@@ -127,6 +127,76 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	}
 }
 
+func TestMSP06GatewayPassesTypedProviderDirectlyWithoutContextTransport(t *testing.T) {
+	fset := token.NewFileSet()
+	mainFile, err := parser.ParseFile(fset, "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterFile, err := parser.ParseFile(fset, "eebus_runtime_adapter.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	typedParameter := false
+	explicitArgument := false
+	for _, declaration := range mainFile.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "startHTTPServer" {
+			continue
+		}
+		for _, field := range function.Type.Params.List {
+			var rendered strings.Builder
+			if err := printer.Fprint(&rendered, fset, field.Type); err != nil {
+				t.Fatal(err)
+			}
+			if rendered.String() == "mcp.EEBusV1Provider" {
+				typedParameter = true
+			}
+		}
+	}
+	ast.Inspect(mainFile, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		function, ok := call.Fun.(*ast.Ident)
+		if !ok || function.Name != "startHTTPServerFn" {
+			return true
+		}
+		for _, argument := range call.Args {
+			identifier, ok := argument.(*ast.Ident)
+			if ok && identifier.Name == "eebusAdapter" {
+				explicitArgument = true
+			}
+		}
+		return true
+	})
+	if !typedParameter {
+		t.Error("startHTTPServer has no explicit mcp.EEBusV1Provider parameter")
+	}
+	if !explicitArgument {
+		t.Error("gateway bootstrap does not pass eebusAdapter directly to startHTTPServerFn")
+	}
+
+	for filename, file := range map[string]*ast.File{
+		"main.go":                  mainFile,
+		"eebus_runtime_adapter.go": adapterFile,
+	} {
+		ast.Inspect(file, func(node ast.Node) bool {
+			identifier, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			switch identifier.Name {
+			case "eebusMCPProviderContextKey", "withEEBusMCPProvider", "eebusMCPProviderFromContext":
+				t.Errorf("%s retains hidden provider context transport %q at %s", filename, identifier.Name, fset.Position(identifier.Pos()))
+			}
+			return true
+		})
+	}
+}
+
 func TestMSP06NoEEBusConsumerOrSemanticProjectionDrift(t *testing.T) {
 	for _, directory := range []string{"../../graphql", "../../portal"} {
 		err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {

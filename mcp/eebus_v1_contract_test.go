@@ -134,7 +134,7 @@ type msp06CallResult struct {
 	isError  bool
 }
 
-func msp06TestServer(t *testing.T, provider *msp06Provider) (*Server, *msp06Clock) {
+func msp06TestServer(t *testing.T, provider EEBusV1Provider) (*Server, *msp06Clock) {
 	t.Helper()
 	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
 	if err != nil {
@@ -405,7 +405,7 @@ func msp06AssertEvidence(t *testing.T, value any, path string) {
 		if !msp06HashPattern.MatchString(digest) || !msp06TimestampPattern.MatchString(timestamp) {
 			t.Fatalf("%s has invalid digest/timestamp: %#v", itemPath, item)
 		}
-		key := kind + "\x00" + digest + "\x00" + fmt.Sprintf("%020d", size) + "\x00" + timestamp
+		key := kind + "\x00" + digest + "\x00" + sizeNumber.String() + "\x00" + timestamp
 		if index > 0 && key <= previous {
 			t.Fatalf("%s ordering key %q is not greater than %q", itemPath, key, previous)
 		}
@@ -496,24 +496,40 @@ func TestMSP06ToolInventoryIsConditionalClosedAndReadOnly(t *testing.T) {
 			}
 		}
 	}
-	if err := server.RegisterEEBusV1Provider(&msp06Provider{snapshot: msp06Snapshot(t, "runtime-b")}); err == nil {
+	secondProvider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-b")}
+	if err := server.RegisterEEBusV1Provider(secondProvider); err == nil {
 		t.Fatal("second eeBUS provider registration succeeded, want rejection")
 	}
 	if got := msp06NamesWithPrefix(msp06Tools(t, server), "eebus."); !reflect.DeepEqual(got, want) {
 		t.Fatalf("inventory changed after rejected second registration: %v", got)
 	}
+	msp06AssertSuccess(t, msp06Call(t, server.Handler(), msp06RuntimeStatusTool, map[string]any{}), msp06RuntimeStatusTool, "runtime-status", "live")
+	if provider.callCount() != 1 || secondProvider.callCount() != 0 {
+		t.Fatalf("provider calls after duplicate registration = original:%d duplicate:%d, want 1/0", provider.callCount(), secondProvider.callCount())
+	}
 }
 
 func TestMSP06NilProviderLeavesInventoryAbsent(t *testing.T) {
-	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := server.RegisterEEBusV1Provider(nil); err == nil {
-		t.Fatal("RegisterEEBusV1Provider(nil) succeeded")
-	}
-	if got := msp06NamesWithPrefix(msp06Tools(t, server), "eebus."); len(got) != 0 {
-		t.Fatalf("nil registration exposed tools %v", got)
+	var typedNil *msp06Provider
+	for _, test := range []struct {
+		name     string
+		provider EEBusV1Provider
+	}{
+		{name: "nil interface", provider: nil},
+		{name: "typed nil", provider: typedNil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := server.RegisterEEBusV1Provider(test.provider); err == nil {
+				t.Fatal("RegisterEEBusV1Provider(nil) succeeded")
+			}
+			if got := msp06NamesWithPrefix(msp06Tools(t, server), "eebus."); len(got) != 0 {
+				t.Fatalf("nil registration exposed tools %v", got)
+			}
+		})
 	}
 }
 
@@ -946,7 +962,11 @@ func TestMSP06ClosedEnumsDuplicatesUnknownsAndUnexplainedEmptyFailClosed(t *test
 			snapshot.Services = append(snapshot.Services, snapshot.Services[0])
 		}},
 		{name: "unsafe evidence integer", tool: msp06ServicesListTool, scope: "services", mutate: func(snapshot *eebusruntime.SnapshotV1) {
-			snapshot.Services[0].Raw[0].Size = int(9007199254740992)
+			unsafeSize := int64(eebusV1MaxSafeInteger + 1)
+			if int64(^uint(0)>>1) < unsafeSize {
+				t.Skip("source evidence size uses int and cannot represent max-safe-plus-one on this architecture")
+			}
+			snapshot.Services[0].Raw[0].Size = int(unsafeSize)
 		}},
 		{name: "unexplained empty ready runtime", tool: msp06ServicesListTool, scope: "services", mutate: func(snapshot *eebusruntime.SnapshotV1) { snapshot.Services = nil }},
 	}
@@ -977,6 +997,18 @@ func TestMSP06ClosedEnumsDuplicatesUnknownsAndUnexplainedEmptyFailClosed(t *test
 	data := msp06AssertSuccess(t, msp06Call(t, server.Handler(), msp06ServicesListTool, map[string]any{}), msp06ServicesListTool, "services", "live")
 	if len(msp06Slice(t, data["services"], "services")) != 0 {
 		t.Fatal("degraded no-visible-services snapshot unexpectedly returned services")
+	}
+}
+
+func TestMSP06SafeNumberLimitRejectsMaxSafePlusOneOnEveryArchitecture(t *testing.T) {
+	object := eebusV1SourceEvidence{
+		Kind:          "service",
+		Digest:        msp06Digest("unsafe-size"),
+		Size:          eebusV1MaxSafeInteger + 1,
+		DataTimestamp: time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC),
+	}
+	if err := eebusV1ValidateSourceEvidenceObject(object); err == nil {
+		t.Fatal("max-safe-plus-one evidence size passed source validation")
 	}
 }
 

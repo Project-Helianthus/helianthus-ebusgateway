@@ -460,6 +460,8 @@ type Server struct {
 	idempotency       map[string]idempotencyEntry
 	snapshotMu        sync.RWMutex
 	snapshots         map[string]snapshotState
+	eebusV1Mu         sync.RWMutex
+	eebusV1           *eebusV1Runtime
 
 	tools []Tool
 
@@ -1364,6 +1366,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 
 	if result, handled := s.handleVaillantB503Call(ctx, call.Name, call.Arguments); handled {
+		return result, nil
+	}
+
+	if result, handled := s.handleEEBusV1Call(ctx, call.Name, call.Arguments); handled {
 		return result, nil
 	}
 

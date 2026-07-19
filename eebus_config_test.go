@@ -59,7 +59,7 @@ func TestDefaultEEBusConfig_ReturnsIndependentEmptySlices(t *testing.T) {
 	}
 }
 
-func TestMSP05BEEBusRuntimeCouplingIsConfinedToPrivateGatewaySeams(t *testing.T) {
+func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 	const runtimeImport = "github.com/Project-Helianthus/helianthus-eebusreg"
 	goMod, err := os.ReadFile("go.mod")
 	if err != nil {
@@ -76,9 +76,11 @@ func TestMSP05BEEBusRuntimeCouplingIsConfinedToPrivateGatewaySeams(t *testing.T)
 		"cmd/gateway/main.go",
 		"config.go",
 	}
-	allowedRuntimeImports := map[string]bool{
+	requiredRuntimeImports := map[string]bool{
 		"cmd/gateway/eebus_runtime_adapter.go": false,
 		"cmd/gateway/eebus_runtime_config.go":  false,
+		// MSP-06 adds one typed, read-only provider seam from the runtime into MCP.
+		"mcp/eebus_v1.go": false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
@@ -100,10 +102,10 @@ func TestMSP05BEEBusRuntimeCouplingIsConfinedToPrivateGatewaySeams(t *testing.T)
 		}
 		normalized := filepath.ToSlash(strings.TrimPrefix(path, "."+string(filepath.Separator)))
 		if strings.Contains(string(content), runtimeImport) {
-			if _, allowed := allowedRuntimeImports[normalized]; !allowed {
-				unexpected = append(unexpected, normalized+": runtime import outside private gateway seams")
+			if _, allowed := requiredRuntimeImports[normalized]; !allowed {
+				unexpected = append(unexpected, normalized+": runtime import outside approved eeBUS seams")
 			} else {
-				allowedRuntimeImports[normalized] = true
+				requiredRuntimeImports[normalized] = true
 			}
 		}
 		if strings.Contains(string(content), "EEBusConfig") && !slices.Contains(allowedConfigReferences, normalized) {
@@ -115,9 +117,9 @@ func TestMSP05BEEBusRuntimeCouplingIsConfinedToPrivateGatewaySeams(t *testing.T)
 		t.Fatalf("walk production Go files: %v", err)
 	}
 	if len(unexpected) != 0 {
-		t.Fatalf("MSP-05A-R1 eeBUS boundary violations: %v", unexpected)
+		t.Fatalf("MSP-06 eeBUS boundary violations: %v", unexpected)
 	}
-	for path, found := range allowedRuntimeImports {
+	for path, found := range requiredRuntimeImports {
 		if !found {
 			t.Errorf("%s does not import %q", path, runtimeImport)
 		}

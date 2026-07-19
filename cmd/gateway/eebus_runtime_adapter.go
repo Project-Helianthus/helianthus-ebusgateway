@@ -67,3 +67,10 @@ func (adapter *eebusRuntimeAdapter) Shutdown() error {
 	})
 	return adapter.shutdownErr
 }
+
+func (adapter *eebusRuntimeAdapter) Snapshot() (eebusruntime.SnapshotV1, error) {
+	if adapter == nil || adapter.runtime == nil {
+		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
+	}
+	return adapter.runtime.Snapshot()
+}

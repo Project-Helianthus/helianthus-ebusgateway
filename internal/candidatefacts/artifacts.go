@@ -14,7 +14,7 @@ var artifactFiles embed.FS
 func PinnedContractV1() ContractBindingV1 {
 	return ContractBindingV1{
 		OwnerRepository:      "Project-Helianthus/helianthus-docs-ebus",
-		OwnerCommit:          "58a91574a637d9be101f9011220c509eabb0ef53",
+		OwnerCommit:          "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
 		GraphSchemaPath:      "docs/platform/schemas/draft-candidate-fact-graph-v1.schema.json",
 		GraphSchemaSHA256:    "ab5f65a527633c3c5f60119cf0071a6ffdd3ee66d6e210f78bf17a03e438069a",
 		ReplaySchemaPath:     "docs/platform/schemas/draft-candidate-fact-replay-v1.schema.json",

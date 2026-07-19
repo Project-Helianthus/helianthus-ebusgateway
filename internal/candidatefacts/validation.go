@@ -329,7 +329,7 @@ func checkProvenance(graph, registry, sourceBundle, sourceReplay map[string]any)
 		terminal, _ := optionalString(fact["terminal_negative_state"])
 		comparator, _ := objectValue(fact["comparator"])
 		samples, _ := arrayValue(comparator["samples"])
-		if status == "CANDIDATE" || status == "CONFLICTED" || terminal == "CONFLICT" {
+		if len(samples) > 0 || status == "CANDIDATE" || status == "CONFLICTED" || terminal == "CONFLICT" {
 			if provenance["ebus"] == nil || provenance["eebus"] == nil ||
 				provenance["ebus_source_id"] == nil || provenance["eebus_source_id"] == nil ||
 				len(samples) == 0 {

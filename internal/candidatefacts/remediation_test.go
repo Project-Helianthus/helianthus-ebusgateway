@@ -9,7 +9,7 @@ import (
 )
 
 func TestCorrectiveContractPinAndCanonicalGraphAreCurrent(t *testing.T) {
-	if got := PinnedContractV1().OwnerCommit; got != "58a91574a637d9be101f9011220c509eabb0ef53" {
+	if got := PinnedContractV1().OwnerCommit; got != "ea88fef23ecb154b08f70e7f94b36e1738ed08bf" {
 		t.Fatalf("OwnerCommit = %q; want corrective docs merge", got)
 	}
 	artifacts := pinnedTestArtifactsV1()

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	docsMergeV1         = "58a91574a637d9be101f9011220c509eabb0ef53"
+	docsMergeV1         = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"
 	sourceOwnerCommitV1 = "4d7747730be023acb251b20a22d796545a9f3688"
 )
 

@@ -671,8 +671,15 @@ func TestMSP06NoDriftToExistingEbusV1InventoryOrResponses(t *testing.T) {
 	if !reflect.DeepEqual(beforeNames, afterNames) {
 		t.Fatalf("ebus.v1 inventory drifted:\nbefore=%v\nafter=%v", beforeNames, afterNames)
 	}
-	if beforeCall.raw != afterCall.raw || beforeCall.isError != afterCall.isError {
-		t.Fatalf("ebus.v1 response drifted after eeBUS registration:\nbefore=%s\nafter=%s", beforeCall.raw, afterCall.raw)
+	for _, envelope := range []map[string]any{beforeCall.envelope, afterCall.envelope} {
+		meta, ok := envelope["meta"].(map[string]any)
+		if !ok {
+			t.Fatalf("ebus.v1 response meta = %T, want object", envelope["meta"])
+		}
+		delete(meta, "data_timestamp")
+	}
+	if !reflect.DeepEqual(beforeCall.envelope, afterCall.envelope) || beforeCall.isError != afterCall.isError {
+		t.Fatalf("ebus.v1 response drifted after eeBUS registration outside the live timestamp:\nbefore=%s\nafter=%s", beforeCall.raw, afterCall.raw)
 	}
 }
 

@@ -162,6 +162,18 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		cfg.Providers = vaillantproviders.Default()
 	}
 
+	evidenceRuntime, err := openSynchronizedEvidenceRuntime(cfg.EvidenceRecorderConfig)
+	if err != nil {
+		return fmt.Errorf("synchronized evidence sidecar: %w", err)
+	}
+	if evidenceRuntime != nil {
+		defer func() {
+			if err := evidenceRuntime.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown synchronized evidence sidecar: %w", err))
+			}
+		}()
+	}
+
 	eebusAdapter, err := startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)
@@ -172,6 +184,21 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
 			}
 		}()
+	}
+	if evidenceRuntime != nil {
+		version, versionErr := synchronizedEvidenceBuildVersion()
+		if versionErr != nil {
+			return fmt.Errorf("synchronized evidence build identity: %w", versionErr)
+		}
+		var captureEEBus eebusEvidenceCapture
+		if eebusAdapter != nil {
+			captureEEBus = func(pseudonymKey []byte) (json.RawMessage, time.Time, error) {
+				return mcp.CaptureEEBusV1ServicesEvidence(eebusAdapter, pseudonymKey)
+			}
+		}
+		if err := evidenceRuntime.Configure(captureEEBus, version, newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
+			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
+		}
 	}
 
 	// Initialize the runtime-state Manager early so the cached

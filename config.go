@@ -125,6 +125,7 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
+	EvidenceRecorderConfig   EvidenceRecorderConfig
 	BusConfig                protocol.BusConfig
 	QueueCapacity            int
 	Providers                []registry.PlaneProvider
@@ -261,10 +262,11 @@ func DefaultConfig() Config {
 			WriteTimeout: 5 * time.Second,
 			DialTimeout:  5 * time.Second,
 		},
-		EEBusConfig: DefaultEEBusConfig(),
-		BusConfig:   protocol.DefaultBusConfig(),
-		Providers:   vaillantproviders.Default(),
-		ScanOnStart: true,
+		EEBusConfig:            DefaultEEBusConfig(),
+		EvidenceRecorderConfig: DefaultEvidenceRecorderConfig(),
+		BusConfig:              protocol.DefaultBusConfig(),
+		Providers:              vaillantproviders.Default(),
+		ScanOnStart:            true,
 		// Use a non-ebusd default to allow running alongside ebusd without address conflicts.
 		ScanSource:  0xF0,
 		ScanTimeout: 3 * time.Minute,
@@ -339,6 +341,9 @@ func DefaultConfig() Config {
 }
 
 func applyDefaults(cfg Config) Config {
+	if cfg.EvidenceRecorderConfig == (EvidenceRecorderConfig{}) {
+		cfg.EvidenceRecorderConfig = DefaultEvidenceRecorderConfig()
+	}
 	if cfg.BusConfig == (protocol.BusConfig{}) {
 		cfg.BusConfig = protocol.DefaultBusConfig()
 	}

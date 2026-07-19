@@ -628,6 +628,9 @@ func smokeMethodNeedsParams(method registry.Method) bool {
 
 func newGatewayWithTransport(ctx context.Context, cfg Config, wrap func(transport.RawTransport) transport.RawTransport) (*Gateway, error) {
 	cfg = applyDefaults(cfg)
+	if err := ValidateEvidenceRecorderConfig(cfg.EvidenceRecorderConfig); err != nil {
+		return nil, fmt.Errorf("validate gateway config: %w", err)
+	}
 
 	transportLayer, closeFn, err := resolveTransport(ctx, cfg)
 	if err != nil {

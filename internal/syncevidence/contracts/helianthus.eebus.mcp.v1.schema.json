@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:helianthus:eebus:mcp:v1:candidate",
+  "title": "Candidate Helianthus eeBUS MCP v1 wire contract",
+  "$ref": "#/$defs/EnvelopeV1",
+  "$defs": {
+    "TimestampV1": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "HashV1": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "OpaqueTokenV1": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "PseudonymV1": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "MaskTierV1": {
+      "const": "redacted"
+    },
+    "AuthScopeV1": {
+      "const": "eebus.raw.read"
+    },
+    "ModeV1": {
+      "enum": ["live", "evidence"]
+    },
+    "RuntimeStateV1": {
+      "enum": ["stopped", "starting", "ready", "degraded", "shutdown"]
+    },
+    "DegradationReasonV1": {
+      "enum": [
+        "missing-discovery",
+        "denied-trust",
+        "remote-disconnect",
+        "certificate-unavailable",
+        "no-visible-services",
+        "no-data"
+      ]
+    },
+    "IdentityKindV1": {
+      "enum": [
+        "runtime",
+        "remote",
+        "service",
+        "session",
+        "device",
+        "entity",
+        "feature",
+        "usecase-claim"
+      ]
+    },
+    "EvidenceKindV1": {
+      "enum": ["identity", "topology", "service", "session", "unknown"]
+    },
+    "ServiceKindV1": {
+      "enum": ["local", "remote"]
+    },
+    "SessionStateV1": {
+      "enum": ["connecting", "connected", "disconnected", "degraded"]
+    },
+    "PairingStateV1": {
+      "enum": ["unpaired", "paired", "denied"]
+    },
+    "FeatureRoleV1": {
+      "enum": ["client", "server"]
+    },
+    "ToolV1": {
+      "enum": [
+        "eebus.v1.runtime.status.get",
+        "eebus.v1.services.list",
+        "eebus.v1.services.get",
+        "eebus.v1.sessions.list",
+        "eebus.v1.sessions.get",
+        "eebus.v1.topology.get",
+        "eebus.v1.snapshot.capture",
+        "eebus.v1.snapshot.drop",
+        "eebus.v1.pairing.status.get"
+      ]
+    },
+    "ScopeV1": {
+      "enum": [
+        "runtime-status",
+        "services",
+        "service",
+        "sessions",
+        "session",
+        "topology",
+        "whole-root",
+        "pairing-status"
+      ]
+    },
+    "ErrorCodeV1": {
+      "enum": [
+        "invalid_argument",
+        "not_found",
+        "permission_denied",
+        "admin_required",
+        "backend_unavailable",
+        "timeout",
+        "snapshot_gone",
+        "quota_exceeded",
+        "contract_violation"
+      ]
+    },
+    "SourceLayerV1": {
+      "enum": ["mcp", "policy", "eebusruntime", "snapshot-store"]
+    },
+    "EnvelopeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["meta", "data", "error"],
+      "properties": {
+        "meta": {"$ref": "#/$defs/MetaV1"},
+        "data": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/RuntimeStatusDataV1"},
+            {"$ref": "#/$defs/ServicesListDataV1"},
+            {"$ref": "#/$defs/ServiceDataV1"},
+            {"$ref": "#/$defs/SessionsListDataV1"},
+            {"$ref": "#/$defs/SessionDataV1"},
+            {"$ref": "#/$defs/TopologyDataV1"},
+            {"$ref": "#/$defs/CapturedRootV1"},
+            {"$ref": "#/$defs/DropResultV1"},
+            {"$ref": "#/$defs/PairingStatusDataV1"}
+          ]
+        },
+        "error": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/ErrorV1"}
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "data": {"not": {"type": "null"}},
+            "error": {"type": "null"}
+          }
+        },
+        {
+          "properties": {
+            "data": {"type": "null"},
+            "error": {"$ref": "#/$defs/ErrorV1"}
+          }
+        }
+      ]
+    },
+    "MetaV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "tool", "scope", "mask_tier", "auth_scope", "mode", "data_timestamp", "data_hash", "runtime"],
+      "properties": {
+        "contract": {"$ref": "#/$defs/ContractV1"},
+        "tool": {"$ref": "#/$defs/ToolV1"},
+        "scope": {"$ref": "#/$defs/ScopeV1"},
+        "mask_tier": {"$ref": "#/$defs/MaskTierV1"},
+        "auth_scope": {"$ref": "#/$defs/AuthScopeV1"},
+        "mode": {"$ref": "#/$defs/ModeV1"},
+        "data_timestamp": {"$ref": "#/$defs/TimestampV1"},
+        "data_hash": {"$ref": "#/$defs/HashV1"},
+        "runtime": {"$ref": "#/$defs/RuntimeMetaV1"}
+      }
+    },
+    "ContractV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "major", "minor"],
+      "properties": {
+        "name": {"const": "helianthus-eebus-mcp"},
+        "major": {"const": 1},
+        "minor": {"const": 0}
+      }
+    },
+    "RuntimeMetaV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"$ref": "#/$defs/RuntimeStateV1"},
+        "degradation": {"$ref": "#/$defs/DegradationDataV1"}
+      }
+    },
+    "ErrorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retriable", "source_layer"],
+      "properties": {
+        "code": {"$ref": "#/$defs/ErrorCodeV1"},
+        "message": {"type": "string", "minLength": 1},
+        "retriable": {"type": "boolean"},
+        "source_layer": {"$ref": "#/$defs/SourceLayerV1"}
+      }
+    },
+    "IdentityDigestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "digest"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/IdentityKindV1"},
+        "digest": {"$ref": "#/$defs/PseudonymV1"}
+      }
+    },
+    "EvidenceDescriptorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "digest", "size", "data_timestamp"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/EvidenceKindV1"},
+        "digest": {"$ref": "#/$defs/HashV1"},
+        "size": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "data_timestamp": {"$ref": "#/$defs/TimestampV1"}
+      }
+    },
+    "DegradationDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "since"],
+      "properties": {
+        "reason": {"$ref": "#/$defs/DegradationReasonV1"},
+        "since": {"$ref": "#/$defs/TimestampV1"}
+      }
+    },
+    "RuntimeStatusDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"$ref": "#/$defs/RuntimeStateV1"},
+        "degradation": {"$ref": "#/$defs/DegradationDataV1"}
+      }
+    },
+    "ServiceDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "visible", "paired"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "kind": {"$ref": "#/$defs/ServiceKindV1"},
+        "visible": {"type": "boolean"},
+        "paired": {"type": "boolean"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "ServicesListDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["services"],
+      "properties": {
+        "services": {"type": "array", "items": {"$ref": "#/$defs/ServiceDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest", "kind"]}
+      }
+    },
+    "SessionDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "remote", "state"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "remote": {"$ref": "#/$defs/IdentityDigestV1"},
+        "state": {"$ref": "#/$defs/SessionStateV1"},
+        "since": {"$ref": "#/$defs/TimestampV1"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "SessionsListDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessions"],
+      "properties": {
+        "sessions": {"type": "array", "items": {"$ref": "#/$defs/SessionDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]}
+      }
+    },
+    "PairingDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "state"],
+      "properties": {
+        "remote": {"$ref": "#/$defs/IdentityDigestV1"},
+        "state": {"$ref": "#/$defs/PairingStateV1"},
+        "since": {"$ref": "#/$defs/TimestampV1"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "PairingStatusDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pairing"],
+      "properties": {
+        "pairing": {"type": "array", "items": {"$ref": "#/$defs/PairingDataV1"}, "uniqueItems": true, "x-order-by": ["remote.digest"]}
+      }
+    },
+    "FeatureDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "role": {"$ref": "#/$defs/FeatureRoleV1"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "EntityDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "features"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "features": {"type": "array", "items": {"$ref": "#/$defs/FeatureDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "UseCaseClaimDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "DeviceDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "entities", "usecase_claims"],
+      "properties": {
+        "id": {"$ref": "#/$defs/IdentityDigestV1"},
+        "entities": {"type": "array", "items": {"$ref": "#/$defs/EntityDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]},
+        "usecase_claims": {"type": "array", "items": {"$ref": "#/$defs/UseCaseClaimDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "TopologyDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["devices"],
+      "properties": {
+        "devices": {"type": "array", "items": {"$ref": "#/$defs/DeviceDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]}
+      }
+    },
+    "SnapshotMetaDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "runtime", "mask_tier", "captured_at", "data_timestamp", "data_hash"],
+      "properties": {
+        "contract": {"const": "helianthus.eebus.runtime.raw-snapshot.v1"},
+        "runtime": {"$ref": "#/$defs/IdentityDigestV1"},
+        "mask_tier": {"$ref": "#/$defs/MaskTierV1"},
+        "captured_at": {"$ref": "#/$defs/TimestampV1"},
+        "data_timestamp": {"$ref": "#/$defs/TimestampV1"},
+        "data_hash": {"$ref": "#/$defs/HashV1"}
+      }
+    },
+    "SnapshotDataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["meta", "status", "pairing", "services", "sessions", "topology"],
+      "properties": {
+        "meta": {"$ref": "#/$defs/SnapshotMetaDataV1"},
+        "status": {"$ref": "#/$defs/RuntimeStatusDataV1"},
+        "pairing": {"type": "array", "items": {"$ref": "#/$defs/PairingDataV1"}, "uniqueItems": true, "x-order-by": ["remote.digest"]},
+        "services": {"type": "array", "items": {"$ref": "#/$defs/ServiceDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest", "kind"]},
+        "sessions": {"type": "array", "items": {"$ref": "#/$defs/SessionDataV1"}, "uniqueItems": true, "x-order-by": ["id.digest"]},
+        "topology": {"$ref": "#/$defs/TopologyDataV1"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/EvidenceDescriptorV1"}, "uniqueItems": true, "x-order-by": ["kind", "digest", "size", "data_timestamp"]}
+      }
+    },
+    "EvidenceRefsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_status_ref", "services_list_ref", "services_get_ref", "sessions_list_ref", "sessions_get_ref", "topology_ref", "pairing_status_ref"],
+      "properties": {
+        "runtime_status_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "services_list_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "services_get_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "sessions_list_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "sessions_get_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "topology_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "pairing_status_ref": {"$ref": "#/$defs/OpaqueTokenV1"}
+      }
+    },
+    "CapturedRootV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshot_ref", "expires_at", "snapshot_content_hash", "evidence_refs", "snapshot"],
+      "properties": {
+        "snapshot_ref": {"$ref": "#/$defs/OpaqueTokenV1"},
+        "expires_at": {"$ref": "#/$defs/TimestampV1"},
+        "snapshot_content_hash": {"$ref": "#/$defs/HashV1"},
+        "evidence_refs": {"$ref": "#/$defs/EvidenceRefsV1"},
+        "snapshot": {"$ref": "#/$defs/SnapshotDataV1"}
+      }
+    },
+    "DropResultV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["dropped", "already_gone"]}
+      }
+    }
+  }
+}

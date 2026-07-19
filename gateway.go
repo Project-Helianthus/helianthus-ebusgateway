@@ -32,6 +32,9 @@ func New(ctx context.Context, cfg Config) (*Gateway, error) {
 	if err := ValidateStartupAdmissionStability(cfg.StateMinStabilitySeconds); err != nil {
 		return nil, fmt.Errorf("validate gateway config: %w", err)
 	}
+	if err := ValidateEvidenceRecorderConfig(cfg.EvidenceRecorderConfig); err != nil {
+		return nil, fmt.Errorf("validate gateway config: %w", err)
+	}
 
 	transportLayer, closeFn, err := resolveTransport(ctx, cfg)
 	if err != nil {

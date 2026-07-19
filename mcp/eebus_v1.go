@@ -26,6 +26,7 @@ const (
 	eebusV1PairingStatusTool   = "eebus.v1.pairing.status.get"
 
 	eebusV1DefaultLiveTimeout = 3 * time.Second
+	eebusV1MaxLiveWorkers     = 8
 	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
 )
 
@@ -46,6 +47,7 @@ type eebusV1Runtime struct {
 	now          func() time.Time
 	pseudonymKey []byte
 	liveTimeout  time.Duration
+	liveWorkers  chan struct{}
 	store        *eebusV1SnapshotStore
 }
 
@@ -147,6 +149,7 @@ func (server *Server) registerEEBusV1Provider(provider EEBusV1Provider, options 
 		now:          options.now,
 		pseudonymKey: append([]byte(nil), options.pseudonymKey...),
 		liveTimeout:  options.liveTimeout,
+		liveWorkers:  make(chan struct{}, eebusV1MaxLiveWorkers),
 	}
 	runtime.store = newEEBusV1SnapshotStore(runtime.now, options.entropy)
 	server.eebusV1 = runtime
@@ -242,9 +245,44 @@ func (runtime *eebusV1Runtime) call(ctx context.Context, spec eebusV1ToolSpec, a
 		return runtime.envelopeAt(spec, "evidence", timestamp, status, data, nil)
 	}
 
-	projection, code := runtime.liveProjection(ctx)
+	return runtime.liveCall(ctx, spec, validated)
+}
+
+func (runtime *eebusV1Runtime) liveCall(ctx context.Context, spec eebusV1ToolSpec, validated eebusV1ValidatedArguments) eebusV1EnvelopeV1 {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	liveCtx, cancel := context.WithTimeout(ctx, runtime.liveTimeout)
+	defer cancel()
+
+	select {
+	case runtime.liveWorkers <- struct{}{}:
+	case <-liveCtx.Done():
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+	}
+	if liveCtx.Err() != nil {
+		<-runtime.liveWorkers
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+	}
+
+	result := make(chan eebusV1EnvelopeV1, 1)
+	go func() {
+		defer func() { <-runtime.liveWorkers }()
+		result <- runtime.buildLiveEnvelope(spec, validated)
+	}()
+
+	select {
+	case envelope := <-result:
+		return envelope
+	case <-liveCtx.Done():
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+	}
+}
+
+func (runtime *eebusV1Runtime) buildLiveEnvelope(spec eebusV1ToolSpec, validated eebusV1ValidatedArguments) eebusV1EnvelopeV1 {
+	projection, code := runtime.liveProjection()
 	if code != "" {
-		return runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), code)
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), code)
 	}
 	if spec.name == eebusV1SnapshotCaptureTool {
 		captured, code := runtime.store.capture(projection)
@@ -307,36 +345,19 @@ func eebusV1ValidateArguments(spec eebusV1ToolSpec, arguments map[string]any) (e
 	return result, ""
 }
 
-func (runtime *eebusV1Runtime) liveProjection(ctx context.Context) (eebusV1Projection, string) {
-	type providerResult struct {
-		snapshot eebusruntime.SnapshotV1
-		err      error
-	}
-	result := make(chan providerResult, 1)
-	go func() {
-		snapshot, err := runtime.provider.Snapshot()
-		result <- providerResult{snapshot: snapshot, err: err}
-	}()
-	timer := time.NewTimer(runtime.liveTimeout)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return eebusV1Projection{}, "timeout"
-	case <-timer.C:
-		return eebusV1Projection{}, "timeout"
-	case observed := <-result:
-		if observed.err != nil {
-			if errors.Is(observed.err, context.DeadlineExceeded) {
-				return eebusV1Projection{}, "timeout"
-			}
-			return eebusV1Projection{}, "backend_unavailable"
+func (runtime *eebusV1Runtime) liveProjection() (eebusV1Projection, string) {
+	snapshot, err := runtime.provider.Snapshot()
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return eebusV1Projection{}, "timeout"
 		}
-		projection, err := eebusV1ProjectSnapshot(observed.snapshot, runtime.pseudonymKey)
-		if err != nil {
-			return eebusV1Projection{}, "contract_violation"
-		}
-		return projection, ""
+		return eebusV1Projection{}, "backend_unavailable"
 	}
+	projection, err := eebusV1ProjectSnapshot(snapshot, runtime.pseudonymKey)
+	if err != nil {
+		return eebusV1Projection{}, "contract_violation"
+	}
+	return projection, ""
 }
 
 func eebusV1DataForTool(name string, projection eebusV1Projection, idDigest string) (any, string) {

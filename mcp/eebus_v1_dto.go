@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 const (
@@ -22,6 +24,7 @@ const (
 
 	eebusV1SourceSnapshotContract = "helianthus.eebus.runtime.raw-snapshot.v1"
 	eebusV1SourceRedactedValue    = "[redacted]"
+	eebusV1MaxCollectionSize      = 1024
 )
 
 type eebusV1ContractV1 struct {
@@ -288,7 +291,10 @@ func (p *eebusV1Pseudonymizer) identity(kind string, source eebusV1SourceIdentit
 	}, nil
 }
 
-func eebusV1ProjectSnapshot(value any, pseudonymKey []byte) (eebusV1Projection, error) {
+func eebusV1ProjectSnapshot(value eebusruntime.SnapshotV1, pseudonymKey []byte) (eebusV1Projection, error) {
+	if err := eebusV1ValidateProviderCollectionBounds(value); err != nil {
+		return eebusV1Projection{}, err
+	}
 	source, err := eebusV1DecodeSourceSnapshot(value)
 	if err != nil {
 		return eebusV1Projection{}, err
@@ -362,6 +368,63 @@ func eebusV1ProjectSnapshot(value any, pseudonymKey []byte) (eebusV1Projection, 
 	}, nil
 }
 
+func eebusV1ValidateProviderCollectionBounds(snapshot eebusruntime.SnapshotV1) error {
+	if err := eebusV1ValidateCollectionSizes(
+		len(snapshot.Pairing),
+		len(snapshot.Services),
+		len(snapshot.Sessions),
+		len(snapshot.Topology.Devices),
+		len(snapshot.Raw),
+	); err != nil {
+		return err
+	}
+	for _, pairing := range snapshot.Pairing {
+		if err := eebusV1ValidateCollectionSizes(len(pairing.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, service := range snapshot.Services {
+		if err := eebusV1ValidateCollectionSizes(len(service.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, session := range snapshot.Sessions {
+		if err := eebusV1ValidateCollectionSizes(len(session.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, device := range snapshot.Topology.Devices {
+		if err := eebusV1ValidateCollectionSizes(len(device.Entities), len(device.UseCaseClaims), len(device.Raw)); err != nil {
+			return err
+		}
+		for _, entity := range device.Entities {
+			if err := eebusV1ValidateCollectionSizes(len(entity.Features), len(entity.Raw)); err != nil {
+				return err
+			}
+			for _, feature := range entity.Features {
+				if err := eebusV1ValidateCollectionSizes(len(feature.Raw)); err != nil {
+					return err
+				}
+			}
+		}
+		for _, claim := range device.UseCaseClaims {
+			if err := eebusV1ValidateCollectionSizes(len(claim.Raw)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func eebusV1ValidateCollectionSizes(lengths ...int) error {
+	for _, length := range lengths {
+		if length > eebusV1MaxCollectionSize {
+			return errors.New("provider collection exceeds maximum size")
+		}
+	}
+	return nil
+}
+
 func eebusV1DecodeSourceSnapshot(value any) (eebusV1SourceSnapshot, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -380,6 +443,15 @@ func eebusV1DecodeSourceSnapshot(value any) (eebusV1SourceSnapshot, error) {
 }
 
 func eebusV1ValidateSourceSnapshot(snapshot eebusV1SourceSnapshot) error {
+	if err := eebusV1ValidateCollectionSizes(
+		len(snapshot.Pairing),
+		len(snapshot.Services),
+		len(snapshot.Sessions),
+		len(snapshot.Topology.Devices),
+		len(snapshot.Raw),
+	); err != nil {
+		return err
+	}
 	if snapshot.Meta.Contract != eebusV1SourceSnapshotContract || snapshot.Meta.MaskTier != eebusV1MaskTier {
 		return errors.New("invalid source snapshot metadata")
 	}
@@ -452,6 +524,9 @@ func eebusV1ValidateSourceSnapshot(snapshot eebusV1SourceSnapshot) error {
 		}
 	}
 	for _, device := range snapshot.Topology.Devices {
+		if err := eebusV1ValidateCollectionSizes(len(device.Entities), len(device.UseCaseClaims)); err != nil {
+			return err
+		}
 		if err := eebusV1ValidateSourceIdentityKind(device.ID, "peer"); err != nil {
 			return err
 		}
@@ -462,6 +537,9 @@ func eebusV1ValidateSourceSnapshot(snapshot eebusV1SourceSnapshot) error {
 			return err
 		}
 		for _, entity := range device.Entities {
+			if err := eebusV1ValidateCollectionSizes(len(entity.Features)); err != nil {
+				return err
+			}
 			if err := eebusV1ValidateSourceIdentityKind(entity.ID, "peer"); err != nil {
 				return err
 			}
@@ -546,6 +624,9 @@ func eebusV1ValidateSourceIdentityKind(source eebusV1SourceIdentity, allowed ...
 }
 
 func eebusV1ValidateSourceEvidence(source []eebusV1SourceEvidence) error {
+	if err := eebusV1ValidateCollectionSizes(len(source)); err != nil {
+		return err
+	}
 	for _, object := range source {
 		if err := eebusV1ValidateSourceEvidenceObject(object); err != nil {
 			return err
@@ -765,6 +846,9 @@ func eebusV1ProjectTopology(source eebusV1SourceTopology, pseudonyms *eebusV1Pse
 }
 
 func eebusV1ProjectEvidence(source []eebusV1SourceEvidence) ([]eebusV1EvidenceDescriptorV1, error) {
+	if err := eebusV1ValidateCollectionSizes(len(source)); err != nil {
+		return nil, err
+	}
 	if len(source) == 0 {
 		return nil, nil
 	}

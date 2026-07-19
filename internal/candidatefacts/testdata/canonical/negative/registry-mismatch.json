@@ -1,0 +1,5 @@
+{
+  "contract": "helianthus.platform.draft-candidate-fact-negative-fixture.v1",
+  "base": "../positive/graph.json",
+  "mutation": "REGISTRY_MISMATCH"
+}

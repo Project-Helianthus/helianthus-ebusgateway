@@ -1,0 +1,96 @@
+{
+  "contract": "helianthus.platform.draft-candidate-fact-registry.v1",
+  "version": 1,
+  "candidate_contract": {
+    "contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+    "schema_version": 1,
+    "schema_path": "docs/platform/schemas/draft-candidate-fact-graph-v1.schema.json",
+    "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
+    "replay_schema_path": "docs/platform/schemas/draft-candidate-fact-replay-v1.schema.json"
+  },
+  "source_contract": {
+    "contract": "helianthus.platform.synchronized-evidence-bundle.v1",
+    "schema_version": 1,
+    "owner_repository": "Project-Helianthus/helianthus-docs-ebus",
+    "owner_commit": "4d7747730be023acb251b20a22d796545a9f3688",
+    "schema_path": "docs/platform/schemas/synchronized-evidence-bundle-v1.schema.json",
+    "schema_sha256": "ed574071fdb11e10d5696c62e873a38c6c6dde64c6069bf616476cea8e8bf737",
+    "source_registry_path": "docs/platform/schemas/synchronized-evidence-source-registry-v1.json",
+    "source_registry_sha256": "a91b2106076c3ef0f70578e9fc1c85925dd085af323c5889f809b5b2ef1a2488",
+    "replay_digest_algorithm": "SHA256_JCS_DOMAIN_V1",
+    "replay_digest_domain": "HELIANTHUS:SYNCHRONIZED-EVIDENCE-REPLAY:V1"
+  },
+  "statuses": [
+    "RAW_ONLY",
+    "CANDIDATE",
+    "CONFLICTED",
+    "WITHHELD"
+  ],
+  "terminal_negative_states": [
+    "NO_SIGNAL",
+    "CLOUD_ONLY",
+    "CONFLICT",
+    "NOT_TESTED"
+  ],
+  "comparators": [
+    {
+      "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+      "type": "NUMERIC_WINDOW",
+      "required_parameters": [
+        "window",
+        "tolerance",
+        "unit_conversion",
+        "rounding",
+        "minimum_samples",
+        "maximum_missing_samples",
+        "stale_cutoff_ns",
+        "conflict_threshold"
+      ],
+      "outcomes": [
+        "MATCH",
+        "MISMATCH",
+        "CONFLICT",
+        "INDETERMINATE",
+        "NOT_EVALUATED"
+      ]
+    }
+  ],
+  "candidate_channel": "CANDIDATE_DEBUG_REPLAY",
+  "forbidden_surfaces": [
+    "STABLE_DOC_NAVIGATION",
+    "STABLE_DOC_SEARCH",
+    "STABLE_DOC_SITEMAP",
+    "VERSIONED_DOC_BUNDLE",
+    "RELEASE_DOC_BUNDLE",
+    "EBUS_V1_MCP",
+    "GRAPHQL",
+    "PORTAL",
+    "HOME_ASSISTANT",
+    "COMMAND_ROUTING",
+    "PROMOTED_SEMANTICS",
+    "STABLE_SEMANTIC_REGISTRY"
+  ],
+  "validation_precedence": [
+    "json.syntax",
+    "schema.graph",
+    "limits.exceeded",
+    "registry.binding",
+    "provenance.binding",
+    "identity.native",
+    "ordering.invalid",
+    "state.terminal",
+    "comparator.invalid",
+    "anti_leak.consumer",
+    "hash.fact",
+    "hash.graph"
+  ],
+  "limits": {
+    "max_graph_bytes": 1048576,
+    "max_depth": 32,
+    "max_facts": 64,
+    "max_evidence_refs_per_fact": 16,
+    "max_samples_per_comparator": 1024,
+    "max_string_bytes": 4096,
+    "max_path_segments": 32
+  }
+}

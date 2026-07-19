@@ -1,0 +1,587 @@
+{
+  "contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+  "schema_version": 1,
+  "graph_id": "dcfgv1:sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3",
+  "graph_hash": "sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3",
+  "registry": {
+    "contract": "helianthus.platform.draft-candidate-fact-registry.v1",
+    "version": 1,
+    "digest": "sha256:3126379f5a59d5751954235ea996bdcb63ce09d51d009382982716c46ba4559a"
+  },
+  "source_bundle": {
+    "contract": "helianthus.platform.synchronized-evidence-bundle.v1",
+    "schema_version": 1,
+    "bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+    "bundle_hash": "sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+    "replay_hash": "sha256:d67fbf596558b994a42ed93e7436a340c22d34d93e4db6f2bf442a48a7f82a4f",
+    "evidence_refs": [
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "repository": null,
+        "commit": null,
+        "path": null
+      },
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "repository": null,
+        "commit": null,
+        "path": null
+      },
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "repository": null,
+        "commit": null,
+        "path": null
+      },
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "repository": null,
+        "commit": null,
+        "path": null
+      },
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "repository": null,
+        "commit": null,
+        "path": null
+      },
+      {
+        "kind": "CONTENT",
+        "digest_algorithm": "SHA256_CONTENT_BYTES",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "repository": null,
+        "commit": null,
+        "path": null
+      }
+    ]
+  },
+  "visibility": {
+    "channel": "CANDIDATE_DEBUG_REPLAY",
+    "promotion_state": "NOT_PROMOTED",
+    "stable_exposure": false,
+    "command_capable": false,
+    "protocol_translation": false
+  },
+  "limits": {
+    "max_graph_bytes": 1048576,
+    "max_depth": 32,
+    "max_facts": 64,
+    "max_evidence_refs_per_fact": 16,
+    "max_samples_per_comparator": 1024,
+    "max_string_bytes": 4096,
+    "max_path_segments": 32
+  },
+  "comparator_drafts": [
+    {
+      "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+      "type": "NUMERIC_WINDOW",
+      "parameters": {
+        "window": {
+          "start_offset_ns": 1000000000,
+          "end_offset_ns": 9000000000
+        },
+        "tolerance": {
+          "absolute_decimal": "0.2",
+          "relative_ppm": 10000
+        },
+        "unit_conversion": {
+          "mode": "IDENTITY",
+          "source_unit": "degC",
+          "target_unit": "degC",
+          "scale_decimal": "1",
+          "offset_decimal": "0"
+        },
+        "rounding": {
+          "mode": "HALF_EVEN",
+          "decimal_places": 1
+        },
+        "minimum_samples": 2,
+        "maximum_missing_samples": 1,
+        "stale_cutoff_ns": 2000000000,
+        "conflict_threshold": {
+          "absolute_decimal": "1.0",
+          "consecutive_samples": 2
+        }
+      }
+    }
+  ],
+  "facts": [
+    {
+      "candidate_id": "m7-candidate-0001",
+      "proposed_path": "/candidates/cloud_only/room_temperature",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "WITHHELD",
+      "terminal_negative_state": "CLOUD_ONLY",
+      "confidence": {
+        "level": "LOW",
+        "basis": "INSUFFICIENT",
+        "score_milli": 100
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": null,
+        "ebus_artifact_id": null,
+        "ebus": null,
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": {
+          "source_id": "cloud-55555555555555555555555555555555",
+          "artifact_id": "seav1:sha256:8b96127c3059945ba940f03facfa0dfa102af622300d6e767ff73fadab9acf80",
+          "evidence_id": "public-evidence-cloud-0001"
+        }
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
+      },
+      "falsifier": {
+        "condition_code": "SIGNAL_DISAPPEARS",
+        "expected_terminal_state": "CLOUD_ONLY",
+        "description": "Native bus evidence remains absent in the bounded capture."
+      },
+      "retest_trigger": {
+        "trigger_code": "SOURCE_RECOVERED",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:18fd9637122bb2fec20b1ba78e131a658bf31972329a772f444f46e79fff999b"
+    },
+    {
+      "candidate_id": "m7-candidate-0002",
+      "proposed_path": "/candidates/conflict/room_temperature",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "WITHHELD",
+      "terminal_negative_state": "CONFLICT",
+      "confidence": {
+        "level": "LOW",
+        "basis": "OBSERVED",
+        "score_milli": 200
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": "ebus-22222222222222222222222222222222",
+        "ebus_artifact_id": "seav1:sha256:2b4dd42381a84888d9db61696e07fe1cd435aa591ce46e106346abb3c6a997fd",
+        "ebus": {
+          "family": "B524",
+          "target_pseudonym": "target-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "opcode": 2,
+          "GG": 3,
+          "II": 0,
+          "RR": 28,
+          "target_address": 21,
+          "source_address": 247,
+          "group_meaning": "zones",
+          "instance_gate": "index-not-ff",
+          "register_category": "STATE",
+          "unit_scale_source": "vrc-explorer-v1"
+        },
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [
+          {
+            "offset_ns": 4000000000,
+            "left_decimal": "18.0",
+            "right_decimal": "21.0",
+            "state": "PRESENT"
+          },
+          {
+            "offset_ns": 5000000000,
+            "left_decimal": "18.1",
+            "right_decimal": "21.1",
+            "state": "PRESENT"
+          }
+        ],
+        "outcome": "CONFLICT"
+      },
+      "falsifier": {
+        "condition_code": "VALUE_DIVERGES",
+        "expected_terminal_state": "CONFLICT",
+        "description": "Two consecutive samples exceed the draft conflict threshold."
+      },
+      "retest_trigger": {
+        "trigger_code": "NEW_SYNCHRONIZED_BUNDLE",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:da2274efe34521abd40a0e54e01a30c18bf1ab6eb7bb5975f9f19f60e744e1b4"
+    },
+    {
+      "candidate_id": "m7-candidate-0003",
+      "proposed_path": "/candidates/eebus/raw_feature",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "RAW_ONLY",
+      "terminal_negative_state": null,
+      "confidence": {
+        "level": "LOW",
+        "basis": "INFERRED",
+        "score_milli": 300
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": "ebus-11111111111111111111111111111111",
+        "ebus_artifact_id": "seav1:sha256:02e77d04afd1d96df8c24abd527726dae82316ed30703f8a72a19d3e578deb48",
+        "ebus": {
+          "family": "B509",
+          "target_pseudonym": "target-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "target_address": 8,
+          "target_product": "BAI00",
+          "register_family": "system",
+          "register_id": 512,
+          "unit_scale_source": "gateway-catalog-v1",
+          "evidence_role": "AUTHORITATIVE"
+        },
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
+      },
+      "falsifier": {
+        "condition_code": "PROVENANCE_BREAKS",
+        "expected_terminal_state": "NOT_TESTED",
+        "description": "Any missing native identity makes the raw correlation untestable."
+      },
+      "retest_trigger": {
+        "trigger_code": "IDENTITY_CONFIRMED",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:feb134bc2c969d7e3e9aa2f99e7b52e6320a14edbdcf413ea64e82bbefd70615"
+    },
+    {
+      "candidate_id": "m7-candidate-0004",
+      "proposed_path": "/candidates/no_signal/room_temperature",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "WITHHELD",
+      "terminal_negative_state": "NO_SIGNAL",
+      "confidence": {
+        "level": "LOW",
+        "basis": "INSUFFICIENT",
+        "score_milli": 0
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": "ebus-11111111111111111111111111111111",
+        "ebus_artifact_id": "seav1:sha256:02e77d04afd1d96df8c24abd527726dae82316ed30703f8a72a19d3e578deb48",
+        "ebus": {
+          "family": "B509",
+          "target_pseudonym": "target-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "target_address": 8,
+          "target_product": "BAI00",
+          "register_family": "system",
+          "register_id": 512,
+          "unit_scale_source": "gateway-catalog-v1",
+          "evidence_role": "AUTHORITATIVE"
+        },
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
+      },
+      "falsifier": {
+        "condition_code": "SIGNAL_DISAPPEARS",
+        "expected_terminal_state": "NO_SIGNAL",
+        "description": "The required peer signal is absent for the complete bounded window."
+      },
+      "retest_trigger": {
+        "trigger_code": "SOURCE_RECOVERED",
+        "required_source_kinds": [
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:bcec5e1365b67ddd78782d66d3634633ca50aad616b1d034a31632249f3c69da"
+    },
+    {
+      "candidate_id": "m7-candidate-0005",
+      "proposed_path": "/candidates/not_tested/schedule",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "WITHHELD",
+      "terminal_negative_state": "NOT_TESTED",
+      "confidence": {
+        "level": "LOW",
+        "basis": "INSUFFICIENT",
+        "score_milli": 0
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": null,
+        "ebus_artifact_id": null,
+        "ebus": null,
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
+      },
+      "falsifier": {
+        "condition_code": "PROVENANCE_BREAKS",
+        "expected_terminal_state": "NOT_TESTED",
+        "description": "No exact native source identity was selected for comparison."
+      },
+      "retest_trigger": {
+        "trigger_code": "IDENTITY_CONFIRMED",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:7283369e0ca1d351094cd177189b3e7fd5d9c892d0a93db9533bbae62fb4fd3a"
+    },
+    {
+      "candidate_id": "m7-candidate-0006",
+      "proposed_path": "/candidates/zones/zone_1/room_temperature",
+      "draft_value": "21.0",
+      "draft_unit": "degC",
+      "status": "CANDIDATE",
+      "terminal_negative_state": null,
+      "confidence": {
+        "level": "MEDIUM",
+        "basis": "OBSERVED",
+        "score_milli": 700
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": "ebus-22222222222222222222222222222222",
+        "ebus_artifact_id": "seav1:sha256:2b4dd42381a84888d9db61696e07fe1cd435aa591ce46e106346abb3c6a997fd",
+        "ebus": {
+          "family": "B524",
+          "target_pseudonym": "target-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "opcode": 2,
+          "GG": 3,
+          "II": 0,
+          "RR": 28,
+          "target_address": 21,
+          "source_address": 247,
+          "group_meaning": "zones",
+          "instance_gate": "index-not-ff",
+          "register_category": "STATE",
+          "unit_scale_source": "vrc-explorer-v1"
+        },
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [
+          {
+            "offset_ns": 4000000000,
+            "left_decimal": "21.0",
+            "right_decimal": "21.1",
+            "state": "PRESENT"
+          },
+          {
+            "offset_ns": 5000000000,
+            "left_decimal": "21.1",
+            "right_decimal": "21.0",
+            "state": "PRESENT"
+          }
+        ],
+        "outcome": "MATCH"
+      },
+      "falsifier": {
+        "condition_code": "VALUE_DIVERGES",
+        "expected_terminal_state": "CONFLICT",
+        "description": "Two consecutive samples exceed the draft conflict threshold."
+      },
+      "retest_trigger": {
+        "trigger_code": "NEW_SYNCHRONIZED_BUNDLE",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:ff189d1ceb088d706946112326adffe7c4d202f0db9a48c3d653b019c55edfa9"
+    },
+    {
+      "candidate_id": "m7-candidate-0007",
+      "proposed_path": "/candidates/zones/zone_1/schedule_start",
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "CONFLICTED",
+      "terminal_negative_state": null,
+      "confidence": {
+        "level": "MEDIUM",
+        "basis": "OBSERVED",
+        "score_milli": 500
+      },
+      "provenance": {
+        "source_bundle_id": "sebv1:sha256:2df0e688d8c615c657698350eac545a5997af39d50502dc56fe2df5eade5da61",
+        "native_evidence_refs": [
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "repository": null,
+            "commit": null,
+            "path": null
+          }
+        ],
+        "ebus_source_id": "ebus-33333333333333333333333333333333",
+        "ebus_artifact_id": "seav1:sha256:3fc5855236ac147a00fc0a9ab53f6bff7c2c7cd0013699141e680f5235e76101",
+        "ebus": {
+          "family": "B555",
+          "target_pseudonym": "target-cccccccccccccccccccccccccccccccc",
+          "device_family": "VRC",
+          "schedule_program": "heating-program-1",
+          "slot_index": 0,
+          "day_of_week": "MONDAY",
+          "time_identity": "06:00:00",
+          "operation_mode_context": "AUTO",
+          "unit_scale_source": "source-native"
+        },
+        "eebus_source_id": null,
+        "eebus_artifact_id": null,
+        "eebus": null,
+        "cloud": null
+      },
+      "comparator": {
+        "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+        "samples": [
+          {
+            "offset_ns": 7000000000,
+            "left_decimal": "6.0",
+            "right_decimal": "8.0",
+            "state": "PRESENT"
+          },
+          {
+            "offset_ns": 8000000000,
+            "left_decimal": "6.0",
+            "right_decimal": "8.0",
+            "state": "PRESENT"
+          }
+        ],
+        "outcome": "CONFLICT"
+      },
+      "falsifier": {
+        "condition_code": "VALUE_DIVERGES",
+        "expected_terminal_state": "CONFLICT",
+        "description": "The native schedule observations remain outside the draft threshold."
+      },
+      "retest_trigger": {
+        "trigger_code": "COMPARATOR_REVISED",
+        "required_source_kinds": [
+          "EBUS",
+          "EEBUS"
+        ],
+        "minimum_new_samples": 2
+      },
+      "debug_only": true,
+      "fact_hash": "sha256:90b5bdcff58c86e2de3aff841f5f06f878974570c506285c2582e2ada603868d"
+    }
+  ]
+}

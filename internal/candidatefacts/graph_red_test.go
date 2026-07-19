@@ -8,10 +8,10 @@ import (
 )
 
 func TestMSP07BuildVerifyReplayAreDeterministicAndCanonical(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
-	expected, err := DecodeGraphV1(artifacts.PositiveGraph)
+	artifacts := pinnedTestArtifactsV1()
+	expected, err := decodeGraphV1(artifacts.PositiveGraph)
 	if err != nil {
-		t.Fatalf("DecodeGraphV1(positive): %v", err)
+		t.Fatalf("decodeGraphV1(positive): %v", err)
 	}
 	drafts := append([]FactV1(nil), expected.Facts...)
 	for index := range drafts {
@@ -39,9 +39,9 @@ func TestMSP07BuildVerifyReplayAreDeterministicAndCanonical(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("Build is sensitive to host environment or mutable runtime state")
 	}
-	built, err := DecodeGraphV1(first)
+	built, err := decodeGraphV1(first)
 	if err != nil {
-		t.Fatalf("DecodeGraphV1(built): %v", err)
+		t.Fatalf("decodeGraphV1(built): %v", err)
 	}
 	if !reflect.DeepEqual(built, expected) {
 		t.Fatalf("built graph does not match the canonical positive graph\nbuilt: %#v\nwant:  %#v", built, expected)
@@ -64,8 +64,8 @@ func TestMSP07BuildVerifyReplayAreDeterministicAndCanonical(t *testing.T) {
 }
 
 func TestMSP07RequiresSeparatelyVerifiedMSP065BundleAndReplay(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
-	graph, err := DecodeGraphV1(artifacts.PositiveGraph)
+	artifacts := pinnedTestArtifactsV1()
+	graph, err := decodeGraphV1(artifacts.PositiveGraph)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestMSP07RequiresSeparatelyVerifiedMSP065BundleAndReplay(t *testing.T) {
 }
 
 func TestMSP07ClosedSchemaBoundsAndFirstErrorCategory(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	for name, want := range negativeCategoriesV1 {
 		name, want := name, want
 		t.Run(name, func(t *testing.T) {
@@ -113,19 +113,19 @@ func TestMSP07ClosedSchemaBoundsAndFirstErrorCategory(t *testing.T) {
 }
 
 func TestMSP07RemainsV1AndRejectsPrematureV2(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	v2 := replaceTopLevel(t, artifacts.PositiveGraph, "schema_version", json.Number("2"))
 	assertCategory(t, Verify(v2, artifacts.SourceBundle, artifacts.SourceReplay), "schema.graph")
-	if _, err := DecodeGraphV1(v2); err == nil || err.Error() != "schema.graph" {
-		t.Fatalf("DecodeGraphV1(v2) error = %v; want schema.graph", err)
+	if _, err := decodeGraphV1(v2); err == nil || err.Error() != "schema.graph" {
+		t.Fatalf("decodeGraphV1(v2) error = %v; want schema.graph", err)
 	}
 }
 
 func TestMSP07CanonicalGraphAndReplayHashes(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	graph := decodeObject(t, artifacts.PositiveGraph)
-	if graph["graph_id"] != "dcfgv1:sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3" ||
-		graph["graph_hash"] != "sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3" {
+	if graph["graph_id"] != "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac" ||
+		graph["graph_hash"] != "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac" {
 		t.Fatalf("canonical graph hashes drifted: id=%v hash=%v", graph["graph_id"], graph["graph_hash"])
 	}
 	registry := objectAt(t, graph, "registry")
@@ -144,8 +144,8 @@ func TestMSP07CanonicalGraphAndReplayHashes(t *testing.T) {
 	}
 
 	replay := decodeObject(t, artifacts.PositiveReplay)
-	if replay["replay_id"] != "dcfrv1:sha256:e52a6c6db7eac4bf9bd1b6cb6f8e244b3c421b64cbab06267526185d01feab6c" ||
-		replay["replay_hash"] != "sha256:e52a6c6db7eac4bf9bd1b6cb6f8e244b3c421b64cbab06267526185d01feab6c" {
+	if replay["replay_id"] != "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b" ||
+		replay["replay_hash"] != "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b" {
 		t.Fatalf("canonical replay hashes drifted: id=%v hash=%v", replay["replay_id"], replay["replay_hash"])
 	}
 }

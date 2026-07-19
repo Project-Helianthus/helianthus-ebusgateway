@@ -1,12 +1,12 @@
 {
   "contract": "helianthus.platform.draft-candidate-fact-graph.v1",
   "schema_version": 1,
-  "graph_id": "dcfgv1:sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3",
-  "graph_hash": "sha256:e20087a0df5febae51a0edb5eecf1eda149419951554105416989130ceed30a3",
+  "graph_id": "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+  "graph_hash": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
   "registry": {
     "contract": "helianthus.platform.draft-candidate-fact-registry.v1",
     "version": 1,
-    "digest": "sha256:3126379f5a59d5751954235ea996bdcb63ce09d51d009382982716c46ba4559a"
+    "digest": "sha256:e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0"
   },
   "source_bundle": {
     "contract": "helianthus.platform.synchronized-evidence-bundle.v1",
@@ -79,7 +79,9 @@
     "max_evidence_refs_per_fact": 16,
     "max_samples_per_comparator": 1024,
     "max_string_bytes": 4096,
-    "max_path_segments": 32
+    "max_path_segments": 32,
+    "max_total_members": 16384,
+    "max_total_list_items": 8192
   },
   "comparator_drafts": [
     {
@@ -145,11 +147,12 @@
         "ebus": null,
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": {
           "source_id": "cloud-55555555555555555555555555555555",
           "artifact_id": "seav1:sha256:8b96127c3059945ba940f03facfa0dfa102af622300d6e767ff73fadab9acf80",
-          "evidence_id": "public-evidence-cloud-0001"
+          "evidence_id": "public-evidence:sha256:6666666666666666666666666666666666666666666666666666666666666666"
         }
       },
       "comparator": {
@@ -171,15 +174,15 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:18fd9637122bb2fec20b1ba78e131a658bf31972329a772f444f46e79fff999b"
+      "fact_hash": "sha256:7b57568f49337c947c799c7009d85db9e2a7e47c8e66a2a0f34dce1012e2e0fe"
     },
     {
       "candidate_id": "m7-candidate-0002",
-      "proposed_path": "/candidates/conflict/room_temperature",
+      "proposed_path": "/candidates/ebus/b524_raw",
       "draft_value": null,
       "draft_unit": null,
-      "status": "WITHHELD",
-      "terminal_negative_state": "CONFLICT",
+      "status": "RAW_ONLY",
+      "terminal_negative_state": null,
       "confidence": {
         "level": "LOW",
         "basis": "OBSERVED",
@@ -215,26 +218,14 @@
         },
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": null
       },
       "comparator": {
         "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
-        "samples": [
-          {
-            "offset_ns": 4000000000,
-            "left_decimal": "18.0",
-            "right_decimal": "21.0",
-            "state": "PRESENT"
-          },
-          {
-            "offset_ns": 5000000000,
-            "left_decimal": "18.1",
-            "right_decimal": "21.1",
-            "state": "PRESENT"
-          }
-        ],
-        "outcome": "CONFLICT"
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
       },
       "falsifier": {
         "condition_code": "VALUE_DIVERGES",
@@ -250,11 +241,11 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:da2274efe34521abd40a0e54e01a30c18bf1ab6eb7bb5975f9f19f60e744e1b4"
+      "fact_hash": "sha256:23078a3e3bbbc950919c184705c60d837e20fc588e2a09eccde4a444890e4860"
     },
     {
       "candidate_id": "m7-candidate-0003",
-      "proposed_path": "/candidates/eebus/raw_feature",
+      "proposed_path": "/candidates/eebus/service_anchor",
       "draft_value": null,
       "draft_unit": null,
       "status": "RAW_ONLY",
@@ -274,6 +265,14 @@
             "repository": null,
             "commit": null,
             "path": null
+          },
+          {
+            "kind": "CONTENT",
+            "digest_algorithm": "SHA256_CONTENT_BYTES",
+            "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "repository": null,
+            "commit": null,
+            "path": null
           }
         ],
         "ebus_source_id": "ebus-11111111111111111111111111111111",
@@ -288,8 +287,9 @@
           "unit_scale_source": "gateway-catalog-v1",
           "evidence_role": "AUTHORITATIVE"
         },
-        "eebus_source_id": null,
-        "eebus_artifact_id": null,
+        "eebus_source_id": "eebus-44444444444444444444444444444444",
+        "eebus_artifact_id": "seav1:sha256:841786ac24dc98b6384aaa8fa3930c50404140bf0a38d97cad1aba717bac3ac8",
+        "eebus_service": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
         "eebus": null,
         "cloud": null
       },
@@ -312,7 +312,7 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:feb134bc2c969d7e3e9aa2f99e7b52e6320a14edbdcf413ea64e82bbefd70615"
+      "fact_hash": "sha256:869e0ebd4ca1df17f3bad602e5c8255c37d0cbf1d54ec4739fec9bc8f1170210"
     },
     {
       "candidate_id": "m7-candidate-0004",
@@ -352,6 +352,7 @@
         },
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": null
       },
@@ -373,7 +374,7 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:bcec5e1365b67ddd78782d66d3634633ca50aad616b1d034a31632249f3c69da"
+      "fact_hash": "sha256:420af2ca4ed9e190a3685a66893149211776290d23552fed430587517f914c85"
     },
     {
       "candidate_id": "m7-candidate-0005",
@@ -404,6 +405,7 @@
         "ebus": null,
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": null
       },
@@ -426,15 +428,15 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:7283369e0ca1d351094cd177189b3e7fd5d9c892d0a93db9533bbae62fb4fd3a"
+      "fact_hash": "sha256:f329ddd7230ae6447b0d8931f7fa04dc3079f4383f23f59606dc7c4f473c33f0"
     },
     {
       "candidate_id": "m7-candidate-0006",
       "proposed_path": "/candidates/zones/zone_1/room_temperature",
-      "draft_value": "21.0",
-      "draft_unit": "degC",
-      "status": "CANDIDATE",
-      "terminal_negative_state": null,
+      "draft_value": null,
+      "draft_unit": null,
+      "status": "WITHHELD",
+      "terminal_negative_state": "NOT_TESTED",
       "confidence": {
         "level": "MEDIUM",
         "basis": "OBSERVED",
@@ -470,26 +472,14 @@
         },
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": null
       },
       "comparator": {
         "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
-        "samples": [
-          {
-            "offset_ns": 4000000000,
-            "left_decimal": "21.0",
-            "right_decimal": "21.1",
-            "state": "PRESENT"
-          },
-          {
-            "offset_ns": 5000000000,
-            "left_decimal": "21.1",
-            "right_decimal": "21.0",
-            "state": "PRESENT"
-          }
-        ],
-        "outcome": "MATCH"
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
       },
       "falsifier": {
         "condition_code": "VALUE_DIVERGES",
@@ -505,14 +495,14 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:ff189d1ceb088d706946112326adffe7c4d202f0db9a48c3d653b019c55edfa9"
+      "fact_hash": "sha256:38799403b30146541148faffc292122b2512fd11ac1b950557e56e620c39791a"
     },
     {
       "candidate_id": "m7-candidate-0007",
       "proposed_path": "/candidates/zones/zone_1/schedule_start",
       "draft_value": null,
       "draft_unit": null,
-      "status": "CONFLICTED",
+      "status": "RAW_ONLY",
       "terminal_negative_state": null,
       "confidence": {
         "level": "MEDIUM",
@@ -546,26 +536,14 @@
         },
         "eebus_source_id": null,
         "eebus_artifact_id": null,
+        "eebus_service": null,
         "eebus": null,
         "cloud": null
       },
       "comparator": {
         "draft_id": "NUMERIC_WINDOW_V1_DRAFT",
-        "samples": [
-          {
-            "offset_ns": 7000000000,
-            "left_decimal": "6.0",
-            "right_decimal": "8.0",
-            "state": "PRESENT"
-          },
-          {
-            "offset_ns": 8000000000,
-            "left_decimal": "6.0",
-            "right_decimal": "8.0",
-            "state": "PRESENT"
-          }
-        ],
-        "outcome": "CONFLICT"
+        "samples": [],
+        "outcome": "NOT_EVALUATED"
       },
       "falsifier": {
         "condition_code": "VALUE_DIVERGES",
@@ -581,7 +559,7 @@
         "minimum_new_samples": 2
       },
       "debug_only": true,
-      "fact_hash": "sha256:90b5bdcff58c86e2de3aff841f5f06f878974570c506285c2582e2ada603868d"
+      "fact_hash": "sha256:42244f6d48e1e10dae3347692da86777aba997ea72cdf02c243e777a26c38294"
     }
   ]
 }

@@ -19,14 +19,18 @@ func validateEvidenceRef(value any) error {
 	}
 	switch ref["kind"] {
 	case "CONTENT":
-		if ref["digest_algorithm"] != "SHA256_CONTENT_BYTES" || ref["repository"] != nil || ref["commit"] != nil || ref["path"] != nil {
+		if ref["digest_algorithm"] != "SHA256_CONTENT_BYTES" ||
+			ref["repository"] != nil || ref["commit"] != nil || ref["path"] != nil {
 			return fail("provenance.binding")
 		}
 	case "GIT_BLOB":
 		repository, repositoryOK := stringValue(ref["repository"])
 		commit, commitOK := stringValue(ref["commit"])
 		path, pathOK := stringValue(ref["path"])
-		if ref["digest_algorithm"] != "SHA256_GIT_BLOB_V1" || !repositoryOK || repository == "" || !commitOK || !commitPattern.MatchString(commit) || !pathOK || path == "" {
+		if ref["digest_algorithm"] != "SHA256_GIT_BLOB_V1" ||
+			!repositoryOK || !token(repository) ||
+			!commitOK || !commitPattern.MatchString(commit) ||
+			!pathOK || len(path) == 0 || len(path) > 512 || !printableASCII(path) {
 			return fail("provenance.binding")
 		}
 	default:
@@ -46,9 +50,6 @@ func checkIdentities(graph, sourceBundle map[string]any) error {
 				return fail("identity.native")
 			}
 		} else {
-			if !token(provenance["ebus_source_id"]) || !token(provenance["ebus_artifact_id"]) {
-				return fail("identity.native")
-			}
 			identity, ok := objectValue(provenance["ebus"])
 			if !ok || validateEBusIdentity(identity) != nil {
 				return fail("identity.native")
@@ -59,31 +60,28 @@ func checkIdentities(graph, sourceBundle map[string]any) error {
 				return fail("identity.native")
 			}
 		}
-		if provenance["eebus"] == nil {
-			if provenance["eebus_source_id"] != nil || provenance["eebus_artifact_id"] != nil {
+
+		eebusSource, eebusArtifact := provenance["eebus_source_id"], provenance["eebus_artifact_id"]
+		if eebusSource == nil && eebusArtifact == nil {
+			if provenance["eebus_service"] != nil || provenance["eebus"] != nil {
 				return fail("identity.native")
 			}
 		} else {
-			if !token(provenance["eebus_source_id"]) || !token(provenance["eebus_artifact_id"]) {
+			service, ok := stringValue(provenance["eebus_service"])
+			if !ok || !token(service) {
 				return fail("identity.native")
 			}
-			identity, ok := objectValue(provenance["eebus"])
-			if !ok || validateEEBusPath(identity) != nil {
-				return fail("identity.native")
-			}
-			key, _ := pairKey(provenance["eebus_source_id"], provenance["eebus_artifact_id"])
+			key, _ := pairKey(eebusSource, eebusArtifact)
 			artifact, ok := artifacts[key]
-			if !ok || !artifactProvesEEBusPath(artifact, identity) {
+			if !ok || !artifactProvesEEBusService(artifact, service) {
 				return fail("identity.native")
 			}
-		}
-		if cloud := provenance["cloud"]; cloud != nil {
-			if !exactKeys(cloud, "source_id", "artifact_id", "evidence_id") {
-				return fail("identity.native")
-			}
-			cloudObject, _ := objectValue(cloud)
-			if !token(cloudObject["source_id"]) || !token(cloudObject["artifact_id"]) || !token(cloudObject["evidence_id"]) {
-				return fail("identity.native")
+			if provenance["eebus"] != nil {
+				identity, ok := objectValue(provenance["eebus"])
+				if !ok || validateEEBusPath(identity) != nil ||
+					identity["service"] != service || !artifactProvesEEBusPath(artifact, identity) {
+					return fail("identity.native")
+				}
 			}
 		}
 	}
@@ -97,24 +95,46 @@ func validateEBusIdentity(identity map[string]any) error {
 	}
 	switch family {
 	case "B509":
-		if !exactKeys(identity, "family", "target_pseudonym", "target_address", "target_product", "register_family", "register_id", "unit_scale_source", "evidence_role") ||
-			!boundedInteger(identity["target_address"], 0, 255) || !token(identity["target_product"]) || !token(identity["register_family"]) ||
-			!boundedInteger(identity["register_id"], 0, 65535) || !member(identity["evidence_role"], "AUTHORITATIVE", "MIRROR", "FALLBACK") {
+		if !exactKeys(identity,
+			"family", "target_pseudonym", "target_address", "target_product",
+			"register_family", "register_id", "unit_scale_source", "evidence_role",
+		) ||
+			!boundedInteger(identity["target_address"], 0, 255) ||
+			!token(identity["target_product"]) || !token(identity["register_family"]) ||
+			!boundedInteger(identity["register_id"], 0, 65535) ||
+			!member(identity["evidence_role"], "AUTHORITATIVE", "MIRROR", "FALLBACK") {
 			return fail("identity.native")
 		}
 	case "B524":
-		if !exactKeys(identity, "family", "target_pseudonym", "opcode", "GG", "II", "RR", "target_address", "source_address", "group_meaning", "instance_gate", "register_category", "unit_scale_source") ||
-			!boundedInteger(identity["opcode"], 0, 255) || !boundedInteger(identity["GG"], 0, 255) || !boundedInteger(identity["II"], 0, 255) ||
-			!boundedInteger(identity["RR"], 0, 65535) || !boundedInteger(identity["target_address"], 0, 255) || !boundedInteger(identity["source_address"], 0, 255) ||
-			!token(identity["group_meaning"]) || !token(identity["instance_gate"]) || !member(identity["register_category"], "STATE", "CONFIG", "PARAMS") {
+		if !exactKeys(identity,
+			"family", "target_pseudonym", "opcode", "GG", "II", "RR",
+			"target_address", "source_address", "group_meaning", "instance_gate",
+			"register_category", "unit_scale_source",
+		) ||
+			!boundedInteger(identity["opcode"], 0, 255) ||
+			!boundedInteger(identity["GG"], 0, 255) ||
+			!boundedInteger(identity["II"], 0, 255) ||
+			!boundedInteger(identity["RR"], 0, 65535) ||
+			!boundedInteger(identity["target_address"], 0, 255) ||
+			!boundedInteger(identity["source_address"], 0, 255) ||
+			!token(identity["group_meaning"]) || !token(identity["instance_gate"]) ||
+			!member(identity["register_category"], "STATE", "CONFIG", "PARAMS") {
 			return fail("identity.native")
 		}
 	case "B555":
 		timeIdentity, timeOK := stringValue(identity["time_identity"])
-		if !exactKeys(identity, "family", "target_pseudonym", "device_family", "schedule_program", "slot_index", "day_of_week", "time_identity", "operation_mode_context", "unit_scale_source") ||
-			!token(identity["device_family"]) || !token(identity["schedule_program"]) || !boundedInteger(identity["slot_index"], 0, 255) ||
-			!member(identity["day_of_week"], "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY") ||
-			!timeOK || !timePattern.MatchString(timeIdentity) || !token(identity["operation_mode_context"]) {
+		if !exactKeys(identity,
+			"family", "target_pseudonym", "device_family", "schedule_program",
+			"slot_index", "day_of_week", "time_identity", "operation_mode_context",
+			"unit_scale_source",
+		) ||
+			!token(identity["device_family"]) || !token(identity["schedule_program"]) ||
+			!boundedInteger(identity["slot_index"], 0, 255) ||
+			!member(identity["day_of_week"],
+				"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY",
+			) ||
+			!timeOK || !timePattern.MatchString(timeIdentity) ||
+			!token(identity["operation_mode_context"]) {
 			return fail("identity.native")
 		}
 	default:
@@ -124,7 +144,8 @@ func validateEBusIdentity(identity map[string]any) error {
 }
 
 func validateEEBusPath(identity map[string]any) error {
-	if !exactKeys(identity, "service", "entity", "feature", "feature_path") || !token(identity["service"]) || !token(identity["entity"]) || !token(identity["feature"]) {
+	if !exactKeys(identity, "service", "entity", "feature", "feature_path") ||
+		!token(identity["service"]) || !token(identity["entity"]) || !token(identity["feature"]) {
 		return fail("identity.native")
 	}
 	path, ok := arrayValue(identity["feature_path"])
@@ -136,10 +157,8 @@ func validateEEBusPath(identity map[string]any) error {
 			return fail("identity.native")
 		}
 		segment, _ := objectValue(raw)
-		if !member(segment["kind"], "SERVICE", "ENTITY", "FEATURE", "FIELD") || !token(segment["selector"]) {
-			return fail("identity.native")
-		}
-		if index >= 3 && segment["kind"] != "FIELD" {
+		if !member(segment["kind"], "SERVICE", "ENTITY", "FEATURE", "FIELD") ||
+			!token(segment["selector"]) || index >= 3 && segment["kind"] != "FIELD" {
 			return fail("identity.native")
 		}
 	}
@@ -154,7 +173,7 @@ func validateEEBusPath(identity map[string]any) error {
 	return nil
 }
 
-func artifactProvesEEBusPath(artifact, identity map[string]any) bool {
+func artifactProvesEEBusService(artifact map[string]any, target string) bool {
 	normalized, ok := objectValue(artifact["normalized_evidence"])
 	if !ok {
 		return false
@@ -167,19 +186,30 @@ func artifactProvesEEBusPath(artifact, identity map[string]any) bool {
 	if !ok {
 		return false
 	}
-	serviceFound := false
 	for _, raw := range services {
 		service, ok := objectValue(raw)
 		if !ok {
 			continue
 		}
 		id, ok := objectValue(service["id"])
-		if ok && id["digest"] == identity["service"] {
-			serviceFound = true
+		if ok && id["digest"] == target {
+			return true
 		}
 	}
+	return false
+}
+
+func artifactProvesEEBusPath(artifact, identity map[string]any) bool {
+	normalized, ok := objectValue(artifact["normalized_evidence"])
+	if !ok {
+		return false
+	}
+	data, ok := objectValue(normalized["data"])
+	if !ok {
+		return false
+	}
 	paths, ok := arrayValue(data["feature_paths"])
-	if !serviceFound || !ok {
+	if !ok {
 		return false
 	}
 	for _, path := range paths {
@@ -209,6 +239,7 @@ func checkOrdering(graph map[string]any) error {
 			return fail("ordering.invalid")
 		}
 		ids[id], paths[path] = true, true
+
 		provenance, _ := objectValue(fact["provenance"])
 		factRefs, _ := arrayValue(provenance["native_evidence_refs"])
 		if !ordered(factRefs, evidenceRefLess) {
@@ -218,6 +249,14 @@ func checkOrdering(graph map[string]any) error {
 		samples, _ := arrayValue(comparator["samples"])
 		if !ordered(samples, sampleLess) {
 			return fail("ordering.invalid")
+		}
+		seenSamples := make(map[string]bool, len(samples))
+		for _, sample := range samples {
+			key, err := canonicalKey(sample)
+			if err != nil || seenSamples[key] {
+				return fail("ordering.invalid")
+			}
+			seenSamples[key] = true
 		}
 		trigger, _ := objectValue(fact["retest_trigger"])
 		required, ok := stringArray(trigger["required_source_kinds"])
@@ -234,31 +273,90 @@ func checkStates(graph, registry map[string]any) error {
 	facts, _ := arrayValue(graph["facts"])
 	for _, raw := range facts {
 		fact, _ := objectValue(raw)
-		id, idOK := stringValue(fact["candidate_id"])
-		path, pathOK := stringValue(fact["proposed_path"])
-		status, statusOK := stringValue(fact["status"])
+		id, _ := stringValue(fact["candidate_id"])
+		path, _ := stringValue(fact["proposed_path"])
+		status, _ := stringValue(fact["status"])
 		terminal, terminalOK := optionalString(fact["terminal_negative_state"])
-		if !idOK || !candidateIDPattern.MatchString(id) || !pathOK || !pathPattern.MatchString(path) || !statusOK || !statuses[status] || !terminalOK || terminal != "" && !terminals[terminal] || fact["debug_only"] != true {
+		if !candidateIDPattern.MatchString(id) || !pathPattern.MatchString(path) ||
+			!statuses[status] || !terminalOK || terminal != "" && !terminals[terminal] ||
+			fact["debug_only"] != true {
 			return fail("state.terminal")
 		}
-		if terminal != "" {
-			if status != "WITHHELD" || fact["draft_value"] != nil || fact["draft_unit"] != nil {
+		provenance, _ := objectValue(fact["provenance"])
+		nativeKinds := map[string]bool{}
+		if provenance["ebus_source_id"] != nil {
+			nativeKinds["EBUS"] = true
+		}
+		if provenance["eebus_source_id"] != nil {
+			nativeKinds["EEBUS"] = true
+		}
+		cloudOnly := provenance["cloud"] != nil && len(nativeKinds) == 0
+		comparator, _ := objectValue(fact["comparator"])
+		samples, _ := arrayValue(comparator["samples"])
+		outcome := asString(comparator["outcome"])
+
+		if cloudOnly && (status != "WITHHELD" || terminal != "CLOUD_ONLY") {
+			return fail("state.terminal")
+		}
+		switch status {
+		case "RAW_ONLY":
+			if terminal != "" || fact["draft_value"] != nil || fact["draft_unit"] != nil ||
+				len(samples) != 0 || outcome != "NOT_EVALUATED" {
 				return fail("state.terminal")
 			}
-		} else if status == "WITHHELD" {
+		case "CANDIDATE":
+			if terminal != "" || fact["draft_value"] == nil || fact["draft_unit"] == nil ||
+				outcome != "MATCH" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
+				return fail("state.terminal")
+			}
+		case "CONFLICTED":
+			if terminal != "" || fact["draft_value"] != nil || fact["draft_unit"] != nil ||
+				outcome != "CONFLICT" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
+				return fail("state.terminal")
+			}
+		case "WITHHELD":
+			if terminal == "" || fact["draft_value"] != nil || fact["draft_unit"] != nil {
+				return fail("state.terminal")
+			}
+			if (terminal == "CLOUD_ONLY" || terminal == "NO_SIGNAL" || terminal == "NOT_TESTED") &&
+				(len(samples) != 0 || outcome != "NOT_EVALUATED") {
+				return fail("state.terminal")
+			}
+			if terminal == "CLOUD_ONLY" && !cloudOnly {
+				return fail("state.terminal")
+			}
+			if terminal == "NO_SIGNAL" && len(nativeKinds) == 0 {
+				return fail("state.terminal")
+			}
+			if terminal == "CONFLICT" &&
+				(outcome != "CONFLICT" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] || len(samples) == 0) {
+				return fail("state.terminal")
+			}
+		default:
 			return fail("state.terminal")
 		}
+
 		confidence, _ := objectValue(fact["confidence"])
-		if !member(confidence["level"], "LOW", "MEDIUM", "HIGH") || !member(confidence["basis"], "OBSERVED", "INFERRED", "INSUFFICIENT") || !boundedInteger(confidence["score_milli"], 0, 1000) {
+		if !member(confidence["level"], "LOW", "MEDIUM", "HIGH") ||
+			!member(confidence["basis"], "OBSERVED", "INFERRED", "INSUFFICIENT") ||
+			!boundedInteger(confidence["score_milli"], 0, 1000) {
 			return fail("state.terminal")
 		}
 		falsifier, _ := objectValue(fact["falsifier"])
-		if !member(falsifier["condition_code"], "VALUE_DIVERGES", "IDENTITY_CHANGES", "SIGNAL_DISAPPEARS", "ORDER_CHANGES", "PROVENANCE_BREAKS") || !terminals[asString(falsifier["expected_terminal_state"])] || !token(falsifier["description"]) {
+		if !member(falsifier["condition_code"],
+			"VALUE_DIVERGES", "IDENTITY_CHANGES", "SIGNAL_DISAPPEARS", "ORDER_CHANGES", "PROVENANCE_BREAKS",
+		) ||
+			!terminals[asString(falsifier["expected_terminal_state"])] ||
+			!token(falsifier["description"]) {
 			return fail("state.terminal")
 		}
 		trigger, _ := objectValue(fact["retest_trigger"])
 		required, requiredOK := stringArray(trigger["required_source_kinds"])
-		if !member(trigger["trigger_code"], "NEW_SYNCHRONIZED_BUNDLE", "SOURCE_RECOVERED", "IDENTITY_CONFIRMED", "COMPARATOR_REVISED") || !boundedInteger(trigger["minimum_new_samples"], 1, 1024) || !requiredOK || len(required) == 0 {
+		if !member(trigger["trigger_code"],
+			"NEW_SYNCHRONIZED_BUNDLE", "SOURCE_RECOVERED", "IDENTITY_CONFIRMED", "COMPARATOR_REVISED",
+		) ||
+			!boundedInteger(trigger["minimum_new_samples"], 1, 1024) ||
+			!requiredOK || len(required) == 0 {
 			return fail("state.terminal")
 		}
 		for _, kind := range required {
@@ -270,41 +368,24 @@ func checkStates(graph, registry map[string]any) error {
 	return nil
 }
 
-func checkComparators(graph, registry map[string]any) error {
+func checkComparators(graph, registry, sourceBundle map[string]any) error {
 	drafts, _ := arrayValue(graph["comparator_drafts"])
 	if len(drafts) != 1 {
 		return fail("comparator.invalid")
 	}
 	draft, _ := objectValue(drafts[0])
-	if draft["draft_id"] != "NUMERIC_WINDOW_V1_DRAFT" || draft["type"] != "NUMERIC_WINDOW" {
-		return fail("comparator.invalid")
-	}
-	registryComparators, ok := arrayValue(registry["comparators"])
-	if !ok || len(registryComparators) == 0 {
-		return fail("comparator.invalid")
-	}
-	registryDraft, ok := objectValue(registryComparators[0])
-	if !ok || registryDraft["draft_id"] != draft["draft_id"] {
+	registryComparators, _ := arrayValue(registry["comparators"])
+	registryDraft, _ := objectValue(registryComparators[0])
+	if draft["draft_id"] != "NUMERIC_WINDOW_V1_DRAFT" ||
+		draft["type"] != "NUMERIC_WINDOW" ||
+		registryDraft["draft_id"] != draft["draft_id"] {
 		return fail("comparator.invalid")
 	}
 	parameters, _ := objectValue(draft["parameters"])
-	window, windowOK := exactObject(parameters["window"], "start_offset_ns", "end_offset_ns")
-	tolerance, toleranceOK := exactObject(parameters["tolerance"], "absolute_decimal", "relative_ppm")
-	conversion, conversionOK := exactObject(parameters["unit_conversion"], "mode", "source_unit", "target_unit", "scale_decimal", "offset_decimal")
-	rounding, roundingOK := exactObject(parameters["rounding"], "mode", "decimal_places")
-	threshold, thresholdOK := exactObject(parameters["conflict_threshold"], "absolute_decimal", "consecutive_samples")
-	start, startOK := integer(window["start_offset_ns"])
-	end, endOK := integer(window["end_offset_ns"])
-	if !windowOK || !toleranceOK || !conversionOK || !roundingOK || !thresholdOK || !startOK || !endOK || start < 0 || start >= end ||
-		!boundedInteger(tolerance["relative_ppm"], 0, maxSafeIntegerV1) || !member(conversion["mode"], "IDENTITY", "AFFINE") || !token(conversion["source_unit"]) || !token(conversion["target_unit"]) ||
-		!member(rounding["mode"], "NONE", "HALF_EVEN") || rounding["decimal_places"] != nil && !boundedInteger(rounding["decimal_places"], 0, 9) ||
-		!boundedInteger(parameters["minimum_samples"], 1, maxSafeIntegerV1) || !boundedInteger(parameters["maximum_missing_samples"], 0, maxSafeIntegerV1) ||
-		!boundedInteger(parameters["stale_cutoff_ns"], 1, maxSafeIntegerV1) || !boundedInteger(threshold["consecutive_samples"], 1, maxSafeIntegerV1) ||
-		!decimalString(tolerance["absolute_decimal"], true) || !decimalString(conversion["scale_decimal"], false) || !decimalString(conversion["offset_decimal"], false) || !decimalString(threshold["absolute_decimal"], true) {
-		return fail("comparator.invalid")
+	if err := validateComparatorParameters(parameters); err != nil {
+		return err
 	}
-	minimumSamples, _ := integer(parameters["minimum_samples"])
-	maximumMissing, _ := integer(parameters["maximum_missing_samples"])
+	artifacts := indexArtifacts(sourceBundle)
 	facts, _ := arrayValue(graph["facts"])
 	for _, raw := range facts {
 		fact, _ := objectValue(raw)
@@ -312,43 +393,49 @@ func checkComparators(graph, registry map[string]any) error {
 		if evaluation["draft_id"] != draft["draft_id"] {
 			return fail("comparator.invalid")
 		}
-		samples, _ := arrayValue(evaluation["samples"])
-		present, missing := int64(0), int64(0)
-		for _, sampleRaw := range samples {
-			sample, _ := objectValue(sampleRaw)
-			offset, offsetOK := integer(sample["offset_ns"])
-			state, stateOK := stringValue(sample["state"])
-			if !offsetOK || offset < start || offset > end || !stateOK || state != "PRESENT" && state != "MISSING" && state != "STALE" {
+		rawSamples, _ := arrayValue(evaluation["samples"])
+		samples := make([]map[string]any, len(rawSamples))
+		for index, rawSample := range rawSamples {
+			samples[index], _ = objectValue(rawSample)
+		}
+		provenance, _ := objectValue(fact["provenance"])
+		rawRefs, _ := arrayValue(provenance["native_evidence_refs"])
+		allowedRefs := make(map[string]bool, len(rawRefs))
+		for _, ref := range rawRefs {
+			key, err := canonicalKey(ref)
+			if err != nil {
 				return fail("comparator.invalid")
 			}
-			if state == "MISSING" {
-				missing++
-				if sample["left_decimal"] != nil || sample["right_decimal"] != nil {
-					return fail("comparator.invalid")
-				}
-			} else {
-				if !decimalString(sample["left_decimal"], false) || !decimalString(sample["right_decimal"], false) {
-					return fail("comparator.invalid")
-				}
-				if state == "PRESENT" {
-					present++
-				}
-			}
+			allowedRefs[key] = true
 		}
-		if missing > maximumMissing {
+		computed, finalRight, err := evaluateNumericWindow(parameters, samples, artifacts, allowedRefs)
+		if err != nil {
+			return err
+		}
+		if evaluation["outcome"] != computed {
 			return fail("comparator.invalid")
 		}
 		status := asString(fact["status"])
-		outcome := asString(evaluation["outcome"])
-		allowed := map[string]map[string]bool{
-			"RAW_ONLY": {"NOT_EVALUATED": true}, "CANDIDATE": {"MATCH": true}, "CONFLICTED": {"CONFLICT": true},
-			"WITHHELD": {"NOT_EVALUATED": true, "CONFLICT": true},
+		allowedOutcomes := map[string]map[string]bool{
+			"RAW_ONLY":   {"NOT_EVALUATED": true},
+			"CANDIDATE":  {"MATCH": true},
+			"CONFLICTED": {"CONFLICT": true},
+			"WITHHELD":   {"NOT_EVALUATED": true, "CONFLICT": true, "INDETERMINATE": true},
 		}
-		if !allowed[status][outcome] || (status == "CANDIDATE" || status == "CONFLICTED") && present < minimumSamples {
+		if !allowedOutcomes[status][computed] {
 			return fail("comparator.invalid")
 		}
+		if status == "CANDIDATE" {
+			if finalRight == "" ||
+				fact["draft_unit"] != objectAtUnsafe(parameters, "unit_conversion")["target_unit"] ||
+				fact["draft_value"] != finalRight {
+				return fail("comparator.invalid")
+			}
+		}
 		terminal, _ := optionalString(fact["terminal_negative_state"])
-		if terminal == "CONFLICT" && outcome != "CONFLICT" || (terminal == "NO_SIGNAL" || terminal == "CLOUD_ONLY" || terminal == "NOT_TESTED") && outcome != "NOT_EVALUATED" {
+		if terminal == "CONFLICT" && computed != "CONFLICT" ||
+			(terminal == "NO_SIGNAL" || terminal == "CLOUD_ONLY" || terminal == "NOT_TESTED") &&
+				computed != "NOT_EVALUATED" {
 			return fail("comparator.invalid")
 		}
 	}
@@ -358,8 +445,8 @@ func checkComparators(graph, registry map[string]any) error {
 func checkAntiLeak(graph, registry map[string]any) error {
 	visibility, _ := objectValue(graph["visibility"])
 	want := map[string]any{
-		"channel": registry["candidate_channel"], "promotion_state": "NOT_PROMOTED", "stable_exposure": false,
-		"command_capable": false, "protocol_translation": false,
+		"channel": registry["candidate_channel"], "promotion_state": "NOT_PROMOTED",
+		"stable_exposure": false, "command_capable": false, "protocol_translation": false,
 	}
 	if !reflect.DeepEqual(visibility, want) {
 		return fail("anti_leak.consumer")
@@ -386,7 +473,8 @@ func checkHashes(graph map[string]any) error {
 		return fail("hash.graph")
 	}
 	hexdigest := domainHex(graphDomainV1, canonical)
-	if graph["graph_hash"] != "sha256:"+hexdigest || graph["graph_id"] != "dcfgv1:sha256:"+hexdigest {
+	if graph["graph_hash"] != "sha256:"+hexdigest ||
+		graph["graph_id"] != "dcfgv1:sha256:"+hexdigest {
 		return fail("hash.graph")
 	}
 	return nil
@@ -420,6 +508,11 @@ func optionalString(value any) (string, bool) {
 func exactObject(value any, keys ...string) (map[string]any, bool) {
 	object, ok := objectValue(value)
 	return object, ok && exactKeys(object, keys...)
+}
+
+func objectAtUnsafe(parent map[string]any, key string) map[string]any {
+	value, _ := objectValue(parent[key])
+	return value
 }
 
 func indexSources(bundle map[string]any) map[string]map[string]any {
@@ -522,20 +615,22 @@ func ordered(values []any, less func(any, any) bool) bool {
 func evidenceRefLess(leftRaw, rightRaw any) bool {
 	left, _ := objectValue(leftRaw)
 	right, _ := objectValue(rightRaw)
-	for _, field := range []string{"kind", "digest_algorithm", "digest", "repository", "commit", "path"} {
-		leftValue, rightValue := nullableSortValue(left[field]), nullableSortValue(right[field])
-		if leftValue != rightValue {
-			return leftValue < rightValue
-		}
+	leftKey := []string{
+		asString(left["kind"]), asString(left["digest_algorithm"]), asString(left["digest"]),
+		nullableSortValue(left["repository"]), nullableSortValue(left["commit"]), nullableSortValue(left["path"]),
 	}
-	return false
+	rightKey := []string{
+		asString(right["kind"]), asString(right["digest_algorithm"]), asString(right["digest"]),
+		nullableSortValue(right["repository"]), nullableSortValue(right["commit"]), nullableSortValue(right["path"]),
+	}
+	return strings.Join(leftKey, "\x00") < strings.Join(rightKey, "\x00")
 }
 
 func nullableSortValue(value any) string {
 	if value == nil {
-		return "0"
+		return "\x00"
 	}
-	return "1" + asString(value)
+	return "\x01" + asString(value)
 }
 
 func factLess(leftRaw, rightRaw any) bool {
@@ -558,12 +653,12 @@ func sampleLess(leftRaw, rightRaw any) bool {
 	}
 	leftCanonical, _ := canonicalJSON(left)
 	rightCanonical, _ := canonicalJSON(right)
-	return strings.Compare(string(leftCanonical), string(rightCanonical)) < 0
+	return string(leftCanonical) < string(rightCanonical)
 }
 
 func canonicalKey(value any) (string, error) {
-	canonical, err := canonicalJSON(value)
-	return string(canonical), err
+	encoded, err := canonicalJSON(value)
+	return string(encoded), err
 }
 
 func cloneObject(value map[string]any) map[string]any {
@@ -575,12 +670,7 @@ func cloneObject(value map[string]any) map[string]any {
 }
 
 func domainHex(domain string, canonical []byte) string {
-	digest := sha256Bytes(append(append([]byte(domain), 0), canonical...))
-	return digest
-}
-
-func sha256Bytes(value []byte) string {
-	digest := sha256.Sum256(value)
+	digest := sha256.Sum256(append(append([]byte(domain), 0), canonical...))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -592,4 +682,16 @@ func countPathSegments(path string) int {
 		}
 	}
 	return count
+}
+
+func printableASCII(value string) bool {
+	if len(value) == 0 {
+		return false
+	}
+	for _, current := range []byte(value) {
+		if current < 0x20 || current > 0x7e {
+			return false
+		}
+	}
+	return true
 }

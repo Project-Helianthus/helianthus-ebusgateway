@@ -1,6 +1,7 @@
 package candidatefacts
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"strings"
@@ -11,10 +12,10 @@ func TestCorrectiveContractPinAndCanonicalGraphAreCurrent(t *testing.T) {
 	if got := PinnedContractV1().OwnerCommit; got != "58a91574a637d9be101f9011220c509eabb0ef53" {
 		t.Fatalf("OwnerCommit = %q; want corrective docs merge", got)
 	}
-	artifacts := PinnedArtifactsV1()
-	graph, err := DecodeGraphV1(artifacts.PositiveGraph)
+	artifacts := pinnedTestArtifactsV1()
+	graph, err := decodeGraphV1(artifacts.PositiveGraph)
 	if err != nil {
-		t.Fatalf("DecodeGraphV1(positive): %v", err)
+		t.Fatalf("decodeGraphV1(positive): %v", err)
 	}
 	for _, fact := range graph.Facts {
 		if len(fact.Comparator.Samples) != 0 || fact.Comparator.Outcome != "NOT_EVALUATED" {
@@ -98,8 +99,78 @@ func TestCorrectiveObservationPointersBindExactNativeValues(t *testing.T) {
 	}
 }
 
+func TestCorrectiveEvaluatorDerivesStateMissingAndConflictReset(t *testing.T) {
+	left := correctiveArtifact("EBUS", "left", "1", "10", "degC", 2_000_000_000)
+	right := correctiveArtifact("EEBUS", "right", "2", "11", "degC", 2_000_000_000)
+	parameters := correctiveParameters()
+	parameters["minimum_samples"] = number(3)
+	parameters["conflict_threshold"] = map[string]any{"absolute_decimal": "1", "consecutive_samples": number(2)}
+	matchingRight := correctiveArtifact("EEBUS", "matching", "3", "10", "degC", 2_000_000_000)
+	outcome, _, err := evaluateNumericWindow(parameters, []map[string]any{
+		correctiveSample(left, right, 3_000_000_000, "PRESENT"),
+		correctiveSample(left, matchingRight, 4_000_000_000, "PRESENT"),
+		correctiveSample(left, right, 5_000_000_000, "STALE"),
+	}, correctiveArtifactIndex(left, right, matchingRight), nil)
+	if err != nil || outcome != "INDETERMINATE" {
+		t.Fatalf("conflict reset and stale accounting = (%q, %v); want INDETERMINATE", outcome, err)
+	}
+
+	forgedState := correctiveSample(left, right, 5_000_000_000, "PRESENT")
+	if _, _, err := evaluateNumericWindow(parameters, []map[string]any{forgedState}, correctiveArtifactIndex(left, right), nil); err == nil || err.Error() != "comparator.invalid" {
+		t.Fatalf("caller-controlled state error = %v; want comparator.invalid", err)
+	}
+
+	missingLeft := correctiveArtifact("EBUS", "missing", "4", "10", "degC", 2_000_000_000)
+	observation := missingLeft["normalized_evidence"].(map[string]any)["observation"].(map[string]any)
+	observation["value"] = nil
+	observation["unit"] = nil
+	parameters["minimum_samples"] = number(1)
+	missing := correctiveSample(missingLeft, matchingRight, 3_000_000_000, "MISSING")
+	outcome, _, err = evaluateNumericWindow(parameters, []map[string]any{missing}, correctiveArtifactIndex(missingLeft, matchingRight), nil)
+	if err != nil || outcome != "INDETERMINATE" {
+		t.Fatalf("missing accounting = (%q, %v); want INDETERMINATE", outcome, err)
+	}
+}
+
+func TestCorrectiveBuildOverwritesStoredOutcomeWithoutMutatingInput(t *testing.T) {
+	artifacts := pinnedTestArtifactsV1()
+	graph, err := decodeGraphV1(artifacts.PositiveGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := append([]FactV1(nil), graph.Facts...)
+	for index := range facts {
+		facts[index].Comparator.Outcome = "MATCH"
+		facts[index].FactHash = "sha256:" + strings.Repeat("f", 64)
+	}
+	input := BuildInputV1{
+		SourceBundle: artifacts.SourceBundle, SourceReplay: artifacts.SourceReplay,
+		ComparatorDrafts: graph.ComparatorDrafts, Facts: facts,
+	}
+	built, err := Build(input)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	expectedValue, err := parseJSON(artifacts.PositiveGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := canonicalJSON(expectedValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(built, expected) {
+		t.Fatalf("Build did not derive canonical outcomes\ngot:  %s\nwant: %s", built, expected)
+	}
+	for _, fact := range input.Facts {
+		if fact.Comparator.Outcome != "MATCH" || fact.FactHash != "sha256:"+strings.Repeat("f", 64) {
+			t.Fatal("Build mutated caller-owned input")
+		}
+	}
+}
+
 func TestCorrectiveSchemaIsExhaustiveAndPrecedesSourceVerification(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	mutations := []func(map[string]any){
 		func(graph map[string]any) { graph["visibility"].(map[string]any)["channel"] = true },
 		func(graph map[string]any) {
@@ -129,16 +200,36 @@ func TestCorrectiveSchemaIsExhaustiveAndPrecedesSourceVerification(t *testing.T)
 }
 
 func TestCorrectiveBoundedPreflightRunsBeforeRecursiveDecode(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	inputs := [][]byte{
 		[]byte(strings.Repeat(" ", 1_048_577)),
 		[]byte(strings.Repeat("[", 34) + strings.Repeat("]", 34)),
 		[]byte("{\"value\":\"" + strings.Repeat("a", 4097) + "\"}"),
 		[]byte("[" + strings.Repeat("0,", 1024) + "0]"),
+		correctiveMemberLimitInput(),
+		correctiveTotalListLimitInput(),
 	}
 	for _, raw := range inputs {
 		assertCategory(t, Verify(raw, artifacts.SourceBundle, artifacts.SourceReplay), "limits.exceeded")
 	}
+}
+
+func TestCorrectiveBuildAndSourceInputsAreBounded(t *testing.T) {
+	artifacts := pinnedTestArtifactsV1()
+	graph, err := decodeGraphV1(artifacts.PositiveGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := append([]FactV1(nil), graph.Facts...)
+	facts[0].Falsifier.Description = strings.Repeat("x", 4097)
+	_, err = Build(BuildInputV1{
+		SourceBundle: []byte("{"), SourceReplay: []byte("{"),
+		ComparatorDrafts: graph.ComparatorDrafts, Facts: facts,
+	})
+	assertCategory(t, err, "limits.exceeded")
+	assertCategory(t, Verify(artifacts.PositiveGraph, []byte(strings.Repeat(" ", 1_048_577)), artifacts.SourceReplay), "provenance.binding")
+	_, err = Replay(artifacts.PositiveGraph, []byte(strings.Repeat(" ", 1_048_577)), artifacts.SourceReplay)
+	assertCategory(t, err, "provenance.binding")
 }
 
 func TestCorrectiveProductionEmbeddingExcludesNegativeFixtures(t *testing.T) {
@@ -200,4 +291,24 @@ func correctiveArtifactIndex(artifacts ...map[string]any) map[string]map[string]
 		result[key] = artifact
 	}
 	return result
+}
+
+func correctiveMemberLimitInput() []byte {
+	var builder strings.Builder
+	builder.WriteByte('{')
+	for index := 0; index < 16_385; index++ {
+		if index > 0 {
+			builder.WriteByte(',')
+		}
+		builder.WriteString("\"k")
+		builder.WriteString(json.Number(number(int64(index)).(json.Number)).String())
+		builder.WriteString("\":0")
+	}
+	builder.WriteByte('}')
+	return []byte(builder.String())
+}
+
+func correctiveTotalListLimitInput() []byte {
+	row := "[" + strings.Repeat("0,", 1023) + "0]"
+	return []byte("[" + strings.TrimSuffix(strings.Repeat(row+",", 9), ",") + "]")
 }

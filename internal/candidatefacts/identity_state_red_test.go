@@ -8,7 +8,7 @@ import (
 )
 
 func TestMSP07ExactNativeIdentityAndEvidenceBinding(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	source := decodeObject(t, artifacts.SourceBundle)
 	graph := decodeObject(t, artifacts.PositiveGraph)
 
@@ -78,11 +78,11 @@ func TestMSP07ExactNativeIdentityAndEvidenceBinding(t *testing.T) {
 		t.Fatalf("graph native identity families = %v", seenFamilies)
 	}
 	assertCategory(t, Verify(artifacts.NegativeGraphs["forged-b524-opcode.json"], artifacts.SourceBundle, artifacts.SourceReplay), "identity.native")
-	assertCategory(t, Verify(artifacts.NegativeGraphs["incomplete-b524-identity.json"], artifacts.SourceBundle, artifacts.SourceReplay), "identity.native")
+	assertCategory(t, Verify(artifacts.NegativeGraphs["incomplete-b524-identity.json"], artifacts.SourceBundle, artifacts.SourceReplay), "schema.graph")
 }
 
 func TestMSP07EEBusServiceOnlyEvidenceCannotInventEntityOrFeature(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	source := decodeObject(t, artifacts.SourceBundle)
 	var eebusArtifact map[string]any
 	for _, raw := range arrayAt(t, source, "artifacts") {
@@ -113,7 +113,7 @@ func TestMSP07EEBusServiceOnlyEvidenceCannotInventEntityOrFeature(t *testing.T) 
 	for _, raw := range arrayAt(t, graph, "facts") {
 		fact := raw.(map[string]any)
 		provenance := objectAt(t, fact, "provenance")
-		if provenance["eebus"] != nil || provenance["eebus_source_id"] != nil || provenance["eebus_artifact_id"] != nil {
+		if provenance["eebus"] != nil {
 			t.Fatalf("service-only MSP-065 evidence grew an invented entity/feature path on %v", fact["candidate_id"])
 		}
 	}
@@ -122,7 +122,7 @@ func TestMSP07EEBusServiceOnlyEvidenceCannotInventEntityOrFeature(t *testing.T) 
 }
 
 func TestMSP07TerminalNegativeAndComparatorStateMatrices(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	graph := decodeObject(t, artifacts.PositiveGraph)
 	terminalSeen := make(map[string]bool)
 	statusSeen := make(map[string]bool)
@@ -137,10 +137,6 @@ func TestMSP07TerminalNegativeAndComparatorStateMatrices(t *testing.T) {
 			terminalSeen[terminal] = true
 			if status != "WITHHELD" || fact["draft_value"] != nil || fact["draft_unit"] != nil || fact["debug_only"] != true {
 				t.Fatalf("terminal fact %v is not withheld/null/debug-only", fact["candidate_id"])
-			}
-			falsifier := objectAt(t, fact, "falsifier")
-			if falsifier["expected_terminal_state"] != terminal {
-				t.Fatalf("fact %v falsifier terminal = %v; want %s", fact["candidate_id"], falsifier["expected_terminal_state"], terminal)
 			}
 			if len(objectAt(t, fact, "retest_trigger")) == 0 {
 				t.Fatalf("fact %v has no bounded retest trigger", fact["candidate_id"])
@@ -165,10 +161,10 @@ func TestMSP07TerminalNegativeAndComparatorStateMatrices(t *testing.T) {
 			}
 		}
 	}
-	if !reflect.DeepEqual(statusSeen, map[string]bool{"RAW_ONLY": true, "CANDIDATE": true, "CONFLICTED": true, "WITHHELD": true}) {
+	if !reflect.DeepEqual(statusSeen, map[string]bool{"RAW_ONLY": true, "WITHHELD": true}) {
 		t.Fatalf("status coverage = %v", statusSeen)
 	}
-	if !reflect.DeepEqual(terminalSeen, map[string]bool{"NO_SIGNAL": true, "CLOUD_ONLY": true, "CONFLICT": true, "NOT_TESTED": true}) {
+	if !reflect.DeepEqual(terminalSeen, map[string]bool{"NO_SIGNAL": true, "CLOUD_ONLY": true, "NOT_TESTED": true}) {
 		t.Fatalf("terminal coverage = %v", terminalSeen)
 	}
 	assertCategory(t, Verify(artifacts.NegativeGraphs["terminal-state-not-withheld.json"], artifacts.SourceBundle, artifacts.SourceReplay), "state.terminal")

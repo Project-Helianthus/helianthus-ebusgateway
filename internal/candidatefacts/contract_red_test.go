@@ -11,16 +11,16 @@ import (
 )
 
 const (
-	docsMergeV1         = "4f7ed144f5d75c4123d90580bf2575d139303bb5"
+	docsMergeV1         = "58a91574a637d9be101f9011220c509eabb0ef53"
 	sourceOwnerCommitV1 = "4d7747730be023acb251b20a22d796545a9f3688"
 )
 
 var canonicalArtifactDigestsV1 = map[string]string{
-	"graph_schema":    "5a8c18119d9dc92bcfd516cab487e045e1df3bd95acb0195a3af2c9f2f73ab83",
+	"graph_schema":    "ab5f65a527633c3c5f60119cf0071a6ffdd3ee66d6e210f78bf17a03e438069a",
 	"replay_schema":   "d691cfc970e99faae7f5a1f4e30ed0cb6a4c3cc6e11959dffba5f82a8fc6d232",
-	"registry":        "3126379f5a59d5751954235ea996bdcb63ce09d51d009382982716c46ba4559a",
-	"positive_graph":  "5d6d62b6ac7767efaae9cc6080fae3df629c091dbc886cdbeff863605259f0b4",
-	"positive_replay": "fb7724abcf4dca7d1dea5a092846d2e6777b2f2c9c19f92c060ea1e0f7b8f530",
+	"registry":        "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
+	"positive_graph":  "b5c5d79e540a1691ee60c6db3e9405a92d9d544d871c74b26800fe449a318b0e",
+	"positive_replay": "8280f6278ffe8598dfd767bb5bf9e60dce3c145b4612174b7c5a32fbff282f5c",
 	"source_bundle":   "e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a",
 	"source_replay":   "3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539",
 }
@@ -34,7 +34,7 @@ var negativeCategoriesV1 = map[string]string{
 	"forged-eebus-entity-feature.json":  "identity.native",
 	"forged-source-id.json":             "provenance.binding",
 	"graph-hash-mismatch.json":          "hash.graph",
-	"incomplete-b524-identity.json":     "identity.native",
+	"incomplete-b524-identity.json":     "schema.graph",
 	"invalid-eebus-feature-path.json":   "identity.native",
 	"limit-exceeded.json":               "limits.exceeded",
 	"ordering-invalid.json":             "ordering.invalid",
@@ -76,7 +76,7 @@ func TestMSP07PinnedContractAndSourceAuthorityV1(t *testing.T) {
 }
 
 func TestMSP07PinnedArtifactsAreExactCanonicalMergeBytes(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	assertSHA256(t, "graph_schema", artifacts.GraphSchema, canonicalArtifactDigestsV1["graph_schema"])
 	assertSHA256(t, "replay_schema", artifacts.ReplaySchema, canonicalArtifactDigestsV1["replay_schema"])
 	assertSHA256(t, "registry", artifacts.Registry, canonicalArtifactDigestsV1["registry"])
@@ -114,7 +114,7 @@ func TestMSP07RegistryClosesVocabularyLimitsAndErrorPrecedence(t *testing.T) {
 		ValidationPrecedence   []string          `json:"validation_precedence"`
 		Limits                 map[string]uint64 `json:"limits"`
 	}
-	if err := json.Unmarshal(PinnedArtifactsV1().Registry, &registry); err != nil {
+	if err := json.Unmarshal(pinnedTestArtifactsV1().Registry, &registry); err != nil {
 		t.Fatal(err)
 	}
 	if registry.Contract != RegistryContractV1 || registry.Version != 1 {
@@ -133,6 +133,7 @@ func TestMSP07RegistryClosesVocabularyLimitsAndErrorPrecedence(t *testing.T) {
 		"max_graph_bytes": 1048576, "max_depth": 32, "max_facts": 64,
 		"max_evidence_refs_per_fact": 16, "max_samples_per_comparator": 1024,
 		"max_string_bytes": 4096, "max_path_segments": 32,
+		"max_total_members": 16384, "max_total_list_items": 8192,
 	}
 	if !reflect.DeepEqual(registry.Limits, wantLimits) {
 		t.Fatalf("registry limits = %#v; want %#v", registry.Limits, wantLimits)

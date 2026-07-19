@@ -91,6 +91,8 @@
     "max_evidence_refs_per_fact": 16,
     "max_samples_per_comparator": 1024,
     "max_string_bytes": 4096,
-    "max_path_segments": 32
+    "max_path_segments": 32,
+    "max_total_members": 16384,
+    "max_total_list_items": 8192
   }
 }

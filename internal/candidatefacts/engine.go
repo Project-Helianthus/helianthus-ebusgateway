@@ -9,6 +9,12 @@ import (
 )
 
 func Build(input BuildInputV1) ([]byte, error) {
+	if err := checkTypedPortable(input.ComparatorDrafts); err != nil {
+		return nil, err
+	}
+	if err := checkTypedPortable(input.Facts); err != nil {
+		return nil, err
+	}
 	sourceBundle, sourceReplay, err := verifySourceInputs(input.SourceBundle, input.SourceReplay)
 	if err != nil {
 		return nil, err
@@ -19,7 +25,7 @@ func Build(input BuildInputV1) ([]byte, error) {
 	}
 	draftsValue, err := typedValue(input.ComparatorDrafts)
 	if err != nil {
-		return nil, fail("schema.graph")
+		return nil, err
 	}
 	drafts, ok := arrayValue(draftsValue)
 	if !ok {
@@ -27,7 +33,7 @@ func Build(input BuildInputV1) ([]byte, error) {
 	}
 	factsValue, err := typedValue(input.Facts)
 	if err != nil {
-		return nil, fail("schema.graph")
+		return nil, err
 	}
 	facts, ok := arrayValue(factsValue)
 	if !ok {
@@ -65,6 +71,64 @@ func Build(input BuildInputV1) ([]byte, error) {
 	normalizeBuildOrdering(graph)
 	for _, raw := range facts {
 		fact, _ := objectValue(raw)
+		fact["fact_hash"] = "sha256:" + zeroDigest()
+	}
+	preliminary, err := canonicalJSON(graph)
+	if err != nil {
+		return nil, err
+	}
+	if err := schemaCheck(graph); err != nil {
+		return nil, err
+	}
+	if err := checkLimits(graph, len(preliminary)); err != nil {
+		return nil, err
+	}
+	if err := checkRegistryBinding(graph, registry, registryRaw); err != nil {
+		return nil, err
+	}
+	if err := checkProvenance(graph, registry, sourceBundle, sourceReplay); err != nil {
+		return nil, err
+	}
+	if err := checkIdentities(graph, sourceBundle); err != nil {
+		return nil, err
+	}
+	if err := checkOrdering(graph); err != nil {
+		return nil, err
+	}
+	if len(drafts) != 1 {
+		return nil, fail("comparator.invalid")
+	}
+	draft, _ := objectValue(drafts[0])
+	parameters, _ := objectValue(draft["parameters"])
+	artifacts := indexArtifacts(sourceBundle)
+	for _, raw := range facts {
+		fact, _ := objectValue(raw)
+		comparator, _ := objectValue(fact["comparator"])
+		rawSamples, _ := arrayValue(comparator["samples"])
+		samples := make([]map[string]any, len(rawSamples))
+		for index, rawSample := range rawSamples {
+			samples[index], _ = objectValue(rawSample)
+		}
+		provenance, _ := objectValue(fact["provenance"])
+		rawRefs, _ := arrayValue(provenance["native_evidence_refs"])
+		allowedRefs := make(map[string]bool, len(rawRefs))
+		for _, ref := range rawRefs {
+			key, keyErr := canonicalKey(ref)
+			if keyErr != nil {
+				return nil, fail("comparator.invalid")
+			}
+			allowedRefs[key] = true
+		}
+		outcome, finalRight, evaluateErr := evaluateNumericWindow(parameters, samples, artifacts, allowedRefs)
+		if evaluateErr != nil {
+			return nil, evaluateErr
+		}
+		comparator["outcome"] = outcome
+		if fact["status"] == "CANDIDATE" && outcome == "MATCH" {
+			conversion, _ := objectValue(parameters["unit_conversion"])
+			fact["draft_value"] = finalRight
+			fact["draft_unit"] = conversion["target_unit"]
+		}
 		view := cloneObject(fact)
 		delete(view, "fact_hash")
 		canonical, err := canonicalJSON(view)
@@ -87,7 +151,16 @@ func Build(input BuildInputV1) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyGraph(graph, registry, registryRaw, len(encoded), sourceBundle, sourceReplay); err != nil {
+	if err := schemaCheck(graph); err != nil {
+		return nil, err
+	}
+	if err := checkLimits(graph, len(encoded)); err != nil {
+		return nil, err
+	}
+	if err := checkRegistryBinding(graph, registry, registryRaw); err != nil {
+		return nil, err
+	}
+	if err := verifyGraphAfterRegistry(graph, registry, sourceBundle, sourceReplay); err != nil {
 		return nil, err
 	}
 	return encoded, nil
@@ -149,6 +222,9 @@ func Replay(graphRaw, sourceBundleRaw, sourceReplayRaw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := replaySchemaCheck(replay); err != nil {
+		return nil, err
+	}
 	return append(encoded, '\n'), nil
 }
 
@@ -175,13 +251,26 @@ func normalizeBuildOrdering(graph map[string]any) {
 }
 
 func typedValue(value any) (any, error) {
+	if err := checkTypedPortable(value); err != nil {
+		return nil, err
+	}
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {
 		return nil, err
 	}
-	return parseJSON(encoded.Bytes())
+	if encoded.Len() > int(hardLimitsV1["max_graph_bytes"]) {
+		return nil, fail("limits.exceeded")
+	}
+	parsed, err := parseJSON(encoded.Bytes())
+	if err != nil {
+		if err.Error() == "limits.exceeded" {
+			return nil, err
+		}
+		return nil, fail("schema.graph")
+	}
+	return parsed, nil
 }
 
 func zeroDigest() string { return string(bytes.Repeat([]byte{'0'}, 64)) }

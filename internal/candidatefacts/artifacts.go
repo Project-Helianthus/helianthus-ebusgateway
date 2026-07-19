@@ -8,39 +8,19 @@ import (
 
 // The embedded files are byte-for-byte copies from the canonical docs merge.
 //
-//go:embed contracts/*.json testdata/canonical/positive/*.json testdata/canonical/source/*.json testdata/canonical/negative/*.json
+//go:embed contracts/*.json testdata/canonical/positive/*.json testdata/canonical/source/*.json
 var artifactFiles embed.FS
-
-var negativeFixtureDigestsV1 = map[string]string{
-	"anti-leak-stable-surface.json":     "7dc7e071ae3ad4c1a7d191af889d378297e2387121991a5c79854df2a4ccb3d7",
-	"comparator-parameter-invalid.json": "54ca728b2bb6bc49a10d5591b53b615208d3e46d429b307787741cf14be30f49",
-	"evidence-ref-not-in-bundle.json":   "e41acc15ea033069c3b38d9eb6e8215e44e7e3467ac7bf208d338438151683cf",
-	"forged-artifact-id.json":           "9546d98e46cdb8e666c134744cbb92498ef83a35746e6a558ea9d995df40e736",
-	"forged-b524-opcode.json":           "44618dbe22a14045375d267279b6d6930c8ca82def9da7e7b9fb2311fb911f9d",
-	"forged-eebus-entity-feature.json":  "46309c0bc58b7a39f3fd7a7d5e59810076f14fe04cbc3c471c334d413905721e",
-	"forged-source-id.json":             "8066d3ad8c509b86785e37a94c5155db18d7f0922efe581c0804a2478a61f140",
-	"graph-hash-mismatch.json":          "11272a453a211a178e7773600d3eaba5928f63413ffff08e268266b6be038c67",
-	"incomplete-b524-identity.json":     "d574c5bb84fd893621ccc1909da248cdfad2feb997259a42aa8d4f9e0ed22d8e",
-	"invalid-eebus-feature-path.json":   "51ff7033e184196d3a94f0260fc4132740d13e76521477a2a6539eda7da5ea0b",
-	"limit-exceeded.json":               "17dd0dbdae52f190a1b8ea60631a7441c787656910a0bfc4c379abee0254ea9d",
-	"ordering-invalid.json":             "515a3535d6c509601a510bf2c534a1cf8a6627c6ca6088cfdeb0f456cda9825c",
-	"registry-mismatch.json":            "c3799d07f7d11c190fac4a450065987e1b5c2f410d5efc942ee1fc6cd3fecc37",
-	"terminal-state-not-withheld.json":  "4acfad48a847b4a767adbcbfae06219e080ffb51349514f80e1983594006a260",
-	"unknown-field.json":                "455fc749eca249b0502a81b36a4b135fb362df52942a70839015c0c8356edecb",
-	"wrong-source-bundle.json":          "f01f496e451dcd43823ca11776dac378312af7b1336da28f6f56875cdfb5452a",
-	"wrong-source-replay.json":          "69db280970154ef0f3ddd52002b4054ccee1475072e8f975ce79e65cff6f17bb",
-}
 
 func PinnedContractV1() ContractBindingV1 {
 	return ContractBindingV1{
 		OwnerRepository:      "Project-Helianthus/helianthus-docs-ebus",
-		OwnerCommit:          "4f7ed144f5d75c4123d90580bf2575d139303bb5",
+		OwnerCommit:          "58a91574a637d9be101f9011220c509eabb0ef53",
 		GraphSchemaPath:      "docs/platform/schemas/draft-candidate-fact-graph-v1.schema.json",
-		GraphSchemaSHA256:    "5a8c18119d9dc92bcfd516cab487e045e1df3bd95acb0195a3af2c9f2f73ab83",
+		GraphSchemaSHA256:    "ab5f65a527633c3c5f60119cf0071a6ffdd3ee66d6e210f78bf17a03e438069a",
 		ReplaySchemaPath:     "docs/platform/schemas/draft-candidate-fact-replay-v1.schema.json",
 		ReplaySchemaSHA256:   "d691cfc970e99faae7f5a1f4e30ed0cb6a4c3cc6e11959dffba5f82a8fc6d232",
 		RegistryPath:         "docs/platform/schemas/draft-candidate-fact-registry-v1.json",
-		RegistrySHA256:       "3126379f5a59d5751954235ea996bdcb63ce09d51d009382982716c46ba4559a",
+		RegistrySHA256:       "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
 		SourceContract:       "helianthus.platform.synchronized-evidence-bundle.v1",
 		SourceSchemaVersion:  1,
 		SourceOwnerCommit:    "4d7747730be023acb251b20a22d796545a9f3688",
@@ -49,20 +29,15 @@ func PinnedContractV1() ContractBindingV1 {
 	}
 }
 
-func PinnedArtifactsV1() ArtifactsV1 {
-	negative := make(map[string][]byte, len(negativeFixtureDigestsV1))
-	for name, digest := range negativeFixtureDigestsV1 {
-		negative[name] = readPinned("testdata/canonical/negative/"+name, digest)
-	}
-	return ArtifactsV1{
+func pinnedArtifactsV1() artifactsV1 {
+	return artifactsV1{
 		GraphSchema:    readPinned("contracts/draft-candidate-fact-graph-v1.schema.json", PinnedContractV1().GraphSchemaSHA256),
 		ReplaySchema:   readPinned("contracts/draft-candidate-fact-replay-v1.schema.json", PinnedContractV1().ReplaySchemaSHA256),
 		Registry:       readPinned("contracts/draft-candidate-fact-registry-v1.json", PinnedContractV1().RegistrySHA256),
-		PositiveGraph:  readPinned("testdata/canonical/positive/graph.json", "5d6d62b6ac7767efaae9cc6080fae3df629c091dbc886cdbeff863605259f0b4"),
-		PositiveReplay: readPinned("testdata/canonical/positive/replay-result.json", "fb7724abcf4dca7d1dea5a092846d2e6777b2f2c9c19f92c060ea1e0f7b8f530"),
+		PositiveGraph:  readPinned("testdata/canonical/positive/graph.json", "b5c5d79e540a1691ee60c6db3e9405a92d9d544d871c74b26800fe449a318b0e"),
+		PositiveReplay: readPinned("testdata/canonical/positive/replay-result.json", "8280f6278ffe8598dfd767bb5bf9e60dce3c145b4612174b7c5a32fbff282f5c"),
 		SourceBundle:   readPinned("testdata/canonical/source/bundle.json", "e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a"),
 		SourceReplay:   readPinned("testdata/canonical/source/replay-result.json", "3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539"),
-		NegativeGraphs: negative,
 	}
 }
 

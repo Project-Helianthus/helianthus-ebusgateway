@@ -53,7 +53,6 @@
     "facts": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 64,
       "items": {
         "$ref": "#/$defs/FactV1"
       }
@@ -68,21 +67,43 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
-      "pattern": "^[ -~]+$"
+      "pattern": "^[\\x20-\\x7e]+$"
     },
     "NullableTokenV1": {
       "oneOf": [
         {
-          "$ref": "#/$defs/TokenV1"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         {
           "type": "null"
         }
       ]
     },
+    "NullablePathV1": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[\\x20-\\x7e]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "JsonPointerV1": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^/(?:[^~/]|~0|~1)+(?:/(?:[^~/]|~0|~1)+)*$"
+    },
     "DecimalV1": {
       "type": "string",
-      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+      "pattern": "^(0(\\.0+)?|0\\.[0-9]*[1-9][0-9]*|[1-9][0-9]*(\\.[0-9]+)?|-(0\\.[0-9]*[1-9][0-9]*|[1-9][0-9]*(\\.[0-9]+)?))$",
       "maxLength": 64
     },
     "EvidenceRefV1": {
@@ -127,7 +148,7 @@
           ]
         },
         "path": {
-          "$ref": "#/$defs/NullableTokenV1"
+          "$ref": "#/$defs/NullablePathV1"
         }
       }
     },
@@ -201,19 +222,25 @@
       ],
       "properties": {
         "channel": {
-          "const": "CANDIDATE_DEBUG_REPLAY"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "promotion_state": {
-          "const": "NOT_PROMOTED"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[\\x20-\\x7e]+$"
         },
         "stable_exposure": {
-          "const": false
+          "type": "boolean"
         },
         "command_capable": {
-          "const": false
+          "type": "boolean"
         },
         "protocol_translation": {
-          "const": false
+          "type": "boolean"
         }
       }
     },
@@ -227,29 +254,55 @@
         "max_evidence_refs_per_fact",
         "max_samples_per_comparator",
         "max_string_bytes",
-        "max_path_segments"
+        "max_path_segments",
+        "max_total_members",
+        "max_total_list_items"
       ],
       "properties": {
         "max_graph_bytes": {
-          "const": 1048576
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_depth": {
-          "const": 32
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_facts": {
-          "const": 64
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_evidence_refs_per_fact": {
-          "const": 16
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_samples_per_comparator": {
-          "const": 1024
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_string_bytes": {
-          "const": 4096
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "max_path_segments": {
-          "const": 32
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_total_members": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_total_list_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     },
@@ -297,11 +350,13 @@
           "properties": {
             "start_offset_ns": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             },
             "end_offset_ns": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           }
         },
@@ -318,7 +373,8 @@
             },
             "relative_ppm": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 1000000
             }
           }
         },
@@ -383,15 +439,18 @@
         },
         "minimum_samples": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 1024
         },
         "maximum_missing_samples": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 1024
         },
         "stale_cutoff_ns": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
         "conflict_threshold": {
           "type": "object",
@@ -406,7 +465,8 @@
             },
             "consecutive_samples": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 1024
             }
           }
         }
@@ -680,7 +740,8 @@
           "$ref": "#/$defs/TokenV1"
         },
         "evidence_id": {
-          "$ref": "#/$defs/TokenV1"
+          "type": "string",
+          "pattern": "^public-evidence:sha256:[0-9a-f]{64}$"
         }
       }
     },
@@ -711,6 +772,7 @@
         "ebus",
         "eebus_source_id",
         "eebus_artifact_id",
+        "eebus_service",
         "eebus",
         "cloud"
       ],
@@ -722,7 +784,6 @@
         "native_evidence_refs": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 16,
           "items": {
             "$ref": "#/$defs/EvidenceRefV1"
           }
@@ -740,6 +801,9 @@
           "$ref": "#/$defs/NullableTokenV1"
         },
         "eebus_artifact_id": {
+          "$ref": "#/$defs/NullableTokenV1"
+        },
+        "eebus_service": {
           "$ref": "#/$defs/NullableTokenV1"
         },
         "eebus": {
@@ -764,6 +828,62 @@
         }
       }
     },
+    "ObservationBindingV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_id",
+        "artifact_id",
+        "evidence_ref",
+        "observed_offset_ns",
+        "value_pointer",
+        "unit_pointer",
+        "native_decimal",
+        "native_unit"
+      ],
+      "properties": {
+        "source_kind": {
+          "enum": [
+            "EBUS",
+            "EEBUS"
+          ]
+        },
+        "source_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "artifact_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "observed_offset_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "value_pointer": {
+          "$ref": "#/$defs/JsonPointerV1"
+        },
+        "unit_pointer": {
+          "$ref": "#/$defs/JsonPointerV1"
+        },
+        "native_decimal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DecimalV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "native_unit": {
+          "$ref": "#/$defs/NullableTokenV1"
+        }
+      }
+    },
     "ComparatorEvaluationV1": {
       "type": "object",
       "additionalProperties": false,
@@ -778,40 +898,26 @@
         },
         "samples": {
           "type": "array",
-          "maxItems": 1024,
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": [
               "offset_ns",
-              "left_decimal",
-              "right_decimal",
+              "left",
+              "right",
               "state"
             ],
             "properties": {
               "offset_ns": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "maximum": 9007199254740991
               },
-              "left_decimal": {
-                "oneOf": [
-                  {
-                    "$ref": "#/$defs/DecimalV1"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "left": {
+                "$ref": "#/$defs/ObservationBindingV1"
               },
-              "right_decimal": {
-                "oneOf": [
-                  {
-                    "$ref": "#/$defs/DecimalV1"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+              "right": {
+                "$ref": "#/$defs/ObservationBindingV1"
               },
               "state": {
                 "enum": [

@@ -10,7 +10,7 @@ import (
 )
 
 func TestMSP07VisibilityIsCandidateDebugOnlyAndNeverCommandCapable(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	graph := decodeObject(t, artifacts.PositiveGraph)
 	visibility := objectAt(t, graph, "visibility")
 	want := map[string]any{

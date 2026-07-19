@@ -7,7 +7,7 @@ import (
 )
 
 func TestStrictJSONSyntaxPrecedesSchemaValidation(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	for name, raw := range map[string][]byte{
 		"duplicate key":  []byte(`{"x":1,"x":2}`),
 		"float":          []byte(`{"x":1.0}`),
@@ -24,7 +24,7 @@ func TestStrictJSONSyntaxPrecedesSchemaValidation(t *testing.T) {
 }
 
 func TestSourceReplayBindingUsesCanonicalRegeneration(t *testing.T) {
-	artifacts := PinnedArtifactsV1()
+	artifacts := pinnedTestArtifactsV1()
 	var indented bytes.Buffer
 	if err := json.Indent(&indented, bytes.TrimSpace(artifacts.SourceReplay), "", "  "); err != nil {
 		t.Fatal(err)
@@ -36,10 +36,10 @@ func TestSourceReplayBindingUsesCanonicalRegeneration(t *testing.T) {
 }
 
 func TestPinnedArtifactsAreReturnedAsIndependentCopies(t *testing.T) {
-	first := PinnedArtifactsV1()
+	first := pinnedTestArtifactsV1()
 	first.Registry[0] ^= 0xff
 	first.NegativeGraphs["unknown-field.json"][0] ^= 0xff
-	second := PinnedArtifactsV1()
+	second := pinnedTestArtifactsV1()
 	if bytes.Equal(first.Registry, second.Registry) || bytes.Equal(first.NegativeGraphs["unknown-field.json"], second.NegativeGraphs["unknown-field.json"]) {
 		t.Fatal("PinnedArtifactsV1 returned mutable shared storage")
 	}

@@ -23,7 +23,7 @@ type ContractBindingV1 struct {
 	SourceRegistrySHA256 string
 }
 
-type ArtifactsV1 struct {
+type artifactsV1 struct {
 	GraphSchema    []byte
 	ReplaySchema   []byte
 	Registry       []byte
@@ -31,7 +31,6 @@ type ArtifactsV1 struct {
 	PositiveReplay []byte
 	SourceBundle   []byte
 	SourceReplay   []byte
-	NegativeGraphs map[string][]byte
 }
 
 type GraphV1 struct {
@@ -87,6 +86,8 @@ type LimitsV1 struct {
 	MaxSamplesPerComparator uint64 `json:"max_samples_per_comparator"`
 	MaxStringBytes          uint64 `json:"max_string_bytes"`
 	MaxPathSegments         uint64 `json:"max_path_segments"`
+	MaxTotalMembers         uint64 `json:"max_total_members"`
+	MaxTotalListItems       uint64 `json:"max_total_list_items"`
 }
 
 type ComparatorDraftV1 struct {
@@ -164,6 +165,7 @@ type ProvenanceV1 struct {
 	EBus               *EBusIdentityV1    `json:"ebus"`
 	EEBusSourceID      *string            `json:"eebus_source_id"`
 	EEBusArtifactID    *string            `json:"eebus_artifact_id"`
+	EEBusService       *string            `json:"eebus_service"`
 	EEBus              *EEBusIdentityV1   `json:"eebus"`
 	Cloud              *CloudProvenanceV1 `json:"cloud"`
 }
@@ -218,10 +220,22 @@ type ComparatorEvaluationV1 struct {
 }
 
 type ComparatorSampleV1 struct {
-	OffsetNS     uint64  `json:"offset_ns"`
-	LeftDecimal  *string `json:"left_decimal"`
-	RightDecimal *string `json:"right_decimal"`
-	State        string  `json:"state"`
+	OffsetNS uint64               `json:"offset_ns"`
+	Left     ObservationBindingV1 `json:"left"`
+	Right    ObservationBindingV1 `json:"right"`
+	State    string               `json:"state"`
+}
+
+type ObservationBindingV1 struct {
+	SourceKind       string        `json:"source_kind"`
+	SourceID         string        `json:"source_id"`
+	ArtifactID       string        `json:"artifact_id"`
+	EvidenceRef      EvidenceRefV1 `json:"evidence_ref"`
+	ObservedOffsetNS uint64        `json:"observed_offset_ns"`
+	ValuePointer     string        `json:"value_pointer"`
+	UnitPointer      string        `json:"unit_pointer"`
+	NativeDecimal    *string       `json:"native_decimal"`
+	NativeUnit       *string       `json:"native_unit"`
 }
 
 type FalsifierV1 struct {

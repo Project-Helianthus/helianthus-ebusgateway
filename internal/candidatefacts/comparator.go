@@ -118,11 +118,11 @@ func evaluateNumericWindow(
 			conflictRun = 0
 		}
 	}
-	if conflict {
-		return "CONFLICT", lastRight, nil
-	}
 	if unavailable > maximumMissing || present < minimumSamples {
 		return "INDETERMINATE", lastRight, nil
+	}
+	if conflict {
+		return "CONFLICT", lastRight, nil
 	}
 	if mismatch {
 		return "MISMATCH", lastRight, nil

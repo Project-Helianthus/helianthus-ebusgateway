@@ -294,6 +294,8 @@ func checkStates(graph, registry map[string]any) error {
 		comparator, _ := objectValue(fact["comparator"])
 		samples, _ := arrayValue(comparator["samples"])
 		outcome := asString(comparator["outcome"])
+		validNotTested := len(samples) == 0 && outcome == "NOT_EVALUATED" ||
+			len(samples) > 0 && outcome == "INDETERMINATE" && nativeKinds["EBUS"] && nativeKinds["EEBUS"]
 
 		if cloudOnly && (status != "WITHHELD" || terminal != "CLOUD_ONLY") {
 			return fail("state.terminal")
@@ -306,20 +308,24 @@ func checkStates(graph, registry map[string]any) error {
 			}
 		case "CANDIDATE":
 			if terminal != "" || fact["draft_value"] == nil || fact["draft_unit"] == nil ||
-				outcome != "MATCH" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
+				len(samples) == 0 || outcome != "MATCH" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
 				return fail("state.terminal")
 			}
 		case "CONFLICTED":
 			if terminal != "" || fact["draft_value"] != nil || fact["draft_unit"] != nil ||
-				outcome != "CONFLICT" || !nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
+				len(samples) == 0 || !member(outcome, "MISMATCH", "CONFLICT") ||
+				!nativeKinds["EBUS"] || !nativeKinds["EEBUS"] {
 				return fail("state.terminal")
 			}
 		case "WITHHELD":
 			if terminal == "" || fact["draft_value"] != nil || fact["draft_unit"] != nil {
 				return fail("state.terminal")
 			}
-			if (terminal == "CLOUD_ONLY" || terminal == "NO_SIGNAL" || terminal == "NOT_TESTED") &&
+			if (terminal == "CLOUD_ONLY" || terminal == "NO_SIGNAL") &&
 				(len(samples) != 0 || outcome != "NOT_EVALUATED") {
+				return fail("state.terminal")
+			}
+			if terminal == "NOT_TESTED" && !validNotTested {
 				return fail("state.terminal")
 			}
 			if terminal == "CLOUD_ONLY" && !cloudOnly {
@@ -416,13 +422,17 @@ func checkComparators(graph, registry, sourceBundle map[string]any) error {
 			return fail("comparator.invalid")
 		}
 		status := asString(fact["status"])
+		terminal, _ := optionalString(fact["terminal_negative_state"])
 		allowedOutcomes := map[string]map[string]bool{
-			"RAW_ONLY":   {"NOT_EVALUATED": true},
-			"CANDIDATE":  {"MATCH": true},
-			"CONFLICTED": {"CONFLICT": true},
-			"WITHHELD":   {"NOT_EVALUATED": true, "CONFLICT": true, "INDETERMINATE": true},
+			"RAW_ONLY\x00":           {"NOT_EVALUATED": true},
+			"CANDIDATE\x00":          {"MATCH": true},
+			"CONFLICTED\x00":         {"MISMATCH": true, "CONFLICT": true},
+			"WITHHELD\x00CLOUD_ONLY": {"NOT_EVALUATED": true},
+			"WITHHELD\x00NO_SIGNAL":  {"NOT_EVALUATED": true},
+			"WITHHELD\x00NOT_TESTED": {"NOT_EVALUATED": true, "INDETERMINATE": true},
+			"WITHHELD\x00CONFLICT":   {"CONFLICT": true},
 		}
-		if !allowedOutcomes[status][computed] {
+		if !allowedOutcomes[status+"\x00"+terminal][computed] {
 			return fail("comparator.invalid")
 		}
 		if status == "CANDIDATE" {
@@ -432,9 +442,8 @@ func checkComparators(graph, registry, sourceBundle map[string]any) error {
 				return fail("comparator.invalid")
 			}
 		}
-		terminal, _ := optionalString(fact["terminal_negative_state"])
 		if terminal == "CONFLICT" && computed != "CONFLICT" ||
-			(terminal == "NO_SIGNAL" || terminal == "CLOUD_ONLY" || terminal == "NOT_TESTED") &&
+			(terminal == "NO_SIGNAL" || terminal == "CLOUD_ONLY") &&
 				computed != "NOT_EVALUATED" {
 			return fail("comparator.invalid")
 		}

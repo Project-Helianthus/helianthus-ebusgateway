@@ -425,6 +425,9 @@ func TestMSP06G15ActiveQuotaCountsRootGroupsAndCaptureFailureConsumesNoSlot(t *t
 func TestMSP06G15ConcurrentCaptureReservationIsAtomicAt32(t *testing.T) {
 	provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
 	server, _ := msp06TestServer(t, provider)
+	// This case isolates store quota linearization; bounded-worker timeout behavior
+	// is covered separately by TestMSP06BlockedProviderWorkersAreBoundedAndPermitsRemainUntilExit.
+	server.eebusV1.liveTimeout = 5 * time.Second
 	const attempts = 64
 	type outcome struct {
 		code string

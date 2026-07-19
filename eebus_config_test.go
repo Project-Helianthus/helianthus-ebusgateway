@@ -59,7 +59,7 @@ func TestDefaultEEBusConfig_ReturnsIndependentEmptySlices(t *testing.T) {
 	}
 }
 
-func TestM5AR1EEBusConfig_RuntimeCouplingIsConfinedToPrivateMapper(t *testing.T) {
+func TestMSP05BEEBusRuntimeCouplingIsConfinedToPrivateGatewaySeams(t *testing.T) {
 	const runtimeImport = "github.com/Project-Helianthus/helianthus-eebusreg"
 	goMod, err := os.ReadFile("go.mod")
 	if err != nil {
@@ -71,11 +71,15 @@ func TestM5AR1EEBusConfig_RuntimeCouplingIsConfinedToPrivateMapper(t *testing.T)
 
 	allowedConfigReferences := []string{
 		"cmd/gateway/eebus_config_flags.go",
+		"cmd/gateway/eebus_runtime_adapter.go",
 		"cmd/gateway/eebus_runtime_config.go",
+		"cmd/gateway/main.go",
 		"config.go",
 	}
-	const allowedRuntimeImport = "cmd/gateway/eebus_runtime_config.go"
-	foundRuntimeImport := false
+	allowedRuntimeImports := map[string]bool{
+		"cmd/gateway/eebus_runtime_adapter.go": false,
+		"cmd/gateway/eebus_runtime_config.go":  false,
+	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -96,14 +100,14 @@ func TestM5AR1EEBusConfig_RuntimeCouplingIsConfinedToPrivateMapper(t *testing.T)
 		}
 		normalized := filepath.ToSlash(strings.TrimPrefix(path, "."+string(filepath.Separator)))
 		if strings.Contains(string(content), runtimeImport) {
-			if normalized != allowedRuntimeImport {
-				unexpected = append(unexpected, normalized+": runtime import outside private mapper")
+			if _, allowed := allowedRuntimeImports[normalized]; !allowed {
+				unexpected = append(unexpected, normalized+": runtime import outside private gateway seams")
 			} else {
-				foundRuntimeImport = true
+				allowedRuntimeImports[normalized] = true
 			}
 		}
 		if strings.Contains(string(content), "EEBusConfig") && !slices.Contains(allowedConfigReferences, normalized) {
-			unexpected = append(unexpected, normalized+": runtime reference outside config scaffold")
+			unexpected = append(unexpected, normalized+": eeBUS config reference outside private gateway seams")
 		}
 		return nil
 	})
@@ -113,7 +117,9 @@ func TestM5AR1EEBusConfig_RuntimeCouplingIsConfinedToPrivateMapper(t *testing.T)
 	if len(unexpected) != 0 {
 		t.Fatalf("MSP-05A-R1 eeBUS boundary violations: %v", unexpected)
 	}
-	if !foundRuntimeImport {
-		t.Fatalf("%s does not import %q", allowedRuntimeImport, runtimeImport)
+	for path, found := range allowedRuntimeImports {
+		if !found {
+			t.Errorf("%s does not import %q", path, runtimeImport)
+		}
 	}
 }

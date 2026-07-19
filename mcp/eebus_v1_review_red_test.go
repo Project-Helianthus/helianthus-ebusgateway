@@ -162,7 +162,7 @@ func TestMSP06StoreExpiryAndDropUseMutexLinearizationTime(t *testing.T) {
 
 func TestMSP06StoreRetainsMonotonicTimeInternallyAndUsesUTCOnlyOnWire(t *testing.T) {
 	base := time.Now()
-	if base == base.Round(0) {
+	if base == base.Round(0) { //nolint:staticcheck // Struct equality intentionally detects monotonic clock metadata.
 		t.Skip("host clock did not provide a monotonic reading")
 	}
 	store, captured := msp06ReviewStoreWithRoot(t, base)
@@ -170,7 +170,7 @@ func TestMSP06StoreRetainsMonotonicTimeInternallyAndUsesUTCOnlyOnWire(t *testing
 	if root == nil {
 		t.Fatal("captured root missing from active store")
 	}
-	if root.ExpiresAt == root.ExpiresAt.Round(0) {
+	if root.ExpiresAt == root.ExpiresAt.Round(0) { //nolint:staticcheck // Struct equality intentionally detects monotonic clock metadata.
 		t.Error("active expiry discarded the monotonic clock reading")
 	}
 	if want := eebusV1Timestamp(base.Add(eebusV1ActiveTTL)); captured.ExpiresAt != want {
@@ -186,7 +186,7 @@ func TestMSP06StoreRetainsMonotonicTimeInternallyAndUsesUTCOnlyOnWire(t *testing
 	if tombstone == nil {
 		t.Fatal("dropped root missing tombstone")
 	}
-	if tombstone.TerminalAt == tombstone.TerminalAt.Round(0) {
+	if tombstone.TerminalAt == tombstone.TerminalAt.Round(0) { //nolint:staticcheck // Struct equality intentionally detects monotonic clock metadata.
 		t.Error("terminal transition discarded the monotonic clock reading")
 	}
 }

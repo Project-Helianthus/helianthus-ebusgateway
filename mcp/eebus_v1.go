@@ -30,7 +30,8 @@ const (
 	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
 )
 
-// EEBusV1Provider is the read-only runtime boundary exposed to MCP.
+// EEBusV1Provider is the MSP-06 typed, read-only seam and the only MCP
+// production boundary allowed to import the eeBUS runtime package.
 type EEBusV1Provider interface {
 	Snapshot() (eebusruntime.SnapshotV1, error)
 }
@@ -353,11 +354,62 @@ func (runtime *eebusV1Runtime) liveProjection() (eebusV1Projection, string) {
 		}
 		return eebusV1Projection{}, "backend_unavailable"
 	}
+	if err := eebusV1ValidateProviderCollectionBounds(snapshot); err != nil {
+		return eebusV1Projection{}, "contract_violation"
+	}
 	projection, err := eebusV1ProjectSnapshot(snapshot, runtime.pseudonymKey)
 	if err != nil {
 		return eebusV1Projection{}, "contract_violation"
 	}
 	return projection, ""
+}
+
+func eebusV1ValidateProviderCollectionBounds(snapshot eebusruntime.SnapshotV1) error {
+	if err := eebusV1ValidateCollectionSizes(
+		len(snapshot.Pairing),
+		len(snapshot.Services),
+		len(snapshot.Sessions),
+		len(snapshot.Topology.Devices),
+		len(snapshot.Raw),
+	); err != nil {
+		return err
+	}
+	for _, pairing := range snapshot.Pairing {
+		if err := eebusV1ValidateCollectionSizes(len(pairing.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, service := range snapshot.Services {
+		if err := eebusV1ValidateCollectionSizes(len(service.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, session := range snapshot.Sessions {
+		if err := eebusV1ValidateCollectionSizes(len(session.Raw)); err != nil {
+			return err
+		}
+	}
+	for _, device := range snapshot.Topology.Devices {
+		if err := eebusV1ValidateCollectionSizes(len(device.Entities), len(device.UseCaseClaims), len(device.Raw)); err != nil {
+			return err
+		}
+		for _, entity := range device.Entities {
+			if err := eebusV1ValidateCollectionSizes(len(entity.Features), len(entity.Raw)); err != nil {
+				return err
+			}
+			for _, feature := range entity.Features {
+				if err := eebusV1ValidateCollectionSizes(len(feature.Raw)); err != nil {
+					return err
+				}
+			}
+		}
+		for _, claim := range device.UseCaseClaims {
+			if err := eebusV1ValidateCollectionSizes(len(claim.Raw)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func eebusV1DataForTool(name string, projection eebusV1Projection, idDigest string) (any, string) {

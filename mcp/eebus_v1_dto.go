@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 const (
@@ -291,10 +289,7 @@ func (p *eebusV1Pseudonymizer) identity(kind string, source eebusV1SourceIdentit
 	}, nil
 }
 
-func eebusV1ProjectSnapshot(value eebusruntime.SnapshotV1, pseudonymKey []byte) (eebusV1Projection, error) {
-	if err := eebusV1ValidateProviderCollectionBounds(value); err != nil {
-		return eebusV1Projection{}, err
-	}
+func eebusV1ProjectSnapshot(value any, pseudonymKey []byte) (eebusV1Projection, error) {
 	source, err := eebusV1DecodeSourceSnapshot(value)
 	if err != nil {
 		return eebusV1Projection{}, err
@@ -366,54 +361,6 @@ func eebusV1ProjectSnapshot(value eebusruntime.SnapshotV1, pseudonymKey []byte) 
 		DataTimestamp: snapshot.Meta.DataTimestamp,
 		RuntimeKey:    pseudonyms.runtimeKey,
 	}, nil
-}
-
-func eebusV1ValidateProviderCollectionBounds(snapshot eebusruntime.SnapshotV1) error {
-	if err := eebusV1ValidateCollectionSizes(
-		len(snapshot.Pairing),
-		len(snapshot.Services),
-		len(snapshot.Sessions),
-		len(snapshot.Topology.Devices),
-		len(snapshot.Raw),
-	); err != nil {
-		return err
-	}
-	for _, pairing := range snapshot.Pairing {
-		if err := eebusV1ValidateCollectionSizes(len(pairing.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, service := range snapshot.Services {
-		if err := eebusV1ValidateCollectionSizes(len(service.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, session := range snapshot.Sessions {
-		if err := eebusV1ValidateCollectionSizes(len(session.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, device := range snapshot.Topology.Devices {
-		if err := eebusV1ValidateCollectionSizes(len(device.Entities), len(device.UseCaseClaims), len(device.Raw)); err != nil {
-			return err
-		}
-		for _, entity := range device.Entities {
-			if err := eebusV1ValidateCollectionSizes(len(entity.Features), len(entity.Raw)); err != nil {
-				return err
-			}
-			for _, feature := range entity.Features {
-				if err := eebusV1ValidateCollectionSizes(len(feature.Raw)); err != nil {
-					return err
-				}
-			}
-		}
-		for _, claim := range device.UseCaseClaims {
-			if err := eebusV1ValidateCollectionSizes(len(claim.Raw)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func eebusV1ValidateCollectionSizes(lengths ...int) error {

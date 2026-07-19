@@ -1,0 +1,56 @@
+{
+  "contract": "helianthus.platform.source-schema-registry.v1",
+  "version": 1,
+  "entries": [
+    {
+      "source_kind": "EBUS_B509",
+      "source_contract": "helianthus.ebus.b509.evidence.v1",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-ebus",
+      "owner_path": "protocols/vaillant/ebus-vaillant-B509.md",
+      "owner_commit": "e1962c0dc83836b0dbea129d198c7be6bea738da",
+      "schema_sha256": "dbe91a10a208613183f890849c634f8d13661194aad937a03ae2a4143070bf2d",
+      "embedded_schema": "docs/platform/schemas/synchronized-evidence-source-ebus-b509-v1.schema.json"
+    },
+    {
+      "source_kind": "EBUS_B524",
+      "source_contract": "helianthus.ebus.b524.evidence.v1",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-ebus",
+      "owner_path": "protocols/vaillant/ebus-vaillant-B524.md",
+      "owner_commit": "e1962c0dc83836b0dbea129d198c7be6bea738da",
+      "schema_sha256": "1002e09890801c9032548af407b13b58d889217dfc83e58bfe2a28df6bc33b78",
+      "embedded_schema": "docs/platform/schemas/synchronized-evidence-source-ebus-b524-v1.schema.json"
+    },
+    {
+      "source_kind": "EBUS_B555",
+      "source_contract": "helianthus.ebus.b555.evidence.v1",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-ebus",
+      "owner_path": "protocols/vaillant/ebus-vaillant-b555-timer-protocol.md",
+      "owner_commit": "e1962c0dc83836b0dbea129d198c7be6bea738da",
+      "schema_sha256": "a3237e344f5c3582ceaf1ca947eabf200bede8fe9388ec85cf647331f026c72d",
+      "embedded_schema": "docs/platform/schemas/synchronized-evidence-source-ebus-b555-v1.schema.json"
+    },
+    {
+      "source_kind": "EEBUS",
+      "source_contract": "helianthus-eebus-mcp",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-eebus",
+      "owner_path": "api/_candidate/msp-06/helianthus.eebus.mcp.v1.schema.json",
+      "owner_commit": "9819762a61c28eeceb11beb775aa2a91c83a68b6",
+      "schema_sha256": "7f10fa6860e8ccee1af7f155e03d5ac208b5a6fb30518aa3145122a9a1dc0a1c",
+      "embedded_schema": null
+    },
+    {
+      "source_kind": "CLOUD_APP",
+      "source_contract": "helianthus.cloud-app.precaptured.evidence.v1",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-ebus",
+      "owner_path": "docs/platform/synchronized-evidence-bundle-v1.md",
+      "owner_commit": "175b4695cfa738162613e8c823036d8ab5d7ecda",
+      "schema_sha256": "ea8bf2064ee5adb8a662676cd38ca0b19974e881891e4069978e3c0102d504ca",
+      "embedded_schema": "docs/platform/schemas/synchronized-evidence-source-cloud-app-v1.schema.json"
+    }
+  ]
+}

@@ -46,7 +46,7 @@ var (
 	attachPassiveShadowProducerFn             = (*vaillantSemanticPoller).AttachPassiveShadowProducer
 	startPassiveTransactionReconstructor      = ebusgateway.StartPassiveTransactionReconstructor
 	startBroadcastListenerWithReconstructorFn = ebusgateway.StartBroadcastListenerWithReconstructor
-	startHTTPServerFn                         = startHTTPServer
+	startHTTPServerFn                         func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error)
 	admissionStabilityRefreshDelay            = time.Duration(ebusgateway.StartupAdmissionStateMinStabilitySecondsDefault)*time.Second + 200*time.Millisecond
 	instanceGUIDPattern                       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -1006,14 +1006,39 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		shadowCache = semanticPoller.shadow
 	}
 
-	httpContext := withEEBusMCPProvider(ctx, eebusAdapter)
+	startHTTPServerOverride := startHTTPServerFn
+	startHTTPServerFn := func(
+		ctx context.Context,
+		cfg ebusgateway.Config,
+		gateway *ebusgateway.Gateway,
+		builder *graphql.Builder,
+		hub *graphql.BroadcastHub,
+		semanticProvider graphql.SemanticProvider,
+		eebusProvider mcp.EEBusV1Provider,
+		scheduleWriter mcp.ScheduleWriter,
+		configWriter mcp.ConfigWriter,
+		busObservability *ebusgateway.BusObservabilityStore,
+		shadowCache *ebusgateway.ShadowCache,
+	) (*http.Server, mdns.Advertiser, error) {
+		if startHTTPServerOverride != nil {
+			return startHTTPServerOverride(
+				ctx, cfg, gateway, builder, hub, semanticProvider, scheduleWriter,
+				configWriter, busObservability, shadowCache,
+			)
+		}
+		return startHTTPServer(
+			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider,
+			scheduleWriter, configWriter, busObservability, shadowCache,
+		)
+	}
 	server, advertiser, err := startHTTPServerFn(
-		httpContext,
+		ctx,
 		cfg,
 		gateway,
 		builder,
 		hub,
 		semanticRuntime.Provider(),
+		eebusAdapter,
 		scheduleWriter,
 		configWriter,
 		busObservability,
@@ -1820,6 +1845,7 @@ func startHTTPServer(
 	builder *graphql.Builder,
 	hub *graphql.BroadcastHub,
 	semanticProvider graphql.SemanticProvider,
+	eebusProvider mcp.EEBusV1Provider,
 	scheduleWriter mcp.ScheduleWriter,
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
@@ -1857,7 +1883,7 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, err
 	}
-	if eebusProvider := eebusMCPProviderFromContext(ctx); eebusProvider != nil {
+	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
 			return nil, nil, fmt.Errorf("register eeBUS MCP provider: %w", err)
 		}

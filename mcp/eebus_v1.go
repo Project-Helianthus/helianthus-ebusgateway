@@ -10,6 +10,8 @@ import (
 	"io"
 	"reflect"
 	"time"
+
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 const (
@@ -27,11 +29,10 @@ const (
 	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
 )
 
-// EEBusV1Provider keeps the runtime package out of MCP ownership. Registration
-// accepts only a concrete provider with an exact Snapshot() (T, error) method.
-type EEBusV1Provider interface{}
-
-type eebusV1SnapshotReader func() (any, error)
+// EEBusV1Provider is the read-only runtime boundary exposed to MCP.
+type EEBusV1Provider interface {
+	Snapshot() (eebusruntime.SnapshotV1, error)
+}
 
 type eebusV1RegistrationOptions struct {
 	now          func() time.Time
@@ -41,7 +42,7 @@ type eebusV1RegistrationOptions struct {
 }
 
 type eebusV1Runtime struct {
-	provider     eebusV1SnapshotReader
+	provider     EEBusV1Provider
 	now          func() time.Time
 	pseudonymKey []byte
 	liveTimeout  time.Duration
@@ -136,18 +137,13 @@ func (server *Server) registerEEBusV1Provider(provider EEBusV1Provider, options 
 	if len(options.pseudonymKey) != sha256.Size {
 		return errors.New("eeBUS MCP pseudonym key must contain 32 bytes")
 	}
-	reader, err := eebusV1ProviderReader(provider)
-	if err != nil {
-		return err
-	}
-
 	server.eebusV1Mu.Lock()
 	defer server.eebusV1Mu.Unlock()
 	if server.eebusV1 != nil {
 		return errors.New("eeBUS MCP provider is already registered")
 	}
 	runtime := &eebusV1Runtime{
-		provider:     reader,
+		provider:     provider,
 		now:          options.now,
 		pseudonymKey: append([]byte(nil), options.pseudonymKey...),
 		liveTimeout:  options.liveTimeout,
@@ -169,26 +165,6 @@ func eebusV1NilProvider(provider EEBusV1Provider) bool {
 	default:
 		return false
 	}
-}
-
-func eebusV1ProviderReader(provider EEBusV1Provider) (eebusV1SnapshotReader, error) {
-	method := reflect.ValueOf(provider).MethodByName("Snapshot")
-	if !method.IsValid() {
-		return nil, errors.New("eeBUS MCP provider is missing Snapshot")
-	}
-	methodType := method.Type()
-	errorType := reflect.TypeOf((*error)(nil)).Elem()
-	if methodType.NumIn() != 0 || methodType.NumOut() != 2 || methodType.Out(1) != errorType {
-		return nil, errors.New("eeBUS MCP provider Snapshot has an invalid signature")
-	}
-	return func() (any, error) {
-		result := method.Call(nil)
-		var snapshotErr error
-		if !result[1].IsNil() {
-			snapshotErr = result[1].Interface().(error)
-		}
-		return result[0].Interface(), snapshotErr
-	}, nil
 }
 
 func eebusV1Tools() []Tool {
@@ -333,12 +309,12 @@ func eebusV1ValidateArguments(spec eebusV1ToolSpec, arguments map[string]any) (e
 
 func (runtime *eebusV1Runtime) liveProjection(ctx context.Context) (eebusV1Projection, string) {
 	type providerResult struct {
-		snapshot any
+		snapshot eebusruntime.SnapshotV1
 		err      error
 	}
 	result := make(chan providerResult, 1)
 	go func() {
-		snapshot, err := runtime.provider()
+		snapshot, err := runtime.provider.Snapshot()
 		result <- providerResult{snapshot: snapshot, err: err}
 	}()
 	timer := time.NewTimer(runtime.liveTimeout)

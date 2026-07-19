@@ -133,9 +133,9 @@ func newEEBusV1SnapshotStore(now func() time.Time, entropy io.Reader) *eebusV1Sn
 }
 
 func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV1CapturedRootV1, string) {
-	now := store.now().UTC()
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	now := store.now()
 	store.purgeLocked(now)
 	if len(store.activeRoots) >= eebusV1MaxActive {
 		return eebusV1CapturedRootV1{}, "quota_exceeded"
@@ -199,9 +199,9 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV
 }
 
 func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1LookupResult {
-	now := store.now().UTC()
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	now := store.now()
 	store.purgeLocked(now)
 
 	if reference, exists := store.activeTokens[token]; exists {
@@ -229,9 +229,9 @@ func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1Look
 }
 
 func (store *eebusV1SnapshotStore) drop(token string) eebusV1DropResultV1 {
-	now := store.now().UTC()
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	now := store.now()
 	store.purgeLocked(now)
 
 	reference, exists := store.activeTokens[token]

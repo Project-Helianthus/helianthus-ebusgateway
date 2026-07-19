@@ -768,35 +768,57 @@ func eebusV1ProjectEvidence(source []eebusV1SourceEvidence) ([]eebusV1EvidenceDe
 	if len(source) == 0 {
 		return nil, nil
 	}
-	result := make([]eebusV1EvidenceDescriptorV1, 0, len(source))
+	type orderedEvidence struct {
+		descriptor eebusV1EvidenceDescriptorV1
+		scalarKey  [4][]byte
+	}
+	ordered := make([]orderedEvidence, 0, len(source))
 	for _, object := range source {
 		if err := eebusV1ValidateSourceEvidenceObject(object); err != nil {
 			return nil, errors.New("invalid evidence descriptor")
 		}
-		result = append(result, eebusV1EvidenceDescriptorV1{
+		descriptor := eebusV1EvidenceDescriptorV1{
 			Kind: object.Kind, Digest: object.Digest, Size: object.Size, DataTimestamp: eebusV1Timestamp(object.DataTimestamp),
-		})
+		}
+		scalarKey, err := eebusV1EvidenceScalarKey(descriptor)
+		if err != nil {
+			return nil, err
+		}
+		ordered = append(ordered, orderedEvidence{descriptor: descriptor, scalarKey: scalarKey})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		left, right := result[i], result[j]
-		if left.Kind != right.Kind {
-			return left.Kind < right.Kind
-		}
-		if left.Digest != right.Digest {
-			return left.Digest < right.Digest
-		}
-		if left.Size != right.Size {
-			return left.Size < right.Size
-		}
-		return left.DataTimestamp < right.DataTimestamp
+	sort.Slice(ordered, func(i, j int) bool {
+		return eebusV1CompareEvidenceScalarKeys(ordered[i].scalarKey, ordered[j].scalarKey) < 0
 	})
-	if err := eebusV1RejectDuplicateKeys(len(result), func(index int) string {
-		item := result[index]
-		return fmt.Sprintf("%s\x00%s\x00%020d\x00%s", item.Kind, item.Digest, item.Size, item.DataTimestamp)
-	}); err != nil {
-		return nil, err
+	result := make([]eebusV1EvidenceDescriptorV1, 0, len(ordered))
+	for index, item := range ordered {
+		if index > 0 && eebusV1CompareEvidenceScalarKeys(ordered[index-1].scalarKey, item.scalarKey) == 0 {
+			return nil, errors.New("duplicate projected identity")
+		}
+		result = append(result, item.descriptor)
 	}
 	return result, nil
+}
+
+func eebusV1EvidenceScalarKey(item eebusV1EvidenceDescriptorV1) ([4][]byte, error) {
+	values := [4]any{item.Kind, item.Digest, item.Size, item.DataTimestamp}
+	var key [4][]byte
+	for index, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return [4][]byte{}, errors.New("marshal evidence ordering key")
+		}
+		key[index] = encoded
+	}
+	return key, nil
+}
+
+func eebusV1CompareEvidenceScalarKeys(left, right [4][]byte) int {
+	for index := range left {
+		if comparison := bytes.Compare(left[index], right[index]); comparison != 0 {
+			return comparison
+		}
+	}
+	return 0
 }
 
 func eebusV1RejectDuplicateKeys(length int, key func(int) string) error {

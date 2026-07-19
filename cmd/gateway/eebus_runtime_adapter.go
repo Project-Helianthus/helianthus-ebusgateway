@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -23,6 +24,8 @@ type eebusRuntimeAdapter struct {
 	shutdownOnce sync.Once
 	shutdownErr  error
 }
+
+type eebusMCPProviderContextKey struct{}
 
 func startEEBusRuntime(
 	ctx context.Context,
@@ -66,4 +69,26 @@ func (adapter *eebusRuntimeAdapter) Shutdown() error {
 		adapter.shutdownErr = adapter.runtime.Shutdown()
 	})
 	return adapter.shutdownErr
+}
+
+func (adapter *eebusRuntimeAdapter) Snapshot() (eebusruntime.SnapshotV1, error) {
+	if adapter == nil || adapter.runtime == nil {
+		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
+	}
+	return adapter.runtime.Snapshot()
+}
+
+func withEEBusMCPProvider(ctx context.Context, provider *eebusRuntimeAdapter) context.Context {
+	if provider == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, eebusMCPProviderContextKey{}, provider)
+}
+
+func eebusMCPProviderFromContext(ctx context.Context) mcp.EEBusV1Provider {
+	if ctx == nil {
+		return nil
+	}
+	provider, _ := ctx.Value(eebusMCPProviderContextKey{}).(mcp.EEBusV1Provider)
+	return provider
 }

@@ -1006,8 +1006,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		shadowCache = semanticPoller.shadow
 	}
 
+	httpContext := withEEBusMCPProvider(ctx, eebusAdapter)
 	server, advertiser, err := startHTTPServerFn(
-		ctx,
+		httpContext,
 		cfg,
 		gateway,
 		builder,
@@ -1855,6 +1856,11 @@ func startHTTPServer(
 	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
 	if err != nil {
 		return nil, nil, err
+	}
+	if eebusProvider := eebusMCPProviderFromContext(ctx); eebusProvider != nil {
+		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
+			return nil, nil, fmt.Errorf("register eeBUS MCP provider: %w", err)
+		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))

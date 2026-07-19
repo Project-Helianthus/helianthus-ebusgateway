@@ -1,0 +1,2598 @@
+{
+  "capture_clock": {
+    "basis": "MONOTONIC_CAPTURE_OFFSETS",
+    "clock_hash": "sha256:d6a242f0f0c7b2dbae67c44c004e4f9c82739bfba0b3699e64c44e1df934a154",
+    "clock_id": "clock-0123456789abcdef0123456789abcdef",
+    "max_capture_age_ns": 10000000000,
+    "max_clock_error_ns": 1000000,
+    "monotonic_epoch_id": "msp08-synthetic-clock-epoch",
+    "verification_offset_ns": 6000000000,
+    "wall_anchor_utc": "2026-07-20T00:00:00Z"
+  },
+  "contract": "helianthus.platform.multi-runtime-coexistence-evidence.v1",
+  "evidence_class": "SYNTHETIC_OFFLINE_FIXTURE",
+  "evidence_hash": "sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183",
+  "evidence_id": "mrcv1:sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183",
+  "fixture_id": "MSP08-G18-SYNTHETIC-POSITIVE-001",
+  "limits": {
+    "max_depth": 32,
+    "max_evidence_bytes": 2097152,
+    "max_inputs_per_run": 16,
+    "max_internal_facts_per_run": 64,
+    "max_payload_bytes": 262144,
+    "max_runs": 8,
+    "max_string_bytes": 4096,
+    "max_total_list_items": 32768,
+    "max_total_members": 65536,
+    "max_views_per_run": 16
+  },
+  "m7_binding": {
+    "completion_token": "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e",
+    "docs_source_commit": "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
+    "graph_contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+    "graph_hash": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+    "graph_id": "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+    "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
+    "replay_hash": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+    "replay_id": "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b"
+  },
+  "normalization": {
+    "canonicalization": "RFC8785_JCS_INTEGER_SUBSET",
+    "mask_replacement": "<MASKED>",
+    "profile_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+    "profile_id": "multi-runtime-coexistence-no-drift-v1",
+    "timestamp_replacement": "<TIMESTAMP>",
+    "view_rules": [
+      {
+        "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "mcp.ebus.v1.responses"
+      },
+      {
+        "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "mcp.tool.inventory"
+      },
+      {
+        "capture_path": "artifacts/protected/graphql-schema.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "graphql.schema"
+      },
+      {
+        "capture_path": "artifacts/protected/graphql-ebus-values.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "graphql.ebus.values"
+      },
+      {
+        "capture_path": "artifacts/protected/ha-graphql-values.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "ha.graphql.values"
+      },
+      {
+        "capture_path": "artifacts/protected/ha-identity.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "ha.identity"
+      },
+      {
+        "capture_path": "artifacts/protected/debug-ebus.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "debug.ebus"
+      },
+      {
+        "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "portal.ebus.bootstrap"
+      },
+      {
+        "capture_path": "artifacts/protected/command-routing.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "command.routing"
+      },
+      {
+        "capture_path": "artifacts/protected/semantic-registry.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "semantic.registry"
+      },
+      {
+        "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+        "mask_pointers": [
+          "/meta/auth_subject"
+        ],
+        "timestamp_pointers": [
+          "/meta/captured_at"
+        ],
+        "view_id": "mcp.eebus.v1.contract"
+      }
+    ]
+  },
+  "registry": {
+    "contract": "helianthus.platform.multi-runtime-coexistence-registry.v1",
+    "digest": "sha256:82cf854d335da31dcda65ff45a024cbb4a1ce515965cb8165122c0b4ef7d8505",
+    "version": 1
+  },
+  "runs": [
+    {
+      "capture_offset_ns": 0,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:4974df3ce1728a147319fce43e41e7c27b6a9b9c918b5c15e81ec3a3c6ef2e6d",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:999b151b25e71a43960b1f9336dc5bc78c0f31187c5ea735a22296e35adbb725",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:17db1a753b6f3f85ad23f34cdf595badae123489910a6bd09845dfef471e5b55",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:4807b42e034773f8e315989f9a0cfd0c7d52df45df2c0ef99f4a5fd65f569d3c",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:ec9d41ed18b5f96749a59556c58675510902c7a4f8c825884e8b26179e4c7b77",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:084ee1a6a68f36984736cd89bc539ffa3a0970132b4a6fe8d1c3090c70301fca",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:6e274aa889d4319ca6164523ea3e176a26ef7e3341c25ab0f8ddb5694d01de0a",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:8ba67b1b1c004d7ce64be8851af61bdc32f31cd0e056873646e92702489139e2",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:1f81b169db192097399d6b2918fe9605dae0008e444dc57b4d35eba4bebc70fb",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:94d21dc7f15422acc2914caea3a12c1a63fd842ba7ea7d8dbf78ee945fd3318e",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-0",
+              "captured_at": "2026-07-20T00:00:00Z"
+            }
+          },
+          "raw_payload_hash": "sha256:3865d371f013075bd282c6e4e3758661a54a62b47e902d4dcb1259ff89e887e6",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:d7320bb543d79591decbab9d79d8f8ddce8b3aabdfcc5a18df5aafb2568ac566",
+          "config_id": "msp08-eebus-disabled-baseline",
+          "payload": {
+            "candidate_graph_enabled": false,
+            "eebus_runtime_enabled": false,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:4974df3ce1728a147319fce43e41e7c27b6a9b9c918b5c15e81ec3a3c6ef2e6d",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:999b151b25e71a43960b1f9336dc5bc78c0f31187c5ea735a22296e35adbb725",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:17db1a753b6f3f85ad23f34cdf595badae123489910a6bd09845dfef471e5b55",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:4807b42e034773f8e315989f9a0cfd0c7d52df45df2c0ef99f4a5fd65f569d3c",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:ec9d41ed18b5f96749a59556c58675510902c7a4f8c825884e8b26179e4c7b77",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:084ee1a6a68f36984736cd89bc539ffa3a0970132b4a6fe8d1c3090c70301fca",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:6e274aa889d4319ca6164523ea3e176a26ef7e3341c25ab0f8ddb5694d01de0a",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:8ba67b1b1c004d7ce64be8851af61bdc32f31cd0e056873646e92702489139e2",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:1f81b169db192097399d6b2918fe9605dae0008e444dc57b4d35eba4bebc70fb",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:94d21dc7f15422acc2914caea3a12c1a63fd842ba7ea7d8dbf78ee945fd3318e",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:3865d371f013075bd282c6e4e3758661a54a62b47e902d4dcb1259ff89e887e6",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "artifact_id": "gateway:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "REPRODUCIBLE_BUILD",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:14eea539c604314aef612dc03f51267e5e87ebc02a699dff2a0866c315392540",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e",
+          "source_parent_commit": null
+        }
+      },
+      "run_id": "msp08-run-01",
+      "state": "EEBUS_DISABLED_BASELINE",
+      "state_evidence": {
+        "candidate_count": 0,
+        "candidate_graph_enabled": false,
+        "conflict_count": 0,
+        "degraded": false,
+        "eebus_runtime_enabled": false,
+        "empty_success": false,
+        "facts": [],
+        "outcome": "BASELINE_CAPTURED",
+        "service_count": 0
+      }
+    },
+    {
+      "capture_offset_ns": 1000000000,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:2316ff4b913a90d2ed1cfcd7ee856de5f8cbd07360231db9a78ce64625653ac2",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:3807c0c56dc5eddb126e9bae8ca121290c064af7002508837caf32e51580f7a8",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:ac9d0d0545e2e6c300371211c5e5e7ece6845ca1271ee9301ba71f29d32aef93",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:035442b62baa09393036d2d7f4b3214f75d51cc42f138adef3df8897e9fa65ac",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:6a1396adb10b913c60337a2d9545c26a3b01d4f6030d6a0b8952d66eb9bd0120",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:684d70e29890da38ccc5740c518f56c19399232eb08267994ff3126fc5360d50",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:a9bab681eed9dd45197c3e5f5a7054a5a6e3c306c72655b70153372467d2122e",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:683cb2451bc3722431a3862df27f282afccbeae513009d748b45a75421a25488",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:15a202fe6c54a088123c3510598c036b9118e8a8d6df7f59245032cee084376e",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:207ff9c2ac30cac08b7e29b07755d04108d052a4dab7750e880a898c11e2a205",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-1",
+              "captured_at": "2026-07-20T00:00:01Z"
+            }
+          },
+          "raw_payload_hash": "sha256:c50ad4bdffa4c3814f7d91037f000e1601e0d64800783619c218a93aa5bc22a9",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:d7320bb543d79591decbab9d79d8f8ddce8b3aabdfcc5a18df5aafb2568ac566",
+          "config_id": "msp08-eebus-disabled-confirmed",
+          "payload": {
+            "candidate_graph_enabled": false,
+            "eebus_runtime_enabled": false,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:2316ff4b913a90d2ed1cfcd7ee856de5f8cbd07360231db9a78ce64625653ac2",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:3807c0c56dc5eddb126e9bae8ca121290c064af7002508837caf32e51580f7a8",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:ac9d0d0545e2e6c300371211c5e5e7ece6845ca1271ee9301ba71f29d32aef93",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:035442b62baa09393036d2d7f4b3214f75d51cc42f138adef3df8897e9fa65ac",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:6a1396adb10b913c60337a2d9545c26a3b01d4f6030d6a0b8952d66eb9bd0120",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:684d70e29890da38ccc5740c518f56c19399232eb08267994ff3126fc5360d50",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:a9bab681eed9dd45197c3e5f5a7054a5a6e3c306c72655b70153372467d2122e",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:683cb2451bc3722431a3862df27f282afccbeae513009d748b45a75421a25488",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:15a202fe6c54a088123c3510598c036b9118e8a8d6df7f59245032cee084376e",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:207ff9c2ac30cac08b7e29b07755d04108d052a4dab7750e880a898c11e2a205",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:c50ad4bdffa4c3814f7d91037f000e1601e0d64800783619c218a93aa5bc22a9",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_id": "gateway:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "SYNTHETIC_FIXTURE",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:e26e7f37ce0b31a1240579b4c1f2953613e99609a0cf103b2a2bdade52ef1b24",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_parent_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
+        }
+      },
+      "run_id": "msp08-run-02",
+      "state": "EEBUS_DISABLED_CONFIRMED",
+      "state_evidence": {
+        "candidate_count": 0,
+        "candidate_graph_enabled": false,
+        "conflict_count": 0,
+        "degraded": false,
+        "eebus_runtime_enabled": false,
+        "empty_success": false,
+        "facts": [],
+        "outcome": "DISABLED_CONFIRMED",
+        "service_count": 0
+      }
+    },
+    {
+      "capture_offset_ns": 2000000000,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:1356432dae206cd1c3ebe781e6f0da5a8a0994016261feab9409b1c77d748b2e",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:d30e75919bacc0060a10fb8e52cef2ce9d537bfacbefcc539cc6a691d3eeb2da",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:6cafea6a50a8d63d69e96126fde95209fc8ce41fa432d33de4935870ebc29087",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:b99c9c7b8efb846ec12ed30b2d9adbe7142037a04e9d16ddaf085bf29d72fbaa",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:b4ec0e5701e8df626ac3b8f6c89adc3e2d154be8ee2c7a576cddb9f6b0e7e07c",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:12875fe1b8d6f8c95218354d802b1a3f4655a01659187e38d82fc9f59355f4ca",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:85a804a955fdf1c1a2bb987106251ada6654c8e7b540cf6886adac29b7e2ed13",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:b7f69b4dcae7ea1be3ceb76b9110602110297dc7950064473436cb89f724b8ee",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:8445b0edc1297a2f8cc3221946c3c665448c6fcdfe4122917f5786eabbc67603",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:61b3a34489ecada4a61fdc71c5bc8393c420adf04ca71814dbf161ba66614120",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-2",
+              "captured_at": "2026-07-20T00:00:02Z"
+            }
+          },
+          "raw_payload_hash": "sha256:e2ff6b8bc2b71797289575247311d962378b7c10e5274b798610ad075f8b254a",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:a0e1684a328e6f19316044d3407f8749263a38acb8235f19c362bfc92eaaa7b7",
+          "config_id": "msp08-eebus-enabled-no-services",
+          "payload": {
+            "candidate_graph_enabled": true,
+            "eebus_runtime_enabled": true,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:1356432dae206cd1c3ebe781e6f0da5a8a0994016261feab9409b1c77d748b2e",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:d30e75919bacc0060a10fb8e52cef2ce9d537bfacbefcc539cc6a691d3eeb2da",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:6cafea6a50a8d63d69e96126fde95209fc8ce41fa432d33de4935870ebc29087",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:b99c9c7b8efb846ec12ed30b2d9adbe7142037a04e9d16ddaf085bf29d72fbaa",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:b4ec0e5701e8df626ac3b8f6c89adc3e2d154be8ee2c7a576cddb9f6b0e7e07c",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:12875fe1b8d6f8c95218354d802b1a3f4655a01659187e38d82fc9f59355f4ca",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:85a804a955fdf1c1a2bb987106251ada6654c8e7b540cf6886adac29b7e2ed13",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:b7f69b4dcae7ea1be3ceb76b9110602110297dc7950064473436cb89f724b8ee",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:8445b0edc1297a2f8cc3221946c3c665448c6fcdfe4122917f5786eabbc67603",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:61b3a34489ecada4a61fdc71c5bc8393c420adf04ca71814dbf161ba66614120",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:e2ff6b8bc2b71797289575247311d962378b7c10e5274b798610ad075f8b254a",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_id": "gateway:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "SYNTHETIC_FIXTURE",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:e26e7f37ce0b31a1240579b4c1f2953613e99609a0cf103b2a2bdade52ef1b24",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_parent_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
+        }
+      },
+      "run_id": "msp08-run-03",
+      "state": "EEBUS_ENABLED_NO_SERVICES",
+      "state_evidence": {
+        "candidate_count": 0,
+        "candidate_graph_enabled": true,
+        "conflict_count": 0,
+        "degraded": true,
+        "eebus_runtime_enabled": true,
+        "empty_success": false,
+        "facts": [],
+        "outcome": "NO_SERVICES_OBSERVED",
+        "service_count": 0
+      }
+    },
+    {
+      "capture_offset_ns": 3000000000,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:003053694ab8c3065e0b681ed278256499a10d72c1ff94e52352eaffb38b0990",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:f72178c3555cd30862bf4aeefd01f287d2e0c421d8bd8206ff8643d893edbd6c",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:66b7f68630b89387448c38f4c28bb568e4d3cad5eec9c58019f421e28fe2d282",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:701a282540cdac1a07b6866bec48609a1ed76a61538af5ccdaf80eab339dadbb",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:0c96c2101585cf14c2ba5c6e87eadb16b39f0a23424c17bcafa0c4bd9d14ad00",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:269b33fd290228ac8e96b6d283eca8420298f33d508ce8cd23068fad39a49ae5",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:ae13f83a8adbd2d117be0e5a532547ae882dbfa5dd850bff1e6b9e0db9177ab3",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:967e38ba6f93b4257c859c4100e932b1d40bfee9c022b7ada71600e7d556c3f6",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:c5ea6ebecaa3c68befd74e9da9466961fa55bb5f6c180f5bf81c70e2c4842d88",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:59079b7db2541c4bb86324df6891e0dee3ebf96be45154d7a3f754b93cd3b25f",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-3",
+              "captured_at": "2026-07-20T00:00:03Z"
+            }
+          },
+          "raw_payload_hash": "sha256:70a0594df3870b509746fe04c176dc4b176ea646a5faae4c5917f79c88d1c8e1",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:a0e1684a328e6f19316044d3407f8749263a38acb8235f19c362bfc92eaaa7b7",
+          "config_id": "msp08-eebus-connected-candidate-only",
+          "payload": {
+            "candidate_graph_enabled": true,
+            "eebus_runtime_enabled": true,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:003053694ab8c3065e0b681ed278256499a10d72c1ff94e52352eaffb38b0990",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:f72178c3555cd30862bf4aeefd01f287d2e0c421d8bd8206ff8643d893edbd6c",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:66b7f68630b89387448c38f4c28bb568e4d3cad5eec9c58019f421e28fe2d282",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:701a282540cdac1a07b6866bec48609a1ed76a61538af5ccdaf80eab339dadbb",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:0c96c2101585cf14c2ba5c6e87eadb16b39f0a23424c17bcafa0c4bd9d14ad00",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:269b33fd290228ac8e96b6d283eca8420298f33d508ce8cd23068fad39a49ae5",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:ae13f83a8adbd2d117be0e5a532547ae882dbfa5dd850bff1e6b9e0db9177ab3",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:967e38ba6f93b4257c859c4100e932b1d40bfee9c022b7ada71600e7d556c3f6",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:c5ea6ebecaa3c68befd74e9da9466961fa55bb5f6c180f5bf81c70e2c4842d88",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:59079b7db2541c4bb86324df6891e0dee3ebf96be45154d7a3f754b93cd3b25f",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:70a0594df3870b509746fe04c176dc4b176ea646a5faae4c5917f79c88d1c8e1",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_id": "gateway:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "SYNTHETIC_FIXTURE",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:e26e7f37ce0b31a1240579b4c1f2953613e99609a0cf103b2a2bdade52ef1b24",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_parent_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
+        }
+      },
+      "run_id": "msp08-run-04",
+      "state": "EEBUS_CONNECTED_CANDIDATE_ONLY",
+      "state_evidence": {
+        "candidate_count": 1,
+        "candidate_graph_enabled": true,
+        "conflict_count": 0,
+        "degraded": false,
+        "eebus_runtime_enabled": true,
+        "empty_success": false,
+        "facts": [
+          {
+            "candidate_id": "m7-candidate-synthetic-0001",
+            "status": "CANDIDATE",
+            "terminal_negative_state": null,
+            "visibility_channel": "CANDIDATE_DEBUG_REPLAY"
+          }
+        ],
+        "outcome": "CANDIDATE_ONLY_OBSERVED",
+        "service_count": 1
+      }
+    },
+    {
+      "capture_offset_ns": 4000000000,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:e911e7a6502b6aced1180040dd368bfb89a458ff24d779e4c861964006f18e3a",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:f7c55ff12b33404c544dc35fc9d10dbc5c0e229d41c296d2cf875a16ab32ac3d",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:11ca91f813eaff67e54bfbdd2e53cb89f7eb5c1ae61b47031e9105d1f0225256",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:fbf5e83cc9a943a89432d0114db5a2ab8b2e553129831df7f80bdf6c23d8150d",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:b4c84f8ecfe0e3ca0cc76ad1f22e03a3482d09f26ae020e13a06c9e393298eee",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:b75165155fa7bb04f3dbe4ca9bde2393aee6126c170ee4033c59789b27a2914e",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:518a4acf2f1ca462de4eda2d0be78a4c7a928ff52c2c7181e3469736fa408ca8",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:f5e45d340ee6ecbcdaf036c09fde7ca7b5aebc062e0d0c11e31f2617b153bc86",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:681d1801df7178545061c30e151ed23d802fec8db7395736424c58158ba4ddf6",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:05fd216e48c059e811f1bce68c4198131808040ae43235a840e2bccd8a613ee7",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-4",
+              "captured_at": "2026-07-20T00:00:04Z"
+            }
+          },
+          "raw_payload_hash": "sha256:da4d92bce29d1a71c636e7297a3a97eecbca16b2f0032a2c77cac3e5e46312c7",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:a0e1684a328e6f19316044d3407f8749263a38acb8235f19c362bfc92eaaa7b7",
+          "config_id": "msp08-eebus-conflicted-withheld",
+          "payload": {
+            "candidate_graph_enabled": true,
+            "eebus_runtime_enabled": true,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:e911e7a6502b6aced1180040dd368bfb89a458ff24d779e4c861964006f18e3a",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:f7c55ff12b33404c544dc35fc9d10dbc5c0e229d41c296d2cf875a16ab32ac3d",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:11ca91f813eaff67e54bfbdd2e53cb89f7eb5c1ae61b47031e9105d1f0225256",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:fbf5e83cc9a943a89432d0114db5a2ab8b2e553129831df7f80bdf6c23d8150d",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:b4c84f8ecfe0e3ca0cc76ad1f22e03a3482d09f26ae020e13a06c9e393298eee",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:b75165155fa7bb04f3dbe4ca9bde2393aee6126c170ee4033c59789b27a2914e",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:518a4acf2f1ca462de4eda2d0be78a4c7a928ff52c2c7181e3469736fa408ca8",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:f5e45d340ee6ecbcdaf036c09fde7ca7b5aebc062e0d0c11e31f2617b153bc86",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:681d1801df7178545061c30e151ed23d802fec8db7395736424c58158ba4ddf6",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:05fd216e48c059e811f1bce68c4198131808040ae43235a840e2bccd8a613ee7",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:da4d92bce29d1a71c636e7297a3a97eecbca16b2f0032a2c77cac3e5e46312c7",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_id": "gateway:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "SYNTHETIC_FIXTURE",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:e26e7f37ce0b31a1240579b4c1f2953613e99609a0cf103b2a2bdade52ef1b24",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_parent_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
+        }
+      },
+      "run_id": "msp08-run-05",
+      "state": "EEBUS_CONFLICTED_WITHHELD",
+      "state_evidence": {
+        "candidate_count": 0,
+        "candidate_graph_enabled": true,
+        "conflict_count": 1,
+        "degraded": true,
+        "eebus_runtime_enabled": true,
+        "empty_success": false,
+        "facts": [
+          {
+            "candidate_id": "m7-candidate-synthetic-conflict-0001",
+            "status": "WITHHELD",
+            "terminal_negative_state": "CONFLICT",
+            "visibility_channel": "CANDIDATE_DEBUG_REPLAY"
+          }
+        ],
+        "outcome": "CONFLICT_WITHHELD_OBSERVED",
+        "service_count": 1
+      }
+    },
+    {
+      "capture_offset_ns": 5000000000,
+      "protected_views": [
+        {
+          "canonical_payload_hash": "sha256:cbcc35538427cc6e9e4340c867e7dcb8009de4f5429b098a1dbdd7dd0e7ed539",
+          "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "contract": "ebus.v1",
+              "responses": [
+                {
+                  "operation": "ebus.v1.devices.list",
+                  "result": {
+                    "devices": [
+                      {
+                        "address": "0x15",
+                        "device_id": "fixture-regulator",
+                        "manufacturer": "fixture-vendor"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:e98f8b4bb439fa28b097b2d78a7346cb7845cf4f1875686e3b595e0217b9a9ee",
+          "shape_hash": "sha256:9cac64ac32169b37ed5e8d25fa4d6c45a55d4dc90c1419797b1ef56416b999b4",
+          "view_id": "mcp.ebus.v1.responses"
+        },
+        {
+          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "tools": [
+                "ebus.v1.devices.list",
+                "ebus.v1.zones.list",
+                "eebus.v1.runtime.status",
+                "eebus.v1.services.list"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:26714796e52621e1c29ab3d5f2f99812bb031139fc47e05ca76dde32a65f300f",
+          "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
+          "view_id": "mcp.tool.inventory"
+        },
+        {
+          "canonical_payload_hash": "sha256:e2eb726ac6123fb6bc13551a6a102d09c09037fbb8ae37b5d2ebb1c2ef79bb79",
+          "capture_path": "artifacts/protected/graphql-schema.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "query_fields": [
+                "devices",
+                "dhw",
+                "energyTotals",
+                "zones"
+              ],
+              "schema_version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:601023af19389840576eeedc6819ec993a618b4ae8b28b09a1bfc618abf10670",
+          "shape_hash": "sha256:e204b7c04ef26668df4f4a17cbf8bf2627ab72a18c3de484382f54a9cccc746c",
+          "view_id": "graphql.schema"
+        },
+        {
+          "canonical_payload_hash": "sha256:ef7737a6becced9def34878f4cc9c644ade05f4930faeb66959ba61eae8ab6ce",
+          "capture_path": "artifacts/protected/graphql-ebus-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "zones": [
+                {
+                  "currentTempC": "21.5",
+                  "id": "fixture-zone-1",
+                  "name": "Fixture Zone",
+                  "source": "ebus",
+                  "targetTempC": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:615d82fe2d144cc109a98bd5145ea6ea3e2cb1210141e733d90e7e1020e19ec6",
+          "shape_hash": "sha256:57b5808074f85e77834665e65ed902a460cd1aef63fff9ec960d41e8a30abea9",
+          "view_id": "graphql.ebus.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:10cc96ded7b65eb2934f8a776c60c3aeca011e753343f5054d0fe7896fafc597",
+          "capture_path": "artifacts/protected/ha-graphql-values.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "entities": [
+                {
+                  "current_temperature": "21.5",
+                  "entity_id": "climate.fixture_zone_1",
+                  "state": "heat",
+                  "target_temperature": "22.0"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:59a231f7bd8b7e99edc56bf71777b941aa1fad60039b85f99070937c4fddb05f",
+          "shape_hash": "sha256:f1ad45ea32be178cef9e4a8e92e894927838eba3ad26b6e9701c93cb484e479f",
+          "view_id": "ha.graphql.values"
+        },
+        {
+          "canonical_payload_hash": "sha256:aae1dc52181d9d0cf9142d06a36de0e7a7d7a8290037c5e2bc6fe2dff97da779",
+          "capture_path": "artifacts/protected/ha-identity.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "devices": [
+                {
+                  "manufacturer": "fixture-vendor",
+                  "model": "fixture-regulator",
+                  "unique_id": "helianthus-ebus-fixture-regulator",
+                  "via_device": "helianthus-gateway-fixture"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:e821f88e2c6dac98f3bdbbac790a66270f6de35e8004b8d855c7d2ebf04137fb",
+          "shape_hash": "sha256:cb8de60c05ca85a7645181d4aeafea26005520c1393e34a74ebaadb8d3217deb",
+          "view_id": "ha.identity"
+        },
+        {
+          "canonical_payload_hash": "sha256:b9ba9dfeadb4a6dfb135c7f8d79c4853b7f65b981dca336f9856c342b3861727",
+          "capture_path": "artifacts/protected/debug-ebus.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "decode_errors": 0,
+              "frames_seen": 42,
+              "last_frame": "fixture-redacted-frame",
+              "transport": "ENS"
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:38cae7c179aac4db2f69dac0922152f81538c7d5cabc6d2d1a6fc099e53d5043",
+          "shape_hash": "sha256:19971eb695a594456612db71d64852bf062070aef50d2041784cf4012dc78ef0",
+          "view_id": "debug.ebus"
+        },
+        {
+          "canonical_payload_hash": "sha256:1afdce5bb08b84ad4286c4be1d6c122cdf636f0b5f55353fc4350d9c5bcdb222",
+          "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "default_protocol": "ebus",
+              "sections": [
+                "devices",
+                "zones",
+                "dhw",
+                "energy"
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:adeb752bfbf65b9cc15749b46c20b46a7de50c4a41d21a4b57a1ee14bd974765",
+          "shape_hash": "sha256:73f3085f7838aecfb948dfd86a2f45c4cafc6bd4b12b1ee89a26cece7a970f0e",
+          "view_id": "portal.ebus.bootstrap"
+        },
+        {
+          "canonical_payload_hash": "sha256:2d87104125088c5ba2483f6e65357c5c384e597dea95f2dcd129e3054cef2a69",
+          "capture_path": "artifacts/protected/command-routing.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "fallback": null,
+              "routes": [
+                {
+                  "semantic_path": "/zones/fixture/setpoint",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:8193f54aea232ec24e06b6f552b7bd1c83da34ca47142a4a1209cd9f1ab9e5b8",
+          "shape_hash": "sha256:96c1424052ba6e7e6bff1a3edfb5abc1203eb9ec3ded9155fca3fd061e0d34cd",
+          "view_id": "command.routing"
+        },
+        {
+          "canonical_payload_hash": "sha256:3784857ae4713aee487edf5ec64c8b0cd0dae9922223433162198eb263b8d222",
+          "capture_path": "artifacts/protected/semantic-registry.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "authority": "ebus.promoted",
+              "leaves": [
+                {
+                  "path": "/zones/fixture/current_temp",
+                  "promotion_state": "PROMOTED",
+                  "source": "ebus"
+                }
+              ]
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:3121dcc65a74a4488a3e14422ee7a5b75156ff3cc2c35bbc377346e866a235e9",
+          "shape_hash": "sha256:456a805471cf61f51c911f1cfb962ba4a32dfadaea619254cb84c911dcd210ae",
+          "view_id": "semantic.registry"
+        },
+        {
+          "canonical_payload_hash": "sha256:973ce845e74f25a721d8fad393232624db0e8303c016ecb8e9d43ab00a5ac957",
+          "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+          "media_type": "application/json",
+          "payload": {
+            "data": {
+              "namespace": "eebus.v1",
+              "public_v2": false,
+              "schema_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "version": 1
+            },
+            "meta": {
+              "auth_subject": "fixture-principal-5",
+              "captured_at": "2026-07-20T00:00:05Z"
+            }
+          },
+          "raw_payload_hash": "sha256:fb1e516c7783dad95066cdd7d01da30205c9dc0dc3562c08c4fbf01dee0922f0",
+          "shape_hash": "sha256:4662e4d5f1c1e4c9a81c9657778260c08917ed5dbb7e534cb015a9369c80965d",
+          "view_id": "mcp.eebus.v1.contract"
+        }
+      ],
+      "provenance": {
+        "auth_scope": {
+          "permissions": [
+            "read:ebus",
+            "read:eebus-v1-contract",
+            "read:graphql",
+            "read:portal-bootstrap",
+            "read:debug"
+          ],
+          "principal_class": "READ_ONLY_TEST",
+          "scope_hash": "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223",
+          "scope_id": "msp08-read-only-contract-capture"
+        },
+        "capture_clock_id": "clock-0123456789abcdef0123456789abcdef",
+        "config": {
+          "config_hash": "sha256:d7320bb543d79591decbab9d79d8f8ddce8b3aabdfcc5a18df5aafb2568ac566",
+          "config_id": "msp08-eebus-disabled-rollback",
+          "payload": {
+            "candidate_graph_enabled": false,
+            "eebus_runtime_enabled": false,
+            "outbound_enabled": false,
+            "public_v2_enabled": false
+          }
+        },
+        "immutable_inputs": [
+          {
+            "byte_length": 271,
+            "digest": "sha256:e98f8b4bb439fa28b097b2d78a7346cb7845cf4f1875686e3b595e0217b9a9ee",
+            "input_id": "view:mcp.ebus.v1.responses",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 198,
+            "digest": "sha256:26714796e52621e1c29ab3d5f2f99812bb031139fc47e05ca76dde32a65f300f",
+            "input_id": "view:mcp.tool.inventory",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 168,
+            "digest": "sha256:601023af19389840576eeedc6819ec993a618b4ae8b28b09a1bfc618abf10670",
+            "input_id": "view:graphql.schema",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 208,
+            "digest": "sha256:615d82fe2d144cc109a98bd5145ea6ea3e2cb1210141e733d90e7e1020e19ec6",
+            "input_id": "view:graphql.ebus.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 217,
+            "digest": "sha256:59a231f7bd8b7e99edc56bf71777b941aa1fad60039b85f99070937c4fddb05f",
+            "input_id": "view:ha.graphql.values",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 257,
+            "digest": "sha256:e821f88e2c6dac98f3bdbbac790a66270f6de35e8004b8d855c7d2ebf04137fb",
+            "input_id": "view:ha.identity",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 184,
+            "digest": "sha256:38cae7c179aac4db2f69dac0922152f81538c7d5cabc6d2d1a6fc099e53d5043",
+            "input_id": "view:debug.ebus",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 165,
+            "digest": "sha256:adeb752bfbf65b9cc15749b46c20b46a7de50c4a41d21a4b57a1ee14bd974765",
+            "input_id": "view:portal.ebus.bootstrap",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 180,
+            "digest": "sha256:8193f54aea232ec24e06b6f552b7bd1c83da34ca47142a4a1209cd9f1ab9e5b8",
+            "input_id": "view:command.routing",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 216,
+            "digest": "sha256:3121dcc65a74a4488a3e14422ee7a5b75156ff3cc2c35bbc377346e866a235e9",
+            "input_id": "view:semantic.registry",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 236,
+            "digest": "sha256:fb1e516c7783dad95066cdd7d01da30205c9dc0dc3562c08c4fbf01dee0922f0",
+            "input_id": "view:mcp.eebus.v1.contract",
+            "kind": "PROTECTED_VIEW_PAYLOAD"
+          },
+          {
+            "byte_length": 13815,
+            "digest": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+            "input_id": "m7:graph",
+            "kind": "M7_GRAPH"
+          },
+          {
+            "byte_length": 3984,
+            "digest": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+            "input_id": "m7:replay",
+            "kind": "M7_REPLAY"
+          }
+        ],
+        "mask_scope_digest": "sha256:06d7955dbbffd53cd5deee8c813d7ccbeb4e2bb2117d8fa7179c15e9fe34f95d",
+        "runtime": {
+          "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_id": "gateway:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "artifact_size_bytes": 16777216,
+          "build_manifest": {
+            "build_mode": "SYNTHETIC_FIXTURE",
+            "flags": [
+              "-trimpath",
+              "CGO_ENABLED=0"
+            ],
+            "go_version": "go1.25.1",
+            "target": "linux/arm64"
+          },
+          "build_manifest_hash": "sha256:e26e7f37ce0b31a1240579b4c1f2953613e99609a0cf103b2a2bdade52ef1b24",
+          "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+          "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source_parent_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
+        }
+      },
+      "run_id": "msp08-run-06",
+      "state": "EEBUS_DISABLED_ROLLBACK",
+      "state_evidence": {
+        "candidate_count": 0,
+        "candidate_graph_enabled": false,
+        "conflict_count": 0,
+        "degraded": false,
+        "eebus_runtime_enabled": false,
+        "empty_success": false,
+        "facts": [],
+        "outcome": "ROLLBACK_BASELINE_RESTORED",
+        "service_count": 0
+      }
+    }
+  ],
+  "schema_version": 1,
+  "scope": {
+    "claims": [
+      "EEBUS-G18"
+    ],
+    "excluded_gates": [
+      "EEBUS-G17",
+      "EEBUS-G19"
+    ],
+    "gate": "EEBUS-G18",
+    "live_vr940_claim": false,
+    "public_version_policy": "V1_ONLY_NO_PUBLIC_V2"
+  }
+}

@@ -1,0 +1,167 @@
+{
+  "contract": "helianthus.platform.multi-runtime-coexistence-registry.v1",
+  "version": 1,
+  "evidence_contract": {
+    "contract": "helianthus.platform.multi-runtime-coexistence-evidence.v1",
+    "schema_path": "docs/platform/schemas/multi-runtime-coexistence-evidence-v1.schema.json"
+  },
+  "report_contract": {
+    "contract": "helianthus.platform.multi-runtime-coexistence-report.v1",
+    "schema_path": "docs/platform/schemas/multi-runtime-coexistence-report-v1.schema.json"
+  },
+  "gate": "EEBUS-G18",
+  "excluded_gates": [
+    "EEBUS-G17",
+    "EEBUS-G19"
+  ],
+  "m7_completion_token": "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e",
+  "m7_docs_source_commit": "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
+  "m7_binding": {
+    "graph_contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+    "graph_id": "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+    "graph_hash": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
+    "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
+    "replay_id": "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+    "replay_hash": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b"
+  },
+  "scenario_order": [
+    "EEBUS_DISABLED_BASELINE",
+    "EEBUS_DISABLED_CONFIRMED",
+    "EEBUS_ENABLED_NO_SERVICES",
+    "EEBUS_CONNECTED_CANDIDATE_ONLY",
+    "EEBUS_CONFLICTED_WITHHELD",
+    "EEBUS_DISABLED_ROLLBACK"
+  ],
+  "protected_views": [
+    "mcp.ebus.v1.responses",
+    "mcp.tool.inventory",
+    "graphql.schema",
+    "graphql.ebus.values",
+    "ha.graphql.values",
+    "ha.identity",
+    "debug.ebus",
+    "portal.ebus.bootstrap",
+    "command.routing",
+    "semantic.registry",
+    "mcp.eebus.v1.contract"
+  ],
+  "view_rules": [
+    {
+      "view_id": "mcp.ebus.v1.responses",
+      "capture_path": "artifacts/protected/mcp-ebus-v1-responses.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "mcp.tool.inventory",
+      "capture_path": "artifacts/protected/mcp-tool-inventory.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "graphql.schema",
+      "capture_path": "artifacts/protected/graphql-schema.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "graphql.ebus.values",
+      "capture_path": "artifacts/protected/graphql-ebus-values.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "ha.graphql.values",
+      "capture_path": "artifacts/protected/ha-graphql-values.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "ha.identity",
+      "capture_path": "artifacts/protected/ha-identity.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "debug.ebus",
+      "capture_path": "artifacts/protected/debug-ebus.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "portal.ebus.bootstrap",
+      "capture_path": "artifacts/protected/portal-ebus-bootstrap.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "command.routing",
+      "capture_path": "artifacts/protected/command-routing.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "semantic.registry",
+      "capture_path": "artifacts/protected/semantic-registry.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    },
+    {
+      "view_id": "mcp.eebus.v1.contract",
+      "capture_path": "artifacts/protected/mcp-eebus-v1-contract.json",
+      "timestamp_pointers": ["/meta/captured_at"],
+      "mask_pointers": ["/meta/auth_subject"]
+    }
+  ],
+  "required_acceptance_checks": [
+    "PROVENANCE_BOUND",
+    "STATE_EVIDENCE_EXPLICIT",
+    "PROTECTED_VIEW_SET_COMPLETE",
+    "PAYLOAD_HASHES_VERIFIED",
+    "SHAPE_IDENTICAL",
+    "CANONICAL_BYTES_IDENTICAL",
+    "EBUS_AUTHORITY_PRESERVED",
+    "CANDIDATE_CONFINED",
+    "V1_SURFACES_PRESERVED",
+    "G18_SCOPE_ONLY"
+  ],
+  "validation_precedence": [
+    "json.syntax",
+    "limits.exceeded",
+    "schema.evidence",
+    "registry.binding",
+    "provenance.m7",
+    "provenance.runtime",
+    "provenance.config",
+    "provenance.auth_mask",
+    "provenance.clock",
+    "ordering.duplicate",
+    "state.evidence",
+    "view.coverage",
+    "canonicalization.invalid",
+    "hash.payload",
+    "anti_leak.candidate",
+    "authority.ebus",
+    "gate.scope",
+    "drift.consumer",
+    "rollback.drift",
+    "hash.evidence"
+  ],
+  "limits": {
+    "max_evidence_bytes": 2097152,
+    "max_depth": 32,
+    "max_runs": 8,
+    "max_views_per_run": 16,
+    "max_inputs_per_run": 16,
+    "max_internal_facts_per_run": 64,
+    "max_payload_bytes": 262144,
+    "max_string_bytes": 4096,
+    "max_total_members": 65536,
+    "max_total_list_items": 32768
+  },
+  "fixture_ids": {
+    "positive_evidence": "MSP08-G18-SYNTHETIC-POSITIVE-001",
+    "positive_report": "MSP08-G18-SYNTHETIC-REPORT-001",
+    "negative_prefix": "MSP08-G18-SYNTHETIC-NEG-"
+  }
+}

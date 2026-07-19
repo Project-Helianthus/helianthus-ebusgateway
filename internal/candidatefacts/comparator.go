@@ -352,17 +352,15 @@ func roundExactDecimal(value *big.Rat, original string, rounding map[string]any)
 		quotient.Neg(quotient)
 	}
 	rounded := new(big.Rat).SetFrac(new(big.Int).Set(quotient), scale)
-	return rounded, formatScaledInteger(quotient, int(places), sign < 0), nil
+	return rounded, formatScaledInteger(quotient, int(places)), nil
 }
 
-func formatScaledInteger(value *big.Int, places int, negativeZero bool) string {
+func formatScaledInteger(value *big.Int, places int) string {
 	sign := ""
 	absolute := new(big.Int).Set(value)
 	if absolute.Sign() < 0 {
 		sign = "-"
 		absolute.Abs(absolute)
-	} else if absolute.Sign() == 0 && negativeZero {
-		sign = "-"
 	}
 	digits := absolute.String()
 	if places == 0 {

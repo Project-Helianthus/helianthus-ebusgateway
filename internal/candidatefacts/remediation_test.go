@@ -89,6 +89,20 @@ func TestCorrectiveEvaluatorAffineHalfEvenConflictAndAvailability(t *testing.T) 
 	}
 }
 
+func TestCorrectiveHalfEvenNormalizesRoundedNegativeZero(t *testing.T) {
+	left := correctiveArtifact("EBUS", "left-zero", "7", "-0.04", "degC", 2_000_000_000)
+	right := correctiveArtifact("EEBUS", "right-zero", "8", "-0.04", "degC", 2_000_000_000)
+	parameters := correctiveParameters()
+	parameters["tolerance"] = map[string]any{"absolute_decimal": "0", "relative_ppm": number(0)}
+	parameters["rounding"] = map[string]any{"mode": "HALF_EVEN", "decimal_places": number(1)}
+	outcome, final, err := evaluateNumericWindow(parameters, []map[string]any{
+		correctiveSample(left, right, 3_000_000_000, "PRESENT"),
+	}, correctiveArtifactIndex(left, right), nil)
+	if err != nil || outcome != "MATCH" || final != "0.0" {
+		t.Fatalf("negative value rounded to zero = (%q, %q, %v); want MATCH, 0.0", outcome, final, err)
+	}
+}
+
 func TestCorrectiveObservationPointersBindExactNativeValues(t *testing.T) {
 	left := correctiveArtifact("EBUS", "left", "1", "10", "degC", 2_000_000_000)
 	right := correctiveArtifact("EEBUS", "right", "2", "10", "degC", 2_000_000_000)

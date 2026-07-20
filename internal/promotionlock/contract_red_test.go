@@ -179,8 +179,12 @@ func TestMSP085RejectsEveryTamperedSourceAncestor(t *testing.T) {
 	}{
 		{"m7_graph", "source.m7_graph", func(in *InputsV1) { in.M7Graph = append(in.M7Graph, ' ') }},
 		{"m7_replay", "source.m7_replay", func(in *InputsV1) { in.M7Replay = append(in.M7Replay, ' ') }},
+		{"m7_registry", "source.m7_registry", func(in *InputsV1) { in.M7Registry = append(in.M7Registry, ' ') }},
+		{"m7_source_bundle", "source.m7_bundle", func(in *InputsV1) { in.M7SourceBundle = append(in.M7SourceBundle, ' ') }},
+		{"m7_source_replay", "source.m7_bundle", func(in *InputsV1) { in.M7SourceReplay = append(in.M7SourceReplay, ' ') }},
 		{"m8_evidence", "source.m8_evidence", func(in *InputsV1) { in.M8Evidence = append(in.M8Evidence, ' ') }},
 		{"m8_report", "source.m8_report", func(in *InputsV1) { in.M8Report = append(in.M8Report, ' ') }},
+		{"m8_registry", "source.m8_registry", func(in *InputsV1) { in.M8Registry = append(in.M8Registry, ' ') }},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -243,10 +247,10 @@ func TestMSP085RejectsHashMismatchDuplicateKeysAndTrailingData(t *testing.T) {
 func TestMSP085DoesNotLeakToExistingStableSurfaces(t *testing.T) {
 	root := filepath.Join("..", "..")
 	for _, path := range []string{
-		"graphql_schema.go",
-		"internal/mcpserver/server.go",
-		"internal/mcpserver/eebus_v1.go",
-		"internal/portal",
+		"cmd/gateway",
+		"graphql",
+		"mcp",
+		"portal",
 	} {
 		raw, err := readPathOrTree(root, path)
 		if err != nil {

@@ -5,16 +5,18 @@ go 1.22.0
 require (
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260521144203-f9919f4b1007
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260510071332-e7b3e38e42d2
-	github.com/Project-Helianthus/helianthus-eebusreg v0.0.0-20260718110648-7a5852e009bb
+	github.com/Project-Helianthus/helianthus-eebusreg v0.1.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4
 	github.com/machinebox/graphql v0.2.2
+	golang.org/x/sys v0.25.0
+	golang.org/x/text v0.18.0
 )
 
 require (
-	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.2 // indirect
-	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.3 // indirect
+	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.3 // indirect
+	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.4 // indirect
 	github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.1 // indirect
 	github.com/ahmetb/go-linq/v3 v3.2.0 // indirect
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
@@ -28,8 +30,6 @@ require (
 	gitlab.com/c0b/go-ordered-json v0.0.0-20201030195603-febf46534d5a // indirect
 	golang.org/x/mod v0.21.0 // indirect
 	golang.org/x/sync v0.8.0 // indirect
-	golang.org/x/sys v0.25.0 // indirect
-	golang.org/x/text v0.18.0 // indirect
 	golang.org/x/tools v0.25.0 // indirect
 )
 

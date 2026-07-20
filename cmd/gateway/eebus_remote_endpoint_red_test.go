@@ -14,9 +14,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 const (
@@ -36,7 +38,26 @@ type remoteEndpointRuntime struct{}
 func (*remoteEndpointRuntime) Start(context.Context) error { return nil }
 func (*remoteEndpointRuntime) Shutdown() error             { return nil }
 func (*remoteEndpointRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
-	return eebusruntime.SnapshotV1{}, nil
+	runtimeID, err := eebusraw.RedactID(eebusraw.IDKindPeer, "remote-endpoint-runtime")
+	if err != nil {
+		return eebusruntime.SnapshotV1{}, err
+	}
+	localSKI, err := eebusraw.RedactID(eebusraw.IDKindLocalSKI, "remote-endpoint-local-ski")
+	if err != nil {
+		return eebusruntime.SnapshotV1{}, err
+	}
+	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	return eebusruntime.SnapshotV1{
+		Meta: eebusruntime.SnapshotMetaV1{
+			Contract:      eebusruntime.SnapshotContractV1,
+			Runtime:       runtimeID,
+			LocalSKI:      localSKI,
+			MaskTier:      eebusraw.MaskTierRedacted,
+			CapturedAt:    now,
+			DataTimestamp: now,
+		},
+		Status: eebusruntime.RuntimeObservationV1{State: eebusruntime.ObservedRuntimeStateV1Ready},
+	}, nil
 }
 func (*remoteEndpointRuntime) PairingState() ([]eebusruntime.PairingObservationV1, error) {
 	return nil, nil
@@ -185,7 +206,11 @@ func TestMapEEBusRuntimeConfig_RejectsUnsafeRemoteEndpointsBeforeResolver(t *tes
 			if want := (eebusruntime.Config{}); !reflect.DeepEqual(got, want) {
 				t.Fatalf("runtime config on endpoint error = %+v; want zero value", got)
 			}
-			assertSanitizedRemoteEndpointError(t, err, test.specs[test.wantIndex], test.wantIndex)
+			secretSpec := test.specs[0]
+			if test.wantIndex < len(test.specs) {
+				secretSpec = test.specs[test.wantIndex]
+			}
+			assertSanitizedRemoteEndpointError(t, err, secretSpec, test.wantIndex)
 		})
 	}
 }
@@ -347,7 +372,11 @@ func assertRemoteEndpointV1(t *testing.T, remote eebusruntime.Remote, wantSKI, w
 		t.Fatal("missing public runtime v1 contract: Remote.Endpoint netip.AddrPort and Remote.EndpointPath string")
 	}
 	endpoint := endpointField.Interface().(netip.AddrPort)
-	if endpoint.String() != wantEndpoint || pathField.String() != wantPath {
+	endpointMatches := endpoint.String() == wantEndpoint
+	if wantEndpoint == "" {
+		endpointMatches = endpoint == (netip.AddrPort{})
+	}
+	if !endpointMatches || pathField.String() != wantPath {
 		t.Fatalf("runtime remote endpoint = %q path %q; want %q path %q", endpoint, pathField.String(), wantEndpoint, wantPath)
 	}
 }

@@ -1,0 +1,288 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.helianthus.local/schemas/multi-runtime-coexistence-evidence-v1.schema.json",
+  "title": "Helianthus Multi-Runtime Coexistence Evidence V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "fixture_id",
+    "evidence_class",
+    "evidence_id",
+    "evidence_hash",
+    "registry",
+    "scope",
+    "m7_binding",
+    "capture_clock",
+    "normalization",
+    "limits",
+    "runs"
+  ],
+  "properties": {
+    "contract": {"const": "helianthus.platform.multi-runtime-coexistence-evidence.v1"},
+    "schema_version": {"const": 1},
+    "fixture_id": {"type": "string", "pattern": "^MSP08-G18-[A-Z0-9-]+$", "maxLength": 128},
+    "evidence_class": {"enum": ["SYNTHETIC_OFFLINE_FIXTURE", "CAPTURED_RUNTIME_EVIDENCE"]},
+    "evidence_id": {"type": "string", "pattern": "^mrcv1:sha256:[0-9a-f]{64}$"},
+    "evidence_hash": {"$ref": "#/$defs/Digest"},
+    "registry": {"$ref": "#/$defs/RegistryBinding"},
+    "scope": {"$ref": "#/$defs/Scope"},
+    "m7_binding": {"$ref": "#/$defs/M7Binding"},
+    "capture_clock": {"$ref": "#/$defs/CaptureClock"},
+    "normalization": {"$ref": "#/$defs/Normalization"},
+    "limits": {"$ref": "#/$defs/Limits"},
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/$defs/Run"}
+    }
+  },
+  "$defs": {
+    "Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "SHA": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "NullableSHA": {"oneOf": [{"$ref": "#/$defs/SHA"}, {"type": "null"}]},
+    "Token": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[\\x20-\\x7e]+$"},
+    "Path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[\\x20-\\x7e]+$"},
+    "JsonValue": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": {"$ref": "#/$defs/JsonValue"}},
+        {"type": "array", "items": {"$ref": "#/$defs/JsonValue"}},
+        {"type": "string", "maxLength": 4096},
+        {"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991},
+        {"type": "boolean"},
+        {"type": "null"}
+      ]
+    },
+    "RegistryBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "version", "digest"],
+      "properties": {
+        "contract": {"const": "helianthus.platform.multi-runtime-coexistence-registry.v1"},
+        "version": {"const": 1},
+        "digest": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "Scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate", "claims", "excluded_gates", "live_vr940_claim", "public_version_policy"],
+      "properties": {
+        "gate": {"const": "EEBUS-G18"},
+        "claims": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"enum": ["EEBUS-G17", "EEBUS-G18", "EEBUS-G19"]}},
+        "excluded_gates": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"enum": ["EEBUS-G17", "EEBUS-G19"]}},
+        "live_vr940_claim": {"type": "boolean"},
+        "public_version_policy": {"const": "V1_ONLY_NO_PUBLIC_V2"}
+      }
+    },
+    "M7Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completion_token", "docs_source_commit", "graph_contract", "graph_id", "graph_hash", "replay_contract", "replay_id", "replay_hash"],
+      "properties": {
+        "completion_token": {"$ref": "#/$defs/Token"},
+        "docs_source_commit": {"$ref": "#/$defs/SHA"},
+        "graph_contract": {"const": "helianthus.platform.draft-candidate-fact-graph.v1"},
+        "graph_id": {"type": "string", "pattern": "^dcfgv1:sha256:[0-9a-f]{64}$"},
+        "graph_hash": {"$ref": "#/$defs/Digest"},
+        "replay_contract": {"const": "helianthus.platform.draft-candidate-fact-replay.v1"},
+        "replay_id": {"type": "string", "pattern": "^dcfrv1:sha256:[0-9a-f]{64}$"},
+        "replay_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "CaptureClock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clock_id", "basis", "wall_anchor_utc", "monotonic_epoch_id", "max_clock_error_ns", "max_capture_age_ns", "verification_offset_ns", "clock_hash"],
+      "properties": {
+        "clock_id": {"type": "string", "pattern": "^clock-[0-9a-f]{32}$"},
+        "basis": {"const": "MONOTONIC_CAPTURE_OFFSETS"},
+        "wall_anchor_utc": {"type": "string", "format": "date-time"},
+        "monotonic_epoch_id": {"$ref": "#/$defs/Token"},
+        "max_clock_error_ns": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "max_capture_age_ns": {"type": "integer", "minimum": 1, "maximum": 86400000000000},
+        "verification_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000},
+        "clock_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "ViewRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["view_id", "capture_path", "timestamp_pointers", "mask_pointers"],
+      "properties": {
+        "view_id": {"$ref": "#/$defs/Token"},
+        "capture_path": {"$ref": "#/$defs/Path"},
+        "timestamp_pointers": {"type": "array", "maxItems": 32, "items": {"type": "string", "pattern": "^/.*$", "maxLength": 512}},
+        "mask_pointers": {"type": "array", "maxItems": 32, "items": {"type": "string", "pattern": "^/.*$", "maxLength": 512}}
+      }
+    },
+    "Normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "canonicalization", "timestamp_replacement", "mask_replacement", "view_rules", "profile_digest"],
+      "properties": {
+        "profile_id": {"const": "multi-runtime-coexistence-no-drift-v1"},
+        "canonicalization": {"const": "RFC8785_JCS_INTEGER_SUBSET"},
+        "timestamp_replacement": {"const": "<TIMESTAMP>"},
+        "mask_replacement": {"const": "<MASKED>"},
+        "view_rules": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/ViewRule"}},
+        "profile_digest": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "Limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_evidence_bytes", "max_depth", "max_runs", "max_views_per_run", "max_inputs_per_run", "max_internal_facts_per_run", "max_payload_bytes", "max_string_bytes", "max_total_members", "max_total_list_items"],
+      "properties": {
+        "max_evidence_bytes": {"type": "integer", "minimum": 1},
+        "max_depth": {"type": "integer", "minimum": 1},
+        "max_runs": {"type": "integer", "minimum": 1},
+        "max_views_per_run": {"type": "integer", "minimum": 1},
+        "max_inputs_per_run": {"type": "integer", "minimum": 1},
+        "max_internal_facts_per_run": {"type": "integer", "minimum": 1},
+        "max_payload_bytes": {"type": "integer", "minimum": 1},
+        "max_string_bytes": {"type": "integer", "minimum": 1},
+        "max_total_members": {"type": "integer", "minimum": 1},
+        "max_total_list_items": {"type": "integer", "minimum": 1}
+      }
+    },
+    "BuildManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["go_version", "target", "build_mode", "flags"],
+      "properties": {
+        "go_version": {"$ref": "#/$defs/Token"},
+        "target": {"$ref": "#/$defs/Token"},
+        "build_mode": {"enum": ["SYNTHETIC_FIXTURE", "REPRODUCIBLE_BUILD"]},
+        "flags": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/Token"}}
+      }
+    },
+    "Runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "source_commit", "source_parent_commit", "artifact_id", "artifact_digest", "artifact_size_bytes", "build_manifest", "build_manifest_hash"],
+      "properties": {
+        "repository": {"const": "github.com/Project-Helianthus/helianthus-ebusgateway"},
+        "source_commit": {"$ref": "#/$defs/SHA"},
+        "source_parent_commit": {"$ref": "#/$defs/NullableSHA"},
+        "artifact_id": {"type": "string", "pattern": "^gateway:sha256:[0-9a-f]{64}$"},
+        "artifact_digest": {"$ref": "#/$defs/Digest"},
+        "artifact_size_bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "build_manifest": {"$ref": "#/$defs/BuildManifest"},
+        "build_manifest_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "ConfigPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eebus_runtime_enabled", "candidate_graph_enabled", "outbound_enabled", "public_v2_enabled"],
+      "properties": {
+        "eebus_runtime_enabled": {"type": "boolean"},
+        "candidate_graph_enabled": {"type": "boolean"},
+        "outbound_enabled": {"type": "boolean"},
+        "public_v2_enabled": {"type": "boolean"}
+      }
+    },
+    "Config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_id", "payload", "config_hash"],
+      "properties": {
+        "config_id": {"$ref": "#/$defs/Token"},
+        "payload": {"$ref": "#/$defs/ConfigPayload"},
+        "config_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "AuthScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope_id", "principal_class", "permissions", "scope_hash"],
+      "properties": {
+        "scope_id": {"$ref": "#/$defs/Token"},
+        "principal_class": {"const": "READ_ONLY_TEST"},
+        "permissions": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/Token"}},
+        "scope_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "ImmutableInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_id", "kind", "digest", "byte_length"],
+      "properties": {
+        "input_id": {"$ref": "#/$defs/Token"},
+        "kind": {"enum": ["PROTECTED_VIEW_PAYLOAD", "M7_GRAPH", "M7_REPLAY"]},
+        "digest": {"$ref": "#/$defs/Digest"},
+        "byte_length": {"type": "integer", "minimum": 1, "maximum": 2097152}
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture_clock_id", "runtime", "config", "auth_scope", "mask_scope_digest", "immutable_inputs"],
+      "properties": {
+        "capture_clock_id": {"type": "string", "pattern": "^clock-[0-9a-f]{32}$"},
+        "runtime": {"$ref": "#/$defs/Runtime"},
+        "config": {"$ref": "#/$defs/Config"},
+        "auth_scope": {"$ref": "#/$defs/AuthScope"},
+        "mask_scope_digest": {"$ref": "#/$defs/Digest"},
+        "immutable_inputs": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/ImmutableInput"}}
+      }
+    },
+    "CandidateFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "status", "terminal_negative_state", "visibility_channel"],
+      "properties": {
+        "candidate_id": {"$ref": "#/$defs/Token"},
+        "status": {"enum": ["CANDIDATE", "WITHHELD"]},
+        "terminal_negative_state": {"oneOf": [{"const": "CONFLICT"}, {"type": "null"}]},
+        "visibility_channel": {"const": "CANDIDATE_DEBUG_REPLAY"}
+      }
+    },
+    "StateEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "eebus_runtime_enabled", "candidate_graph_enabled", "service_count", "candidate_count", "conflict_count", "degraded", "empty_success", "facts"],
+      "properties": {
+        "outcome": {"enum": ["BASELINE_CAPTURED", "DISABLED_CONFIRMED", "NO_SERVICES_OBSERVED", "CANDIDATE_ONLY_OBSERVED", "CONFLICT_WITHHELD_OBSERVED", "ROLLBACK_BASELINE_RESTORED"]},
+        "eebus_runtime_enabled": {"type": "boolean"},
+        "candidate_graph_enabled": {"type": "boolean"},
+        "service_count": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "candidate_count": {"type": "integer", "minimum": 0, "maximum": 64},
+        "conflict_count": {"type": "integer", "minimum": 0, "maximum": 64},
+        "degraded": {"type": "boolean"},
+        "empty_success": {"type": "boolean"},
+        "facts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/CandidateFact"}}
+      }
+    },
+    "ProtectedView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["view_id", "capture_path", "media_type", "payload", "raw_payload_hash", "shape_hash", "canonical_payload_hash"],
+      "properties": {
+        "view_id": {"$ref": "#/$defs/Token"},
+        "capture_path": {"$ref": "#/$defs/Path"},
+        "media_type": {"const": "application/json"},
+        "payload": {"$ref": "#/$defs/JsonValue"},
+        "raw_payload_hash": {"$ref": "#/$defs/Digest"},
+        "shape_hash": {"$ref": "#/$defs/Digest"},
+        "canonical_payload_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "Run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "state", "capture_offset_ns", "provenance", "state_evidence", "protected_views"],
+      "properties": {
+        "run_id": {"type": "string", "pattern": "^msp08-run-[0-9]{2}$"},
+        "state": {"enum": ["EEBUS_DISABLED_BASELINE", "EEBUS_DISABLED_CONFIRMED", "EEBUS_ENABLED_NO_SERVICES", "EEBUS_CONNECTED_CANDIDATE_ONLY", "EEBUS_CONFLICTED_WITHHELD", "EEBUS_DISABLED_ROLLBACK"]},
+        "capture_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000},
+        "provenance": {"$ref": "#/$defs/Provenance"},
+        "state_evidence": {"$ref": "#/$defs/StateEvidence"},
+        "protected_views": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/ProtectedView"}}
+      }
+    }
+  }
+}

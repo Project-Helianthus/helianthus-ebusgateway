@@ -1,0 +1,1021 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.helianthus.local/schemas/leaf-promotion-dossier-v1.schema.json",
+  "title": "Helianthus Leaf Promotion Dossier V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "dossier_id",
+    "evidence_class",
+    "capture_context",
+    "positive_promotion_claim",
+    "registry",
+    "source_bindings",
+    "m9_consumer_gate",
+    "leaves",
+    "dossier_hash"
+  ],
+  "properties": {
+    "contract": {
+      "const": "helianthus.platform.leaf-promotion-dossier.v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "dossier_id": {
+      "$ref": "#/$defs/TokenV1"
+    },
+    "evidence_class": {
+      "enum": [
+        "SYNTHETIC_OFFLINE_FIXTURE",
+        "CAPTURED_RUNTIME_EVIDENCE"
+      ]
+    },
+    "capture_context": {
+      "enum": [
+        "OFF_LAN",
+        "SAME_LAN_LAB"
+      ]
+    },
+    "positive_promotion_claim": {
+      "type": "boolean"
+    },
+    "registry": {
+      "$ref": "#/$defs/RegistryBindingV1"
+    },
+    "source_bindings": {
+      "$ref": "#/$defs/SourceBindingsV1"
+    },
+    "m9_consumer_gate": {
+      "enum": [
+        "BLOCKED_ZERO_PROMOTED_LEAVES",
+        "READY_FOR_M9"
+      ]
+    },
+    "leaves": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/LeafV1"
+      }
+    },
+    "dossier_hash": {
+      "$ref": "#/$defs/DigestV1"
+    }
+  },
+  "$defs": {
+    "TokenV1": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[\\x20-\\x7e]+$"
+    },
+    "SemanticPathV1": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 512,
+      "pattern": "^/[a-z0-9_]+(?:/[a-z0-9_]+)*$"
+    },
+    "DigestV1": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "NullableTokenV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TokenV1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "NullableIntegerV1": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "DecimalV1": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "NullableDecimalV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DecimalV1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "RegistryBindingV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "version",
+        "digest"
+      ],
+      "properties": {
+        "contract": {
+          "const": "helianthus.platform.leaf-promotion-registry.v1"
+        },
+        "version": {
+          "const": 1
+        },
+        "digest": {
+          "$ref": "#/$defs/DigestV1"
+        }
+      }
+    },
+    "SourceBindingsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "m7_graph_id",
+        "m7_graph_hash",
+        "m7_replay_id",
+        "m7_replay_hash",
+        "m8_evidence_id",
+        "m8_evidence_hash",
+        "m8_report_id",
+        "m8_report_hash",
+        "coexistence_verdict"
+      ],
+      "properties": {
+        "m7_graph_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "m7_graph_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "m7_replay_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "m7_replay_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "m8_evidence_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "m8_evidence_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "m8_report_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "m8_report_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "coexistence_verdict": {
+          "const": "PASS"
+        }
+      }
+    },
+    "B509IdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "target_pseudonym",
+        "target_address",
+        "target_product",
+        "register_family",
+        "register_id",
+        "unit_scale_source",
+        "evidence_role"
+      ],
+      "properties": {
+        "family": {
+          "const": "B509"
+        },
+        "target_pseudonym": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "target_address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "target_product": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "register_family": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "register_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "unit_scale_source": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "evidence_role": {
+          "enum": [
+            "AUTHORITATIVE",
+            "MIRROR",
+            "FALLBACK"
+          ]
+        }
+      }
+    },
+    "B524IdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "target_pseudonym",
+        "opcode",
+        "namespace",
+        "group",
+        "instance",
+        "register",
+        "target_address",
+        "source_address",
+        "group_meaning",
+        "instance_gate",
+        "register_category",
+        "unit_scale_source"
+      ],
+      "properties": {
+        "family": {
+          "const": "B524"
+        },
+        "target_pseudonym": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "opcode": {
+          "enum": [
+            2,
+            6
+          ]
+        },
+        "namespace": {
+          "enum": [
+            "OP_0X02",
+            "OP_0X06"
+          ]
+        },
+        "group": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "instance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "register": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "target_address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "source_address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "group_meaning": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "instance_gate": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "register_category": {
+          "enum": [
+            "STATE",
+            "CONFIG",
+            "PARAMS"
+          ]
+        },
+        "unit_scale_source": {
+          "$ref": "#/$defs/TokenV1"
+        }
+      }
+    },
+    "B555IdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "target_pseudonym",
+        "device_family",
+        "schedule_program",
+        "slot_index",
+        "day_of_week",
+        "time_identity",
+        "operation_mode_context",
+        "unit_scale_source"
+      ],
+      "properties": {
+        "family": {
+          "const": "B555"
+        },
+        "target_pseudonym": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "device_family": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "schedule_program": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "slot_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "day_of_week": {
+          "enum": [
+            "MONDAY",
+            "TUESDAY",
+            "WEDNESDAY",
+            "THURSDAY",
+            "FRIDAY",
+            "SATURDAY",
+            "SUNDAY"
+          ]
+        },
+        "time_identity": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
+        },
+        "operation_mode_context": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "unit_scale_source": {
+          "$ref": "#/$defs/TokenV1"
+        }
+      }
+    },
+    "EEBusIdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity",
+        "service",
+        "feature",
+        "path"
+      ],
+      "properties": {
+        "entity": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "service": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "feature": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "path": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "selector"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "ENTITY",
+                  "SERVICE",
+                  "FEATURE",
+                  "FIELD"
+                ]
+              },
+              "selector": {
+                "$ref": "#/$defs/TokenV1"
+              }
+            }
+          }
+        }
+      }
+    },
+    "SourceIdentityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ebus",
+        "eebus"
+      ],
+      "properties": {
+        "ebus": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/B509IdentityV1"
+            },
+            {
+              "$ref": "#/$defs/B524IdentityV1"
+            },
+            {
+              "$ref": "#/$defs/B555IdentityV1"
+            }
+          ]
+        },
+        "eebus": {
+          "$ref": "#/$defs/EEBusIdentityV1"
+        }
+      }
+    },
+    "ComparatorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "window",
+        "tolerance",
+        "conversion",
+        "rounding",
+        "minimum_samples",
+        "maximum_missing",
+        "stale_cutoff_ns",
+        "conflict_threshold",
+        "observed_samples",
+        "missing_samples",
+        "outcome"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "NUMERIC_WINDOW",
+            "ENUM_EXACT",
+            "BOOLEAN_EDGE"
+          ]
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_offset_ns",
+            "end_offset_ns",
+            "sample_period_ns"
+          ],
+          "properties": {
+            "start_offset_ns": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "end_offset_ns": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "sample_period_ns": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "tolerance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "absolute_decimal",
+            "relative_ppm"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "EXACT",
+                "ABSOLUTE",
+                "ABSOLUTE_OR_RELATIVE"
+              ]
+            },
+            "absolute_decimal": {
+              "$ref": "#/$defs/NullableDecimalV1"
+            },
+            "relative_ppm": {
+              "$ref": "#/$defs/NullableIntegerV1"
+            }
+          }
+        },
+        "conversion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "source_unit",
+            "target_unit",
+            "scale_decimal",
+            "offset_decimal"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "IDENTITY",
+                "AFFINE",
+                "MAPPING"
+              ]
+            },
+            "source_unit": {
+              "$ref": "#/$defs/TokenV1"
+            },
+            "target_unit": {
+              "$ref": "#/$defs/TokenV1"
+            },
+            "scale_decimal": {
+              "$ref": "#/$defs/DecimalV1"
+            },
+            "offset_decimal": {
+              "$ref": "#/$defs/DecimalV1"
+            }
+          }
+        },
+        "rounding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "decimal_places"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "NONE",
+                "HALF_EVEN"
+              ]
+            },
+            "decimal_places": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "minimum_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "maximum_missing": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "stale_cutoff_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "conflict_threshold": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "absolute_decimal",
+            "consecutive_samples"
+          ],
+          "properties": {
+            "absolute_decimal": {
+              "$ref": "#/$defs/DecimalV1"
+            },
+            "consecutive_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024
+            }
+          }
+        },
+        "observed_samples": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "missing_samples": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "outcome": {
+          "enum": [
+            "MATCH",
+            "MISMATCH",
+            "CONFLICT",
+            "INDETERMINATE",
+            "NOT_EVALUATED"
+          ]
+        }
+      }
+    },
+    "InheritanceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "device",
+        "sibling"
+      ],
+      "properties": {
+        "family": {
+          "type": "boolean"
+        },
+        "device": {
+          "type": "boolean"
+        },
+        "sibling": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CoexistenceProofV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_id",
+        "report_hash",
+        "scenario_run_ids",
+        "protected_view_hashes",
+        "no_drift",
+        "rollback_exact"
+      ],
+      "properties": {
+        "report_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "report_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "scenario_run_ids": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TokenV1"
+          }
+        },
+        "protected_view_hashes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/DigestV1"
+          }
+        },
+        "no_drift": {
+          "type": "boolean"
+        },
+        "rollback_exact": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ProvenanceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_artifact_ids",
+        "redacted_input_hashes",
+        "normalized_output_hash"
+      ],
+      "properties": {
+        "source_artifact_ids": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TokenV1"
+          }
+        },
+        "redacted_input_hashes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/DigestV1"
+          }
+        },
+        "normalized_output_hash": {
+          "$ref": "#/$defs/DigestV1"
+        }
+      }
+    },
+    "ReplayV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_id",
+        "tool_version",
+        "input_hashes",
+        "expected_output_hash",
+        "actual_output_hash",
+        "deterministic"
+      ],
+      "properties": {
+        "tool_id": {
+          "const": "leaf-promotion-replay"
+        },
+        "tool_version": {
+          "const": 1
+        },
+        "input_hashes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/DigestV1"
+          }
+        },
+        "expected_output_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "actual_output_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "deterministic": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RetestTriggerV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trigger",
+        "changed_inputs",
+        "minimum_new_samples"
+      ],
+      "properties": {
+        "trigger": {
+          "enum": [
+            "SOURCE_RECOVERED",
+            "SOURCE_ARTIFACT_CHANGED",
+            "IDENTITY_CHANGED",
+            "COMPARATOR_CHANGED",
+            "COEXISTENCE_CHANGED",
+            "RUNTIME_CHANGED",
+            "LEASE_CHANGED"
+          ]
+        },
+        "changed_inputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/TokenV1"
+          }
+        },
+        "minimum_new_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        }
+      }
+    },
+    "PerturbationCycleV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycle_id",
+        "performed_at",
+        "perturbation_input_hash",
+        "observed_state_hash",
+        "rollback_state_hash",
+        "independent",
+        "rollback"
+      ],
+      "properties": {
+        "cycle_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "performed_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+          "minLength": 20,
+          "maxLength": 32
+        },
+        "perturbation_input_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "observed_state_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "rollback_state_hash": {
+          "$ref": "#/$defs/DigestV1"
+        },
+        "independent": {
+          "type": "boolean"
+        },
+        "rollback": {
+          "enum": [
+            "EXACT",
+            "FAILED"
+          ]
+        }
+      }
+    },
+    "MutableProofV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lab_whitelist_id",
+        "lease",
+        "one_writer",
+        "writer_id",
+        "write_path",
+        "direct_adapter_write",
+        "abort_conditions",
+        "cycles"
+      ],
+      "properties": {
+        "lab_whitelist_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lease_id",
+            "holder",
+            "valid_from",
+            "valid_until"
+          ],
+          "properties": {
+            "lease_id": {
+              "$ref": "#/$defs/TokenV1"
+            },
+            "holder": {
+              "$ref": "#/$defs/TokenV1"
+            },
+            "valid_from": {
+              "$ref": "#/$defs/TokenV1"
+            },
+            "valid_until": {
+              "$ref": "#/$defs/TokenV1"
+            }
+          }
+        },
+        "one_writer": {
+          "type": "boolean"
+        },
+        "writer_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "write_path": {
+          "const": "GATEWAY_ROUTER_ONLY"
+        },
+        "direct_adapter_write": {
+          "type": "boolean"
+        },
+        "abort_conditions": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "LEASE_EXPIRED",
+              "WRITER_CONFLICT",
+              "GATEWAY_ROUTER_PATH_LOST",
+              "SOURCE_STALE",
+              "CONFLICT_THRESHOLD_EXCEEDED",
+              "ROLLBACK_FAILED"
+            ]
+          }
+        },
+        "cycles": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/PerturbationCycleV1"
+          }
+        }
+      }
+    },
+    "NullableMutableProofV1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MutableProofV1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "NullableTerminalStateV1": {
+      "oneOf": [
+        {
+          "enum": [
+            "NO_SIGNAL",
+            "CLOUD_ONLY",
+            "CONFLICT",
+            "NOT_TESTED"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "LeafV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaf_id",
+        "semantic_path",
+        "mutability",
+        "source_identity",
+        "comparator",
+        "decision",
+        "terminal_state",
+        "visibility",
+        "inheritance",
+        "coexistence_proof",
+        "provenance",
+        "replay",
+        "retest_trigger",
+        "mutable_proof"
+      ],
+      "properties": {
+        "leaf_id": {
+          "$ref": "#/$defs/TokenV1"
+        },
+        "semantic_path": {
+          "$ref": "#/$defs/SemanticPathV1"
+        },
+        "mutability": {
+          "enum": [
+            "READ_ONLY",
+            "MUTABLE"
+          ]
+        },
+        "source_identity": {
+          "$ref": "#/$defs/SourceIdentityV1"
+        },
+        "comparator": {
+          "$ref": "#/$defs/ComparatorV1"
+        },
+        "decision": {
+          "enum": [
+            "PROMOTED",
+            "WITHHELD"
+          ]
+        },
+        "terminal_state": {
+          "$ref": "#/$defs/NullableTerminalStateV1"
+        },
+        "visibility": {
+          "enum": [
+            "RAW_DEBUG_ONLY",
+            "LOCKED_NOT_EXPOSED"
+          ]
+        },
+        "inheritance": {
+          "$ref": "#/$defs/InheritanceV1"
+        },
+        "coexistence_proof": {
+          "$ref": "#/$defs/CoexistenceProofV1"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ProvenanceV1"
+        },
+        "replay": {
+          "$ref": "#/$defs/ReplayV1"
+        },
+        "retest_trigger": {
+          "$ref": "#/$defs/RetestTriggerV1"
+        },
+        "mutable_proof": {
+          "$ref": "#/$defs/NullableMutableProofV1"
+        }
+      }
+    }
+  }
+}

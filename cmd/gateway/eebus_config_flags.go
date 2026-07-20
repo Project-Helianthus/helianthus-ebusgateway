@@ -75,6 +75,10 @@ func bindEEBusFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		cfg.EEBusConfig.RemoteSKIAllowlist = allowlist
 		return nil
 	})
+	fs.Func("eebus-remote-endpoint", "repeatable eeBUS remote endpoint <ski>=<literal-addrport><absolute-path>", func(value string) error {
+		cfg.EEBusConfig.RemoteEndpoints = append(cfg.EEBusConfig.RemoteEndpoints, strings.TrimSpace(value))
+		return nil
+	})
 	fs.Func("eebus-pairing-window-mode", "eeBUS pairing-window mode (M5A: closed only)", func(value string) error {
 		mode := ebusgateway.EEBusPairingWindowMode(strings.ToLower(strings.TrimSpace(value)))
 		if mode != ebusgateway.EEBusPairingWindowClosed {

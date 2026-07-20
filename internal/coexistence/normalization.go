@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -39,7 +40,7 @@ func normalizedPayload(payload any, rule, profile map[string]any) (any, error) {
 	}
 	for _, pointer := range timestamps {
 		value, set, err := pointerTarget(result, pointer)
-		if err != nil || !rfc3339UTCV1.MatchString(value) {
+		if err != nil || !validRFC3339UTC(value) {
 			return nil, fail("canonicalization.invalid")
 		}
 		set(timestampReplacement)
@@ -52,6 +53,20 @@ func normalizedPayload(payload any, rule, profile map[string]any) (any, error) {
 		set(maskReplacement)
 	}
 	return result, nil
+}
+
+func validRFC3339UTC(value string) bool {
+	if !rfc3339UTCV1.MatchString(value) {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil && parsed.Location() == time.UTC
+}
+
+func containsV2Marker(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, ".v2") || strings.Contains(lower, "_v2") ||
+		strings.Contains(lower, "/v2") || strings.Contains(lower, "-v2")
 }
 
 func pointerTarget(value any, pointer string) (string, func(string), error) {

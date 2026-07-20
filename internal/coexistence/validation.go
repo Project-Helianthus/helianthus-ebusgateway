@@ -301,7 +301,7 @@ func checkClock(evidence map[string]any) error {
 	wall, _ := stringValueV1(clock["wall_anchor_utc"])
 	verification, verificationOK := integerValue(clock["verification_offset_ns"])
 	maximumAge, ageOK := integerValue(clock["max_capture_age_ns"])
-	if err != nil || clock["basis"] != "MONOTONIC_CAPTURE_OFFSETS" || !rfc3339UTCV1.MatchString(wall) ||
+	if err != nil || clock["basis"] != "MONOTONIC_CAPTURE_OFFSETS" || !validRFC3339UTC(wall) ||
 		clock["clock_hash"] != computed || !verificationOK || verification < 0 || !ageOK || maximumAge < 1 {
 		return fail("provenance.clock")
 	}
@@ -466,9 +466,6 @@ func checkAntiLeak(evidence map[string]any) error {
 	runs, _ := arrayValueV1(evidence["runs"])
 	for _, rawRun := range runs {
 		run := rawRun.(map[string]any)
-		if run["state"] == "EEBUS_DISABLED_ROLLBACK" {
-			continue
-		}
 		for _, rawView := range run["protected_views"].([]any) {
 			if containsCandidateLeakV1(rawView.(map[string]any)["payload"]) {
 				return fail("anti_leak.candidate")
@@ -482,8 +479,8 @@ func containsCandidateLeakV1(value any) bool {
 	switch current := value.(type) {
 	case map[string]any:
 		for key, item := range current {
-			switch strings.ToLower(key) {
-			case "candidate_status", "conflict_status", "candidate_fact", "candidate_facts":
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, "candidate") || strings.Contains(lower, "conflict") {
 				return true
 			}
 			if containsCandidateLeakV1(item) {
@@ -497,7 +494,13 @@ func containsCandidateLeakV1(value any) bool {
 			}
 		}
 	case string:
-		return current == "CANDIDATE" || current == "WITHHELD/CONFLICT"
+		lower := strings.ToLower(current)
+		switch lower {
+		case "candidate", "withheld", "conflict", "withheld/conflict":
+			return true
+		default:
+			return false
+		}
 	}
 	return false
 }
@@ -553,7 +556,7 @@ func checkScope(evidence, registry map[string]any) error {
 			return fail("gate.scope")
 		}
 		for _, tool := range tools {
-			if strings.Contains(strings.ToLower(tool), ".v2") {
+			if containsV2Marker(tool) {
 				return fail("gate.scope")
 			}
 		}
@@ -568,7 +571,7 @@ func checkScope(evidence, registry map[string]any) error {
 		}
 		for _, field := range queryFields {
 			lower := strings.ToLower(field)
-			if strings.Contains(lower, "eebus") || strings.Contains(lower, ".v2") {
+			if strings.Contains(lower, "eebus") || containsV2Marker(field) {
 				return fail("gate.scope")
 			}
 		}
@@ -705,8 +708,7 @@ func containsPublicV2(value any) bool {
 	switch current := value.(type) {
 	case map[string]any:
 		for key, item := range current {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, ".v2") || strings.HasSuffix(lower, "_v2") {
+			if mapEntryClaimsV2(key, item) {
 				return true
 			}
 			if containsPublicV2(item) {
@@ -720,8 +722,7 @@ func containsPublicV2(value any) bool {
 			}
 		}
 	case string:
-		lower := strings.ToLower(current)
-		return strings.Contains(lower, ".v2") || strings.Contains(lower, "eebus_v2")
+		return containsV2Marker(current)
 	}
 	return false
 }
@@ -729,7 +730,10 @@ func containsPublicV2(value any) bool {
 func containsV2String(value any) bool {
 	switch current := value.(type) {
 	case map[string]any:
-		for _, item := range current {
+		for key, item := range current {
+			if mapEntryClaimsV2(key, item) {
+				return true
+			}
 			if containsV2String(item) {
 				return true
 			}
@@ -741,7 +745,15 @@ func containsV2String(value any) bool {
 			}
 		}
 	case string:
-		return strings.Contains(strings.ToLower(current), ".v2")
+		return containsV2Marker(current)
 	}
 	return false
+}
+
+func mapEntryClaimsV2(key string, value any) bool {
+	if !containsV2Marker(key) {
+		return false
+	}
+	enabled, isBoolean := boolValueV1(value)
+	return !isBoolean || enabled
 }

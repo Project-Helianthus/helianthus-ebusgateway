@@ -46,7 +46,7 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 		return ArtifactsV1{}, fail("provenance.clock")
 	}
 	for _, timestamp := range timestamps {
-		if !rfc3339UTCV1.MatchString(timestamp) {
+		if !validRFC3339UTC(timestamp) {
 			return ArtifactsV1{}, fail("provenance.clock")
 		}
 	}
@@ -165,7 +165,7 @@ func validGenerationClock(clock map[string]any) bool {
 	verification, verificationOK := integerValue(clock["verification_offset_ns"])
 	maximumAge, ageOK := integerValue(clock["max_capture_age_ns"])
 	lastOffset := int64(len(coexScenarioOrderV1)-1) * 1_000_000_000
-	return err == nil && clock["basis"] == "MONOTONIC_CAPTURE_OFFSETS" && rfc3339UTCV1.MatchString(wall) &&
+	return err == nil && clock["basis"] == "MONOTONIC_CAPTURE_OFFSETS" && validRFC3339UTC(wall) &&
 		clock["clock_hash"] == computed && verificationOK && ageOK && verification >= lastOffset && verification-lastOffset <= maximumAge
 }
 

@@ -86,7 +86,6 @@ type EEBusConfig struct {
 	PrivateKeyPath     string
 	TrustStorePath     string
 	RemoteSKIAllowlist []string
-	RemoteEndpoints    []string
 	PairingWindowMode  EEBusPairingWindowMode
 }
 
@@ -95,7 +94,6 @@ func DefaultEEBusConfig() EEBusConfig {
 		Interfaces:         []string{},
 		Subnets:            []string{},
 		RemoteSKIAllowlist: []string{},
-		RemoteEndpoints:    []string{},
 		PairingWindowMode:  EEBusPairingWindowClosed,
 	}
 }

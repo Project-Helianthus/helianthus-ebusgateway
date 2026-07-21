@@ -76,11 +76,35 @@ func TestEEBusregV014RuntimeAndGatewayBoundary(t *testing.T) {
 			for _, spec := range general.Specs {
 				importSpec := spec.(*ast.ImportSpec)
 				importPath := strings.Trim(importSpec.Path.Value, "\"")
-				if importPath == eebusgoModule || importPath == shipgoModule {
+				if moduleImportMatches(importPath, eebusgoModule) || moduleImportMatches(importPath, shipgoModule) {
 					t.Errorf("%s imports protocol implementation module %q directly", path, importPath)
 				}
 			}
 		}
+	}
+}
+
+func moduleImportMatches(importPath, modulePath string) bool {
+	return importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/")
+}
+
+func TestModuleImportMatches(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		importPath string
+		want       bool
+	}{
+		{name: "module root", importPath: eebusgoModule, want: true},
+		{name: "module subpackage", importPath: eebusgoModule + "/service", want: true},
+		{name: "similar module", importPath: eebusgoModule + "-other/service", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := moduleImportMatches(test.importPath, eebusgoModule); got != test.want {
+				t.Fatalf("moduleImportMatches(%q, %q) = %t; want %t", test.importPath, eebusgoModule, got, test.want)
+			}
+		})
 	}
 }
 

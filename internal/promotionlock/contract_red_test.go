@@ -160,8 +160,8 @@ func TestMSP085BindsExactM7AndM8ArtifactsAndSyntheticBoundary(t *testing.T) {
 	source := manifest.SourceBindings
 	if source.M7GraphID != "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac" ||
 		source.M7ReplayID != "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b" ||
-		source.M8EvidenceID != "mrcv1:sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183" ||
-		source.M8ReportID != "mrcrv1:sha256:9f84bd33a2cd78cfd34e02607213a980945d73bb3b9a3c6ac768ddd2225b3898" ||
+		source.M8EvidenceID != "mrcv1:sha256:9055d83a83042c70131769e7d6f33f6eabe1665532634299d0fbdc65c58b6218" ||
+		source.M8ReportID != "mrcrv1:sha256:e87f8e135041b6894be4c0e3ccca9d16a34923ee9ec78cbf3fb614974e05b38b" ||
 		source.EvidenceClass != "SYNTHETIC_OFFLINE_FIXTURE" || source.LiveVR940Claim {
 		t.Fatalf("source binding = %#v", source)
 	}

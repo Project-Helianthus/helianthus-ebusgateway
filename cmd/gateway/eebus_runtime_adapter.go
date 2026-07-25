@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -22,6 +23,13 @@ type eebusRuntimeAdapter struct {
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+}
+
+func eebusMCPProvider(adapter *eebusRuntimeAdapter) mcp.EEBusV1Provider {
+	if adapter == nil {
+		return nil
+	}
+	return adapter
 }
 
 func startEEBusRuntime(

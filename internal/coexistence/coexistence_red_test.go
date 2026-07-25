@@ -416,7 +416,7 @@ func assertProtectedAuthority(t *testing.T, viewID string, payload any) {
 	case "mcp.ebus.v1.responses":
 		assertStringValue(t, data, "contract", "ebus.v1")
 	case "mcp.tool.inventory":
-		assertStringSlice(t, data["tools"], []string{"ebus.v1.devices.list", "ebus.v1.zones.list", "eebus.v1.runtime.status", "eebus.v1.services.list"})
+		assertStringSlice(t, data["tools"], []string{"ebus.v1.devices.list", "ebus.v1.zones.list", "eebus.v1.runtime.status.get", "eebus.v1.services.list"})
 		for _, tool := range stringSlice(t, data["tools"]) {
 			if strings.Contains(tool, ".v2.") {
 				t.Fatalf("public V2 tool leaked into inventory: %s", tool)

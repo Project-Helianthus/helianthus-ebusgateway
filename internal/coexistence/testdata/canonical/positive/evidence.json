@@ -11,8 +11,8 @@
   },
   "contract": "helianthus.platform.multi-runtime-coexistence-evidence.v1",
   "evidence_class": "SYNTHETIC_OFFLINE_FIXTURE",
-  "evidence_hash": "sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183",
-  "evidence_id": "mrcv1:sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183",
+  "evidence_hash": "sha256:9055d83a83042c70131769e7d6f33f6eabe1665532634299d0fbdc65c58b6218",
+  "evidence_id": "mrcv1:sha256:9055d83a83042c70131769e7d6f33f6eabe1665532634299d0fbdc65c58b6218",
   "fixture_id": "MSP08-G18-SYNTHETIC-POSITIVE-001",
   "limits": {
     "max_depth": 32,
@@ -196,7 +196,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -204,7 +204,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -213,7 +213,7 @@
               "captured_at": "2026-07-20T00:00:00Z"
             }
           },
-          "raw_payload_hash": "sha256:999b151b25e71a43960b1f9336dc5bc78c0f31187c5ea735a22296e35adbb725",
+          "raw_payload_hash": "sha256:6a214bbbc4d048c6bb2b66398a7240c12cc146a936e7a7dd5cccd1a7f7cecfc0",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -456,8 +456,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:999b151b25e71a43960b1f9336dc5bc78c0f31187c5ea735a22296e35adbb725",
+            "byte_length": 202,
+            "digest": "sha256:6a214bbbc4d048c6bb2b66398a7240c12cc146a936e7a7dd5cccd1a7f7cecfc0",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
@@ -597,7 +597,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -605,7 +605,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -614,7 +614,7 @@
               "captured_at": "2026-07-20T00:00:01Z"
             }
           },
-          "raw_payload_hash": "sha256:3807c0c56dc5eddb126e9bae8ca121290c064af7002508837caf32e51580f7a8",
+          "raw_payload_hash": "sha256:7f09671cfd8a03e1a3c2716b0a84770914cfb70b27955dc4e70782b418d8313c",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -857,8 +857,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:3807c0c56dc5eddb126e9bae8ca121290c064af7002508837caf32e51580f7a8",
+            "byte_length": 202,
+            "digest": "sha256:7f09671cfd8a03e1a3c2716b0a84770914cfb70b27955dc4e70782b418d8313c",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
@@ -998,7 +998,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -1006,7 +1006,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -1015,7 +1015,7 @@
               "captured_at": "2026-07-20T00:00:02Z"
             }
           },
-          "raw_payload_hash": "sha256:d30e75919bacc0060a10fb8e52cef2ce9d537bfacbefcc539cc6a691d3eeb2da",
+          "raw_payload_hash": "sha256:c55e00676e78c3615eb8d5dfe353b2daeeca1e7c134ab7b731d6265b170c8928",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -1258,8 +1258,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:d30e75919bacc0060a10fb8e52cef2ce9d537bfacbefcc539cc6a691d3eeb2da",
+            "byte_length": 202,
+            "digest": "sha256:c55e00676e78c3615eb8d5dfe353b2daeeca1e7c134ab7b731d6265b170c8928",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
@@ -1399,7 +1399,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -1407,7 +1407,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -1416,7 +1416,7 @@
               "captured_at": "2026-07-20T00:00:03Z"
             }
           },
-          "raw_payload_hash": "sha256:f72178c3555cd30862bf4aeefd01f287d2e0c421d8bd8206ff8643d893edbd6c",
+          "raw_payload_hash": "sha256:7f87283f3fb591edea8dc3bf79693664a6e0e093977013fd5c52ddb9e08c2437",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -1659,8 +1659,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:f72178c3555cd30862bf4aeefd01f287d2e0c421d8bd8206ff8643d893edbd6c",
+            "byte_length": 202,
+            "digest": "sha256:7f87283f3fb591edea8dc3bf79693664a6e0e093977013fd5c52ddb9e08c2437",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
@@ -1807,7 +1807,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -1815,7 +1815,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -1824,7 +1824,7 @@
               "captured_at": "2026-07-20T00:00:04Z"
             }
           },
-          "raw_payload_hash": "sha256:f7c55ff12b33404c544dc35fc9d10dbc5c0e229d41c296d2cf875a16ab32ac3d",
+          "raw_payload_hash": "sha256:67bbf1cac27554d28d01dd637a81a5f8257c79d8ec9b93a309ee165e29a3b5a9",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -2067,8 +2067,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:f7c55ff12b33404c544dc35fc9d10dbc5c0e229d41c296d2cf875a16ab32ac3d",
+            "byte_length": 202,
+            "digest": "sha256:67bbf1cac27554d28d01dd637a81a5f8257c79d8ec9b93a309ee165e29a3b5a9",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
@@ -2215,7 +2215,7 @@
           "view_id": "mcp.ebus.v1.responses"
         },
         {
-          "canonical_payload_hash": "sha256:77bb1c648fc97f25fcca802baa5eee8e3ce5d31dc4b43c32e8123d355013d88a",
+          "canonical_payload_hash": "sha256:59a4619643fd245039fbbeae62584a3611f4085500d20cfb7c27f18d171682ed",
           "capture_path": "artifacts/protected/mcp-tool-inventory.json",
           "media_type": "application/json",
           "payload": {
@@ -2223,7 +2223,7 @@
               "tools": [
                 "ebus.v1.devices.list",
                 "ebus.v1.zones.list",
-                "eebus.v1.runtime.status",
+                "eebus.v1.runtime.status.get",
                 "eebus.v1.services.list"
               ]
             },
@@ -2232,7 +2232,7 @@
               "captured_at": "2026-07-20T00:00:05Z"
             }
           },
-          "raw_payload_hash": "sha256:26714796e52621e1c29ab3d5f2f99812bb031139fc47e05ca76dde32a65f300f",
+          "raw_payload_hash": "sha256:854493ddb58f8964fdd956d020455d169219f96f7136795184041d25bd959fa8",
           "shape_hash": "sha256:28574c8f74d4ffe66389d9507bafd776b1b93ec0451113d60f203c36f291786e",
           "view_id": "mcp.tool.inventory"
         },
@@ -2475,8 +2475,8 @@
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },
           {
-            "byte_length": 198,
-            "digest": "sha256:26714796e52621e1c29ab3d5f2f99812bb031139fc47e05ca76dde32a65f300f",
+            "byte_length": 202,
+            "digest": "sha256:854493ddb58f8964fdd956d020455d169219f96f7136795184041d25bd959fa8",
             "input_id": "view:mcp.tool.inventory",
             "kind": "PROTECTED_VIEW_PAYLOAD"
           },

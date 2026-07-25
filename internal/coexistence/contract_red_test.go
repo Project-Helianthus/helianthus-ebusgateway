@@ -11,10 +11,10 @@ import (
 
 const (
 	docsOwnerRepository       = "Project-Helianthus/helianthus-docs-ebus"
-	docsOwnerCommit           = "fa335b6f66c97f5f82519ae71f3078687d919800"
-	docsOwnerTree             = "6afa212c29b9270edea031b78de39411505c27b6"
-	docsExactHeadActionsRun   = uint64(29707590892)
-	docsPostMainActionsRun    = uint64(29707652181)
+	docsOwnerCommit           = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	docsOwnerTree             = "24794312f89defcbed5cb9654e8539f37c1aa1df"
+	docsExactHeadActionsRun   = uint64(30135202717)
+	docsPostMainActionsRun    = uint64(30135494435)
 	baselineGatewayCommit     = "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	m7CompletionToken         = "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	m7DocsSourceCommit        = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"
@@ -40,8 +40,8 @@ var ownerArtifactSHA256 = map[string]string{
 	"docs/platform/schemas/multi-runtime-coexistence-evidence-v1.schema.json":                   "b0c891ea44e073b9bab150f2142584db356ed5e0569d70112156355617235b5d",
 	"docs/platform/schemas/multi-runtime-coexistence-report-v1.schema.json":                     "7769c91654319c208576d45ed5c9f10aaa133c6591f37a5ed1adeda0e8c4c25c",
 	"docs/platform/schemas/multi-runtime-coexistence-registry-v1.json":                          "82cf854d335da31dcda65ff45a024cbb4a1ce515965cb8165122c0b4ef7d8505",
-	"docs/platform/fixtures/coexistence-no-drift/v1/positive/evidence.json":                     "f1b2b0c9033ae985343ffd67748273f8ec5389f853e34fab90a218767fe74e26",
-	"docs/platform/fixtures/coexistence-no-drift/v1/positive/report.json":                       "7b5c964ab4794be28c5d87c09d36813dc2dddc564ba54ba6a81de51559a0a4bd",
+	"docs/platform/fixtures/coexistence-no-drift/v1/positive/evidence.json":                     "7fe0eced765b2599ee6341985d60edf86936485c75c56cb8c51892775f8d352b",
+	"docs/platform/fixtures/coexistence-no-drift/v1/positive/report.json":                       "687662756a2c833548bbc15285c895442c70346bf3832bf21c3a8309a9da0007",
 	"docs/platform/fixtures/coexistence-no-drift/v1/negative/candidate-leak-ebus-mcp.json":      "a19f30e188b30ef6eea49aad3330609aa0cbb834c308e747736a8806a417bf6d",
 	"docs/platform/fixtures/coexistence-no-drift/v1/negative/canonical-hash-mismatch.json":      "baf75894c6d16db5c17aafbe760c96c7eda71a4619f91d9b4e4166c9c8e4398b",
 	"docs/platform/fixtures/coexistence-no-drift/v1/negative/clock-mismatch.json":               "db0ee4072a7c6c6b3538e1464c6cc48a51265239835df4a2a63fd1194949ae90",

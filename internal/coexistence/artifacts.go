@@ -15,8 +15,8 @@ const (
 	registrySHA256       = "82cf854d335da31dcda65ff45a024cbb4a1ce515965cb8165122c0b4ef7d8505"
 	evidenceSchemaSHA256 = "b0c891ea44e073b9bab150f2142584db356ed5e0569d70112156355617235b5d"
 	reportSchemaSHA256   = "7769c91654319c208576d45ed5c9f10aaa133c6591f37a5ed1adeda0e8c4c25c"
-	positiveEvidenceSHA  = "f1b2b0c9033ae985343ffd67748273f8ec5389f853e34fab90a218767fe74e26"
-	positiveReportSHA    = "7b5c964ab4794be28c5d87c09d36813dc2dddc564ba54ba6a81de51559a0a4bd"
+	positiveEvidenceSHA  = "7fe0eced765b2599ee6341985d60edf86936485c75c56cb8c51892775f8d352b"
+	positiveReportSHA    = "687662756a2c833548bbc15285c895442c70346bf3832bf21c3a8309a9da0007"
 )
 
 var coexOwnerArtifactSHA256 = map[string]string{

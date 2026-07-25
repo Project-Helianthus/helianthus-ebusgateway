@@ -8,10 +8,10 @@ import (
 
 const (
 	ownerRepository          = "Project-Helianthus/helianthus-docs-ebus"
-	ownerCommit              = "2f15ce713bceae1cbd917e51d2413d4bf792678a"
-	ownerTree                = "bcd39a01f0fd06fc8ba99ade69f0451c4c9660bf"
-	ownerExactHeadActionsRun = uint64(29738982332)
-	ownerPostMainActionsRun  = uint64(29739155837)
+	ownerCommit              = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	ownerTree                = "24794312f89defcbed5cb9654e8539f37c1aa1df"
+	ownerExactHeadActionsRun = uint64(30135202717)
+	ownerPostMainActionsRun  = uint64(30135494435)
 )
 
 // These are executable contract copies, not substantive codebase docs.
@@ -23,8 +23,8 @@ var ownerArtifactSHA256 = map[string]string{
 	"docs/platform/schemas/leaf-promotion-dossier-v1.schema.json":            "665baa6356b86d279169ffa3c3667e7c0f5ee4a68bb0972eda360e32cf0fcd24",
 	"docs/platform/schemas/leaf-promotion-lock-result-v1.schema.json":        "8fb2caf77ac46cbcfe6074eee25183c21fd19b512dc19f1c38ea308767959de3",
 	"docs/platform/schemas/leaf-promotion-registry-v1.json":                  "89d2abad7c981d95a2cb6077ee383404ef13be04a3f1f34f79b8bf177a90792e",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json": "6cbc2585f07a443fa3ce28cba6f7fae635450aab7c3f4d59def56b9325f3f311",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":  "5919bc64a96cd606d61ac9b674e734eb8011a55161fb4bded9c7916be6a9ac4c",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json": "665898298a37032623e8269280ca3116ecd41b66e1414f627c9d587fc7702cff",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":  "4bd17234c77bcacecb5b016db2eeadb17c10c096b1579a378767115b991c26ec",
 }
 
 var embeddedPath = map[string]string{

@@ -55,10 +55,10 @@ const (
 	coexRegistryContractV1 = "helianthus.platform.multi-runtime-coexistence-registry.v1"
 
 	ownerRepository           = "Project-Helianthus/helianthus-docs-ebus"
-	ownerCommit               = "fa335b6f66c97f5f82519ae71f3078687d919800"
-	ownerTree                 = "6afa212c29b9270edea031b78de39411505c27b6"
-	ownerExactHeadActionsRun  = uint64(29707590892)
-	ownerPostMainActionsRun   = uint64(29707652181)
+	ownerCommit               = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	ownerTree                 = "24794312f89defcbed5cb9654e8539f37c1aa1df"
+	ownerExactHeadActionsRun  = uint64(30135202717)
+	ownerPostMainActionsRun   = uint64(30135494435)
 	coexBaselineGatewayCommit = "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	coexM7CompletionToken     = "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	coexM7DocsSourceCommit    = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"

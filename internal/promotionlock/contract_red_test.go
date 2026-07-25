@@ -9,11 +9,13 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence"
 )
 
 const (
-	docsOwnerCommit = "2f15ce713bceae1cbd917e51d2413d4bf792678a"
-	docsOwnerTree   = "bcd39a01f0fd06fc8ba99ade69f0451c4c9660bf"
+	docsOwnerCommit = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	docsOwnerTree   = "24794312f89defcbed5cb9654e8539f37c1aa1df"
 )
 
 func readTestFile(t *testing.T, parts ...string) []byte {
@@ -63,8 +65,8 @@ func TestMSP085PinsExactDocsOwnerAndExecutableArtifacts(t *testing.T) {
 	binding := PinnedContractV1()
 	if binding.OwnerRepository != "Project-Helianthus/helianthus-docs-ebus" ||
 		binding.OwnerCommit != docsOwnerCommit || binding.OwnerTree != docsOwnerTree ||
-		binding.OwnerExactHeadActionsRun != 29738982332 ||
-		binding.OwnerPostMainActionsRun != 29739155837 {
+		binding.OwnerExactHeadActionsRun != 30135202717 ||
+		binding.OwnerPostMainActionsRun != 30135494435 {
 		t.Fatalf("unexpected owner binding: %#v", binding)
 	}
 	want := map[string]string{
@@ -90,6 +92,18 @@ func TestMSP085PinsExactDocsOwnerAndExecutableArtifacts(t *testing.T) {
 		if bytes.Equal(raw, fresh) {
 			t.Fatalf("artifact %s aliases internal storage", path)
 		}
+	}
+}
+
+func TestMSP085PromotionAndCoexistenceBindSameDocsOwnerSnapshot(t *testing.T) {
+	promotion := PinnedContractV1()
+	coexistenceBinding := coexistence.Binding()
+	if promotion.OwnerRepository != coexistenceBinding.OwnerRepository ||
+		promotion.OwnerCommit != coexistenceBinding.OwnerCommit ||
+		promotion.OwnerTree != coexistenceBinding.OwnerTree ||
+		promotion.OwnerExactHeadActionsRun != coexistenceBinding.OwnerExactHeadActionsRun ||
+		promotion.OwnerPostMainActionsRun != coexistenceBinding.OwnerPostMainActionsRun {
+		t.Fatalf("docs owner snapshots diverged: promotion=%#v coexistence=%#v", promotion, coexistenceBinding)
 	}
 }
 
@@ -160,8 +174,8 @@ func TestMSP085BindsExactM7AndM8ArtifactsAndSyntheticBoundary(t *testing.T) {
 	source := manifest.SourceBindings
 	if source.M7GraphID != "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac" ||
 		source.M7ReplayID != "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b" ||
-		source.M8EvidenceID != "mrcv1:sha256:5eb99b41a11dc654a9ee3302a0732d5198c81f175250932e7eea9b142a4dd183" ||
-		source.M8ReportID != "mrcrv1:sha256:9f84bd33a2cd78cfd34e02607213a980945d73bb3b9a3c6ac768ddd2225b3898" ||
+		source.M8EvidenceID != "mrcv1:sha256:9055d83a83042c70131769e7d6f33f6eabe1665532634299d0fbdc65c58b6218" ||
+		source.M8ReportID != "mrcrv1:sha256:e87f8e135041b6894be4c0e3ccca9d16a34923ee9ec78cbf3fb614974e05b38b" ||
 		source.EvidenceClass != "SYNTHETIC_OFFLINE_FIXTURE" || source.LiveVR940Claim {
 		t.Fatalf("source binding = %#v", source)
 	}

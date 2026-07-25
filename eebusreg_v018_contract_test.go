@@ -20,7 +20,7 @@ const (
 	shipgoModule   = "github.com/Project-Helianthus/helianthus-ship-go"
 )
 
-func TestEEBusregV017ModuleClosure(t *testing.T) {
+func TestEEBusregV018ModuleClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -34,7 +34,7 @@ func TestEEBusregV017ModuleClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.7",
+		eebusregModule: "v0.1.8",
 		eebusgoModule:  "v0.7.1-helianthus.6",
 		shipgoModule:   "v0.6.1-helianthus.6",
 	}
@@ -52,7 +52,7 @@ func TestEEBusregV017ModuleClosure(t *testing.T) {
 	}
 }
 
-func TestEEBusregV017RuntimeAndGatewayBoundary(t *testing.T) {
+func TestEEBusregV018RuntimeAndGatewayBoundary(t *testing.T) {
 	remoteType := reflect.TypeOf(eebusruntime.Remote{})
 	if remoteType.NumField() != 1 || remoteType.Field(0).Name != "SKI" {
 		t.Fatalf("eebusruntime.Remote fields = %d/%v; want exactly SKI", remoteType.NumField(), remoteFieldNames(remoteType))
@@ -84,7 +84,7 @@ func TestEEBusregV017RuntimeAndGatewayBoundary(t *testing.T) {
 	}
 }
 
-func TestEEBusregV017CandidateFlowStaysPrivate(t *testing.T) {
+func TestEEBusregV018CandidateFlowStaysPrivate(t *testing.T) {
 	forbidden := []string{
 		"candidate_ref",
 		"CandidateRef",

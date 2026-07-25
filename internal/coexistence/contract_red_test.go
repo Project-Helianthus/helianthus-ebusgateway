@@ -11,10 +11,10 @@ import (
 
 const (
 	docsOwnerRepository       = "Project-Helianthus/helianthus-docs-ebus"
-	docsOwnerCommit           = "fa335b6f66c97f5f82519ae71f3078687d919800"
-	docsOwnerTree             = "6afa212c29b9270edea031b78de39411505c27b6"
-	docsExactHeadActionsRun   = uint64(29707590892)
-	docsPostMainActionsRun    = uint64(29707652181)
+	docsOwnerCommit           = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	docsOwnerTree             = "24794312f89defcbed5cb9654e8539f37c1aa1df"
+	docsExactHeadActionsRun   = uint64(30135202717)
+	docsPostMainActionsRun    = uint64(30135494435)
 	baselineGatewayCommit     = "ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	m7CompletionToken         = "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e"
 	m7DocsSourceCommit        = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"

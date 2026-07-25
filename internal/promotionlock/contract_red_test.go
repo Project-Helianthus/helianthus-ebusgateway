@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence"
 )
 
 const (
@@ -90,6 +92,18 @@ func TestMSP085PinsExactDocsOwnerAndExecutableArtifacts(t *testing.T) {
 		if bytes.Equal(raw, fresh) {
 			t.Fatalf("artifact %s aliases internal storage", path)
 		}
+	}
+}
+
+func TestMSP085PromotionAndCoexistenceBindSameDocsOwnerSnapshot(t *testing.T) {
+	promotion := PinnedContractV1()
+	coexistenceBinding := coexistence.Binding()
+	if promotion.OwnerRepository != coexistenceBinding.OwnerRepository ||
+		promotion.OwnerCommit != coexistenceBinding.OwnerCommit ||
+		promotion.OwnerTree != coexistenceBinding.OwnerTree ||
+		promotion.OwnerExactHeadActionsRun != coexistenceBinding.OwnerExactHeadActionsRun ||
+		promotion.OwnerPostMainActionsRun != coexistenceBinding.OwnerPostMainActionsRun {
+		t.Fatalf("docs owner snapshots diverged: promotion=%#v coexistence=%#v", promotion, coexistenceBinding)
 	}
 }
 

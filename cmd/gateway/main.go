@@ -1065,7 +1065,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		builder,
 		hub,
 		semanticRuntime.Provider(),
-		eebusAdapter,
+		eebusMCPProvider(eebusAdapter),
 		scheduleWriter,
 		configWriter,
 		busObservability,

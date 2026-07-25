@@ -127,7 +127,9 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	}
 }
 
-func TestMSP06GatewayPassesTypedProviderDirectlyWithoutContextTransport(t *testing.T) {
+// This AST check is retained because the process bootstrap cannot be invoked
+// behaviorally without constructing the unrelated eBUS transport lifecycle.
+func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	fset := token.NewFileSet()
 	mainFile, err := parser.ParseFile(fset, "main.go", nil, 0)
 	if err != nil {
@@ -165,10 +167,16 @@ func TestMSP06GatewayPassesTypedProviderDirectlyWithoutContextTransport(t *testi
 			return true
 		}
 		for _, argument := range call.Args {
-			identifier, ok := argument.(*ast.Ident)
-			if ok && identifier.Name == "eebusAdapter" {
-				explicitArgument = true
+			conversion, ok := argument.(*ast.CallExpr)
+			if !ok {
+				continue
 			}
+			function, ok := conversion.Fun.(*ast.Ident)
+			if !ok || function.Name != "eebusMCPProvider" || len(conversion.Args) != 1 {
+				continue
+			}
+			identifier, ok := conversion.Args[0].(*ast.Ident)
+			explicitArgument = ok && identifier.Name == "eebusAdapter"
 		}
 		return true
 	})
@@ -176,7 +184,7 @@ func TestMSP06GatewayPassesTypedProviderDirectlyWithoutContextTransport(t *testi
 		t.Error("startHTTPServer has no explicit mcp.EEBusV1Provider parameter")
 	}
 	if !explicitArgument {
-		t.Error("gateway bootstrap does not pass eebusAdapter directly to startHTTPServerFn")
+		t.Error("gateway bootstrap does not normalize eebusAdapter before startHTTPServerFn")
 	}
 
 	for filename, file := range map[string]*ast.File{

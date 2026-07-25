@@ -8,10 +8,10 @@ import (
 
 const (
 	ownerRepository          = "Project-Helianthus/helianthus-docs-ebus"
-	ownerCommit              = "2f15ce713bceae1cbd917e51d2413d4bf792678a"
-	ownerTree                = "bcd39a01f0fd06fc8ba99ade69f0451c4c9660bf"
-	ownerExactHeadActionsRun = uint64(29738982332)
-	ownerPostMainActionsRun  = uint64(29739155837)
+	ownerCommit              = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	ownerTree                = "24794312f89defcbed5cb9654e8539f37c1aa1df"
+	ownerExactHeadActionsRun = uint64(30135202717)
+	ownerPostMainActionsRun  = uint64(30135494435)
 )
 
 // These are executable contract copies, not substantive codebase docs.

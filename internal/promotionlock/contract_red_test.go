@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	docsOwnerCommit = "2f15ce713bceae1cbd917e51d2413d4bf792678a"
-	docsOwnerTree   = "bcd39a01f0fd06fc8ba99ade69f0451c4c9660bf"
+	docsOwnerCommit = "e8614eed91b424b81c414c3cfad596b7c1e8402f"
+	docsOwnerTree   = "24794312f89defcbed5cb9654e8539f37c1aa1df"
 )
 
 func readTestFile(t *testing.T, parts ...string) []byte {
@@ -63,8 +63,8 @@ func TestMSP085PinsExactDocsOwnerAndExecutableArtifacts(t *testing.T) {
 	binding := PinnedContractV1()
 	if binding.OwnerRepository != "Project-Helianthus/helianthus-docs-ebus" ||
 		binding.OwnerCommit != docsOwnerCommit || binding.OwnerTree != docsOwnerTree ||
-		binding.OwnerExactHeadActionsRun != 29738982332 ||
-		binding.OwnerPostMainActionsRun != 29739155837 {
+		binding.OwnerExactHeadActionsRun != 30135202717 ||
+		binding.OwnerPostMainActionsRun != 30135494435 {
 		t.Fatalf("unexpected owner binding: %#v", binding)
 	}
 	want := map[string]string{

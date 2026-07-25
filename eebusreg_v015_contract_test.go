@@ -20,7 +20,7 @@ const (
 	shipgoModule   = "github.com/Project-Helianthus/helianthus-ship-go"
 )
 
-func TestEEBusregV014ModuleClosure(t *testing.T) {
+func TestEEBusregV015ModuleClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -34,9 +34,9 @@ func TestEEBusregV014ModuleClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.4",
-		eebusgoModule:  "v0.7.1-helianthus.4",
-		shipgoModule:   "v0.6.1-helianthus.5",
+		eebusregModule: "v0.1.5",
+		eebusgoModule:  "v0.7.1-helianthus.6",
+		shipgoModule:   "v0.6.1-helianthus.6",
 	}
 	got := make(map[string]string, len(want))
 	for _, requirement := range parsed.Require {
@@ -52,7 +52,7 @@ func TestEEBusregV014ModuleClosure(t *testing.T) {
 	}
 }
 
-func TestEEBusregV014RuntimeAndGatewayBoundary(t *testing.T) {
+func TestEEBusregV015RuntimeAndGatewayBoundary(t *testing.T) {
 	remoteType := reflect.TypeOf(eebusruntime.Remote{})
 	if remoteType.NumField() != 1 || remoteType.Field(0).Name != "SKI" {
 		t.Fatalf("eebusruntime.Remote fields = %d/%v; want exactly SKI", remoteType.NumField(), remoteFieldNames(remoteType))
@@ -79,6 +79,28 @@ func TestEEBusregV014RuntimeAndGatewayBoundary(t *testing.T) {
 				if moduleImportMatches(importPath, eebusgoModule) || moduleImportMatches(importPath, shipgoModule) {
 					t.Errorf("%s imports protocol implementation module %q directly", path, importPath)
 				}
+			}
+		}
+	}
+}
+
+func TestEEBusregV015CandidateFlowStaysPrivate(t *testing.T) {
+	forbidden := []string{
+		"candidate_ref",
+		"CandidateRef",
+		"PairingCandidateQueuer",
+		"QueuePairingCandidate",
+		"VisiblePairingCandidatesUpdated",
+		"select_candidate",
+	}
+	for _, path := range productionGoFiles(t, ".") {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, token := range forbidden {
+			if strings.Contains(string(contents), token) {
+				t.Errorf("%s leaks private eeBUS candidate token %q", path, token)
 			}
 		}
 	}

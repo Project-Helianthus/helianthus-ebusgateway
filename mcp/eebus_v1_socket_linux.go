@@ -26,6 +26,8 @@ type eebusV1SocketIdentity struct {
 	inode  uint64
 	mode   uint32
 	uid    uint32
+	ctimeS int64
+	ctimeN int64
 }
 
 type eebusV1AnchoredListener struct {
@@ -92,7 +94,7 @@ func eebusV1PlatformListenOperator(socketPath string) (net.Listener, error) {
 		return nil, err
 	}
 	after, err := parent.statChild()
-	if err != nil || before != after || !after.isOwnedSocket(0o600) {
+	if err != nil || !before.sameObject(after) || !after.isOwnedSocket(0o600) {
 		return nil, errors.New("eeBUS operator socket permission and identity proof failed")
 	}
 	keepParent = true
@@ -168,7 +170,15 @@ func (parent *eebusV1PinnedParent) statChild() (eebusV1SocketIdentity, error) {
 	}
 	return eebusV1SocketIdentity{
 		device: uint64(stat.Dev), inode: stat.Ino, mode: stat.Mode, uid: stat.Uid,
+		ctimeS: stat.Ctim.Sec, ctimeN: stat.Ctim.Nsec,
 	}, nil
+}
+
+func (identity eebusV1SocketIdentity) sameObject(other eebusV1SocketIdentity) bool {
+	return identity.device == other.device &&
+		identity.inode == other.inode &&
+		identity.mode&unix.S_IFMT == other.mode&unix.S_IFMT &&
+		identity.uid == other.uid
 }
 
 func (identity eebusV1SocketIdentity) isOwnedSocket(permissions uint32) bool {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"time"
 
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
@@ -28,6 +30,7 @@ const (
 	eebusV1DefaultLiveTimeout = 3 * time.Second
 	eebusV1MaxLiveWorkers     = 8
 	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
+	eebusV1IDDigestPattern    = `^(?:[A-Za-z0-9_-]{43}|sha256:[0-9a-f]{64})$`
 )
 
 // EEBusV1Provider is the MSP-06 typed, read-only seam and the only MCP
@@ -44,12 +47,44 @@ type eebusV1RegistrationOptions struct {
 }
 
 type eebusV1Runtime struct {
-	provider     EEBusV1Provider
-	now          func() time.Time
-	pseudonymKey []byte
-	liveTimeout  time.Duration
-	liveWorkers  chan struct{}
-	store        *eebusV1SnapshotStore
+	provider            EEBusV1Provider
+	now                 func() time.Time
+	pseudonymKey        []byte
+	liveTimeout         time.Duration
+	publicLiveWorkers   chan struct{}
+	operatorLiveWorkers chan struct{}
+	store               *eebusV1SnapshotStore
+}
+
+type eebusV1Boundary struct {
+	AuthorizationBoundary string
+	MaskTier              string
+	AuthScope             string
+}
+
+var (
+	eebusV1PublicBoundary = eebusV1Boundary{
+		AuthorizationBoundary: "lan-http",
+		MaskTier:              "redacted",
+		AuthScope:             "eebus.public.read",
+	}
+	eebusV1OperatorBoundary = eebusV1Boundary{
+		AuthorizationBoundary: "owner-af-unix",
+		MaskTier:              "raw",
+		AuthScope:             "eebus.raw.read",
+	}
+)
+
+type eebusV1BoundaryContextKey struct{}
+
+func eebusV1BoundaryFromContext(ctx context.Context) eebusV1Boundary {
+	if ctx != nil {
+		if boundary, ok := ctx.Value(eebusV1BoundaryContextKey{}).(eebusV1Boundary); ok &&
+			(boundary == eebusV1PublicBoundary || boundary == eebusV1OperatorBoundary) {
+			return boundary
+		}
+	}
+	return eebusV1PublicBoundary
 }
 
 type eebusV1ToolSpec struct {
@@ -61,15 +96,15 @@ type eebusV1ToolSpec struct {
 }
 
 var eebusV1ToolSpecs = []eebusV1ToolSpec{
-	{name: eebusV1RuntimeStatusTool, scope: "runtime-status", description: "Get the redacted eeBUS runtime status.", properties: []string{"evidence_ref"}},
-	{name: eebusV1ServicesListTool, scope: "services", description: "List redacted eeBUS services.", properties: []string{"evidence_ref"}},
-	{name: eebusV1ServicesGetTool, scope: "service", description: "Get one redacted eeBUS service.", properties: []string{"evidence_ref", "id_digest"}, required: []string{"id_digest"}},
-	{name: eebusV1SessionsListTool, scope: "sessions", description: "List redacted eeBUS sessions.", properties: []string{"evidence_ref"}},
-	{name: eebusV1SessionsGetTool, scope: "session", description: "Get one redacted eeBUS session.", properties: []string{"evidence_ref", "id_digest"}, required: []string{"id_digest"}},
-	{name: eebusV1TopologyGetTool, scope: "topology", description: "Get the redacted eeBUS topology.", properties: []string{"evidence_ref"}},
-	{name: eebusV1SnapshotCaptureTool, scope: "whole-root", description: "Capture one immutable redacted eeBUS evidence root."},
+	{name: eebusV1RuntimeStatusTool, scope: "runtime-status", description: "Get the eeBUS runtime status.", properties: []string{"evidence_ref"}},
+	{name: eebusV1ServicesListTool, scope: "services", description: "List eeBUS services.", properties: []string{"evidence_ref"}},
+	{name: eebusV1ServicesGetTool, scope: "service", description: "Get one eeBUS service.", properties: []string{"evidence_ref", "id_digest"}, required: []string{"id_digest"}},
+	{name: eebusV1SessionsListTool, scope: "sessions", description: "List eeBUS sessions.", properties: []string{"evidence_ref"}},
+	{name: eebusV1SessionsGetTool, scope: "session", description: "Get one eeBUS session.", properties: []string{"evidence_ref", "id_digest"}, required: []string{"id_digest"}},
+	{name: eebusV1TopologyGetTool, scope: "topology", description: "Get the eeBUS topology.", properties: []string{"evidence_ref"}},
+	{name: eebusV1SnapshotCaptureTool, scope: "whole-root", description: "Capture one immutable eeBUS evidence root."},
 	{name: eebusV1SnapshotDropTool, scope: "whole-root", description: "Drop one immutable eeBUS evidence root.", properties: []string{"snapshot_ref"}, required: []string{"snapshot_ref"}},
-	{name: eebusV1PairingStatusTool, scope: "pairing-status", description: "Get redacted eeBUS pairing status.", properties: []string{"evidence_ref"}},
+	{name: eebusV1PairingStatusTool, scope: "pairing-status", description: "Get eeBUS pairing status.", properties: []string{"evidence_ref"}},
 }
 
 type eebusV1MetaV1 struct {
@@ -146,11 +181,12 @@ func (server *Server) registerEEBusV1Provider(provider EEBusV1Provider, options 
 		return errors.New("eeBUS MCP provider is already registered")
 	}
 	runtime := &eebusV1Runtime{
-		provider:     provider,
-		now:          options.now,
-		pseudonymKey: append([]byte(nil), options.pseudonymKey...),
-		liveTimeout:  options.liveTimeout,
-		liveWorkers:  make(chan struct{}, eebusV1MaxLiveWorkers),
+		provider:            provider,
+		now:                 options.now,
+		pseudonymKey:        append([]byte(nil), options.pseudonymKey...),
+		liveTimeout:         options.liveTimeout,
+		publicLiveWorkers:   make(chan struct{}, eebusV1MaxLiveWorkers),
+		operatorLiveWorkers: make(chan struct{}, eebusV1MaxLiveWorkers),
 	}
 	runtime.store = newEEBusV1SnapshotStore(runtime.now, options.entropy)
 	server.eebusV1 = runtime
@@ -176,7 +212,11 @@ func eebusV1Tools() []Tool {
 	for _, spec := range eebusV1ToolSpecs {
 		properties := make(map[string]any, len(spec.properties))
 		for _, property := range spec.properties {
-			properties[property] = map[string]any{"type": "string", "pattern": eebusV1TokenPattern}
+			pattern := eebusV1TokenPattern
+			if property == "id_digest" {
+				pattern = eebusV1IDDigestPattern
+			}
+			properties[property] = map[string]any{"type": "string", "pattern": pattern}
 		}
 		schema := map[string]any{
 			"type":                 "object",
@@ -202,10 +242,11 @@ func (server *Server) handleEEBusV1Call(ctx context.Context, name string, argume
 	if !ok {
 		return nil, false
 	}
-	envelope := runtime.call(ctx, spec, arguments)
+	boundary := eebusV1BoundaryFromContext(ctx)
+	envelope := runtime.call(ctx, spec, arguments, boundary)
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
-		envelope = runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), "contract_violation")
+		envelope = runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), boundary, "contract_violation")
 		encoded, _ = json.Marshal(envelope)
 	}
 	return callToolResultText(string(encoded), envelope.Error != nil), true
@@ -220,83 +261,101 @@ func eebusV1Spec(name string) (eebusV1ToolSpec, bool) {
 	return eebusV1ToolSpec{}, false
 }
 
-func (runtime *eebusV1Runtime) call(ctx context.Context, spec eebusV1ToolSpec, arguments map[string]any) eebusV1EnvelopeV1 {
+func (runtime *eebusV1Runtime) call(ctx context.Context, spec eebusV1ToolSpec, arguments map[string]any, boundary eebusV1Boundary) eebusV1EnvelopeV1 {
 	validated, code := eebusV1ValidateArguments(spec, arguments)
 	if code != "" {
-		return runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), code)
+		return runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), boundary, code)
 	}
 	if spec.name == eebusV1SnapshotDropTool {
-		result := runtime.store.drop(validated.snapshotRef)
-		return runtime.envelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), result, nil)
+		result := runtime.store.drop(validated.snapshotRef, boundary)
+		if result.ErrorCode != "" {
+			return runtime.errorEnvelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), boundary, result.ErrorCode)
+		}
+		return runtime.envelope(spec, "live", runtime.now().UTC(), eebusV1FallbackRuntime(), boundary, result, nil)
 	}
 	if validated.evidenceRef != "" {
-		lookup := runtime.store.lookup(validated.evidenceRef, spec.name, spec.scope)
+		lookup := runtime.store.lookup(validated.evidenceRef, spec.name, spec.scope, boundary)
 		status, timestamp := lookup.Runtime, lookup.Timestamp
 		if timestamp == "" {
 			timestamp = eebusV1Timestamp(runtime.now())
 			status = eebusV1FallbackRuntime()
 		}
 		if lookup.ErrorCode != "" {
-			return runtime.errorEnvelopeAt(spec, "evidence", timestamp, status, lookup.ErrorCode)
+			return runtime.errorEnvelopeAt(spec, "evidence", timestamp, status, boundary, lookup.ErrorCode)
 		}
 		data, code := eebusV1DataForTool(spec.name, *lookup.Projection, validated.idDigest)
 		if code != "" {
-			return runtime.errorEnvelopeAt(spec, "evidence", timestamp, status, code)
+			return runtime.errorEnvelopeAt(spec, "evidence", timestamp, status, boundary, code)
 		}
-		return runtime.envelopeAt(spec, "evidence", timestamp, status, data, nil)
+		return runtime.envelopeAt(spec, "evidence", timestamp, status, boundary, data, nil)
 	}
 
-	return runtime.liveCall(ctx, spec, validated)
+	return runtime.liveCall(ctx, spec, validated, boundary)
 }
 
-func (runtime *eebusV1Runtime) liveCall(ctx context.Context, spec eebusV1ToolSpec, validated eebusV1ValidatedArguments) eebusV1EnvelopeV1 {
+func (runtime *eebusV1Runtime) liveCall(ctx context.Context, spec eebusV1ToolSpec, validated eebusV1ValidatedArguments, boundary eebusV1Boundary) eebusV1EnvelopeV1 {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	liveCtx, cancel := context.WithTimeout(ctx, runtime.liveTimeout)
 	defer cancel()
 
+	workers, ok := runtime.liveWorkerBudget(boundary)
+	if !ok {
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "permission_denied")
+	}
 	select {
-	case runtime.liveWorkers <- struct{}{}:
+	case workers <- struct{}{}:
 	case <-liveCtx.Done():
-		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
 	}
 	if liveCtx.Err() != nil {
-		<-runtime.liveWorkers
-		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+		<-workers
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
 	}
 
 	result := make(chan eebusV1EnvelopeV1, 1)
 	go func() {
-		defer func() { <-runtime.liveWorkers }()
-		result <- runtime.buildLiveEnvelope(spec, validated)
+		defer func() { <-workers }()
+		result <- runtime.buildLiveEnvelope(spec, validated, boundary)
 	}()
 
 	select {
 	case envelope := <-result:
 		return envelope
 	case <-liveCtx.Done():
-		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), "timeout")
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
 	}
 }
 
-func (runtime *eebusV1Runtime) buildLiveEnvelope(spec eebusV1ToolSpec, validated eebusV1ValidatedArguments) eebusV1EnvelopeV1 {
-	projection, code := runtime.liveProjection()
+func (runtime *eebusV1Runtime) liveWorkerBudget(boundary eebusV1Boundary) (chan struct{}, bool) {
+	switch boundary {
+	case eebusV1PublicBoundary:
+		return runtime.publicLiveWorkers, runtime.publicLiveWorkers != nil
+	case eebusV1OperatorBoundary:
+		return runtime.operatorLiveWorkers, runtime.operatorLiveWorkers != nil
+	default:
+		return nil, false
+	}
+}
+
+func (runtime *eebusV1Runtime) buildLiveEnvelope(spec eebusV1ToolSpec, validated eebusV1ValidatedArguments, boundary eebusV1Boundary) eebusV1EnvelopeV1 {
+	projection, code := runtime.liveProjection(boundary)
 	if code != "" {
-		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), code)
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, code)
 	}
 	if spec.name == eebusV1SnapshotCaptureTool {
-		captured, code := runtime.store.capture(projection)
+		captured, code := runtime.store.capture(projection, boundary)
 		if code != "" {
-			return runtime.errorEnvelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, code)
+			return runtime.errorEnvelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, boundary, code)
 		}
-		return runtime.envelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, captured, nil)
+		return runtime.envelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, boundary, captured, nil)
 	}
 	data, code := eebusV1DataForTool(spec.name, projection, validated.idDigest)
 	if code != "" {
-		return runtime.errorEnvelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, code)
+		return runtime.errorEnvelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, boundary, code)
 	}
-	return runtime.envelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, data, nil)
+	return runtime.envelopeAt(spec, "live", projection.DataTimestamp, projection.Runtime, boundary, data, nil)
 }
 
 type eebusV1ValidatedArguments struct {
@@ -337,7 +396,7 @@ func eebusV1ValidateArguments(spec eebusV1ToolSpec, arguments map[string]any) (e
 		result.snapshotRef = value
 	}
 	if raw, exists := arguments["id_digest"]; exists {
-		value, ok := eebusV1ParseCanonicalToken(raw)
+		value, ok := eebusV1ParseIDDigest(raw)
 		if !ok {
 			return eebusV1ValidatedArguments{}, "invalid_argument"
 		}
@@ -346,7 +405,22 @@ func eebusV1ValidateArguments(spec eebusV1ToolSpec, arguments map[string]any) (e
 	return result, ""
 }
 
-func (runtime *eebusV1Runtime) liveProjection() (eebusV1Projection, string) {
+func eebusV1ParseIDDigest(value any) (string, bool) {
+	if token, ok := eebusV1ParseCanonicalToken(value); ok {
+		return token, true
+	}
+	digest, ok := value.(string)
+	if !ok || len(digest) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(digest, "sha256:") {
+		return "", false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+	if err != nil || len(decoded) != sha256.Size || "sha256:"+hex.EncodeToString(decoded) != digest {
+		return "", false
+	}
+	return digest, true
+}
+
+func (runtime *eebusV1Runtime) liveProjection(boundary eebusV1Boundary) (eebusV1Projection, string) {
 	snapshot, err := runtime.provider.Snapshot()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -357,7 +431,7 @@ func (runtime *eebusV1Runtime) liveProjection() (eebusV1Projection, string) {
 	if err := eebusV1ValidateProviderCollectionBounds(snapshot); err != nil {
 		return eebusV1Projection{}, "contract_violation"
 	}
-	projection, err := eebusV1ProjectSnapshot(snapshot, runtime.pseudonymKey)
+	projection, err := eebusV1ProjectSnapshotForBoundary(snapshot, boundary, runtime.pseudonymKey)
 	if err != nil {
 		return eebusV1Projection{}, "contract_violation"
 	}
@@ -369,50 +443,21 @@ func eebusV1ValidateProviderCollectionBounds(snapshot eebusruntime.SnapshotV1) e
 		len(snapshot.Pairing),
 		len(snapshot.Services),
 		len(snapshot.Sessions),
-		len(snapshot.Topology.Devices),
-		len(snapshot.Raw),
+		len(snapshot.Devices),
+		len(snapshot.Entities),
+		len(snapshot.Features),
+		len(snapshot.UseCases),
+		len(snapshot.Opaque),
 	); err != nil {
 		return err
-	}
-	for _, pairing := range snapshot.Pairing {
-		if err := eebusV1ValidateCollectionSizes(len(pairing.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, service := range snapshot.Services {
-		if err := eebusV1ValidateCollectionSizes(len(service.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, session := range snapshot.Sessions {
-		if err := eebusV1ValidateCollectionSizes(len(session.Raw)); err != nil {
-			return err
-		}
-	}
-	for _, device := range snapshot.Topology.Devices {
-		if err := eebusV1ValidateCollectionSizes(len(device.Entities), len(device.UseCaseClaims), len(device.Raw)); err != nil {
-			return err
-		}
-		for _, entity := range device.Entities {
-			if err := eebusV1ValidateCollectionSizes(len(entity.Features), len(entity.Raw)); err != nil {
-				return err
-			}
-			for _, feature := range entity.Features {
-				if err := eebusV1ValidateCollectionSizes(len(feature.Raw)); err != nil {
-					return err
-				}
-			}
-		}
-		for _, claim := range device.UseCaseClaims {
-			if err := eebusV1ValidateCollectionSizes(len(claim.Raw)); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
 
 func eebusV1DataForTool(name string, projection eebusV1Projection, idDigest string) (any, string) {
+	if projection.Boundary == eebusV1OperatorBoundary {
+		return eebusV1RawDataForTool(name, projection, idDigest)
+	}
 	switch name {
 	case eebusV1RuntimeStatusTool:
 		return projection.Runtime, ""
@@ -443,26 +488,64 @@ func eebusV1DataForTool(name string, projection eebusV1Projection, idDigest stri
 	}
 }
 
-func (runtime *eebusV1Runtime) errorEnvelope(spec eebusV1ToolSpec, mode string, timestamp time.Time, status eebusV1RuntimeStatusDataV1, code string) eebusV1EnvelopeV1 {
-	return runtime.errorEnvelopeAt(spec, mode, eebusV1Timestamp(timestamp), status, code)
+func eebusV1RawDataForTool(name string, projection eebusV1Projection, idDigest string) (any, string) {
+	if projection.Source == nil {
+		return nil, "contract_violation"
+	}
+	source := projection.Source
+	switch name {
+	case eebusV1RuntimeStatusTool:
+		return projection.Runtime, ""
+	case eebusV1ServicesListTool:
+		return eebusV1ServicesListDataV1{Services: eebusV1ProjectRawServices(source.Services)}, ""
+	case eebusV1ServicesGetTool:
+		for _, service := range eebusV1ProjectRawServices(source.Services) {
+			if service.IDDigest == idDigest {
+				return service, ""
+			}
+		}
+		return nil, "not_found"
+	case eebusV1SessionsListTool:
+		return eebusV1SessionsListDataV1{Sessions: eebusV1ProjectRawSessions(source.Sessions)}, ""
+	case eebusV1SessionsGetTool:
+		for _, session := range eebusV1ProjectRawSessions(source.Sessions) {
+			if session.IDDigest == idDigest {
+				return session, ""
+			}
+		}
+		return nil, "not_found"
+	case eebusV1TopologyGetTool:
+		return eebusV1RawTopologyDataV1{
+			Devices: source.Devices, Entities: source.Entities, Features: source.Features,
+			UseCases: source.UseCases, Opaque: source.Opaque,
+		}, ""
+	case eebusV1PairingStatusTool:
+		return eebusV1PairingStatusDataV1{Pairing: source.Pairing}, ""
+	default:
+		return nil, "contract_violation"
+	}
 }
 
-func (runtime *eebusV1Runtime) errorEnvelopeAt(spec eebusV1ToolSpec, mode, timestamp string, status eebusV1RuntimeStatusDataV1, code string) eebusV1EnvelopeV1 {
+func (runtime *eebusV1Runtime) errorEnvelope(spec eebusV1ToolSpec, mode string, timestamp time.Time, status eebusV1RuntimeStatusDataV1, boundary eebusV1Boundary, code string) eebusV1EnvelopeV1 {
+	return runtime.errorEnvelopeAt(spec, mode, eebusV1Timestamp(timestamp), status, boundary, code)
+}
+
+func (runtime *eebusV1Runtime) errorEnvelopeAt(spec eebusV1ToolSpec, mode, timestamp string, status eebusV1RuntimeStatusDataV1, boundary eebusV1Boundary, code string) eebusV1EnvelopeV1 {
 	public, ok := eebusV1PublicErrorForCode(code)
 	if !ok {
 		public, _ = eebusV1PublicErrorForCode("contract_violation")
 	}
-	return runtime.envelopeAt(spec, mode, timestamp, status, nil, &public)
+	return runtime.envelopeAt(spec, mode, timestamp, status, boundary, nil, &public)
 }
 
-func (runtime *eebusV1Runtime) envelope(spec eebusV1ToolSpec, mode string, timestamp time.Time, status eebusV1RuntimeStatusDataV1, data any, publicError *eebusV1ErrorV1) eebusV1EnvelopeV1 {
-	return runtime.envelopeAt(spec, mode, eebusV1Timestamp(timestamp), status, data, publicError)
+func (runtime *eebusV1Runtime) envelope(spec eebusV1ToolSpec, mode string, timestamp time.Time, status eebusV1RuntimeStatusDataV1, boundary eebusV1Boundary, data any, publicError *eebusV1ErrorV1) eebusV1EnvelopeV1 {
+	return runtime.envelopeAt(spec, mode, eebusV1Timestamp(timestamp), status, boundary, data, publicError)
 }
 
-func (runtime *eebusV1Runtime) envelopeAt(spec eebusV1ToolSpec, mode, timestamp string, status eebusV1RuntimeStatusDataV1, data any, publicError *eebusV1ErrorV1) eebusV1EnvelopeV1 {
+func (runtime *eebusV1Runtime) envelopeAt(spec eebusV1ToolSpec, mode, timestamp string, status eebusV1RuntimeStatusDataV1, boundary eebusV1Boundary, data any, publicError *eebusV1ErrorV1) eebusV1EnvelopeV1 {
 	view := eebusV1HashView{
 		Contract: eebusV1Contract, Tool: spec.name, Scope: spec.scope,
-		MaskTier: eebusV1MaskTier, AuthScope: eebusV1AuthScope, Mode: mode,
+		MaskTier: boundary.MaskTier, AuthScope: boundary.AuthScope, Mode: mode,
 		DataTimestamp: timestamp, RuntimeState: status.State, Degradation: status.Degradation,
 		Data: data, Error: publicError,
 	}
@@ -483,7 +566,7 @@ func (runtime *eebusV1Runtime) envelopeAt(spec eebusV1ToolSpec, mode, timestamp 
 		data = nil
 		fallback := eebusV1HashView{
 			Contract: eebusV1Contract, Tool: spec.name, Scope: spec.scope,
-			MaskTier: eebusV1MaskTier, AuthScope: eebusV1AuthScope, Mode: mode,
+			MaskTier: boundary.MaskTier, AuthScope: boundary.AuthScope, Mode: mode,
 			DataTimestamp: timestamp, RuntimeState: status.State, Degradation: status.Degradation,
 			Data: nil, Error: publicError,
 		}
@@ -493,7 +576,7 @@ func (runtime *eebusV1Runtime) envelopeAt(spec eebusV1ToolSpec, mode, timestamp 
 	return eebusV1EnvelopeV1{
 		Meta: eebusV1MetaV1{
 			Contract: eebusV1Contract, Tool: spec.name, Scope: spec.scope,
-			MaskTier: eebusV1MaskTier, AuthScope: eebusV1AuthScope, Mode: mode,
+			MaskTier: boundary.MaskTier, AuthScope: boundary.AuthScope, Mode: mode,
 			DataTimestamp: timestamp, DataHash: hash, Runtime: status,
 		},
 		Data: data, Error: publicError,

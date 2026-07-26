@@ -17,7 +17,7 @@ func CaptureEEBusV1ServicesEvidence(provider EEBusV1Provider, pseudonymKey []byt
 		provider:     provider,
 		pseudonymKey: append([]byte(nil), pseudonymKey...),
 	}
-	projection, code := runtime.liveProjection()
+	projection, code := runtime.liveProjection(eebusV1PublicBoundary)
 	if code != "" {
 		return nil, time.Time{}, errors.New("eeBUS evidence source unavailable")
 	}
@@ -26,7 +26,7 @@ func CaptureEEBusV1ServicesEvidence(provider EEBusV1Provider, pseudonymKey []byt
 		return nil, time.Time{}, errors.New("eeBUS evidence contract violation")
 	}
 	spec := eebusV1ToolSpec{name: eebusV1ServicesListTool, scope: "services"}
-	envelope := runtime.envelopeAt(spec, "evidence", projection.DataTimestamp, projection.Runtime, data, nil)
+	envelope := runtime.envelopeAt(spec, "evidence", projection.DataTimestamp, projection.Runtime, eebusV1PublicBoundary, data, nil)
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, time.Time{}, errors.New("marshal eeBUS evidence envelope")

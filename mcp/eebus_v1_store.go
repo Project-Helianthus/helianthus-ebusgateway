@@ -34,11 +34,12 @@ type eebusV1CapturedRootV1 struct {
 	ExpiresAt           string                `json:"expires_at"`
 	SnapshotContentHash string                `json:"snapshot_content_hash"`
 	EvidenceRefs        eebusV1EvidenceRefsV1 `json:"evidence_refs"`
-	Snapshot            eebusV1SnapshotDataV1 `json:"snapshot"`
+	Snapshot            any                   `json:"snapshot"`
 }
 
 type eebusV1DropResultV1 struct {
-	Status string `json:"status"`
+	Status    string `json:"status,omitempty"`
+	ErrorCode string `json:"-"`
 }
 
 type eebusV1ReferenceBinding struct {
@@ -49,16 +50,19 @@ type eebusV1ReferenceBinding struct {
 	Scope      string
 	MaskTier   string
 	AuthScope  string
+	Boundary   string
 }
 
-func (binding eebusV1ReferenceBinding) matches(tool, scope string) bool {
+func (binding eebusV1ReferenceBinding) matches(tool, scope string, boundary eebusV1Boundary, runtimeKey string) bool {
 	return binding.Version == eebusV1ReferenceVersion &&
 		binding.Contract == eebusV1Contract &&
 		binding.Tool == tool &&
 		binding.Scope == scope &&
-		binding.MaskTier == eebusV1MaskTier &&
-		binding.AuthScope == eebusV1AuthScope &&
-		binding.RuntimeKey != ""
+		binding.MaskTier == boundary.MaskTier &&
+		binding.AuthScope == boundary.AuthScope &&
+		binding.Boundary == boundary.AuthorizationBoundary &&
+		binding.RuntimeKey != "" &&
+		binding.RuntimeKey == runtimeKey
 }
 
 type eebusV1StoredReference struct {
@@ -70,6 +74,8 @@ type eebusV1StoredReference struct {
 type eebusV1ActiveRoot struct {
 	RootToken  string
 	RootBytes  [sha256.Size]byte
+	RuntimeKey string
+	Boundary   eebusV1Boundary
 	ExpiresAt  time.Time
 	Projection eebusV1Projection
 	Captured   eebusV1CapturedRootV1
@@ -79,6 +85,8 @@ type eebusV1ActiveRoot struct {
 type eebusV1TombstoneRoot struct {
 	RootToken  string
 	RootBytes  [sha256.Size]byte
+	RuntimeKey string
+	Boundary   eebusV1Boundary
 	TerminalAt time.Time
 	Runtime    eebusV1RuntimeStatusDataV1
 	Timestamp  string
@@ -132,12 +140,20 @@ func newEEBusV1SnapshotStore(now func() time.Time, entropy io.Reader) *eebusV1Sn
 	}
 }
 
-func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV1CapturedRootV1, string) {
+func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection, boundaries ...eebusV1Boundary) (eebusV1CapturedRootV1, string) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	boundary := projection.Boundary
+	if len(boundaries) != 0 {
+		boundary = boundaries[0]
+	}
+	if boundary != projection.Boundary ||
+		(boundary != eebusV1PublicBoundary && boundary != eebusV1OperatorBoundary) {
+		return eebusV1CapturedRootV1{}, "permission_denied"
+	}
 	now := store.now()
 	store.purgeLocked(now)
-	if len(store.activeRoots) >= eebusV1MaxActive {
+	if store.activeCountLocked(boundary) >= eebusV1MaxActive {
 		return eebusV1CapturedRootV1{}, "quota_exceeded"
 	}
 
@@ -158,7 +174,7 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV
 	captured := eebusV1CapturedRootV1{
 		SnapshotRef:         tokens["snapshot_ref"],
 		ExpiresAt:           eebusV1Timestamp(expiresAt),
-		SnapshotContentHash: projection.Snapshot.Meta.DataHash,
+		SnapshotContentHash: projection.ContentHash,
 		EvidenceRefs: eebusV1EvidenceRefsV1{
 			RuntimeStatusRef: tokens["runtime_status_ref"],
 			ServicesListRef:  tokens["services_list_ref"],
@@ -168,11 +184,13 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV
 			TopologyRef:      tokens["topology_ref"],
 			PairingStatusRef: tokens["pairing_status_ref"],
 		},
-		Snapshot: projection.Snapshot,
+		Snapshot: projection.capturedSnapshot(),
 	}
 	root := &eebusV1ActiveRoot{
 		RootToken:  captured.SnapshotRef,
 		RootBytes:  decoded["snapshot_ref"],
+		RuntimeKey: projection.RuntimeKey,
+		Boundary:   boundary,
 		ExpiresAt:  expiresAt,
 		Projection: projection,
 		Captured:   captured,
@@ -186,7 +204,8 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV
 			Binding: eebusV1ReferenceBinding{
 				Version: eebusV1ReferenceVersion, RuntimeKey: projection.RuntimeKey,
 				Contract: eebusV1Contract, Tool: spec.Tool, Scope: spec.Scope,
-				MaskTier: eebusV1MaskTier, AuthScope: eebusV1AuthScope,
+				MaskTier: boundary.MaskTier, AuthScope: boundary.AuthScope,
+				Boundary: boundary.AuthorizationBoundary,
 			},
 		}
 		root.References[token] = reference
@@ -198,9 +217,13 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection) (eebusV
 	return captured, ""
 }
 
-func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1LookupResult {
+func (store *eebusV1SnapshotStore) lookup(token, tool, scope string, boundaries ...eebusV1Boundary) eebusV1LookupResult {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	boundary := eebusV1PublicBoundary
+	if len(boundaries) != 0 {
+		boundary = boundaries[0]
+	}
 	now := store.now()
 	store.purgeLocked(now)
 
@@ -209,7 +232,7 @@ func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1Look
 		if root == nil {
 			return eebusV1LookupResult{ErrorCode: "contract_violation"}
 		}
-		if !reference.Binding.matches(tool, scope) {
+		if !reference.Binding.matches(tool, scope, boundary, root.RuntimeKey) {
 			return eebusV1LookupResult{Runtime: root.Projection.Runtime, Timestamp: root.Projection.DataTimestamp, ErrorCode: "permission_denied"}
 		}
 		projection := root.Projection
@@ -220,7 +243,7 @@ func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1Look
 		if root == nil {
 			return eebusV1LookupResult{ErrorCode: "contract_violation"}
 		}
-		if !reference.Binding.matches(tool, scope) {
+		if !reference.Binding.matches(tool, scope, boundary, root.RuntimeKey) {
 			return eebusV1LookupResult{Runtime: root.Runtime, Timestamp: root.Timestamp, ErrorCode: "permission_denied"}
 		}
 		return eebusV1LookupResult{Runtime: root.Runtime, Timestamp: root.Timestamp, ErrorCode: "snapshot_gone"}
@@ -228,23 +251,55 @@ func (store *eebusV1SnapshotStore) lookup(token, tool, scope string) eebusV1Look
 	return eebusV1LookupResult{ErrorCode: "not_found"}
 }
 
-func (store *eebusV1SnapshotStore) drop(token string) eebusV1DropResultV1 {
+func (store *eebusV1SnapshotStore) drop(token string, boundaries ...eebusV1Boundary) eebusV1DropResultV1 {
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	boundary := eebusV1PublicBoundary
+	if len(boundaries) != 0 {
+		boundary = boundaries[0]
+	}
 	now := store.now()
 	store.purgeLocked(now)
 
 	reference, exists := store.activeTokens[token]
-	if !exists || !reference.Root {
+	if !exists {
+		if terminal, terminalExists := store.tombstoneTokens[token]; terminalExists {
+			root := store.tombstoneRoots[terminal.RootToken]
+			if root == nil {
+				return eebusV1DropResultV1{ErrorCode: "contract_violation"}
+			}
+			if !terminal.Binding.matches(eebusV1SnapshotCaptureTool, "whole-root", boundary, root.RuntimeKey) {
+				return eebusV1DropResultV1{ErrorCode: "permission_denied"}
+			}
+		}
 		return eebusV1DropResultV1{Status: "already_gone"}
 	}
 	root := store.activeRoots[reference.RootToken]
+	if root == nil {
+		return eebusV1DropResultV1{ErrorCode: "contract_violation"}
+	}
+	if !reference.Binding.matches(eebusV1SnapshotCaptureTool, "whole-root", boundary, root.RuntimeKey) {
+		return eebusV1DropResultV1{ErrorCode: "permission_denied"}
+	}
+	if !reference.Root {
+		return eebusV1DropResultV1{Status: "already_gone"}
+	}
 	if root == nil || root.RootToken != token {
 		return eebusV1DropResultV1{Status: "already_gone"}
 	}
 	store.terminalizeLocked(root, now)
 	store.enforceTombstoneBoundLocked()
 	return eebusV1DropResultV1{Status: "dropped"}
+}
+
+func (store *eebusV1SnapshotStore) activeCountLocked(boundary eebusV1Boundary) int {
+	count := 0
+	for _, root := range store.activeRoots {
+		if root.Boundary == boundary {
+			count++
+		}
+	}
+	return count
 }
 
 func (store *eebusV1SnapshotStore) mintTokenLocked(reserved map[string]struct{}) (string, [sha256.Size]byte, error) {
@@ -301,6 +356,8 @@ func (store *eebusV1SnapshotStore) terminalizeLocked(root *eebusV1ActiveRoot, te
 	tombstone := &eebusV1TombstoneRoot{
 		RootToken:  root.RootToken,
 		RootBytes:  root.RootBytes,
+		RuntimeKey: root.RuntimeKey,
+		Boundary:   root.Boundary,
 		TerminalAt: terminalAt,
 		Runtime:    root.Projection.Runtime,
 		Timestamp:  root.Projection.DataTimestamp,
@@ -313,19 +370,34 @@ func (store *eebusV1SnapshotStore) terminalizeLocked(root *eebusV1ActiveRoot, te
 }
 
 func (store *eebusV1SnapshotStore) enforceTombstoneBoundLocked() {
-	for len(store.tombstoneRoots) > eebusV1MaxTombstones {
-		var oldest *eebusV1TombstoneRoot
-		for _, candidate := range store.tombstoneRoots {
-			if oldest == nil || candidate.TerminalAt.Before(oldest.TerminalAt) ||
-				(candidate.TerminalAt.Equal(oldest.TerminalAt) && bytes.Compare(candidate.RootBytes[:], oldest.RootBytes[:]) < 0) {
-				oldest = candidate
+	for _, boundary := range []eebusV1Boundary{eebusV1PublicBoundary, eebusV1OperatorBoundary} {
+		for store.tombstoneCountLocked(boundary) > eebusV1MaxTombstones {
+			var oldest *eebusV1TombstoneRoot
+			for _, candidate := range store.tombstoneRoots {
+				if candidate.Boundary != boundary {
+					continue
+				}
+				if oldest == nil || candidate.TerminalAt.Before(oldest.TerminalAt) ||
+					(candidate.TerminalAt.Equal(oldest.TerminalAt) && bytes.Compare(candidate.RootBytes[:], oldest.RootBytes[:]) < 0) {
+					oldest = candidate
+				}
 			}
+			if oldest == nil {
+				return
+			}
+			store.removeTombstoneLocked(oldest.RootToken)
 		}
-		if oldest == nil {
-			return
-		}
-		store.removeTombstoneLocked(oldest.RootToken)
 	}
+}
+
+func (store *eebusV1SnapshotStore) tombstoneCountLocked(boundary eebusV1Boundary) int {
+	count := 0
+	for _, root := range store.tombstoneRoots {
+		if root.Boundary == boundary {
+			count++
+		}
+	}
+	return count
 }
 
 func (store *eebusV1SnapshotStore) removeTombstoneLocked(rootToken string) {

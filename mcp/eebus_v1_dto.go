@@ -500,7 +500,7 @@ func eebusV1ValidateSourceSnapshot(snapshot eebusV1SourceSnapshot) error {
 				if err := eebusV1ValidateSourceIdentityKind(feature.ID, "peer"); err != nil {
 					return err
 				}
-				if (feature.Role != "client" && feature.Role != "server") || len(feature.Unknown) != 0 {
+				if (feature.Role != "client" && feature.Role != "server" && feature.Role != "special") || len(feature.Unknown) != 0 {
 					return errors.New("feature contains an unsupported value")
 				}
 				if err := eebusV1ValidateSourceEvidence(feature.Raw); err != nil {

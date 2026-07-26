@@ -309,6 +309,7 @@ func msp06Snapshot(t *testing.T, runtimeLabel string) eebusruntime.SnapshotV1 {
 					{ID: msp06SourceID(t, eebusraw.IDKindPeer, "entity-z"), Features: []eebusruntime.FeatureV1{
 						{ID: msp06SourceID(t, eebusraw.IDKindPeer, "feature-z"), Role: eebusruntime.FeatureRoleV1Server},
 						{ID: msp06SourceID(t, eebusraw.IDKindPeer, "feature-a"), Role: eebusruntime.FeatureRoleV1Client},
+						{ID: msp06SourceID(t, eebusraw.IDKindPeer, "feature-m"), Role: eebusruntime.FeatureRoleV1Special},
 					}},
 					{ID: msp06SourceID(t, eebusraw.IDKindPeer, "entity-a")},
 				},
@@ -752,8 +753,8 @@ func msp06AssertTopology(t *testing.T, topology map[string]any) {
 				}
 				msp06AssertKeys(t, feature, featurePath, keys...)
 				featureDigests = append(featureDigests, msp06AssertIdentity(t, feature["id"], featurePath+".id", "feature"))
-				if feature["role"] != "client" && feature["role"] != "server" {
-					t.Fatalf("%s.role = %#v, want closed client/server enum", featurePath, feature["role"])
+				if feature["role"] != "client" && feature["role"] != "server" && feature["role"] != "special" {
+					t.Fatalf("%s.role = %#v, want closed client/server/special enum", featurePath, feature["role"])
 				}
 			}
 			if !sort.StringsAreSorted(featureDigests) {

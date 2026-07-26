@@ -567,7 +567,12 @@ func TestIssue743OperatorSocketModesAndSameEffectiveUIDOnLinux(t *testing.T) {
 	if got := endpoint.eebusV1OperatorSocketPath(); got != "/data/eebus/operator-mcp.sock" {
 		t.Fatalf("operator socket path = %q, want /data/eebus/operator-mcp.sock", got)
 	}
-	socketPath := filepath.Join(t.TempDir(), "eebus", "operator-mcp.sock")
+	socketRoot, err := os.MkdirTemp("", "e743-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	socketPath := filepath.Join(socketRoot, "operator.sock")
 	closer, err := endpoint.eebusV1ServeOperator(context.Background(), socketPath, func(net.Conn) (int, error) {
 		return os.Geteuid(), nil
 	})
@@ -653,7 +658,12 @@ func TestIssue743OperatorSocketRejectsDifferentEffectiveUIDBeforeProviderAccess(
 	if !ok {
 		t.Fatal("eeBUS AF_UNIX operator endpoint is unavailable")
 	}
-	socketPath := filepath.Join(t.TempDir(), "eebus", "operator-mcp.sock")
+	socketRoot, err := os.MkdirTemp("", "e743-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	socketPath := filepath.Join(socketRoot, "operator.sock")
 	closer, err := endpoint.eebusV1ServeOperator(context.Background(), socketPath, func(net.Conn) (int, error) {
 		return os.Geteuid() + 1, nil
 	})

@@ -18,9 +18,10 @@ const (
 	eebusregModule = "github.com/Project-Helianthus/helianthus-eebusreg"
 	eebusgoModule  = "github.com/Project-Helianthus/helianthus-eebus-go"
 	shipgoModule   = "github.com/Project-Helianthus/helianthus-ship-go"
+	spinegoModule  = "github.com/Project-Helianthus/helianthus-spine-go"
 )
 
-func TestEEBusregV0113ModuleClosure(t *testing.T) {
+func TestEEBusregV0114ModuleClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -34,9 +35,10 @@ func TestEEBusregV0113ModuleClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.13",
-		eebusgoModule:  "v0.7.1-helianthus.8",
-		shipgoModule:   "v0.6.1-helianthus.8",
+		eebusregModule: "v0.1.14",
+		eebusgoModule:  "v0.7.1-helianthus.9",
+		shipgoModule:   "v0.6.1-helianthus.9",
+		spinegoModule:  "v0.7.1-helianthus.4",
 	}
 	got := make(map[string]string, len(want))
 	for _, requirement := range parsed.Require {
@@ -52,7 +54,7 @@ func TestEEBusregV0113ModuleClosure(t *testing.T) {
 	}
 }
 
-func TestEEBusregV0113RuntimeAndGatewayBoundary(t *testing.T) {
+func TestEEBusregV0114RuntimeAndGatewayBoundary(t *testing.T) {
 	remoteType := reflect.TypeOf(eebusruntime.Remote{})
 	if remoteType.NumField() != 1 || remoteType.Field(0).Name != "SKI" {
 		t.Fatalf("eebusruntime.Remote fields = %d/%v; want exactly SKI", remoteType.NumField(), remoteFieldNames(remoteType))
@@ -84,7 +86,7 @@ func TestEEBusregV0113RuntimeAndGatewayBoundary(t *testing.T) {
 	}
 }
 
-func TestEEBusregV0113CandidateFlowStaysPrivate(t *testing.T) {
+func TestEEBusregV0114CandidateFlowStaysPrivate(t *testing.T) {
 	forbidden := []string{
 		"candidate_ref",
 		"CandidateRef",

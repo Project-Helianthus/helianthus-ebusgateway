@@ -90,11 +90,11 @@ func issue743Snapshot(t *testing.T, content []byte) eebusruntime.SnapshotV1 {
 	t.Helper()
 	var draft eebusruntime.SnapshotV1
 	if err := json.Unmarshal(content, &draft); err != nil {
-		t.Fatalf("decode eebusreg v0.1.15 raw fixture: %v", err)
+		t.Fatalf("decode eebusreg v0.1.16 raw fixture: %v", err)
 	}
 	snapshot, err := eebusruntime.NewSnapshotV1(draft)
 	if err != nil {
-		t.Fatalf("construct eebusreg v0.1.15 raw fixture: %v", err)
+		t.Fatalf("construct eebusreg v0.1.16 raw fixture: %v", err)
 	}
 	return snapshot
 }
@@ -151,6 +151,7 @@ func issue743Contains(values []string, wanted string) bool {
 func issue743AssertNoRawIdentity(t *testing.T, raw string) {
 	t.Helper()
 	for _, forbidden := range []string{
+		"3333333333333333333333333333333333333333",
 		"2222222222222222222222222222222222222222",
 		"vaillant-vr940f-ship-id",
 		"d:_n:Vaillant_VR940",

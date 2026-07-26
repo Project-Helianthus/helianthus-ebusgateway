@@ -597,6 +597,9 @@ func TestIssue743OperatorSocketModesAndSameEffectiveUIDOnLinux(t *testing.T) {
 }
 
 func TestIssue743OperatorSocketStartupFailsClosedWhenProofOrListenerUnavailable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("anchored AF_UNIX filesystem proof is Linux-only")
+	}
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
 	endpoint, ok := any(server).(issue743OperatorEndpointProvider)
 	if !ok {

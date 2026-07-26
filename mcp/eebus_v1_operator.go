@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sync"
-	"time"
 )
 
 const eebusV1OperatorSocket = "/data/eebus/operator-mcp.sock"
@@ -37,12 +35,10 @@ func (listener *eebusV1UIDListener) Accept() (net.Conn, error) {
 }
 
 type eebusV1OperatorEndpoint struct {
-	once       sync.Once
-	server     *http.Server
-	listener   net.Listener
-	socketPath string
-	socketInfo os.FileInfo
-	done       chan struct{}
+	once     sync.Once
+	server   *http.Server
+	listener net.Listener
+	done     chan struct{}
 }
 
 func (endpoint *eebusV1OperatorEndpoint) Close() error {
@@ -50,14 +46,9 @@ func (endpoint *eebusV1OperatorEndpoint) Close() error {
 	endpoint.once.Do(func() {
 		if endpoint.server != nil {
 			result = endpoint.server.Close()
-		} else if endpoint.listener != nil {
-			result = endpoint.listener.Close()
 		}
-		if current, err := os.Lstat(endpoint.socketPath); err == nil &&
-			endpoint.socketInfo != nil && os.SameFile(current, endpoint.socketInfo) {
-			if removeErr := os.Remove(endpoint.socketPath); result == nil {
-				result = removeErr
-			}
+		if endpoint.listener != nil {
+			result = errors.Join(result, endpoint.listener.Close())
 		}
 		close(endpoint.done)
 	})
@@ -101,23 +92,7 @@ func (server *Server) eebusV1ServeOperator(ctx context.Context, socketPath strin
 		ctx = context.Background()
 	}
 
-	parent := filepath.Dir(socketPath)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(parent, 0o700); err != nil {
-		return nil, err
-	}
-	parentInfo, err := os.Stat(parent)
-	if err != nil || !parentInfo.IsDir() || parentInfo.Mode().Perm() != 0o700 ||
-		!eebusV1OwnedByEffectiveUID(parentInfo) {
-		return nil, errors.New("eeBUS operator socket parent permission proof failed")
-	}
-	if err := eebusV1RemoveStaleSocket(socketPath); err != nil {
-		return nil, err
-	}
-
-	base, err := net.Listen("unix", socketPath)
+	base, err := eebusV1PlatformListenOperator(socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -125,26 +100,18 @@ func (server *Server) eebusV1ServeOperator(ctx context.Context, socketPath strin
 	defer func() {
 		if cleanup {
 			_ = base.Close()
-			_ = os.Remove(socketPath)
 		}
 	}()
-	if err := os.Chmod(socketPath, 0o600); err != nil {
-		return nil, err
-	}
-	socketInfo, err := os.Lstat(socketPath)
-	if err != nil || socketInfo.Mode()&os.ModeSocket == 0 || socketInfo.Mode().Perm() != 0o600 ||
-		!eebusV1OwnedByEffectiveUID(socketInfo) {
-		return nil, errors.New("eeBUS operator socket permission proof failed")
-	}
 
 	guarded := &eebusV1UIDListener{Listener: base, resolve: resolve, wantUID: os.Geteuid()}
 	httpServer := &http.Server{Handler: server.eebusV1OperatorHandler()}
 	endpoint := &eebusV1OperatorEndpoint{
-		server: httpServer, listener: guarded, socketPath: socketPath, socketInfo: socketInfo, done: make(chan struct{}),
+		server: httpServer, listener: guarded, done: make(chan struct{}),
 	}
 	cleanup = false
 	go func() {
 		_ = httpServer.Serve(guarded)
+		_ = endpoint.Close()
 	}()
 	go func() {
 		select {
@@ -154,26 +121,4 @@ func (server *Server) eebusV1ServeOperator(ctx context.Context, socketPath strin
 		}
 	}()
 	return endpoint, nil
-}
-
-func eebusV1RemoveStaleSocket(socketPath string) error {
-	info, err := os.Lstat(socketPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return errors.New("eeBUS operator socket path is occupied by a non-socket")
-	}
-	if !eebusV1OwnedByEffectiveUID(info) {
-		return errors.New("eeBUS operator stale socket is not owned by the effective UID")
-	}
-	connection, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
-	if dialErr == nil {
-		_ = connection.Close()
-		return errors.New("eeBUS operator socket already has an active listener")
-	}
-	return os.Remove(socketPath)
 }

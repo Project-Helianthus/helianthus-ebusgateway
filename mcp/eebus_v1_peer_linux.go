@@ -5,8 +5,6 @@ package mcp
 import (
 	"errors"
 	"net"
-	"os"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -38,9 +36,4 @@ func eebusV1PlatformPeerUIDResolver() eebusV1PeerUIDResolver {
 		}
 		return int(credential.Uid), nil
 	}
-}
-
-func eebusV1OwnedByEffectiveUID(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Geteuid()
 }

@@ -111,6 +111,7 @@ func TestIssue743ReferenceRuntimeKeyMustMatchActiveAndTombstoneRoot(t *testing.T
 
 func TestIssue743CaptureQuotaIsIndependentAndExactPerBoundary(t *testing.T) {
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
+	server.eebusV1.liveTimeout = 5 * time.Second
 	for name, handler := range map[string]http.Handler{
 		"public":   server.Handler(),
 		"operator": issue743OperatorHandler(t, server),

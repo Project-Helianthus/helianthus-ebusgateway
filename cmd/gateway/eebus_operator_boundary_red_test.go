@@ -19,7 +19,7 @@ func TestIssue743DependencyClosurePinsEEBusregV0115(t *testing.T) {
 	}
 	defer func() { _ = goMod.Close() }()
 
-	const module = "github.com/Project-Helianthus/helianthus-ebusreg"
+	const module = "github.com/Project-Helianthus/helianthus-eebusreg"
 	var versions []string
 	scanner := bufio.NewScanner(goMod)
 	for scanner.Scan() {

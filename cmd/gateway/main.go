@@ -7,6 +7,7 @@ import (
 	"expvar"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -2210,16 +2211,37 @@ func startHTTPServer(
 		})
 	}
 
+	var operatorEndpoint io.Closer
+	if eebusProvider != nil {
+		operatorEndpoint, err = mcpServer.StartEEBusV1OperatorEndpoint(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start eeBUS operator MCP endpoint: %w", err)
+		}
+	}
+
 	listener, err := net.Listen("tcp", cfg.HTTPAddr)
 	if err != nil {
+		if operatorEndpoint != nil {
+			_ = operatorEndpoint.Close()
+		}
 		return nil, nil, err
 	}
 
 	server := &http.Server{
 		Handler: mux,
 	}
+	if operatorEndpoint != nil {
+		server.RegisterOnShutdown(func() {
+			_ = operatorEndpoint.Close()
+		})
+	}
 
 	go func() {
+		defer func() {
+			if operatorEndpoint != nil {
+				_ = operatorEndpoint.Close()
+			}
+		}()
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("http server error: %v", err)
 		}
@@ -2236,6 +2258,9 @@ func startHTTPServer(
 		})
 		if err != nil {
 			_ = server.Close()
+			if operatorEndpoint != nil {
+				_ = operatorEndpoint.Close()
+			}
 			return nil, nil, err
 		}
 	}
@@ -2243,6 +2268,9 @@ func startHTTPServer(
 	go func() {
 		<-ctx.Done()
 		_ = server.Shutdown(context.Background())
+		if operatorEndpoint != nil {
+			_ = operatorEndpoint.Close()
+		}
 	}()
 
 	return server, advertiser, nil

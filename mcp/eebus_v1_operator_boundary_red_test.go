@@ -597,7 +597,11 @@ func TestIssue743OperatorSocketStartupFailsClosedWhenProofOrListenerUnavailable(
 	if !ok {
 		t.Fatal("eeBUS AF_UNIX operator endpoint is unavailable")
 	}
-	root := t.TempDir()
+	root, err := os.MkdirTemp("/tmp", "issue743-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	parentAsFile := filepath.Join(root, "not-a-directory")
 	if err := os.WriteFile(parentAsFile, []byte("occupied"), 0o600); err != nil {
 		t.Fatal(err)
@@ -620,6 +624,23 @@ func TestIssue743OperatorSocketStartupFailsClosedWhenProofOrListenerUnavailable(
 	if closer, err := endpoint.eebusV1ServeOperator(context.Background(), occupiedPath, sameUID); err == nil {
 		_ = closer.Close()
 		t.Fatal("operator endpoint replaced an active listener instead of failing closed")
+	}
+
+	stalePath := filepath.Join(root, "stale.sock")
+	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: stalePath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.SetUnlinkOnClose(false)
+	if err := stale.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closer, err := endpoint.eebusV1ServeOperator(context.Background(), stalePath, sameUID)
+	if err != nil {
+		t.Fatalf("safe owned stale socket was not replaced: %v", err)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

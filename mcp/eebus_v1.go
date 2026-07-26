@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"time"
 
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
@@ -28,6 +30,7 @@ const (
 	eebusV1DefaultLiveTimeout = 3 * time.Second
 	eebusV1MaxLiveWorkers     = 8
 	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
+	eebusV1IDDigestPattern    = `^(?:[A-Za-z0-9_-]{43}|sha256:[0-9a-f]{64})$`
 )
 
 // EEBusV1Provider is the MSP-06 typed, read-only seam and the only MCP
@@ -207,7 +210,11 @@ func eebusV1Tools() []Tool {
 	for _, spec := range eebusV1ToolSpecs {
 		properties := make(map[string]any, len(spec.properties))
 		for _, property := range spec.properties {
-			properties[property] = map[string]any{"type": "string", "pattern": eebusV1TokenPattern}
+			pattern := eebusV1TokenPattern
+			if property == "id_digest" {
+				pattern = eebusV1IDDigestPattern
+			}
+			properties[property] = map[string]any{"type": "string", "pattern": pattern}
 		}
 		schema := map[string]any{
 			"type":                 "object",
@@ -372,13 +379,28 @@ func eebusV1ValidateArguments(spec eebusV1ToolSpec, arguments map[string]any) (e
 		result.snapshotRef = value
 	}
 	if raw, exists := arguments["id_digest"]; exists {
-		value, ok := eebusV1ParseCanonicalToken(raw)
+		value, ok := eebusV1ParseIDDigest(raw)
 		if !ok {
 			return eebusV1ValidatedArguments{}, "invalid_argument"
 		}
 		result.idDigest = value
 	}
 	return result, ""
+}
+
+func eebusV1ParseIDDigest(value any) (string, bool) {
+	if token, ok := eebusV1ParseCanonicalToken(value); ok {
+		return token, true
+	}
+	digest, ok := value.(string)
+	if !ok || len(digest) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(digest, "sha256:") {
+		return "", false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+	if err != nil || len(decoded) != sha256.Size || "sha256:"+hex.EncodeToString(decoded) != digest {
+		return "", false
+	}
+	return digest, true
 }
 
 func (runtime *eebusV1Runtime) liveProjection(boundary eebusV1Boundary) (eebusV1Projection, string) {
@@ -458,19 +480,19 @@ func eebusV1RawDataForTool(name string, projection eebusV1Projection, idDigest s
 	case eebusV1RuntimeStatusTool:
 		return projection.Runtime, ""
 	case eebusV1ServicesListTool:
-		return eebusV1ServicesListDataV1{Services: source.Services}, ""
+		return eebusV1ServicesListDataV1{Services: eebusV1ProjectRawServices(source.Services)}, ""
 	case eebusV1ServicesGetTool:
-		for _, service := range source.Services {
-			if eebusV1RawServiceDigest(service) == idDigest {
+		for _, service := range eebusV1ProjectRawServices(source.Services) {
+			if service.IDDigest == idDigest {
 				return service, ""
 			}
 		}
 		return nil, "not_found"
 	case eebusV1SessionsListTool:
-		return eebusV1SessionsListDataV1{Sessions: source.Sessions}, ""
+		return eebusV1SessionsListDataV1{Sessions: eebusV1ProjectRawSessions(source.Sessions)}, ""
 	case eebusV1SessionsGetTool:
-		for _, session := range source.Sessions {
-			if eebusV1RawSessionDigest(session) == idDigest {
+		for _, session := range eebusV1ProjectRawSessions(source.Sessions) {
+			if session.IDDigest == idDigest {
 				return session, ""
 			}
 		}

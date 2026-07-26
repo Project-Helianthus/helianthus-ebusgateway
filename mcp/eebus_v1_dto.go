@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,6 +43,31 @@ type eebusV1ServicesListDataV1 struct {
 
 type eebusV1SessionsListDataV1 struct {
 	Sessions any `json:"sessions"`
+}
+
+type eebusV1RawServiceDataV1 struct {
+	IDDigest        string                              `json:"id_digest"`
+	SKI             string                              `json:"ski"`
+	SHIPID          *string                             `json:"ship_id,omitempty"`
+	Kind            eebusruntime.ServiceKindV1          `json:"kind"`
+	Visible         bool                                `json:"visible"`
+	Paired          bool                                `json:"paired"`
+	Name            *string                             `json:"name,omitempty"`
+	Identifier      *string                             `json:"identifier,omitempty"`
+	Brand           *string                             `json:"brand,omitempty"`
+	Type            *string                             `json:"type,omitempty"`
+	Model           *string                             `json:"model,omitempty"`
+	SecondaryDigest *string                             `json:"secondary_digest,omitempty"`
+	Opaque          *[]eebusruntime.OpaqueObservationV1 `json:"opaque,omitempty"`
+}
+
+type eebusV1RawSessionDataV1 struct {
+	IDDigest  string                              `json:"id_digest"`
+	ID        string                              `json:"id"`
+	RemoteSKI string                              `json:"remote_ski"`
+	State     eebusruntime.ObservedSessionStateV1 `json:"state"`
+	Since     time.Time                           `json:"since"`
+	Opaque    *[]eebusruntime.OpaqueObservationV1 `json:"opaque,omitempty"`
 }
 
 type eebusV1PairingStatusDataV1 struct {
@@ -165,19 +192,39 @@ func eebusV1RawServiceDigest(service eebusruntime.ServiceV1) string {
 		eebusV1OptionalString(service.Identifier),
 		string(service.Kind),
 	}, "\x00")
-	id, err := eebusraw.RedactID(eebusraw.IDKindPeer, identity)
-	if err != nil {
-		return ""
-	}
-	return id.Digest
+	sum := sha256.Sum256([]byte(identity))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func eebusV1RawSessionDigest(session eebusruntime.SessionV1) string {
-	id, err := eebusraw.RedactID(eebusraw.IDKindSession, session.ID)
-	if err != nil {
-		return ""
+	sum := sha256.Sum256([]byte(session.ID))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func eebusV1ProjectRawServices(services []eebusruntime.ServiceV1) []eebusV1RawServiceDataV1 {
+	result := make([]eebusV1RawServiceDataV1, len(services))
+	for index, service := range services {
+		result[index] = eebusV1RawServiceDataV1{
+			IDDigest: eebusV1RawServiceDigest(service),
+			SKI:      service.SKI, SHIPID: service.SHIPID, Kind: service.Kind,
+			Visible: service.Visible, Paired: service.Paired, Name: service.Name,
+			Identifier: service.Identifier, Brand: service.Brand, Type: service.Type,
+			Model: service.Model, SecondaryDigest: service.SecondaryDigest, Opaque: service.Opaque,
+		}
 	}
-	return id.Digest
+	return result
+}
+
+func eebusV1ProjectRawSessions(sessions []eebusruntime.SessionV1) []eebusV1RawSessionDataV1 {
+	result := make([]eebusV1RawSessionDataV1, len(sessions))
+	for index, session := range sessions {
+		result[index] = eebusV1RawSessionDataV1{
+			IDDigest: eebusV1RawSessionDigest(session),
+			ID:       session.ID, RemoteSKI: session.RemoteSKI, State: session.State,
+			Since: session.Since, Opaque: session.Opaque,
+		}
+	}
+	return result
 }
 
 func eebusV1OptionalString(value *string) string {

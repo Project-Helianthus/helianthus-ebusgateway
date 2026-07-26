@@ -424,7 +424,7 @@ func msp06AssertMeta(t *testing.T, envelope map[string]any, tool, scope, mode st
 	if contract["name"] != "helianthus-eebus-mcp" || fmt.Sprint(contract["major"]) != "1" || fmt.Sprint(contract["minor"]) != "0" {
 		t.Fatalf("meta.contract = %#v, want helianthus-eebus-mcp 1.0", contract)
 	}
-	if meta["tool"] != tool || meta["scope"] != scope || meta["mode"] != mode || meta["mask_tier"] != "redacted" || meta["auth_scope"] != "eebus.raw.read" {
+	if meta["tool"] != tool || meta["scope"] != scope || meta["mode"] != mode || meta["mask_tier"] != "redacted" || meta["auth_scope"] != "eebus.public.read" {
 		t.Fatalf("meta binding = %#v, want tool=%s scope=%s mode=%s fixed reader policy", meta, tool, scope, mode)
 	}
 	if timestamp, _ := meta["data_timestamp"].(string); !msp06TimestampPattern.MatchString(timestamp) {

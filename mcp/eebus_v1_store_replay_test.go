@@ -310,7 +310,7 @@ func TestMSP06G14ReferencesAreToolScopeBoundAndPolicyCannotBeOverridden(t *testi
 	withHeaders := msp06CallWithHeaders(t, server.Handler(), msp06RuntimeStatusTool, map[string]any{}, headers)
 	msp06AssertSuccess(t, plain, msp06RuntimeStatusTool, "runtime-status", "live")
 	meta := msp06AssertMeta(t, withHeaders.envelope, msp06RuntimeStatusTool, "runtime-status", "live")
-	if meta["mask_tier"] != "redacted" || meta["auth_scope"] != "eebus.raw.read" || plain.raw != withHeaders.raw {
+	if meta["mask_tier"] != "redacted" || meta["auth_scope"] != "eebus.public.read" || plain.raw != withHeaders.raw {
 		t.Fatalf("headers altered fixed reader policy or response:\nplain=%s\nheaders=%s", plain.raw, withHeaders.raw)
 	}
 

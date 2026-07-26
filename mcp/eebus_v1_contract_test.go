@@ -214,7 +214,7 @@ func msp06Snapshot(t *testing.T, runtimeLabel string) eebusruntime.SnapshotV1 {
 		Meta: eebusruntime.SnapshotMetaV1{
 			Contract: eebusruntime.SnapshotContractV1,
 			Runtime:  msp06SourceID(t, eebusraw.IDKindPeer, runtimeLabel),
-			LocalSKI: msp06SourceID(t, eebusraw.IDKindLocalSKI, "local-ski-secret"),
+			LocalSKI: "4444444444444444444444444444444444444444",
 			MaskTier: eebusraw.MaskTier("raw"), CapturedAt: observed.Add(time.Second), DataTimestamp: observed,
 		},
 		Status: eebusruntime.RuntimeObservationV1{State: eebusruntime.ObservedRuntimeStateV1Ready},
@@ -368,7 +368,7 @@ func TestMSP06PublicProjectionUsesCanonicalRedactedBuilder(t *testing.T) {
 		t.Fatalf("services = %d, want %d", len(services), len(expected.Services))
 	}
 	encoded, _ := json.Marshal(data)
-	for _, secret := range []string{"ski-z", "service-z", "device-z", "local-ski-secret"} {
+	for _, secret := range []string{"ski-z", "service-z", "device-z", "4444444444444444444444444444444444444444"} {
 		if bytes.Contains(encoded, []byte(secret)) {
 			t.Errorf("public projection leaked %q", secret)
 		}

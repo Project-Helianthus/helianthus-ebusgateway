@@ -90,11 +90,11 @@ func issue743Snapshot(t *testing.T, content []byte) eebusruntime.SnapshotV1 {
 	t.Helper()
 	var draft eebusruntime.SnapshotV1
 	if err := json.Unmarshal(content, &draft); err != nil {
-		t.Fatalf("decode eebusreg v0.1.15 raw fixture: %v", err)
+		t.Fatalf("decode eebusreg v0.1.16 raw fixture: %v", err)
 	}
 	snapshot, err := eebusruntime.NewSnapshotV1(draft)
 	if err != nil {
-		t.Fatalf("construct eebusreg v0.1.15 raw fixture: %v", err)
+		t.Fatalf("construct eebusreg v0.1.16 raw fixture: %v", err)
 	}
 	return snapshot
 }
@@ -151,6 +151,7 @@ func issue743Contains(values []string, wanted string) bool {
 func issue743AssertNoRawIdentity(t *testing.T, raw string) {
 	t.Helper()
 	for _, forbidden := range []string{
+		"3333333333333333333333333333333333333333",
 		"2222222222222222222222222222222222222222",
 		"vaillant-vr940f-ship-id",
 		"d:_n:Vaillant_VR940",
@@ -444,6 +445,25 @@ func TestIssue743RawTopologyPreservesVR940OperationalFields(t *testing.T) {
 		}
 	}
 	issue743AssertOpaqueBounds(t, topologyResult.envelope["data"])
+}
+
+func TestIssue745RawSnapshotMetaExposesLocalSKIOnlyToOperator(t *testing.T) {
+	const localSKI = "3333333333333333333333333333333333333333"
+
+	server, _ := issue743Server(t)
+	rawCapture := msp06Call(t, issue743OperatorHandler(t, server), msp06SnapshotCapture, map[string]any{})
+	issue743Meta(t, rawCapture, "raw", "eebus.raw.read")
+	rawSnapshot := msp06Map(t, msp06Map(t, rawCapture.envelope["data"], "raw capture")["snapshot"], "raw snapshot")
+	rawMeta := msp06Map(t, rawSnapshot["meta"], "raw snapshot meta")
+	if rawMeta["local_ski"] != localSKI {
+		t.Fatalf("raw snapshot local_ski = %#v, want %q", rawMeta["local_ski"], localSKI)
+	}
+
+	publicCapture := msp06Call(t, server.Handler(), msp06SnapshotCapture, map[string]any{})
+	issue743Meta(t, publicCapture, "redacted", "eebus.public.read")
+	if strings.Contains(publicCapture.raw, localSKI) {
+		t.Fatalf("public snapshot leaked raw local SKI: %s", publicCapture.raw)
+	}
 }
 
 func TestIssue743PublicProjectionIrreversiblyOmitsRawIdentityAddressAndMetadata(t *testing.T) {

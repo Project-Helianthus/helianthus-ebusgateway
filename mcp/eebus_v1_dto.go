@@ -1,10 +1,14 @@
 package mcp
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,8 +17,17 @@ import (
 )
 
 const (
-	eebusV1ContractName      = "helianthus-eebus-mcp"
-	eebusV1MaxCollectionSize = 16384
+	eebusV1ContractName           = "helianthus-eebus-mcp"
+	eebusV1MaxCollectionSize      = 16384
+	eebusV1PublicPseudonymContext = "helianthus-eebus-mcp/public-pseudonym/v1"
+	eebusV1PseudonymDomainRuntime = "runtime"
+	eebusV1PseudonymDomainService = "service"
+	eebusV1PseudonymDomainSession = "session"
+	eebusV1PseudonymDomainRemote  = "session-remote"
+	eebusV1PseudonymDomainDevice  = "device"
+	eebusV1PseudonymDomainEntity  = "entity"
+	eebusV1PseudonymDomainFeature = "feature"
+	eebusV1PseudonymDomainUseCase = "usecase"
 )
 
 type eebusV1ContractV1 struct {
@@ -114,15 +127,19 @@ type eebusV1Projection struct {
 	Boundary      eebusV1Boundary
 }
 
-func eebusV1ProjectSnapshot(value any, _ []byte) (eebusV1Projection, error) {
+func eebusV1ProjectSnapshot(value any, pseudonymKey []byte) (eebusV1Projection, error) {
 	snapshot, ok := value.(eebusruntime.SnapshotV1)
 	if !ok {
 		return eebusV1Projection{}, errors.New("provider returned an unsupported snapshot type")
 	}
-	return eebusV1ProjectSnapshotForBoundary(snapshot, eebusV1PublicBoundary)
+	return eebusV1ProjectSnapshotForBoundary(snapshot, eebusV1PublicBoundary, pseudonymKey)
 }
 
-func eebusV1ProjectSnapshotForBoundary(source eebusruntime.SnapshotV1, boundary eebusV1Boundary) (eebusV1Projection, error) {
+func eebusV1ProjectSnapshotForBoundary(
+	source eebusruntime.SnapshotV1,
+	boundary eebusV1Boundary,
+	pseudonymKey []byte,
+) (eebusV1Projection, error) {
 	if err := source.Validate(); err != nil {
 		return eebusV1Projection{}, fmt.Errorf("validate provider snapshot: %w", err)
 	}
@@ -146,25 +163,135 @@ func eebusV1ProjectSnapshotForBoundary(source eebusruntime.SnapshotV1, boundary 
 	if err != nil {
 		return eebusV1Projection{}, fmt.Errorf("build redacted snapshot: %w", err)
 	}
-	projection.ContentHash = redacted.Meta.DataHash
-	projection.Snapshot = eebusV1SnapshotDataV1{
-		Meta: eebusV1SnapshotMetaDataV1{
-			Contract:      redacted.Meta.Contract,
-			Runtime:       redacted.Meta.Runtime,
-			MaskTier:      string(redacted.Meta.MaskTier),
-			CapturedAt:    eebusV1Timestamp(redacted.Meta.CapturedAt),
-			DataTimestamp: eebusV1Timestamp(redacted.Meta.DataTimestamp),
-			DataHash:      redacted.Meta.DataHash,
-		},
-		Status:   runtime,
-		Pairing:  append([]eebusraw.PairingState(nil), redacted.Pairing...),
-		Services: append([]eebusruntime.RedactedServiceV1(nil), redacted.Services...),
-		Sessions: append([]eebusruntime.RedactedSessionV1(nil), redacted.Sessions...),
-		Topology: eebusV1TopologyDataV1{
-			Devices: append([]eebusruntime.RedactedDeviceV1(nil), redacted.Devices...),
-		},
+	keyed, err := eebusV1KeyPublicSnapshot(redacted, pseudonymKey, runtime)
+	if err != nil {
+		return eebusV1Projection{}, err
 	}
+	projection.ContentHash = keyed.Meta.DataHash
+	projection.Snapshot = keyed
 	return projection, nil
+}
+
+func eebusV1KeyPublicSnapshot(
+	source eebusruntime.RedactedSnapshotV1,
+	pseudonymKey []byte,
+	runtime eebusV1RuntimeStatusDataV1,
+) (eebusV1SnapshotDataV1, error) {
+	runtimeID, err := eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainRuntime, source.Meta.Runtime)
+	if err != nil {
+		return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public runtime identity")
+	}
+	services := make([]eebusruntime.RedactedServiceV1, len(source.Services))
+	for index, service := range source.Services {
+		service.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainService, service.ID)
+		if err != nil {
+			return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public service identity")
+		}
+		services[index] = service
+	}
+	sort.Slice(services, func(left, right int) bool {
+		return services[left].ID.Digest < services[right].ID.Digest
+	})
+
+	sessions := make([]eebusruntime.RedactedSessionV1, len(source.Sessions))
+	for index, session := range source.Sessions {
+		session.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainSession, session.ID)
+		if err != nil {
+			return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public session identity")
+		}
+		session.Remote, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainRemote, session.Remote)
+		if err != nil {
+			return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public session remote identity")
+		}
+		sessions[index] = session
+	}
+	sort.Slice(sessions, func(left, right int) bool {
+		return sessions[left].ID.Digest < sessions[right].ID.Digest
+	})
+
+	devices := make([]eebusruntime.RedactedDeviceV1, len(source.Devices))
+	for index, device := range source.Devices {
+		device.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainDevice, device.ID)
+		if err != nil {
+			return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public device identity")
+		}
+		device.Entities = append([]eebusruntime.RedactedEntityV1(nil), device.Entities...)
+		for entityIndex, entity := range device.Entities {
+			entity.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainEntity, entity.ID)
+			if err != nil {
+				return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public entity identity")
+			}
+			entity.Features = append([]eebusruntime.RedactedFeatureV1(nil), entity.Features...)
+			for featureIndex, feature := range entity.Features {
+				feature.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainFeature, feature.ID)
+				if err != nil {
+					return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public feature identity")
+				}
+				entity.Features[featureIndex] = feature
+			}
+			sort.Slice(entity.Features, func(left, right int) bool {
+				return entity.Features[left].ID.Digest < entity.Features[right].ID.Digest
+			})
+			device.Entities[entityIndex] = entity
+		}
+		sort.Slice(device.Entities, func(left, right int) bool {
+			return device.Entities[left].ID.Digest < device.Entities[right].ID.Digest
+		})
+		device.UseCaseClaims = append([]eebusruntime.RedactedUseCaseV1(nil), device.UseCaseClaims...)
+		for useCaseIndex, useCase := range device.UseCaseClaims {
+			useCase.ID, err = eebusV1KeyRedactedID(pseudonymKey, eebusV1PseudonymDomainUseCase, useCase.ID)
+			if err != nil {
+				return eebusV1SnapshotDataV1{}, errors.New("pseudonymize public usecase identity")
+			}
+			device.UseCaseClaims[useCaseIndex] = useCase
+		}
+		sort.Slice(device.UseCaseClaims, func(left, right int) bool {
+			return device.UseCaseClaims[left].ID.Digest < device.UseCaseClaims[right].ID.Digest
+		})
+		devices[index] = device
+	}
+	sort.Slice(devices, func(left, right int) bool {
+		return devices[left].ID.Digest < devices[right].ID.Digest
+	})
+
+	result := eebusV1SnapshotDataV1{
+		Meta: eebusV1SnapshotMetaDataV1{
+			Contract: source.Meta.Contract, Runtime: runtimeID, MaskTier: string(source.Meta.MaskTier),
+			CapturedAt:    eebusV1Timestamp(source.Meta.CapturedAt),
+			DataTimestamp: eebusV1Timestamp(source.Meta.DataTimestamp),
+		},
+		Status: runtime, Pairing: append([]eebusraw.PairingState(nil), source.Pairing...),
+		Services: services, Sessions: sessions, Topology: eebusV1TopologyDataV1{Devices: devices},
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return eebusV1SnapshotDataV1{}, errors.New("marshal keyed public snapshot")
+	}
+	_, result.Meta.DataHash, err = eebusV1CanonicalHashJSON(encoded, "/meta/captured_at", "/meta/data_hash")
+	if err != nil {
+		return eebusV1SnapshotDataV1{}, errors.New("hash keyed public snapshot")
+	}
+	return result, nil
+}
+
+func eebusV1KeyRedactedID(key []byte, domain string, source eebusraw.RedactedID) (eebusraw.RedactedID, error) {
+	if len(key) != sha256.Size || domain == "" || source.Digest == "" {
+		return eebusraw.RedactedID{}, errors.New("invalid public pseudonym input")
+	}
+	if err := source.Validate(); err != nil {
+		return eebusraw.RedactedID{}, errors.New("invalid redacted source identity")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(eebusV1PublicPseudonymContext))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(domain))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(source.Kind))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(source.Digest))
+	return eebusraw.RedactedID{
+		Kind: source.Kind, Masked: source.Masked, Digest: "sha256:" + hex.EncodeToString(mac.Sum(nil)),
+	}, nil
 }
 
 func (projection eebusV1Projection) capturedSnapshot() any {

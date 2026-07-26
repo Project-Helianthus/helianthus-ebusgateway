@@ -397,6 +397,71 @@ func TestMSP06ProviderTimeoutIsNormalized(t *testing.T) {
 	msp06AssertError(t, result, msp06TopologyGetTool, "topology", "timeout")
 }
 
+func TestIssue743SaturatedPublicWorkersCannotStarveOperatorBoundary(t *testing.T) {
+	snapshot := msp06Snapshot(t, "runtime-worker-isolation")
+	entered := make(chan struct{}, eebusV1MaxLiveWorkers)
+	release := make(chan struct{})
+	var calls int
+	var callsMu sync.Mutex
+	provider := EEBusV1ProviderFunc(func() (eebusruntime.SnapshotV1, error) {
+		callsMu.Lock()
+		calls++
+		call := calls
+		callsMu.Unlock()
+		if call <= eebusV1MaxLiveWorkers {
+			entered <- struct{}{}
+			<-release
+		}
+		return snapshot, nil
+	})
+	server, _ := msp06TestServer(t, provider)
+	server.eebusV1.liveTimeout = 500 * time.Millisecond
+
+	publicDone := make(chan struct{}, eebusV1MaxLiveWorkers)
+	for range eebusV1MaxLiveWorkers {
+		go func() {
+			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+				`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"eebus.v1.topology.get","arguments":{}}}`,
+			))
+			server.Handler().ServeHTTP(httptest.NewRecorder(), request)
+			publicDone <- struct{}{}
+		}()
+	}
+	for range eebusV1MaxLiveWorkers {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("public provider calls did not saturate their worker budget")
+		}
+	}
+
+	spoofed := msp06CallWithHeaders(t, server.Handler(), msp06TopologyGetTool, map[string]any{}, map[string]string{
+		"X-EEBus-Authorization-Boundary": "owner-af-unix",
+		"X-EEBus-Auth-Scope":             "eebus.raw.read",
+	})
+	issue743AssertError(t, spoofed, "redacted", "eebus.public.read", "timeout")
+
+	operator := msp06Call(t, issue743OperatorHandler(t, server), msp06TopologyGetTool, map[string]any{})
+	issue743AssertBoundarySuccess(t, operator, msp06TopologyGetTool, "topology", "live", "raw", "eebus.raw.read")
+	callsMu.Lock()
+	if calls != eebusV1MaxLiveWorkers+1 {
+		callsMu.Unlock()
+		close(release)
+		t.Fatalf("provider calls = %d, want %d", calls, eebusV1MaxLiveWorkers+1)
+	}
+	callsMu.Unlock()
+
+	close(release)
+	for range eebusV1MaxLiveWorkers {
+		select {
+		case <-publicDone:
+		case <-time.After(time.Second):
+			t.Fatal("blocked public call did not terminate after release")
+		}
+	}
+}
+
 type EEBusV1ProviderFunc func() (eebusruntime.SnapshotV1, error)
 
 func (provider EEBusV1ProviderFunc) Snapshot() (eebusruntime.SnapshotV1, error) {

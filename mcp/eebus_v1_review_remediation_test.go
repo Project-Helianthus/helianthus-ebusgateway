@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log"
@@ -283,11 +284,11 @@ func issue743Selectors(t *testing.T, snapshot eebusruntime.SnapshotV1, boundaryN
 	if boundaryName == "operator" {
 		return eebusV1RawServiceDigest(snapshot.Services[0]), eebusV1RawSessionDigest(snapshot.Sessions[0])
 	}
-	redacted, err := eebusruntime.BuildRedactedSnapshotV1(snapshot)
+	projection, err := eebusV1ProjectSnapshot(snapshot, bytes.Repeat([]byte{0x5a}, sha256.Size))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return redacted.Services[0].ID.Digest, redacted.Sessions[0].ID.Digest
+	return projection.Snapshot.Services[0].ID.Digest, projection.Snapshot.Sessions[0].ID.Digest
 }
 
 func issue743AssertBoundarySuccess(

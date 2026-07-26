@@ -75,6 +75,7 @@ type eebusV1ActiveRoot struct {
 	RootToken  string
 	RootBytes  [sha256.Size]byte
 	RuntimeKey string
+	Boundary   eebusV1Boundary
 	ExpiresAt  time.Time
 	Projection eebusV1Projection
 	Captured   eebusV1CapturedRootV1
@@ -85,6 +86,7 @@ type eebusV1TombstoneRoot struct {
 	RootToken  string
 	RootBytes  [sha256.Size]byte
 	RuntimeKey string
+	Boundary   eebusV1Boundary
 	TerminalAt time.Time
 	Runtime    eebusV1RuntimeStatusDataV1
 	Timestamp  string
@@ -188,6 +190,7 @@ func (store *eebusV1SnapshotStore) capture(projection eebusV1Projection, boundar
 		RootToken:  captured.SnapshotRef,
 		RootBytes:  decoded["snapshot_ref"],
 		RuntimeKey: projection.RuntimeKey,
+		Boundary:   boundary,
 		ExpiresAt:  expiresAt,
 		Projection: projection,
 		Captured:   captured,
@@ -292,7 +295,7 @@ func (store *eebusV1SnapshotStore) drop(token string, boundaries ...eebusV1Bound
 func (store *eebusV1SnapshotStore) activeCountLocked(boundary eebusV1Boundary) int {
 	count := 0
 	for _, root := range store.activeRoots {
-		if root.Projection.Boundary == boundary {
+		if root.Boundary == boundary {
 			count++
 		}
 	}
@@ -354,6 +357,7 @@ func (store *eebusV1SnapshotStore) terminalizeLocked(root *eebusV1ActiveRoot, te
 		RootToken:  root.RootToken,
 		RootBytes:  root.RootBytes,
 		RuntimeKey: root.RuntimeKey,
+		Boundary:   root.Boundary,
 		TerminalAt: terminalAt,
 		Runtime:    root.Projection.Runtime,
 		Timestamp:  root.Projection.DataTimestamp,
@@ -366,19 +370,34 @@ func (store *eebusV1SnapshotStore) terminalizeLocked(root *eebusV1ActiveRoot, te
 }
 
 func (store *eebusV1SnapshotStore) enforceTombstoneBoundLocked() {
-	for len(store.tombstoneRoots) > eebusV1MaxTombstones {
-		var oldest *eebusV1TombstoneRoot
-		for _, candidate := range store.tombstoneRoots {
-			if oldest == nil || candidate.TerminalAt.Before(oldest.TerminalAt) ||
-				(candidate.TerminalAt.Equal(oldest.TerminalAt) && bytes.Compare(candidate.RootBytes[:], oldest.RootBytes[:]) < 0) {
-				oldest = candidate
+	for _, boundary := range []eebusV1Boundary{eebusV1PublicBoundary, eebusV1OperatorBoundary} {
+		for store.tombstoneCountLocked(boundary) > eebusV1MaxTombstones {
+			var oldest *eebusV1TombstoneRoot
+			for _, candidate := range store.tombstoneRoots {
+				if candidate.Boundary != boundary {
+					continue
+				}
+				if oldest == nil || candidate.TerminalAt.Before(oldest.TerminalAt) ||
+					(candidate.TerminalAt.Equal(oldest.TerminalAt) && bytes.Compare(candidate.RootBytes[:], oldest.RootBytes[:]) < 0) {
+					oldest = candidate
+				}
 			}
+			if oldest == nil {
+				return
+			}
+			store.removeTombstoneLocked(oldest.RootToken)
 		}
-		if oldest == nil {
-			return
-		}
-		store.removeTombstoneLocked(oldest.RootToken)
 	}
+}
+
+func (store *eebusV1SnapshotStore) tombstoneCountLocked(boundary eebusV1Boundary) int {
+	count := 0
+	for _, root := range store.tombstoneRoots {
+		if root.Boundary == boundary {
+			count++
+		}
+	}
+	return count
 }
 
 func (store *eebusV1SnapshotStore) removeTombstoneLocked(rootToken string) {

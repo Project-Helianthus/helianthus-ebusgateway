@@ -47,12 +47,13 @@ type eebusV1RegistrationOptions struct {
 }
 
 type eebusV1Runtime struct {
-	provider     EEBusV1Provider
-	now          func() time.Time
-	pseudonymKey []byte
-	liveTimeout  time.Duration
-	liveWorkers  chan struct{}
-	store        *eebusV1SnapshotStore
+	provider            EEBusV1Provider
+	now                 func() time.Time
+	pseudonymKey        []byte
+	liveTimeout         time.Duration
+	publicLiveWorkers   chan struct{}
+	operatorLiveWorkers chan struct{}
+	store               *eebusV1SnapshotStore
 }
 
 type eebusV1Boundary struct {
@@ -180,11 +181,12 @@ func (server *Server) registerEEBusV1Provider(provider EEBusV1Provider, options 
 		return errors.New("eeBUS MCP provider is already registered")
 	}
 	runtime := &eebusV1Runtime{
-		provider:     provider,
-		now:          options.now,
-		pseudonymKey: append([]byte(nil), options.pseudonymKey...),
-		liveTimeout:  options.liveTimeout,
-		liveWorkers:  make(chan struct{}, eebusV1MaxLiveWorkers),
+		provider:            provider,
+		now:                 options.now,
+		pseudonymKey:        append([]byte(nil), options.pseudonymKey...),
+		liveTimeout:         options.liveTimeout,
+		publicLiveWorkers:   make(chan struct{}, eebusV1MaxLiveWorkers),
+		operatorLiveWorkers: make(chan struct{}, eebusV1MaxLiveWorkers),
 	}
 	runtime.store = newEEBusV1SnapshotStore(runtime.now, options.entropy)
 	server.eebusV1 = runtime
@@ -298,19 +300,23 @@ func (runtime *eebusV1Runtime) liveCall(ctx context.Context, spec eebusV1ToolSpe
 	liveCtx, cancel := context.WithTimeout(ctx, runtime.liveTimeout)
 	defer cancel()
 
+	workers, ok := runtime.liveWorkerBudget(boundary)
+	if !ok {
+		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "permission_denied")
+	}
 	select {
-	case runtime.liveWorkers <- struct{}{}:
+	case workers <- struct{}{}:
 	case <-liveCtx.Done():
 		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
 	}
 	if liveCtx.Err() != nil {
-		<-runtime.liveWorkers
+		<-workers
 		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
 	}
 
 	result := make(chan eebusV1EnvelopeV1, 1)
 	go func() {
-		defer func() { <-runtime.liveWorkers }()
+		defer func() { <-workers }()
 		result <- runtime.buildLiveEnvelope(spec, validated, boundary)
 	}()
 
@@ -319,6 +325,17 @@ func (runtime *eebusV1Runtime) liveCall(ctx context.Context, spec eebusV1ToolSpe
 		return envelope
 	case <-liveCtx.Done():
 		return runtime.errorEnvelope(spec, "live", runtime.now(), eebusV1FallbackRuntime(), boundary, "timeout")
+	}
+}
+
+func (runtime *eebusV1Runtime) liveWorkerBudget(boundary eebusV1Boundary) (chan struct{}, bool) {
+	switch boundary {
+	case eebusV1PublicBoundary:
+		return runtime.publicLiveWorkers, runtime.publicLiveWorkers != nil
+	case eebusV1OperatorBoundary:
+		return runtime.operatorLiveWorkers, runtime.operatorLiveWorkers != nil
+	default:
+		return nil, false
 	}
 }
 
@@ -414,7 +431,7 @@ func (runtime *eebusV1Runtime) liveProjection(boundary eebusV1Boundary) (eebusV1
 	if err := eebusV1ValidateProviderCollectionBounds(snapshot); err != nil {
 		return eebusV1Projection{}, "contract_violation"
 	}
-	projection, err := eebusV1ProjectSnapshotForBoundary(snapshot, boundary)
+	projection, err := eebusV1ProjectSnapshotForBoundary(snapshot, boundary, runtime.pseudonymKey)
 	if err != nil {
 		return eebusV1Projection{}, "contract_violation"
 	}

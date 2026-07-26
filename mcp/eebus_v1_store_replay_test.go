@@ -131,6 +131,52 @@ func TestIssue743CaptureQuotaIsIndependentAndExactPerBoundary(t *testing.T) {
 	}
 }
 
+func TestIssue743FullCaptureQuotaCannotStarveOtherBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		fullHandler func(*testing.T, *Server) http.Handler
+		other       func(*testing.T, *Server) http.Handler
+		fullTier    string
+		fullScope   string
+		otherTier   string
+		otherScope  string
+	}{
+		{
+			name:        "public-full-operator-available",
+			fullHandler: func(_ *testing.T, server *Server) http.Handler { return server.Handler() },
+			other:       issue743OperatorHandler,
+			fullTier:    "redacted",
+			fullScope:   "eebus.public.read",
+			otherTier:   "raw",
+			otherScope:  "eebus.raw.read",
+		},
+		{
+			name:        "operator-full-public-available",
+			fullHandler: issue743OperatorHandler,
+			other:       func(_ *testing.T, server *Server) http.Handler { return server.Handler() },
+			fullTier:    "raw",
+			fullScope:   "eebus.raw.read",
+			otherTier:   "redacted",
+			otherScope:  "eebus.public.read",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
+			server.eebusV1.liveTimeout = 5 * time.Second
+			full := test.fullHandler(t, server)
+			for range eebusV1MaxActive {
+				issue743AssertBoundarySuccess(t, msp06Call(t, full, msp06SnapshotCapture, map[string]any{}),
+					msp06SnapshotCapture, "whole-root", "live", test.fullTier, test.fullScope)
+			}
+			issue743AssertError(t, msp06Call(t, full, msp06SnapshotCapture, map[string]any{}),
+				test.fullTier, test.fullScope, "quota_exceeded")
+			issue743AssertBoundarySuccess(t,
+				msp06Call(t, test.other(t, server), msp06SnapshotCapture, map[string]any{}),
+				msp06SnapshotCapture, "whole-root", "live", test.otherTier, test.otherScope)
+		})
+	}
+}
+
 func TestIssue743FailedCaptureConsumesNoQuotaSlot(t *testing.T) {
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
 	server.eebusV1.store.entropy = issue743FailingReader{}
@@ -181,29 +227,37 @@ func TestIssue743DropIsIdempotentAndTTLsAreInclusive(t *testing.T) {
 		msp06ServicesListTool, "services", "evidence", "not_found")
 }
 
-func TestIssue743TombstonesAreBoundedByDecodedRootOrdering(t *testing.T) {
+func TestIssue743TombstonesAreBoundedPerBoundaryByDecodedRootOrdering(t *testing.T) {
 	store := newEEBusV1SnapshotStore(time.Now, &msp06EntropyReader{})
 	terminalAt := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
-	var decodedMinimum string
-	for index := 0; index <= eebusV1MaxTombstones; index++ {
-		var raw [sha256.Size]byte
-		raw[0] = byte(index)
-		raw[1] = byte(index >> 8)
-		token := base64.RawURLEncoding.EncodeToString(raw[:])
-		if index == 0 {
-			decodedMinimum = token
-		}
-		store.tombstoneRoots[token] = &eebusV1TombstoneRoot{
-			RootToken: token, RootBytes: raw, RuntimeKey: "runtime",
-			TerminalAt: terminalAt, References: map[string]eebusV1StoredReference{},
+	minimums := make(map[eebusV1Boundary]string, 2)
+	for boundaryIndex, boundary := range []eebusV1Boundary{eebusV1PublicBoundary, eebusV1OperatorBoundary} {
+		for index := 0; index <= eebusV1MaxTombstones; index++ {
+			var raw [sha256.Size]byte
+			raw[0] = byte(boundaryIndex)
+			raw[1] = byte(index)
+			raw[2] = byte(index >> 8)
+			token := base64.RawURLEncoding.EncodeToString(raw[:])
+			if index == 0 {
+				minimums[boundary] = token
+			}
+			store.tombstoneRoots[token] = &eebusV1TombstoneRoot{
+				RootToken: token, RootBytes: raw, RuntimeKey: "runtime", Boundary: boundary,
+				TerminalAt: terminalAt, References: map[string]eebusV1StoredReference{},
+			}
 		}
 	}
 	store.enforceTombstoneBoundLocked()
-	if got := len(store.tombstoneRoots); got != eebusV1MaxTombstones {
-		t.Fatalf("tombstones = %d, want %d", got, eebusV1MaxTombstones)
+	if got := len(store.tombstoneRoots); got != 2*eebusV1MaxTombstones {
+		t.Fatalf("tombstones = %d, want %d", got, 2*eebusV1MaxTombstones)
 	}
-	if _, exists := store.tombstoneRoots[decodedMinimum]; exists {
-		t.Fatalf("decoded-byte minimum root %q was not deterministically evicted", decodedMinimum)
+	for _, boundary := range []eebusV1Boundary{eebusV1PublicBoundary, eebusV1OperatorBoundary} {
+		if got := store.tombstoneCountLocked(boundary); got != eebusV1MaxTombstones {
+			t.Fatalf("%s tombstones = %d, want %d", boundary.AuthorizationBoundary, got, eebusV1MaxTombstones)
+		}
+		if _, exists := store.tombstoneRoots[minimums[boundary]]; exists {
+			t.Fatalf("%s decoded-byte minimum root was not deterministically evicted", boundary.AuthorizationBoundary)
+		}
 	}
 }
 

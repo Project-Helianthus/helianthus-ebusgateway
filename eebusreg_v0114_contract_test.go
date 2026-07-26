@@ -63,7 +63,9 @@ func TestEEBusregV0114ModuleClosure(t *testing.T) {
 func selectedModuleVersions(t *testing.T, want map[string]string) map[string]string {
 	t.Helper()
 
-	output, err := exec.Command("go", "list", "-m", "all").CombinedOutput()
+	command := exec.Command("go", "list", "-m", "all")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go list -m all: %v\n%s", err, output)
 	}

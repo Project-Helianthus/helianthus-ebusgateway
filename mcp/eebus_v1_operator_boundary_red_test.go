@@ -446,6 +446,25 @@ func TestIssue743RawTopologyPreservesVR940OperationalFields(t *testing.T) {
 	issue743AssertOpaqueBounds(t, topologyResult.envelope["data"])
 }
 
+func TestIssue745RawSnapshotMetaExposesLocalSKIOnlyToOperator(t *testing.T) {
+	const localSKI = "3333333333333333333333333333333333333333"
+
+	server, _ := issue743Server(t)
+	rawCapture := msp06Call(t, issue743OperatorHandler(t, server), msp06SnapshotCapture, map[string]any{})
+	issue743Meta(t, rawCapture, "raw", "eebus.raw.read")
+	rawSnapshot := msp06Map(t, msp06Map(t, rawCapture.envelope["data"], "raw capture")["snapshot"], "raw snapshot")
+	rawMeta := msp06Map(t, rawSnapshot["meta"], "raw snapshot meta")
+	if rawMeta["local_ski"] != localSKI {
+		t.Fatalf("raw snapshot local_ski = %#v, want %q", rawMeta["local_ski"], localSKI)
+	}
+
+	publicCapture := msp06Call(t, server.Handler(), msp06SnapshotCapture, map[string]any{})
+	issue743Meta(t, publicCapture, "redacted", "eebus.public.read")
+	if strings.Contains(publicCapture.raw, localSKI) {
+		t.Fatalf("public snapshot leaked raw local SKI: %s", publicCapture.raw)
+	}
+}
+
 func TestIssue743PublicProjectionIrreversiblyOmitsRawIdentityAddressAndMetadata(t *testing.T) {
 	server, _ := issue743Server(t)
 	for _, tool := range []string{msp06ServicesListTool, msp06TopologyGetTool, msp06SnapshotCapture} {

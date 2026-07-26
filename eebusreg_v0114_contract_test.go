@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -40,18 +41,51 @@ func TestEEBusregV0114ModuleClosure(t *testing.T) {
 		shipgoModule:   "v0.6.1-helianthus.9",
 		spinegoModule:  "v0.7.1-helianthus.4",
 	}
-	got := make(map[string]string, len(want))
+	declared := make(map[string]string, len(want))
 	for _, requirement := range parsed.Require {
 		if _, required := want[requirement.Mod.Path]; required {
-			got[requirement.Mod.Path] = requirement.Mod.Version
+			declared[requirement.Mod.Path] = requirement.Mod.Version
 			if strings.Contains(requirement.Mod.Version, "-0.") {
-				t.Errorf("%s resolves to pseudo-version %q", requirement.Mod.Path, requirement.Mod.Version)
+				t.Errorf("%s is declared at pseudo-version %q", requirement.Mod.Path, requirement.Mod.Version)
 			}
 		}
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("eeBUS module closure = %#v; want %#v", got, want)
+	if !reflect.DeepEqual(declared, want) {
+		t.Fatalf("eeBUS declared requirements = %#v; want %#v", declared, want)
 	}
+
+	selected := selectedModuleVersions(t, want)
+	if !reflect.DeepEqual(selected, want) {
+		t.Fatalf("eeBUS selected module graph = %#v; want %#v", selected, want)
+	}
+}
+
+func selectedModuleVersions(t *testing.T, want map[string]string) map[string]string {
+	t.Helper()
+
+	output, err := exec.Command("go", "list", "-m", "all").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -m all: %v\n%s", err, output)
+	}
+
+	selected := make(map[string]string, len(want))
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, required := want[fields[0]]; !required {
+			continue
+		}
+		if len(fields) != 2 {
+			t.Fatalf("parse selected module line %q: want path and version", line)
+		}
+		selected[fields[0]] = fields[1]
+		if strings.Contains(fields[1], "-0.") {
+			t.Errorf("%s is selected at pseudo-version %q", fields[0], fields[1])
+		}
+	}
+	return selected
 }
 
 func TestEEBusregV0114RuntimeAndGatewayBoundary(t *testing.T) {

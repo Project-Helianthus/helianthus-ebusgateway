@@ -359,6 +359,68 @@ func TestIssue749RouterOutputsAreValidatedBeforePublication(t *testing.T) {
 	}
 }
 
+func TestIssue749MutationGetNotFoundWithoutRuntimeIsPreserved(t *testing.T) {
+	commandCases := issue749CommandCases(t)
+	test := commandCases[3]
+	notFound := eebusraw.NewErrorV1(
+		eebusraw.ErrorCodeV1NotFound,
+		"raw mutation was not found",
+		false,
+		eebusraw.SourceLayerV1Runtime,
+	)
+	malformed := notFound.Clone()
+	malformed.Message = " "
+	incoherent := issue749PreparedMutation(
+		t,
+		issue749DecodeArguments[eebusraw.FeatureDataSetRequestV1](t, commandCases[2].arguments),
+		eebusraw.RuntimeBindingV1{RuntimeEpoch: 7, ConnectionGeneration: 3},
+	)
+	incoherent.MutationRef = strings.Repeat("Q", 43)
+	if terminal := eebusraw.ValidateMutationV1(incoherent); terminal != nil {
+		t.Fatalf("incoherent fixture is not independently valid: %+v", terminal)
+	}
+
+	cases := []struct {
+		name     string
+		data     eebusraw.MutationV1
+		terminal *eebusraw.ErrorV1
+		wantCode eebusraw.ErrorCodeV1
+	}{
+		{name: "unknown reference", terminal: notFound, wantCode: eebusraw.ErrorCodeV1NotFound},
+		{name: "malformed terminal", terminal: &malformed, wantCode: eebusraw.ErrorCodeV1Internal},
+		{name: "incoherent data", data: incoherent, terminal: notFound, wantCode: eebusraw.ErrorCodeV1Internal},
+	}
+	for _, current := range cases {
+		t.Run(current.name, func(t *testing.T) {
+			provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
+			server, _ := msp06TestServer(t, provider)
+			router := &issue749TypedRouter{
+				mutationData:  current.data,
+				mutationError: current.terminal,
+			}
+			if err := server.RegisterEEBusV1CommandRouter(router); err != nil {
+				t.Fatal(err)
+			}
+
+			result := msp06Call(t, issue743OperatorHandler(t, server), test.tool, test.arguments)
+			publicError := msp06Map(t, result.envelope["error"], "command error")
+			if code := publicError["code"]; code != string(current.wantCode) {
+				t.Fatalf("mutation get error = %q, want %q; envelope=%#v",
+					code, current.wantCode, result.envelope)
+			}
+			if result.envelope["data"] != nil {
+				t.Fatalf("mutation get error published data: %#v", result.envelope["data"])
+			}
+			assertIssue749PreRuntimeFailure(t, result.envelope, false)
+			if current.wantCode == eebusraw.ErrorCodeV1NotFound &&
+				(publicError["message"] != notFound.Message ||
+					publicError["source_layer"] != string(eebusV1SourceLayerGatewayRouter)) {
+				t.Fatalf("actionable not_found was not preserved: %#v", publicError)
+			}
+		})
+	}
+}
+
 func TestIssue749ZeroDataRouterErrorValidatesOpaqueDetails(t *testing.T) {
 	opaqueValue, err := eebusraw.NewTypedValueV1(map[string]any{"status": "opaque"})
 	if err != nil {

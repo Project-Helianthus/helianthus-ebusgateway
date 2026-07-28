@@ -642,8 +642,7 @@ func eebusV1TerminalRequiresRuntime(code eebusraw.ErrorCodeV1) bool {
 		eebusraw.ErrorCodeV1NoEffect,
 		eebusraw.ErrorCodeV1OutcomeUnknown,
 		eebusraw.ErrorCodeV1Conflict,
-		eebusraw.ErrorCodeV1RollbackFailed,
-		eebusraw.ErrorCodeV1NotFound:
+		eebusraw.ErrorCodeV1RollbackFailed:
 		return true
 	default:
 		return false

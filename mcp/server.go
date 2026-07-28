@@ -445,23 +445,24 @@ type SemanticProvider interface {
 }
 
 type Server struct {
-	registry          Registry
-	invoker           Invoker
-	statusProvider    StatusProvider
-	bus               BusObservabilityProvider
-	watch             WatchSummaryProvider
-	semantic          SemanticProvider
-	scheduleWriter    ScheduleWriter
-	configWriter      ConfigWriter
-	rpcSource         byte
-	rpcSourceAdmitted bool
-	rpcSourceProvider func() (byte, bool)
-	idempotencyMu     sync.Mutex
-	idempotency       map[string]idempotencyEntry
-	snapshotMu        sync.RWMutex
-	snapshots         map[string]snapshotState
-	eebusV1Mu         sync.RWMutex
-	eebusV1           *eebusV1Runtime
+	registry             Registry
+	invoker              Invoker
+	statusProvider       StatusProvider
+	bus                  BusObservabilityProvider
+	watch                WatchSummaryProvider
+	semantic             SemanticProvider
+	scheduleWriter       ScheduleWriter
+	configWriter         ConfigWriter
+	rpcSource            byte
+	rpcSourceAdmitted    bool
+	rpcSourceProvider    func() (byte, bool)
+	idempotencyMu        sync.Mutex
+	idempotency          map[string]idempotencyEntry
+	snapshotMu           sync.RWMutex
+	snapshots            map[string]snapshotState
+	eebusV1Mu            sync.RWMutex
+	eebusV1              *eebusV1Runtime
+	eebusV1CommandRouter EEBusV1CommandRouter
 
 	tools []Tool
 
@@ -1118,6 +1119,9 @@ func (s *Server) hasToolNamed(name string) bool {
 	if s == nil {
 		return false
 	}
+	if _, ok := eebusV1CommandSpecForName(name); ok {
+		return true
+	}
 	for _, tool := range s.tools {
 		if tool.Name == name {
 			return true
@@ -1302,7 +1306,7 @@ func (s *Server) dispatch(ctx context.Context, method string, params json.RawMes
 	case "initialize":
 		return s.handleInitialize(params)
 	case "tools/list":
-		return s.handleToolsList()
+		return s.handleToolsList(ctx)
 	case "tools/call":
 		return s.handleToolsCall(ctx, params)
 	case "ping":
@@ -1338,9 +1342,18 @@ func (s *Server) handleInitialize(params json.RawMessage) (any, *rpcError) {
 	}, nil
 }
 
-func (s *Server) handleToolsList() (any, *rpcError) {
+func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
+	tools := s.tools
+	if eebusV1BoundaryFromContext(ctx) == eebusV1OperatorBoundary {
+		s.eebusV1Mu.RLock()
+		registered := !eebusV1NilCommandRouter(s.eebusV1CommandRouter)
+		s.eebusV1Mu.RUnlock()
+		if registered {
+			tools = append(append([]Tool(nil), tools...), eebusV1CommandTools()...)
+		}
+	}
 	return map[string]any{
-		"tools": s.tools,
+		"tools": tools,
 	}, nil
 }
 
@@ -1349,16 +1362,36 @@ type callToolParams struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
+type rawCallToolParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
 func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (any, *rpcError) {
+	hasDuplicateKeys := eebusV1JSONHasDuplicateKeys(params)
+	var rawCall rawCallToolParams
+	if err := json.Unmarshal(params, &rawCall); err != nil {
+		return nil, rpcErrorInvalidParams("tools/call params invalid")
+	}
+	if rawCall.Name == "" {
+		return nil, rpcErrorInvalidParams("tools/call missing name")
+	}
+	if !s.hasToolNamed(rawCall.Name) {
+		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+	}
+	if spec, ok := eebusV1CommandSpecForName(rawCall.Name); ok {
+		if hasDuplicateKeys {
+			return eebusV1MalformedCommandResult(spec), nil
+		}
+		return s.handleEEBusV1CommandRawCall(ctx, spec, rawCall.Arguments), nil
+	}
+	if hasDuplicateKeys {
+		return nil, rpcErrorInvalidParams("tools/call params contain duplicate object keys")
+	}
+
 	var call callToolParams
 	if err := json.Unmarshal(params, &call); err != nil {
 		return nil, rpcErrorInvalidParams("tools/call params invalid")
-	}
-	if call.Name == "" {
-		return nil, rpcErrorInvalidParams("tools/call missing name")
-	}
-	if !s.hasToolNamed(call.Name) {
-		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", call.Name))
 	}
 
 	if result, handled := s.handleEbusStandardCall(call.Name, call.Arguments); handled {

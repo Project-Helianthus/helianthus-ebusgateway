@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
@@ -30,6 +31,13 @@ func eebusMCPProvider(adapter *eebusRuntimeAdapter) mcp.EEBusV1Provider {
 		return nil
 	}
 	return adapter
+}
+
+func eebusMCPCommandRouter(adapter *eebusRuntimeAdapter) mcp.EEBusV1CommandRouter {
+	if adapter == nil || adapter.runtime == nil {
+		return nil
+	}
+	return eebuscommand.New(adapter.runtime)
 }
 
 func startEEBusRuntime(

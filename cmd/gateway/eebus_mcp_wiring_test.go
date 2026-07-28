@@ -21,6 +21,7 @@ type msp06GatewayRuntime struct {
 	snapshot      eebusruntime.SnapshotV1
 	snapshotErr   error
 	snapshotCalls int
+	featuresCalls int
 }
 
 var _ mcp.EEBusV1Provider = (*eebusRuntimeAdapter)(nil)
@@ -31,11 +32,12 @@ func (*msp06GatewayRuntime) PairingState() ([]eebusruntime.PairingObservationV1,
 	return nil, nil
 }
 
-func (*msp06GatewayRuntime) FeaturesGet(
+func (runtime *msp06GatewayRuntime) FeaturesGet(
 	context.Context,
 	eebusraw.ReadAuthorizationV1,
 	eebusraw.FeaturesGetRequestV1,
 ) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	runtime.featuresCalls++
 	return eebusraw.FeaturesGetDataV1{}, nil
 }
 
@@ -77,6 +79,37 @@ func TestMSP06RuntimeAdapterForwardsOnlySnapshotReads(t *testing.T) {
 	}
 }
 
+func TestIssue749GatewayCommandRouterUsesAdapterRuntime(t *testing.T) {
+	runtime := &msp06GatewayRuntime{}
+	adapter := &eebusRuntimeAdapter{runtime: runtime}
+	router := eebusMCPCommandRouter(adapter)
+	if router == nil {
+		t.Fatal("enabled eeBUS adapter produced no MCP command router")
+	}
+	if _, terminal := router.FeaturesGet(
+		context.Background(),
+		eebusraw.ReadAuthorizationV1{
+			PrincipalClass: "owner",
+			Scope:          eebusraw.AuthScopeV1RawRead,
+			Tool:           eebusraw.ToolV1FeaturesGet,
+			MaskTier:       eebusraw.MaskTierRaw,
+		},
+		eebusraw.FeaturesGetRequestV1{},
+	); terminal != nil {
+		t.Fatalf("same-runtime command route failed: %v", terminal)
+	}
+	if runtime.featuresCalls != 1 {
+		t.Fatalf("adapter runtime feature calls = %d, want 1", runtime.featuresCalls)
+	}
+
+	if router := eebusMCPCommandRouter(nil); router != nil {
+		t.Fatalf("disabled eeBUS adapter produced command router %T", router)
+	}
+	if router := eebusMCPCommandRouter(&eebusRuntimeAdapter{}); router != nil {
+		t.Fatalf("adapter without runtime produced command router %T", router)
+	}
+}
+
 func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)
@@ -85,8 +118,10 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	}
 
 	var registerPosition token.Pos
+	var commandRegisterPosition token.Pos
 	var mountPosition token.Pos
 	registrationGuarded := false
+	commandRegistrationGuarded := false
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch value := node.(type) {
 		case *ast.CallExpr:
@@ -100,6 +135,12 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 				}
 				registerPosition = value.Pos()
 			}
+			if selector.Sel.Name == "RegisterEEBusV1CommandRouter" {
+				if commandRegisterPosition.IsValid() {
+					t.Fatal("RegisterEEBusV1CommandRouter appears more than once in gateway bootstrap")
+				}
+				commandRegisterPosition = value.Pos()
+			}
 			if selector.Sel.Name == "Handle" && len(value.Args) > 0 {
 				pathSelector, ok := value.Args[0].(*ast.SelectorExpr)
 				if ok && pathSelector.Sel.Name == "MCPPath" {
@@ -108,6 +149,7 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 			}
 		case *ast.IfStmt:
 			containsRegistration := false
+			containsCommandRegistration := false
 			ast.Inspect(value.Body, func(child ast.Node) bool {
 				call, ok := child.(*ast.CallExpr)
 				if !ok {
@@ -117,6 +159,9 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 				if ok && selector.Sel.Name == "RegisterEEBusV1Provider" {
 					containsRegistration = true
 				}
+				if ok && selector.Sel.Name == "RegisterEEBusV1CommandRouter" {
+					containsCommandRegistration = true
+				}
 				return true
 			})
 			if containsRegistration {
@@ -125,6 +170,13 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 					t.Fatal(err)
 				}
 				registrationGuarded = strings.Contains(condition.String(), "!= nil")
+			}
+			if containsCommandRegistration {
+				var condition strings.Builder
+				if err := printer.Fprint(&condition, fset, value.Cond); err != nil {
+					t.Fatal(err)
+				}
+				commandRegistrationGuarded = strings.Contains(condition.String(), "!= nil")
 			}
 		}
 		return true
@@ -136,11 +188,21 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	if !mountPosition.IsValid() {
 		t.Fatal("gateway MCP mount was not found")
 	}
+	if !commandRegisterPosition.IsValid() {
+		t.Fatal("gateway bootstrap does not register the enabled eeBUS command router with MCP")
+	}
 	if registerPosition >= mountPosition {
 		t.Fatalf("eeBUS provider registration at %s must complete before MCP mount at %s", fset.Position(registerPosition), fset.Position(mountPosition))
 	}
 	if !registrationGuarded {
 		t.Fatal("eeBUS MCP provider registration is not guarded by a non-nil enabled runtime")
+	}
+	if commandRegisterPosition >= mountPosition {
+		t.Fatalf("eeBUS command router registration at %s must complete before MCP mount at %s",
+			fset.Position(commandRegisterPosition), fset.Position(mountPosition))
+	}
+	if !commandRegistrationGuarded {
+		t.Fatal("eeBUS MCP command router registration is not guarded by a non-nil enabled runtime")
 	}
 }
 
@@ -158,7 +220,9 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	}
 
 	typedParameter := false
+	typedCommandParameter := false
 	explicitArgument := false
+	explicitCommandArgument := false
 	for _, declaration := range mainFile.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if !ok || function.Name.Name != "startHTTPServer" {
@@ -171,6 +235,9 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 			}
 			if rendered.String() == "mcp.EEBusV1Provider" {
 				typedParameter = true
+			}
+			if rendered.String() == "mcp.EEBusV1CommandRouter" {
+				typedCommandParameter = true
 			}
 		}
 	}
@@ -189,11 +256,16 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 				continue
 			}
 			function, ok := conversion.Fun.(*ast.Ident)
-			if !ok || function.Name != "eebusMCPProvider" || len(conversion.Args) != 1 {
+			if !ok || len(conversion.Args) != 1 {
 				continue
 			}
 			identifier, ok := conversion.Args[0].(*ast.Ident)
-			explicitArgument = ok && identifier.Name == "eebusAdapter"
+			switch function.Name {
+			case "eebusMCPProvider":
+				explicitArgument = ok && identifier.Name == "eebusAdapter"
+			case "eebusMCPCommandRouter":
+				explicitCommandArgument = ok && identifier.Name == "eebusAdapter"
+			}
 		}
 		return true
 	})
@@ -202,6 +274,12 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	}
 	if !explicitArgument {
 		t.Error("gateway bootstrap does not normalize eebusAdapter before startHTTPServerFn")
+	}
+	if !typedCommandParameter {
+		t.Error("startHTTPServer has no explicit mcp.EEBusV1CommandRouter parameter")
+	}
+	if !explicitCommandArgument {
+		t.Error("gateway bootstrap does not create the command router from eebusAdapter before startHTTPServerFn")
 	}
 
 	for filename, file := range map[string]*ast.File{

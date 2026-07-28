@@ -16,7 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
-const issue749FrozenM6ManifestSHA256 = "2d28e20a07d6338ca8873907be284de92701b18b5140023e875a8d14136acec6"
+const issue749FrozenM6ManifestSHA256 = "4bbbe92ba4a0294b82092d6b735261725fd45bb1f7b1fef76aca54894ec921b4"
 
 var issue749AdditiveToolNames = []string{
 	"eebus.v1.features.get",
@@ -290,7 +290,7 @@ type issue749CommandCase struct {
 func issue749CommandCases(t *testing.T) []issue749CommandCase {
 	t.Helper()
 	locator := eebusraw.FeatureLocatorV1{
-		RemoteSKI: "fixture-remote-ski", SHIPID: "fixture-ship-id",
+		RemoteSKI: strings.Repeat("a", 40), SHIPID: "fixture-ship-id",
 		DeviceAddress: "0", EntityAddress: []uint64{1}, FeatureAddress: 2,
 		FeatureType: "Measurement", FeatureRole: eebusraw.FeatureRoleV1Server,
 	}
@@ -327,22 +327,22 @@ func issue749CommandCases(t *testing.T) []issue749CommandCase {
 			tool:  string(eebusraw.ToolV1FeaturesDataSet),
 			scope: string(eebusraw.AuthScopeV1RawWrite),
 			arguments: issue749Arguments(t, eebusraw.FeatureDataSetRequestV1{
-				Target: writeTarget, Value: value, ReadToken: "fixture-read-token",
-				IdempotencyKey: "fixture-set-key", Mode: eebusraw.ModeV1Apply,
+				Target: writeTarget, Value: value, ReadToken: strings.Repeat("E", 43),
+				IdempotencyKey: "fixture-set-key-01", Mode: eebusraw.ModeV1Apply,
 			}),
 		},
 		{
 			tool:  string(eebusraw.ToolV1MutationsGet),
 			scope: string(eebusraw.AuthScopeV1RawRead),
 			arguments: issue749Arguments(t, eebusraw.MutationGetRequestV1{
-				MutationRef: "fixture-mutation-ref",
+				MutationRef: strings.Repeat("M", 43),
 			}),
 		},
 		{
 			tool:  string(eebusraw.ToolV1MutationsRollback),
 			scope: string(eebusraw.AuthScopeV1RawWrite),
 			arguments: issue749Arguments(t, eebusraw.MutationRollbackRequestV1{
-				MutationRef: "fixture-mutation-ref", IdempotencyKey: "fixture-rollback-key",
+				MutationRef: strings.Repeat("M", 43), IdempotencyKey: "fixture-rollback-key-01",
 			}),
 		},
 	}

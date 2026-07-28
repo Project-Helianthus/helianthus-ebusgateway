@@ -80,8 +80,10 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"cmd/gateway/eebus_runtime_adapter.go": false,
 		"cmd/gateway/eebus_runtime_config.go":  false,
 		// MSP-06 adds one typed, read-only provider seam from the runtime into MCP.
-		"mcp/eebus_v1.go":     false,
-		"mcp/eebus_v1_dto.go": false,
+		"mcp/eebus_v1.go": false,
+		// Issue #747 adds one isolated command router over the canonical runtime.
+		"internal/eebuscommand/router.go": false,
+		"mcp/eebus_v1_dto.go":             false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

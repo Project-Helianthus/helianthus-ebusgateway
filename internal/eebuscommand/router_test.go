@@ -637,3 +637,73 @@ func TestRouterMutationCapabilityFailsClosedBeforeRuntimeContact(t *testing.T) {
 		})
 	}
 }
+
+func TestRouterMutationAuthorizationFailsBeforeRuntimeContact(t *testing.T) {
+	runtime := &issue747MutationRuntime{issue747ReadRuntime: &issue747ReadRuntime{}}
+	router := New(runtime)
+
+	operations := []struct {
+		name string
+		call func() (eebusraw.MutationV1, *eebusraw.ErrorV1)
+	}{
+		{
+			name: "FeaturesDataSet requires write authorization for its tool",
+			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+				return router.FeaturesDataSet(
+					context.Background(),
+					eebusraw.WriteAuthorizationV1{
+						PrincipalClass: "owner",
+						Scope:          eebusraw.AuthScopeV1RawRead,
+						Tool:           eebusraw.ToolV1FeaturesDataSet,
+						MaskTier:       eebusraw.MaskTierRaw,
+					},
+					eebusraw.FeatureDataSetRequestV1{},
+				)
+			},
+		},
+		{
+			name: "MutationsGet requires read authorization for its tool",
+			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+				return router.MutationsGet(
+					context.Background(),
+					eebusraw.ReadAuthorizationV1{
+						PrincipalClass: "owner",
+						Scope:          eebusraw.AuthScopeV1RawRead,
+						Tool:           eebusraw.ToolV1FeaturesGet,
+						MaskTier:       eebusraw.MaskTierRaw,
+					},
+					eebusraw.MutationGetRequestV1{},
+				)
+			},
+		},
+		{
+			name: "MutationsRollback requires write authorization for its tool",
+			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+				return router.MutationsRollback(
+					context.Background(),
+					eebusraw.WriteAuthorizationV1{
+						PrincipalClass: "owner",
+						Scope:          eebusraw.AuthScopeV1RawWrite,
+						Tool:           eebusraw.ToolV1FeaturesDataSet,
+						MaskTier:       eebusraw.MaskTierRaw,
+					},
+					eebusraw.MutationRollbackRequestV1{},
+				)
+			},
+		},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			before := runtime.callCounts()
+			result, terminal := operation.call()
+			issue747AssertCallDelta(t, before, runtime.callCounts(), issue747CallCounts{})
+			if terminal == nil || terminal.Code != eebusraw.ErrorCodeV1PermissionDenied {
+				t.Fatalf("terminal error = %+v, want permission_denied", terminal)
+			}
+			if !reflect.DeepEqual(result, eebusraw.MutationV1{}) {
+				t.Fatalf("result = %+v, want zero mutation", result)
+			}
+		})
+	}
+}

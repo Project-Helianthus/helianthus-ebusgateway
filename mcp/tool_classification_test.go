@@ -7,6 +7,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	estd "github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 type toolClass string
@@ -55,6 +56,13 @@ func toolClassificationPolicy() map[string]toolClass {
 		estd.ToolCommandsList:            toolClassCoreStable,
 		estd.ToolCommandGet:              toolClassCoreStable,
 		estd.ToolDecode:                  toolClassCoreStable,
+
+		// Owner-only raw eeBUS command surface (execution-plans#71).
+		string(eebusraw.ToolV1FeaturesGet):       toolClassCoreStable,
+		string(eebusraw.ToolV1FeaturesDataGet):   toolClassCoreStable,
+		string(eebusraw.ToolV1FeaturesDataSet):   toolClassCoreStable,
+		string(eebusraw.ToolV1MutationsGet):      toolClassCoreStable,
+		string(eebusraw.ToolV1MutationsRollback): toolClassCoreStable,
 		// Vaillant B503 surface (M2a_GATEWAY_MCP / execution-plans#19).
 		// Provider-scoped namespace parallel to ebus_standard; tools surface
 		// a dedicated capability signal (meta.capabilities.vaillant_b503).
@@ -98,13 +106,14 @@ func TestToolClassificationPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
-	// Install B503 tools so the classification policy check covers them too
-	// (production wiring does this in cmd/gateway/main.go). Without this
-	// explicit registration here, the test would only check the default
-	// NewServer inventory and leave ebus.v1.vaillant.* without CI coverage.
+	// Install production-wired dynamic tools so the policy check covers the
+	// registered operator inventory, not only the default NewServer tools.
 	testInstallB503ForClassification(server)
+	if err := server.RegisterEEBusV1CommandRouter(&issue749TypedRouter{}); err != nil {
+		t.Fatalf("RegisterEEBusV1CommandRouter error = %v", err)
+	}
 
-	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
+	res := doRPC(t, issue743OperatorHandler(t, server), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
 	if res.Error != nil {
 		t.Fatalf("tools/list error = %+v", res.Error)
 	}

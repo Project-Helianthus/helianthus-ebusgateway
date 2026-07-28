@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 type msp05bRuntime struct {
@@ -39,6 +40,22 @@ func (*msp05bRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
 
 func (*msp05bRuntime) PairingState() ([]eebusruntime.PairingObservationV1, error) {
 	return nil, nil
+}
+
+func (*msp05bRuntime) FeaturesGet(
+	context.Context,
+	eebusraw.ReadAuthorizationV1,
+	eebusraw.FeaturesGetRequestV1,
+) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	return eebusraw.FeaturesGetDataV1{}, nil
+}
+
+func (*msp05bRuntime) FeaturesDataGet(
+	context.Context,
+	eebusraw.ReadAuthorizationV1,
+	eebusraw.FeatureDataGetRequestV1,
+) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
+	return eebusraw.FeatureDataGetDataV1{}, nil
 }
 
 func msp05bEnabledConfig() ebusgateway.EEBusConfig {

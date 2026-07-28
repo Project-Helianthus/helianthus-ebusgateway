@@ -90,11 +90,11 @@ func issue743Snapshot(t *testing.T, content []byte) eebusruntime.SnapshotV1 {
 	t.Helper()
 	var draft eebusruntime.SnapshotV1
 	if err := json.Unmarshal(content, &draft); err != nil {
-		t.Fatalf("decode eebusreg v0.1.16 raw fixture: %v", err)
+		t.Fatalf("decode eebusreg v0.1.18 raw fixture: %v", err)
 	}
 	snapshot, err := eebusruntime.NewSnapshotV1(draft)
 	if err != nil {
-		t.Fatalf("construct eebusreg v0.1.16 raw fixture: %v", err)
+		t.Fatalf("construct eebusreg v0.1.18 raw fixture: %v", err)
 	}
 	return snapshot
 }

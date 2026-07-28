@@ -84,6 +84,7 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		// Issue #747 adds one isolated command router over the canonical runtime.
 		"internal/eebuscommand/router.go": false,
 		"mcp/eebus_v1_dto.go":             false,
+		"mcp/eebus_v1_commands.go":        false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

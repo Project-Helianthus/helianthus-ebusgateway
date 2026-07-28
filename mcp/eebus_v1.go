@@ -29,8 +29,8 @@ const (
 
 	eebusV1DefaultLiveTimeout = 3 * time.Second
 	eebusV1MaxLiveWorkers     = 8
-	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{43}$`
-	eebusV1IDDigestPattern    = `^(?:[A-Za-z0-9_-]{43}|sha256:[0-9a-f]{64})$`
+	eebusV1TokenPattern       = `^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$`
+	eebusV1IDDigestPattern    = `^(?:[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]|sha256:[0-9a-f]{64})$`
 )
 
 // EEBusV1Provider is the MSP-06 typed, read-only seam and the only MCP

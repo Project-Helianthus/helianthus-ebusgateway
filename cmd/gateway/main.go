@@ -1043,6 +1043,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		hub *graphql.BroadcastHub,
 		semanticProvider graphql.SemanticProvider,
 		eebusProvider mcp.EEBusV1Provider,
+		eebusCommandRouter mcp.EEBusV1CommandRouter,
 		scheduleWriter mcp.ScheduleWriter,
 		configWriter mcp.ConfigWriter,
 		busObservability *ebusgateway.BusObservabilityStore,
@@ -1055,7 +1056,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			)
 		}
 		return startHTTPServer(
-			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider,
+			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
 			scheduleWriter, configWriter, busObservability, shadowCache,
 		)
 	}
@@ -1067,6 +1068,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		hub,
 		semanticRuntime.Provider(),
 		eebusMCPProvider(eebusAdapter),
+		eebusMCPCommandRouter(eebusAdapter),
 		scheduleWriter,
 		configWriter,
 		busObservability,
@@ -1874,6 +1876,7 @@ func startHTTPServer(
 	hub *graphql.BroadcastHub,
 	semanticProvider graphql.SemanticProvider,
 	eebusProvider mcp.EEBusV1Provider,
+	eebusCommandRouter mcp.EEBusV1CommandRouter,
 	scheduleWriter mcp.ScheduleWriter,
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
@@ -1914,6 +1917,11 @@ func startHTTPServer(
 	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
 			return nil, nil, fmt.Errorf("register eeBUS MCP provider: %w", err)
+		}
+	}
+	if eebusCommandRouter != nil {
+		if err := mcpServer.RegisterEEBusV1CommandRouter(eebusCommandRouter); err != nil {
+			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)

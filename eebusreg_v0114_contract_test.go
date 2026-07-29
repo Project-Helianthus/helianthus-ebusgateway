@@ -22,7 +22,7 @@ const (
 	spinegoModule  = "github.com/Project-Helianthus/helianthus-spine-go"
 )
 
-func TestEEBusregV0123ModuleClosure(t *testing.T) {
+func TestEEBusregV0124ModuleClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -36,7 +36,7 @@ func TestEEBusregV0123ModuleClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.23",
+		eebusregModule: "v0.1.24",
 		eebusgoModule:  "v0.7.1-helianthus.11",
 		shipgoModule:   "v0.6.1-helianthus.9",
 		spinegoModule:  "v0.7.1-helianthus.7",

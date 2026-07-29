@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-func TestIssue755DependencyClosurePinsEEBusregV0123(t *testing.T) {
+func TestIssue759DependencyClosurePinsEEBusregV0124(t *testing.T) {
 	goMod, err := os.Open("../../go.mod")
 	if err != nil {
 		t.Fatal(err)
@@ -33,8 +33,8 @@ func TestIssue755DependencyClosurePinsEEBusregV0123(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 1 || versions[0] != "v0.1.23" {
-		t.Fatalf("%s versions = %v, want exactly [v0.1.23]", module, versions)
+	if len(versions) != 1 || versions[0] != "v0.1.24" {
+		t.Fatalf("%s versions = %v, want exactly [v0.1.24]", module, versions)
 	}
 }
 

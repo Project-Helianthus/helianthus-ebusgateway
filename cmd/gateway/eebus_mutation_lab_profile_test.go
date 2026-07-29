@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,7 +16,10 @@ import (
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
-const issue755ProfileBasename = "mutation-lab-profile-v1.json"
+const (
+	issue755ProfileDirectory = "eebusmutation"
+	issue755ProfileBasename  = "mutation-lab-profile-v1.json"
+)
 
 func TestIssue755AbsentMutationLabProfileLeavesRuntimeConfigNil(t *testing.T) {
 	tests := []struct {
@@ -29,9 +33,17 @@ func TestIssue755AbsentMutationLabProfileLeavesRuntimeConfigNil(t *testing.T) {
 			},
 		},
 		{
-			name: "file absent",
+			name: "child absent",
 			stateRoot: func(t *testing.T) string {
 				return issue755SecureStateRoot(t)
+			},
+		},
+		{
+			name: "file absent",
+			stateRoot: func(t *testing.T) string {
+				root := issue755SecureStateRoot(t)
+				issue755SecureProfileDirectory(t, root)
+				return root
 			},
 		},
 	}
@@ -99,6 +111,9 @@ func TestIssue755LoaderProductionSurfaceIsFixedAndNonLeaking(t *testing.T) {
 	if count := strings.Count(text, issue755ProfileBasename); count != 1 {
 		t.Fatalf("fixed profile basename occurrences = %d, want exactly one", count)
 	}
+	if count := strings.Count(text, issue755ProfileDirectory); count != 1 {
+		t.Fatalf("fixed profile directory occurrences = %d, want exactly one", count)
+	}
 	for _, forbidden := range []string{
 		"os.Getenv",
 		"os.LookupEnv",
@@ -115,6 +130,16 @@ func TestIssue755LoaderProductionSurfaceIsFixedAndNonLeaking(t *testing.T) {
 			t.Fatalf("loader production source contains forbidden surface %q", forbidden)
 		}
 	}
+}
+
+func TestIssue755RejectsRootLevelMutationLabProfileBeforeFactory(t *testing.T) {
+	root := issue755SecureStateRoot(t)
+	issue755WriteProfileAt(
+		t,
+		filepath.Join(root, issue755ProfileBasename),
+		issue755ValidMutationLabProfileJSON(t),
+	)
+	issue755AssertGenericLoadFailure(t, root, "")
 }
 
 func issue755EnabledConfig(stateRoot string) ebusgateway.EEBusConfig {
@@ -229,7 +254,16 @@ func TestIssue755RejectsCaseAliasedMutationLabProfileKeys(t *testing.T) {
 
 func issue755WriteProfile(t *testing.T, stateRoot string, raw []byte) string {
 	t.Helper()
-	path := filepath.Join(stateRoot, issue755ProfileBasename)
+	directory := issue755SecureProfileDirectory(t, stateRoot)
+	return issue755WriteProfileAt(
+		t,
+		filepath.Join(directory, issue755ProfileBasename),
+		raw,
+	)
+}
+
+func issue755WriteProfileAt(t *testing.T, path string, raw []byte) string {
+	t.Helper()
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -246,4 +280,53 @@ func issue755SecureStateRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func issue755SecureProfileDirectory(t *testing.T, stateRoot string) string {
+	t.Helper()
+	directory := filepath.Join(stateRoot, issue755ProfileDirectory)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+func issue755AssertGenericLoadFailure(
+	t *testing.T,
+	stateRoot string,
+	contentMarker string,
+) {
+	t.Helper()
+	runtime := &msp05bRuntime{}
+	factoryCalls := 0
+	adapter, err := startEEBusRuntime(
+		context.Background(),
+		issue755EnabledConfig(stateRoot),
+		issue755Resolver,
+		func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+			factoryCalls++
+			return runtime, nil
+		},
+	)
+	if adapter != nil || err == nil {
+		t.Fatalf("invalid profile startup = (%v, %v); want nil adapter and error", adapter, err)
+	}
+	if factoryCalls != 0 || runtime.startCalls != 0 {
+		t.Fatalf("invalid profile calls factory=%d start=%d; want zero", factoryCalls, runtime.startCalls)
+	}
+	const generic = "eeBUS mutation lab profile load failed"
+	if !strings.Contains(err.Error(), generic) {
+		t.Fatalf("startup error = %q; want generic profile load failure", err)
+	}
+	for _, secret := range []string{stateRoot, contentMarker, issue755RemoteSKI} {
+		if secret != "" && strings.Contains(err.Error(), secret) {
+			t.Fatalf("startup error leaked protected profile detail %q: %v", secret, err)
+		}
+	}
+	if errors.Unwrap(errors.Unwrap(err)) != nil {
+		t.Fatalf("startup error exposes an implementation cause chain: %v", err)
+	}
 }

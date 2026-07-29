@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -119,14 +118,68 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 			},
 		},
 		{
+			name: "child symlink",
+			setup: func(t *testing.T) string {
+				root := issue755SecureStateRoot(t)
+				actual := filepath.Join(t.TempDir(), "actual")
+				if err := os.Mkdir(actual, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				issue755WriteProfileAt(
+					t,
+					filepath.Join(actual, issue755ProfileBasename),
+					valid,
+				)
+				if err := os.Symlink(
+					actual,
+					filepath.Join(root, issue755ProfileDirectory),
+				); err != nil {
+					t.Fatal(err)
+				}
+				return root
+			},
+		},
+		{
+			name: "child non-directory",
+			setup: func(t *testing.T) string {
+				root := issue755SecureStateRoot(t)
+				issue755WriteProfileAt(
+					t,
+					filepath.Join(root, issue755ProfileDirectory),
+					valid,
+				)
+				return root
+			},
+		},
+		{
+			name: "child mode",
+			setup: func(t *testing.T) string {
+				root := issue755SecureStateRoot(t)
+				child := filepath.Join(root, issue755ProfileDirectory)
+				if err := os.Mkdir(child, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(child, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				issue755WriteProfileAt(
+					t,
+					filepath.Join(child, issue755ProfileBasename),
+					valid,
+				)
+				return root
+			},
+		},
+		{
 			name: "file symlink",
 			setup: func(t *testing.T) string {
 				root := issue755SecureStateRoot(t)
+				child := issue755SecureProfileDirectory(t, root)
 				target := filepath.Join(t.TempDir(), "profile.json")
 				if err := os.WriteFile(target, valid, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(target, filepath.Join(root, issue755ProfileBasename)); err != nil {
+				if err := os.Symlink(target, filepath.Join(child, issue755ProfileBasename)); err != nil {
 					t.Fatal(err)
 				}
 				return root
@@ -136,7 +189,8 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 			name: "nonregular file",
 			setup: func(t *testing.T) string {
 				root := issue755SecureStateRoot(t)
-				if err := os.Mkdir(filepath.Join(root, issue755ProfileBasename), 0o600); err != nil {
+				child := issue755SecureProfileDirectory(t, root)
+				if err := os.Mkdir(filepath.Join(child, issue755ProfileBasename), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return root
@@ -157,11 +211,12 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 			name: "hardlink",
 			setup: func(t *testing.T) string {
 				root := issue755SecureStateRoot(t)
-				original := filepath.Join(root, "original.json")
+				child := issue755SecureProfileDirectory(t, root)
+				original := filepath.Join(child, "original.json")
 				if err := os.WriteFile(original, valid, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Link(original, filepath.Join(root, issue755ProfileBasename)); err != nil {
+				if err := os.Link(original, filepath.Join(child, issue755ProfileBasename)); err != nil {
 					t.Fatal(err)
 				}
 				return root
@@ -176,10 +231,10 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 	}
 }
 
-func TestIssue755MetadataValidationRejectsOwnerTypeModeLinksAndSize(t *testing.T) {
+func TestIssue755MetadataValidationRejectsRootChildAndFileBoundaries(t *testing.T) {
 	euid := uint32(os.Geteuid())
 	if !mutationLabRootMetadataValid(unix.S_IFDIR|0o700, euid, euid) {
-		t.Fatal("valid root metadata rejected")
+		t.Fatal("valid root or child metadata rejected")
 	}
 	for _, test := range []struct {
 		name string
@@ -190,9 +245,9 @@ func TestIssue755MetadataValidationRejectsOwnerTypeModeLinksAndSize(t *testing.T
 		{name: "type", mode: unix.S_IFREG | 0o700, uid: euid},
 		{name: "mode", mode: unix.S_IFDIR | 0o750, uid: euid},
 	} {
-		t.Run("root "+test.name, func(t *testing.T) {
+		t.Run("root or child "+test.name, func(t *testing.T) {
 			if mutationLabRootMetadataValid(test.mode, test.uid, euid) {
-				t.Fatal("unsafe root metadata accepted")
+				t.Fatal("unsafe root or child metadata accepted")
 			}
 		})
 	}
@@ -336,41 +391,4 @@ func TestIssue755RejectsMalformedOrInvalidProfileBeforeFactory(t *testing.T) {
 
 func jsonMarshalIssue755(value any) ([]byte, error) {
 	return json.Marshal(value)
-}
-
-func issue755AssertGenericLoadFailure(
-	t *testing.T,
-	stateRoot string,
-	contentMarker string,
-) {
-	t.Helper()
-	runtime := &msp05bRuntime{}
-	factoryCalls := 0
-	adapter, err := startEEBusRuntime(
-		context.Background(),
-		issue755EnabledConfig(stateRoot),
-		issue755Resolver,
-		func(eebusruntime.Config) (eebusruntime.Runtime, error) {
-			factoryCalls++
-			return runtime, nil
-		},
-	)
-	if adapter != nil || err == nil {
-		t.Fatalf("invalid profile startup = (%v, %v); want nil adapter and error", adapter, err)
-	}
-	if factoryCalls != 0 || runtime.startCalls != 0 {
-		t.Fatalf("invalid profile calls factory=%d start=%d; want zero", factoryCalls, runtime.startCalls)
-	}
-	const generic = "eeBUS mutation lab profile load failed"
-	if !strings.Contains(err.Error(), generic) {
-		t.Fatalf("startup error = %q; want generic profile load failure", err)
-	}
-	for _, secret := range []string{stateRoot, contentMarker, issue755RemoteSKI} {
-		if secret != "" && strings.Contains(err.Error(), secret) {
-			t.Fatalf("startup error leaked protected profile detail %q: %v", secret, err)
-		}
-	}
-	if errors.Unwrap(errors.Unwrap(err)) != nil {
-		t.Fatalf("startup error exposes an implementation cause chain: %v", err)
-	}
 }

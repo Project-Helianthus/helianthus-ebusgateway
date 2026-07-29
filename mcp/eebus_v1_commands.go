@@ -511,6 +511,9 @@ func eebusV1ValidateCommandOutcome(
 			if !reflect.ValueOf(typedData).IsZero() {
 				return nil, eebusV1ContractViolation()
 			}
+			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
+				return nil, eebusV1ContractViolation()
+			}
 			return nil, nil
 		}
 		if failure := eebusraw.ValidateFeatureDataGetDataV1(typedRequest, typedData, terminal); failure != nil {
@@ -524,6 +527,9 @@ func eebusV1ValidateCommandOutcome(
 	case eebusraw.ToolV1FeaturesDataSet,
 		eebusraw.ToolV1MutationsGet,
 		eebusraw.ToolV1MutationsRollback:
+		if terminal != nil && terminal.Code == eebusraw.ErrorCodeV1PartialResult {
+			return nil, eebusV1ContractViolation()
+		}
 		typedData := data.(eebusraw.MutationV1)
 		runtime := eebusV1BoundOutcomeRuntime(outcomeRuntime)
 		if outcomeRuntime != nil && runtime == nil {

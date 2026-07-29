@@ -11,8 +11,10 @@ import (
 )
 
 type issue755StageBoundRouter struct {
-	outcome  eebusruntime.RawMutationOutcomeV1
-	terminal *eebusraw.ErrorV1
+	dataGetData     eebusraw.FeatureDataGetDataV1
+	dataGetTerminal *eebusraw.ErrorV1
+	outcome         eebusruntime.RawMutationOutcomeV1
+	terminal        *eebusraw.ErrorV1
 }
 
 var _ EEBusV1CommandRouter = (*issue755StageBoundRouter)(nil)
@@ -30,17 +32,12 @@ func (*issue755StageBoundRouter) FeaturesGet(
 	)
 }
 
-func (*issue755StageBoundRouter) FeaturesDataGet(
+func (router *issue755StageBoundRouter) FeaturesDataGet(
 	context.Context,
 	eebusraw.ReadAuthorizationV1,
 	eebusraw.FeatureDataGetRequestV1,
 ) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
-	return eebusraw.FeatureDataGetDataV1{}, eebusraw.NewErrorV1(
-		eebusraw.ErrorCodeV1Internal,
-		"unexpected feature data lookup",
-		false,
-		eebusraw.SourceLayerV1Runtime,
-	)
+	return router.dataGetData.Clone(), issue755CloneTerminal(router.dataGetTerminal)
 }
 
 func (router *issue755StageBoundRouter) FeaturesDataSet(
@@ -311,6 +308,181 @@ func TestIssue755MutationAndOutcomeRuntimeMustMatch(t *testing.T) {
 		t.Fatalf("matching mutation outcome failed: %#v", result.envelope)
 	}
 	assertIssue749CommandMeta(t, result.envelope, test.tool, test.scope, binding)
+}
+
+func TestIssue755FeatureDataGetZeroDataEnforcesSourcePartition(t *testing.T) {
+	sourceCases := []struct {
+		source     eebusraw.SourceLayerV1
+		wantCode   eebusraw.ErrorCodeV1
+		wantSource eebusraw.SourceLayerV1
+	}{
+		{
+			source:     eebusV1SourceLayerMCP,
+			wantCode:   eebusraw.ErrorCodeV1Disconnected,
+			wantSource: eebusV1SourceLayerMCP,
+		},
+		{
+			source:     eebusV1SourceLayerGatewayRouter,
+			wantCode:   eebusraw.ErrorCodeV1Disconnected,
+			wantSource: eebusV1SourceLayerGatewayRouter,
+		},
+		{
+			source:     eebusraw.SourceLayerV1Runtime,
+			wantCode:   eebusraw.ErrorCodeV1Disconnected,
+			wantSource: eebusraw.SourceLayerV1Runtime,
+		},
+		{
+			source:     eebusraw.SourceLayerV1("eebusreg-coordinator"),
+			wantCode:   eebusraw.ErrorCodeV1Disconnected,
+			wantSource: eebusraw.SourceLayerV1("eebusreg-coordinator"),
+		},
+		{
+			source:     eebusraw.SourceLayerV1Executor,
+			wantCode:   eebusraw.ErrorCodeV1Internal,
+			wantSource: eebusV1SourceLayerGatewayRouter,
+		},
+		{
+			source:     eebusraw.SourceLayerV1SpineRoundTrip,
+			wantCode:   eebusraw.ErrorCodeV1Internal,
+			wantSource: eebusV1SourceLayerGatewayRouter,
+		},
+		{
+			source:     eebusraw.SourceLayerV1("ship-session"),
+			wantCode:   eebusraw.ErrorCodeV1Internal,
+			wantSource: eebusV1SourceLayerGatewayRouter,
+		},
+		{
+			source:     eebusraw.SourceLayerV1Remote,
+			wantCode:   eebusraw.ErrorCodeV1Internal,
+			wantSource: eebusV1SourceLayerGatewayRouter,
+		},
+	}
+	test := issue749CommandCases(t)[1]
+	for _, testCase := range sourceCases {
+		t.Run(string(testCase.source), func(t *testing.T) {
+			result := issue755CallCommand(t, &issue755StageBoundRouter{
+				dataGetTerminal: eebusraw.NewErrorV1(
+					eebusraw.ErrorCodeV1Disconnected,
+					"feature data read ended without a captured runtime",
+					true,
+					testCase.source,
+				),
+			}, test)
+			issue755AssertTerminalEnvelope(
+				t,
+				result.envelope,
+				testCase.wantCode,
+				testCase.wantSource,
+				nil,
+			)
+		})
+	}
+}
+
+func TestIssue755FeatureDataGetPartialResultWithBoundDataRemainsLegal(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         7,
+		ConnectionGeneration: 3,
+	}
+	test := issue749CommandCases(t)[1]
+	arguments := cloneIssue749Arguments(t, test.arguments)
+	targets := arguments["targets"].([]any)
+	secondTarget := cloneIssue749Arguments(t, targets[0].(map[string]any))
+	secondTarget["feature_address"] = float64(3)
+	arguments["targets"] = append(targets, secondTarget)
+	test.arguments = arguments
+	request := issue749DecodeArguments[eebusraw.FeatureDataGetRequestV1](t, arguments)
+
+	result := issue755CallCommand(t, &issue755StageBoundRouter{
+		dataGetData: issue749PartialData(t, request, binding),
+		dataGetTerminal: eebusraw.NewErrorV1(
+			eebusraw.ErrorCodeV1PartialResult,
+			"one bound read target timed out",
+			true,
+			eebusraw.SourceLayerV1SpineRoundTrip,
+		),
+	}, test)
+	if !result.isError || result.envelope["data"] == nil {
+		t.Fatalf("bound partial read was not retained: %#v", result.envelope)
+	}
+	publicError := msp06Map(t, result.envelope["error"], "partial read error")
+	if publicError["code"] != string(eebusraw.ErrorCodeV1PartialResult) ||
+		publicError["source_layer"] != string(eebusraw.SourceLayerV1SpineRoundTrip) {
+		t.Fatalf("partial read terminal = %#v", publicError)
+	}
+	assertIssue749CommandMeta(t, result.envelope, test.tool, test.scope, binding)
+}
+
+func TestIssue755MutationToolsRejectPartialResultCategorically(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         7,
+		ConnectionGeneration: 3,
+	}
+	commandCases := issue749CommandCases(t)
+	setRequest := issue749DecodeArguments[eebusraw.FeatureDataSetRequestV1](
+		t,
+		commandCases[2].arguments,
+	)
+	mutation := issue749PreparedMutation(t, setRequest, binding)
+	sources := []eebusraw.SourceLayerV1{
+		eebusV1SourceLayerMCP,
+		eebusV1SourceLayerGatewayRouter,
+		eebusraw.SourceLayerV1Runtime,
+		eebusraw.SourceLayerV1("eebusreg-coordinator"),
+		eebusraw.SourceLayerV1Executor,
+		eebusraw.SourceLayerV1SpineRoundTrip,
+		eebusraw.SourceLayerV1("ship-session"),
+		eebusraw.SourceLayerV1Remote,
+	}
+	outcomes := []struct {
+		name    string
+		outcome eebusruntime.RawMutationOutcomeV1
+	}{
+		{name: "zero-unbound"},
+		{
+			name: "zero-bound",
+			outcome: eebusruntime.RawMutationOutcomeV1{
+				Runtime: &binding,
+			},
+		},
+		{
+			name: "mutation-bound",
+			outcome: eebusruntime.RawMutationOutcomeV1{
+				Mutation: mutation,
+				Runtime:  &binding,
+			},
+		},
+	}
+
+	for _, commandIndex := range []int{2, 3, 4} {
+		test := commandCases[commandIndex]
+		t.Run(test.tool, func(t *testing.T) {
+			for _, source := range sources {
+				t.Run(string(source), func(t *testing.T) {
+					for _, outcome := range outcomes {
+						t.Run(outcome.name, func(t *testing.T) {
+							result := issue755CallCommand(t, &issue755StageBoundRouter{
+								outcome: outcome.outcome,
+								terminal: eebusraw.NewErrorV1(
+									eebusraw.ErrorCodeV1PartialResult,
+									"partial mutation results are forbidden",
+									true,
+									source,
+								),
+							}, test)
+							issue755AssertTerminalEnvelope(
+								t,
+								result.envelope,
+								eebusraw.ErrorCodeV1Internal,
+								eebusV1SourceLayerGatewayRouter,
+								nil,
+							)
+						})
+					}
+				})
+			}
+		})
+	}
 }
 
 func issue755CallCommand(

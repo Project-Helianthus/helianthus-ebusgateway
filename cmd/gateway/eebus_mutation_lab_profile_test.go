@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -206,49 +204,4 @@ func issue755SecureStateRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
-}
-
-func issue755AssertGenericLoadFailure(
-	t *testing.T,
-	stateRoot string,
-	contentMarker string,
-) {
-	t.Helper()
-	runtime := &msp05bRuntime{}
-	factoryCalls := 0
-	adapter, err := startEEBusRuntime(
-		context.Background(),
-		issue755EnabledConfig(stateRoot),
-		issue755Resolver,
-		func(eebusruntime.Config) (eebusruntime.Runtime, error) {
-			factoryCalls++
-			return runtime, nil
-		},
-	)
-	if adapter != nil || err == nil {
-		t.Fatalf("invalid profile startup = (%v, %v); want nil adapter and error", adapter, err)
-	}
-	if factoryCalls != 0 || runtime.startCalls != 0 {
-		t.Fatalf("invalid profile calls factory=%d start=%d; want zero", factoryCalls, runtime.startCalls)
-	}
-	const generic = "eeBUS mutation lab profile load failed"
-	if !strings.Contains(err.Error(), generic) {
-		t.Fatalf("startup error = %q; want generic profile load failure", err)
-	}
-	for _, secret := range []string{stateRoot, contentMarker, issue755RemoteSKI} {
-		if secret != "" && strings.Contains(err.Error(), secret) {
-			t.Fatalf("startup error leaked protected profile detail %q: %v", secret, err)
-		}
-	}
-	if errors.Unwrap(errors.Unwrap(err)) != nil {
-		t.Fatalf("startup error exposes an implementation cause chain: %v", err)
-	}
-}
-
-func issue755CloneProfile(profile eebusraw.MutationLabProfileV1) eebusraw.MutationLabProfileV1 {
-	return profile.Clone()
-}
-
-func issue755ProfilesEqual(left, right eebusraw.MutationLabProfileV1) bool {
-	return reflect.DeepEqual(left, right)
 }

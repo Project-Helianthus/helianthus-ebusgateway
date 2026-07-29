@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -17,7 +19,7 @@ import (
 func TestIssue755ValidProfileHandoffIsOneImmutableSnapshot(t *testing.T) {
 	stateRoot := issue755SecureStateRoot(t)
 	profile := issue755ValidMutationLabProfile(t)
-	expected := issue755CloneProfile(profile)
+	expected := profile.Clone()
 	raw := issue755ValidMutationLabProfileJSON(t)
 	path := issue755WriteProfile(t, stateRoot, raw)
 	runtime := &msp05bRuntime{}
@@ -32,11 +34,11 @@ func TestIssue755ValidProfileHandoffIsOneImmutableSnapshot(t *testing.T) {
 			if len(got.MutationLabProfiles) != 1 {
 				t.Fatalf("MutationLabProfiles = %#v; want exactly one", got.MutationLabProfiles)
 			}
-			if !issue755ProfilesEqual(got.MutationLabProfiles[0], expected) {
+			if !reflect.DeepEqual(got.MutationLabProfiles[0], expected) {
 				t.Fatalf("loaded profile mismatch: got %#v", got.MutationLabProfiles[0])
 			}
 
-			replacement := issue755CloneProfile(profile)
+			replacement := profile.Clone()
 			replacement.ProfileID = "replacement-after-load"
 			replacementRaw, marshalErr := jsonMarshalIssue755(replacement)
 			if marshalErr != nil {
@@ -45,7 +47,7 @@ func TestIssue755ValidProfileHandoffIsOneImmutableSnapshot(t *testing.T) {
 			if writeErr := os.WriteFile(path, replacementRaw, 0o600); writeErr != nil {
 				t.Fatal(writeErr)
 			}
-			if !issue755ProfilesEqual(got.MutationLabProfiles[0], expected) {
+			if !reflect.DeepEqual(got.MutationLabProfiles[0], expected) {
 				t.Fatal("runtime config profile changed after backing file replacement")
 			}
 			return runtime, nil
@@ -310,4 +312,41 @@ func TestIssue755RejectsMalformedOrInvalidProfileBeforeFactory(t *testing.T) {
 
 func jsonMarshalIssue755(value any) ([]byte, error) {
 	return json.Marshal(value)
+}
+
+func issue755AssertGenericLoadFailure(
+	t *testing.T,
+	stateRoot string,
+	contentMarker string,
+) {
+	t.Helper()
+	runtime := &msp05bRuntime{}
+	factoryCalls := 0
+	adapter, err := startEEBusRuntime(
+		context.Background(),
+		issue755EnabledConfig(stateRoot),
+		issue755Resolver,
+		func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+			factoryCalls++
+			return runtime, nil
+		},
+	)
+	if adapter != nil || err == nil {
+		t.Fatalf("invalid profile startup = (%v, %v); want nil adapter and error", adapter, err)
+	}
+	if factoryCalls != 0 || runtime.startCalls != 0 {
+		t.Fatalf("invalid profile calls factory=%d start=%d; want zero", factoryCalls, runtime.startCalls)
+	}
+	const generic = "eeBUS mutation lab profile load failed"
+	if !strings.Contains(err.Error(), generic) {
+		t.Fatalf("startup error = %q; want generic profile load failure", err)
+	}
+	for _, secret := range []string{stateRoot, contentMarker, issue755RemoteSKI} {
+		if secret != "" && strings.Contains(err.Error(), secret) {
+			t.Fatalf("startup error leaked protected profile detail %q: %v", secret, err)
+		}
+	}
+	if errors.Unwrap(errors.Unwrap(err)) != nil {
+		t.Fatalf("startup error exposes an implementation cause chain: %v", err)
+	}
 }

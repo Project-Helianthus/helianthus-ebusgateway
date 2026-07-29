@@ -52,13 +52,13 @@ func (router *Router) FeaturesDataSet(
 	ctx context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	request eebusraw.FeatureDataSetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	if terminal := eebusraw.ValidateWriteAuthorizationV1(auth, eebusraw.ToolV1FeaturesDataSet); terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	runtime, terminal := router.mutationRuntime()
 	if terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	return runtime.FeaturesDataSet(ctx, auth, request)
 }
@@ -68,13 +68,13 @@ func (router *Router) MutationsGet(
 	ctx context.Context,
 	auth eebusraw.ReadAuthorizationV1,
 	request eebusraw.MutationGetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	if terminal := eebusraw.ValidateReadAuthorizationV1(auth, eebusraw.ToolV1MutationsGet); terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	runtime, terminal := router.mutationRuntime()
 	if terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	return runtime.MutationsGet(ctx, auth, request)
 }
@@ -84,13 +84,13 @@ func (router *Router) MutationsRollback(
 	ctx context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	request eebusraw.MutationRollbackRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	if terminal := eebusraw.ValidateWriteAuthorizationV1(auth, eebusraw.ToolV1MutationsRollback); terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	runtime, terminal := router.mutationRuntime()
 	if terminal != nil {
-		return eebusraw.MutationV1{}, terminal
+		return eebusruntime.RawMutationOutcomeV1{}, terminal
 	}
 	return runtime.MutationsRollback(ctx, auth, request)
 }

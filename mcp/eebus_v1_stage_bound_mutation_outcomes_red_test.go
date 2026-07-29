@@ -148,8 +148,18 @@ func TestIssue755SameStaleTokenCodeMayBeBoundOrUnbound(t *testing.T) {
 	)
 	boundHash := msp06Map(t, bound.envelope["meta"], "bound meta")["data_hash"]
 	unboundHash := msp06Map(t, unbound.envelope["meta"], "unbound meta")["data_hash"]
-	if boundHash == unboundHash {
-		t.Fatalf("bound and unbound terminal envelopes share hash %v", boundHash)
+	const (
+		wantBoundHash   = "sha256:53f6b7f26272d6d955a3cbde49077d200703faca5f15384165e2d2b9c9dc265e"
+		wantUnboundHash = "sha256:ac70761fdce6e5a750d811711189b82c09cd49e33451b09c00af6ecac72299ba"
+	)
+	if boundHash != wantBoundHash || unboundHash != wantUnboundHash {
+		t.Fatalf(
+			"terminal hash known-answer mismatch: bound=%v want=%s unbound=%v want=%s",
+			boundHash,
+			wantBoundHash,
+			unboundHash,
+			wantUnboundHash,
+		)
 	}
 }
 
@@ -202,6 +212,10 @@ func TestIssue755MutationGetNotFoundStaysCanonicalAndUnbound(t *testing.T) {
 }
 
 func TestIssue755PostDispatchTerminalWithoutRuntimeFailsClosed(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         7,
+		ConnectionGeneration: 3,
+	}
 	postDispatchSources := []eebusraw.SourceLayerV1{
 		eebusraw.SourceLayerV1("eebus-go-executor"),
 		eebusraw.SourceLayerV1SpineRoundTrip,
@@ -225,6 +239,23 @@ func TestIssue755PostDispatchTerminalWithoutRuntimeFailsClosed(t *testing.T) {
 				eebusraw.ErrorCodeV1Internal,
 				eebusV1SourceLayerGatewayRouter,
 				nil,
+			)
+
+			bound := issue755CallCommand(t, &issue755StageBoundRouter{
+				outcome: eebusruntime.RawMutationOutcomeV1{Runtime: &binding},
+				terminal: eebusraw.NewErrorV1(
+					eebusraw.ErrorCodeV1Disconnected,
+					"post-dispatch terminal retained its runtime",
+					true,
+					source,
+				),
+			}, test)
+			issue755AssertTerminalEnvelope(
+				t,
+				bound.envelope,
+				eebusraw.ErrorCodeV1Disconnected,
+				source,
+				&binding,
 			)
 		})
 	}
@@ -309,16 +340,39 @@ func issue755AssertTerminalEnvelope(
 	runtime *eebusraw.RuntimeBindingV1,
 ) {
 	t.Helper()
+	msp06AssertKeys(t, envelope, "terminal envelope", "meta", "request", "data", "error")
 	if envelope["data"] != nil {
 		t.Fatalf("terminal envelope exposed data: %#v", envelope["data"])
 	}
 	publicError := msp06Map(t, envelope["error"], "terminal error")
+	msp06AssertKeys(
+		t,
+		publicError,
+		"terminal error",
+		"code",
+		"message",
+		"retriable",
+		"source_layer",
+	)
 	if publicError["code"] != string(code) ||
 		publicError["source_layer"] != string(source) {
 		t.Fatalf("terminal error = %#v, want code=%s source=%s",
 			publicError, code, source)
 	}
 	meta := msp06Map(t, envelope["meta"], "terminal meta")
+	msp06AssertKeys(
+		t,
+		meta,
+		"terminal meta",
+		"contract",
+		"tool",
+		"scope",
+		"mask_tier",
+		"auth_scope",
+		"data_timestamp",
+		"data_hash",
+		"runtime",
+	)
 	hash, _ := meta["data_hash"].(string)
 	if !strings.HasPrefix(hash, "sha256:") || len(hash) != len("sha256:")+64 {
 		t.Fatalf("terminal data_hash = %q", hash)
@@ -330,6 +384,13 @@ func issue755AssertTerminalEnvelope(
 		return
 	}
 	got := msp06Map(t, meta["runtime"], "terminal runtime")
+	msp06AssertKeys(
+		t,
+		got,
+		"terminal runtime",
+		"runtime_epoch",
+		"connection_generation",
+	)
 	if fmt.Sprint(got["runtime_epoch"]) != fmt.Sprint(runtime.RuntimeEpoch) ||
 		fmt.Sprint(got["connection_generation"]) != fmt.Sprint(runtime.ConnectionGeneration) {
 		t.Fatalf("terminal runtime = %#v, want %#v", got, runtime)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
@@ -66,36 +67,47 @@ func (router *issue749TypedRouter) FeaturesDataSet(
 	_ context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	_ eebusraw.FeatureDataSetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	router.record(eebusraw.ToolV1FeaturesDataSet)
 	router.writeAuth = auth
-	return router.mutationData, router.mutationError
+	return issue749MutationOutcome(router.mutationData), router.mutationError
 }
 
 func (router *issue749TypedRouter) MutationsGet(
 	_ context.Context,
 	auth eebusraw.ReadAuthorizationV1,
 	_ eebusraw.MutationGetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	router.record(eebusraw.ToolV1MutationsGet)
 	router.readAuth = auth
-	return router.mutationData, router.mutationError
+	return issue749MutationOutcome(router.mutationData), router.mutationError
 }
 
 func (router *issue749TypedRouter) MutationsRollback(
 	_ context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	_ eebusraw.MutationRollbackRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	router.record(eebusraw.ToolV1MutationsRollback)
 	router.writeAuth = auth
-	return router.mutationData, router.mutationError
+	return issue749MutationOutcome(router.mutationData), router.mutationError
+}
+
+func issue749MutationOutcome(
+	mutation eebusraw.MutationV1,
+) eebusruntime.RawMutationOutcomeV1 {
+	outcome := eebusruntime.RawMutationOutcomeV1{Mutation: mutation}
+	if !reflect.ValueOf(mutation).IsZero() {
+		runtime := mutation.Runtime
+		outcome.Runtime = &runtime
+	}
+	return outcome
 }
 
 func (router *issue749TypedRouter) callCount() int {
@@ -414,7 +426,7 @@ func TestIssue749MutationGetNotFoundWithoutRuntimeIsPreserved(t *testing.T) {
 			assertIssue749PreRuntimeFailure(t, result.envelope, false)
 			if current.wantCode == eebusraw.ErrorCodeV1NotFound &&
 				(publicError["message"] != notFound.Message ||
-					publicError["source_layer"] != string(eebusV1SourceLayerGatewayRouter)) {
+					publicError["source_layer"] != string(eebusraw.SourceLayerV1Runtime)) {
 				t.Fatalf("actionable not_found was not preserved: %#v", publicError)
 			}
 		})

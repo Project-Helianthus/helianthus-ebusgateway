@@ -147,21 +147,21 @@ type issue747MutationRuntime struct {
 	featuresDataSetContext context.Context
 	featuresDataSetAuth    eebusraw.WriteAuthorizationV1
 	featuresDataSetRequest eebusraw.FeatureDataSetRequestV1
-	featuresDataSetResult  eebusraw.MutationV1
+	featuresDataSetResult  eebusruntime.RawMutationOutcomeV1
 	featuresDataSetError   *eebusraw.ErrorV1
 
 	mutationsGetCalls   int
 	mutationsGetContext context.Context
 	mutationsGetAuth    eebusraw.ReadAuthorizationV1
 	mutationsGetRequest eebusraw.MutationGetRequestV1
-	mutationsGetResult  eebusraw.MutationV1
+	mutationsGetResult  eebusruntime.RawMutationOutcomeV1
 	mutationsGetError   *eebusraw.ErrorV1
 
 	mutationsRollbackCalls   int
 	mutationsRollbackContext context.Context
 	mutationsRollbackAuth    eebusraw.WriteAuthorizationV1
 	mutationsRollbackRequest eebusraw.MutationRollbackRequestV1
-	mutationsRollbackResult  eebusraw.MutationV1
+	mutationsRollbackResult  eebusruntime.RawMutationOutcomeV1
 	mutationsRollbackError   *eebusraw.ErrorV1
 }
 
@@ -171,7 +171,7 @@ func (runtime *issue747MutationRuntime) FeaturesDataSet(
 	ctx context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	request eebusraw.FeatureDataSetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	runtime.featuresDataSetCalls++
 	runtime.featuresDataSetContext = ctx
 	runtime.featuresDataSetAuth = auth
@@ -183,7 +183,7 @@ func (runtime *issue747MutationRuntime) MutationsGet(
 	ctx context.Context,
 	auth eebusraw.ReadAuthorizationV1,
 	request eebusraw.MutationGetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	runtime.mutationsGetCalls++
 	runtime.mutationsGetContext = ctx
 	runtime.mutationsGetAuth = auth
@@ -195,7 +195,7 @@ func (runtime *issue747MutationRuntime) MutationsRollback(
 	ctx context.Context,
 	auth eebusraw.WriteAuthorizationV1,
 	request eebusraw.MutationRollbackRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	runtime.mutationsRollbackCalls++
 	runtime.mutationsRollbackContext = ctx
 	runtime.mutationsRollbackAuth = auth
@@ -356,27 +356,27 @@ func (*issue747TypedNilRuntime) FeaturesDataSet(
 	context.Context,
 	eebusraw.WriteAuthorizationV1,
 	eebusraw.FeatureDataSetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	issue747TypedNilCalls.FeaturesDataSet++
-	return eebusraw.MutationV1{}, nil
+	return eebusruntime.RawMutationOutcomeV1{}, nil
 }
 
 func (*issue747TypedNilRuntime) MutationsGet(
 	context.Context,
 	eebusraw.ReadAuthorizationV1,
 	eebusraw.MutationGetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	issue747TypedNilCalls.MutationsGet++
-	return eebusraw.MutationV1{}, nil
+	return eebusruntime.RawMutationOutcomeV1{}, nil
 }
 
 func (*issue747TypedNilRuntime) MutationsRollback(
 	context.Context,
 	eebusraw.WriteAuthorizationV1,
 	eebusraw.MutationRollbackRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 	issue747TypedNilCalls.MutationsRollback++
-	return eebusraw.MutationV1{}, nil
+	return eebusruntime.RawMutationOutcomeV1{}, nil
 }
 
 func TestRouterReadOperationsDelegateExactlyOnce(t *testing.T) {
@@ -445,19 +445,25 @@ func TestRouterMutationOperationsDelegateExactlyOnce(t *testing.T) {
 	rollbackError := &eebusraw.ErrorV1{Message: "rollback-sentinel"}
 	runtime := &issue747MutationRuntime{
 		issue747ReadRuntime: &issue747ReadRuntime{},
-		featuresDataSetResult: eebusraw.MutationV1{
-			MutationRef: "mutation-set",
-			State:       "applied",
+		featuresDataSetResult: eebusruntime.RawMutationOutcomeV1{
+			Mutation: eebusraw.MutationV1{
+				MutationRef: "mutation-set",
+				State:       "applied",
+			},
 		},
 		featuresDataSetError: setError,
-		mutationsGetResult: eebusraw.MutationV1{
-			MutationRef: "mutation-status",
-			State:       "verify_pending",
+		mutationsGetResult: eebusruntime.RawMutationOutcomeV1{
+			Mutation: eebusraw.MutationV1{
+				MutationRef: "mutation-status",
+				State:       "verify_pending",
+			},
 		},
 		mutationsGetError: statusError,
-		mutationsRollbackResult: eebusraw.MutationV1{
-			MutationRef: "mutation-rollback",
-			State:       "rolled_back",
+		mutationsRollbackResult: eebusruntime.RawMutationOutcomeV1{
+			Mutation: eebusraw.MutationV1{
+				MutationRef: "mutation-rollback",
+				State:       "rolled_back",
+			},
 		},
 		mutationsRollbackError: rollbackError,
 	}
@@ -587,11 +593,11 @@ func TestRouterMutationCapabilityFailsClosedBeforeRuntimeContact(t *testing.T) {
 
 			operations := []struct {
 				name string
-				call func() (eebusraw.MutationV1, *eebusraw.ErrorV1)
+				call func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1)
 			}{
 				{
 					name: "FeaturesDataSet",
-					call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+					call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 						return router.FeaturesDataSet(
 							context.Background(),
 							eebusraw.WriteAuthorizationV1{},
@@ -601,7 +607,7 @@ func TestRouterMutationCapabilityFailsClosedBeforeRuntimeContact(t *testing.T) {
 				},
 				{
 					name: "MutationsGet",
-					call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+					call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 						return router.MutationsGet(
 							context.Background(),
 							eebusraw.ReadAuthorizationV1{},
@@ -611,7 +617,7 @@ func TestRouterMutationCapabilityFailsClosedBeforeRuntimeContact(t *testing.T) {
 				},
 				{
 					name: "MutationsRollback",
-					call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+					call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 						return router.MutationsRollback(
 							context.Background(),
 							eebusraw.WriteAuthorizationV1{},
@@ -629,7 +635,7 @@ func TestRouterMutationCapabilityFailsClosedBeforeRuntimeContact(t *testing.T) {
 					if terminal == nil {
 						t.Fatalf("%s succeeded without the complete RawMutationRuntimeV1", operation.name)
 					}
-					if !reflect.DeepEqual(result, eebusraw.MutationV1{}) {
+					if !reflect.DeepEqual(result, eebusruntime.RawMutationOutcomeV1{}) {
 						t.Fatalf("%s result = %+v, want zero mutation", operation.name, result)
 					}
 				})
@@ -644,11 +650,11 @@ func TestRouterMutationAuthorizationFailsBeforeRuntimeContact(t *testing.T) {
 
 	operations := []struct {
 		name string
-		call func() (eebusraw.MutationV1, *eebusraw.ErrorV1)
+		call func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1)
 	}{
 		{
 			name: "FeaturesDataSet requires write authorization for its tool",
-			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+			call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 				return router.FeaturesDataSet(
 					context.Background(),
 					eebusraw.WriteAuthorizationV1{
@@ -663,7 +669,7 @@ func TestRouterMutationAuthorizationFailsBeforeRuntimeContact(t *testing.T) {
 		},
 		{
 			name: "MutationsGet requires read authorization for its tool",
-			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+			call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 				return router.MutationsGet(
 					context.Background(),
 					eebusraw.ReadAuthorizationV1{
@@ -678,7 +684,7 @@ func TestRouterMutationAuthorizationFailsBeforeRuntimeContact(t *testing.T) {
 		},
 		{
 			name: "MutationsRollback requires write authorization for its tool",
-			call: func() (eebusraw.MutationV1, *eebusraw.ErrorV1) {
+			call: func() (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
 				return router.MutationsRollback(
 					context.Background(),
 					eebusraw.WriteAuthorizationV1{
@@ -701,7 +707,7 @@ func TestRouterMutationAuthorizationFailsBeforeRuntimeContact(t *testing.T) {
 			if terminal == nil || terminal.Code != eebusraw.ErrorCodeV1PermissionDenied {
 				t.Fatalf("terminal error = %+v, want permission_denied", terminal)
 			}
-			if !reflect.DeepEqual(result, eebusraw.MutationV1{}) {
+			if !reflect.DeepEqual(result, eebusruntime.RawMutationOutcomeV1{}) {
 				t.Fatalf("result = %+v, want zero mutation", result)
 			}
 		})

@@ -15,7 +15,7 @@ import (
 )
 
 func TestIssue755ValidProfileHandoffIsOneImmutableSnapshot(t *testing.T) {
-	stateRoot := t.TempDir()
+	stateRoot := issue755SecureStateRoot(t)
 	profile := issue755ValidMutationLabProfile(t)
 	expected := issue755CloneProfile(profile)
 	raw := issue755ValidMutationLabProfileJSON(t)
@@ -76,7 +76,7 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 		{
 			name: "root mode",
 			setup: func(t *testing.T) string {
-				root := t.TempDir()
+				root := issue755SecureStateRoot(t)
 				if err := os.Chmod(root, 0o750); err != nil {
 					t.Fatal(err)
 				}
@@ -119,7 +119,7 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 		{
 			name: "file symlink",
 			setup: func(t *testing.T) string {
-				root := t.TempDir()
+				root := issue755SecureStateRoot(t)
 				target := filepath.Join(t.TempDir(), "profile.json")
 				if err := os.WriteFile(target, valid, 0o600); err != nil {
 					t.Fatal(err)
@@ -133,7 +133,7 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 		{
 			name: "nonregular file",
 			setup: func(t *testing.T) string {
-				root := t.TempDir()
+				root := issue755SecureStateRoot(t)
 				if err := os.Mkdir(filepath.Join(root, issue755ProfileBasename), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -143,7 +143,7 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 		{
 			name: "file mode",
 			setup: func(t *testing.T) string {
-				root := t.TempDir()
+				root := issue755SecureStateRoot(t)
 				path := issue755WriteProfile(t, root, valid)
 				if err := os.Chmod(path, 0o640); err != nil {
 					t.Fatal(err)
@@ -154,7 +154,7 @@ func TestIssue755RejectsUnsafeRootAndFileBoundariesBeforeFactory(t *testing.T) {
 		{
 			name: "hardlink",
 			setup: func(t *testing.T) string {
-				root := t.TempDir()
+				root := issue755SecureStateRoot(t)
 				original := filepath.Join(root, "original.json")
 				if err := os.WriteFile(original, valid, 0o600); err != nil {
 					t.Fatal(err)
@@ -228,7 +228,7 @@ func TestIssue755ProfileSizeBoundary(t *testing.T) {
 	}
 
 	t.Run("65536 accepted", func(t *testing.T) {
-		root := t.TempDir()
+		root := issue755SecureStateRoot(t)
 		raw := append(append([]byte(nil), valid...), []byte(strings.Repeat(" ", 65536-len(valid)))...)
 		issue755WriteProfile(t, root, raw)
 		runtime := &msp05bRuntime{}
@@ -254,7 +254,7 @@ func TestIssue755ProfileSizeBoundary(t *testing.T) {
 	})
 
 	t.Run("65537 rejected", func(t *testing.T) {
-		root := t.TempDir()
+		root := issue755SecureStateRoot(t)
 		raw := append(append([]byte(nil), valid...), []byte(strings.Repeat(" ", 65537-len(valid)))...)
 		issue755WriteProfile(t, root, raw)
 		issue755AssertGenericLoadFailure(t, root, "")
@@ -301,7 +301,7 @@ func TestIssue755RejectsMalformedOrInvalidProfileBeforeFactory(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := issue755SecureStateRoot(t)
 			issue755WriteProfile(t, root, test.raw)
 			issue755AssertGenericLoadFailure(t, root, "secret-marker")
 		})

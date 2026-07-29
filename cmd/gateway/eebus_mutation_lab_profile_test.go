@@ -33,7 +33,7 @@ func TestIssue755AbsentMutationLabProfileLeavesRuntimeConfigNil(t *testing.T) {
 		{
 			name: "file absent",
 			stateRoot: func(t *testing.T) string {
-				return t.TempDir()
+				return issue755SecureStateRoot(t)
 			},
 		},
 	}
@@ -197,6 +197,15 @@ func issue755WriteProfile(t *testing.T, stateRoot string, raw []byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func issue755SecureStateRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func issue755AssertGenericLoadFailure(

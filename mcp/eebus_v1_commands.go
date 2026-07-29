@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
@@ -27,9 +28,9 @@ const (
 type EEBusV1CommandRouter interface {
 	FeaturesGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.FeaturesGetRequestV1) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1)
 	FeaturesDataGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.FeatureDataGetRequestV1) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1)
-	FeaturesDataSet(context.Context, eebusraw.WriteAuthorizationV1, eebusraw.FeatureDataSetRequestV1) (eebusraw.MutationV1, *eebusraw.ErrorV1)
-	MutationsGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.MutationGetRequestV1) (eebusraw.MutationV1, *eebusraw.ErrorV1)
-	MutationsRollback(context.Context, eebusraw.WriteAuthorizationV1, eebusraw.MutationRollbackRequestV1) (eebusraw.MutationV1, *eebusraw.ErrorV1)
+	FeaturesDataSet(context.Context, eebusraw.WriteAuthorizationV1, eebusraw.FeatureDataSetRequestV1) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1)
+	MutationsGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.MutationGetRequestV1) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1)
+	MutationsRollback(context.Context, eebusraw.WriteAuthorizationV1, eebusraw.MutationRollbackRequestV1) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1)
 }
 
 type eebusV1CommandSpec struct {
@@ -367,6 +368,7 @@ func eebusV1DispatchCommand(
 ) (any, *eebusraw.ErrorV1, *eebusraw.RuntimeBindingV1) {
 	var data any
 	var terminal *eebusraw.ErrorV1
+	var outcomeRuntime *eebusraw.RuntimeBindingV1
 	switch spec.tool {
 	case eebusraw.ToolV1FeaturesGet:
 		typedRequest := request.(eebusraw.FeaturesGetRequestV1)
@@ -378,16 +380,16 @@ func eebusV1DispatchCommand(
 		data, terminal = typedData, typedTerminal
 	case eebusraw.ToolV1FeaturesDataSet:
 		typedRequest := request.(eebusraw.FeatureDataSetRequestV1)
-		typedData, typedTerminal := router.FeaturesDataSet(ctx, eebusV1WriteAuthorization(spec), typedRequest)
-		data, terminal = typedData, typedTerminal
+		outcome, typedTerminal := router.FeaturesDataSet(ctx, eebusV1WriteAuthorization(spec), typedRequest)
+		data, outcomeRuntime, terminal = outcome.Mutation, outcome.Runtime, typedTerminal
 	case eebusraw.ToolV1MutationsGet:
 		typedRequest := request.(eebusraw.MutationGetRequestV1)
-		typedData, typedTerminal := router.MutationsGet(ctx, eebusV1ReadAuthorization(spec), typedRequest)
-		data, terminal = typedData, typedTerminal
+		outcome, typedTerminal := router.MutationsGet(ctx, eebusV1ReadAuthorization(spec), typedRequest)
+		data, outcomeRuntime, terminal = outcome.Mutation, outcome.Runtime, typedTerminal
 	case eebusraw.ToolV1MutationsRollback:
 		typedRequest := request.(eebusraw.MutationRollbackRequestV1)
-		typedData, typedTerminal := router.MutationsRollback(ctx, eebusV1WriteAuthorization(spec), typedRequest)
-		data, terminal = typedData, typedTerminal
+		outcome, typedTerminal := router.MutationsRollback(ctx, eebusV1WriteAuthorization(spec), typedRequest)
+		data, outcomeRuntime, terminal = outcome.Mutation, outcome.Runtime, typedTerminal
 	default:
 		return nil, eebusraw.NewErrorV1(
 			eebusraw.ErrorCodeV1Internal,
@@ -402,15 +404,15 @@ func eebusV1DispatchCommand(
 		return nil, terminalFailure, nil
 	}
 	terminal = safeTerminal
-	runtime, validationFailure := eebusV1ValidateCommandOutcome(spec.tool, request, data, terminal)
+	runtime, validationFailure := eebusV1ValidateCommandOutcome(
+		spec.tool,
+		request,
+		data,
+		terminal,
+		outcomeRuntime,
+	)
 	if validationFailure != nil {
 		return nil, validationFailure, nil
-	}
-	if runtime == nil && terminal != nil {
-		if eebusV1TerminalRequiresRuntime(terminal.Code) {
-			return nil, eebusV1ContractViolation(), nil
-		}
-		terminal.SourceLayer = eebusV1SourceLayerGatewayRouter
 	}
 	return data, terminal, runtime
 }
@@ -462,14 +464,27 @@ func eebusV1BoundRuntime(runtime eebusraw.RuntimeBindingV1) *eebusraw.RuntimeBin
 	return &bound
 }
 
+func eebusV1BoundOutcomeRuntime(
+	runtime *eebusraw.RuntimeBindingV1,
+) *eebusraw.RuntimeBindingV1 {
+	if runtime == nil {
+		return nil
+	}
+	return eebusV1BoundRuntime(*runtime)
+}
+
 func eebusV1ValidateCommandOutcome(
 	tool eebusraw.ToolV1,
 	request any,
 	data any,
 	terminal *eebusraw.ErrorV1,
+	outcomeRuntime *eebusraw.RuntimeBindingV1,
 ) (*eebusraw.RuntimeBindingV1, *eebusraw.ErrorV1) {
 	switch tool {
 	case eebusraw.ToolV1FeaturesGet:
+		if outcomeRuntime != nil {
+			return nil, eebusV1ContractViolation()
+		}
 		typedRequest := request.(eebusraw.FeaturesGetRequestV1)
 		typedData := data.(eebusraw.FeaturesGetDataV1)
 		if reflect.ValueOf(typedData).IsZero() {
@@ -487,10 +502,16 @@ func eebusV1ValidateCommandOutcome(
 		}
 		return runtime, nil
 	case eebusraw.ToolV1FeaturesDataGet:
+		if outcomeRuntime != nil {
+			return nil, eebusV1ContractViolation()
+		}
 		typedRequest := request.(eebusraw.FeatureDataGetRequestV1)
 		typedData := data.(eebusraw.FeatureDataGetDataV1)
 		if terminal != nil && terminal.Code != eebusraw.ErrorCodeV1PartialResult {
 			if !reflect.ValueOf(typedData).IsZero() {
+				return nil, eebusV1ContractViolation()
+			}
+			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
 				return nil, eebusV1ContractViolation()
 			}
 			return nil, nil
@@ -506,12 +527,22 @@ func eebusV1ValidateCommandOutcome(
 	case eebusraw.ToolV1FeaturesDataSet,
 		eebusraw.ToolV1MutationsGet,
 		eebusraw.ToolV1MutationsRollback:
+		if terminal != nil && terminal.Code == eebusraw.ErrorCodeV1PartialResult {
+			return nil, eebusV1ContractViolation()
+		}
 		typedData := data.(eebusraw.MutationV1)
+		runtime := eebusV1BoundOutcomeRuntime(outcomeRuntime)
+		if outcomeRuntime != nil && runtime == nil {
+			return nil, eebusV1ContractViolation()
+		}
 		if reflect.ValueOf(typedData).IsZero() {
 			if terminal == nil {
 				return nil, eebusV1ContractViolation()
 			}
-			return nil, nil
+			if runtime == nil && !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
+				return nil, eebusV1ContractViolation()
+			}
+			return runtime, nil
 		}
 		if failure := eebusraw.ValidateMutationV1(typedData); failure != nil {
 			return nil, eebusV1CanonicalValidationFailure(failure)
@@ -519,13 +550,27 @@ func eebusV1ValidateCommandOutcome(
 		if !eebusV1MutationMatchesRequest(tool, request, typedData) {
 			return nil, eebusV1ContractViolation()
 		}
-		runtime := eebusV1BoundRuntime(typedData.Runtime)
-		if runtime == nil {
+		mutationRuntime := eebusV1BoundRuntime(typedData.Runtime)
+		if mutationRuntime == nil ||
+			runtime == nil ||
+			*runtime != *mutationRuntime {
 			return nil, eebusV1ContractViolation()
 		}
 		return runtime, nil
 	default:
 		return nil, eebusV1ContractViolation()
+	}
+}
+
+func eebusV1UnboundTerminalSourceAllowed(layer eebusraw.SourceLayerV1) bool {
+	switch string(layer) {
+	case "mcp",
+		"gateway-router",
+		"eebusreg-runtime",
+		"eebusreg-coordinator":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -621,32 +666,6 @@ func eebusV1ContractViolation() *eebusraw.ErrorV1 {
 		false,
 		eebusV1SourceLayerGatewayRouter,
 	)
-}
-
-func eebusV1TerminalRequiresRuntime(code eebusraw.ErrorCodeV1) bool {
-	switch code {
-	case eebusraw.ErrorCodeV1ConstraintsUnknown,
-		eebusraw.ErrorCodeV1ConstraintFailure,
-		eebusraw.ErrorCodeV1StaleReadToken,
-		eebusraw.ErrorCodeV1CASMismatch,
-		eebusraw.ErrorCodeV1RuntimeEpochMismatch,
-		eebusraw.ErrorCodeV1ConnectionGenerationMismatch,
-		eebusraw.ErrorCodeV1IdempotencyConflict,
-		eebusraw.ErrorCodeV1WriterBusy,
-		eebusraw.ErrorCodeV1Disconnected,
-		eebusraw.ErrorCodeV1Timeout,
-		eebusraw.ErrorCodeV1Cancelled,
-		eebusraw.ErrorCodeV1RemoteError,
-		eebusraw.ErrorCodeV1DecodeError,
-		eebusraw.ErrorCodeV1PartialResult,
-		eebusraw.ErrorCodeV1NoEffect,
-		eebusraw.ErrorCodeV1OutcomeUnknown,
-		eebusraw.ErrorCodeV1Conflict,
-		eebusraw.ErrorCodeV1RollbackFailed:
-		return true
-	default:
-		return false
-	}
 }
 
 func eebusV1KnownErrorCode(code eebusraw.ErrorCodeV1) bool {

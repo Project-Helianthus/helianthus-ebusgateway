@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
@@ -408,22 +409,22 @@ func (runtime *issue749CommandRuntime) FeaturesDataSet(
 	_ context.Context,
 	_ eebusraw.WriteAuthorizationV1,
 	_ eebusraw.FeatureDataSetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
-	return eebusraw.MutationV1{}, runtime.terminal(eebusraw.ToolV1FeaturesDataSet)
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return eebusruntime.RawMutationOutcomeV1{}, runtime.terminal(eebusraw.ToolV1FeaturesDataSet)
 }
 
 func (runtime *issue749CommandRuntime) MutationsGet(
 	_ context.Context,
 	_ eebusraw.ReadAuthorizationV1,
 	_ eebusraw.MutationGetRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
-	return eebusraw.MutationV1{}, runtime.terminal(eebusraw.ToolV1MutationsGet)
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return eebusruntime.RawMutationOutcomeV1{}, runtime.terminal(eebusraw.ToolV1MutationsGet)
 }
 
 func (runtime *issue749CommandRuntime) MutationsRollback(
 	_ context.Context,
 	_ eebusraw.WriteAuthorizationV1,
 	_ eebusraw.MutationRollbackRequestV1,
-) (eebusraw.MutationV1, *eebusraw.ErrorV1) {
-	return eebusraw.MutationV1{}, runtime.terminal(eebusraw.ToolV1MutationsRollback)
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return eebusruntime.RawMutationOutcomeV1{}, runtime.terminal(eebusraw.ToolV1MutationsRollback)
 }

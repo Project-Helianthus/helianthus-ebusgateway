@@ -1,0 +1,337 @@
+package mcp
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
+)
+
+type issue755StageBoundRouter struct {
+	outcome  eebusruntime.RawMutationOutcomeV1
+	terminal *eebusraw.ErrorV1
+}
+
+var _ EEBusV1CommandRouter = (*issue755StageBoundRouter)(nil)
+
+func (*issue755StageBoundRouter) FeaturesGet(
+	context.Context,
+	eebusraw.ReadAuthorizationV1,
+	eebusraw.FeaturesGetRequestV1,
+) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	return eebusraw.FeaturesGetDataV1{}, eebusraw.NewErrorV1(
+		eebusraw.ErrorCodeV1Internal,
+		"unexpected feature lookup",
+		false,
+		eebusraw.SourceLayerV1Runtime,
+	)
+}
+
+func (*issue755StageBoundRouter) FeaturesDataGet(
+	context.Context,
+	eebusraw.ReadAuthorizationV1,
+	eebusraw.FeatureDataGetRequestV1,
+) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
+	return eebusraw.FeatureDataGetDataV1{}, eebusraw.NewErrorV1(
+		eebusraw.ErrorCodeV1Internal,
+		"unexpected feature data lookup",
+		false,
+		eebusraw.SourceLayerV1Runtime,
+	)
+}
+
+func (router *issue755StageBoundRouter) FeaturesDataSet(
+	context.Context,
+	eebusraw.WriteAuthorizationV1,
+	eebusraw.FeatureDataSetRequestV1,
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return router.outcome.Clone(), issue755CloneTerminal(router.terminal)
+}
+
+func (router *issue755StageBoundRouter) MutationsGet(
+	context.Context,
+	eebusraw.ReadAuthorizationV1,
+	eebusraw.MutationGetRequestV1,
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return router.outcome.Clone(), issue755CloneTerminal(router.terminal)
+}
+
+func (router *issue755StageBoundRouter) MutationsRollback(
+	context.Context,
+	eebusraw.WriteAuthorizationV1,
+	eebusraw.MutationRollbackRequestV1,
+) (eebusruntime.RawMutationOutcomeV1, *eebusraw.ErrorV1) {
+	return router.outcome.Clone(), issue755CloneTerminal(router.terminal)
+}
+
+func issue755CloneTerminal(terminal *eebusraw.ErrorV1) *eebusraw.ErrorV1 {
+	if terminal == nil {
+		return nil
+	}
+	cloned := terminal.Clone()
+	return &cloned
+}
+
+func TestIssue755LiveExpiredTokenKeepsCapturedRuntimeAndStableHash(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         2,
+		ConnectionGeneration: 10,
+	}
+	router := &issue755StageBoundRouter{
+		outcome: eebusruntime.RawMutationOutcomeV1{Runtime: &binding},
+		terminal: eebusraw.NewErrorV1(
+			eebusraw.ErrorCodeV1StaleReadToken,
+			"read token expired",
+			false,
+			eebusraw.SourceLayerV1("eebusreg-coordinator"),
+		),
+	}
+	test := issue749CommandCases(t)[2]
+	first := issue755CallCommand(t, router, test)
+	second := issue755CallCommand(t, router, test)
+
+	issue755AssertTerminalEnvelope(
+		t,
+		first.envelope,
+		eebusraw.ErrorCodeV1StaleReadToken,
+		eebusraw.SourceLayerV1("eebusreg-coordinator"),
+		&binding,
+	)
+	firstMeta := msp06Map(t, first.envelope["meta"], "first meta")
+	secondMeta := msp06Map(t, second.envelope["meta"], "second meta")
+	if firstMeta["data_hash"] != secondMeta["data_hash"] {
+		t.Fatalf("bound stale-token hash changed with data_timestamp: %v != %v",
+			firstMeta["data_hash"], secondMeta["data_hash"])
+	}
+}
+
+func TestIssue755SameStaleTokenCodeMayBeBoundOrUnbound(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         2,
+		ConnectionGeneration: 10,
+	}
+	test := issue749CommandCases(t)[2]
+	bound := issue755CallCommand(t, &issue755StageBoundRouter{
+		outcome: eebusruntime.RawMutationOutcomeV1{Runtime: &binding},
+		terminal: eebusraw.NewErrorV1(
+			eebusraw.ErrorCodeV1StaleReadToken,
+			"authenticated read token expired",
+			false,
+			eebusraw.SourceLayerV1Runtime,
+		),
+	}, test)
+	unbound := issue755CallCommand(t, &issue755StageBoundRouter{
+		terminal: eebusraw.NewErrorV1(
+			eebusraw.ErrorCodeV1StaleReadToken,
+			"unknown read token",
+			false,
+			eebusraw.SourceLayerV1Runtime,
+		),
+	}, test)
+
+	issue755AssertTerminalEnvelope(
+		t,
+		bound.envelope,
+		eebusraw.ErrorCodeV1StaleReadToken,
+		eebusraw.SourceLayerV1Runtime,
+		&binding,
+	)
+	issue755AssertTerminalEnvelope(
+		t,
+		unbound.envelope,
+		eebusraw.ErrorCodeV1StaleReadToken,
+		eebusraw.SourceLayerV1Runtime,
+		nil,
+	)
+	boundHash := msp06Map(t, bound.envelope["meta"], "bound meta")["data_hash"]
+	unboundHash := msp06Map(t, unbound.envelope["meta"], "unbound meta")["data_hash"]
+	if boundHash == unboundHash {
+		t.Fatalf("bound and unbound terminal envelopes share hash %v", boundHash)
+	}
+}
+
+func TestIssue755MutationTerminalBindingAppliesToEveryMutationTool(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         7,
+		ConnectionGeneration: 3,
+	}
+	cases := issue749CommandCases(t)
+	for _, index := range []int{2, 3, 4} {
+		test := cases[index]
+		t.Run(test.tool, func(t *testing.T) {
+			result := issue755CallCommand(t, &issue755StageBoundRouter{
+				outcome: eebusruntime.RawMutationOutcomeV1{Runtime: &binding},
+				terminal: eebusraw.NewErrorV1(
+					eebusraw.ErrorCodeV1Disconnected,
+					"operation lost its admitted SHIP session",
+					true,
+					eebusraw.SourceLayerV1("eebusreg-coordinator"),
+				),
+			}, test)
+			issue755AssertTerminalEnvelope(
+				t,
+				result.envelope,
+				eebusraw.ErrorCodeV1Disconnected,
+				eebusraw.SourceLayerV1("eebusreg-coordinator"),
+				&binding,
+			)
+		})
+	}
+}
+
+func TestIssue755MutationGetNotFoundStaysCanonicalAndUnbound(t *testing.T) {
+	test := issue749CommandCases(t)[3]
+	result := issue755CallCommand(t, &issue755StageBoundRouter{
+		terminal: eebusraw.NewErrorV1(
+			eebusraw.ErrorCodeV1NotFound,
+			"mutation reference was not found",
+			false,
+			eebusraw.SourceLayerV1Runtime,
+		),
+	}, test)
+	issue755AssertTerminalEnvelope(
+		t,
+		result.envelope,
+		eebusraw.ErrorCodeV1NotFound,
+		eebusraw.SourceLayerV1Runtime,
+		nil,
+	)
+}
+
+func TestIssue755PostDispatchTerminalWithoutRuntimeFailsClosed(t *testing.T) {
+	postDispatchSources := []eebusraw.SourceLayerV1{
+		eebusraw.SourceLayerV1("eebus-go-executor"),
+		eebusraw.SourceLayerV1SpineRoundTrip,
+		eebusraw.SourceLayerV1("ship-session"),
+		eebusraw.SourceLayerV1Remote,
+	}
+	test := issue749CommandCases(t)[2]
+	for _, source := range postDispatchSources {
+		t.Run(string(source), func(t *testing.T) {
+			result := issue755CallCommand(t, &issue755StageBoundRouter{
+				terminal: eebusraw.NewErrorV1(
+					eebusraw.ErrorCodeV1Disconnected,
+					"post-dispatch terminal omitted its runtime",
+					true,
+					source,
+				),
+			}, test)
+			issue755AssertTerminalEnvelope(
+				t,
+				result.envelope,
+				eebusraw.ErrorCodeV1Internal,
+				eebusV1SourceLayerGatewayRouter,
+				nil,
+			)
+		})
+	}
+}
+
+func TestIssue755MutationAndOutcomeRuntimeMustMatch(t *testing.T) {
+	binding := eebusraw.RuntimeBindingV1{
+		RuntimeEpoch:         7,
+		ConnectionGeneration: 3,
+	}
+	test := issue749CommandCases(t)[2]
+	request := issue749DecodeArguments[eebusraw.FeatureDataSetRequestV1](t, test.arguments)
+	mutation := issue749PreparedMutation(t, request, binding)
+
+	cases := []struct {
+		name    string
+		runtime *eebusraw.RuntimeBindingV1
+	}{
+		{name: "missing"},
+		{
+			name: "different",
+			runtime: &eebusraw.RuntimeBindingV1{
+				RuntimeEpoch:         binding.RuntimeEpoch,
+				ConnectionGeneration: binding.ConnectionGeneration + 1,
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			result := issue755CallCommand(t, &issue755StageBoundRouter{
+				outcome: eebusruntime.RawMutationOutcomeV1{
+					Mutation: mutation,
+					Runtime:  testCase.runtime,
+				},
+			}, test)
+			issue755AssertTerminalEnvelope(
+				t,
+				result.envelope,
+				eebusraw.ErrorCodeV1Internal,
+				eebusV1SourceLayerGatewayRouter,
+				nil,
+			)
+		})
+	}
+
+	result := issue755CallCommand(t, &issue755StageBoundRouter{
+		outcome: eebusruntime.RawMutationOutcomeV1{
+			Mutation: mutation,
+			Runtime:  &binding,
+		},
+	}, test)
+	if result.isError || result.envelope["error"] != nil || result.envelope["data"] == nil {
+		t.Fatalf("matching mutation outcome failed: %#v", result.envelope)
+	}
+	assertIssue749CommandMeta(t, result.envelope, test.tool, test.scope, binding)
+}
+
+func issue755CallCommand(
+	t *testing.T,
+	router EEBusV1CommandRouter,
+	test issue749CommandCase,
+) msp06CallResult {
+	t.Helper()
+	provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
+	server, _ := msp06TestServer(t, provider)
+	if err := server.RegisterEEBusV1CommandRouter(router); err != nil {
+		t.Fatal(err)
+	}
+	return msp06Call(
+		t,
+		issue743OperatorHandler(t, server),
+		test.tool,
+		cloneIssue749Arguments(t, test.arguments),
+	)
+}
+
+func issue755AssertTerminalEnvelope(
+	t *testing.T,
+	envelope map[string]any,
+	code eebusraw.ErrorCodeV1,
+	source eebusraw.SourceLayerV1,
+	runtime *eebusraw.RuntimeBindingV1,
+) {
+	t.Helper()
+	if envelope["data"] != nil {
+		t.Fatalf("terminal envelope exposed data: %#v", envelope["data"])
+	}
+	publicError := msp06Map(t, envelope["error"], "terminal error")
+	if publicError["code"] != string(code) ||
+		publicError["source_layer"] != string(source) {
+		t.Fatalf("terminal error = %#v, want code=%s source=%s",
+			publicError, code, source)
+	}
+	meta := msp06Map(t, envelope["meta"], "terminal meta")
+	hash, _ := meta["data_hash"].(string)
+	if !strings.HasPrefix(hash, "sha256:") || len(hash) != len("sha256:")+64 {
+		t.Fatalf("terminal data_hash = %q", hash)
+	}
+	if runtime == nil {
+		if meta["runtime"] != nil {
+			t.Fatalf("unbound terminal fabricated runtime: %#v", meta["runtime"])
+		}
+		return
+	}
+	got := msp06Map(t, meta["runtime"], "terminal runtime")
+	if fmt.Sprint(got["runtime_epoch"]) != fmt.Sprint(runtime.RuntimeEpoch) ||
+		fmt.Sprint(got["connection_generation"]) != fmt.Sprint(runtime.ConnectionGeneration) {
+		t.Fatalf("terminal runtime = %#v, want %#v", got, runtime)
+	}
+}

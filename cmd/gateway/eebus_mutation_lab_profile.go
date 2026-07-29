@@ -9,7 +9,10 @@ import (
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
-const eebusMutationLabProfileBasename = "mutation-lab-profile-v1.json"
+const (
+	eebusMutationLabProfileDirectory = "eebusmutation"
+	eebusMutationLabProfileBasename  = "mutation-lab-profile-v1.json"
+)
 
 var errEEBusMutationLabProfileLoad = errors.New("eeBUS mutation lab profile load failed")
 

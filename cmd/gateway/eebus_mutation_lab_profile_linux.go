@@ -34,8 +34,17 @@ func readEEBusMutationLabProfileFile(stateRoot string) ([]byte, bool, error) {
 	}
 	defer func() { _ = unix.Close(rootFD) }()
 
+	if err := rejectEEBusMutationLabRootLevelProfile(rootFD); err != nil {
+		return nil, false, err
+	}
+	directoryFD, present, err := openEEBusMutationLabProfileDirectory(rootFD)
+	if err != nil || !present {
+		return nil, false, err
+	}
+	defer func() { _ = unix.Close(directoryFD) }()
+
 	fd, err := unix.Openat(
-		rootFD,
+		directoryFD,
 		eebusMutationLabProfileBasename,
 		unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK,
 		0,
@@ -78,6 +87,43 @@ func readEEBusMutationLabProfileFile(stateRoot string) ([]byte, bool, error) {
 		return nil, false, errEEBusMutationLabProfileLoad
 	}
 	return raw, true, nil
+}
+
+func rejectEEBusMutationLabRootLevelProfile(rootFD int) error {
+	var stat unix.Stat_t
+	err := unix.Fstatat(
+		rootFD,
+		eebusMutationLabProfileBasename,
+		&stat,
+		unix.AT_SYMLINK_NOFOLLOW,
+	)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return errEEBusMutationLabProfileLoad
+}
+
+func openEEBusMutationLabProfileDirectory(rootFD int) (int, bool, error) {
+	fd, err := unix.Openat(
+		rootFD,
+		eebusMutationLabProfileDirectory,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	if errors.Is(err, unix.ENOENT) {
+		return -1, false, nil
+	}
+	if err != nil {
+		return -1, false, errEEBusMutationLabProfileLoad
+	}
+
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil ||
+		!mutationLabRootMetadataValid(stat.Mode, stat.Uid, uint32(os.Geteuid())) {
+		_ = unix.Close(fd)
+		return -1, false, errEEBusMutationLabProfileLoad
+	}
+	return fd, true, nil
 }
 
 func openEEBusMutationLabStateRoot(stateRoot string) (int, bool, error) {

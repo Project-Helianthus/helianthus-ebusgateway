@@ -10,6 +10,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 type eebusRuntimeFactory func(eebusruntime.Config) (eebusruntime.Runtime, error)
@@ -55,6 +56,15 @@ func startEEBusRuntime(
 	}
 	if factory == nil {
 		return nil, errors.New("enabled eeBUS configuration requires a runtime factory")
+	}
+	profile, err := loadEEBusMutationLabProfile(runtimeConfig.StateRoot)
+	if err != nil {
+		return nil, fmt.Errorf("load eeBUS mutation lab profile: %w", err)
+	}
+	if profile != nil {
+		runtimeConfig.MutationLabProfiles = []eebusraw.MutationLabProfileV1{
+			profile.Clone(),
+		}
 	}
 
 	runtime, factoryErr := factory(runtimeConfig)

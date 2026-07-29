@@ -13,6 +13,32 @@ const eebusMutationLabProfileBasename = "mutation-lab-profile-v1.json"
 
 var errEEBusMutationLabProfileLoad = errors.New("eeBUS mutation lab profile load failed")
 
+type eebusMutationLabJSONObjectSchema map[string]eebusMutationLabJSONObjectSchema
+
+var eebusMutationLabProfileJSONSchema = eebusMutationLabJSONObjectSchema{
+	"contract":                  nil,
+	"profile_id":                nil,
+	"target":                    eebusMutationLabTargetJSONSchema,
+	"allowed_value_hashes":      nil,
+	"rollback_value_hash":       nil,
+	"maximum_probe_ttl_seconds": nil,
+	"safety_predicates":         nil,
+	"evidence_hashes":           nil,
+	"expires_at":                nil,
+}
+
+var eebusMutationLabTargetJSONSchema = eebusMutationLabJSONObjectSchema{
+	"remote_ski":      nil,
+	"ship_id":         nil,
+	"device_address":  nil,
+	"entity_address":  nil,
+	"feature_address": nil,
+	"feature_type":    nil,
+	"feature_role":    nil,
+	"function":        nil,
+	"operation":       nil,
+}
+
 func loadEEBusMutationLabProfile(
 	stateRoot string,
 ) (*eebusraw.MutationLabProfileV1, error) {
@@ -66,7 +92,10 @@ func validateSingleEEBusMutationLabJSONObject(raw []byte) error {
 	if !ok || delimiter != '{' {
 		return errors.New("profile JSON root is not an object")
 	}
-	if err := walkEEBusMutationLabJSONObject(decoder); err != nil {
+	if err := walkEEBusMutationLabJSONObject(
+		decoder,
+		eebusMutationLabProfileJSONSchema,
+	); err != nil {
 		return err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
@@ -75,7 +104,10 @@ func validateSingleEEBusMutationLabJSONObject(raw []byte) error {
 	return nil
 }
 
-func walkEEBusMutationLabJSONValue(decoder *json.Decoder) error {
+func walkEEBusMutationLabJSONValue(
+	decoder *json.Decoder,
+	schema eebusMutationLabJSONObjectSchema,
+) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
@@ -86,10 +118,10 @@ func walkEEBusMutationLabJSONValue(decoder *json.Decoder) error {
 	}
 	switch delimiter {
 	case '{':
-		return walkEEBusMutationLabJSONObject(decoder)
+		return walkEEBusMutationLabJSONObject(decoder, schema)
 	case '[':
 		for decoder.More() {
-			if err := walkEEBusMutationLabJSONValue(decoder); err != nil {
+			if err := walkEEBusMutationLabJSONValue(decoder, nil); err != nil {
 				return err
 			}
 		}
@@ -103,7 +135,10 @@ func walkEEBusMutationLabJSONValue(decoder *json.Decoder) error {
 	}
 }
 
-func walkEEBusMutationLabJSONObject(decoder *json.Decoder) error {
+func walkEEBusMutationLabJSONObject(
+	decoder *json.Decoder,
+	schema eebusMutationLabJSONObjectSchema,
+) error {
 	seen := make(map[string]struct{})
 	for decoder.More() {
 		rawKey, err := decoder.Token()
@@ -118,7 +153,11 @@ func walkEEBusMutationLabJSONObject(decoder *json.Decoder) error {
 			return errors.New("profile JSON object key is duplicated")
 		}
 		seen[key] = struct{}{}
-		if err := walkEEBusMutationLabJSONValue(decoder); err != nil {
+		childSchema, allowed := schema[key]
+		if schema != nil && !allowed {
+			return errors.New("profile JSON object key is unknown")
+		}
+		if err := walkEEBusMutationLabJSONValue(decoder, childSchema); err != nil {
 			return err
 		}
 	}

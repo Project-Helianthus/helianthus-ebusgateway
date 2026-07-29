@@ -185,6 +185,48 @@ func issue755ValidMutationLabProfileJSON(t *testing.T) []byte {
 	return raw
 }
 
+func TestIssue755RejectsCaseAliasedMutationLabProfileKeys(t *testing.T) {
+	valid := string(issue755ValidMutationLabProfileJSON(t))
+	tests := []struct {
+		name        string
+		oldFragment string
+		newFragment string
+	}{
+		{
+			name:        "root case alias",
+			oldFragment: `"profile_id":"issue755-lab-profile"`,
+			newFragment: `"PROFILE_ID":"issue755-lab-profile"`,
+		},
+		{
+			name:        "root canonical and case alias collision",
+			oldFragment: `"profile_id":"issue755-lab-profile"`,
+			newFragment: `"profile_id":"issue755-lab-profile","PROFILE_ID":"issue755-lab-profile"`,
+		},
+		{
+			name:        "target case alias",
+			oldFragment: `"remote_ski":"` + issue755RemoteSKI + `"`,
+			newFragment: `"REMOTE_SKI":"` + issue755RemoteSKI + `"`,
+		},
+		{
+			name:        "target canonical and case alias collision",
+			oldFragment: `"remote_ski":"` + issue755RemoteSKI + `"`,
+			newFragment: `"remote_ski":"` + issue755RemoteSKI + `","REMOTE_SKI":"` + issue755RemoteSKI + `"`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := strings.Replace(valid, test.oldFragment, test.newFragment, 1)
+			if raw == valid {
+				t.Fatal("test fixture did not replace the expected canonical key")
+			}
+			if _, err := decodeEEBusMutationLabProfile([]byte(raw)); err == nil {
+				t.Fatal("case-aliased profile key was accepted")
+			}
+		})
+	}
+}
+
 func issue755WriteProfile(t *testing.T, stateRoot string, raw []byte) string {
 	t.Helper()
 	path := filepath.Join(stateRoot, issue755ProfileBasename)

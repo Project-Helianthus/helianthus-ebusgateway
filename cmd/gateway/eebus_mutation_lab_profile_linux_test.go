@@ -297,6 +297,30 @@ func TestIssue755RejectsMalformedOrInvalidProfileBeforeFactory(t *testing.T) {
 			`"profile_id":"issue755-lab-profile","unknown_marker":"secret-marker"`,
 			1,
 		))},
+		{name: "root case alias", raw: []byte(strings.Replace(
+			string(valid),
+			`"profile_id":"issue755-lab-profile"`,
+			`"PROFILE_ID":"issue755-lab-profile"`,
+			1,
+		))},
+		{name: "root canonical and case alias collision", raw: []byte(strings.Replace(
+			string(valid),
+			`"profile_id":"issue755-lab-profile"`,
+			`"profile_id":"issue755-lab-profile","PROFILE_ID":"issue755-lab-profile"`,
+			1,
+		))},
+		{name: "target case alias", raw: []byte(strings.Replace(
+			string(valid),
+			`"remote_ski":"`+issue755RemoteSKI+`"`,
+			`"REMOTE_SKI":"`+issue755RemoteSKI+`"`,
+			1,
+		))},
+		{name: "target canonical and case alias collision", raw: []byte(strings.Replace(
+			string(valid),
+			`"remote_ski":"`+issue755RemoteSKI+`"`,
+			`"remote_ski":"`+issue755RemoteSKI+`","REMOTE_SKI":"`+issue755RemoteSKI+`"`,
+			1,
+		))},
 		{name: "trailing", raw: append(append([]byte(nil), valid...), []byte("secret-marker")...)},
 		{name: "invalid typed profile", raw: invalidTypedRaw},
 	}

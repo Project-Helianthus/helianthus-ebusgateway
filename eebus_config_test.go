@@ -77,8 +77,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"config.go",
 	}
 	requiredRuntimeImports := map[string]bool{
-		"cmd/gateway/eebus_runtime_adapter.go": false,
-		"cmd/gateway/eebus_runtime_config.go":  false,
+		"cmd/gateway/eebus_mutation_lab_profile.go": false,
+		"cmd/gateway/eebus_runtime_adapter.go":      false,
+		"cmd/gateway/eebus_runtime_config.go":       false,
 		// MSP-06 adds one typed, read-only provider seam from the runtime into MCP.
 		"mcp/eebus_v1.go": false,
 		// Issue #747 adds one isolated command router over the canonical runtime.

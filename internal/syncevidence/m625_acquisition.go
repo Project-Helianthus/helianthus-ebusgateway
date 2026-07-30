@@ -575,6 +575,7 @@ func m625BuildEvidence(observations []m625ProjectedObservation, limits CaptureLi
 		return m625ObservationNativeKey(observations[left]) < m625ObservationNativeKey(observations[right])
 	})
 	services := make(map[string]string)
+	serviceRows := make([]any, 0)
 	paths := make([]any, 0, len(observations))
 	rows := make([]any, 0, len(observations))
 	pathKeys := make(map[string]bool, len(observations))
@@ -585,6 +586,7 @@ func m625BuildEvidence(observations []m625ProjectedObservation, limits CaptureLi
 		if service == "" {
 			service = m625OpaquePseudonym("service\x00" + serviceIdentity)
 			services[serviceIdentity] = service
+			serviceRows = append(serviceRows, service)
 		}
 		entityIdentity := serviceIdentity + "\x00" + observation.target.DeviceAddress + "\x00" + m625UintPath(observation.target.EntityAddress)
 		entity := m625OpaquePseudonym("entity\x00" + entityIdentity)
@@ -629,10 +631,6 @@ func m625BuildEvidence(observations []m625ProjectedObservation, limits CaptureLi
 			latest = observation.observedAt
 		}
 	}
-	serviceRows := make([]any, 0, len(services))
-	for _, service := range services {
-		serviceRows = append(serviceRows, service)
-	}
 	payload := map[string]any{
 		"contract":           M625EEBusContractV1,
 		"schema_version":     json.Number("1"),
@@ -640,9 +638,6 @@ func m625BuildEvidence(observations []m625ProjectedObservation, limits CaptureLi
 		"services":           serviceRows,
 		"feature_paths":      paths,
 		"observations":       rows,
-	}
-	if err := sortM625Payload(payload); err != nil {
-		return AcquiredEvidence{}, err
 	}
 	if err := validateM625Payload(payload, sourceCapture{
 		sourceKind: SourceEEBus, sourceContract: M625EEBusContractV1, sourceSchemaVersion: 1,

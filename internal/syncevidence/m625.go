@@ -3,7 +3,6 @@ package syncevidence
 import (
 	"encoding/json"
 	"regexp"
-	"sort"
 	"strconv"
 	"time"
 )
@@ -63,15 +62,12 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 		return contractError("schema.bundle")
 	}
 	serviceSet := make(map[string]bool, len(services))
-	lastService := ""
 	for _, raw := range services {
 		service, ok := raw.(string)
-		if !ok || !remaskedValuePattern.MatchString(service) || serviceSet[service] ||
-			lastService != "" && service < lastService {
+		if !ok || !remaskedValuePattern.MatchString(service) || serviceSet[service] {
 			return contractError("schema.bundle")
 		}
 		serviceSet[service] = true
-		lastService = service
 	}
 
 	paths, ok := object["feature_paths"].([]any)
@@ -80,7 +76,6 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 	}
 	referencedServices := make(map[string]bool)
 	pathEncodings := make(map[string]bool, len(paths))
-	lastPath := ""
 	for _, raw := range paths {
 		path, ok := raw.(map[string]any)
 		if !ok || validateM625Path(path, serviceSet) != nil {
@@ -93,11 +88,10 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 			return contractError("schema.bundle")
 		}
 		key := string(encoded)
-		if pathEncodings[key] || lastPath != "" && key < lastPath {
-			return contractError("ordering.invalid")
+		if pathEncodings[key] {
+			return contractError("schema.bundle")
 		}
 		pathEncodings[key] = true
-		lastPath = key
 	}
 	if len(referencedServices) != len(serviceSet) {
 		return contractError("schema.bundle")
@@ -114,7 +108,6 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 	}
 	refs := make(map[string]bool, len(observations))
 	pathIndexes := make(map[uint64]bool, len(observations))
-	lastRef := ""
 	var latest time.Time
 	for _, raw := range observations {
 		observation, ok := raw.(map[string]any)
@@ -135,12 +128,10 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 			return contractError("schema.bundle")
 		}
 		ref, ok := observation["observation_ref"].(string)
-		if !ok || !m625ObservationRefPattern.MatchString(ref) || refs[ref] ||
-			lastRef != "" && ref < lastRef {
-			return contractError("ordering.invalid")
+		if !ok || !m625ObservationRefPattern.MatchString(ref) || refs[ref] {
+			return contractError("schema.bundle")
 		}
 		refs[ref] = true
-		lastRef = ref
 		pathIndex, ok := m625SafeInteger(observation["path_index"])
 		if !ok || pathIndex >= uint64(len(paths)) || pathIndexes[pathIndex] {
 			return contractError("schema.bundle")
@@ -284,47 +275,6 @@ func m625SafeInteger(value any) (uint64, bool) {
 	}
 	parsed, err := strconv.ParseUint(string(number), 10, 64)
 	return parsed, err == nil
-}
-
-func sortM625Payload(object map[string]any) error {
-	paths := object["feature_paths"].([]any)
-	type indexedPath struct {
-		oldIndex int
-		encoded  string
-		value    any
-	}
-	indexed := make([]indexedPath, len(paths))
-	for index, path := range paths {
-		encoded, err := canonicalJSONValue(path)
-		if err != nil {
-			return err
-		}
-		indexed[index] = indexedPath{oldIndex: index, encoded: string(encoded), value: path}
-	}
-	sort.Slice(indexed, func(left, right int) bool { return indexed[left].encoded < indexed[right].encoded })
-	oldToNew := make(map[uint64]uint64, len(indexed))
-	for newIndex, path := range indexed {
-		paths[newIndex] = path.value
-		oldToNew[uint64(path.oldIndex)] = uint64(newIndex)
-	}
-	observations := object["observations"].([]any)
-	for _, raw := range observations {
-		observation := raw.(map[string]any)
-		oldIndex, ok := m625SafeInteger(observation["path_index"])
-		if !ok {
-			return contractError("schema.bundle")
-		}
-		observation["path_index"] = json.Number(strconv.FormatUint(oldToNew[oldIndex], 10))
-	}
-	sort.Slice(observations, func(left, right int) bool {
-		return observations[left].(map[string]any)["observation_ref"].(string) <
-			observations[right].(map[string]any)["observation_ref"].(string)
-	})
-	services := object["services"].([]any)
-	sort.Slice(services, func(left, right int) bool {
-		return services[left].(string) < services[right].(string)
-	})
-	return nil
 }
 
 func m625RemaskingRequirements(object map[string]any) (map[string]m625RemaskingRequirement, error) {

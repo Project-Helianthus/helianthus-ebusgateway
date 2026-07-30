@@ -224,7 +224,7 @@ func TestIssue764M625FiveSourceCaptureRemasksAndReplays(t *testing.T) {
 	}
 }
 
-func TestIssue764M625ValidatorRejectsWrongOrderingAndRawMetadata(t *testing.T) {
+func TestIssue764M625ValidatorRejectsRawMetadataAndWrongValueMatrix(t *testing.T) {
 	observed := time.Date(2026, 7, 30, 12, 0, 2, 0, time.UTC)
 	base := sourceCapture{
 		sourceKind:          SourceEEBus,
@@ -245,10 +245,6 @@ func TestIssue764M625ValidatorRejectsWrongOrderingAndRawMetadata(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]any){
 		"raw identity": func(root map[string]any) {
 			root["remote_ski"] = strings.Repeat("a", 40)
-		},
-		"wrong ordering": func(root map[string]any) {
-			paths := root["feature_paths"].([]any)
-			paths[0], paths[1] = paths[1], paths[0]
 		},
 		"wrong value matrix": func(root map[string]any) {
 			observation := root["observations"].([]any)[0].(map[string]any)

@@ -811,9 +811,6 @@ func (recorder *Recorder) prepareEvidence(capture sourceCapture, identity *EBusS
 		if err := recorder.remaskM625Payload(object, usedValues); err != nil {
 			return nil, RemaskingV1{}, 0, err
 		}
-		if err := sortM625Payload(object); err != nil {
-			return nil, RemaskingV1{}, 0, err
-		}
 		requirements, err := m625RemaskingRequirements(object)
 		if err != nil {
 			return nil, RemaskingV1{}, 0, err

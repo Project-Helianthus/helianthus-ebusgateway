@@ -54,6 +54,11 @@ const (
 	SourceCloudApp SourceKind = "CLOUD_APP"
 )
 
+const (
+	HistoricalEEBusContractV1 = "helianthus-eebus-mcp"
+	M625EEBusContractV1       = "helianthus.eebus.m625.public-redacted-evidence.v1"
+)
+
 type Phase string
 
 const (
@@ -470,6 +475,8 @@ type PrecapturedCloudInput struct {
 type RegisteredSource struct {
 	Phase            Phase
 	SourceKind       SourceKind
+	SourceContract   string
+	SourceVersion    uint64
 	RuntimeInstance  string
 	SourceID         string // Deprecated compatibility alias for RuntimeInstance; never serialized.
 	OperationVersion string

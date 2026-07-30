@@ -276,7 +276,7 @@ func oneOfError(value ErrorCategory, allowed ...ErrorCategory) bool {
 }
 
 func validateRegisteredSource(source RegisteredSource) error {
-	authority, exists := sourceAuthorities[source.SourceKind]
+	authority, exists := registeredSourceAuthority(source)
 	runtimeKind, validKind := runtimeForSource(source.SourceKind)
 	if !exists || !validKind || authority.kind != source.SourceKind || !validPhase(source.Phase) ||
 		!operationVersionExpr.MatchString(source.OperationVersion) || source.OperationScope != expectedOperationScope(source.SourceKind) {

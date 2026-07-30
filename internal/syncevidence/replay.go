@@ -518,7 +518,7 @@ func validateSources(bundle *SynchronizedEvidenceBundleV1, rootPermissions map[s
 }
 
 func validateBinding(binding SourceBindingV1, source *SourceRecordV1, permissions map[string]bool) error {
-	authority, exists := sourceAuthorities[binding.SourceKind]
+	authority, exists := boundSourceAuthority(binding.SourceKind, binding.SourceContract, binding.SourceSchemaVersion)
 	expectedRuntime, validKind := runtimeForSource(binding.SourceKind)
 	if !exists || !validKind || binding.RuntimeKind != expectedRuntime || binding.RuntimeKind != source.SourceKind ||
 		!runtimeIDPattern.MatchString(binding.RuntimePseudonym) || !operationVersionExpr.MatchString(binding.OperationVersion) ||

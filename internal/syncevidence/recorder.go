@@ -546,7 +546,10 @@ func (recorder *Recorder) hasPendingSource() bool {
 }
 
 func (recorder *Recorder) sourcePrecedence(registered RegisteredSource) (sourceCapture, sourceAuthority, []string, bool, error) {
-	authority := sourceAuthorities[registered.SourceKind]
+	authority, exists := registeredSourceAuthority(registered)
+	if !exists {
+		return sourceCapture{}, sourceAuthority{}, nil, false, ErrInvalidArgument
+	}
 	runtimeKind, _ := runtimeForSource(registered.SourceKind)
 	permissions, err := normalizePermissions(registered.Admission.EffectivePermissions)
 	if err != nil {

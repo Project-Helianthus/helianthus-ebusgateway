@@ -43,6 +43,16 @@
       "embedded_schema": null
     },
     {
+      "source_kind": "EEBUS",
+      "source_contract": "helianthus.eebus.m625.public-redacted-evidence.v1",
+      "source_schema_version": 1,
+      "owner_repository": "Project-Helianthus/helianthus-docs-eebus",
+      "owner_path": "api/_candidate/msp-0625/helianthus.eebus.m625.public-redacted-evidence.v1.schema.json",
+      "owner_commit": "a09e3a77153204bc3117e233c71e77ef1859834e",
+      "schema_sha256": "0a2885d01d6703389541e246db59bcd845a332e7ed296abca2d49b4f8de31811",
+      "embedded_schema": "docs/platform/schemas/vendor/helianthus.eebus.m625.public-redacted-evidence.v1.schema.json"
+    },
+    {
       "source_kind": "CLOUD_APP",
       "source_contract": "helianthus.cloud-app.precaptured.evidence.v1",
       "source_schema_version": 1,

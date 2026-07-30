@@ -511,7 +511,9 @@ func eebusV1ValidateCommandOutcome(
 			if !reflect.ValueOf(typedData).IsZero() {
 				return nil, eebusV1ContractViolation()
 			}
-			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
+			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) &&
+				!(terminal.Code == eebusraw.ErrorCodeV1TypedEmpty &&
+					terminal.SourceLayer == eebusraw.SourceLayerV1Remote) {
 				return nil, eebusV1ContractViolation()
 			}
 			return nil, nil
@@ -567,8 +569,7 @@ func eebusV1UnboundTerminalSourceAllowed(layer eebusraw.SourceLayerV1) bool {
 	case "mcp",
 		"gateway-router",
 		"eebusreg-runtime",
-		"eebusreg-coordinator",
-		"remote":
+		"eebusreg-coordinator":
 		return true
 	default:
 		return false

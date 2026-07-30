@@ -3,6 +3,7 @@ package syncevidence
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -214,6 +215,25 @@ func TestIssue764M625AcquisitionSelectsOrdersBatchesAndRedacts(t *testing.T) {
 	}
 	if got := len(payload["observations"].([]any)); got != 17 {
 		t.Fatalf("observation count = %d, want 17", got)
+	}
+	observations := payload["observations"].([]any)
+	observationRefs := make([]string, len(observations))
+	nativeBase := time.Date(2026, 7, 30, 12, 0, 1, 0, time.UTC)
+	for index, raw := range observations {
+		observation := raw.(map[string]any)
+		wantObservedAt := nativeBase.Add(time.Duration(index+1) * time.Millisecond).Format(time.RFC3339Nano)
+		if got := observation["source_observed_at"]; got != wantObservedAt {
+			t.Fatalf(
+				"emitted observation %d source_observed_at = %v, want native feature order timestamp %q",
+				index,
+				got,
+				wantObservedAt,
+			)
+		}
+		observationRefs[index] = observation["observation_ref"].(string)
+	}
+	if sort.StringsAreSorted(observationRefs) {
+		t.Fatalf("native feature order unexpectedly equals pseudonym lexical order: %v", observationRefs)
 	}
 
 	runtime.mu.Lock()

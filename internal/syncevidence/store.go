@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,23 +32,26 @@ type FileStoreConfig struct {
 	Retention  time.Duration
 	Now        func() time.Time
 	Entropy    io.Reader
+	LockProof  []byte
 }
 
 type FileStore struct {
-	mu               sync.Mutex
-	root             string
-	rootFile         *os.File
-	lockFile         *os.File
-	quota            int64
-	used             int64
-	reserved         int64
-	retention        time.Duration
-	now              func() time.Time
-	entropy          io.Reader
-	reservations     map[uint64]int64
-	nextReserve      uint64
-	beforeDropRename func()
-	closed           bool
+	mu                    sync.Mutex
+	root                  string
+	rootFile              *os.File
+	lockFile              *os.File
+	quota                 int64
+	used                  int64
+	reserved              int64
+	retention             time.Duration
+	now                   func() time.Time
+	entropy               io.Reader
+	lockProof             []byte
+	reservations          map[uint64]int64
+	nextReserve           uint64
+	beforeDropRename      func()
+	beforePublishedReopen func(string)
+	closed                bool
 }
 
 type CaptureReservation struct {
@@ -65,7 +69,8 @@ type journalRecord struct {
 
 func OpenFileStore(config FileStoreConfig) (*FileStore, error) {
 	if config.Root == "" || !filepath.IsAbs(config.Root) || filepath.Clean(config.Root) != config.Root ||
-		config.Root == string(filepath.Separator) || config.QuotaBytes <= journalReserveBytes || config.Retention < 0 {
+		config.Root == string(filepath.Separator) || config.QuotaBytes <= journalReserveBytes || config.Retention < 0 ||
+		config.LockProof != nil && len(config.LockProof) != 32 {
 		return nil, ErrUnsafeStore
 	}
 	rootFile, err := openOrCreateStoreRoot(config.Root)
@@ -105,7 +110,8 @@ func OpenFileStore(config FileStoreConfig) (*FileStore, error) {
 	}
 	store := &FileStore{
 		root: config.Root, rootFile: rootFile, lockFile: lockFile, quota: config.QuotaBytes,
-		retention: config.Retention, now: now, entropy: entropy, reservations: make(map[uint64]int64),
+		retention: config.Retention, now: now, entropy: entropy,
+		lockProof: append([]byte(nil), config.LockProof...), reservations: make(map[uint64]int64),
 	}
 	if err := store.verifyLockOwnership(); err != nil {
 		_ = store.Close()
@@ -191,7 +197,8 @@ func openStoreLock(rootFD int) (int, bool, error) {
 
 func verifyDirectoryFD(fd int) error {
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || uint32(stat.Mode)&0o777 != 0o700 {
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR ||
+		uint32(stat.Mode)&0o777 != 0o700 || stat.Uid != uint32(os.Geteuid()) {
 		return ErrUnsafeStore
 	}
 	return nil
@@ -200,16 +207,20 @@ func verifyDirectoryFD(fd int) error {
 func verifyRegularFD(fd int, wantedMode uint32) error {
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG ||
-		uint64(stat.Nlink) != 1 || uint32(stat.Mode)&0o777 != wantedMode {
+		uint64(stat.Nlink) != 1 || uint32(stat.Mode)&0o777 != wantedMode ||
+		stat.Uid != uint32(os.Geteuid()) {
 		return ErrUnsafeStore
 	}
 	return nil
 }
 
 func (store *FileStore) verifyLockOwnership() error {
-	token := make([]byte, 32)
-	if _, err := io.ReadFull(store.entropy, token); err != nil {
-		return ErrUnsafeStore
+	token := append([]byte(nil), store.lockProof...)
+	if len(token) == 0 {
+		token = make([]byte, 32)
+		if _, err := io.ReadFull(store.entropy, token); err != nil {
+			return ErrUnsafeStore
+		}
 	}
 	if err := store.lockFile.Truncate(0); err != nil {
 		return ErrUnsafeStore
@@ -553,6 +564,17 @@ func (store *FileStore) ReserveCapture(maxBundleBytes int64) (*CaptureReservatio
 }
 
 func (reservation *CaptureReservation) Publish(bundle []byte) (string, error) {
+	return reservation.publish(bundle, nil)
+}
+
+func (reservation *CaptureReservation) PublishVerified(bundle, expectedReplay []byte) (string, error) {
+	if len(expectedReplay) == 0 {
+		return "", ErrInvalidArgument
+	}
+	return reservation.publish(bundle, expectedReplay)
+}
+
+func (reservation *CaptureReservation) publish(bundle, expectedReplay []byte) (string, error) {
 	if reservation == nil || reservation.store == nil {
 		return "", ErrInvalidArgument
 	}
@@ -571,7 +593,14 @@ func (reservation *CaptureReservation) Publish(bundle []byte) (string, error) {
 	if int64(len(bundle)) > reservation.max {
 		return "", ErrQuotaExceeded
 	}
-	return store.publishLocked(bundle)
+	id, err := store.publishLocked(bundle)
+	if err != nil || expectedReplay == nil {
+		return id, err
+	}
+	if err := store.verifyPublishedLocked(id, bundle, expectedReplay); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func (reservation *CaptureReservation) Release() {
@@ -673,6 +702,96 @@ func (store *FileStore) publishLocked(bundle []byte) (string, error) {
 	}
 	published = true
 	return id, nil
+}
+
+func (store *FileStore) verifyPublishedLocked(id string, bundle, expectedReplay []byte) error {
+	name := id + ".json"
+	if store.beforePublishedReopen != nil {
+		store.beforePublishedReopen(name)
+	}
+	reopened, err := store.readEntry(name, DefaultLimitsV1().MaxBundleBytes)
+	if err != nil || !bytes.Equal(reopened, bundle) {
+		return ErrDurability
+	}
+	reopenedID, err := extractBundleID(reopened)
+	if err != nil || reopenedID != id {
+		return ErrDurability
+	}
+	replayed, err := Replay(reopened)
+	if err != nil || !bytes.Equal(replayed, expectedReplay) {
+		return ErrDurability
+	}
+	return syncDirectory(store.rootFile)
+}
+
+func (store *FileStore) lookupOneShot(actionRef EvidenceRefV1, tuple SourceTupleV1) (OneShotLookupResult, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.closed {
+		return OneShotLookupResult{}, ErrStoreClosed
+	}
+	if validateEvidenceRef(actionRef) != nil {
+		return OneShotLookupResult{}, ErrInvalidArgument
+	}
+	authority, ok := boundSourceAuthority(tuple.SourceKind, tuple.Contract, tuple.Version)
+	if !ok || authority.kind != tuple.SourceKind || authority.contract != tuple.Contract || authority.version != tuple.Version {
+		return OneShotLookupResult{}, ErrInvalidArgument
+	}
+	entries, err := store.listEntries()
+	if err != nil {
+		return OneShotLookupResult{}, err
+	}
+	sort.Slice(entries, func(left, right int) bool {
+		return entries[left].Name() < entries[right].Name()
+	})
+	result := OneShotLookupResult{Status: OneShotLookupNone}
+	conflict := false
+	actionKey := evidenceRefKey(actionRef)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if err := store.verifyFinal(name); err != nil {
+			return OneShotLookupResult{}, err
+		}
+		raw, err := store.readEntry(name, DefaultLimitsV1().MaxBundleBytes)
+		if err != nil {
+			return OneShotLookupResult{}, err
+		}
+		bundle, err := verifyBundle(raw)
+		if err != nil {
+			return OneShotLookupResult{}, err
+		}
+		if evidenceRefKey(bundle.CaptureWindow.Action.EvidenceRef) != actionKey {
+			continue
+		}
+		replay, err := Replay(raw)
+		if err != nil {
+			return OneShotLookupResult{}, err
+		}
+		matches := 0
+		for _, source := range bundle.Sources {
+			if source.SourceBinding.SourceKind == tuple.SourceKind &&
+				source.SourceContract == tuple.Contract &&
+				source.SourceSchemaVersion == tuple.Version {
+				matches++
+			}
+		}
+		if matches != 1 || result.Status == OneShotLookupExisting {
+			conflict = true
+			continue
+		}
+		result = OneShotLookupResult{
+			Status: OneShotLookupExisting,
+			Bundle: append([]byte(nil), raw...),
+			Replay: append([]byte(nil), replay...),
+		}
+	}
+	if conflict {
+		return OneShotLookupResult{Status: OneShotLookupConflict}, nil
+	}
+	return result, nil
 }
 
 func (store *FileStore) createExclusive(prefix string) (string, *os.File, error) {

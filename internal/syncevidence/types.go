@@ -140,6 +140,26 @@ const (
 	DropStatusAlreadyGone DropStatus = "ALREADY_GONE"
 )
 
+type SourceTupleV1 struct {
+	SourceKind SourceKind
+	Contract   string
+	Version    uint64
+}
+
+type OneShotLookupStatus string
+
+const (
+	OneShotLookupNone     OneShotLookupStatus = "NONE"
+	OneShotLookupExisting OneShotLookupStatus = "EXISTING"
+	OneShotLookupConflict OneShotLookupStatus = "CONFLICT"
+)
+
+type OneShotLookupResult struct {
+	Status OneShotLookupStatus
+	Bundle []byte
+	Replay []byte
+}
+
 type EBusFamily string
 
 const (

@@ -84,15 +84,7 @@ func TestIssue764HistoricalEEBusRegistryEntryRemainsByteIdentical(t *testing.T) 
       "schema_sha256": "7f10fa6860e8ccee1af7f155e03d5ac208b5a6fb30518aa3145122a9a1dc0a1c",
       "embedded_schema": null
     }`)
-	historicalCompact := new(bytes.Buffer)
-	wantCompact := new(bytes.Buffer)
-	if err := json.Compact(historicalCompact, historical); err != nil {
-		t.Fatalf("compact historical entry: %v", err)
-	}
-	if err := json.Compact(wantCompact, want); err != nil {
-		t.Fatalf("compact expected historical entry: %v", err)
-	}
-	if !bytes.Equal(historicalCompact.Bytes(), wantCompact.Bytes()) {
-		t.Fatalf("historical EEBUS registry entry changed:\n got: %s\nwant: %s", historicalCompact.Bytes(), wantCompact.Bytes())
+	if !bytes.Equal(historical, want) {
+		t.Fatalf("historical EEBUS registry entry changed byte-for-byte:\n got: %q\nwant: %q", historical, want)
 	}
 }

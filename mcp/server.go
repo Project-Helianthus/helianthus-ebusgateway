@@ -1273,12 +1273,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	const maximumRequestBodyBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maximumRequestBodyBytes+1))
 	if err != nil {
 		http.Error(w, "read failed", http.StatusBadRequest)
 		return
 	}
 	defer func() { _ = r.Body.Close() }()
+	if len(body) > maximumRequestBodyBytes {
+		s.writeRPCError(w, nil, rpcErrorInvalidRequest("request body too large"))
+		return
+	}
 
 	var req rpcRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -1385,7 +1390,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		return nil, rpcErrorInvalidParams("tools/call missing name")
 	}
 	if rawCall.Name == synchronizedEvidenceCaptureToolName {
-		return s.handleSynchronizedEvidenceCaptureRaw(ctx, rawCall.Arguments, hasDuplicateKeys)
+		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
+		return s.handleSynchronizedEvidenceCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))

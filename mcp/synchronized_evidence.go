@@ -63,7 +63,7 @@ func synchronizedEvidenceCaptureTool() Tool {
 func (server *Server) handleSynchronizedEvidenceCaptureRaw(
 	ctx context.Context,
 	arguments json.RawMessage,
-	hasDuplicateKeys bool,
+	invalidCallParams bool,
 ) (any, *rpcError) {
 	if eebusV1BoundaryFromContext(ctx) != eebusV1OperatorBoundary {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", synchronizedEvidenceCaptureToolName))
@@ -74,7 +74,7 @@ func (server *Server) handleSynchronizedEvidenceCaptureRaw(
 	if nilSynchronizedEvidenceCapture(capture) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", synchronizedEvidenceCaptureToolName))
 	}
-	if hasDuplicateKeys || !synchronizedEvidenceEmptyArgs(arguments) {
+	if invalidCallParams || !synchronizedEvidenceEmptyArgs(arguments) {
 		receipt := syncevidence.OneShotReceiptV1{Category: syncevidence.OneShotInvalidRequest}
 		return callToolResultText(mustJSON(receipt), true), nil
 	}
@@ -98,6 +98,16 @@ func synchronizedEvidenceEmptyArgs(raw json.RawMessage) bool {
 		return false
 	}
 	return errors.Is(decoder.Decode(&struct{}{}), io.EOF)
+}
+
+func synchronizedEvidenceCallParamsClosed(raw json.RawMessage) bool {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil || len(value) != 2 {
+		return false
+	}
+	_, hasName := value["name"]
+	_, hasArguments := value["arguments"]
+	return hasName && hasArguments
 }
 
 func callSynchronizedEvidenceCapture(

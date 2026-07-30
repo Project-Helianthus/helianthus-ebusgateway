@@ -185,6 +185,20 @@ func TestIssue764OneShotPublishesThenRepeatsAndRestartsWithoutAcquisition(t *tes
 		t.Fatalf("repeat rewrote store lock proof")
 	}
 
+	mutatedRequest := issue764MutateRequestCloudValue(t, requestBytes)
+	issue764WriteRequest(t, root, mutatedRequest, 0o600)
+	receipt = ExecuteOneShot(context.Background(), options)
+	if receipt != (OneShotReceiptV1{Category: OneShotInvalidRequest}) {
+		t.Fatalf("mutated retained-ref receipt = %#v", receipt)
+	}
+	if readerCalls != 1 || clockCalls != 1 || versionCalls != 1 || replayCalls != 2 || entropy.bytes != firstEntropy {
+		t.Fatalf(
+			"mutated retained-ref request performed work reader=%d clock=%d version=%d replay=%d entropy=%d/%d",
+			readerCalls, clockCalls, versionCalls, replayCalls, entropy.bytes, firstEntropy,
+		)
+	}
+	issue764WriteRequest(t, root, requestBytes, 0o600)
+
 	restartOptions := options
 	restartOptions.Reader = issue764M625ReaderFunc(func(context.Context, SourceRequest) (AcquiredEvidence, error) {
 		t.Fatal("restart acquired a source")

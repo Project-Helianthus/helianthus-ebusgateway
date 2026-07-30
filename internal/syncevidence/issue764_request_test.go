@@ -14,20 +14,41 @@ import (
 func issue764RequestBytes(t *testing.T, digit byte) []byte {
 	t.Helper()
 	observed := time.Date(2026, 7, 30, 11, 12, 13, 456000000, time.UTC)
-	ref := redEvidenceRef(digit)
+	normalized, err := CanonicalizeJSON(cloudPayload(
+		observed,
+		strings.Repeat(strings.ToUpper(string(digit)), 43),
+		"21.5",
+	))
+	if err != nil {
+		t.Fatalf("canonicalize cloud evidence: %v", err)
+	}
+	ref := EvidenceRefV1{
+		Kind:            EvidenceKindContent,
+		DigestAlgorithm: DigestAlgorithmContentBytes,
+		Digest:          HashContentBytes(normalized),
+	}
 	raw, err := json.Marshal(map[string]any{
 		"contract":            OneShotRequestContractV1,
 		"schema_version":      1,
 		"action_evidence_ref": ref,
 		"cloud_app_action": map[string]any{
 			"evidence_ref":        ref,
-			"normalized_evidence": json.RawMessage(cloudPayload(observed, strings.Repeat("A", 43), "21.5")),
+			"normalized_evidence": json.RawMessage(normalized),
 		},
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
 	return raw
+}
+
+func issue764MutateRequestCloudValue(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	mutated := bytes.Replace(raw, []byte(`"value":"21.5"`), []byte(`"value":"22.5"`), 1)
+	if bytes.Equal(mutated, raw) || len(mutated) != len(raw) {
+		t.Fatalf("cloud mutation did not preserve request size")
+	}
+	return mutated
 }
 
 func issue764SecureTempDir(t *testing.T) string {
@@ -84,6 +105,13 @@ func TestIssue764RequestLoaderAcceptsOnlyFixedClosedRequest(t *testing.T) {
 	}
 	if !bytes.Equal(request.CloudAppAction.NormalizedEvidence, wantCloud) {
 		t.Fatalf("cloud evidence = %s, want canonical %s", request.CloudAppAction.NormalizedEvidence, wantCloud)
+	}
+}
+
+func TestIssue764RequestRejectsCloudContentDigestMismatch(t *testing.T) {
+	raw := issue764MutateRequestCloudValue(t, issue764RequestBytes(t, 'a'))
+	if _, err := parseOneShotRequest(raw); err == nil {
+		t.Fatal("accepted mutated canonical cloud evidence with retained content digest")
 	}
 }
 
@@ -184,12 +212,15 @@ func TestIssue764RequestLoaderRejectsModeSymlinkMutationAndSelectors(t *testing.
 
 	t.Run("different refs", func(t *testing.T) {
 		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
-		raw := bytes.Replace(
-			issue764RequestBytes(t, 'a'),
-			[]byte("sha256:"+strings.Repeat("a", 64)),
-			[]byte("sha256:"+strings.Repeat("b", 64)),
-			1,
-		)
+		var request map[string]any
+		if err := json.Unmarshal(issue764RequestBytes(t, 'a'), &request); err != nil {
+			t.Fatal(err)
+		}
+		request["action_evidence_ref"].(map[string]any)["digest"] = "sha256:" + strings.Repeat("f", 64)
+		raw, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
 		issue764WriteRequest(t, root, raw, 0o600)
 		if _, err := loadOneShotRequestAt(root, nil); err == nil {
 			t.Fatal("accepted non-identical action and cloud evidence refs")

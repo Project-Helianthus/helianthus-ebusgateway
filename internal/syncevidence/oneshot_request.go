@@ -234,6 +234,10 @@ func parseOneShotRequest(raw []byte) (OneShotRequestV1, error) {
 	if err != nil {
 		return OneShotRequestV1{}, ErrInvalidArgument
 	}
+	contentDigest := HashContentBytes(normalizedCanonical)
+	if actionRef.Digest != contentDigest || cloudRef.Digest != contentDigest {
+		return OneShotRequestV1{}, ErrInvalidArgument
+	}
 	observedAtText, ok := normalized["source_observed_at"].(string)
 	if !ok || !canonicalTimestamp(observedAtText) {
 		return OneShotRequestV1{}, ErrInvalidArgument

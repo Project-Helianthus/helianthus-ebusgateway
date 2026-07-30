@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,39 @@ func TestIssue764OneShotPublishesThenRepeatsAndRestartsWithoutAcquisition(t *tes
 	}
 	if len(bundle.Sources) != 5 {
 		t.Fatalf("source count = %d", len(bundle.Sources))
+	}
+	exactIdentities := map[SourceKind]*EBusSourceIdentityV1{
+		SourceEBusB509: {
+			Family: EBusFamilyB509, TargetAddress: 0x08, TargetProduct: "BAI00",
+			RegisterFamily: "system", RegisterID: 512, UnitScaleSource: "gateway-catalog-v1",
+			EvidenceRole: "AUTHORITATIVE",
+		},
+		SourceEBusB524: {
+			Family: EBusFamilyB524, TargetAddress: 0x15, SourceAddress: 0xf7,
+			Opcode: 2, GG: 3, II: 0, RR: 28, GroupMeaning: "zones",
+			InstanceGate: "index-not-ff", RegisterCategory: "STATE",
+			UnitScaleSource: "vrc-explorer-v1",
+		},
+		SourceEBusB555: {
+			Family: EBusFamilyB555, DeviceFamily: "VRC",
+			ScheduleProgram: "heating-program-1", SlotIndex: 0, DayOfWeek: "MONDAY",
+			TimeIdentity: "06:00:00", OperationModeContext: "AUTO",
+			UnitScaleSource: "source-native",
+		},
+	}
+	for _, source := range bundle.Sources {
+		want := exactIdentities[source.SourceBinding.SourceKind]
+		if want == nil {
+			continue
+		}
+		got := cloneIdentity(source.EBusIdentity)
+		if got == nil || got.TargetPseudonym == "" {
+			t.Fatalf("exact identity missing for %s", source.SourceBinding.SourceKind)
+		}
+		got.TargetPseudonym = ""
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("identity for %s = %#v, want %#v", source.SourceBinding.SourceKind, got, want)
+		}
 	}
 	lockPath := filepath.Join(storeRoot, storeLockName)
 	lockBefore, err := os.ReadFile(lockPath)
@@ -230,5 +264,41 @@ func TestIssue764OneShotInvalidRequestIsCategoryOnlyAndDoesNotOpenStore(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(root, "store")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid request opened store: %v", err)
+	}
+}
+
+func TestIssue764OneShotRejectsStoreSymlinkBeforeAnyNewCaptureWork(t *testing.T) {
+	base := issue764SecureTempDir(t)
+	root := filepath.Join(base, "synchronized-evidence")
+	issue764WriteRequest(t, root, issue764RequestBytes(t, 'd'), 0o600)
+	target := filepath.Join(base, "store-target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "store")); err != nil {
+		t.Fatal(err)
+	}
+	receipt := ExecuteOneShot(context.Background(), OneShotExecutionOptions{
+		Root:    root,
+		Entropy: issue764RejectEntropy{},
+		Reader: issue764M625ReaderFunc(func(context.Context, SourceRequest) (AcquiredEvidence, error) {
+			t.Fatal("unsafe store triggered acquisition")
+			return AcquiredEvidence{}, nil
+		}),
+		ClockFactory: func() Clock {
+			t.Fatal("unsafe store created a clock")
+			return nil
+		},
+		BuildIdentity: func() (OneShotBuildIdentity, error) {
+			t.Fatal("unsafe store resolved build identity")
+			return OneShotBuildIdentity{}, nil
+		},
+	})
+	if receipt != (OneShotReceiptV1{Category: OneShotPublishFailed}) {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("symlink target entries = %v, %v", entries, err)
 	}
 }

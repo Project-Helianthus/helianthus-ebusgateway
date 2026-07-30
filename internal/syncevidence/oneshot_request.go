@@ -243,7 +243,13 @@ func parseOneShotEvidenceRef(value map[string]any) (EvidenceRefV1, []byte, error
 		return EvidenceRefV1{}, nil, ErrInvalidArgument
 	}
 	var ref EvidenceRefV1
-	if err := json.Unmarshal(canonical, &ref); err != nil || validateEvidenceRef(ref) != nil {
+	if err := json.Unmarshal(canonical, &ref); err != nil ||
+		validateEvidenceRef(ref) != nil ||
+		ref.Kind != EvidenceKindContent ||
+		ref.DigestAlgorithm != DigestAlgorithmContentBytes ||
+		ref.Repository != nil ||
+		ref.Commit != nil ||
+		ref.Path != nil {
 		return EvidenceRefV1{}, nil, ErrInvalidArgument
 	}
 	return ref, canonical, nil

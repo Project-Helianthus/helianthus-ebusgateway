@@ -162,4 +162,30 @@ func TestIssue764RequestLoaderRejectsModeSymlinkMutationAndSelectors(t *testing.
 			t.Fatal("accepted non-identical action and cloud evidence refs")
 		}
 	})
+
+	t.Run("git blob evidence ref", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		var request map[string]any
+		if err := json.Unmarshal(issue764RequestBytes(t, 'a'), &request); err != nil {
+			t.Fatal(err)
+		}
+		ref := map[string]any{
+			"kind":             EvidenceKindGitBlob,
+			"digest_algorithm": DigestAlgorithmGitBlobV1,
+			"digest":           "sha256:" + strings.Repeat("a", 64),
+			"repository":       "Project-Helianthus/private-evidence",
+			"commit":           strings.Repeat("b", 40),
+			"path":             "evidence.json",
+		}
+		request["action_evidence_ref"] = ref
+		request["cloud_app_action"].(map[string]any)["evidence_ref"] = ref
+		raw, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue764WriteRequest(t, root, raw, 0o600)
+		if _, err := loadOneShotRequestAt(root, nil); err == nil {
+			t.Fatal("one-shot request accepted a Git-blob evidence ref")
+		}
+	})
 }

@@ -1924,6 +1924,15 @@ func startHTTPServer(
 			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
 		}
 	}
+	oneShotRuntime, err := newSynchronizedEvidenceOneShotRuntime(eebusProvider, eebusCommandRouter)
+	if err != nil {
+		return nil, nil, err
+	}
+	if oneShotRuntime != nil {
+		if err := mcpServer.RegisterSynchronizedEvidenceCapture(oneShotRuntime); err != nil {
+			return nil, nil, fmt.Errorf("register synchronized evidence capture: %w", err)
+		}
+	}
 	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
 	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))
 	if busObservability != nil {

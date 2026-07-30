@@ -33,15 +33,27 @@ type OneShotRequestV1 struct {
 }
 
 type oneShotFileIdentity struct {
-	device uint64
-	inode  uint64
-	mode   uint32
-	uid    uint32
-	links  uint64
-	size   int64
+	device    uint64
+	inode     uint64
+	mode      uint32
+	uid       uint32
+	links     uint64
+	size      int64
+	mtimeSec  int64
+	mtimeNSec int64
+	ctimeSec  int64
+	ctimeNSec int64
 }
 
 func loadOneShotRequestAt(root string, afterFirstRead func()) (OneShotRequestV1, error) {
+	return loadOneShotRequestAtWithHooks(root, nil, afterFirstRead)
+}
+
+func loadOneShotRequestAtWithHooks(
+	root string,
+	afterInitialStat func(),
+	afterFirstRead func(),
+) (OneShotRequestV1, error) {
 	if digestHex(mustReadContract("synchronized-evidence-one-shot-control-v1.schema.json")) != oneShotRequestSchemaDigest {
 		panic("syncevidence: pinned one-shot request schema digest mismatch")
 	}
@@ -52,10 +64,18 @@ func loadOneShotRequestAt(root string, afterFirstRead func()) (OneShotRequestV1,
 	defer func() {
 		_ = parent.Close()
 	}()
-	return loadOneShotRequestFromDirectory(parent, afterFirstRead)
+	return loadOneShotRequestFromDirectoryWithHooks(parent, afterInitialStat, afterFirstRead)
 }
 
 func loadOneShotRequestFromDirectory(parent *os.File, afterFirstRead func()) (OneShotRequestV1, error) {
+	return loadOneShotRequestFromDirectoryWithHooks(parent, nil, afterFirstRead)
+}
+
+func loadOneShotRequestFromDirectoryWithHooks(
+	parent *os.File,
+	afterInitialStat func(),
+	afterFirstRead func(),
+) (OneShotRequestV1, error) {
 	if parent == nil || verifyDirectoryFD(int(parent.Fd())) != nil {
 		return OneShotRequestV1{}, ErrUnsafeStore
 	}
@@ -76,6 +96,9 @@ func loadOneShotRequestFromDirectory(parent *os.File, afterFirstRead func()) (On
 	before, err := verifiedOneShotRequestIdentity(fd)
 	if err != nil {
 		return OneShotRequestV1{}, err
+	}
+	if afterInitialStat != nil {
+		afterInitialStat()
 	}
 	first, err := readOneShotRequest(file)
 	if err != nil {
@@ -154,13 +177,18 @@ func oneShotRequestIdentity(stat unix.Stat_t) (oneShotFileIdentity, error) {
 		stat.Size < 0 {
 		return oneShotFileIdentity{}, ErrUnsafeStore
 	}
+	mtimeSec, mtimeNSec, ctimeSec, ctimeNSec := oneShotRequestChangeTimes(stat)
 	return oneShotFileIdentity{
-		device: uint64(stat.Dev),
-		inode:  uint64(stat.Ino),
-		mode:   uint32(stat.Mode),
-		uid:    stat.Uid,
-		links:  uint64(stat.Nlink),
-		size:   stat.Size,
+		device:    uint64(stat.Dev),
+		inode:     uint64(stat.Ino),
+		mode:      uint32(stat.Mode),
+		uid:       stat.Uid,
+		links:     uint64(stat.Nlink),
+		size:      stat.Size,
+		mtimeSec:  mtimeSec,
+		mtimeNSec: mtimeNSec,
+		ctimeSec:  ctimeSec,
+		ctimeNSec: ctimeNSec,
 	}, nil
 }
 

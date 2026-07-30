@@ -163,6 +163,10 @@ func TestIssue764RequestLoaderRejectsModeSymlinkMutationAndSelectors(t *testing.
 			if closeErr := file.Close(); closeErr != nil {
 				t.Fatalf("close in-place mutation: %v", closeErr)
 			}
+			changedAt := time.Date(2030, 1, 2, 3, 4, 5, 6, time.UTC)
+			if chtimesErr := os.Chtimes(path, changedAt, changedAt); chtimesErr != nil {
+				t.Fatalf("set deterministic mutation time: %v", chtimesErr)
+			}
 		}, nil); err == nil {
 			t.Fatal("accepted same-size in-place mutation after initial fstat")
 		}

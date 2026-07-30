@@ -40,6 +40,53 @@ func TestIssue766TypedEmptyKeepsTheReleasedRawReadTerminalContract(t *testing.T)
 	}
 }
 
+func TestIssue766TypedEmptyFailsClosedUnlessNonRetriableRemote(t *testing.T) {
+	command := issue749CommandCases(t)[1]
+	tests := []struct {
+		name      string
+		retriable bool
+		source    eebusraw.SourceLayerV1
+	}{
+		{
+			name:   "runtime source",
+			source: eebusraw.SourceLayerV1Runtime,
+		},
+		{
+			name:      "retriable remote",
+			retriable: true,
+			source:    eebusraw.SourceLayerV1Remote,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
+			server, _ := msp06TestServer(t, provider)
+			router := &issue749TypedRouter{
+				dataGetError: eebusraw.NewErrorV1(
+					eebusraw.ErrorCodeV1TypedEmpty,
+					"raw READ response contained valid empty typed data",
+					test.retriable,
+					test.source,
+				),
+			}
+			if err := server.RegisterEEBusV1CommandRouter(router); err != nil {
+				t.Fatal(err)
+			}
+
+			result := msp06Call(t, issue743OperatorHandler(t, server), command.tool, command.arguments)
+			if !result.isError || result.envelope["data"] != nil {
+				t.Fatalf("malformed typed-empty envelope = %#v", result.envelope)
+			}
+			errorData := msp06Map(t, result.envelope["error"], "malformed typed-empty error")
+			if errorData["code"] != string(eebusraw.ErrorCodeV1Internal) ||
+				errorData["retriable"] != false ||
+				errorData["source_layer"] != string(eebusV1SourceLayerGatewayRouter) {
+				t.Fatalf("malformed typed-empty terminal = %#v", errorData)
+			}
+		})
+	}
+}
+
 func TestIssue766MixedTypedEmptyRemainsPartialResult(t *testing.T) {
 	provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
 	server, _ := msp06TestServer(t, provider)

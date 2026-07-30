@@ -511,9 +511,14 @@ func eebusV1ValidateCommandOutcome(
 			if !reflect.ValueOf(typedData).IsZero() {
 				return nil, eebusV1ContractViolation()
 			}
-			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) &&
-				!(terminal.Code == eebusraw.ErrorCodeV1TypedEmpty &&
-					terminal.SourceLayer == eebusraw.SourceLayerV1Remote) {
+			if terminal.Code == eebusraw.ErrorCodeV1TypedEmpty {
+				if terminal.SourceLayer != eebusraw.SourceLayerV1Remote ||
+					terminal.Retriable {
+					return nil, eebusV1ContractViolation()
+				}
+				return nil, nil
+			}
+			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
 				return nil, eebusV1ContractViolation()
 			}
 			return nil, nil

@@ -567,7 +567,8 @@ func eebusV1UnboundTerminalSourceAllowed(layer eebusraw.SourceLayerV1) bool {
 	case "mcp",
 		"gateway-router",
 		"eebusreg-runtime",
-		"eebusreg-coordinator":
+		"eebusreg-coordinator",
+		"remote":
 		return true
 	default:
 		return false
@@ -686,6 +687,7 @@ func eebusV1KnownErrorCode(code eebusraw.ErrorCodeV1) bool {
 		eebusraw.ErrorCodeV1Timeout,
 		eebusraw.ErrorCodeV1Cancelled,
 		eebusraw.ErrorCodeV1RemoteError,
+		eebusraw.ErrorCodeV1TypedEmpty,
 		eebusraw.ErrorCodeV1DecodeError,
 		eebusraw.ErrorCodeV1PartialResult,
 		eebusraw.ErrorCodeV1OutcomeUnknown,

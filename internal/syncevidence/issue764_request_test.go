@@ -139,6 +139,35 @@ func TestIssue764RequestLoaderRejectsModeSymlinkMutationAndSelectors(t *testing.
 		}
 	})
 
+	t.Run("same-size in-place changed after initial fstat", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		initial := issue764RequestBytes(t, 'a')
+		mutated := issue764RequestBytes(t, 'b')
+		if len(mutated) != len(initial) {
+			t.Fatalf("mutation fixture sizes differ: %d != %d", len(mutated), len(initial))
+		}
+		path := issue764WriteRequest(t, root, initial, 0o600)
+		if _, err := loadOneShotRequestAtWithHooks(root, func() {
+			file, openErr := os.OpenFile(path, os.O_WRONLY, 0)
+			if openErr != nil {
+				t.Fatalf("open request for in-place mutation: %v", openErr)
+			}
+			if _, writeErr := file.WriteAt(mutated, 0); writeErr != nil {
+				_ = file.Close()
+				t.Fatalf("mutate request in place: %v", writeErr)
+			}
+			if syncErr := file.Sync(); syncErr != nil {
+				_ = file.Close()
+				t.Fatalf("sync in-place mutation: %v", syncErr)
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatalf("close in-place mutation: %v", closeErr)
+			}
+		}, nil); err == nil {
+			t.Fatal("accepted same-size in-place mutation after initial fstat")
+		}
+	})
+
 	t.Run("caller selector", func(t *testing.T) {
 		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
 		raw := bytes.TrimSuffix(issue764RequestBytes(t, 'a'), []byte("}"))

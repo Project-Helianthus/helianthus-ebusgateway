@@ -436,8 +436,12 @@ type ActionMarker struct {
 }
 
 type SourceRequest struct {
-	Phase  Phase
-	Limits CaptureLimitsV1
+	Phase          Phase
+	Limits         CaptureLimitsV1
+	OperationID    string
+	OperationScope string
+	MaskTier       string
+	AuthScope      AuthScopeV1
 }
 
 type SourceAdmission struct {
@@ -464,6 +468,11 @@ type EEBusServicesReader interface {
 	ListServices(context.Context, SourceRequest) (AcquiredEvidence, error)
 }
 
+// EEBusM625Reader exposes only the bounded public-redacted feature-data read.
+type EEBusM625Reader interface {
+	ReadFeatureData(context.Context, SourceRequest) (AcquiredEvidence, error)
+}
+
 // PrecapturedCloudInput is a value-only local seam. It has no callback, client,
 // endpoint, credential, retry, or refresh capability.
 type PrecapturedCloudInput struct {
@@ -486,6 +495,7 @@ type RegisteredSource struct {
 	EBusIdentity     *EBusSourceIdentityV1
 	EBusReader       EBusSnapshotReader
 	EEBusReader      EEBusServicesReader
+	EEBusM625Reader  EEBusM625Reader
 	PrecapturedCloud *PrecapturedCloudInput
 }
 

@@ -65,7 +65,9 @@ func ExecuteOneShot(ctx context.Context, options OneShotExecutionOptions) OneSho
 	if err != nil {
 		return oneShotReceipt(OneShotInvalidRequest)
 	}
-	defer parent.Close()
+	defer func() {
+		_ = parent.Close()
+	}()
 	request, err := loadOneShotRequestFromDirectory(parent, nil)
 	if err != nil {
 		return oneShotReceipt(OneShotInvalidRequest)
@@ -80,7 +82,9 @@ func ExecuteOneShot(ctx context.Context, options OneShotExecutionOptions) OneSho
 	if err != nil {
 		return oneShotReceipt(OneShotPublishFailed)
 	}
-	defer store.Close()
+	defer func() {
+		_ = store.Close()
+	}()
 
 	retained, err := store.lookupOneShot(request.ActionEvidenceRef, options.sourceTuple())
 	if err != nil {

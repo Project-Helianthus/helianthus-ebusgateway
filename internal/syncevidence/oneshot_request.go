@@ -49,7 +49,9 @@ func loadOneShotRequestAt(root string, afterFirstRead func()) (OneShotRequestV1,
 	if err != nil {
 		return OneShotRequestV1{}, err
 	}
-	defer parent.Close()
+	defer func() {
+		_ = parent.Close()
+	}()
 	return loadOneShotRequestFromDirectory(parent, afterFirstRead)
 }
 
@@ -67,7 +69,9 @@ func loadOneShotRequestFromDirectory(parent *os.File, afterFirstRead func()) (On
 		return OneShotRequestV1{}, ErrInvalidArgument
 	}
 	file := os.NewFile(uintptr(fd), OneShotRequestFileV1)
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 
 	before, err := verifiedOneShotRequestIdentity(fd)
 	if err != nil {

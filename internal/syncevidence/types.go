@@ -517,6 +517,7 @@ type RegisteredSource struct {
 	EEBusReader      EEBusServicesReader
 	EEBusM625Reader  EEBusM625Reader
 	PrecapturedCloud *PrecapturedCloudInput
+	cloudBound       bool
 }
 
 type StoppableTimer interface {

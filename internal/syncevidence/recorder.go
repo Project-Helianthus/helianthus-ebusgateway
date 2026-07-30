@@ -57,6 +57,7 @@ type sourceCapture struct {
 	ebusIdentity        *EBusSourceIdentityV1
 	evidenceRefs        []EvidenceRefV1
 	normalizedEvidence  json.RawMessage
+	cloudBound          bool
 }
 
 type acquisitionOutcome struct {
@@ -583,6 +584,7 @@ func (recorder *Recorder) sourcePrecedence(registered RegisteredSource) (sourceC
 		snapshotMode:        snapshotMode,
 		ebusIdentity:        cloneIdentity(registered.EBusIdentity),
 		evidenceRefs:        refs,
+		cloudBound:          registered.cloudBound,
 	}
 	switch {
 	case registered.Admission.Selection == SelectionExcluded:
@@ -807,7 +809,19 @@ func (recorder *Recorder) prepareEvidence(capture sourceCapture, identity *EBusS
 		return nil, RemaskingV1{}, 0, err
 	}
 	entries := make([]RemaskedPseudonymV1, 0)
-	if capture.sourceKind == SourceEEBus && capture.sourceContract == M625EEBusContractV1 {
+	if capture.sourceKind == SourceCloudApp && capture.cloudBound {
+		pseudonym, ok := object["subject_pseudonym"].(string)
+		if !ok || !remaskedValuePattern.MatchString(pseudonym) {
+			return nil, RemaskingV1{}, 0, contractError("privacy.remask")
+		}
+		if _, duplicate := usedValues[pseudonym]; duplicate {
+			return nil, RemaskingV1{}, 0, contractError("privacy.remask")
+		}
+		usedValues[pseudonym] = struct{}{}
+		entries = append(entries, RemaskedPseudonymV1{
+			Path: "/subject_pseudonym", Pseudonym: pseudonym,
+		})
+	} else if capture.sourceKind == SourceEEBus && capture.sourceContract == M625EEBusContractV1 {
 		if err := recorder.remaskM625Payload(object, usedValues); err != nil {
 			return nil, RemaskingV1{}, 0, err
 		}

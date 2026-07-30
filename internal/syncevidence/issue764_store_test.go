@@ -30,6 +30,16 @@ func issue764FiveSourceBundleWithCloudRef(
 ) []byte {
 	t.Helper()
 	observed := time.Date(2026, 7, 30, 12, 0, 2, 0, time.UTC)
+	cloud := cloudRegistration(PrecapturedCloudInput{
+		SourceObservedAt: observed,
+		NormalizedEvidence: cloudPayload(
+			observed,
+			"JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
+			"21.5",
+		),
+		EvidenceRef: cloudRef,
+	}, PhaseAction, "cloud-runtime")
+	cloud.cloudBound = true
 	sources := []RegisteredSource{
 		issue764TerminalEBusSource(SourceEBusB509, PhasePre, "ebus-b509", "dbe91a10a208613183f890849c634f8d13661194aad937a03ae2a4143070bf2d"),
 		{
@@ -44,15 +54,7 @@ func issue764FiveSourceBundleWithCloudRef(
 			}),
 		},
 		issue764TerminalEBusSource(SourceEBusB524, PhaseAction, "ebus-b524", "1002e09890801c9032548af407b13b58d889217dfc83e58bfe2a28df6bc33b78"),
-		cloudRegistration(PrecapturedCloudInput{
-			SourceObservedAt: observed,
-			NormalizedEvidence: cloudPayload(
-				observed,
-				"JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
-				"21.5",
-			),
-			EvidenceRef: cloudRef,
-		}, PhaseAction, "cloud-runtime"),
+		cloud,
 		issue764TerminalEBusSource(SourceEBusB555, PhasePost, "ebus-b555", "a3237e344f5c3582ceaf1ca947eabf200bede8fe9388ec85cf647331f026c72d"),
 	}
 	recorder := testRecorder(t, sources, func(options *RecorderOptions) {
@@ -86,7 +88,8 @@ func issue764RetainedCloudContentRef(t *testing.T, raw []byte) EvidenceRefV1 {
 
 func TestIssue764RetainedLookupSurvivesRestartWithoutEntropyOrStaging(t *testing.T) {
 	root := filepath.Join(storeTestRoot(t), "store")
-	actionRef := redEvidenceRef('a')
+	provisional := issue764FiveSourceBundle(t, redEvidenceRef('a'), 0x61)
+	actionRef := issue764RetainedCloudContentRef(t, provisional)
 	bundle := issue764FiveSourceBundle(t, actionRef, 0x61)
 	replay, err := Replay(bundle)
 	if err != nil {
@@ -148,7 +151,8 @@ func TestIssue764RetainedLookupSurvivesRestartWithoutEntropyOrStaging(t *testing
 
 func TestIssue764RetainedLookupConflictsOnMultipleCandidates(t *testing.T) {
 	root := filepath.Join(storeTestRoot(t), "store")
-	actionRef := redEvidenceRef('b')
+	provisional := issue764FiveSourceBundle(t, redEvidenceRef('b'), 0x61)
+	actionRef := issue764RetainedCloudContentRef(t, provisional)
 	store, err := OpenFileStore(FileStoreConfig{
 		Root: root, QuotaBytes: 1 << 27, LockProof: bytes.Repeat([]byte{0x4c}, 32),
 	})

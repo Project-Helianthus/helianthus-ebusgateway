@@ -210,6 +210,7 @@ func oneShotSources(
 			Phase: PhaseAction, SourceKind: SourceCloudApp,
 			RuntimeInstance: "cloud-app-precaptured", OperationVersion: operationVersion,
 			OperationScope: "cloud-app", Admission: oneShotAdmission("cloud.read", BackendUnknown),
+			cloudBound: true,
 			PrecapturedCloud: &PrecapturedCloudInput{
 				SourceObservedAt: cloudObservedAt,
 				NormalizedEvidence: append(

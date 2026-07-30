@@ -68,15 +68,34 @@ type journalRecord struct {
 }
 
 func OpenFileStore(config FileStoreConfig) (*FileStore, error) {
-	if config.Root == "" || !filepath.IsAbs(config.Root) || filepath.Clean(config.Root) != config.Root ||
-		config.Root == string(filepath.Separator) || config.QuotaBytes <= journalReserveBytes || config.Retention < 0 ||
-		config.LockProof != nil && len(config.LockProof) != 32 {
+	if !validFileStoreConfig(config) {
 		return nil, ErrUnsafeStore
 	}
 	rootFile, err := openOrCreateStoreRoot(config.Root)
 	if err != nil {
 		return nil, err
 	}
+	return openFileStore(config, rootFile)
+}
+
+func openOneShotFileStore(parent *os.File, config FileStoreConfig) (*FileStore, error) {
+	if parent == nil || !validFileStoreConfig(config) || verifyDirectoryFD(int(parent.Fd())) != nil {
+		return nil, ErrUnsafeStore
+	}
+	rootFile, err := openOrCreateStoreDirectoryAt(parent, "store", config.Root)
+	if err != nil {
+		return nil, err
+	}
+	return openFileStore(config, rootFile)
+}
+
+func validFileStoreConfig(config FileStoreConfig) bool {
+	return config.Root != "" && filepath.IsAbs(config.Root) && filepath.Clean(config.Root) == config.Root &&
+		config.Root != string(filepath.Separator) && config.QuotaBytes > journalReserveBytes &&
+		config.Retention >= 0 && (config.LockProof == nil || len(config.LockProof) == 32)
+}
+
+func openFileStore(config FileStoreConfig, rootFile *os.File) (*FileStore, error) {
 	fail := func(result error) (*FileStore, error) {
 		_ = rootFile.Close()
 		return nil, result
@@ -113,7 +132,7 @@ func OpenFileStore(config FileStoreConfig) (*FileStore, error) {
 		retention: config.Retention, now: now, entropy: entropy,
 		lockProof: append([]byte(nil), config.LockProof...), reservations: make(map[uint64]int64),
 	}
-	if err := store.verifyLockOwnership(); err != nil {
+	if err := store.verifyLockOwnership(created); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -122,6 +141,45 @@ func OpenFileStore(config FileStoreConfig) (*FileStore, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func openOrCreateStoreDirectoryAt(parent *os.File, name, label string) (*os.File, error) {
+	if parent == nil || name != "store" || verifyDirectoryFD(int(parent.Fd())) != nil {
+		return nil, ErrUnsafeStore
+	}
+	fd, err := unix.Openat(
+		int(parent.Fd()),
+		name,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	created := false
+	if errors.Is(err, unix.ENOENT) {
+		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err != nil {
+			return nil, ErrUnsafeStore
+		}
+		created = true
+		if err := syncDirectory(parent); err != nil {
+			return nil, err
+		}
+		fd, err = unix.Openat(
+			int(parent.Fd()),
+			name,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			0,
+		)
+	}
+	if err != nil {
+		return nil, ErrUnsafeStore
+	}
+	if created {
+		err = unix.Fchmod(fd, 0o700)
+	}
+	if err != nil || verifyDirectoryFD(fd) != nil {
+		_ = unix.Close(fd)
+		return nil, ErrUnsafeStore
+	}
+	return os.NewFile(uintptr(fd), label), nil
 }
 
 func openOrCreateStoreRoot(root string) (*os.File, error) {
@@ -214,13 +272,22 @@ func verifyRegularFD(fd int, wantedMode uint32) error {
 	return nil
 }
 
-func (store *FileStore) verifyLockOwnership() error {
+func (store *FileStore) verifyLockOwnership(created bool) error {
 	token := append([]byte(nil), store.lockProof...)
 	if len(token) == 0 {
 		token = make([]byte, 32)
 		if _, err := io.ReadFull(store.entropy, token); err != nil {
 			return ErrUnsafeStore
 		}
+	} else if !created {
+		if _, err := store.lockFile.Seek(0, io.SeekStart); err != nil {
+			return ErrUnsafeStore
+		}
+		readBack, err := io.ReadAll(io.LimitReader(store.lockFile, int64(len(token))+1))
+		if err != nil || !bytes.Equal(readBack, token) {
+			return ErrUnsafeStore
+		}
+		return nil
 	}
 	if err := store.lockFile.Truncate(0); err != nil {
 		return ErrUnsafeStore
@@ -252,6 +319,7 @@ func (store *FileStore) recoverAndMeasure() error {
 	if err != nil {
 		return err
 	}
+	changed := false
 	for _, entry := range entries {
 		name := entry.Name()
 		switch {
@@ -266,6 +334,7 @@ func (store *FileStore) recoverAndMeasure() error {
 			if err := unix.Unlinkat(int(store.rootFile.Fd()), name, 0); err != nil {
 				return ErrUnsafeStore
 			}
+			changed = true
 		case strings.HasPrefix(name, journalPrefix), strings.HasPrefix(name, dropPrefix):
 			return ErrUnsafeStore
 		case strings.HasSuffix(name, ".json"):
@@ -273,13 +342,16 @@ func (store *FileStore) recoverAndMeasure() error {
 				if err := store.quarantine(name); err != nil {
 					return err
 				}
+				changed = true
 			}
 		default:
 			return ErrUnsafeStore
 		}
 	}
-	if err := syncDirectory(store.rootFile); err != nil {
-		return err
+	if changed {
+		if err := syncDirectory(store.rootFile); err != nil {
+			return err
+		}
 	}
 	if err := store.remeasure(); err != nil {
 		return err

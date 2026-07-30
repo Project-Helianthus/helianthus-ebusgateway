@@ -50,7 +50,13 @@ func loadOneShotRequestAt(root string, afterFirstRead func()) (OneShotRequestV1,
 		return OneShotRequestV1{}, err
 	}
 	defer parent.Close()
+	return loadOneShotRequestFromDirectory(parent, afterFirstRead)
+}
 
+func loadOneShotRequestFromDirectory(parent *os.File, afterFirstRead func()) (OneShotRequestV1, error) {
+	if parent == nil || verifyDirectoryFD(int(parent.Fd())) != nil {
+		return OneShotRequestV1{}, ErrUnsafeStore
+	}
 	fd, err := unix.Openat(
 		int(parent.Fd()),
 		OneShotRequestFileV1,

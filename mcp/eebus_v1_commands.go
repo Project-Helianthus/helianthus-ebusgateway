@@ -480,6 +480,11 @@ func eebusV1ValidateCommandOutcome(
 	terminal *eebusraw.ErrorV1,
 	outcomeRuntime *eebusraw.RuntimeBindingV1,
 ) (*eebusraw.RuntimeBindingV1, *eebusraw.ErrorV1) {
+	if terminal != nil &&
+		terminal.Code == eebusraw.ErrorCodeV1TypedEmpty &&
+		tool != eebusraw.ToolV1FeaturesDataGet {
+		return nil, eebusV1ContractViolation()
+	}
 	switch tool {
 	case eebusraw.ToolV1FeaturesGet:
 		if outcomeRuntime != nil {
@@ -510,6 +515,13 @@ func eebusV1ValidateCommandOutcome(
 		if terminal != nil && terminal.Code != eebusraw.ErrorCodeV1PartialResult {
 			if !reflect.ValueOf(typedData).IsZero() {
 				return nil, eebusV1ContractViolation()
+			}
+			if terminal.Code == eebusraw.ErrorCodeV1TypedEmpty {
+				if terminal.SourceLayer != eebusraw.SourceLayerV1Remote ||
+					terminal.Retriable {
+					return nil, eebusV1ContractViolation()
+				}
+				return nil, nil
 			}
 			if !eebusV1UnboundTerminalSourceAllowed(terminal.SourceLayer) {
 				return nil, eebusV1ContractViolation()
@@ -686,6 +698,7 @@ func eebusV1KnownErrorCode(code eebusraw.ErrorCodeV1) bool {
 		eebusraw.ErrorCodeV1Timeout,
 		eebusraw.ErrorCodeV1Cancelled,
 		eebusraw.ErrorCodeV1RemoteError,
+		eebusraw.ErrorCodeV1TypedEmpty,
 		eebusraw.ErrorCodeV1DecodeError,
 		eebusraw.ErrorCodeV1PartialResult,
 		eebusraw.ErrorCodeV1OutcomeUnknown,

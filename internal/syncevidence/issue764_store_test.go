@@ -19,6 +19,16 @@ func (issue764RejectEntropy) Read([]byte) (int, error) {
 
 func issue764FiveSourceBundle(t *testing.T, actionRef EvidenceRefV1, entropy byte) []byte {
 	t.Helper()
+	return issue764FiveSourceBundleWithCloudRef(t, actionRef, actionRef, entropy)
+}
+
+func issue764FiveSourceBundleWithCloudRef(
+	t *testing.T,
+	actionRef EvidenceRefV1,
+	cloudRef EvidenceRefV1,
+	entropy byte,
+) []byte {
+	t.Helper()
 	observed := time.Date(2026, 7, 30, 12, 0, 2, 0, time.UTC)
 	sources := []RegisteredSource{
 		issue764TerminalEBusSource(SourceEBusB509, PhasePre, "ebus-b509", "dbe91a10a208613183f890849c634f8d13661194aad937a03ae2a4143070bf2d"),
@@ -41,7 +51,7 @@ func issue764FiveSourceBundle(t *testing.T, actionRef EvidenceRefV1, entropy byt
 				"JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ",
 				"21.5",
 			),
-			EvidenceRef: actionRef,
+			EvidenceRef: cloudRef,
 		}, PhaseAction, "cloud-runtime"),
 		issue764TerminalEBusSource(SourceEBusB555, PhasePost, "ebus-b555", "a3237e344f5c3582ceaf1ca947eabf200bede8fe9388ec85cf647331f026c72d"),
 	}
@@ -53,6 +63,25 @@ func issue764FiveSourceBundle(t *testing.T, actionRef EvidenceRefV1, entropy byt
 		t.Fatalf("Capture: %v", err)
 	}
 	return bundle
+}
+
+func issue764RetainedCloudContentRef(t *testing.T, raw []byte) EvidenceRefV1 {
+	t.Helper()
+	bundle, err := verifyBundle(raw)
+	if err != nil {
+		t.Fatalf("verify retained bundle: %v", err)
+	}
+	for _, artifact := range bundle.Artifacts {
+		if artifact.SourceBinding.SourceKind == SourceCloudApp {
+			return EvidenceRefV1{
+				Kind:            EvidenceKindContent,
+				DigestAlgorithm: DigestAlgorithmContentBytes,
+				Digest:          HashContentBytes(artifact.NormalizedEvidence),
+			}
+		}
+	}
+	t.Fatal("retained bundle has no cloud artifact")
+	return EvidenceRefV1{}
 }
 
 func TestIssue764RetainedLookupSurvivesRestartWithoutEntropyOrStaging(t *testing.T) {
@@ -139,6 +168,56 @@ func TestIssue764RetainedLookupConflictsOnMultipleCandidates(t *testing.T) {
 	if err != nil || retained.Status != OneShotLookupConflict ||
 		retained.Bundle != nil || retained.Replay != nil {
 		t.Fatalf("conflicting lookup = %#v, %v", retained, err)
+	}
+}
+
+func TestIssue764RetainedLookupRejectsLegacyCloudContentMismatch(t *testing.T) {
+	root := filepath.Join(storeTestRoot(t), "store")
+	request, err := parseOneShotRequest(issue764RequestBytes(t, 'a'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actionRef := request.ActionEvidenceRef
+	const entropy = byte(0x61)
+	provisional := issue764FiveSourceBundle(t, redEvidenceRef('f'), entropy)
+	cloudRef := issue764RetainedCloudContentRef(t, provisional)
+	if evidenceRefKey(cloudRef) == evidenceRefKey(actionRef) {
+		t.Fatal("legacy mismatch fixture refs unexpectedly match")
+	}
+	legacy := issue764FiveSourceBundleWithCloudRef(t, actionRef, cloudRef, entropy)
+	if got := issue764RetainedCloudContentRef(t, legacy); evidenceRefKey(got) != evidenceRefKey(cloudRef) {
+		t.Fatalf("legacy cloud digest = %#v, want %#v", got, cloudRef)
+	}
+	if _, err := Replay(legacy); err != nil {
+		t.Fatalf("legacy bundle no longer satisfies replay contract: %v", err)
+	}
+	lockProof := bytes.Repeat([]byte{0x4c}, 32)
+	store, err := OpenFileStore(FileStoreConfig{
+		Root: root, QuotaBytes: 1 << 27, LockProof: lockProof,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Publish(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := OpenFileStore(FileStoreConfig{
+		Root: root, QuotaBytes: 1 << 27, Entropy: issue764RejectEntropy{}, LockProof: lockProof,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	retained, err := restarted.lookupOneShot(actionRef, SourceTupleV1{
+		SourceKind: SourceEEBus, Contract: M625EEBusContractV1, Version: 1,
+	})
+	if err != nil || retained.Status != OneShotLookupNone ||
+		retained.Bundle != nil || retained.Replay != nil {
+		t.Fatalf("legacy mismatch lookup = %#v, %v", retained, err)
 	}
 }
 

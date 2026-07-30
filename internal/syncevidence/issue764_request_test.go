@@ -1,0 +1,165 @@
+package syncevidence
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func issue764RequestBytes(t *testing.T, digit byte) []byte {
+	t.Helper()
+	observed := time.Date(2026, 7, 30, 11, 12, 13, 456000000, time.UTC)
+	ref := redEvidenceRef(digit)
+	raw, err := json.Marshal(map[string]any{
+		"contract":            OneShotRequestContractV1,
+		"schema_version":      1,
+		"action_evidence_ref": ref,
+		"cloud_app_action": map[string]any{
+			"evidence_ref":        ref,
+			"normalized_evidence": json.RawMessage(cloudPayload(observed, strings.Repeat("A", 43), "21.5")),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	return raw
+}
+
+func issue764SecureTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp directory: %v", err)
+	}
+	return root
+}
+
+func issue764WriteRequest(t *testing.T, root string, raw []byte, mode os.FileMode) string {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("mkdir request root: %v", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("chmod request root: %v", err)
+	}
+	path := filepath.Join(root, OneShotRequestFileV1)
+	if err := os.WriteFile(path, raw, mode); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod request: %v", err)
+	}
+	return path
+}
+
+func TestIssue764RequestLoaderAcceptsOnlyFixedClosedRequest(t *testing.T) {
+	root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+	raw := issue764RequestBytes(t, 'a')
+	issue764WriteRequest(t, root, raw, 0o600)
+	if _, err := parseOneShotRequest(raw); err != nil {
+		t.Fatalf("parse request fixture: %v\n%s", err, raw)
+	}
+	request, err := loadOneShotRequestAt(root, nil)
+	if err != nil {
+		t.Fatalf("load request: %v", err)
+	}
+	if request.Contract != OneShotRequestContractV1 || request.SchemaVersion != 1 {
+		t.Fatalf("request identity = %#v", request)
+	}
+	if !reflect.DeepEqual(request.ActionEvidenceRef, request.CloudAppAction.EvidenceRef) {
+		t.Fatalf("request refs differ: %#v", request)
+	}
+	wantCloud, err := CanonicalizeJSON(cloudPayload(
+		time.Date(2026, 7, 30, 11, 12, 13, 456000000, time.UTC),
+		strings.Repeat("A", 43),
+		"21.5",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(request.CloudAppAction.NormalizedEvidence, wantCloud) {
+		t.Fatalf("cloud evidence = %s, want canonical %s", request.CloudAppAction.NormalizedEvidence, wantCloud)
+	}
+}
+
+func TestIssue764RequestLoaderRejectsModeSymlinkMutationAndSelectors(t *testing.T) {
+	t.Run("mode", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		issue764WriteRequest(t, root, issue764RequestBytes(t, 'a'), 0o640)
+		if _, err := loadOneShotRequestAt(root, nil); err == nil {
+			t.Fatal("accepted request without exact mode 0600")
+		}
+	})
+
+	t.Run("leaf symlink", func(t *testing.T) {
+		base := issue764SecureTempDir(t)
+		root := filepath.Join(base, "synchronized-evidence")
+		target := filepath.Join(base, "request.json")
+		if err := os.WriteFile(target, issue764RequestBytes(t, 'a'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, OneShotRequestFileV1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOneShotRequestAt(root, nil); err == nil {
+			t.Fatal("followed request symlink")
+		}
+	})
+
+	t.Run("parent symlink", func(t *testing.T) {
+		base := issue764SecureTempDir(t)
+		actual := filepath.Join(base, "actual")
+		issue764WriteRequest(t, actual, issue764RequestBytes(t, 'a'), 0o600)
+		link := filepath.Join(base, "synchronized-evidence")
+		if err := os.Symlink(actual, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadOneShotRequestAt(link, nil); err == nil {
+			t.Fatal("followed request parent symlink")
+		}
+	})
+
+	t.Run("changed after metadata", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		path := issue764WriteRequest(t, root, issue764RequestBytes(t, 'a'), 0o600)
+		if _, err := loadOneShotRequestAt(root, func() {
+			if writeErr := os.WriteFile(path, issue764RequestBytes(t, 'b'), 0o600); writeErr != nil {
+				t.Fatalf("mutate request: %v", writeErr)
+			}
+		}); err == nil {
+			t.Fatal("accepted request changed between metadata verification and read")
+		}
+	})
+
+	t.Run("caller selector", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		raw := bytes.TrimSuffix(issue764RequestBytes(t, 'a'), []byte("}"))
+		raw = append(raw, []byte(`,"targets":[]}`)...)
+		issue764WriteRequest(t, root, raw, 0o600)
+		if _, err := loadOneShotRequestAt(root, nil); err == nil {
+			t.Fatal("accepted caller-supplied targets")
+		}
+	})
+
+	t.Run("different refs", func(t *testing.T) {
+		root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+		raw := bytes.Replace(
+			issue764RequestBytes(t, 'a'),
+			[]byte("sha256:"+strings.Repeat("a", 64)),
+			[]byte("sha256:"+strings.Repeat("b", 64)),
+			1,
+		)
+		issue764WriteRequest(t, root, raw, 0o600)
+		if _, err := loadOneShotRequestAt(root, nil); err == nil {
+			t.Fatal("accepted non-identical action and cloud evidence refs")
+		}
+	})
+}

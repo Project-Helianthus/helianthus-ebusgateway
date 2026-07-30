@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Project-Helianthus/helianthus-docs-ebus/raw/main/docs/platform/schemas/synchronized-evidence-one-shot-control-v1.schema.json",
+  "title": "Helianthus synchronized-evidence one-shot request V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "schema_version",
+    "action_evidence_ref",
+    "cloud_app_action"
+  ],
+  "properties": {
+    "contract": {
+      "const": "helianthus.platform.synchronized-evidence.one-shot-request.v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "action_evidence_ref": {
+      "$ref": "#/$defs/EvidenceRefV1"
+    },
+    "cloud_app_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_ref",
+        "normalized_evidence"
+      ],
+      "properties": {
+        "evidence_ref": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "normalized_evidence": {
+          "$ref": "synchronized-evidence-source-cloud-app-v1.schema.json"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "EmptyArgsV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "EvidenceRefV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "digest_algorithm",
+        "digest",
+        "repository",
+        "commit",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "const": "CONTENT"
+        },
+        "digest_algorithm": {
+          "const": "SHA256_CONTENT_BYTES"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "repository": {
+          "type": "null"
+        },
+        "commit": {
+          "type": "null"
+        },
+        "path": {
+          "type": "null"
+        }
+      }
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category"
+      ],
+      "properties": {
+        "category": {
+          "enum": [
+            "PUBLISHED",
+            "EXISTING",
+            "INVALID_REQUEST",
+            "PERMISSION_DENIED",
+            "CONFLICT",
+            "ACQUISITION_FAILED",
+            "REPLAY_MISMATCH",
+            "PUBLISH_FAILED",
+            "INTERNAL"
+          ]
+        }
+      }
+    }
+  },
+  "x-helianthus-one-shot-control": {
+    "tool": "helianthus.v1.synchronized_evidence.capture",
+    "arguments": "#/$defs/EmptyArgsV1",
+    "transport": "AF_UNIX",
+    "socket_boundary": "EXISTING_OPERATOR_SOCKET",
+    "peer_uid": "SAME_UID",
+    "visibility": "OWNER_ONLY_PRIVATE",
+    "public_tools_list": "OMITTED",
+    "request_path": "/data/synchronized-evidence/one-shot-request-v1.json",
+    "request_mode": "0600",
+    "request_loading": "DESCRIPTOR_RELATIVE_NO_SYMLINK_NO_TRAVERSAL",
+    "store_directory": "/data/synchronized-evidence/store",
+    "store_loading": "DESCRIPTOR_RELATIVE_NO_SYMLINK_NO_TRAVERSAL",
+    "selection": "ALL_SERVER_MEASUREMENT_SETPOINT_HVAC",
+    "sort_key": "COMPLETE_NATIVE_TUPLE",
+    "batch_max": 16,
+    "caller_targets": "FORBIDDEN",
+    "action_input": "PRECAPTURED_CLOUD_APP",
+    "source_kind": "EEBUS",
+    "source_contract": "helianthus.eebus.m625.public-redacted-evidence.v1",
+    "source_schema_version": 1,
+    "idempotency_key": "ACTION_EVIDENCE_REF_PLUS_SOURCE_TUPLE",
+    "prepublish_replay_count": 2,
+    "prepublish_replay_input": "FINALIZED_CANONICAL_STAGING_BYTES",
+    "prepublish_replay_equality": "BYTE_IDENTICAL",
+    "postpublish_verification": "REOPEN_VALIDATE_REPLAY_MATCH",
+    "receipt_after": "ATOMIC_PUBLISH_REOPEN_VALIDATE_REPLAY",
+    "repeat_result": "EXISTING_NO_RUNTIME_NETWORK_SOURCE_ACQUISITION_IO",
+    "repeat_allowed_io": "REQUEST_STORE_READ_RETAINED_VALIDATION_OFFLINE_REPLAY",
+    "repeat_forbidden_new": "TIMESTAMPS_BUNDLE_PSEUDONYMS_STAGING"
+  }
+}

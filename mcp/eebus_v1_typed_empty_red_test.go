@@ -87,6 +87,60 @@ func TestIssue766TypedEmptyFailsClosedUnlessNonRetriableRemote(t *testing.T) {
 	}
 }
 
+func TestIssue766TypedEmptyIsFeatureDataGetOnly(t *testing.T) {
+	commandCases := issue749CommandCases(t)
+	tests := []struct {
+		name      string
+		command   issue749CommandCase
+		configure func(*issue749TypedRouter, *eebusraw.ErrorV1)
+	}{
+		{
+			name:    "features get",
+			command: commandCases[0],
+			configure: func(router *issue749TypedRouter, terminal *eebusraw.ErrorV1) {
+				router.featuresGetError = terminal
+			},
+		},
+		{
+			name:    "mutation get",
+			command: commandCases[3],
+			configure: func(router *issue749TypedRouter, terminal *eebusraw.ErrorV1) {
+				router.mutationError = terminal
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
+			server, _ := msp06TestServer(t, provider)
+			router := &issue749TypedRouter{}
+			test.configure(router, eebusraw.NewErrorV1(
+				eebusraw.ErrorCodeV1TypedEmpty,
+				"typed-empty is invalid for this tool",
+				false,
+				eebusraw.SourceLayerV1Runtime,
+			))
+			if err := server.RegisterEEBusV1CommandRouter(router); err != nil {
+				t.Fatal(err)
+			}
+
+			result := msp06Call(
+				t,
+				issue743OperatorHandler(t, server),
+				test.command.tool,
+				test.command.arguments,
+			)
+			issue755AssertTerminalEnvelope(
+				t,
+				result.envelope,
+				eebusraw.ErrorCodeV1Internal,
+				eebusV1SourceLayerGatewayRouter,
+				nil,
+			)
+		})
+	}
+}
+
 func TestIssue766MixedTypedEmptyRemainsPartialResult(t *testing.T) {
 	provider := &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")}
 	server, _ := msp06TestServer(t, provider)

@@ -480,6 +480,11 @@ func eebusV1ValidateCommandOutcome(
 	terminal *eebusraw.ErrorV1,
 	outcomeRuntime *eebusraw.RuntimeBindingV1,
 ) (*eebusraw.RuntimeBindingV1, *eebusraw.ErrorV1) {
+	if terminal != nil &&
+		terminal.Code == eebusraw.ErrorCodeV1TypedEmpty &&
+		tool != eebusraw.ToolV1FeaturesDataGet {
+		return nil, eebusV1ContractViolation()
+	}
 	switch tool {
 	case eebusraw.ToolV1FeaturesGet:
 		if outcomeRuntime != nil {

@@ -54,6 +54,11 @@ const (
 	SourceCloudApp SourceKind = "CLOUD_APP"
 )
 
+const (
+	HistoricalEEBusContractV1 = "helianthus-eebus-mcp"
+	M625EEBusContractV1       = "helianthus.eebus.m625.public-redacted-evidence.v1"
+)
+
 type Phase string
 
 const (
@@ -134,6 +139,26 @@ const (
 	DropStatusDropped     DropStatus = "DROPPED"
 	DropStatusAlreadyGone DropStatus = "ALREADY_GONE"
 )
+
+type SourceTupleV1 struct {
+	SourceKind SourceKind
+	Contract   string
+	Version    uint64
+}
+
+type OneShotLookupStatus string
+
+const (
+	OneShotLookupNone     OneShotLookupStatus = "NONE"
+	OneShotLookupExisting OneShotLookupStatus = "EXISTING"
+	OneShotLookupConflict OneShotLookupStatus = "CONFLICT"
+)
+
+type OneShotLookupResult struct {
+	Status OneShotLookupStatus
+	Bundle []byte
+	Replay []byte
+}
 
 type EBusFamily string
 
@@ -431,8 +456,12 @@ type ActionMarker struct {
 }
 
 type SourceRequest struct {
-	Phase  Phase
-	Limits CaptureLimitsV1
+	Phase          Phase
+	Limits         CaptureLimitsV1
+	OperationID    string
+	OperationScope string
+	MaskTier       string
+	AuthScope      AuthScopeV1
 }
 
 type SourceAdmission struct {
@@ -459,6 +488,11 @@ type EEBusServicesReader interface {
 	ListServices(context.Context, SourceRequest) (AcquiredEvidence, error)
 }
 
+// EEBusM625Reader exposes only the bounded public-redacted feature-data read.
+type EEBusM625Reader interface {
+	ReadFeatureData(context.Context, SourceRequest) (AcquiredEvidence, error)
+}
+
 // PrecapturedCloudInput is a value-only local seam. It has no callback, client,
 // endpoint, credential, retry, or refresh capability.
 type PrecapturedCloudInput struct {
@@ -470,6 +504,8 @@ type PrecapturedCloudInput struct {
 type RegisteredSource struct {
 	Phase            Phase
 	SourceKind       SourceKind
+	SourceContract   string
+	SourceVersion    uint64
 	RuntimeInstance  string
 	SourceID         string // Deprecated compatibility alias for RuntimeInstance; never serialized.
 	OperationVersion string
@@ -479,7 +515,9 @@ type RegisteredSource struct {
 	EBusIdentity     *EBusSourceIdentityV1
 	EBusReader       EBusSnapshotReader
 	EEBusReader      EEBusServicesReader
+	EEBusM625Reader  EEBusM625Reader
 	PrecapturedCloud *PrecapturedCloudInput
+	cloudBound       bool
 }
 
 type StoppableTimer interface {

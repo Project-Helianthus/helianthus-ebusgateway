@@ -57,6 +57,7 @@ type sourceCapture struct {
 	ebusIdentity        *EBusSourceIdentityV1
 	evidenceRefs        []EvidenceRefV1
 	normalizedEvidence  json.RawMessage
+	cloudBound          bool
 }
 
 type acquisitionOutcome struct {
@@ -259,7 +260,11 @@ func (recorder *Recorder) Capture(ctx context.Context, marker ActionMarker) ([]b
 			if base.errorCategory != ErrorBackendUnavailable {
 				var hitTotal bool
 				var rootErr error
-				result, hitTotal, rootErr = recorder.captureSource(ctx, registered, SourceRequest{Phase: phase, Limits: recorder.limits}, totalTimer.C())
+				result, hitTotal, rootErr = recorder.captureSource(ctx, registered, SourceRequest{
+					Phase: phase, Limits: recorder.limits,
+					OperationID: base.operationID, OperationScope: base.operationScope, MaskTier: "redacted",
+					AuthScope: AuthScopeV1{Authority: "effective", Permissions: append([]string(nil), permissions...)},
+				}, totalTimer.C())
 				if rootErr != nil {
 					return rootErr
 				}
@@ -505,7 +510,15 @@ func (recorder *Recorder) captureSource(ctx context.Context, registered Register
 		case SourceEBusB509, SourceEBusB524, SourceEBusB555:
 			outcome.evidence, outcome.err = registered.EBusReader.ReadSnapshot(sourceCtx, request)
 		case SourceEEBus:
-			outcome.evidence, outcome.err = registered.EEBusReader.ListServices(sourceCtx, request)
+			authority, ok := registeredSourceAuthority(registered)
+			switch {
+			case !ok:
+				outcome.err = ErrContractViolation
+			case authority.contract == M625EEBusContractV1:
+				outcome.evidence, outcome.err = registered.EEBusM625Reader.ReadFeatureData(sourceCtx, request)
+			default:
+				outcome.evidence, outcome.err = registered.EEBusReader.ListServices(sourceCtx, request)
+			}
 		case SourceCloudApp:
 			outcome.evidence = AcquiredEvidence{SourceObservedAt: registered.PrecapturedCloud.SourceObservedAt, NormalizedEvidence: append(json.RawMessage(nil), registered.PrecapturedCloud.NormalizedEvidence...)}
 		default:
@@ -546,13 +559,16 @@ func (recorder *Recorder) hasPendingSource() bool {
 }
 
 func (recorder *Recorder) sourcePrecedence(registered RegisteredSource) (sourceCapture, sourceAuthority, []string, bool, error) {
-	authority := sourceAuthorities[registered.SourceKind]
+	authority, exists := registeredSourceAuthority(registered)
+	if !exists {
+		return sourceCapture{}, sourceAuthority{}, nil, false, ErrInvalidArgument
+	}
 	runtimeKind, _ := runtimeForSource(registered.SourceKind)
 	permissions, err := normalizePermissions(registered.Admission.EffectivePermissions)
 	if err != nil {
 		return sourceCapture{}, sourceAuthority{}, nil, false, err
 	}
-	operationID, snapshotMode := expectedSourceOperation(runtimeKind)
+	operationID, snapshotMode := expectedSourceOperation(runtimeKind, authority.contract)
 	refs := append([]EvidenceRefV1(nil), registered.EvidenceRefs...)
 	if registered.SourceKind == SourceCloudApp {
 		refs = []EvidenceRefV1{registered.PrecapturedCloud.EvidenceRef}
@@ -568,6 +584,7 @@ func (recorder *Recorder) sourcePrecedence(registered RegisteredSource) (sourceC
 		snapshotMode:        snapshotMode,
 		ebusIdentity:        cloneIdentity(registered.EBusIdentity),
 		evidenceRefs:        refs,
+		cloudBound:          registered.cloudBound,
 	}
 	switch {
 	case registered.Admission.Selection == SelectionExcluded:
@@ -792,10 +809,33 @@ func (recorder *Recorder) prepareEvidence(capture sourceCapture, identity *EBusS
 		return nil, RemaskingV1{}, 0, err
 	}
 	entries := make([]RemaskedPseudonymV1, 0)
-	if err := recorder.remaskPayload(object, capture.sourceKind, identity, "", &entries, usedValues); err != nil {
+	if capture.sourceKind == SourceCloudApp && capture.cloudBound {
+		if _, ok := object["subject_pseudonym"].(string); !ok {
+			return nil, RemaskingV1{}, 0, contractError("privacy.remask")
+		}
+		pseudonym, err := recorder.mintUniqueRemask(usedValues)
+		if err != nil {
+			return nil, RemaskingV1{}, 0, err
+		}
+		object["subject_pseudonym"] = pseudonym
+		entries = append(entries, RemaskedPseudonymV1{
+			Path: "/subject_pseudonym", Pseudonym: pseudonym,
+		})
+	} else if capture.sourceKind == SourceEEBus && capture.sourceContract == M625EEBusContractV1 {
+		if err := recorder.remaskM625Payload(object, usedValues); err != nil {
+			return nil, RemaskingV1{}, 0, err
+		}
+		requirements, err := m625RemaskingRequirements(object)
+		if err != nil {
+			return nil, RemaskingV1{}, 0, err
+		}
+		for path, requirement := range requirements {
+			entries = append(entries, RemaskedPseudonymV1{Path: path, Pseudonym: requirement.pseudonym})
+		}
+	} else if err := recorder.remaskPayload(object, capture.sourceKind, identity, "", &entries, usedValues); err != nil {
 		return nil, RemaskingV1{}, 0, err
 	}
-	if capture.sourceKind == SourceEEBus {
+	if capture.sourceKind == SourceEEBus && capture.sourceContract == HistoricalEEBusContractV1 {
 		sortEEBusPayload(object)
 		if err := recomputeEEBusDataHash(object); err != nil {
 			return nil, RemaskingV1{}, 0, err
@@ -887,6 +927,9 @@ func validateSourcePayload(object map[string]any, capture sourceCapture) error {
 			return contractError("schema.bundle")
 		}
 	case SourceEEBus:
+		if capture.sourceContract == M625EEBusContractV1 {
+			return validateM625Payload(object, capture)
+		}
 		return validateEEBusServicesPayload(object, capture)
 	default:
 		return contractError("binding.registry")
@@ -1256,6 +1299,85 @@ func (recorder *Recorder) remaskPayload(value any, kind SourceKind, identity *EB
 	return nil
 }
 
+func (recorder *Recorder) remaskM625Payload(object map[string]any, usedValues map[string]struct{}) error {
+	assignments := make(map[string]string)
+	assign := func(identity string) (string, error) {
+		if pseudonym := assignments[identity]; pseudonym != "" {
+			return pseudonym, nil
+		}
+		pseudonym, err := recorder.mintUniqueRemask(usedValues)
+		if err != nil {
+			return "", err
+		}
+		assignments[identity] = pseudonym
+		return pseudonym, nil
+	}
+
+	services := object["services"].([]any)
+	servicePseudonyms := make(map[string]string, len(services))
+	for index, raw := range services {
+		service := raw.(string)
+		pseudonym, err := assign("SERVICE\x00" + service)
+		if err != nil {
+			return err
+		}
+		servicePseudonyms[service] = pseudonym
+		services[index] = pseudonym
+	}
+	paths := object["feature_paths"].([]any)
+	for _, raw := range paths {
+		path := raw.(map[string]any)
+		service := path["service"].(string)
+		entity := path["entity"].(string)
+		feature := path["feature"].(string)
+		serviceIdentity := "SERVICE\x00" + service
+		entityIdentity := serviceIdentity + "\x00ENTITY\x00" + entity
+		featureIdentity := entityIdentity + "\x00FEATURE\x00" + feature
+		servicePseudonym := servicePseudonyms[service]
+		entityPseudonym, err := assign(entityIdentity)
+		if err != nil {
+			return err
+		}
+		featurePseudonym, err := assign(featureIdentity)
+		if err != nil {
+			return err
+		}
+		path["service"] = servicePseudonym
+		path["entity"] = entityPseudonym
+		path["feature"] = featurePseudonym
+		segments := path["feature_path"].([]any)
+		for index, rawSegment := range segments {
+			segment := rawSegment.(map[string]any)
+			switch index {
+			case 0:
+				segment["selector"] = servicePseudonym
+			case 1:
+				segment["selector"] = entityPseudonym
+			case 2:
+				segment["selector"] = featurePseudonym
+			default:
+				selector := segment["selector"].(string)
+				featureIdentity += "\x00FIELD\x00" + selector
+				pseudonym, err := assign(featureIdentity)
+				if err != nil {
+					return err
+				}
+				segment["selector"] = pseudonym
+			}
+		}
+	}
+	for _, raw := range object["observations"].([]any) {
+		observation := raw.(map[string]any)
+		ref := observation["observation_ref"].(string)
+		pseudonym, err := assign("OBSERVATION\x00" + ref)
+		if err != nil {
+			return err
+		}
+		observation["observation_ref"] = "obs-" + pseudonym
+	}
+	return nil
+}
+
 func sourceItemCount(object map[string]any, kind SourceKind) uint64 {
 	switch kind {
 	case SourceEBusB509, SourceEBusB524, SourceEBusB555:
@@ -1265,6 +1387,9 @@ func sourceItemCount(object map[string]any, kind SourceKind) uint64 {
 	case SourceCloudApp:
 		return 1
 	case SourceEEBus:
+		if rows, ok := object["observations"].([]any); ok {
+			return uint64(len(rows))
+		}
 		if data, ok := object["data"].(map[string]any); ok {
 			if rows, ok := data["services"].([]any); ok {
 				return uint64(len(rows))

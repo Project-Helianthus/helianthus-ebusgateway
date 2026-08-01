@@ -158,6 +158,9 @@ func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store
 
 func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	applyTransportSourcePolicy(&cfg)
+	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
+		return fmt.Errorf("validate synchronized evidence config: %w", err)
+	}
 
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
@@ -1286,6 +1289,12 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.WriteTimeout, "write-timeout", cfg.TransportConfig.WriteTimeout, "transport write timeout")
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
 	bindEEBusFlags(fs, cfg)
+	fs.BoolVar(
+		&cfg.EvidenceOneShotEnabled,
+		"synchronized-evidence-one-shot-enabled",
+		cfg.EvidenceOneShotEnabled,
+		"enable the fixed owner-only synchronized evidence one-shot control",
+	)
 	fs.IntVar(&cfg.QueueCapacity, "queue-capacity", cfg.QueueCapacity, "bus queue capacity (0 uses protocol default)")
 	fs.BoolVar(&cfg.ScanOnStart, "scan", cfg.ScanOnStart, "scan bus on startup")
 	fs.DurationVar(&cfg.ScanTimeout, "scan-timeout", cfg.ScanTimeout, "startup scan timeout")
@@ -1922,6 +1931,19 @@ func startHTTPServer(
 	if eebusCommandRouter != nil {
 		if err := mcpServer.RegisterEEBusV1CommandRouter(eebusCommandRouter); err != nil {
 			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
+		}
+	}
+	oneShotRuntime, err := newSynchronizedEvidenceOneShotRuntime(
+		cfg.EvidenceOneShotEnabled,
+		eebusProvider,
+		eebusCommandRouter,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	if oneShotRuntime != nil {
+		if err := mcpServer.RegisterSynchronizedEvidenceCapture(oneShotRuntime); err != nil {
+			return nil, nil, fmt.Errorf("register synchronized evidence capture: %w", err)
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)

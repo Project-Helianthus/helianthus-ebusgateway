@@ -39,9 +39,15 @@ type embeddedRegistryEntry struct {
 	EmbeddedSchema      *string    `json:"embedded_schema"`
 }
 
-func mustLoadSourceAuthorities() map[SourceKind]sourceAuthority {
+type sourceAuthorityKey struct {
+	kind     SourceKind
+	contract string
+	version  uint64
+}
+
+func mustLoadSourceAuthorities() map[sourceAuthorityKey]sourceAuthority {
 	raw := mustReadContract("synchronized-evidence-source-registry-v1.json")
-	if digestHex(raw) != "a91b2106076c3ef0f70578e9fc1c85925dd085af323c5889f809b5b2ef1a2488" {
+	if digestHex(raw) != "bfc105545bcbe96b528928ac5893c2273057d18bae4dc7d1f81fb6291f94045c" {
 		panic("syncevidence: pinned source registry digest mismatch")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -53,12 +59,17 @@ func mustLoadSourceAuthorities() map[SourceKind]sourceAuthority {
 	if token, err := decoder.Token(); err != io.EOF || token != nil {
 		panic("syncevidence: trailing embedded source registry data")
 	}
-	if registry.Contract != registryContractV1 || registry.Version != registryVersionV1 || len(registry.Entries) != 5 {
+	if registry.Contract != registryContractV1 || registry.Version != registryVersionV1 || len(registry.Entries) != 6 {
 		panic("syncevidence: unsupported embedded source registry")
 	}
-	result := make(map[SourceKind]sourceAuthority, len(registry.Entries))
+	result := make(map[sourceAuthorityKey]sourceAuthority, len(registry.Entries))
 	for _, entry := range registry.Entries {
-		if _, duplicate := result[entry.SourceKind]; duplicate || !validRegistryEntry(entry) {
+		key := sourceAuthorityKey{
+			kind:     entry.SourceKind,
+			contract: entry.SourceContract,
+			version:  entry.SourceSchemaVersion,
+		}
+		if _, duplicate := result[key]; duplicate || !validRegistryEntry(entry) {
 			panic("syncevidence: invalid embedded source registry entry")
 		}
 		schemaName := "helianthus.eebus.mcp.v1.schema.json"
@@ -68,7 +79,7 @@ func mustLoadSourceAuthorities() map[SourceKind]sourceAuthority {
 		if digestHex(mustReadContract(schemaName)) != entry.SchemaSHA256 {
 			panic("syncevidence: embedded source schema digest mismatch")
 		}
-		result[entry.SourceKind] = sourceAuthority{
+		result[key] = sourceAuthority{
 			kind:            entry.SourceKind,
 			contract:        entry.SourceContract,
 			version:         entry.SourceSchemaVersion,
@@ -79,11 +90,65 @@ func mustLoadSourceAuthorities() map[SourceKind]sourceAuthority {
 		}
 	}
 	for _, kind := range []SourceKind{SourceEBusB509, SourceEBusB524, SourceEBusB555, SourceEEBus, SourceCloudApp} {
-		if _, ok := result[kind]; !ok {
+		key, ok := defaultSourceAuthorityKey(kind)
+		if !ok {
+			panic("syncevidence: invalid default source authority")
+		}
+		if _, ok := result[key]; !ok {
 			panic("syncevidence: incomplete embedded source registry")
 		}
 	}
+	if _, ok := result[sourceAuthorityKey{kind: SourceEEBus, contract: M625EEBusContractV1, version: 1}]; !ok {
+		panic("syncevidence: incomplete M6.25 source registry")
+	}
 	return result
+}
+
+func defaultSourceAuthorityKey(kind SourceKind) (sourceAuthorityKey, bool) {
+	var contract string
+	switch kind {
+	case SourceEBusB509:
+		contract = "helianthus.ebus.b509.evidence.v1"
+	case SourceEBusB524:
+		contract = "helianthus.ebus.b524.evidence.v1"
+	case SourceEBusB555:
+		contract = "helianthus.ebus.b555.evidence.v1"
+	case SourceEEBus:
+		contract = HistoricalEEBusContractV1
+	case SourceCloudApp:
+		contract = "helianthus.cloud-app.precaptured.evidence.v1"
+	default:
+		return sourceAuthorityKey{}, false
+	}
+	return sourceAuthorityKey{kind: kind, contract: contract, version: 1}, true
+}
+
+func registeredSourceAuthority(source RegisteredSource) (sourceAuthority, bool) {
+	key, ok := defaultSourceAuthorityKey(source.SourceKind)
+	if !ok {
+		return sourceAuthority{}, false
+	}
+	if source.SourceContract != "" || source.SourceVersion != 0 {
+		if source.SourceContract == "" || source.SourceVersion == 0 {
+			return sourceAuthority{}, false
+		}
+		key = sourceAuthorityKey{
+			kind:     source.SourceKind,
+			contract: source.SourceContract,
+			version:  source.SourceVersion,
+		}
+	}
+	authority, ok := sourceAuthorities[key]
+	return authority, ok
+}
+
+func boundSourceAuthority(kind SourceKind, contract string, version uint64) (sourceAuthority, bool) {
+	authority, ok := sourceAuthorities[sourceAuthorityKey{
+		kind:     kind,
+		contract: contract,
+		version:  version,
+	}]
+	return authority, ok
 }
 
 func validRegistryEntry(entry embeddedRegistryEntry) bool {

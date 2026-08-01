@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -14,9 +15,13 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
 const synchronizedEvidenceSourceVersion = "git:520b6439441cb6e8ef9ff291bde28f4efa4db254"
+const synchronizedEvidenceOneShotRoot = "/data/synchronized-evidence"
 
 type synchronizedEvidenceRuntime struct {
 	store     *syncevidence.FileStore
@@ -24,6 +29,25 @@ type synchronizedEvidenceRuntime struct {
 	config    ebusgateway.EvidenceRecorderConfig
 	closeOnce sync.Once
 	closeErr  error
+}
+
+type synchronizedEvidenceOneShotRuntime struct {
+	mu            sync.Mutex
+	root          string
+	reader        syncevidence.EEBusM625Reader
+	clockFactory  func() syncevidence.Clock
+	entropy       io.Reader
+	buildIdentity func() (syncevidence.OneShotBuildIdentity, error)
+	execute       func(context.Context, syncevidence.OneShotExecutionOptions) syncevidence.OneShotReceiptV1
+}
+
+type synchronizedEvidenceM625Runtime struct {
+	provider synchronizedEvidenceSnapshotProvider
+	router   mcp.EEBusV1CommandRouter
+}
+
+type synchronizedEvidenceSnapshotProvider interface {
+	Snapshot() (eebusruntime.SnapshotV1, error)
 }
 
 type synchronizedEvidenceClock struct {
@@ -73,6 +97,87 @@ func (reader *gatewayEEBusEvidenceReader) ListServices(context.Context, syncevid
 		return syncevidence.AcquiredEvidence{}, err
 	}
 	return syncevidence.AcquiredEvidence{SourceObservedAt: observedAt, NormalizedEvidence: payload}, nil
+}
+
+func newSynchronizedEvidenceOneShotRuntime(
+	enabled bool,
+	provider synchronizedEvidenceSnapshotProvider,
+	router mcp.EEBusV1CommandRouter,
+) (*synchronizedEvidenceOneShotRuntime, error) {
+	if !enabled {
+		return nil, nil
+	}
+	if synchronizedEvidenceNilInterface(provider) || synchronizedEvidenceNilInterface(router) {
+		return nil, nil
+	}
+	reader, err := syncevidence.NewM625EEBusReader(&synchronizedEvidenceM625Runtime{
+		provider: provider,
+		router:   router,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct synchronized evidence M6.25 reader: %w", err)
+	}
+	return &synchronizedEvidenceOneShotRuntime{
+		root:          synchronizedEvidenceOneShotRoot,
+		reader:        reader,
+		clockFactory:  func() syncevidence.Clock { return newSynchronizedEvidenceClock() },
+		entropy:       synchronizedEvidenceEntropy,
+		buildIdentity: synchronizedEvidenceOneShotBuildIdentity,
+		execute:       syncevidence.ExecuteOneShot,
+	}, nil
+}
+
+func synchronizedEvidenceNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+func (runtime *synchronizedEvidenceOneShotRuntime) CaptureSynchronizedEvidence(
+	ctx context.Context,
+) syncevidence.OneShotReceiptV1 {
+	if runtime == nil {
+		return syncevidence.OneShotReceiptV1{Category: syncevidence.OneShotInternal}
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.execute == nil {
+		return syncevidence.OneShotReceiptV1{Category: syncevidence.OneShotInternal}
+	}
+	return runtime.execute(ctx, syncevidence.OneShotExecutionOptions{
+		Root:          runtime.root,
+		Reader:        runtime.reader,
+		ClockFactory:  runtime.clockFactory,
+		Entropy:       runtime.entropy,
+		BuildIdentity: runtime.buildIdentity,
+	})
+}
+
+func (runtime *synchronizedEvidenceM625Runtime) Snapshot() (eebusruntime.SnapshotV1, error) {
+	return runtime.provider.Snapshot()
+}
+
+func (runtime *synchronizedEvidenceM625Runtime) FeaturesGet(
+	ctx context.Context,
+	auth eebusraw.ReadAuthorizationV1,
+	request eebusraw.FeaturesGetRequestV1,
+) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	return runtime.router.FeaturesGet(ctx, auth, request)
+}
+
+func (runtime *synchronizedEvidenceM625Runtime) FeaturesDataGet(
+	ctx context.Context,
+	auth eebusraw.ReadAuthorizationV1,
+	request eebusraw.FeatureDataGetRequestV1,
+) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
+	return runtime.router.FeaturesDataGet(ctx, auth, request)
 }
 
 func openSynchronizedEvidenceRuntime(config ebusgateway.EvidenceRecorderConfig) (*synchronizedEvidenceRuntime, error) {
@@ -201,13 +306,34 @@ func contentEvidenceRef(digest string) syncevidence.EvidenceRefV1 {
 }
 
 func synchronizedEvidenceBuildVersion() (string, error) {
+	revision, err := synchronizedEvidenceBuildRevision()
+	if err != nil {
+		return "", err
+	}
+	return buildVersion + "+git." + revision, nil
+}
+
+func synchronizedEvidenceOneShotBuildIdentity() (syncevidence.OneShotBuildIdentity, error) {
+	revision, err := synchronizedEvidenceBuildRevision()
+	if err != nil {
+		return syncevidence.OneShotBuildIdentity{}, err
+	}
+	version := buildVersion + "+git." + revision
+	return syncevidence.OneShotBuildIdentity{
+		RecorderVersion:  version,
+		ReplayVersion:    version,
+		OperationVersion: "git:" + revision,
+	}, nil
+}
+
+func synchronizedEvidenceBuildRevision() (string, error) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "", errors.New("read build information")
 	}
 	for _, setting := range info.Settings {
 		if setting.Key == "vcs.revision" && len(setting.Value) == 40 && strings.Trim(setting.Value, "0123456789abcdef") == "" {
-			return buildVersion + "+git." + setting.Value, nil
+			return setting.Value, nil
 		}
 	}
 	return "", errors.New("full build revision unavailable")
@@ -216,5 +342,7 @@ func synchronizedEvidenceBuildVersion() (string, error) {
 var _ syncevidence.EBusSnapshotReader = unavailableEBusEvidenceReader{}
 var _ syncevidence.EEBusServicesReader = unavailableEEBusEvidenceReader{}
 var _ syncevidence.EEBusServicesReader = (*gatewayEEBusEvidenceReader)(nil)
+var _ syncevidence.M625EEBusRuntime = (*synchronizedEvidenceM625Runtime)(nil)
+var _ mcp.SynchronizedEvidenceCapture = (*synchronizedEvidenceOneShotRuntime)(nil)
 
 var synchronizedEvidenceEntropy io.Reader = rand.Reader

@@ -89,3 +89,25 @@ func TestGatewayRejectsUnsafeEvidenceRecorderBeforeTransportDial(t *testing.T) {
 		t.Fatal("transport dialed before evidence recorder configuration was rejected")
 	}
 }
+
+func TestSynchronizedEvidenceConfigRejectsDuplicateStoreOwners(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.EvidenceOneShotEnabled = true
+	cfg.EvidenceRecorderConfig = EvidenceRecorderConfig{
+		Version:    EvidenceRecorderConfigVersion,
+		Enabled:    true,
+		Scope:      EvidenceRecorderScopeV1,
+		StateRoot:  "/data/evidence",
+		Retention:  DefaultEvidenceRecorderRetention,
+		QuotaBytes: DefaultEvidenceRecorderQuotaBytes,
+		Limits:     DefaultEvidenceRecorderLimits(),
+	}
+
+	if err := ValidateSynchronizedEvidenceConfig(cfg); !errors.Is(err, ErrSynchronizedEvidenceOwnership) {
+		t.Fatalf("ValidateSynchronizedEvidenceConfig() error = %v, want %v", err, ErrSynchronizedEvidenceOwnership)
+	}
+	cfg.EvidenceRecorderConfig = DefaultEvidenceRecorderConfig()
+	if err := ValidateSynchronizedEvidenceConfig(cfg); err != nil {
+		t.Fatalf("one-shot-only config rejected: %v", err)
+	}
+}

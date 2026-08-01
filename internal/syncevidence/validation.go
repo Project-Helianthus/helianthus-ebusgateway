@@ -276,10 +276,10 @@ func oneOfError(value ErrorCategory, allowed ...ErrorCategory) bool {
 }
 
 func validateRegisteredSource(source RegisteredSource) error {
-	authority, exists := sourceAuthorities[source.SourceKind]
+	authority, exists := registeredSourceAuthority(source)
 	runtimeKind, validKind := runtimeForSource(source.SourceKind)
 	if !exists || !validKind || authority.kind != source.SourceKind || !validPhase(source.Phase) ||
-		!operationVersionExpr.MatchString(source.OperationVersion) || source.OperationScope != expectedOperationScope(source.SourceKind) {
+		!operationVersionExpr.MatchString(source.OperationVersion) || source.OperationScope != expectedOperationScope(authority) {
 		return ErrInvalidArgument
 	}
 	if source.RuntimeInstance != "" && source.SourceID != "" && source.RuntimeInstance != source.SourceID {
@@ -309,7 +309,7 @@ func validateRegisteredSource(source RegisteredSource) error {
 		}
 	}
 	if runtimeKind == RuntimeEBus {
-		if source.EBusReader == nil || source.EEBusReader != nil || source.PrecapturedCloud != nil {
+		if source.EBusReader == nil || source.EEBusReader != nil || source.EEBusM625Reader != nil || source.PrecapturedCloud != nil {
 			return ErrInvalidArgument
 		}
 		if source.EBusIdentity != nil {
@@ -328,11 +328,13 @@ func validateRegisteredSource(source RegisteredSource) error {
 	} else if source.EBusIdentity != nil {
 		return ErrInvalidArgument
 	} else if runtimeKind == RuntimeEEBus {
-		if source.EEBusReader == nil || source.EBusReader != nil || source.PrecapturedCloud != nil || len(source.EvidenceRefs) == 0 {
+		historical := authority.contract == HistoricalEEBusContractV1 && source.EEBusReader != nil && source.EEBusM625Reader == nil
+		m625 := authority.contract == M625EEBusContractV1 && source.EEBusReader == nil && source.EEBusM625Reader != nil
+		if (!historical && !m625) || source.EBusReader != nil || source.PrecapturedCloud != nil || len(source.EvidenceRefs) == 0 {
 			return ErrInvalidArgument
 		}
 	} else {
-		if source.PrecapturedCloud == nil || source.EBusReader != nil || source.EEBusReader != nil || len(source.EvidenceRefs) != 0 {
+		if source.PrecapturedCloud == nil || source.EBusReader != nil || source.EEBusReader != nil || source.EEBusM625Reader != nil || len(source.EvidenceRefs) != 0 {
 			return ErrInvalidArgument
 		}
 		if err := validateEvidenceRef(source.PrecapturedCloud.EvidenceRef); err != nil {
@@ -347,8 +349,8 @@ func validateRegisteredSource(source RegisteredSource) error {
 	return nil
 }
 
-func expectedOperationScope(kind SourceKind) string {
-	switch kind {
+func expectedOperationScope(authority sourceAuthority) string {
+	switch authority.kind {
 	case SourceEBusB509:
 		return "ebus-b509"
 	case SourceEBusB524:
@@ -356,6 +358,9 @@ func expectedOperationScope(kind SourceKind) string {
 	case SourceEBusB555:
 		return "ebus-b555"
 	case SourceEEBus:
+		if authority.contract == M625EEBusContractV1 {
+			return "feature-data"
+		}
 		return "services"
 	case SourceCloudApp:
 		return "cloud-app"
@@ -364,11 +369,14 @@ func expectedOperationScope(kind SourceKind) string {
 	}
 }
 
-func expectedSourceOperation(kind RuntimeKind) (string, SnapshotMode) {
+func expectedSourceOperation(kind RuntimeKind, contract string) (string, SnapshotMode) {
 	switch kind {
 	case RuntimeEBus:
 		return "ebus.v1.snapshot.capture", SnapshotFrozen
 	case RuntimeEEBus:
+		if contract == M625EEBusContractV1 {
+			return "eebus.v1.features.data.get", SnapshotLiveRead
+		}
 		return "eebus.v1.services.list", SnapshotLiveRead
 	case RuntimeCloudApp:
 		return "cloud.precaptured.import", SnapshotPrecaptured

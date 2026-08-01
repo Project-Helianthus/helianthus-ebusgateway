@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -194,19 +194,67 @@ func validateJSONString(value string, maximum uint64) error {
 }
 
 func isSafeInteger(value string) bool {
-	if value == "0" {
-		return true
+	_, ok := safeIntegerValue(value)
+	return ok
+}
+
+func safeIntegerValue(value string) (uint64, bool) {
+	if !isJSONNumberLexeme(value) {
+		return 0, false
 	}
-	if value == "" || value[0] < '1' || value[0] > '9' {
+	rational, ok := new(big.Rat).SetString(value)
+	if !ok || !rational.IsInt() || rational.Sign() < 0 || !rational.Num().IsUint64() {
+		return 0, false
+	}
+	parsed := rational.Num().Uint64()
+	if parsed > MaxSafeIntegerV1 {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func isJSONNumberLexeme(value string) bool {
+	index := 0
+	if index < len(value) && value[index] == '-' {
+		index++
+	}
+	if index >= len(value) {
 		return false
 	}
-	for _, char := range value[1:] {
-		if char < '0' || char > '9' {
+	if value[index] == '0' {
+		index++
+	} else {
+		if value[index] < '1' || value[index] > '9' {
+			return false
+		}
+		for index < len(value) && value[index] >= '0' && value[index] <= '9' {
+			index++
+		}
+	}
+	if index < len(value) && value[index] == '.' {
+		index++
+		fractionStart := index
+		for index < len(value) && value[index] >= '0' && value[index] <= '9' {
+			index++
+		}
+		if index == fractionStart {
 			return false
 		}
 	}
-	parsed, err := strconv.ParseUint(value, 10, 64)
-	return err == nil && parsed <= MaxSafeIntegerV1
+	if index < len(value) && (value[index] == 'e' || value[index] == 'E') {
+		index++
+		if index < len(value) && (value[index] == '+' || value[index] == '-') {
+			index++
+		}
+		exponentStart := index
+		for index < len(value) && value[index] >= '0' && value[index] <= '9' {
+			index++
+		}
+		if index == exponentStart {
+			return false
+		}
+	}
+	return index == len(value)
 }
 
 func appendCanonical(out *bytes.Buffer, value any) error {
@@ -222,10 +270,11 @@ func appendCanonical(out *bytes.Buffer, value any) error {
 	case string:
 		appendJSONString(out, current)
 	case json.Number:
-		if !isSafeInteger(string(current)) {
+		integer, ok := safeIntegerValue(string(current))
+		if !ok {
 			return ErrContractViolation
 		}
-		out.WriteString(string(current))
+		fmt.Fprint(out, integer)
 	case []any:
 		out.WriteByte('[')
 		for index, item := range current {

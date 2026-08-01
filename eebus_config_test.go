@@ -86,6 +86,10 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"internal/eebuscommand/router.go": false,
 		"mcp/eebus_v1_dto.go":             false,
 		"mcp/eebus_v1_commands.go":        false,
+		// Issue #764 adds one bounded read-only M6.25 evidence consumer and its
+		// private gateway owner wiring. Neither seam is a consumer projection.
+		"internal/syncevidence/m625_acquisition.go":    false,
+		"cmd/gateway/synchronized_evidence_runtime.go": false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

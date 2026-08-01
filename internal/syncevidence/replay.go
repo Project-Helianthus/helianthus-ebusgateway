@@ -518,7 +518,7 @@ func validateSources(bundle *SynchronizedEvidenceBundleV1, rootPermissions map[s
 }
 
 func validateBinding(binding SourceBindingV1, source *SourceRecordV1, permissions map[string]bool) error {
-	authority, exists := sourceAuthorities[binding.SourceKind]
+	authority, exists := boundSourceAuthority(binding.SourceKind, binding.SourceContract, binding.SourceSchemaVersion)
 	expectedRuntime, validKind := runtimeForSource(binding.SourceKind)
 	if !exists || !validKind || binding.RuntimeKind != expectedRuntime || binding.RuntimeKind != source.SourceKind ||
 		!runtimeIDPattern.MatchString(binding.RuntimePseudonym) || !operationVersionExpr.MatchString(binding.OperationVersion) ||
@@ -533,7 +533,7 @@ func validateBinding(binding SourceBindingV1, source *SourceRecordV1, permission
 		!reflect.DeepEqual(binding.EBusIdentity, source.EBusIdentity) {
 		return contractError("binding.registry")
 	}
-	expectedOperation, expectedMode := expectedSourceOperation(source.SourceKind)
+	expectedOperation, expectedMode := expectedSourceOperation(source.SourceKind, binding.SourceContract)
 	if binding.OperationID != expectedOperation || binding.SnapshotScope.Mode != expectedMode {
 		return contractError("binding.registry")
 	}
@@ -717,23 +717,53 @@ func validateRemasking(artifact *SourceArtifactV1, value any, bundle *Synchroniz
 	}
 	last := ""
 	paths := make(map[string]string)
+	var m625Requirements map[string]m625RemaskingRequirement
+	if artifact.SourceContract == M625EEBusContractV1 {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return contractError("privacy.remask")
+		}
+		var err error
+		m625Requirements, err = m625RemaskingRequirements(object)
+		if err != nil {
+			return err
+		}
+	}
 	for _, entry := range artifact.Remasking.Entries {
 		if entry.Path == "" || !remaskedValuePattern.MatchString(entry.Pseudonym) || (last != "" && (entry.Path < last || entry.Path == last)) {
 			return contractError("privacy.remask")
 		}
 		resolved, ok := resolveJSONPointer(value, entry.Path)
-		if !ok || resolved != entry.Pseudonym {
+		observationRef := artifact.SourceContract == M625EEBusContractV1 &&
+			strings.HasPrefix(entry.Path, "/observations/") &&
+			strings.HasSuffix(entry.Path, "/observation_ref") &&
+			resolved == "obs-"+entry.Pseudonym
+		if !ok || resolved != entry.Pseudonym && !observationRef {
 			return contractError("privacy.remask")
 		}
-		if prior, duplicate := assignments[entry.Pseudonym]; duplicate && prior != artifact.ArtifactID+"\x00"+entry.Path {
+		assignment := artifact.ArtifactID + "\x00" + entry.Path
+		if m625Requirements != nil {
+			requirement, exists := m625Requirements[entry.Path]
+			if !exists || requirement.pseudonym != entry.Pseudonym {
+				return contractError("privacy.remask")
+			}
+			assignment = artifact.ArtifactID + "\x00" + requirement.identity
+		}
+		if prior, duplicate := assignments[entry.Pseudonym]; duplicate && prior != assignment {
 			return contractError("privacy.remask")
 		}
-		assignments[entry.Pseudonym] = artifact.ArtifactID + "\x00" + entry.Path
+		assignments[entry.Pseudonym] = assignment
 		paths[entry.Path] = entry.Pseudonym
 		last = entry.Path
 	}
 	required := make(map[string]string)
-	collectRemaskedPaths(value, artifact.SourceBinding.SourceKind, "", required)
+	if m625Requirements != nil {
+		for path, requirement := range m625Requirements {
+			required[path] = requirement.pseudonym
+		}
+	} else {
+		collectRemaskedPaths(value, artifact.SourceBinding.SourceKind, "", required)
+	}
 	if !reflect.DeepEqual(required, paths) {
 		return contractError("privacy.remask")
 	}

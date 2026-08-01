@@ -124,6 +124,30 @@ func TestMSP065EvidenceStoreLockFailsBeforeTransportDial(t *testing.T) {
 	}
 }
 
+func TestIssue764DuplicateEvidenceStoreOwnersFailBeforeOpenOrDial(t *testing.T) {
+	config := enabledSynchronizedEvidenceConfig(t)
+	gatewayConfig := ebusgateway.DefaultConfig()
+	gatewayConfig.EvidenceRecorderConfig = config
+	gatewayConfig.EvidenceOneShotEnabled = true
+	dialed := false
+	gatewayConfig.TransportConfig.Network = "tcp"
+	gatewayConfig.TransportConfig.Address = "127.0.0.1:9999"
+	gatewayConfig.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("unexpected dial")
+	}
+
+	if err := run(context.Background(), gatewayConfig); !errors.Is(err, ebusgateway.ErrSynchronizedEvidenceOwnership) {
+		t.Fatalf("run() error = %v, want %v", err, ebusgateway.ErrSynchronizedEvidenceOwnership)
+	}
+	if dialed {
+		t.Fatal("transport dialed before duplicate ownership was rejected")
+	}
+	if _, err := os.Stat(config.StateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("duplicate ownership opened store: %v", err)
+	}
+}
+
 func TestMSP065SynchronizedEvidenceRuntimeRejectsSecondConfigurationAndClosesOnce(t *testing.T) {
 	config := enabledSynchronizedEvidenceConfig(t)
 	runtime, err := openSynchronizedEvidenceRuntime(config)
@@ -148,6 +172,7 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 	eebusRuntime := &msp06GatewayRuntime{}
 	adapter := &eebusRuntimeAdapter{runtime: eebusRuntime}
 	runtime, err := newSynchronizedEvidenceOneShotRuntime(
+		true,
 		eebusMCPProvider(adapter),
 		eebusMCPCommandRouter(adapter),
 	)
@@ -196,8 +221,15 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 		t.Fatalf("calls/maximum concurrency = %d/%d", calls, maximum)
 	}
 
-	if absent, err := newSynchronizedEvidenceOneShotRuntime(nil, nil); err != nil || absent != nil {
+	if absent, err := newSynchronizedEvidenceOneShotRuntime(true, nil, nil); err != nil || absent != nil {
 		t.Fatalf("disabled one-shot runtime = %#v, %v", absent, err)
+	}
+	if absent, err := newSynchronizedEvidenceOneShotRuntime(
+		false,
+		eebusMCPProvider(adapter),
+		eebusMCPCommandRouter(adapter),
+	); err != nil || absent != nil {
+		t.Fatalf("explicitly disabled one-shot runtime = %#v, %v", absent, err)
 	}
 }
 

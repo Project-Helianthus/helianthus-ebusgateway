@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const oneShotStoreQuota = int64(1 << 28)
+const (
+	oneShotStoreQuota     = int64(1 << 28)
+	oneShotStoreRetention = 7 * 24 * time.Hour
+)
 
 var oneShotStoreLockProof = bytes.Repeat([]byte{0x4c}, 32)
 
@@ -76,6 +79,7 @@ func ExecuteOneShot(ctx context.Context, options OneShotExecutionOptions) OneSho
 	store, err := openOneShotFileStore(parent, FileStoreConfig{
 		Root:       filepath.Join(options.Root, "store"),
 		QuotaBytes: oneShotStoreQuota,
+		Retention:  oneShotStoreRetention,
 		Entropy:    options.Entropy,
 		LockProof:  oneShotStoreLockProof,
 	})
@@ -103,8 +107,7 @@ func ExecuteOneShot(ctx context.Context, options OneShotExecutionOptions) OneSho
 	if options.Reader == nil || options.ClockFactory == nil || options.BuildIdentity == nil {
 		return oneShotReceipt(OneShotInternal)
 	}
-	limits := DefaultLimitsV1()
-	limits.MaxSources = 5
+	limits := oneShotCaptureLimits()
 	reservation, err := store.ReserveCapture(int64(limits.MaxBundleBytes))
 	if err != nil {
 		return oneShotReceipt(OneShotPublishFailed)
@@ -153,6 +156,12 @@ func ExecuteOneShot(ctx context.Context, options OneShotExecutionOptions) OneSho
 		return oneShotReceipt(OneShotPublishFailed)
 	}
 	return oneShotReceipt(OneShotPublished)
+}
+
+func oneShotCaptureLimits() CaptureLimitsV1 {
+	limits := DefaultLimitsV1()
+	limits.MaxSources = 5
+	return limits
 }
 
 func oneShotReceipt(category OneShotReceiptCategory) OneShotReceiptV1 {

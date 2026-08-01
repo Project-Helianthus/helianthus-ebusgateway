@@ -838,12 +838,13 @@ func (store *FileStore) lookupOneShot(actionRef EvidenceRefV1, tuple SourceTuple
 		if evidenceRefKey(bundle.CaptureWindow.Action.EvidenceRef) != actionKey {
 			continue
 		}
-		if !retainedOneShotCloudContentMatches(bundle, actionRef) {
-			continue
-		}
 		replay, err := Replay(raw)
 		if err != nil {
 			return OneShotLookupResult{}, err
+		}
+		if !retainedOneShotCloudContentMatches(bundle, actionRef) {
+			conflict = true
+			continue
 		}
 		matches := 0
 		for _, source := range bundle.Sources {
@@ -874,12 +875,13 @@ func retainedOneShotCloudContentMatches(
 	actionRef EvidenceRefV1,
 ) bool {
 	matches := 0
+	actionKey := evidenceRefKey(actionRef)
 	for _, artifact := range bundle.Artifacts {
 		if artifact.SourceBinding.SourceKind != SourceCloudApp {
 			continue
 		}
 		matches++
-		if HashContentBytes(artifact.NormalizedEvidence) != actionRef.Digest {
+		if len(artifact.EvidenceRefs) != 1 || evidenceRefKey(artifact.EvidenceRefs[0]) != actionKey {
 			return false
 		}
 	}

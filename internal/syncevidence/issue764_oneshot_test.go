@@ -117,6 +117,9 @@ func TestIssue764OneShotPublishesThenRepeatsAndRestartsWithoutAcquisition(t *tes
 	if err := validateOneShotBundle(bundle, options.sourceTuple()); err != nil {
 		t.Fatalf("published bundle: %v", err)
 	}
+	if bundle.Limits != oneShotCaptureLimits() {
+		t.Fatalf("one-shot limits = %#v, want %#v", bundle.Limits, oneShotCaptureLimits())
+	}
 	if len(bundle.Sources) != 5 {
 		t.Fatalf("source count = %d", len(bundle.Sources))
 	}
@@ -224,6 +227,71 @@ func TestIssue764OneShotPublishesThenRepeatsAndRestartsWithoutAcquisition(t *tes
 	entries, err = os.ReadDir(storeRoot)
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("restart entries = %v, %v", entries, err)
+	}
+}
+
+func TestIssue764OneShotRetainedCloudMismatchConflictsWithoutAcquisition(t *testing.T) {
+	root := filepath.Join(issue764SecureTempDir(t), "synchronized-evidence")
+	requestBytes := issue764RequestBytes(t, 'a')
+	issue764WriteRequest(t, root, requestBytes, 0o600)
+	request, err := parseOneShotRequest(requestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloudRef := redEvidenceRef('f')
+	if evidenceRefKey(cloudRef) == evidenceRefKey(request.ActionEvidenceRef) {
+		t.Fatal("cloud mismatch fixture unexpectedly matches the action ref")
+	}
+	retained := issue764FiveSourceBundleWithCloudRefAt(
+		t,
+		request.ActionEvidenceRef,
+		cloudRef,
+		0x61,
+		time.Now().UTC().Add(-time.Hour),
+	)
+	store, err := OpenFileStore(FileStoreConfig{
+		Root:       filepath.Join(root, "store"),
+		QuotaBytes: oneShotStoreQuota,
+		Retention:  oneShotStoreRetention,
+		LockProof:  oneShotStoreLockProof,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Publish(retained); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt := ExecuteOneShot(context.Background(), OneShotExecutionOptions{
+		Root:    root,
+		Entropy: issue764RejectEntropy{},
+		Reader: issue764M625ReaderFunc(func(context.Context, SourceRequest) (AcquiredEvidence, error) {
+			t.Fatal("conflicting retained bundle triggered source acquisition")
+			return AcquiredEvidence{}, errors.New("unreachable")
+		}),
+		ClockFactory: func() Clock {
+			t.Fatal("conflicting retained bundle created a clock")
+			return nil
+		},
+		BuildIdentity: func() (OneShotBuildIdentity, error) {
+			t.Fatal("conflicting retained bundle resolved build identity")
+			return OneShotBuildIdentity{}, errors.New("unreachable")
+		},
+	})
+	if receipt != (OneShotReceiptV1{Category: OneShotConflict}) {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != storeLockName && !strings.HasSuffix(entry.Name(), ".json") {
+			t.Fatalf("conflict created store entry %q", entry.Name())
+		}
 	}
 }
 

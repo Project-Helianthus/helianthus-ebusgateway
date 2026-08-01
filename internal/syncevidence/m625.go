@@ -45,9 +45,10 @@ func mustM625SchemaEnum(definition string) map[string]bool {
 }
 
 func validateM625Payload(object map[string]any, capture sourceCapture) error {
+	schemaVersion, schemaVersionOK := m625SafeInteger(object["schema_version"])
 	if !exactKeys(object, "contract", "schema_version", "source_observed_at", "services", "feature_paths", "observations") ||
 		object["contract"] != M625EEBusContractV1 ||
-		object["schema_version"] != json.Number("1") ||
+		!schemaVersionOK || schemaVersion != 1 ||
 		capture.sourceContract != M625EEBusContractV1 ||
 		capture.sourceSchemaVersion != 1 {
 		return contractError("schema.bundle")
@@ -107,7 +108,6 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 		return contractError("schema.bundle")
 	}
 	refs := make(map[string]bool, len(observations))
-	pathIndexes := make(map[uint64]bool, len(observations))
 	var latest time.Time
 	for _, raw := range observations {
 		observation, ok := raw.(map[string]any)
@@ -133,10 +133,9 @@ func validateM625Payload(object map[string]any, capture sourceCapture) error {
 		}
 		refs[ref] = true
 		pathIndex, ok := m625SafeInteger(observation["path_index"])
-		if !ok || pathIndex >= uint64(len(paths)) || pathIndexes[pathIndex] {
+		if !ok || pathIndex >= uint64(len(paths)) {
 			return contractError("schema.bundle")
 		}
-		pathIndexes[pathIndex] = true
 		observedAt, ok := m625Timestamp(observation["source_observed_at"])
 		if !ok || validateM625Observation(observation) != nil {
 			return contractError("schema.bundle")
@@ -270,11 +269,10 @@ func m625Timestamp(value any) (time.Time, bool) {
 
 func m625SafeInteger(value any) (uint64, bool) {
 	number, ok := value.(json.Number)
-	if !ok || !isSafeInteger(string(number)) {
+	if !ok {
 		return 0, false
 	}
-	parsed, err := strconv.ParseUint(string(number), 10, 64)
-	return parsed, err == nil
+	return safeIntegerValue(string(number))
 }
 
 func m625RemaskingRequirements(object map[string]any) (map[string]m625RemaskingRequirement, error) {
@@ -345,13 +343,9 @@ func m625RemaskingRequirements(object map[string]any) (map[string]m625RemaskingR
 		if !ok || pathIndex >= uint64(len(paths)) {
 			return nil, contractError("privacy.remask")
 		}
-		pathBytes, err := canonicalJSONValue(paths[pathIndex])
-		if err != nil {
-			return nil, err
-		}
 		result["/observations/"+strconv.Itoa(index)+"/observation_ref"] = m625RemaskingRequirement{
 			pseudonym: ref[4:],
-			identity:  "OBSERVATION\x00" + string(pathBytes),
+			identity:  "OBSERVATION\x00" + ref,
 		}
 	}
 	return result, nil

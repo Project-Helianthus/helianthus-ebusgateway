@@ -3,10 +3,12 @@ package syncevidence
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +29,23 @@ func issue764FiveSourceBundleWithCloudRef(
 	actionRef EvidenceRefV1,
 	cloudRef EvidenceRefV1,
 	entropy byte,
+) []byte {
+	t.Helper()
+	return issue764FiveSourceBundleWithCloudRefAt(
+		t,
+		actionRef,
+		cloudRef,
+		entropy,
+		time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC),
+	)
+}
+
+func issue764FiveSourceBundleWithCloudRefAt(
+	t *testing.T,
+	actionRef EvidenceRefV1,
+	cloudRef EvidenceRefV1,
+	entropy byte,
+	captureStartedAt time.Time,
 ) []byte {
 	t.Helper()
 	observed := time.Date(2026, 7, 30, 12, 0, 2, 0, time.UTC)
@@ -59,6 +78,7 @@ func issue764FiveSourceBundleWithCloudRef(
 	}
 	recorder := testRecorder(t, sources, func(options *RecorderOptions) {
 		options.Entropy = bytes.NewReader(bytes.Repeat([]byte{entropy}, 1<<20))
+		options.Clock = &redClock{wall: captureStartedAt}
 	})
 	bundle, err := recorder.Capture(context.Background(), ActionMarker{EvidenceRef: actionRef})
 	if err != nil {
@@ -75,15 +95,74 @@ func issue764RetainedCloudContentRef(t *testing.T, raw []byte) EvidenceRefV1 {
 	}
 	for _, artifact := range bundle.Artifacts {
 		if artifact.SourceBinding.SourceKind == SourceCloudApp {
-			return EvidenceRefV1{
-				Kind:            EvidenceKindContent,
-				DigestAlgorithm: DigestAlgorithmContentBytes,
-				Digest:          HashContentBytes(artifact.NormalizedEvidence),
+			if len(artifact.EvidenceRefs) != 1 {
+				t.Fatalf("retained cloud artifact refs = %#v", artifact.EvidenceRefs)
 			}
+			return artifact.EvidenceRefs[0]
 		}
 	}
 	t.Fatal("retained bundle has no cloud artifact")
 	return EvidenceRefV1{}
+}
+
+func issue764CloudSubject(t *testing.T, raw []byte) string {
+	t.Helper()
+	bundle, err := verifyBundle(raw)
+	if err != nil {
+		t.Fatalf("verify cloud bundle: %v", err)
+	}
+	for _, artifact := range bundle.Artifacts {
+		if artifact.SourceBinding.SourceKind != SourceCloudApp {
+			continue
+		}
+		var payload struct {
+			SubjectPseudonym string `json:"subject_pseudonym"`
+		}
+		if err := json.Unmarshal(artifact.NormalizedEvidence, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(artifact.Remasking.Entries) != 1 ||
+			artifact.Remasking.Entries[0] != (RemaskedPseudonymV1{
+				Path: "/subject_pseudonym", Pseudonym: payload.SubjectPseudonym,
+			}) {
+			t.Fatalf("cloud remasking = %#v", artifact.Remasking)
+		}
+		return payload.SubjectPseudonym
+	}
+	t.Fatal("bundle has no cloud artifact")
+	return ""
+}
+
+func TestIssue764PublishedBundlesRemaskCloudSubjectPerBundle(t *testing.T) {
+	root := filepath.Join(storeTestRoot(t), "store")
+	store, err := OpenFileStore(FileStoreConfig{
+		Root: root, QuotaBytes: 1 << 27, LockProof: bytes.Repeat([]byte{0x4c}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	callerSubject := strings.Repeat("J", 43)
+	var subjects []string
+	for _, fixture := range []struct {
+		ref     EvidenceRefV1
+		entropy byte
+	}{
+		{ref: redEvidenceRef('a'), entropy: 0x61},
+		{ref: redEvidenceRef('b'), entropy: 0x62},
+	} {
+		bundle := issue764FiveSourceBundle(t, fixture.ref, fixture.entropy)
+		if bytes.Contains(bundle, []byte(callerSubject)) {
+			t.Fatalf("published candidate leaks caller cloud subject: %s", bundle)
+		}
+		if _, err := store.Publish(bundle); err != nil {
+			t.Fatal(err)
+		}
+		subjects = append(subjects, issue764CloudSubject(t, bundle))
+	}
+	if subjects[0] == callerSubject || subjects[1] == callerSubject || subjects[0] == subjects[1] {
+		t.Fatalf("cloud subjects preserve correlation: %#v", subjects)
+	}
 }
 
 func TestIssue764RetainedLookupSurvivesRestartWithoutEntropyOrStaging(t *testing.T) {
@@ -175,7 +254,7 @@ func TestIssue764RetainedLookupConflictsOnMultipleCandidates(t *testing.T) {
 	}
 }
 
-func TestIssue764RetainedLookupRejectsLegacyCloudContentMismatch(t *testing.T) {
+func TestIssue764RetainedLookupConflictsOnCloudContentMismatch(t *testing.T) {
 	root := filepath.Join(storeTestRoot(t), "store")
 	request, err := parseOneShotRequest(issue764RequestBytes(t, 'a'))
 	if err != nil {
@@ -219,7 +298,7 @@ func TestIssue764RetainedLookupRejectsLegacyCloudContentMismatch(t *testing.T) {
 	retained, err := restarted.lookupOneShot(actionRef, SourceTupleV1{
 		SourceKind: SourceEEBus, Contract: M625EEBusContractV1, Version: 1,
 	})
-	if err != nil || retained.Status != OneShotLookupNone ||
+	if err != nil || retained.Status != OneShotLookupConflict ||
 		retained.Bundle != nil || retained.Replay != nil {
 		t.Fatalf("legacy mismatch lookup = %#v, %v", retained, err)
 	}

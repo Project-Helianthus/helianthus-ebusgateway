@@ -810,14 +810,14 @@ func (recorder *Recorder) prepareEvidence(capture sourceCapture, identity *EBusS
 	}
 	entries := make([]RemaskedPseudonymV1, 0)
 	if capture.sourceKind == SourceCloudApp && capture.cloudBound {
-		pseudonym, ok := object["subject_pseudonym"].(string)
-		if !ok || !remaskedValuePattern.MatchString(pseudonym) {
+		if _, ok := object["subject_pseudonym"].(string); !ok {
 			return nil, RemaskingV1{}, 0, contractError("privacy.remask")
 		}
-		if _, duplicate := usedValues[pseudonym]; duplicate {
-			return nil, RemaskingV1{}, 0, contractError("privacy.remask")
+		pseudonym, err := recorder.mintUniqueRemask(usedValues)
+		if err != nil {
+			return nil, RemaskingV1{}, 0, err
 		}
-		usedValues[pseudonym] = struct{}{}
+		object["subject_pseudonym"] = pseudonym
 		entries = append(entries, RemaskedPseudonymV1{
 			Path: "/subject_pseudonym", Pseudonym: pseudonym,
 		})

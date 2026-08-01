@@ -34,6 +34,7 @@ var (
 	ErrEvidenceRecorderRetention     = errors.New("evidence recorder config: retention must be positive")
 	ErrEvidenceRecorderQuota         = errors.New("evidence recorder config: quota cannot hold one maximum bundle")
 	ErrEvidenceRecorderLimits        = errors.New("evidence recorder config: limits must be positive and within V1 ceilings")
+	ErrSynchronizedEvidenceOwnership = errors.New("synchronized evidence: generic recorder and one-shot control cannot both be enabled")
 )
 
 // EvidenceRecorderLimits records the effective, hash-bound V1 capture limits.
@@ -76,6 +77,16 @@ func DefaultEvidenceRecorderLimits() EvidenceRecorderLimits {
 		MaxCaptureDuration: 15 * time.Minute,
 		MaxSourceDuration:  time.Minute,
 	}
+}
+
+func ValidateSynchronizedEvidenceConfig(cfg Config) error {
+	if err := ValidateEvidenceRecorderConfig(cfg.EvidenceRecorderConfig); err != nil {
+		return err
+	}
+	if cfg.EvidenceRecorderConfig.Enabled && cfg.EvidenceOneShotEnabled {
+		return ErrSynchronizedEvidenceOwnership
+	}
+	return nil
 }
 
 func ValidateEvidenceRecorderConfig(cfg EvidenceRecorderConfig) error {

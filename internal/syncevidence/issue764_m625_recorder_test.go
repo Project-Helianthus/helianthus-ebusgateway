@@ -266,3 +266,94 @@ func TestIssue764M625ValidatorRejectsRawMetadataAndWrongValueMatrix(t *testing.T
 		})
 	}
 }
+
+func TestIssue764M625AcceptsIntegralNumericFormsAndRepeatedPathObservations(t *testing.T) {
+	observed := time.Date(2026, 7, 30, 12, 0, 2, 0, time.UTC)
+	value, _, err := parseJSON(issue764M625Payload(), DefaultLimitsV1(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := value.(map[string]any)
+	root["schema_version"] = json.Number("1.0")
+	observations := root["observations"].([]any)
+	observations[0].(map[string]any)["path_index"] = json.Number("0.0")
+	observations[1].(map[string]any)["path_index"] = json.Number("0e0")
+	capture := sourceCapture{
+		sourceKind:          SourceEEBus,
+		sourceContract:      M625EEBusContractV1,
+		sourceSchemaVersion: 1,
+		sourceObservedAt:    observed,
+		operationID:         "eebus.v1.features.data.get",
+		operationScope:      "feature-data",
+	}
+	if err := validateM625Payload(root, capture); err != nil {
+		t.Fatalf("schema-valid repeated-path payload rejected: %v", err)
+	}
+
+	encoded, err := canonicalJSONValue(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.normalizedEvidence = encoded
+	recorder := &Recorder{
+		limits:  DefaultLimitsV1(),
+		entropy: bytes.NewReader(bytes.Repeat([]byte{0x63}, 1<<20)),
+	}
+	remasked, remasking, itemCount, err := recorder.prepareEvidence(
+		capture,
+		nil,
+		"remask-"+strings.Repeat("a", 32),
+		make(map[string]struct{}),
+	)
+	if err != nil {
+		t.Fatalf("prepare repeated-path evidence: %v", err)
+	}
+	if itemCount != 2 {
+		t.Fatalf("item count = %d, want 2", itemCount)
+	}
+	var observationPseudonyms []string
+	for _, entry := range remasking.Entries {
+		if strings.HasPrefix(entry.Path, "/observations/") {
+			observationPseudonyms = append(observationPseudonyms, entry.Pseudonym)
+		}
+	}
+	if len(observationPseudonyms) != 2 || observationPseudonyms[0] == observationPseudonyms[1] {
+		t.Fatalf("observation remasking = %#v", observationPseudonyms)
+	}
+	remaskedValue, _, err := parseJSON(remasked, DefaultLimitsV1(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateM625Payload(remaskedValue.(map[string]any), capture); err != nil {
+		t.Fatalf("remasked repeated-path payload rejected: %v", err)
+	}
+
+	observations[1].(map[string]any)["observation_ref"] = observations[0].(map[string]any)["observation_ref"]
+	if err := validateM625Payload(root, capture); err == nil {
+		t.Fatal("duplicate observation_ref accepted")
+	}
+}
+
+func TestIssue764M625SafeIntegerMatchesJSONSchemaIntegerSemantics(t *testing.T) {
+	for _, test := range []struct {
+		number string
+		want   uint64
+		ok     bool
+	}{
+		{number: "0", want: 0, ok: true},
+		{number: "1.0", want: 1, ok: true},
+		{number: "1e0", want: 1, ok: true},
+		{number: "9007199254740991.0", want: 9_007_199_254_740_991, ok: true},
+		{number: "1.5", ok: false},
+		{number: "-1.0", ok: false},
+		{number: "9007199254740992", ok: false},
+		{number: "1/1", ok: false},
+		{number: "01", ok: false},
+		{number: "+1", ok: false},
+	} {
+		got, ok := m625SafeInteger(json.Number(test.number))
+		if got != test.want || ok != test.ok {
+			t.Errorf("m625SafeInteger(%q) = (%d, %t), want (%d, %t)", test.number, got, ok, test.want, test.ok)
+		}
+	}
+}

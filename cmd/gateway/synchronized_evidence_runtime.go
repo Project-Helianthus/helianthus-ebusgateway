@@ -100,9 +100,13 @@ func (reader *gatewayEEBusEvidenceReader) ListServices(context.Context, syncevid
 }
 
 func newSynchronizedEvidenceOneShotRuntime(
+	enabled bool,
 	provider synchronizedEvidenceSnapshotProvider,
 	router mcp.EEBusV1CommandRouter,
 ) (*synchronizedEvidenceOneShotRuntime, error) {
+	if !enabled {
+		return nil, nil
+	}
 	if synchronizedEvidenceNilInterface(provider) || synchronizedEvidenceNilInterface(router) {
 		return nil, nil
 	}

@@ -126,6 +126,7 @@ type Config struct {
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
+	EvidenceOneShotEnabled   bool
 	BusConfig                protocol.BusConfig
 	QueueCapacity            int
 	Providers                []registry.PlaneProvider

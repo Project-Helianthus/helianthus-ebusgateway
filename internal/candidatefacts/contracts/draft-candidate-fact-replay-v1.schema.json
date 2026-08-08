@@ -168,6 +168,88 @@
           "items": {
             "$ref": "#/$defs/DigestV1"
           }
+        },
+        "source_terminal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SourceTerminalReplayV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SourceTerminalReplayV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_kind",
+        "binding_source_kind",
+        "source_contract",
+        "source_schema_version",
+        "phase",
+        "state",
+        "error_category",
+        "identity_family",
+        "evidence_digests"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^ebus-[0-9a-f]{32}$"
+        },
+        "source_kind": {
+          "const": "EBUS"
+        },
+        "binding_source_kind": {
+          "enum": [
+            "EBUS_B509",
+            "EBUS_B524",
+            "EBUS_B555"
+          ]
+        },
+        "source_contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[\\x20-\\x7e]+$"
+        },
+        "source_schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "phase": {
+          "enum": [
+            "pre",
+            "action",
+            "post"
+          ]
+        },
+        "state": {
+          "const": "UNAVAILABLE"
+        },
+        "error_category": {
+          "const": "BACKEND_UNAVAILABLE"
+        },
+        "identity_family": {
+          "enum": [
+            "B509",
+            "B524",
+            "B555"
+          ]
+        },
+        "evidence_digests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/DigestV1"
+          }
         }
       }
     }

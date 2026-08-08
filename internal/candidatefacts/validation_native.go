@@ -187,6 +187,18 @@ func artifactProvesEEBusService(artifact map[string]any, target string) bool {
 	if !ok {
 		return false
 	}
+	if artifact["source_contract"] == m625SourceContractV1 {
+		services, ok := arrayValue(normalized["services"])
+		if !ok {
+			return false
+		}
+		for _, service := range services {
+			if service == target {
+				return true
+			}
+		}
+		return false
+	}
 	data, ok := objectValue(normalized["data"])
 	if !ok {
 		return false
@@ -211,6 +223,18 @@ func artifactProvesEEBusService(artifact map[string]any, target string) bool {
 func artifactProvesEEBusPath(artifact, identity map[string]any) bool {
 	normalized, ok := objectValue(artifact["normalized_evidence"])
 	if !ok {
+		return false
+	}
+	if artifact["source_contract"] == m625SourceContractV1 {
+		paths, ok := arrayValue(normalized["feature_paths"])
+		if !ok {
+			return false
+		}
+		for _, path := range paths {
+			if reflect.DeepEqual(path, identity) {
+				return true
+			}
+		}
 		return false
 	}
 	data, ok := objectValue(normalized["data"])

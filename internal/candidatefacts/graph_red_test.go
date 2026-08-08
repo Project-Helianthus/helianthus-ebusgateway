@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -107,7 +108,11 @@ func TestMSP07ClosedSchemaBoundsAndFirstErrorCategory(t *testing.T) {
 	for name, want := range negativeCategoriesV1 {
 		name, want := name, want
 		t.Run(name, func(t *testing.T) {
-			assertCategory(t, Verify(artifacts.NegativeGraphs[name], artifacts.SourceBundle, artifacts.SourceReplay), want)
+			bundle, replay := artifacts.SourceBundle, artifacts.SourceReplay
+			if strings.HasPrefix(name, "source-terminal-") {
+				bundle, replay = artifacts.SourceTerminalBundle, artifacts.SourceTerminalSourceReplay
+			}
+			assertCategory(t, Verify(artifacts.NegativeGraphs[name], bundle, replay), want)
 		})
 	}
 }

@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	docsMergeV1         = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"
+	docsMergeV1         = "35d2eba256a77b6575a2b45c07e73f054ff74ced"
 	sourceOwnerCommitV1 = "4d7747730be023acb251b20a22d796545a9f3688"
 )
 
 var canonicalArtifactDigestsV1 = map[string]string{
-	"graph_schema":    "ab5f65a527633c3c5f60119cf0071a6ffdd3ee66d6e210f78bf17a03e438069a",
-	"replay_schema":   "d691cfc970e99faae7f5a1f4e30ed0cb6a4c3cc6e11959dffba5f82a8fc6d232",
+	"graph_schema":    "e7a2fd4d9a9494c8d25f6b688684e70d8bce72002df0bdcc76da766aec02706b",
+	"replay_schema":   "742a7e29f95ff17ad6b6b5669185f38b54fee07bc1af94b430cd7beb1db91a66",
 	"registry":        "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
 	"positive_graph":  "b5c5d79e540a1691ee60c6db3e9405a92d9d544d871c74b26800fe449a318b0e",
 	"positive_replay": "8280f6278ffe8598dfd767bb5bf9e60dce3c145b4612174b7c5a32fbff282f5c",
@@ -26,23 +26,41 @@ var canonicalArtifactDigestsV1 = map[string]string{
 }
 
 var negativeCategoriesV1 = map[string]string{
-	"anti-leak-stable-surface.json":     "anti_leak.consumer",
-	"comparator-parameter-invalid.json": "comparator.invalid",
-	"evidence-ref-not-in-bundle.json":   "provenance.binding",
-	"forged-artifact-id.json":           "provenance.binding",
-	"forged-b524-opcode.json":           "identity.native",
-	"forged-eebus-entity-feature.json":  "identity.native",
-	"forged-source-id.json":             "provenance.binding",
-	"graph-hash-mismatch.json":          "hash.graph",
-	"incomplete-b524-identity.json":     "schema.graph",
-	"invalid-eebus-feature-path.json":   "identity.native",
-	"limit-exceeded.json":               "limits.exceeded",
-	"ordering-invalid.json":             "ordering.invalid",
-	"registry-mismatch.json":            "registry.binding",
-	"terminal-state-not-withheld.json":  "state.terminal",
-	"unknown-field.json":                "schema.graph",
-	"wrong-source-bundle.json":          "provenance.binding",
-	"wrong-source-replay.json":          "provenance.binding",
+	"anti-leak-stable-surface.json":              "anti_leak.consumer",
+	"comparator-parameter-invalid.json":          "comparator.invalid",
+	"evidence-ref-not-in-bundle.json":            "provenance.binding",
+	"forged-artifact-id.json":                    "provenance.binding",
+	"forged-b524-opcode.json":                    "identity.native",
+	"forged-eebus-entity-feature.json":           "identity.native",
+	"forged-source-id.json":                      "provenance.binding",
+	"graph-hash-mismatch.json":                   "hash.graph",
+	"incomplete-b524-identity.json":              "schema.graph",
+	"invalid-eebus-feature-path.json":            "identity.native",
+	"limit-exceeded.json":                        "limits.exceeded",
+	"ordering-invalid.json":                      "ordering.invalid",
+	"registry-mismatch.json":                     "registry.binding",
+	"source-terminal-candidate.json":             "provenance.binding",
+	"source-terminal-conflicted.json":            "provenance.binding",
+	"source-terminal-cross-runtime-pairing.json": "provenance.binding",
+	"source-terminal-evaluated-samples.json":     "provenance.binding",
+	"source-terminal-forged-binding-kind.json":   "provenance.binding",
+	"source-terminal-forged-contract.json":       "provenance.binding",
+	"source-terminal-forged-error.json":          "schema.graph",
+	"source-terminal-forged-evidence-refs.json":  "provenance.binding",
+	"source-terminal-forged-identity.json":       "provenance.binding",
+	"source-terminal-forged-phase.json":          "provenance.binding",
+	"source-terminal-forged-source-id.json":      "provenance.binding",
+	"source-terminal-forged-source-kind.json":    "schema.graph",
+	"source-terminal-forged-state.json":          "schema.graph",
+	"source-terminal-forged-version.json":        "provenance.binding",
+	"source-terminal-no-signal.json":             "state.terminal",
+	"source-terminal-null.json":                  "provenance.binding",
+	"source-terminal-omitted.json":               "provenance.binding",
+	"source-terminal-promoted-exposure.json":     "anti_leak.consumer",
+	"terminal-state-not-withheld.json":           "state.terminal",
+	"unknown-field.json":                         "schema.graph",
+	"wrong-source-bundle.json":                   "provenance.binding",
+	"wrong-source-replay.json":                   "provenance.binding",
 }
 
 func TestMSP07PinnedContractAndSourceAuthorityV1(t *testing.T) {

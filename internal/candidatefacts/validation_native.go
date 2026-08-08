@@ -45,6 +45,15 @@ func checkIdentities(graph, sourceBundle map[string]any) error {
 	for _, raw := range facts {
 		fact, _ := objectValue(raw)
 		provenance, _ := objectValue(fact["provenance"])
+		if terminalRaw := provenance["source_terminal"]; terminalRaw != nil {
+			terminal, ok := objectValue(terminalRaw)
+			identity, identityOK := objectValue(terminal["ebus_identity"])
+			family, familyOK := stringValue(identity["family"])
+			if !ok || !identityOK || !familyOK || validateEBusIdentity(identity) != nil ||
+				terminal["binding_source_kind"] != "EBUS_"+family {
+				return fail("identity.native")
+			}
+		}
 		if provenance["ebus"] == nil {
 			if provenance["ebus_source_id"] != nil || provenance["ebus_artifact_id"] != nil {
 				return fail("identity.native")
@@ -178,6 +187,18 @@ func artifactProvesEEBusService(artifact map[string]any, target string) bool {
 	if !ok {
 		return false
 	}
+	if artifact["source_contract"] == m625SourceContractV1 {
+		services, ok := arrayValue(normalized["services"])
+		if !ok {
+			return false
+		}
+		for _, service := range services {
+			if service == target {
+				return true
+			}
+		}
+		return false
+	}
 	data, ok := objectValue(normalized["data"])
 	if !ok {
 		return false
@@ -202,6 +223,18 @@ func artifactProvesEEBusService(artifact map[string]any, target string) bool {
 func artifactProvesEEBusPath(artifact, identity map[string]any) bool {
 	normalized, ok := objectValue(artifact["normalized_evidence"])
 	if !ok {
+		return false
+	}
+	if artifact["source_contract"] == m625SourceContractV1 {
+		paths, ok := arrayValue(normalized["feature_paths"])
+		if !ok {
+			return false
+		}
+		for _, path := range paths {
+			if reflect.DeepEqual(path, identity) {
+				return true
+			}
+		}
 		return false
 	}
 	data, ok := objectValue(normalized["data"])
@@ -244,6 +277,12 @@ func checkOrdering(graph map[string]any) error {
 		factRefs, _ := arrayValue(provenance["native_evidence_refs"])
 		if !ordered(factRefs, evidenceRefLess) {
 			return fail("ordering.invalid")
+		}
+		if terminal, ok := objectValue(provenance["source_terminal"]); ok {
+			terminalRefs, _ := arrayValue(terminal["evidence_refs"])
+			if !ordered(terminalRefs, evidenceRefLess) {
+				return fail("ordering.invalid")
+			}
 		}
 		comparator, _ := objectValue(fact["comparator"])
 		samples, _ := arrayValue(comparator["samples"])
@@ -294,6 +333,19 @@ func checkStates(graph, registry map[string]any) error {
 		comparator, _ := objectValue(fact["comparator"])
 		samples, _ := arrayValue(comparator["samples"])
 		outcome := asString(comparator["outcome"])
+		if provenance["source_terminal"] != nil {
+			falsifier, _ := objectValue(fact["falsifier"])
+			trigger, _ := objectValue(fact["retest_trigger"])
+			required, requiredOK := stringArray(trigger["required_source_kinds"])
+			if status != "WITHHELD" || terminal != "NOT_TESTED" ||
+				fact["draft_value"] != nil || fact["draft_unit"] != nil || len(samples) != 0 ||
+				outcome != "NOT_EVALUATED" || falsifier["expected_terminal_state"] != "NOT_TESTED" ||
+				trigger["trigger_code"] != "SOURCE_RECOVERED" ||
+				!requiredOK || !reflect.DeepEqual(required, []string{"EBUS"}) ||
+				!numberEquals(trigger["minimum_new_samples"], 1) {
+				return fail("state.terminal")
+			}
+		}
 		validNotTested := len(samples) == 0 && outcome == "NOT_EVALUATED" ||
 			len(samples) > 0 && outcome == "INDETERMINATE" && nativeKinds["EBUS"] && nativeKinds["EEBUS"]
 

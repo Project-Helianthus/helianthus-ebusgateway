@@ -7,7 +7,7 @@ import (
 )
 
 func TestOutcomeMatrixPinsCorrectiveDocsMerge(t *testing.T) {
-	const want = "ea88fef23ecb154b08f70e7f94b36e1738ed08bf"
+	const want = "35d2eba256a77b6575a2b45c07e73f054ff74ced"
 	if got := PinnedContractV1().OwnerCommit; got != want {
 		t.Fatalf("OwnerCommit = %q; want %q", got, want)
 	}

@@ -10,11 +10,21 @@ var negativeFixtureFiles embed.FS
 
 type testArtifactsV1 struct {
 	artifactsV1
-	NegativeGraphs map[string][]byte
+	NegativeGraphs             map[string][]byte
+	SourceTerminalGraph        []byte
+	SourceTerminalReplay       []byte
+	SourceTerminalBundle       []byte
+	SourceTerminalSourceReplay []byte
 }
 
 func pinnedTestArtifactsV1() testArtifactsV1 {
-	artifacts := pinnedArtifactsV1()
+	artifacts := testArtifactsV1{
+		artifactsV1:                pinnedArtifactsV1(),
+		SourceTerminalGraph:        readPinned("testdata/canonical/positive/source-terminal-graph.json", "2fd356d9d3262281bcf830154d8507bbb237f3f0d091b737365e3812cdeaafb3"),
+		SourceTerminalReplay:       readPinned("testdata/canonical/positive/source-terminal-replay-result.json", "ba478963171fc238e76ee19036119e0f2543d98f73c35c124abef4028b2fae22"),
+		SourceTerminalBundle:       readPinned("testdata/canonical/source/source-terminal-bundle.json", "b7269e608dfc004f6737fd80b34a1c6018483942632e0c3c8bfd33cadbaa8134"),
+		SourceTerminalSourceReplay: readPinned("testdata/canonical/source/source-terminal-replay-result.json", "82ed1c66222348746abd9f4291e10b968314363160ba4cfc568044390aced9d2"),
+	}
 	negative := make(map[string][]byte, len(negativeCategoriesV1))
 	for name := range negativeCategoriesV1 {
 		raw, err := negativeFixtureFiles.ReadFile("testdata/canonical/negative/" + name)
@@ -29,7 +39,7 @@ func pinnedTestArtifactsV1() testArtifactsV1 {
 		if !ok {
 			panic("candidatefacts test: invalid negative fixture: " + name)
 		}
-		expanded, err := expandNegativeFixtureForTest(fixture)
+		expanded, err := expandNegativeFixtureForTest(fixture, artifacts)
 		if err != nil {
 			panic(err)
 		}
@@ -38,15 +48,24 @@ func pinnedTestArtifactsV1() testArtifactsV1 {
 			panic(err)
 		}
 	}
-	return testArtifactsV1{artifactsV1: artifacts, NegativeGraphs: negative}
+	artifacts.NegativeGraphs = negative
+	return artifacts
 }
 
-func expandNegativeFixtureForTest(value map[string]any) (map[string]any, error) {
-	if value["contract"] != "helianthus.platform.draft-candidate-fact-negative-fixture.v1" ||
-		value["base"] != "../positive/graph.json" {
+func expandNegativeFixtureForTest(value map[string]any, artifacts testArtifactsV1) (map[string]any, error) {
+	if value["contract"] != "helianthus.platform.draft-candidate-fact-negative-fixture.v1" {
 		return nil, fail("json.syntax")
 	}
-	base, err := parseJSON(pinnedArtifactsV1().PositiveGraph)
+	var baseRaw []byte
+	switch value["base"] {
+	case "../positive/graph.json":
+		baseRaw = artifacts.PositiveGraph
+	case "../positive/source-terminal-graph.json":
+		baseRaw = artifacts.SourceTerminalGraph
+	default:
+		return nil, fail("json.syntax")
+	}
+	base, err := parseJSON(baseRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -105,6 +124,75 @@ func expandNegativeFixtureForTest(value map[string]any) (map[string]any, error) 
 		}
 	case "REGISTRY_MISMATCH":
 		objectAtUnsafe(graph, "registry")["digest"] = "sha256:" + strings.Repeat("0", 64)
+	case "SOURCE_TERMINAL_CANDIDATE":
+		fact := firstSourceTerminalFactForTest(facts)
+		fact["status"] = "CANDIDATE"
+		fact["terminal_negative_state"] = nil
+	case "SOURCE_TERMINAL_CONFLICTED":
+		fact := firstSourceTerminalFactForTest(facts)
+		fact["status"] = "CONFLICTED"
+		fact["terminal_negative_state"] = nil
+	case "SOURCE_TERMINAL_EVALUATED_SAMPLES":
+		fact := firstSourceTerminalFactForTest(facts)
+		ref := cloneObject(firstFactRef([]any{fact}))
+		fact["comparator"] = map[string]any{
+			"draft_id": "NUMERIC_WINDOW_V1_DRAFT",
+			"samples": []any{map[string]any{
+				"offset_ns": number(1),
+				"left": map[string]any{
+					"source_kind": "EBUS", "source_id": "ebus-" + strings.Repeat("a", 32),
+					"artifact_id": "seav1:sha256:" + strings.Repeat("a", 64), "evidence_ref": ref,
+					"observed_offset_ns": number(1), "value_pointer": "/value", "unit_pointer": "/unit",
+					"native_decimal": "1", "native_unit": "degC",
+				},
+				"right": map[string]any{
+					"source_kind": "EEBUS", "source_id": "eebus-" + strings.Repeat("b", 32),
+					"artifact_id": "seav1:sha256:" + strings.Repeat("b", 64), "evidence_ref": ref,
+					"observed_offset_ns": number(1), "value_pointer": "/value", "unit_pointer": "/unit",
+					"native_decimal": "1", "native_unit": "degC",
+				},
+				"state": "PRESENT",
+			}},
+			"outcome": "INDETERMINATE",
+		}
+	case "SOURCE_TERMINAL_PROMOTED_EXPOSURE":
+		objectAtUnsafe(graph, "visibility")["stable_exposure"] = true
+	case "SOURCE_TERMINAL_FORGED_SOURCE_ID":
+		firstSourceTerminalForTest(facts)["source_id"] = "ebus-" + strings.Repeat("f", 32)
+	case "SOURCE_TERMINAL_FORGED_SOURCE_KIND":
+		firstSourceTerminalForTest(facts)["source_kind"] = "EEBUS"
+	case "SOURCE_TERMINAL_FORGED_BINDING_KIND":
+		firstSourceTerminalForTest(facts)["binding_source_kind"] = "EBUS_B524"
+	case "SOURCE_TERMINAL_FORGED_CONTRACT":
+		firstSourceTerminalForTest(facts)["source_contract"] = "helianthus.ebus.forged.evidence.v1"
+	case "SOURCE_TERMINAL_FORGED_VERSION":
+		firstSourceTerminalForTest(facts)["source_schema_version"] = number(2)
+	case "SOURCE_TERMINAL_FORGED_PHASE":
+		firstSourceTerminalForTest(facts)["phase"] = "action"
+	case "SOURCE_TERMINAL_FORGED_STATE":
+		firstSourceTerminalForTest(facts)["state"] = "NOT_TESTED"
+	case "SOURCE_TERMINAL_FORGED_ERROR":
+		firstSourceTerminalForTest(facts)["error_category"] = "TIMEOUT"
+	case "SOURCE_TERMINAL_FORGED_IDENTITY":
+		identity := objectAtUnsafe(firstSourceTerminalForTest(facts), "ebus_identity")
+		identity["target_address"] = number(9)
+	case "SOURCE_TERMINAL_FORGED_EVIDENCE_REFS":
+		refs, _ := arrayValue(firstSourceTerminalForTest(facts)["evidence_refs"])
+		ref, _ := objectValue(refs[0])
+		ref["digest"] = "sha256:" + strings.Repeat("f", 64)
+	case "SOURCE_TERMINAL_CROSS_RUNTIME_PAIRING":
+		provenance := factProvenanceForTest(firstSourceTerminalFactForTest(facts))
+		provenance["eebus_source_id"] = "eebus-" + strings.Repeat("e", 32)
+		provenance["eebus_artifact_id"] = "seav1:sha256:" + strings.Repeat("e", 64)
+		provenance["eebus_service"] = "service-" + strings.Repeat("e", 32)
+	case "SOURCE_TERMINAL_NO_SIGNAL":
+		fact := firstSourceTerminalFactForTest(facts)
+		fact["terminal_negative_state"] = "NO_SIGNAL"
+		objectAtUnsafe(fact, "falsifier")["expected_terminal_state"] = "NO_SIGNAL"
+	case "SOURCE_TERMINAL_NULL":
+		factProvenanceForTest(firstSourceTerminalFactForTest(facts))["source_terminal"] = nil
+	case "SOURCE_TERMINAL_OMITTED":
+		delete(factProvenanceForTest(firstSourceTerminalFactForTest(facts)), "source_terminal")
 	case "TERMINAL_STATE_NOT_WITHHELD":
 		for _, raw := range facts {
 			fact, _ := objectValue(raw)
@@ -169,4 +257,21 @@ func firstEBusIdentityForTest(facts []any, family string) map[string]any {
 		}
 	}
 	return nil
+}
+
+func firstSourceTerminalFactForTest(facts []any) map[string]any {
+	for _, raw := range facts {
+		fact, ok := objectValue(raw)
+		if ok {
+			if _, terminalOK := objectValue(factProvenanceForTest(fact)["source_terminal"]); terminalOK {
+				return fact
+			}
+		}
+	}
+	return nil
+}
+
+func firstSourceTerminalForTest(facts []any) map[string]any {
+	terminal, _ := objectValue(factProvenanceForTest(firstSourceTerminalFactForTest(facts))["source_terminal"])
+	return terminal
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
@@ -252,6 +253,7 @@ func checkProvenance(graph, registry, sourceBundle, sourceReplay map[string]any)
 	sources := indexSources(sourceBundle)
 	artifacts := indexArtifacts(sourceBundle)
 	facts, _ := arrayValue(graph["facts"])
+	boundTerminalSourceIDs := make([]string, 0)
 	for _, raw := range facts {
 		fact, _ := objectValue(raw)
 		provenance, _ := objectValue(fact["provenance"])
@@ -269,6 +271,53 @@ func checkProvenance(graph, registry, sourceBundle, sourceReplay map[string]any)
 				return fail("provenance.binding")
 			}
 			seen[key] = true
+		}
+
+		if terminalRaw := provenance["source_terminal"]; terminalRaw != nil {
+			terminal, ok := objectValue(terminalRaw)
+			if !ok || !exactKeys(terminal,
+				"source_id", "source_kind", "binding_source_kind", "source_contract",
+				"source_schema_version", "phase", "state", "error_category",
+				"ebus_identity", "evidence_refs",
+			) {
+				return fail("provenance.binding")
+			}
+			sourceID, ok := stringValue(terminal["source_id"])
+			source, sourceOK := sources[sourceID]
+			binding, bindingOK := objectValue(source["source_binding"])
+			identity, identityOK := objectValue(terminal["ebus_identity"])
+			family, familyOK := stringValue(identity["family"])
+			expectedBindingKind := "EBUS_" + family
+			requestScope, requestScopeOK := objectValue(binding["request_scope"])
+			terminalRefs, terminalRefsOK := arrayValue(terminal["evidence_refs"])
+			if !ok || !sourceOK || !bindingOK || !identityOK || !familyOK ||
+				!requestScopeOK || !terminalRefsOK ||
+				terminal["source_kind"] != source["source_kind"] ||
+				terminal["binding_source_kind"] != binding["source_kind"] ||
+				terminal["source_contract"] != source["source_contract"] ||
+				!reflect.DeepEqual(terminal["source_schema_version"], source["source_schema_version"]) ||
+				terminal["phase"] != source["phase"] || terminal["state"] != source["state"] ||
+				terminal["error_category"] != source["error_category"] ||
+				!reflect.DeepEqual(terminal["ebus_identity"], source["ebus_identity"]) ||
+				!reflect.DeepEqual(terminalRefs, source["evidence_refs"]) ||
+				source["source_kind"] != "EBUS" || source["state"] != "UNAVAILABLE" ||
+				source["error_category"] != "BACKEND_UNAVAILABLE" ||
+				!isEmptyArray(source["artifact_ids"]) || sourceHasArtifact(sourceBundle, sourceID) ||
+				binding["runtime_kind"] != source["source_kind"] ||
+				binding["source_kind"] != expectedBindingKind ||
+				binding["source_contract"] != source["source_contract"] ||
+				!reflect.DeepEqual(binding["source_schema_version"], source["source_schema_version"]) ||
+				requestScope["phase"] != source["phase"] ||
+				requestScope["source_kind"] != source["source_kind"] ||
+				!reflect.DeepEqual(binding["ebus_identity"], source["ebus_identity"]) ||
+				!reflect.DeepEqual(factRefs, terminalRefs) ||
+				provenance["ebus_source_id"] != nil || provenance["ebus_artifact_id"] != nil ||
+				provenance["ebus"] != nil || provenance["eebus_source_id"] != nil ||
+				provenance["eebus_artifact_id"] != nil || provenance["eebus_service"] != nil ||
+				provenance["eebus"] != nil || provenance["cloud"] != nil {
+				return fail("provenance.binding")
+			}
+			boundTerminalSourceIDs = append(boundTerminalSourceIDs, sourceID)
 		}
 
 		selected := make([]map[string]any, 0, 3)
@@ -337,7 +386,40 @@ func checkProvenance(graph, registry, sourceBundle, sourceReplay map[string]any)
 			}
 		}
 	}
+
+	eligibleTerminalSourceIDs := make([]string, 0)
+	for sourceID, source := range sources {
+		binding, bindingOK := objectValue(source["source_binding"])
+		bindingKind, bindingKindOK := stringValue(binding["source_kind"])
+		if bindingOK && bindingKindOK && source["source_kind"] == "EBUS" &&
+			source["state"] == "UNAVAILABLE" && source["error_category"] == "BACKEND_UNAVAILABLE" &&
+			isEmptyArray(source["artifact_ids"]) &&
+			(bindingKind == "EBUS_B509" || bindingKind == "EBUS_B524" || bindingKind == "EBUS_B555") {
+			eligibleTerminalSourceIDs = append(eligibleTerminalSourceIDs, sourceID)
+		}
+	}
+	sort.Strings(boundTerminalSourceIDs)
+	sort.Strings(eligibleTerminalSourceIDs)
+	if !reflect.DeepEqual(boundTerminalSourceIDs, eligibleTerminalSourceIDs) {
+		return fail("provenance.binding")
+	}
 	return nil
+}
+
+func isEmptyArray(value any) bool {
+	items, ok := arrayValue(value)
+	return ok && len(items) == 0
+}
+
+func sourceHasArtifact(bundle map[string]any, sourceID string) bool {
+	artifacts, _ := arrayValue(bundle["artifacts"])
+	for _, raw := range artifacts {
+		artifact, ok := objectValue(raw)
+		if ok && artifact["source_id"] == sourceID {
+			return true
+		}
+	}
+	return false
 }
 
 func checkSampleProvenance(fact map[string]any, artifacts map[string]map[string]any, factRefs map[string]bool) error {

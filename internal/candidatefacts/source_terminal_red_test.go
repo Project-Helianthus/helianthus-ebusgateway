@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
 )
 
-const sourceTerminalOwnerCommit = "444eb1abee44039dc000da2fbdb165162839fcdc"
+const sourceTerminalOwnerCommit = "35d2eba256a77b6575a2b45c07e73f054ff74ced"
 
 func TestMSP07SourceTerminalContractPin(t *testing.T) {
 	got := PinnedContractV1()
@@ -27,6 +29,33 @@ func TestMSP07SourceTerminalBuildVerifyReplayAreCanonical(t *testing.T) {
 	replayRaw := sourceTerminalFixture(t, "positive", "source-terminal-replay-result.json")
 	bundleRaw := sourceTerminalFixture(t, "source", "source-terminal-bundle.json")
 	sourceReplayRaw := sourceTerminalFixture(t, "source", "source-terminal-replay-result.json")
+	generatedSourceReplay, err := syncevidence.Replay(bundleRaw)
+	if err != nil {
+		t.Fatalf("syncevidence.Replay(source terminal): %v", err)
+	}
+	wantSourceReplay, err := syncevidence.CanonicalizeJSON(sourceReplayRaw)
+	if err != nil || !bytes.Equal(generatedSourceReplay, wantSourceReplay) {
+		t.Fatalf("source-terminal source replay differs from canonical bytes err=%v\ngot=%s\nwant=%s", err, generatedSourceReplay, wantSourceReplay)
+	}
+	sourceBundle, sourceReplay, err := verifySourceInputs(bundleRaw, sourceReplayRaw)
+	if err != nil {
+		t.Fatalf("verifySourceInputs(source terminal): %v", err)
+	}
+	registry, _, err := loadRegistryV1()
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := parseJSON(graphRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphValue, _ := objectValue(value)
+	if err := checkProvenance(graphValue, registry, sourceBundle, sourceReplay); err != nil {
+		t.Fatalf("checkProvenance(source terminal): %v", err)
+	}
+	if err := Verify(graphRaw, bundleRaw, sourceReplayRaw); err != nil {
+		t.Fatalf("Verify(canonical source terminal): %v", err)
+	}
 
 	graph, err := decodeGraphV1(graphRaw)
 	if err != nil {
@@ -56,8 +85,9 @@ func TestMSP07SourceTerminalBuildVerifyReplayAreCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build(source terminal): %v", err)
 	}
-	if !bytes.Equal(built, graphRaw) {
-		t.Fatal("source-terminal build differs from the canonical graph")
+	wantGraph, err := canonicalJSON(graphValue)
+	if err != nil || !bytes.Equal(built, wantGraph) {
+		t.Fatalf("source-terminal build differs from the canonical graph err=%v", err)
 	}
 	if err := Verify(built, bundleRaw, sourceReplayRaw); err != nil {
 		t.Fatalf("Verify(source terminal): %v", err)

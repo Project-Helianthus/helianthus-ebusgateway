@@ -160,6 +160,7 @@ type ConfidenceV1 struct {
 type ProvenanceV1 struct {
 	SourceBundleID     string             `json:"source_bundle_id"`
 	NativeEvidenceRefs []EvidenceRefV1    `json:"native_evidence_refs"`
+	SourceTerminal     *SourceTerminalV1  `json:"source_terminal,omitempty"`
 	EBusSourceID       *string            `json:"ebus_source_id"`
 	EBusArtifactID     *string            `json:"ebus_artifact_id"`
 	EBus               *EBusIdentityV1    `json:"ebus"`
@@ -168,6 +169,19 @@ type ProvenanceV1 struct {
 	EEBusService       *string            `json:"eebus_service"`
 	EEBus              *EEBusIdentityV1   `json:"eebus"`
 	Cloud              *CloudProvenanceV1 `json:"cloud"`
+}
+
+type SourceTerminalV1 struct {
+	SourceID            string          `json:"source_id"`
+	SourceKind          string          `json:"source_kind"`
+	BindingSourceKind   string          `json:"binding_source_kind"`
+	SourceContract      string          `json:"source_contract"`
+	SourceSchemaVersion uint64          `json:"source_schema_version"`
+	Phase               string          `json:"phase"`
+	State               string          `json:"state"`
+	ErrorCategory       string          `json:"error_category"`
+	EBusIdentity        EBusIdentityV1  `json:"ebus_identity"`
+	EvidenceRefs        []EvidenceRefV1 `json:"evidence_refs"`
 }
 
 type EBusIdentityV1 struct {

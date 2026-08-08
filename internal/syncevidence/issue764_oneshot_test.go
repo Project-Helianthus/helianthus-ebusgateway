@@ -34,13 +34,14 @@ func issue764OneShotOptions(
 	versionCalls *int,
 ) OneShotExecutionOptions {
 	t.Helper()
+	wall := time.Now().UTC().Truncate(time.Second)
 	return OneShotExecutionOptions{
 		Root:    root,
 		Reader:  reader,
 		Entropy: entropy,
 		ClockFactory: func() Clock {
 			*clockCalls++
-			return &redClock{wall: time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)}
+			return &redClock{wall: wall}
 		},
 		BuildIdentity: func() (OneShotBuildIdentity, error) {
 			*versionCalls++

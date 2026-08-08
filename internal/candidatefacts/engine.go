@@ -193,11 +193,40 @@ func Replay(graphRaw, sourceBundleRaw, sourceReplayRaw []byte) ([]byte, error) {
 		}
 		sort.Strings(digests)
 		comparator, _ := objectValue(fact["comparator"])
-		results = append(results, map[string]any{
+		result := map[string]any{
 			"candidate_id": fact["candidate_id"], "proposed_path": fact["proposed_path"], "status": fact["status"],
 			"terminal_negative_state": fact["terminal_negative_state"], "confidence": fact["confidence"],
 			"comparator_outcome": comparator["outcome"], "fact_hash": fact["fact_hash"], "native_evidence_digests": digests,
-		})
+		}
+		if terminalRaw, present := provenance["source_terminal"]; present {
+			if terminalRaw == nil {
+				result["source_terminal"] = nil
+			} else {
+				terminal, _ := objectValue(terminalRaw)
+				identity, _ := objectValue(terminal["ebus_identity"])
+				terminalRefs, _ := arrayValue(terminal["evidence_refs"])
+				digestSet := make(map[string]bool, len(terminalRefs))
+				for _, refRaw := range terminalRefs {
+					ref, _ := objectValue(refRaw)
+					digestSet[asString(ref["digest"])] = true
+				}
+				terminalDigests := make([]string, 0, len(digestSet))
+				for digest := range digestSet {
+					terminalDigests = append(terminalDigests, digest)
+				}
+				sort.Strings(terminalDigests)
+				result["source_terminal"] = map[string]any{
+					"source_id": terminal["source_id"], "source_kind": terminal["source_kind"],
+					"binding_source_kind":   terminal["binding_source_kind"],
+					"source_contract":       terminal["source_contract"],
+					"source_schema_version": terminal["source_schema_version"],
+					"phase":                 terminal["phase"], "state": terminal["state"],
+					"error_category": terminal["error_category"], "identity_family": identity["family"],
+					"evidence_digests": terminalDigests,
+				}
+			}
+		}
+		results = append(results, result)
 	}
 	registry, _ := objectValue(graph["registry"])
 	bundle, _ := objectValue(graph["source_bundle"])
@@ -238,6 +267,10 @@ func normalizeBuildOrdering(graph map[string]any) {
 		provenance, _ := objectValue(fact["provenance"])
 		factRefs, _ := arrayValue(provenance["native_evidence_refs"])
 		sort.SliceStable(factRefs, func(i, j int) bool { return evidenceRefLess(factRefs[i], factRefs[j]) })
+		if terminal, ok := objectValue(provenance["source_terminal"]); ok {
+			terminalRefs, _ := arrayValue(terminal["evidence_refs"])
+			sort.SliceStable(terminalRefs, func(i, j int) bool { return evidenceRefLess(terminalRefs[i], terminalRefs[j]) })
+		}
 		comparator, _ := objectValue(fact["comparator"])
 		samples, _ := arrayValue(comparator["samples"])
 		sort.SliceStable(samples, func(i, j int) bool { return sampleLess(samples[i], samples[j]) })

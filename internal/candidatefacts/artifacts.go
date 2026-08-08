@@ -14,11 +14,11 @@ var artifactFiles embed.FS
 func PinnedContractV1() ContractBindingV1 {
 	return ContractBindingV1{
 		OwnerRepository:      "Project-Helianthus/helianthus-docs-ebus",
-		OwnerCommit:          "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
+		OwnerCommit:          "35d2eba256a77b6575a2b45c07e73f054ff74ced",
 		GraphSchemaPath:      "docs/platform/schemas/draft-candidate-fact-graph-v1.schema.json",
-		GraphSchemaSHA256:    "ab5f65a527633c3c5f60119cf0071a6ffdd3ee66d6e210f78bf17a03e438069a",
+		GraphSchemaSHA256:    "e7a2fd4d9a9494c8d25f6b688684e70d8bce72002df0bdcc76da766aec02706b",
 		ReplaySchemaPath:     "docs/platform/schemas/draft-candidate-fact-replay-v1.schema.json",
-		ReplaySchemaSHA256:   "d691cfc970e99faae7f5a1f4e30ed0cb6a4c3cc6e11959dffba5f82a8fc6d232",
+		ReplaySchemaSHA256:   "742a7e29f95ff17ad6b6b5669185f38b54fee07bc1af94b430cd7beb1db91a66",
 		RegistryPath:         "docs/platform/schemas/draft-candidate-fact-registry-v1.json",
 		RegistrySHA256:       "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
 		SourceContract:       "helianthus.platform.synchronized-evidence-bundle.v1",

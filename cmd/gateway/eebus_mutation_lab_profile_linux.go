@@ -204,9 +204,9 @@ func mutationLabFileIdentity(stat unix.Stat_t) eebusMutationLabFileIdentity {
 		uid:          stat.Uid,
 		linkCount:    uint64(stat.Nlink),
 		size:         stat.Size,
-		changeSec:    stat.Ctim.Sec,
-		changeNsec:   stat.Ctim.Nsec,
-		modifiedSec:  stat.Mtim.Sec,
-		modifiedNsec: stat.Mtim.Nsec,
+		changeSec:    int64(stat.Ctim.Sec),
+		changeNsec:   int64(stat.Ctim.Nsec),
+		modifiedSec:  int64(stat.Mtim.Sec),
+		modifiedNsec: int64(stat.Mtim.Nsec),
 	}
 }

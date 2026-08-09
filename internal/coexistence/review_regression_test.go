@@ -18,6 +18,34 @@ func TestMSP08ReviewRejectsUnrecognizedCandidateLeakValues(t *testing.T) {
 	assertReviewCategory(t, evidence, "anti_leak.candidate")
 }
 
+func TestMSP08ReviewRejectsStructuredCandidateLeakKeyVariantsWithRecomputedEvidence(t *testing.T) {
+	for _, fixture := range []struct {
+		name   string
+		viewID string
+		key    string
+		value  any
+	}{
+		{name: "GraphQL candidate status suffix", viewID: "graphql.ebus.values", key: "candidate_status_v1", value: map[string]any{"state": true}},
+		{name: "HA conflict state", viewID: "ha.graphql.values", key: "conflict_state", value: []any{true}},
+		{name: "debug raw only reason", viewID: "debug.ebus", key: "raw_only_reason", value: map[string]any{"code": 1}},
+		{name: "debug withheld count suffix", viewID: "debug.ebus", key: "withheld_count_v1", value: 1},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			evidence := reviewEvidence(t)
+			for _, rawRun := range arrayValue(t, evidence, "runs") {
+				run := asObject(t, rawRun, "run")
+				view := findView(t, run, fixture.viewID)
+				data := objectValue(t, objectValue(t, view, "payload"), "data")
+				data[fixture.key] = fixture.value
+				refreshViewHashes(t, evidence, run, view)
+			}
+			refreshEvidenceIdentity(t, evidence)
+
+			assertReviewCategory(t, evidence, "anti_leak.candidate")
+		})
+	}
+}
+
 func TestMSP08ReviewRejectsAlternatePublicV2Spellings(t *testing.T) {
 	evidence := reviewEvidence(t)
 	for _, rawRun := range arrayValue(t, evidence, "runs") {

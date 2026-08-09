@@ -151,6 +151,24 @@ func TestMSP08PublicRedactionRejectsSecretsAndStableProtocolIdentity(t *testing.
 	}
 }
 
+func TestMSP08PublicHAIdentityRejectsRawViaDeviceAcrossAllRuns(t *testing.T) {
+	inputs := capturedPublicInputs(t)
+	evidence := asObject(t, decodeJSON(t, inputs.Evidence), "captured evidence")
+	for _, rawRun := range arrayValue(t, evidence, "runs") {
+		run := asObject(t, rawRun, "run")
+		view := findView(t, run, "ha.identity")
+		data := objectValue(t, objectValue(t, view, "payload"), "data")
+		devices := arrayValue(t, data, "devices")
+		for _, rawDevice := range devices {
+			asObject(t, rawDevice, "HA device")["via_device"] = "vr940-stable-raw-device-id"
+		}
+		refreshViewHashes(t, evidence, run, view)
+	}
+	refreshEvidenceIdentity(t, evidence)
+	inputs.Evidence = canonicalJSON(t, evidence)
+	assertCategory(t, VerifyPublic(inputs), "redaction.public")
+}
+
 func capturedPublicInputs(t *testing.T) InputsV1 {
 	t.Helper()
 	repo := repoDir(t)

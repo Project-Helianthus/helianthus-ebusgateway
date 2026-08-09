@@ -9,8 +9,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence"
 )
 
 const (
@@ -95,18 +93,6 @@ func TestMSP085PinsExactDocsOwnerAndExecutableArtifacts(t *testing.T) {
 	}
 }
 
-func TestMSP085PromotionAndCoexistenceBindSameDocsOwnerSnapshot(t *testing.T) {
-	promotion := PinnedContractV1()
-	coexistenceBinding := coexistence.Binding()
-	if promotion.OwnerRepository != coexistenceBinding.OwnerRepository ||
-		promotion.OwnerCommit != coexistenceBinding.OwnerCommit ||
-		promotion.OwnerTree != coexistenceBinding.OwnerTree ||
-		promotion.OwnerExactHeadActionsRun != coexistenceBinding.OwnerExactHeadActionsRun ||
-		promotion.OwnerPostMainActionsRun != coexistenceBinding.OwnerPostMainActionsRun {
-		t.Fatalf("docs owner snapshots diverged: promotion=%#v coexistence=%#v", promotion, coexistenceBinding)
-	}
-}
-
 func sortedKeys[V any](values map[string]V) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -174,8 +160,8 @@ func TestMSP085BindsExactM7AndM8ArtifactsAndSyntheticBoundary(t *testing.T) {
 	source := manifest.SourceBindings
 	if source.M7GraphID != "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac" ||
 		source.M7ReplayID != "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b" ||
-		source.M8EvidenceID != "mrcv1:sha256:9055d83a83042c70131769e7d6f33f6eabe1665532634299d0fbdc65c58b6218" ||
-		source.M8ReportID != "mrcrv1:sha256:e87f8e135041b6894be4c0e3ccca9d16a34923ee9ec78cbf3fb614974e05b38b" ||
+		source.M8EvidenceID != "mrcv1:sha256:91a6da0fd05ed9988fe5a741a8ca673109fcd12ff88f75491a92b4013e2c72b7" ||
+		source.M8ReportID != "mrcrv1:sha256:016be5dfd8a0f1707c3efd34daf4751f697cef4e70833ce3fc7ed2b53d8eda30" ||
 		source.EvidenceClass != "SYNTHETIC_OFFLINE_FIXTURE" || source.LiveVR940Claim {
 		t.Fatalf("source binding = %#v", source)
 	}

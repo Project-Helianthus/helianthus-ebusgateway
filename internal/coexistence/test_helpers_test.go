@@ -427,6 +427,13 @@ func refreshViewHashes(t *testing.T, evidence, run, view map[string]any) {
 	t.Fatalf("missing immutable input %s", inputID)
 }
 
+func refreshEvidenceIdentity(t *testing.T, evidence map[string]any) {
+	t.Helper()
+	digest := domainDigest(t, evidenceDomainV1, withoutKeys(t, evidence, "evidence_id", "evidence_hash"))
+	evidence["evidence_hash"] = digest
+	evidence["evidence_id"] = "mrcv1:" + digest
+}
+
 func applyMutation(t *testing.T, evidence map[string]any, mutation string) {
 	t.Helper()
 	disabled := findRun(t, evidence, "EEBUS_DISABLED_CONFIRMED")

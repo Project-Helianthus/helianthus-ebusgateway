@@ -9,11 +9,13 @@
     "schema_version",
     "fixture_id",
     "evidence_class",
+    "export_tier",
     "evidence_id",
     "evidence_hash",
     "registry",
     "scope",
     "m7_binding",
+    "m7_live_status",
     "capture_clock",
     "normalization",
     "limits",
@@ -22,13 +24,15 @@
   "properties": {
     "contract": {"const": "helianthus.platform.multi-runtime-coexistence-evidence.v1"},
     "schema_version": {"const": 1},
-    "fixture_id": {"type": "string", "pattern": "^MSP08-G18-[A-Z0-9-]+$", "maxLength": 128},
+    "fixture_id": {"type": "string", "pattern": "^MSP08-G18-[A-Z0-9-]+$", "maxLength": 121},
     "evidence_class": {"enum": ["SYNTHETIC_OFFLINE_FIXTURE", "CAPTURED_RUNTIME_EVIDENCE"]},
+    "export_tier": {"const": "PUBLIC_REDACTED"},
     "evidence_id": {"type": "string", "pattern": "^mrcv1:sha256:[0-9a-f]{64}$"},
     "evidence_hash": {"$ref": "#/$defs/Digest"},
     "registry": {"$ref": "#/$defs/RegistryBinding"},
     "scope": {"$ref": "#/$defs/Scope"},
     "m7_binding": {"$ref": "#/$defs/M7Binding"},
+    "m7_live_status": {"oneOf": [{"$ref": "#/$defs/M7LiveStatusBinding"}, {"type": "null"}]},
     "capture_clock": {"$ref": "#/$defs/CaptureClock"},
     "normalization": {"$ref": "#/$defs/Normalization"},
     "limits": {"$ref": "#/$defs/Limits"},
@@ -80,16 +84,34 @@
     "M7Binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["completion_token", "docs_source_commit", "graph_contract", "graph_id", "graph_hash", "replay_contract", "replay_id", "replay_hash"],
+      "required": ["source_commit", "docs_source_commit", "graph_contract", "graph_id", "graph_hash", "replay_contract", "replay_id", "replay_hash", "registry_content_hash", "source_bundle_content_hash", "source_replay_content_hash"],
       "properties": {
-        "completion_token": {"$ref": "#/$defs/Token"},
+        "source_commit": {"$ref": "#/$defs/SHA"},
         "docs_source_commit": {"$ref": "#/$defs/SHA"},
         "graph_contract": {"const": "helianthus.platform.draft-candidate-fact-graph.v1"},
         "graph_id": {"type": "string", "pattern": "^dcfgv1:sha256:[0-9a-f]{64}$"},
         "graph_hash": {"$ref": "#/$defs/Digest"},
         "replay_contract": {"const": "helianthus.platform.draft-candidate-fact-replay.v1"},
         "replay_id": {"type": "string", "pattern": "^dcfrv1:sha256:[0-9a-f]{64}$"},
-        "replay_hash": {"$ref": "#/$defs/Digest"}
+        "replay_hash": {"$ref": "#/$defs/Digest"},
+        "registry_content_hash": {"$ref": "#/$defs/Digest"},
+        "source_bundle_content_hash": {"$ref": "#/$defs/Digest"},
+        "source_replay_content_hash": {"$ref": "#/$defs/Digest"}
+      }
+    },
+    "M7LiveStatusBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "projection_id", "projection_hash", "content_hash", "source_graph_id", "source_graph_hash", "source_replay_id", "source_replay_hash"],
+      "properties": {
+        "contract": {"const": "helianthus.platform.draft-candidate-fact-public-status.v1"},
+        "projection_id": {"type": "string", "pattern": "^dcfpsv1:sha256:[0-9a-f]{64}$"},
+        "projection_hash": {"$ref": "#/$defs/Digest"},
+        "content_hash": {"$ref": "#/$defs/Digest"},
+        "source_graph_id": {"type": "string", "pattern": "^dcfgv1:sha256:[0-9a-f]{64}$"},
+        "source_graph_hash": {"$ref": "#/$defs/Digest"},
+        "source_replay_id": {"type": "string", "pattern": "^dcfrv1:sha256:[0-9a-f]{64}$"},
+        "source_replay_hash": {"$ref": "#/$defs/Digest"}
       }
     },
     "CaptureClock": {
@@ -212,7 +234,7 @@
       "required": ["input_id", "kind", "digest", "byte_length"],
       "properties": {
         "input_id": {"$ref": "#/$defs/Token"},
-        "kind": {"enum": ["PROTECTED_VIEW_PAYLOAD", "M7_GRAPH", "M7_REPLAY"]},
+        "kind": {"enum": ["PROTECTED_VIEW_PAYLOAD", "M7_GRAPH", "M7_REPLAY", "M7_REGISTRY", "M7_SOURCE_BUNDLE", "M7_SOURCE_REPLAY", "M7_TERMINAL_GRAPH", "M7_TERMINAL_REPLAY", "M7_TERMINAL_SOURCE_BUNDLE", "M7_TERMINAL_SOURCE_REPLAY", "M7_PRIVATE_GRAPH", "M7_PRIVATE_REPLAY", "M7_PRIVATE_SOURCE_BUNDLE", "M7_PRIVATE_SOURCE_REPLAY", "M7_PUBLIC_STATUS", "RESTART_PROCESS_EVENT", "RESTART_STATE_SNAPSHOT", "RESTART_SESSION_EVENT"]},
         "digest": {"$ref": "#/$defs/Digest"},
         "byte_length": {"type": "integer", "minimum": 1, "maximum": 2097152}
       }
@@ -220,14 +242,15 @@
     "Provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["capture_clock_id", "runtime", "config", "auth_scope", "mask_scope_digest", "immutable_inputs"],
+      "required": ["capture_clock_id", "process_instance_id", "runtime", "config", "auth_scope", "mask_scope_digest", "immutable_inputs"],
       "properties": {
         "capture_clock_id": {"type": "string", "pattern": "^clock-[0-9a-f]{32}$"},
+        "process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
         "runtime": {"$ref": "#/$defs/Runtime"},
         "config": {"$ref": "#/$defs/Config"},
         "auth_scope": {"$ref": "#/$defs/AuthScope"},
         "mask_scope_digest": {"$ref": "#/$defs/Digest"},
-        "immutable_inputs": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/ImmutableInput"}}
+        "immutable_inputs": {"type": "array", "minItems": 1, "maxItems": 27, "items": {"$ref": "#/$defs/ImmutableInput"}}
       }
     },
     "CandidateFact": {
@@ -236,25 +259,85 @@
       "required": ["candidate_id", "status", "terminal_negative_state", "visibility_channel"],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/Token"},
-        "status": {"enum": ["CANDIDATE", "WITHHELD"]},
-        "terminal_negative_state": {"oneOf": [{"const": "CONFLICT"}, {"type": "null"}]},
+        "status": {"enum": ["RAW_ONLY", "CANDIDATE", "CONFLICTED", "WITHHELD"]},
+        "terminal_negative_state": {"oneOf": [{"enum": ["NO_SIGNAL", "CLOUD_ONLY", "CONFLICT", "NOT_TESTED"]}, {"type": "null"}]},
         "visibility_channel": {"const": "CANDIDATE_DEBUG_REPLAY"}
+      }
+    },
+    "RestartProcessEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "event_type", "before_process_instance_id", "after_process_instance_id", "observed_at_offset_ns"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/Token"},
+        "event_type": {"const": "PROCESS_RESTART_OBSERVED"},
+        "before_process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "after_process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "observed_at_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000}
+      }
+    },
+    "RestartStateSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_instance_id", "capture_offset_ns", "trust_state_id", "peer_binding_id", "session_id", "session_state"],
+      "properties": {
+        "process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "capture_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000},
+        "trust_state_id": {"type": "string", "pattern": "^redacted:sha256:[0-9a-f]{12}$"},
+        "peer_binding_id": {"type": "string", "pattern": "^redacted:sha256:[0-9a-f]{12}$"},
+        "session_id": {"type": "string", "pattern": "^redacted:sha256:[0-9a-f]{12}$"},
+        "session_state": {"const": "CONNECTED"}
+      }
+    },
+    "RestartSessionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "event_type", "process_instance_id", "session_id", "observed_at_offset_ns", "state"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/Token"},
+        "event_type": {"const": "SESSION_RECONNECTED_OBSERVED"},
+        "process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "session_id": {"type": "string", "pattern": "^redacted:sha256:[0-9a-f]{12}$"},
+        "observed_at_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000},
+        "state": {"const": "CONNECTED"}
+      }
+    },
+    "RestartTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "before_process_instance_id", "after_process_instance_id", "before_trust_state_hash", "after_trust_state_hash", "before_peer_binding_hash", "after_peer_binding_hash", "session_reconnected", "process_event", "before_snapshot", "after_snapshot", "session_event"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/Token"},
+        "before_process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "after_process_instance_id": {"type": "string", "pattern": "^process-[0-9a-f]{32}$"},
+        "before_trust_state_hash": {"$ref": "#/$defs/Digest"},
+        "after_trust_state_hash": {"$ref": "#/$defs/Digest"},
+        "before_peer_binding_hash": {"$ref": "#/$defs/Digest"},
+        "after_peer_binding_hash": {"$ref": "#/$defs/Digest"},
+        "session_reconnected": {"const": true},
+        "process_event": {"$ref": "#/$defs/RestartProcessEvent"},
+        "before_snapshot": {"$ref": "#/$defs/RestartStateSnapshot"},
+        "after_snapshot": {"$ref": "#/$defs/RestartStateSnapshot"},
+        "session_event": {"$ref": "#/$defs/RestartSessionEvent"}
       }
     },
     "StateEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["outcome", "eebus_runtime_enabled", "candidate_graph_enabled", "service_count", "candidate_count", "conflict_count", "degraded", "empty_success", "facts"],
+      "required": ["outcome", "eebus_runtime_enabled", "candidate_graph_enabled", "service_count", "raw_only_count", "candidate_count", "conflict_count", "withheld_count", "degraded", "empty_success", "facts", "restart_transition"],
       "properties": {
-        "outcome": {"enum": ["BASELINE_CAPTURED", "DISABLED_CONFIRMED", "NO_SERVICES_OBSERVED", "CANDIDATE_ONLY_OBSERVED", "CONFLICT_WITHHELD_OBSERVED", "ROLLBACK_BASELINE_RESTORED"]},
+        "outcome": {"enum": ["BASELINE_CAPTURED", "DISABLED_CONFIRMED", "NO_SERVICES_OBSERVED", "CANDIDATE_ONLY_OBSERVED", "CONFLICT_WITHHELD_OBSERVED", "ROLLBACK_BASELINE_RESTORED", "CONNECTED_BASELINE_CAPTURED", "RAW_WITHHELD_OBSERVED", "RESTART_PERSISTED", "GRAPH_EVIDENCE_DROPPED"]},
         "eebus_runtime_enabled": {"type": "boolean"},
         "candidate_graph_enabled": {"type": "boolean"},
         "service_count": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "raw_only_count": {"type": "integer", "minimum": 0, "maximum": 64},
         "candidate_count": {"type": "integer", "minimum": 0, "maximum": 64},
         "conflict_count": {"type": "integer", "minimum": 0, "maximum": 64},
+        "withheld_count": {"type": "integer", "minimum": 0, "maximum": 64},
         "degraded": {"type": "boolean"},
         "empty_success": {"type": "boolean"},
-        "facts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/CandidateFact"}}
+        "facts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/CandidateFact"}},
+        "restart_transition": {"oneOf": [{"$ref": "#/$defs/RestartTransition"}, {"type": "null"}]}
       }
     },
     "ProtectedView": {
@@ -277,7 +360,7 @@
       "required": ["run_id", "state", "capture_offset_ns", "provenance", "state_evidence", "protected_views"],
       "properties": {
         "run_id": {"type": "string", "pattern": "^msp08-run-[0-9]{2}$"},
-        "state": {"enum": ["EEBUS_DISABLED_BASELINE", "EEBUS_DISABLED_CONFIRMED", "EEBUS_ENABLED_NO_SERVICES", "EEBUS_CONNECTED_CANDIDATE_ONLY", "EEBUS_CONFLICTED_WITHHELD", "EEBUS_DISABLED_ROLLBACK"]},
+        "state": {"enum": ["EEBUS_DISABLED_BASELINE", "EEBUS_DISABLED_CONFIRMED", "EEBUS_ENABLED_NO_SERVICES", "EEBUS_CONNECTED_CANDIDATE_ONLY", "EEBUS_CONFLICTED_WITHHELD", "EEBUS_DISABLED_ROLLBACK", "EEBUS_CONNECTED_BASELINE", "EEBUS_CONNECTED_RAW_WITHHELD", "EEBUS_RESTART_PERSISTED", "EEBUS_CONNECTED_ROLLBACK"]},
         "capture_offset_ns": {"type": "integer", "minimum": 0, "maximum": 86400000000000},
         "provenance": {"$ref": "#/$defs/Provenance"},
         "state_evidence": {"$ref": "#/$defs/StateEvidence"},

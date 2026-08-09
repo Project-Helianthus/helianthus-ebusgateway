@@ -11,6 +11,8 @@ import (
 var (
 	evidenceSchemaOnce sync.Once
 	evidenceSchemaV1   map[string]any
+	statusSchemaOnce   sync.Once
+	statusSchemaV1     map[string]any
 )
 
 func loadEvidenceSchema() map[string]any {
@@ -25,6 +27,18 @@ func loadEvidenceSchema() map[string]any {
 	return evidenceSchemaV1
 }
 
+func loadStatusSchema() map[string]any {
+	statusSchemaOnce.Do(func() {
+		raw := readPinnedArtifact("contracts/draft-candidate-fact-public-status-v1.schema.json", statusSchemaSHA256)
+		value, err := parseCategorizedJSON(raw, "provenance.m7")
+		if err != nil {
+			panic("coexistence: invalid embedded M7 status schema")
+		}
+		statusSchemaV1 = value.(map[string]any)
+	})
+	return statusSchemaV1
+}
+
 func schemaCheckEvidence(value any) error {
 	schema := loadEvidenceSchema()
 	if !schemaValidate(value, schema, schema) {
@@ -32,6 +46,14 @@ func schemaCheckEvidence(value any) error {
 	}
 	if err := checkPortableKeys(value); err != nil {
 		return err
+	}
+	return nil
+}
+
+func schemaCheckStatus(value any) error {
+	schema := loadStatusSchema()
+	if !schemaValidate(value, schema, schema) {
+		return fail("provenance.m7")
 	}
 	return nil
 }

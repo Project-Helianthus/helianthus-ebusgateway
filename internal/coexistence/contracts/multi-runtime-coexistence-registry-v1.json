@@ -14,24 +14,83 @@
     "EEBUS-G17",
     "EEBUS-G19"
   ],
-  "m7_completion_token": "MSP-07@ff511b035b85aef6123fb0853bb3d2f3af6fc01e",
-  "m7_docs_source_commit": "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
-  "m7_binding": {
+  "m7_synthetic_predecessor": {
+    "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+    "source_commit": "ff511b035b85aef6123fb0853bb3d2f3af6fc01e",
+    "docs_source_commit": "ea88fef23ecb154b08f70e7f94b36e1738ed08bf",
+    "binding_mode": "EXACT_SYNTHETIC_FIXTURE"
+  },
+  "m7_live_predecessor": {
+    "repository": "github.com/Project-Helianthus/helianthus-ebusgateway",
+    "source_commit": "8bcba2107d10b149f984ac9546ea6427a9cda8a1",
+    "docs_source_commit": "35d2eba256a77b6575a2b45c07e73f054ff74ced",
+    "binding_mode": "VALIDATED_INPUTS_AND_REGENERATED_REPLAY"
+  },
+  "m7_synthetic_binding": {
     "graph_contract": "helianthus.platform.draft-candidate-fact-graph.v1",
     "graph_id": "dcfgv1:sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
     "graph_hash": "sha256:00f2b3c48959605d311d0d3895ec924b475d8fa25ee4e236d32d6facbd32c4ac",
     "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
     "replay_id": "dcfrv1:sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
-    "replay_hash": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b"
+    "replay_hash": "sha256:0d3d6c1b4d23e1a8dfe6137fd7956f2c0c3fa51009c1ebb9129807c9fd49850b",
+    "registry_content_hash": "sha256:e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
+    "source_bundle_content_hash": "sha256:e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a",
+    "source_replay_content_hash": "sha256:3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539"
   },
-  "scenario_order": [
-    "EEBUS_DISABLED_BASELINE",
-    "EEBUS_DISABLED_CONFIRMED",
-    "EEBUS_ENABLED_NO_SERVICES",
-    "EEBUS_CONNECTED_CANDIDATE_ONLY",
-    "EEBUS_CONFLICTED_WITHHELD",
-    "EEBUS_DISABLED_ROLLBACK"
-  ],
+  "m7_live_binding": {
+    "graph_contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+    "graph_id": "dcfgv1:sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "graph_hash": "sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
+    "replay_id": "dcfrv1:sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55",
+    "replay_hash": "sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55",
+    "registry_content_hash": "sha256:e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
+    "source_bundle_content_hash": "sha256:4a6f2b1759d15ff12fbdb05e3e3f70689442ddb80b6091caa7bd8ee2f5abf8c5",
+    "source_replay_content_hash": "sha256:ef18ace29b4b2bb8b2b94b874aa07d2f46e98efba3e0a6ee56ef85a5f2d7d1df"
+  },
+  "m7_live_terminal_binding": {
+    "graph_contract": "helianthus.platform.draft-candidate-fact-graph.v1",
+    "graph_id": "dcfgv1:sha256:9291ab6dc01c97153d6bd1c05ae7326954d6f536eb44ba109cf3e85d183a04a4",
+    "graph_hash": "sha256:9291ab6dc01c97153d6bd1c05ae7326954d6f536eb44ba109cf3e85d183a04a4",
+    "replay_contract": "helianthus.platform.draft-candidate-fact-replay.v1",
+    "replay_id": "dcfrv1:sha256:e08d8ad1b2cf45a13c3e8fc27258778d5c5055818e8dfa8592a0440731ab0f07",
+    "replay_hash": "sha256:e08d8ad1b2cf45a13c3e8fc27258778d5c5055818e8dfa8592a0440731ab0f07",
+    "registry_content_hash": "sha256:e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
+    "source_bundle_content_hash": "sha256:b7269e608dfc004f6737fd80b34a1c6018483942632e0c3c8bfd33cadbaa8134",
+    "source_replay_content_hash": "sha256:82ed1c66222348746abd9f4291e10b968314363160ba4cfc568044390aced9d2"
+  },
+  "m7_live_private_inputs": {
+    "graph": {"digest": "sha256:51c2a8efb6dfcd70964b85a71fe0d0af9337c7d92fec9e1d9d2b31c403f72654", "byte_length": 38990},
+    "replay": {"digest": "sha256:86baff2793027809a869e074a8537834f0199e4d6de4cbb0496369da45336f36", "byte_length": 9903},
+    "source_bundle": {"digest": "sha256:4a6f2b1759d15ff12fbdb05e3e3f70689442ddb80b6091caa7bd8ee2f5abf8c5", "byte_length": 70698},
+    "source_replay": {"digest": "sha256:ef18ace29b4b2bb8b2b94b874aa07d2f46e98efba3e0a6ee56ef85a5f2d7d1df", "byte_length": 26494}
+  },
+  "m7_live_status_binding": {
+    "contract": "helianthus.platform.draft-candidate-fact-public-status.v1",
+    "projection_id": "dcfpsv1:sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
+    "projection_hash": "sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
+    "content_hash": "sha256:63ecafd94d507cedadc2cba4bb9ac108488d1020d3b43b0ad034409460826428",
+    "source_graph_id": "dcfgv1:sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "source_graph_hash": "sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "source_replay_id": "dcfrv1:sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55",
+    "source_replay_hash": "sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55"
+  },
+  "scenario_profiles": {
+    "SYNTHETIC_OFFLINE_FIXTURE": [
+      "EEBUS_DISABLED_BASELINE",
+      "EEBUS_DISABLED_CONFIRMED",
+      "EEBUS_ENABLED_NO_SERVICES",
+      "EEBUS_CONNECTED_CANDIDATE_ONLY",
+      "EEBUS_CONFLICTED_WITHHELD",
+      "EEBUS_DISABLED_ROLLBACK"
+    ],
+    "CAPTURED_RUNTIME_EVIDENCE": [
+      "EEBUS_CONNECTED_BASELINE",
+      "EEBUS_CONNECTED_RAW_WITHHELD",
+      "EEBUS_RESTART_PERSISTED",
+      "EEBUS_CONNECTED_ROLLBACK"
+    ]
+  },
   "protected_views": [
     "mcp.ebus.v1.responses",
     "mcp.tool.inventory",
@@ -122,6 +181,7 @@
     "CANONICAL_BYTES_IDENTICAL",
     "EBUS_AUTHORITY_PRESERVED",
     "CANDIDATE_CONFINED",
+    "PUBLIC_REDACTION_ENFORCED",
     "V1_SURFACES_PRESERVED",
     "G18_SCOPE_ONLY"
   ],
@@ -141,6 +201,7 @@
     "canonicalization.invalid",
     "hash.payload",
     "anti_leak.candidate",
+    "redaction.public",
     "authority.ebus",
     "gate.scope",
     "drift.consumer",
@@ -152,7 +213,7 @@
     "max_depth": 32,
     "max_runs": 8,
     "max_views_per_run": 16,
-    "max_inputs_per_run": 16,
+    "max_inputs_per_run": 27,
     "max_internal_facts_per_run": 64,
     "max_payload_bytes": 262144,
     "max_string_bytes": 4096,
@@ -160,8 +221,10 @@
     "max_total_list_items": 32768
   },
   "fixture_ids": {
-    "positive_evidence": "MSP08-G18-SYNTHETIC-POSITIVE-001",
-    "positive_report": "MSP08-G18-SYNTHETIC-REPORT-001",
-    "negative_prefix": "MSP08-G18-SYNTHETIC-NEG-"
+    "synthetic_positive_evidence": "MSP08-G18-SYNTHETIC-POSITIVE-001",
+    "synthetic_positive_report": "MSP08-G18-SYNTHETIC-REPORT-001",
+    "synthetic_negative_prefix": "MSP08-G18-SYNTHETIC-NEG-",
+    "live_evidence_prefix": "MSP08-G18-LIVE-EVIDENCE-",
+    "live_report_suffix": "-REPORT"
   }
 }

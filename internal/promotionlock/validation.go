@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -93,6 +94,9 @@ func decodeResultDocumentV1(raw []byte) (ResultV1, map[string]any, error) {
 	if len(raw) > maxResultBytesV1 {
 		return ResultV1{}, nil, fail("limits.exceeded")
 	}
+	if !utf8.Valid(raw) {
+		return ResultV1{}, nil, fail("json.syntax")
+	}
 	if negativeZeroPatternV1.Match(raw) {
 		return ResultV1{}, nil, fail("json.syntax")
 	}
@@ -152,8 +156,14 @@ func validateExactResultDocumentV1(object map[string]any) error {
 	if !hasExactKeysV1(object, topLevel...) {
 		return fail("captured.result")
 	}
-	if _, err := exactObjectV1(object["counts"], "total", "promoted", "withheld"); err != nil {
+	counts, err := exactObjectV1(object["counts"], "total", "promoted", "withheld")
+	if err != nil {
 		return err
+	}
+	if !jsonIntegerV1(object["schema_version"]) || !jsonIntegerV1(object["replay_version"]) ||
+		!jsonIntegerV1(object["dossier_count"]) || !jsonIntegerV1(counts["total"]) ||
+		!jsonIntegerV1(counts["promoted"]) || !jsonIntegerV1(counts["withheld"]) {
+		return fail("captured.result")
 	}
 	if profile == ProfileSyntheticConformanceV1 {
 		return validateExactObjectListV1(object["leaves"],
@@ -176,12 +186,21 @@ func validateExactResultDocumentV1(object map[string]any) error {
 		if err != nil {
 			return err
 		}
-		if _, err := exactObjectV1(assessment["retest_trigger"],
-			"trigger", "required_source_kinds", "minimum_new_samples"); err != nil {
+		retest, err := exactObjectV1(assessment["retest_trigger"],
+			"trigger", "required_source_kinds", "minimum_new_samples")
+		if err != nil {
 			return err
+		}
+		if !jsonIntegerV1(retest["minimum_new_samples"]) {
+			return fail("captured.result")
 		}
 	}
 	return nil
+}
+
+func jsonIntegerV1(value any) bool {
+	_, ok := value.(json.Number)
+	return ok
 }
 
 func validateExactObjectListV1(value any, keys ...string) error {

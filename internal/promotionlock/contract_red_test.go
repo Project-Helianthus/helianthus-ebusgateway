@@ -29,9 +29,9 @@ var executableArtifactsV1 = map[string]string{
 	"docs/platform/schemas/leaf-promotion-dossier-v1.schema.json":                                  "ee206ea23d595169d7dec2dd305250a1fd7320a630f89b3b9826b5098e3e1f74",
 	"docs/platform/schemas/leaf-promotion-captured-assessment-v1.schema.json":                      "dc2ef02d81d5791ed363f1b18b87874400ab195fcc5463217bef3d165ca19731",
 	"docs/platform/schemas/leaf-promotion-lock-result-v1.schema.json":                              "f0da41bc87618bebc2a44b2192e7c7f3b41f75e94108d87e92122a16f5e19a54",
-	"docs/platform/schemas/leaf-promotion-registry-v1.json":                                        "a694a897160f3f56cc0221fae7b7999e8dcf0009eeec0d7bbe764d12871c4273",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json":                       "81edb9901737e724370d755de3582d032f0ced9895b0a0d556ea86036095876f",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":                        "05b63d7d0df412e2376b61b3ec8395a8541c1f21946232d5efc2ec2aa025c850",
+	"docs/platform/schemas/leaf-promotion-registry-v1.json":                                        "ad33736c00aa2c3ecaac981606d25c064088c80cb72ca5389b83c5d9df40f6a3",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json":                       "3b12e3b6f625f6efb28fced19d679ab73b974fc4369e0dba9f61f1a2d104ec64",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":                        "a4e5deb1027e337e917304addfa1aebaaf8f04659d7de38b36083c78525d1a04",
 	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json": "9b3f2643cb46e45b9b7c890f1ecca27b29942cd91419afb96b30c82912f68cc7",
 }
 
@@ -146,7 +146,7 @@ func intField(t *testing.T, object map[string]any, key string) int64 {
 	return value
 }
 
-func TestMSP085EmbedsExactMergedExecutableArtifacts(t *testing.T) {
+func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
 	for path, want := range executableArtifactsV1 {
 		raw := contractArtifact(t, path)
 		digest := sha256.Sum256(raw)
@@ -158,6 +158,62 @@ func TestMSP085EmbedsExactMergedExecutableArtifacts(t *testing.T) {
 		if bytes.Equal(raw, fresh) {
 			t.Fatalf("artifact %s aliases embedded storage", path)
 		}
+	}
+}
+
+func TestMSP085CapturedRuntimeSourcePathsResolveCanonicalArtifacts(t *testing.T) {
+	registry := decodeObject(t, contractArtifact(t, "docs/platform/schemas/leaf-promotion-registry-v1.json"))
+	sources, ok := registry["captured_runtime_sources"].(map[string]any)
+	if !ok {
+		t.Fatalf("captured_runtime_sources = %T", registry["captured_runtime_sources"])
+	}
+	for _, expected := range []struct {
+		key, path, digest string
+	}{
+		{
+			key: "m7_terminal_source_bundle", path: "internal/candidatefacts/testdata/canonical/source/source-terminal-bundle.json",
+			digest: "b7269e608dfc004f6737fd80b34a1c6018483942632e0c3c8bfd33cadbaa8134",
+		},
+		{
+			key: "m7_terminal_source_replay", path: "internal/candidatefacts/testdata/canonical/source/source-terminal-replay-result.json",
+			digest: "82ed1c66222348746abd9f4291e10b968314363160ba4cfc568044390aced9d2",
+		},
+	} {
+		got, ok := sources[expected.key].(string)
+		if !ok || got != expected.path {
+			t.Errorf("captured_runtime_sources.%s = %q; want %q", expected.key, got, expected.path)
+			continue
+		}
+		raw := readTestFile(t, "..", "..", filepath.FromSlash(got))
+		digest := sha256.Sum256(raw)
+		if gotDigest := hex.EncodeToString(digest[:]); gotDigest != expected.digest {
+			t.Errorf("%s SHA-256 = %s; want %s", got, gotDigest, expected.digest)
+		}
+	}
+}
+
+func TestMSP085EmbeddedRegistryDossierAndResultStayHashAligned(t *testing.T) {
+	registryRaw := contractArtifact(t, "docs/platform/schemas/leaf-promotion-registry-v1.json")
+	registryDigest := sha256.Sum256(registryRaw)
+	wantRegistryDigest := "sha256:" + hex.EncodeToString(registryDigest[:])
+
+	dossier := decodeObject(t, contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json"))
+	dossierRegistry := dossier["registry"].(map[string]any)
+	if got := dossierRegistry["digest"]; got != wantRegistryDigest {
+		t.Fatalf("dossier registry digest = %v; want %s", got, wantRegistryDigest)
+	}
+	wantDossierHash := hashObjectWithoutFieldV1("HELIANTHUS:LEAF-PROMOTION-DOSSIER:V1", dossier, "dossier_hash")
+	if got := dossier["dossier_hash"]; got != wantDossierHash {
+		t.Fatalf("dossier hash = %v; want %s", got, wantDossierHash)
+	}
+
+	result := decodeObject(t, contractArtifact(t, "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json"))
+	if got := result["dossier_hash"]; got != wantDossierHash {
+		t.Fatalf("result dossier hash = %v; want %s", got, wantDossierHash)
+	}
+	wantResultHash := hashObjectWithoutFieldV1(resultHashDomainV1, result, "result_hash")
+	if got := result["result_hash"]; got != wantResultHash {
+		t.Fatalf("result hash = %v; want %s", got, wantResultHash)
 	}
 }
 
@@ -574,6 +630,63 @@ func TestMSP085CapturedJSONRequiresExactNestedShapesAndForbidsFieldsByPresence(t
 				t.Fatalf("captured shape error = %v; want captured.result", err)
 			}
 		})
+	}
+}
+
+func TestMSP085ResultJSONRequiresIntegerTypesForEveryNumericField(t *testing.T) {
+	syntheticRaw, err := Build(syntheticInputs(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, _ := capturedAssessmentSources(t)
+	captured, err := buildManifest(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturedRaw := mustJSON(t, captured)
+	cases := []struct {
+		name string
+		raw  []byte
+		edit func(map[string]any)
+	}{
+		{"schema version", syntheticRaw, func(value map[string]any) { value["schema_version"] = nil }},
+		{"replay version", syntheticRaw, func(value map[string]any) { value["replay_version"] = nil }},
+		{"synthetic dossier count", syntheticRaw, func(value map[string]any) { value["dossier_count"] = nil }},
+		{"captured dossier count", capturedRaw, func(value map[string]any) { value["dossier_count"] = nil }},
+		{"counts total", syntheticRaw, func(value map[string]any) { value["counts"].(map[string]any)["total"] = nil }},
+		{"counts promoted", syntheticRaw, func(value map[string]any) { value["counts"].(map[string]any)["promoted"] = nil }},
+		{"counts withheld", syntheticRaw, func(value map[string]any) { value["counts"].(map[string]any)["withheld"] = nil }},
+		{"minimum new samples", capturedRaw, func(value map[string]any) {
+			assessment := value["assessments"].([]any)[0].(map[string]any)
+			assessment["retest_trigger"].(map[string]any)["minimum_new_samples"] = nil
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			value := decodeObject(t, test.raw)
+			test.edit(value)
+			value["result_hash"] = hashObjectWithoutFieldV1(resultHashDomainV1, value, "result_hash")
+			_, err := decodeResultV1(mustJSON(t, value))
+			if err == nil || err.Error() != "captured.result" {
+				t.Fatalf("numeric null error = %v; want captured.result", err)
+			}
+		})
+	}
+}
+
+func TestMSP085ResultJSONRejectsMalformedUTF8BeforeDecode(t *testing.T) {
+	raw, err := Build(syntheticInputs(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := bytes.Clone(raw)
+	index := bytes.Index(invalid, []byte("helianthus.platform"))
+	if index < 0 {
+		t.Fatal("synthetic result has no contract value")
+	}
+	invalid[index] = 0xff
+	if _, err := decodeResultV1(invalid); err == nil || err.Error() != "json.syntax" {
+		t.Fatalf("malformed UTF-8 error = %v; want json.syntax", err)
 	}
 }
 

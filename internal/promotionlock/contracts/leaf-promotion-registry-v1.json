@@ -37,8 +37,8 @@
     "m7_public_status": "docs/platform/fixtures/candidate-fact-graph/v1/positive/live-public-status.json",
     "m7_terminal_graph": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-graph.json",
     "m7_terminal_replay": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-replay-result.json",
-    "m7_terminal_source_bundle": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-bundle.json",
-    "m7_terminal_source_replay": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-source-replay.json",
+    "m7_terminal_source_bundle": "internal/candidatefacts/testdata/canonical/source/source-terminal-bundle.json",
+    "m7_terminal_source_replay": "internal/candidatefacts/testdata/canonical/source/source-terminal-replay-result.json",
     "m8_registry": "docs/platform/schemas/multi-runtime-coexistence-registry-v1.json",
     "profile_fixture": "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json"
   },

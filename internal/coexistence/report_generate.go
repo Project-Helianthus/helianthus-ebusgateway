@@ -1,31 +1,33 @@
 package coexistence
 
-import (
-	"bytes"
-)
+import "bytes"
 
 func Report(inputs InputsV1) ([]byte, error) {
-	context, err := validateInputs(inputs)
+	context, err := validateInputs(inputs, true)
 	if err != nil {
 		return nil, err
 	}
 	return encodeReport(context.evidence, context.registry)
 }
 
+// Generate emits only the synthetic conformance fixture. Live evidence is
+// captured by the runtime harness and then verified; it is never synthesized.
 func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 	registry, err := verifyRegistryForGeneration(inputs.Registry)
 	if err != nil {
 		return ArtifactsV1{}, err
 	}
-	verificationInputs := InputsV1{
-		Registry:       inputs.Registry,
-		M7Graph:        inputs.M7Graph,
-		M7Replay:       inputs.M7Replay,
-		M7Registry:     inputs.M7Registry,
-		M7SourceBundle: inputs.M7SourceBundle,
-		M7SourceReplay: inputs.M7SourceReplay,
+	templateRaw := readPinnedArtifact("testdata/canonical/positive/evidence.json", positiveEvidenceSHA)
+	value, parseErr := parseEvidenceJSON(templateRaw)
+	if parseErr != nil {
+		panic("coexistence: invalid pinned positive evidence")
 	}
-	m7, err := verifyM7(verificationInputs, registry, nil)
+	evidence := value.(map[string]any)
+	verificationInputs := InputsV1{
+		Registry: inputs.Registry, M7Graph: inputs.M7Graph, M7Replay: inputs.M7Replay,
+		M7Registry: inputs.M7Registry, M7SourceBundle: inputs.M7SourceBundle, M7SourceReplay: inputs.M7SourceReplay,
+	}
+	m7, err := verifyM7(verificationInputs, registry, evidence, true)
 	if err != nil {
 		return ArtifactsV1{}, err
 	}
@@ -41,8 +43,9 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 	if err != nil || !validGenerationClock(clock) {
 		return ArtifactsV1{}, fail("provenance.clock")
 	}
+	scenarioOrder := coexScenarioProfilesV1["SYNTHETIC_OFFLINE_FIXTURE"]
 	timestamps, err := parseGenerationStrings(inputs.CaptureTimestamps, "provenance.clock")
-	if err != nil || len(timestamps) != len(coexScenarioOrderV1) {
+	if err != nil || len(timestamps) != len(scenarioOrder) {
 		return ArtifactsV1{}, fail("provenance.clock")
 	}
 	for _, timestamp := range timestamps {
@@ -51,21 +54,15 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 		}
 	}
 	subjects, err := parseGenerationStrings(inputs.MaskedSubjects, "provenance.auth_mask")
-	if err != nil || len(subjects) != len(coexScenarioOrderV1) {
+	if err != nil || len(subjects) != len(scenarioOrder) {
 		return ArtifactsV1{}, fail("provenance.auth_mask")
 	}
 	for _, subject := range subjects {
-		if subject == "" || int64(len(subject)) > hardLimitsV1["max_string_bytes"] || containsNUL(subject) {
+		if !redactedIDPatternV1.MatchString(subject) {
 			return ArtifactsV1{}, fail("provenance.auth_mask")
 		}
 	}
 
-	templateRaw := readPinnedArtifact("testdata/canonical/positive/evidence.json", positiveEvidenceSHA)
-	value, parseErr := parseEvidenceJSON(templateRaw)
-	if parseErr != nil {
-		panic("coexistence: invalid pinned positive evidence")
-	}
-	evidence := value.(map[string]any)
 	evidence["capture_clock"] = cloneJSONV1(clock)
 	evidence["registry"] = map[string]any{"contract": coexRegistryContractV1, "version": number(1), "digest": "sha256:" + registrySHA256}
 	runs := evidence["runs"].([]any)
@@ -81,7 +78,7 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 		}
 		provenance["capture_clock_id"] = clock["clock_id"]
 		views := run["protected_views"].([]any)
-		immutable := make([]any, 0, len(views)+2)
+		immutable := make([]any, 0, len(views)+len(m7.inputs))
 		for _, rawView := range views {
 			view := rawView.(map[string]any)
 			payload := view["payload"].(map[string]any)
@@ -104,10 +101,11 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 				"input_id": "view:" + viewID, "kind": "PROTECTED_VIEW_PAYLOAD", "digest": rawHash, "byte_length": number(int64(len(payloadBytes))),
 			})
 		}
-		immutable = append(immutable,
-			map[string]any{"input_id": "m7:graph", "kind": "M7_GRAPH", "digest": m7.graph["graph_hash"], "byte_length": number(m7.graphBytes)},
-			map[string]any{"input_id": "m7:replay", "kind": "M7_REPLAY", "digest": m7.replay["replay_hash"], "byte_length": number(m7.replayBytes)},
-		)
+		for _, input := range m7.inputs {
+			immutable = append(immutable, map[string]any{
+				"input_id": input.id, "kind": input.kind, "digest": input.digest, "byte_length": number(input.bytes),
+			})
+		}
 		provenance["immutable_inputs"] = immutable
 	}
 	evidenceHash, hashErr := domainDigestV1(coexEvidenceDomainV1, withoutJSONKeysV1(evidence, "evidence_id", "evidence_hash"))
@@ -121,7 +119,7 @@ func Generate(inputs GenerateInputsV1) (ArtifactsV1, error) {
 		return ArtifactsV1{}, err
 	}
 	verificationInputs.Evidence = evidenceBytes
-	context, err := validateInputs(verificationInputs)
+	context, err := validateInputs(verificationInputs, true)
 	if err != nil {
 		return ArtifactsV1{}, err
 	}
@@ -164,7 +162,7 @@ func validGenerationClock(clock map[string]any) bool {
 	wall, _ := stringValueV1(clock["wall_anchor_utc"])
 	verification, verificationOK := integerValue(clock["verification_offset_ns"])
 	maximumAge, ageOK := integerValue(clock["max_capture_age_ns"])
-	lastOffset := int64(len(coexScenarioOrderV1)-1) * 1_000_000_000
+	lastOffset := int64(len(coexScenarioProfilesV1["SYNTHETIC_OFFLINE_FIXTURE"])-1) * 1_000_000_000
 	return err == nil && clock["basis"] == "MONOTONIC_CAPTURE_OFFSETS" && validRFC3339UTC(wall) &&
 		clock["clock_hash"] == computed && verificationOK && ageOK && verification >= lastOffset && verification-lastOffset <= maximumAge
 }
@@ -178,6 +176,9 @@ func encodeReport(evidence, registry map[string]any) ([]byte, error) {
 		"EEBUS_CONNECTED_CANDIDATE_ONLY": "CANDIDATE_CONFINED_NO_DRIFT",
 		"EEBUS_CONFLICTED_WITHHELD":      "CONFLICT_WITHHELD_NO_DRIFT",
 		"EEBUS_DISABLED_ROLLBACK":        "ROLLBACK_EXACT_BASELINE",
+		"EEBUS_CONNECTED_RAW_WITHHELD":   "RAW_WITHHELD_CONFINED_NO_DRIFT",
+		"EEBUS_RESTART_PERSISTED":        "RESTART_PERSISTED_NO_DRIFT",
+		"EEBUS_CONNECTED_ROLLBACK":       "GRAPH_EVIDENCE_DROPPED_NO_DRIFT",
 	}
 	baseline := runs[0].(map[string]any)
 	baselineRuntime := baseline["provenance"].(map[string]any)["runtime"].(map[string]any)
@@ -198,14 +199,25 @@ func encodeReport(evidence, registry map[string]any) ([]byte, error) {
 		})
 	}
 	m7 := evidence["m7_binding"].(map[string]any)
+	liveStatusID, liveStatusHash := any(nil), any(nil)
+	if liveStatus, ok := objectValueV1(evidence["m7_live_status"]); ok {
+		liveStatusID = liveStatus["projection_id"]
+		liveStatusHash = liveStatus["projection_hash"]
+	}
 	fixtureIDs := registry["fixture_ids"].(map[string]any)
+	fixtureID := fixtureIDs["synthetic_positive_report"]
+	if evidence["evidence_class"] == "CAPTURED_RUNTIME_EVIDENCE" {
+		fixtureID = evidence["fixture_id"].(string) + fixtureIDs["live_report_suffix"].(string)
+	}
 	report := map[string]any{
-		"contract": coexReportContractV1, "schema_version": number(1), "fixture_id": fixtureIDs["positive_report"],
+		"contract": coexReportContractV1, "schema_version": number(1), "fixture_id": fixtureID,
+		"evidence_class": evidence["evidence_class"], "export_tier": evidence["export_tier"],
 		"report_id": "mrcrv1:sha256:" + stringsOf('0', 64), "report_hash": "sha256:" + stringsOf('0', 64),
 		"evidence_id": evidence["evidence_id"], "evidence_hash": evidence["evidence_hash"], "gate": registry["gate"], "verdict": "PASS",
 		"m7_binding": map[string]any{
-			"completion_token": m7["completion_token"], "docs_source_commit": m7["docs_source_commit"],
+			"source_commit": m7["source_commit"], "docs_source_commit": m7["docs_source_commit"],
 			"graph_id": m7["graph_id"], "graph_hash": m7["graph_hash"], "replay_id": m7["replay_id"], "replay_hash": m7["replay_hash"],
+			"live_status_projection_id": liveStatusID, "live_status_projection_hash": liveStatusHash,
 		},
 		"baseline": map[string]any{
 			"run_id": baseline["run_id"], "state": baseline["state"], "source_commit": baselineRuntime["source_commit"],
@@ -213,7 +225,8 @@ func encodeReport(evidence, registry map[string]any) ([]byte, error) {
 		},
 		"scenarios": scenarios, "acceptance_matrix": acceptance,
 		"rollback": map[string]any{
-			"run_id": runs[len(runs)-1].(map[string]any)["run_id"], "runtime_disabled": true,
+			"run_id":                   runs[len(runs)-1].(map[string]any)["run_id"],
+			"runtime_enabled":          runs[len(runs)-1].(map[string]any)["state_evidence"].(map[string]any)["eebus_runtime_enabled"],
 			"candidate_graph_disabled": true, "exact_baseline_restored": true,
 		},
 	}

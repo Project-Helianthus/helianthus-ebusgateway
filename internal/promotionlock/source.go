@@ -16,9 +16,9 @@ var sourceSHA256V1 = map[string]string{
 	"m7_registry":      "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
 	"m7_source_bundle": "e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a",
 	"m7_source_replay": "3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539",
-	"m8_evidence":      "7fe0eced765b2599ee6341985d60edf86936485c75c56cb8c51892775f8d352b",
-	"m8_report":        "687662756a2c833548bbc15285c895442c70346bf3832bf21c3a8309a9da0007",
-	"m8_registry":      "82cf854d335da31dcda65ff45a024cbb4a1ce515965cb8165122c0b4ef7d8505",
+	"m8_evidence":      "32049994cb8a89cd6c11f7852979e6d9b400c75fd106bde52ba28734cc9fd8f2",
+	"m8_report":        "24c875c9bb43ad3819da20403435d6d8a4533451154407df089302db45dbcc0c",
+	"m8_registry":      "8fab50c488cf99a5f6c29cb8cddc41df9728b5c5edde99e3c1e58d13c9f8407b",
 }
 
 type verifiedSourcesV1 struct {

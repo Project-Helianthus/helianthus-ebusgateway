@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -27,6 +26,11 @@ func main() {
 	m7Registry := flags.String("m7-registry", "", "M7 registry input")
 	m7SourceBundle := flags.String("m7-source-bundle", "", "M7 source bundle input")
 	m7SourceReplay := flags.String("m7-source-replay", "", "M7 source replay input")
+	m7LiveStatus := flags.String("m7-live-status", "", "M7 public-redacted live status input")
+	m7TerminalGraph := flags.String("m7-terminal-graph", "", "M7 terminal graph input")
+	m7TerminalReplay := flags.String("m7-terminal-replay", "", "M7 terminal replay input")
+	m7TerminalSourceBundle := flags.String("m7-terminal-source-bundle", "", "M7 terminal source bundle input")
+	m7TerminalSourceReplay := flags.String("m7-terminal-source-replay", "", "M7 terminal source replay input")
 	baselineRuntime := flags.String("baseline-runtime", "", "baseline runtime identity input")
 	comparedRuntime := flags.String("compared-runtime", "", "compared runtime identity input")
 	captureClock := flags.String("capture-clock", "", "capture clock input")
@@ -38,15 +42,27 @@ func main() {
 	}
 
 	switch command {
-	case "binding":
-		writeJSON(coexistence.Binding())
 	case "verify":
-		if err := coexistence.Verify(readInputs(*evidence, *registry, *m7Graph, *m7Replay, *m7Registry, *m7SourceBundle, *m7SourceReplay)); err != nil {
+		if err := coexistence.Verify(readInputs(
+			*evidence, *registry, *m7Graph, *m7Replay, *m7Registry, *m7SourceBundle, *m7SourceReplay,
+			*m7LiveStatus, *m7TerminalGraph, *m7TerminalReplay, *m7TerminalSourceBundle, *m7TerminalSourceReplay,
+		)); err != nil {
 			fail(err)
 		}
 		fmt.Println("ok")
+	case "verify-public":
+		if err := coexistence.VerifyPublic(readInputs(
+			*evidence, *registry, *m7Graph, *m7Replay, *m7Registry, *m7SourceBundle, *m7SourceReplay,
+			*m7LiveStatus, *m7TerminalGraph, *m7TerminalReplay, *m7TerminalSourceBundle, *m7TerminalSourceReplay,
+		)); err != nil {
+			fail(err)
+		}
+		fmt.Println("public-only-ok")
 	case "report":
-		report, err := coexistence.Report(readInputs(*evidence, *registry, *m7Graph, *m7Replay, *m7Registry, *m7SourceBundle, *m7SourceReplay))
+		report, err := coexistence.Report(readInputs(
+			*evidence, *registry, *m7Graph, *m7Replay, *m7Registry, *m7SourceBundle, *m7SourceReplay,
+			*m7LiveStatus, *m7TerminalGraph, *m7TerminalReplay, *m7TerminalSourceBundle, *m7TerminalSourceReplay,
+		))
 		if err != nil {
 			fail(err)
 		}
@@ -73,15 +89,23 @@ func main() {
 	}
 }
 
-func readInputs(evidence, registry, graph, replay, m7Registry, sourceBundle, sourceReplay string) coexistence.InputsV1 {
+func readInputs(
+	evidence, registry, graph, replay, m7Registry, sourceBundle, sourceReplay,
+	liveStatus, terminalGraph, terminalReplay, terminalSourceBundle, terminalSourceReplay string,
+) coexistence.InputsV1 {
 	return coexistence.InputsV1{
-		Evidence:       readOptional(evidence),
-		Registry:       readOptional(registry),
-		M7Graph:        readOptional(graph),
-		M7Replay:       readOptional(replay),
-		M7Registry:     readOptional(m7Registry),
-		M7SourceBundle: readOptional(sourceBundle),
-		M7SourceReplay: readOptional(sourceReplay),
+		Evidence:               readOptional(evidence),
+		Registry:               readOptional(registry),
+		M7Graph:                readOptional(graph),
+		M7Replay:               readOptional(replay),
+		M7Registry:             readOptional(m7Registry),
+		M7SourceBundle:         readOptional(sourceBundle),
+		M7SourceReplay:         readOptional(sourceReplay),
+		M7LiveStatus:           readOptional(liveStatus),
+		M7TerminalGraph:        readOptional(terminalGraph),
+		M7TerminalReplay:       readOptional(terminalReplay),
+		M7TerminalSourceBundle: readOptional(terminalSourceBundle),
+		M7TerminalSourceReplay: readOptional(terminalSourceReplay),
 	}
 }
 
@@ -118,15 +142,6 @@ func readOptional(path string) []byte {
 		panic(closeErr)
 	}
 	return raw
-}
-
-func writeJSON(value any) {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	raw = append(raw, '\n')
-	_, _ = os.Stdout.Write(raw)
 }
 
 func fail(err error) {

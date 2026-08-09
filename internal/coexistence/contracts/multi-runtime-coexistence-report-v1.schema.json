@@ -8,6 +8,8 @@
     "contract",
     "schema_version",
     "fixture_id",
+    "evidence_class",
+    "export_tier",
     "report_id",
     "report_hash",
     "evidence_id",
@@ -24,6 +26,8 @@
     "contract": {"const": "helianthus.platform.multi-runtime-coexistence-report.v1"},
     "schema_version": {"const": 1},
     "fixture_id": {"type": "string", "pattern": "^MSP08-G18-[A-Z0-9-]+$", "maxLength": 128},
+    "evidence_class": {"enum": ["SYNTHETIC_OFFLINE_FIXTURE", "CAPTURED_RUNTIME_EVIDENCE"]},
+    "export_tier": {"const": "PUBLIC_REDACTED"},
     "report_id": {"type": "string", "pattern": "^mrcrv1:sha256:[0-9a-f]{64}$"},
     "report_hash": {"$ref": "#/$defs/Digest"},
     "evidence_id": {"type": "string", "pattern": "^mrcv1:sha256:[0-9a-f]{64}$"},
@@ -34,31 +38,128 @@
     "baseline": {"$ref": "#/$defs/Baseline"},
     "scenarios": {
       "type": "array",
-      "minItems": 5,
+      "minItems": 3,
       "maxItems": 5,
       "items": {"$ref": "#/$defs/Scenario"}
     },
     "acceptance_matrix": {
       "type": "array",
-      "minItems": 6,
+      "minItems": 4,
       "maxItems": 6,
       "items": {"$ref": "#/$defs/AcceptanceRow"}
     },
     "rollback": {"$ref": "#/$defs/Rollback"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"evidence_class": {"const": "SYNTHETIC_OFFLINE_FIXTURE"}}},
+      "then": {
+        "properties": {
+          "m7_binding": {
+            "properties": {
+              "live_status_projection_id": {"type": "null"},
+              "live_status_projection_hash": {"type": "null"}
+            }
+          },
+          "baseline": {
+            "properties": {
+              "run_id": {"const": "msp08-run-01"},
+              "state": {"const": "EEBUS_DISABLED_BASELINE"}
+            }
+          },
+          "scenarios": {
+            "minItems": 5,
+            "maxItems": 5,
+            "prefixItems": [
+              {"properties": {"run_id": {"const": "msp08-run-02"}, "state": {"const": "EEBUS_DISABLED_CONFIRMED"}, "result": {"const": "NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-03"}, "state": {"const": "EEBUS_ENABLED_NO_SERVICES"}, "result": {"const": "EXPECTED_NO_SERVICES_NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-04"}, "state": {"const": "EEBUS_CONNECTED_CANDIDATE_ONLY"}, "result": {"const": "CANDIDATE_CONFINED_NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-05"}, "state": {"const": "EEBUS_CONFLICTED_WITHHELD"}, "result": {"const": "CONFLICT_WITHHELD_NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-06"}, "state": {"const": "EEBUS_DISABLED_ROLLBACK"}, "result": {"const": "ROLLBACK_EXACT_BASELINE"}}}
+            ],
+            "items": false
+          },
+          "acceptance_matrix": {
+            "minItems": 6,
+            "maxItems": 6,
+            "prefixItems": [
+              {"properties": {"state": {"const": "EEBUS_DISABLED_BASELINE"}}},
+              {"properties": {"state": {"const": "EEBUS_DISABLED_CONFIRMED"}}},
+              {"properties": {"state": {"const": "EEBUS_ENABLED_NO_SERVICES"}}},
+              {"properties": {"state": {"const": "EEBUS_CONNECTED_CANDIDATE_ONLY"}}},
+              {"properties": {"state": {"const": "EEBUS_CONFLICTED_WITHHELD"}}},
+              {"properties": {"state": {"const": "EEBUS_DISABLED_ROLLBACK"}}}
+            ],
+            "items": false
+          },
+          "rollback": {
+            "properties": {
+              "run_id": {"const": "msp08-run-06"},
+              "runtime_enabled": {"const": false}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "m7_binding": {
+            "properties": {
+              "live_status_projection_id": {"type": "string", "pattern": "^dcfpsv1:sha256:[0-9a-f]{64}$"},
+              "live_status_projection_hash": {"$ref": "#/$defs/Digest"}
+            }
+          },
+          "baseline": {
+            "properties": {
+              "run_id": {"const": "msp08-run-01"},
+              "state": {"const": "EEBUS_CONNECTED_BASELINE"}
+            }
+          },
+          "scenarios": {
+            "minItems": 3,
+            "maxItems": 3,
+            "prefixItems": [
+              {"properties": {"run_id": {"const": "msp08-run-02"}, "state": {"const": "EEBUS_CONNECTED_RAW_WITHHELD"}, "result": {"const": "RAW_WITHHELD_CONFINED_NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-03"}, "state": {"const": "EEBUS_RESTART_PERSISTED"}, "result": {"const": "RESTART_PERSISTED_NO_DRIFT"}}},
+              {"properties": {"run_id": {"const": "msp08-run-04"}, "state": {"const": "EEBUS_CONNECTED_ROLLBACK"}, "result": {"const": "GRAPH_EVIDENCE_DROPPED_NO_DRIFT"}}}
+            ],
+            "items": false
+          },
+          "acceptance_matrix": {
+            "minItems": 4,
+            "maxItems": 4,
+            "prefixItems": [
+              {"properties": {"state": {"const": "EEBUS_CONNECTED_BASELINE"}}},
+              {"properties": {"state": {"const": "EEBUS_CONNECTED_RAW_WITHHELD"}}},
+              {"properties": {"state": {"const": "EEBUS_RESTART_PERSISTED"}}},
+              {"properties": {"state": {"const": "EEBUS_CONNECTED_ROLLBACK"}}}
+            ],
+            "items": false
+          },
+          "rollback": {
+            "properties": {
+              "run_id": {"const": "msp08-run-04"},
+              "runtime_enabled": {"const": true}
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "M7Binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["completion_token", "docs_source_commit", "graph_id", "graph_hash", "replay_id", "replay_hash"],
+      "required": ["source_commit", "docs_source_commit", "graph_id", "graph_hash", "replay_id", "replay_hash", "live_status_projection_id", "live_status_projection_hash"],
       "properties": {
-        "completion_token": {"type": "string", "maxLength": 128},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "docs_source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "graph_id": {"type": "string", "pattern": "^dcfgv1:sha256:[0-9a-f]{64}$"},
         "graph_hash": {"$ref": "#/$defs/Digest"},
         "replay_id": {"type": "string", "pattern": "^dcfrv1:sha256:[0-9a-f]{64}$"},
-        "replay_hash": {"$ref": "#/$defs/Digest"}
+        "replay_hash": {"$ref": "#/$defs/Digest"},
+        "live_status_projection_id": {"oneOf": [{"type": "string", "pattern": "^dcfpsv1:sha256:[0-9a-f]{64}$"}, {"type": "null"}]},
+        "live_status_projection_hash": {"oneOf": [{"$ref": "#/$defs/Digest"}, {"type": "null"}]}
       }
     },
     "ViewHash": {
@@ -71,16 +172,35 @@
         "canonical_payload_hash": {"$ref": "#/$defs/Digest"}
       }
     },
+    "ProtectedViewHashes": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "mcp.ebus.v1.responses"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "mcp.tool.inventory"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "graphql.schema"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "graphql.ebus.values"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "ha.graphql.values"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "ha.identity"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "debug.ebus"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "portal.ebus.bootstrap"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "command.routing"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "semantic.registry"}}}]},
+        {"allOf": [{"$ref": "#/$defs/ViewHash"}, {"properties": {"view_id": {"const": "mcp.eebus.v1.contract"}}}]}
+      ],
+      "items": false
+    },
     "Baseline": {
       "type": "object",
       "additionalProperties": false,
       "required": ["run_id", "state", "source_commit", "artifact_digest", "view_hashes"],
       "properties": {
         "run_id": {"type": "string", "pattern": "^msp08-run-[0-9]{2}$"},
-        "state": {"const": "EEBUS_DISABLED_BASELINE"},
+        "state": {"enum": ["EEBUS_DISABLED_BASELINE", "EEBUS_CONNECTED_BASELINE"]},
         "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "artifact_digest": {"$ref": "#/$defs/Digest"},
-        "view_hashes": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"$ref": "#/$defs/ViewHash"}}
+        "view_hashes": {"$ref": "#/$defs/ProtectedViewHashes"}
       }
     },
     "Scenario": {
@@ -89,10 +209,10 @@
       "required": ["run_id", "state", "result", "checks", "view_hashes"],
       "properties": {
         "run_id": {"type": "string", "pattern": "^msp08-run-[0-9]{2}$"},
-        "state": {"enum": ["EEBUS_DISABLED_CONFIRMED", "EEBUS_ENABLED_NO_SERVICES", "EEBUS_CONNECTED_CANDIDATE_ONLY", "EEBUS_CONFLICTED_WITHHELD", "EEBUS_DISABLED_ROLLBACK"]},
-        "result": {"enum": ["NO_DRIFT", "EXPECTED_NO_SERVICES_NO_DRIFT", "CANDIDATE_CONFINED_NO_DRIFT", "CONFLICT_WITHHELD_NO_DRIFT", "ROLLBACK_EXACT_BASELINE"]},
-        "checks": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"type": "string", "maxLength": 128}},
-        "view_hashes": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"$ref": "#/$defs/ViewHash"}}
+        "state": {"enum": ["EEBUS_DISABLED_CONFIRMED", "EEBUS_ENABLED_NO_SERVICES", "EEBUS_CONNECTED_CANDIDATE_ONLY", "EEBUS_CONFLICTED_WITHHELD", "EEBUS_DISABLED_ROLLBACK", "EEBUS_CONNECTED_RAW_WITHHELD", "EEBUS_RESTART_PERSISTED", "EEBUS_CONNECTED_ROLLBACK"]},
+        "result": {"enum": ["NO_DRIFT", "EXPECTED_NO_SERVICES_NO_DRIFT", "CANDIDATE_CONFINED_NO_DRIFT", "CONFLICT_WITHHELD_NO_DRIFT", "ROLLBACK_EXACT_BASELINE", "RAW_WITHHELD_CONFINED_NO_DRIFT", "RESTART_PERSISTED_NO_DRIFT", "GRAPH_EVIDENCE_DROPPED_NO_DRIFT"]},
+        "checks": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"type": "string", "maxLength": 128}},
+        "view_hashes": {"$ref": "#/$defs/ProtectedViewHashes"}
       }
     },
     "AcceptanceRow": {
@@ -101,17 +221,17 @@
       "required": ["state", "required_checks", "passed"],
       "properties": {
         "state": {"type": "string", "maxLength": 128},
-        "required_checks": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"type": "string", "maxLength": 128}},
+        "required_checks": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"type": "string", "maxLength": 128}},
         "passed": {"const": true}
       }
     },
     "Rollback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run_id", "runtime_disabled", "candidate_graph_disabled", "exact_baseline_restored"],
+      "required": ["run_id", "runtime_enabled", "candidate_graph_disabled", "exact_baseline_restored"],
       "properties": {
         "run_id": {"type": "string", "pattern": "^msp08-run-[0-9]{2}$"},
-        "runtime_disabled": {"const": true},
+        "runtime_enabled": {"type": "boolean"},
         "candidate_graph_disabled": {"const": true},
         "exact_baseline_restored": {"const": true}
       }

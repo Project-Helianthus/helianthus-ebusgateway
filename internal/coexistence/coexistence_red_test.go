@@ -48,6 +48,7 @@ var acceptanceChecksV1 = []string{
 	"CANONICAL_BYTES_IDENTICAL",
 	"EBUS_AUTHORITY_PRESERVED",
 	"CANDIDATE_CONFINED",
+	"PUBLIC_REDACTION_ENFORCED",
 	"V1_SURFACES_PRESERVED",
 	"G18_SCOPE_ONLY",
 }
@@ -165,10 +166,11 @@ func TestMSP08ProvenanceBindsRuntimeConfigM7ReplayAuthMaskAndClock(t *testing.T)
 	assertStringValue(t, registryBinding, "digest", "sha256:"+rawSHA256(readFile(t, registryPath)))
 
 	m7 := objectValue(t, evidence, "m7_binding")
-	assertStringValue(t, m7, "completion_token", m7CompletionToken)
-	assertStringValue(t, m7, "docs_source_commit", m7DocsSourceCommit)
+	assertStringValue(t, m7, "source_commit", coexBaselineGatewayCommit)
+	assertStringValue(t, m7, "docs_source_commit", coexSyntheticDocsCommit)
+	syntheticBinding := objectValue(t, registry, "m7_synthetic_binding")
 	for _, field := range []string{"graph_contract", "graph_id", "graph_hash", "replay_contract", "replay_id", "replay_hash"} {
-		if !reflect.DeepEqual(m7[field], objectValue(t, registry, "m7_binding")[field]) {
+		if !reflect.DeepEqual(m7[field], syntheticBinding[field]) {
 			t.Fatalf("M7 %s does not match registry", field)
 		}
 	}
@@ -221,12 +223,12 @@ func TestMSP08ProvenanceBindsRuntimeConfigM7ReplayAuthMaskAndClock(t *testing.T)
 		manifest := objectValue(t, runtime, "build_manifest")
 		assertStringValue(t, runtime, "build_manifest_hash", domainDigest(t, buildDomainV1, manifest))
 		if runIndex == 0 {
-			assertStringValue(t, runtime, "source_commit", baselineGatewayCommit)
+			assertStringValue(t, runtime, "source_commit", coexBaselineGatewayCommit)
 			if runtime["source_parent_commit"] != nil {
 				t.Fatal("baseline source parent must be null")
 			}
 		} else {
-			assertStringValue(t, runtime, "source_parent_commit", baselineGatewayCommit)
+			assertStringValue(t, runtime, "source_parent_commit", coexBaselineGatewayCommit)
 			if len(stringValue(t, runtime, "source_commit")) != 40 {
 				t.Fatal("compared runtime source commit is not a full SHA")
 			}
@@ -256,8 +258,8 @@ func TestMSP08ProvenanceBindsRuntimeConfigM7ReplayAuthMaskAndClock(t *testing.T)
 		assertStringValue(t, auth, "scope_hash", domainDigest(t, authDomainV1, withoutKeys(t, auth, "scope_hash")))
 
 		inputs := arrayValue(t, provenance, "immutable_inputs")
-		if len(inputs) != len(protectedViewsV1)+2 {
-			t.Fatalf("%s immutable inputs = %d; want %d", state, len(inputs), len(protectedViewsV1)+2)
+		if len(inputs) != len(protectedViewsV1)+5 {
+			t.Fatalf("%s immutable inputs = %d; want %d", state, len(inputs), len(protectedViewsV1)+5)
 		}
 		for index, viewID := range protectedViewsV1 {
 			input := asObject(t, inputs[index], "protected input")
@@ -293,7 +295,7 @@ func TestMSP08GoldenReportPinsDerivedAcceptanceAndExactRollback(t *testing.T) {
 	baseline := objectValue(t, report, "baseline")
 	assertStringValue(t, baseline, "run_id", "msp08-run-01")
 	assertStringValue(t, baseline, "state", "EEBUS_DISABLED_BASELINE")
-	assertStringValue(t, baseline, "source_commit", baselineGatewayCommit)
+	assertStringValue(t, baseline, "source_commit", coexBaselineGatewayCommit)
 	assertViewHashInventory(t, arrayValue(t, baseline, "view_hashes"))
 
 	wantResults := []string{
@@ -330,7 +332,10 @@ func TestMSP08GoldenReportPinsDerivedAcceptanceAndExactRollback(t *testing.T) {
 
 	rollback := objectValue(t, report, "rollback")
 	assertStringValue(t, rollback, "run_id", "msp08-run-06")
-	for _, field := range []string{"runtime_disabled", "candidate_graph_disabled", "exact_baseline_restored"} {
+	if boolValue(t, rollback, "runtime_enabled") {
+		t.Fatal("synthetic rollback runtime remains enabled")
+	}
+	for _, field := range []string{"candidate_graph_disabled", "exact_baseline_restored"} {
 		if !boolValue(t, rollback, field) {
 			t.Fatalf("rollback %s is false", field)
 		}

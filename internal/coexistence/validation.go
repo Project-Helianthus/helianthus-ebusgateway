@@ -3,24 +3,35 @@ package coexistence
 import (
 	"bytes"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts"
 )
 
-const (
-	m7GraphInputSHA        = "b5c5d79e540a1691ee60c6db3e9405a92d9d544d871c74b26800fe449a318b0e"
-	m7ReplayInputSHA       = "8280f6278ffe8598dfd767bb5bf9e60dce3c145b4612174b7c5a32fbff282f5c"
-	m7RegistryInputSHA     = "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0"
-	m7SourceBundleInputSHA = "e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a"
-	m7SourceReplayInputSHA = "3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539"
-)
+const m7RegistryInputSHA = "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0"
+
+type inputBindingV1 struct {
+	id     string
+	kind   string
+	digest string
+	bytes  int64
+}
+
+type m7SetV1 struct {
+	graph           map[string]any
+	replay          map[string]any
+	graphCanonical  []byte
+	replayCanonical []byte
+	registryRaw     []byte
+	sourceBundleRaw []byte
+	sourceReplayRaw []byte
+}
 
 type m7AuthorityV1 struct {
 	graph       map[string]any
-	replay      map[string]any
-	graphBytes  int64
-	replayBytes int64
+	sourceGraph map[string]any
+	inputs      []inputBindingV1
 }
 
 type validationContextV1 struct {
@@ -30,11 +41,18 @@ type validationContextV1 struct {
 }
 
 func Verify(inputs InputsV1) error {
-	_, err := validateInputs(inputs)
+	_, err := validateInputs(inputs, true)
 	return err
 }
 
-func validateInputs(inputs InputsV1) (*validationContextV1, error) {
+// VerifyPublic validates a public-redacted captured-runtime artifact without
+// accepting the redacted status as a substitute for private source evidence.
+func VerifyPublic(inputs InputsV1) error {
+	_, err := validateInputs(inputs, false)
+	return err
+}
+
+func validateInputs(inputs InputsV1, requirePrivate bool) (*validationContextV1, error) {
 	value, err := parseEvidenceJSON(inputs.Evidence)
 	if err != nil {
 		return nil, err
@@ -50,7 +68,7 @@ func validateInputs(inputs InputsV1) (*validationContextV1, error) {
 	if err != nil {
 		return nil, err
 	}
-	m7, err := verifyM7(inputs, registry, evidence)
+	m7, err := verifyM7(inputs, registry, evidence, requirePrivate)
 	if err != nil {
 		return nil, err
 	}
@@ -60,11 +78,13 @@ func validateInputs(inputs InputsV1) (*validationContextV1, error) {
 		func() error { return checkAuthMask(evidence) },
 		func() error { return checkClock(evidence) },
 		func() error { return checkOrdering(evidence, registry) },
-		func() error { return checkStates(evidence) },
+		func() error { return checkStates(evidence, m7.graph) },
+		func() error { return checkRestart(evidence) },
 		func() error { return checkViewCoverage(evidence, registry) },
 		func() error { return checkNormalization(evidence, registry) },
 		func() error { return checkPayloadHashes(evidence, registry) },
-		func() error { return checkAntiLeak(evidence) },
+		func() error { return checkAntiLeak(evidence, m7.graph, m7.sourceGraph) },
+		func() error { return checkPublicRedaction(evidence) },
 		func() error { return checkAuthority(evidence) },
 		func() error { return checkScope(evidence, registry) },
 		func() error { return checkDrift(evidence, registry) },
@@ -90,8 +110,9 @@ func verifyRegistry(raw []byte, evidence map[string]any) (map[string]any, error)
 	registry, ok := objectValueV1(value)
 	if !ok || !exactKeys(registry,
 		"contract", "version", "evidence_contract", "report_contract", "gate", "excluded_gates",
-		"m7_completion_token", "m7_docs_source_commit", "m7_binding", "scenario_order", "protected_views",
-		"view_rules", "required_acceptance_checks", "validation_precedence", "limits", "fixture_ids",
+		"m7_synthetic_predecessor", "m7_live_predecessor", "m7_synthetic_binding", "m7_live_binding",
+		"m7_live_terminal_binding", "m7_live_private_inputs", "m7_live_status_binding", "scenario_profiles",
+		"protected_views", "view_rules", "required_acceptance_checks", "validation_precedence", "limits", "fixture_ids",
 	) {
 		return nil, fail("registry.binding")
 	}
@@ -100,150 +121,375 @@ func verifyRegistry(raw []byte, evidence map[string]any) (map[string]any, error)
 		"version":  number(1),
 		"digest":   "sha256:" + registrySHA256,
 	}
-	if !reflect.DeepEqual(evidence["registry"], expectedBinding) {
+	if registry["contract"] != coexRegistryContractV1 || registry["version"] != number(1) ||
+		!reflect.DeepEqual(registry["limits"], integerMapV1(hardLimitsV1)) ||
+		!reflect.DeepEqual(evidence["registry"], expectedBinding) {
 		return nil, fail("registry.binding")
+	}
+	profiles, ok := objectValueV1(registry["scenario_profiles"])
+	if !ok || len(profiles) != len(coexScenarioProfilesV1) {
+		return nil, fail("registry.binding")
+	}
+	for profile, expected := range coexScenarioProfilesV1 {
+		actual, valid := stringsFromArray(profiles[profile])
+		if !valid || !reflect.DeepEqual(actual, expected) {
+			return nil, fail("registry.binding")
+		}
+	}
+	for key, mode := range map[string]string{
+		"m7_synthetic_predecessor": "EXACT_SYNTHETIC_FIXTURE",
+		"m7_live_predecessor":      "VALIDATED_INPUTS_AND_REGENERATED_REPLAY",
+	} {
+		predecessor, valid := objectValueV1(registry[key])
+		if !valid || !exactKeys(predecessor, "repository", "source_commit", "docs_source_commit", "binding_mode") ||
+			predecessor["repository"] != "github.com/Project-Helianthus/helianthus-ebusgateway" ||
+			predecessor["binding_mode"] != mode || !shaPatternV1.MatchString(stringOrEmpty(predecessor["source_commit"])) ||
+			!shaPatternV1.MatchString(stringOrEmpty(predecessor["docs_source_commit"])) {
+			return nil, fail("registry.binding")
+		}
 	}
 	return registry, nil
 }
 
 func verifyRegistryForGeneration(raw []byte) (map[string]any, error) {
-	if rawSHA256V1(raw) != registrySHA256 {
-		return nil, fail("registry.binding")
-	}
-	value, err := parseCategorizedJSON(raw, "registry.binding")
-	if err != nil {
-		return nil, err
-	}
-	registry, ok := objectValueV1(value)
-	if !ok {
-		return nil, fail("registry.binding")
-	}
-	return registry, nil
+	dummy := map[string]any{"registry": map[string]any{
+		"contract": coexRegistryContractV1,
+		"version":  number(1),
+		"digest":   "sha256:" + registrySHA256,
+	}}
+	return verifyRegistry(raw, dummy)
 }
 
-func verifyM7(inputs InputsV1, registry, evidence map[string]any) (m7AuthorityV1, error) {
-	if rawSHA256V1(inputs.M7Graph) != m7GraphInputSHA ||
-		rawSHA256V1(inputs.M7Replay) != m7ReplayInputSHA ||
-		rawSHA256V1(inputs.M7Registry) != m7RegistryInputSHA ||
-		rawSHA256V1(inputs.M7SourceBundle) != m7SourceBundleInputSHA ||
-		rawSHA256V1(inputs.M7SourceReplay) != m7SourceReplayInputSHA {
+func verifyM7(inputs InputsV1, registry, evidence map[string]any, requirePrivate bool) (m7AuthorityV1, error) {
+	class := stringOrEmpty(evidence["evidence_class"])
+	if class == "SYNTHETIC_OFFLINE_FIXTURE" {
+		if evidence["m7_live_status"] != nil {
+			return m7AuthorityV1{}, fail("provenance.m7")
+		}
+		set, err := loadVerifiedM7Set(inputs.M7Graph, inputs.M7Replay, inputs.M7Registry, inputs.M7SourceBundle, inputs.M7SourceReplay)
+		if err != nil {
+			return m7AuthorityV1{}, err
+		}
+		binding := m7ContentBinding(set)
+		predecessor := registry["m7_synthetic_predecessor"].(map[string]any)
+		expected := mergeObjectsV1(map[string]any{
+			"source_commit":      predecessor["source_commit"],
+			"docs_source_commit": predecessor["docs_source_commit"],
+		}, registry["m7_synthetic_binding"].(map[string]any))
+		if !reflect.DeepEqual(binding, registry["m7_synthetic_binding"]) || !reflect.DeepEqual(evidence["m7_binding"], expected) {
+			return m7AuthorityV1{}, fail("provenance.m7")
+		}
+		return m7AuthorityV1{
+			graph:       set.graph,
+			sourceGraph: set.graph,
+			inputs: []inputBindingV1{
+				{id: "m7:graph", kind: "M7_GRAPH", digest: stringOrEmpty(set.graph["graph_hash"]), bytes: int64(len(set.graphCanonical))},
+				{id: "m7:replay", kind: "M7_REPLAY", digest: stringOrEmpty(set.replay["replay_hash"]), bytes: int64(len(set.replayCanonical))},
+				{id: "m7:registry", kind: "M7_REGISTRY", digest: binding["registry_content_hash"].(string), bytes: int64(len(set.registryRaw))},
+				{id: "m7:source-bundle", kind: "M7_SOURCE_BUNDLE", digest: binding["source_bundle_content_hash"].(string), bytes: int64(len(set.sourceBundleRaw))},
+				{id: "m7:source-replay", kind: "M7_SOURCE_REPLAY", digest: binding["source_replay_content_hash"].(string), bytes: int64(len(set.sourceReplayRaw))},
+			},
+		}, nil
+	}
+	if class != "CAPTURED_RUNTIME_EVIDENCE" {
 		return m7AuthorityV1{}, fail("provenance.m7")
 	}
-	if err := candidatefacts.Verify(inputs.M7Graph, inputs.M7SourceBundle, inputs.M7SourceReplay); err != nil {
-		return m7AuthorityV1{}, fail("provenance.m7")
-	}
-	generatedReplay, err := candidatefacts.Replay(inputs.M7Graph, inputs.M7SourceBundle, inputs.M7SourceReplay)
-	if err != nil || !bytes.Equal(generatedReplay, inputs.M7Replay) {
-		return m7AuthorityV1{}, fail("provenance.m7")
-	}
-	graphValue, err := parseCategorizedJSON(inputs.M7Graph, "provenance.m7")
+
+	statusGraph, statusRaw, err := verifyM7LiveStatus(inputs.M7LiveStatus, registry, evidence)
 	if err != nil {
+		return m7AuthorityV1{}, err
+	}
+	terminal, err := loadVerifiedM7Set(
+		inputs.M7TerminalGraph,
+		inputs.M7TerminalReplay,
+		inputs.M7Registry,
+		inputs.M7TerminalSourceBundle,
+		inputs.M7TerminalSourceReplay,
+	)
+	if err != nil || !reflect.DeepEqual(m7ContentBinding(terminal), registry["m7_live_terminal_binding"]) {
 		return m7AuthorityV1{}, fail("provenance.m7")
 	}
-	replayValue, err := parseCategorizedJSON(inputs.M7Replay, "provenance.m7")
-	if err != nil {
+	predecessor := registry["m7_live_predecessor"].(map[string]any)
+	expectedBinding := mergeObjectsV1(map[string]any{
+		"source_commit":      predecessor["source_commit"],
+		"docs_source_commit": predecessor["docs_source_commit"],
+	}, registry["m7_live_binding"].(map[string]any))
+	if !reflect.DeepEqual(evidence["m7_binding"], expectedBinding) {
 		return m7AuthorityV1{}, fail("provenance.m7")
 	}
+
+	privateInputs := registry["m7_live_private_inputs"].(map[string]any)
+	if requirePrivate {
+		live, liveErr := loadVerifiedM7Set(inputs.M7Graph, inputs.M7Replay, inputs.M7Registry, inputs.M7SourceBundle, inputs.M7SourceReplay)
+		if liveErr != nil || !reflect.DeepEqual(m7ContentBinding(live), registry["m7_live_binding"]) ||
+			!matchesPrivateInputV1(privateInputs, "graph", inputs.M7Graph) ||
+			!matchesPrivateInputV1(privateInputs, "replay", inputs.M7Replay) ||
+			!matchesPrivateInputV1(privateInputs, "source_bundle", inputs.M7SourceBundle) ||
+			!matchesPrivateInputV1(privateInputs, "source_replay", inputs.M7SourceReplay) {
+			return m7AuthorityV1{}, fail("provenance.m7")
+		}
+		projected, projectErr := projectM7PublicStatus(live.graph, live.replay, coexLiveGatewayCommit, coexLiveDocsCommit)
+		statusValue, parseErr := parseCategorizedJSON(statusRaw, "provenance.m7")
+		if projectErr != nil || parseErr != nil || !reflect.DeepEqual(projected, statusValue) {
+			return m7AuthorityV1{}, fail("provenance.m7")
+		}
+	}
+
+	terminalBinding := m7ContentBinding(terminal)
+	statusBinding := registry["m7_live_status_binding"].(map[string]any)
+	inputsV1 := []inputBindingV1{
+		{id: "m7:terminal-graph", kind: "M7_TERMINAL_GRAPH", digest: stringOrEmpty(terminal.graph["graph_hash"]), bytes: int64(len(terminal.graphCanonical))},
+		{id: "m7:terminal-replay", kind: "M7_TERMINAL_REPLAY", digest: stringOrEmpty(terminal.replay["replay_hash"]), bytes: int64(len(terminal.replayCanonical))},
+		{id: "m7:registry", kind: "M7_REGISTRY", digest: terminalBinding["registry_content_hash"].(string), bytes: int64(len(terminal.registryRaw))},
+		{id: "m7:terminal-source-bundle", kind: "M7_TERMINAL_SOURCE_BUNDLE", digest: terminalBinding["source_bundle_content_hash"].(string), bytes: int64(len(terminal.sourceBundleRaw))},
+		{id: "m7:terminal-source-replay", kind: "M7_TERMINAL_SOURCE_REPLAY", digest: terminalBinding["source_replay_content_hash"].(string), bytes: int64(len(terminal.sourceReplayRaw))},
+		privateInputBindingV1(privateInputs, "graph", "m7:private-graph", "M7_PRIVATE_GRAPH"),
+		privateInputBindingV1(privateInputs, "replay", "m7:private-replay", "M7_PRIVATE_REPLAY"),
+		privateInputBindingV1(privateInputs, "source_bundle", "m7:private-source-bundle", "M7_PRIVATE_SOURCE_BUNDLE"),
+		privateInputBindingV1(privateInputs, "source_replay", "m7:private-source-replay", "M7_PRIVATE_SOURCE_REPLAY"),
+		{id: "m7:status-projection", kind: "M7_PUBLIC_STATUS", digest: statusBinding["content_hash"].(string), bytes: int64(len(statusRaw))},
+	}
+	return m7AuthorityV1{graph: statusGraph, sourceGraph: terminal.graph, inputs: inputsV1}, nil
+}
+
+func loadVerifiedM7Set(graphRaw, replayRaw, registryRaw, sourceBundleRaw, sourceReplayRaw []byte) (m7SetV1, error) {
+	if rawSHA256V1(registryRaw) != m7RegistryInputSHA || len(graphRaw) == 0 || len(replayRaw) == 0 ||
+		len(sourceBundleRaw) == 0 || len(sourceReplayRaw) == 0 {
+		return m7SetV1{}, fail("provenance.m7")
+	}
+	if err := candidatefacts.Verify(graphRaw, sourceBundleRaw, sourceReplayRaw); err != nil {
+		return m7SetV1{}, fail("provenance.m7")
+	}
+	replayed, err := candidatefacts.Replay(graphRaw, sourceBundleRaw, sourceReplayRaw)
+	if err != nil || !bytes.Equal(replayed, replayRaw) {
+		return m7SetV1{}, fail("provenance.m7")
+	}
+	graphValue, graphErr := parseCategorizedJSON(graphRaw, "provenance.m7")
+	replayValue, replayErr := parseCategorizedJSON(replayRaw, "provenance.m7")
 	graph, graphOK := objectValueV1(graphValue)
 	replay, replayOK := objectValueV1(replayValue)
-	if !graphOK || !replayOK {
-		return m7AuthorityV1{}, fail("provenance.m7")
-	}
-	registryBinding, ok := objectValueV1(registry["m7_binding"])
-	if !ok {
-		return m7AuthorityV1{}, fail("provenance.m7")
-	}
-	expected := map[string]any{
-		"completion_token":   registry["m7_completion_token"],
-		"docs_source_commit": registry["m7_docs_source_commit"],
-		"graph_contract":     registryBinding["graph_contract"],
-		"graph_id":           registryBinding["graph_id"],
-		"graph_hash":         registryBinding["graph_hash"],
-		"replay_contract":    registryBinding["replay_contract"],
-		"replay_id":          registryBinding["replay_id"],
-		"replay_hash":        registryBinding["replay_hash"],
-	}
-	actual := map[string]any{
-		"completion_token":   registry["m7_completion_token"],
-		"docs_source_commit": registry["m7_docs_source_commit"],
-		"graph_contract":     graph["contract"],
-		"graph_id":           graph["graph_id"],
-		"graph_hash":         graph["graph_hash"],
-		"replay_contract":    replay["contract"],
-		"replay_id":          replay["replay_id"],
-		"replay_hash":        replay["replay_hash"],
-	}
-	if !reflect.DeepEqual(actual, expected) || evidence != nil && !reflect.DeepEqual(evidence["m7_binding"], expected) {
-		return m7AuthorityV1{}, fail("provenance.m7")
+	if graphErr != nil || replayErr != nil || !graphOK || !replayOK {
+		return m7SetV1{}, fail("provenance.m7")
 	}
 	graphCanonical, graphErr := marshalCanonicalV1(graph)
 	replayCanonical, replayErr := marshalCanonicalV1(replay)
 	if graphErr != nil || replayErr != nil {
-		return m7AuthorityV1{}, fail("provenance.m7")
+		return m7SetV1{}, fail("provenance.m7")
 	}
-	return m7AuthorityV1{graph: graph, replay: replay, graphBytes: int64(len(graphCanonical)), replayBytes: int64(len(replayCanonical))}, nil
+	return m7SetV1{
+		graph: graph, replay: replay, graphCanonical: graphCanonical, replayCanonical: replayCanonical,
+		registryRaw: registryRaw, sourceBundleRaw: sourceBundleRaw, sourceReplayRaw: sourceReplayRaw,
+	}, nil
+}
+
+func m7ContentBinding(set m7SetV1) map[string]any {
+	return map[string]any{
+		"graph_contract":             set.graph["contract"],
+		"graph_id":                   set.graph["graph_id"],
+		"graph_hash":                 set.graph["graph_hash"],
+		"replay_contract":            set.replay["contract"],
+		"replay_id":                  set.replay["replay_id"],
+		"replay_hash":                set.replay["replay_hash"],
+		"registry_content_hash":      "sha256:" + rawSHA256V1(set.registryRaw),
+		"source_bundle_content_hash": "sha256:" + rawSHA256V1(set.sourceBundleRaw),
+		"source_replay_content_hash": "sha256:" + rawSHA256V1(set.sourceReplayRaw),
+	}
+}
+
+func verifyM7LiveStatus(raw []byte, registry, evidence map[string]any) (map[string]any, []byte, error) {
+	value, err := parseCategorizedJSON(raw, "provenance.m7")
+	if err != nil || schemaCheckStatus(value) != nil {
+		return nil, nil, fail("provenance.m7")
+	}
+	status := value.(map[string]any)
+	view := withoutJSONKeysV1(status, "projection_id", "projection_hash")
+	projectionHash, err := domainDigestV1(coexM7StatusDomainV1, view)
+	if err != nil {
+		return nil, nil, fail("provenance.m7")
+	}
+	facts := status["facts"].([]any)
+	counts := map[string]any{"RAW_ONLY": number(0), "WITHHELD": number(0)}
+	ids := make([]string, len(facts))
+	for index, rawFact := range facts {
+		fact := rawFact.(map[string]any)
+		ids[index] = fact["candidate_id"].(string)
+		statusName := fact["status"].(string)
+		count, _ := integerValue(counts[statusName])
+		counts[statusName] = number(count + 1)
+		if (statusName == "RAW_ONLY") != (fact["terminal_negative_state"] == nil) {
+			return nil, nil, fail("provenance.m7")
+		}
+	}
+	binding := map[string]any{
+		"contract":           status["contract"],
+		"projection_id":      status["projection_id"],
+		"projection_hash":    status["projection_hash"],
+		"content_hash":       "sha256:" + rawSHA256V1(raw),
+		"source_graph_id":    status["source_graph_id"],
+		"source_graph_hash":  status["source_graph_hash"],
+		"source_replay_id":   status["source_replay_id"],
+		"source_replay_hash": status["source_replay_hash"],
+	}
+	rawOnly, _ := integerValue(counts["RAW_ONLY"])
+	withheld, _ := integerValue(counts["WITHHELD"])
+	if status["projection_hash"] != projectionHash || status["projection_id"] != "dcfpsv1:"+projectionHash ||
+		status["source_commit"] != coexLiveGatewayCommit || status["docs_source_commit"] != coexLiveDocsCommit ||
+		!reflect.DeepEqual(binding, registry["m7_live_status_binding"]) || !reflect.DeepEqual(evidence["m7_live_status"], binding) ||
+		status["fact_count"] != number(int64(len(facts))) || !reflect.DeepEqual(status["status_counts"], counts) ||
+		rawOnly < 1 || withheld < 1 || !sort.StringsAreSorted(ids) || !uniqueStrings(ids) {
+		return nil, nil, fail("provenance.m7")
+	}
+	return map[string]any{"facts": facts}, raw, nil
+}
+
+func projectM7PublicStatus(graph, replay map[string]any, sourceCommit, docsCommit string) (map[string]any, error) {
+	if !shaPatternV1.MatchString(sourceCommit) || !shaPatternV1.MatchString(docsCommit) {
+		return nil, fail("provenance.m7")
+	}
+	rawFacts, ok := arrayValueV1(graph["facts"])
+	if !ok {
+		return nil, fail("provenance.m7")
+	}
+	facts := make([]any, len(rawFacts))
+	for index, rawFact := range rawFacts {
+		fact, valid := objectValueV1(rawFact)
+		if !valid {
+			return nil, fail("provenance.m7")
+		}
+		facts[index] = map[string]any{
+			"candidate_id": fact["candidate_id"], "status": fact["status"],
+			"terminal_negative_state": fact["terminal_negative_state"], "fact_hash": fact["fact_hash"],
+		}
+	}
+	sort.Slice(facts, func(left, right int) bool {
+		return facts[left].(map[string]any)["candidate_id"].(string) < facts[right].(map[string]any)["candidate_id"].(string)
+	})
+	counts := map[string]any{"RAW_ONLY": number(0), "WITHHELD": number(0)}
+	for _, rawFact := range facts {
+		fact := rawFact.(map[string]any)
+		statusName := stringOrEmpty(fact["status"])
+		count, valid := integerValue(counts[statusName])
+		if !valid {
+			return nil, fail("provenance.m7")
+		}
+		counts[statusName] = number(count + 1)
+	}
+	result := map[string]any{
+		"contract": "helianthus.platform.draft-candidate-fact-public-status.v1", "schema_version": number(1),
+		"export_tier": "PUBLIC_REDACTED", "projection_id": "", "projection_hash": "",
+		"source_commit": sourceCommit, "docs_source_commit": docsCommit,
+		"source_graph_id": graph["graph_id"], "source_graph_hash": graph["graph_hash"],
+		"source_replay_id": replay["replay_id"], "source_replay_hash": replay["replay_hash"],
+		"fact_count": number(int64(len(facts))), "status_counts": counts, "facts": facts,
+	}
+	hash, err := domainDigestV1(coexM7StatusDomainV1, withoutJSONKeysV1(result, "projection_id", "projection_hash"))
+	if err != nil {
+		return nil, fail("provenance.m7")
+	}
+	result["projection_id"] = "dcfpsv1:" + hash
+	result["projection_hash"] = hash
+	return result, nil
+}
+
+func matchesPrivateInputV1(private map[string]any, name string, raw []byte) bool {
+	binding, ok := objectValueV1(private[name])
+	length, lengthOK := integerValue(binding["byte_length"])
+	return ok && lengthOK && binding["digest"] == "sha256:"+rawSHA256V1(raw) && length == int64(len(raw))
+}
+
+func privateInputBindingV1(private map[string]any, name, id, kind string) inputBindingV1 {
+	binding := private[name].(map[string]any)
+	length, _ := integerValue(binding["byte_length"])
+	return inputBindingV1{id: id, kind: kind, digest: binding["digest"].(string), bytes: length}
 }
 
 func checkRuntime(evidence map[string]any, m7 m7AuthorityV1) error {
-	runs, _ := arrayValueV1(evidence["runs"])
-	if len(runs) < 2 {
-		return fail("provenance.runtime")
-	}
-	baseline := runs[0].(map[string]any)["provenance"].(map[string]any)["runtime"].(map[string]any)
-	if baseline["source_commit"] != coexBaselineGatewayCommit || baseline["source_parent_commit"] != nil {
-		return fail("provenance.runtime")
-	}
-	compared := runs[1].(map[string]any)["provenance"].(map[string]any)["runtime"].(map[string]any)
-	if compared["source_parent_commit"] != coexBaselineGatewayCommit {
+	runs := evidence["runs"].([]any)
+	class := evidence["evidence_class"].(string)
+	baselineRuntime := runs[0].(map[string]any)["provenance"].(map[string]any)["runtime"].(map[string]any)
+	comparedRuntime := baselineRuntime
+	if class == "SYNTHETIC_OFFLINE_FIXTURE" {
+		if baselineRuntime["source_commit"] != coexBaselineGatewayCommit || baselineRuntime["source_parent_commit"] != nil {
+			return fail("provenance.runtime")
+		}
+		comparedRuntime = runs[1].(map[string]any)["provenance"].(map[string]any)["runtime"].(map[string]any)
+		if comparedRuntime["source_parent_commit"] != coexBaselineGatewayCommit {
+			return fail("provenance.runtime")
+		}
+	} else if baselineRuntime["source_parent_commit"] != coexLiveGatewayCommit {
 		return fail("provenance.runtime")
 	}
 	for index, rawRun := range runs {
 		run := rawRun.(map[string]any)
 		provenance := run["provenance"].(map[string]any)
 		runtime := provenance["runtime"].(map[string]any)
-		if !validRuntimeIdentity(runtime) || index > 0 && !reflect.DeepEqual(runtime, compared) {
+		if !validRuntimeIdentity(runtime) || class == "SYNTHETIC_OFFLINE_FIXTURE" && index > 0 && !reflect.DeepEqual(runtime, comparedRuntime) ||
+			class == "CAPTURED_RUNTIME_EVIDENCE" && !reflect.DeepEqual(runtime, comparedRuntime) {
 			return fail("provenance.runtime")
 		}
-		views := run["protected_views"].([]any)
-		inputs := provenance["immutable_inputs"].([]any)
-		viewIDs := make([]string, len(views))
-		expected := make(map[string]inputBindingV1, len(views)+2)
-		for viewIndex, rawView := range views {
+		expected := make([]inputBindingV1, 0, len(run["protected_views"].([]any))+len(m7.inputs)+4)
+		for _, rawView := range run["protected_views"].([]any) {
 			view := rawView.(map[string]any)
-			viewID := view["view_id"].(string)
-			viewIDs[viewIndex] = viewID
-			payloadBytes, err := marshalCanonicalV1(view["payload"])
+			payload, err := marshalCanonicalV1(view["payload"])
 			if err != nil {
 				return fail("provenance.runtime")
 			}
-			expected["view:"+viewID] = inputBindingV1{digest: view["raw_payload_hash"].(string), bytes: int64(len(payloadBytes))}
+			expected = append(expected, inputBindingV1{
+				id: "view:" + view["view_id"].(string), kind: "PROTECTED_VIEW_PAYLOAD",
+				digest: view["raw_payload_hash"].(string), bytes: int64(len(payload)),
+			})
 		}
-		expected["m7:graph"] = inputBindingV1{digest: m7.graph["graph_hash"].(string), bytes: m7.graphBytes}
-		expected["m7:replay"] = inputBindingV1{digest: m7.replay["replay_hash"].(string), bytes: m7.replayBytes}
-		inputIDs := make([]string, len(inputs))
-		actual := make(map[string]inputBindingV1, len(inputs))
-		for inputIndex, rawInput := range inputs {
+		expected = append(expected, m7.inputs...)
+		transition := run["state_evidence"].(map[string]any)["restart_transition"]
+		if transition != nil {
+			item := transition.(map[string]any)
+			for _, definition := range []struct {
+				id, kind, field, domain string
+			}{
+				{"restart:process-event", "RESTART_PROCESS_EVENT", "process_event", coexRestartProcessDomainV1},
+				{"restart:before-snapshot", "RESTART_STATE_SNAPSHOT", "before_snapshot", coexRestartSnapshotDomainV1},
+				{"restart:after-snapshot", "RESTART_STATE_SNAPSHOT", "after_snapshot", coexRestartSnapshotDomainV1},
+				{"restart:session-event", "RESTART_SESSION_EVENT", "session_event", coexRestartSessionDomainV1},
+			} {
+				value := item[definition.field]
+				digest, err := domainDigestV1(definition.domain, value)
+				encoded, encodeErr := marshalCanonicalV1(value)
+				if err != nil || encodeErr != nil {
+					return fail("provenance.runtime")
+				}
+				expected = append(expected, inputBindingV1{id: definition.id, kind: definition.kind, digest: digest, bytes: int64(len(encoded))})
+			}
+		}
+		actualRaw := provenance["immutable_inputs"].([]any)
+		actualByID := make(map[string][]inputBindingV1, len(actualRaw))
+		for _, rawInput := range actualRaw {
 			input := rawInput.(map[string]any)
-			inputID := input["input_id"].(string)
-			inputIDs[inputIndex] = inputID
 			length, _ := integerValue(input["byte_length"])
-			actual[inputID] = inputBindingV1{digest: input["digest"].(string), bytes: length}
+			actual := inputBindingV1{id: stringOrEmpty(input["input_id"]), kind: stringOrEmpty(input["kind"]), digest: stringOrEmpty(input["digest"]), bytes: length}
+			actualByID[actual.id] = append(actualByID[actual.id], actual)
 		}
-		expectedIDs := make([]string, 0, len(viewIDs)+2)
-		for _, viewID := range viewIDs {
-			expectedIDs = append(expectedIDs, "view:"+viewID)
+		expectedIDs := make(map[string]bool, len(expected))
+		for _, want := range expected {
+			expectedIDs[want.id] = true
+			matches := actualByID[want.id]
+			matched := false
+			for _, actual := range matches {
+				if actual == want {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fail("provenance.runtime")
+			}
 		}
-		expectedIDs = append(expectedIDs, "m7:graph", "m7:replay")
-		if uniqueStrings(viewIDs) && uniqueStrings(inputIDs) && sameStringSet(inputIDs, expectedIDs) && !reflect.DeepEqual(actual, expected) {
-			return fail("provenance.runtime")
+		for id := range actualByID {
+			if !expectedIDs[id] {
+				return fail("provenance.runtime")
+			}
 		}
 	}
 	return nil
-}
-
-type inputBindingV1 struct {
-	digest string
-	bytes  int64
 }
 
 func validRuntimeIdentity(runtime map[string]any) bool {
@@ -260,15 +506,14 @@ func validRuntimeIdentity(runtime map[string]any) bool {
 }
 
 func checkConfig(evidence map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		run := rawRun.(map[string]any)
-		config := run["provenance"].(map[string]any)["config"].(map[string]any)
+	live := evidence["evidence_class"] == "CAPTURED_RUNTIME_EVIDENCE"
+	for _, rawRun := range evidence["runs"].([]any) {
+		config := rawRun.(map[string]any)["provenance"].(map[string]any)["config"].(map[string]any)
 		payload := config["payload"].(map[string]any)
 		computed, err := domainDigestV1(coexConfigDomainV1, payload)
 		outbound, _ := boolValueV1(payload["outbound_enabled"])
 		publicV2, _ := boolValueV1(payload["public_v2_enabled"])
-		if err != nil || config["config_hash"] != computed || outbound || publicV2 {
+		if err != nil || config["config_hash"] != computed || outbound != live || publicV2 {
 			return fail("provenance.config")
 		}
 	}
@@ -281,14 +526,15 @@ func checkAuthMask(evidence map[string]any) error {
 	if err != nil || profile["profile_digest"] != profileDigest {
 		return fail("provenance.auth_mask")
 	}
-	runs, _ := arrayValueV1(evidence["runs"])
-	firstAuth := runs[0].(map[string]any)["provenance"].(map[string]any)["auth_scope"].(map[string]any)
+	runs := evidence["runs"].([]any)
+	first := runs[0].(map[string]any)["provenance"].(map[string]any)["auth_scope"].(map[string]any)
+	expectedPermissions := []any{"read:ebus", "read:eebus-v1-contract", "read:graphql", "read:portal-bootstrap", "read:debug"}
 	for _, rawRun := range runs {
 		provenance := rawRun.(map[string]any)["provenance"].(map[string]any)
 		auth := provenance["auth_scope"].(map[string]any)
-		authDigest, digestErr := domainDigestV1(coexAuthDomainV1, withoutJSONKeysV1(auth, "scope_hash"))
-		if digestErr != nil || !reflect.DeepEqual(auth, firstAuth) || auth["principal_class"] != "READ_ONLY_TEST" ||
-			auth["scope_hash"] != authDigest || provenance["mask_scope_digest"] != profileDigest {
+		digest, digestErr := domainDigestV1(coexAuthDomainV1, withoutJSONKeysV1(auth, "scope_hash"))
+		if digestErr != nil || !reflect.DeepEqual(auth, first) || auth["principal_class"] != "READ_ONLY_TEST" ||
+			!reflect.DeepEqual(auth["permissions"], expectedPermissions) || auth["scope_hash"] != digest || provenance["mask_scope_digest"] != profileDigest {
 			return fail("provenance.auth_mask")
 		}
 	}
@@ -305,12 +551,11 @@ func checkClock(evidence map[string]any) error {
 		clock["clock_hash"] != computed || !verificationOK || verification < 0 || !ageOK || maximumAge < 1 {
 		return fail("provenance.clock")
 	}
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
+	for _, rawRun := range evidence["runs"].([]any) {
 		run := rawRun.(map[string]any)
 		offset, _ := integerValue(run["capture_offset_ns"])
-		provenance := run["provenance"].(map[string]any)
-		if provenance["capture_clock_id"] != clock["clock_id"] || offset > verification || verification-offset > maximumAge {
+		if run["provenance"].(map[string]any)["capture_clock_id"] != clock["clock_id"] ||
+			offset > verification || verification-offset > maximumAge {
 			return fail("provenance.clock")
 		}
 	}
@@ -318,18 +563,19 @@ func checkClock(evidence map[string]any) error {
 }
 
 func checkOrdering(evidence, registry map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
+	runs := evidence["runs"].([]any)
+	profiles := registry["scenario_profiles"].(map[string]any)
+	wantStates, _ := stringsFromArray(profiles[evidence["evidence_class"].(string)])
 	states := make([]string, len(runs))
-	runIDs := make([]string, len(runs))
+	ids := make([]string, len(runs))
 	offsets := make([]int64, len(runs))
 	for index, rawRun := range runs {
 		run := rawRun.(map[string]any)
 		states[index] = run["state"].(string)
-		runIDs[index] = run["run_id"].(string)
+		ids[index] = run["run_id"].(string)
 		offsets[index], _ = integerValue(run["capture_offset_ns"])
 	}
-	wantStates, _ := stringsFromArray(registry["scenario_order"])
-	if !reflect.DeepEqual(states, wantStates) || !uniqueStrings(runIDs) || !strictlyIncreasing(offsets) {
+	if !reflect.DeepEqual(states, wantStates) || !uniqueStrings(ids) || !strictlyIncreasing(offsets) {
 		return fail("ordering.duplicate")
 	}
 	wantViews, _ := stringsFromArray(registry["protected_views"])
@@ -340,72 +586,158 @@ func checkOrdering(evidence, registry map[string]any) error {
 		for index, rawView := range views {
 			viewIDs[index] = rawView.(map[string]any)["view_id"].(string)
 		}
+		if !uniqueStrings(viewIDs) || len(viewIDs) == len(wantViews) && !reflect.DeepEqual(viewIDs, wantViews) {
+			return fail("ordering.duplicate")
+		}
 		inputs := run["provenance"].(map[string]any)["immutable_inputs"].([]any)
 		inputIDs := make([]string, len(inputs))
 		for index, rawInput := range inputs {
 			inputIDs[index] = rawInput.(map[string]any)["input_id"].(string)
 		}
-		expectedInputs := make([]string, 0, len(viewIDs)+2)
-		for _, viewID := range viewIDs {
-			expectedInputs = append(expectedInputs, "view:"+viewID)
-		}
-		expectedInputs = append(expectedInputs, "m7:graph", "m7:replay")
-		if !uniqueStrings(viewIDs) || !uniqueStrings(inputIDs) || !reflect.DeepEqual(inputIDs, expectedInputs) ||
-			len(viewIDs) == len(wantViews) && !reflect.DeepEqual(viewIDs, wantViews) {
+		if !uniqueStrings(inputIDs) {
 			return fail("ordering.duplicate")
 		}
 	}
 	return nil
 }
 
-func checkStates(evidence map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		run := rawRun.(map[string]any)
-		stateName := run["state"].(string)
-		expected, ok := expectedStateEvidence(stateName)
-		if !ok || !reflect.DeepEqual(run["state_evidence"], expected) {
+func checkStates(evidence, graph map[string]any) error {
+	class := evidence["evidence_class"].(string)
+	expected := syntheticStateEvidenceV1()
+	if class == "CAPTURED_RUNTIME_EVIDENCE" {
+		facts := factSummariesV1(graph)
+		counts := factStatusCountsV1(facts)
+		if counts["RAW_ONLY"] < 1 || counts["WITHHELD"] < 1 {
 			return fail("state.evidence")
 		}
+		runs := evidence["runs"].([]any)
+		services, _ := integerValue(runs[0].(map[string]any)["state_evidence"].(map[string]any)["service_count"])
+		if services < 1 {
+			return fail("state.evidence")
+		}
+		expected = map[string]map[string]any{
+			"EEBUS_CONNECTED_BASELINE": stateEvidenceV1("CONNECTED_BASELINE_CAPTURED", true, false, services, 0, 0, 0, 0, false, []any{}),
+			"EEBUS_CONNECTED_RAW_WITHHELD": stateEvidenceV1("RAW_WITHHELD_OBSERVED", true, true, services,
+				counts["RAW_ONLY"], counts["CANDIDATE"], counts["CONFLICTED"], counts["WITHHELD"], false, facts),
+			"EEBUS_RESTART_PERSISTED": stateEvidenceV1("RESTART_PERSISTED", true, true, services,
+				counts["RAW_ONLY"], counts["CANDIDATE"], counts["CONFLICTED"], counts["WITHHELD"], false, facts),
+			"EEBUS_CONNECTED_ROLLBACK": stateEvidenceV1("GRAPH_EVIDENCE_DROPPED", true, false, services, 0, 0, 0, 0, false, []any{}),
+		}
+	}
+	for _, rawRun := range evidence["runs"].([]any) {
+		run := rawRun.(map[string]any)
 		state := run["state_evidence"].(map[string]any)
+		actual := withoutJSONKeysV1(state, "restart_transition")
+		want, ok := expected[run["state"].(string)]
+		if !ok || !reflect.DeepEqual(actual, want) {
+			return fail("state.evidence")
+		}
 		config := run["provenance"].(map[string]any)["config"].(map[string]any)["payload"].(map[string]any)
-		if config["eebus_runtime_enabled"] != state["eebus_runtime_enabled"] ||
-			config["candidate_graph_enabled"] != state["candidate_graph_enabled"] {
+		if config["eebus_runtime_enabled"] != state["eebus_runtime_enabled"] || config["candidate_graph_enabled"] != state["candidate_graph_enabled"] {
 			return fail("state.evidence")
 		}
 	}
 	return nil
 }
 
-func expectedStateEvidence(state string) (map[string]any, bool) {
-	values := map[string]map[string]any{
-		"EEBUS_DISABLED_BASELINE":   stateEvidence("BASELINE_CAPTURED", false, false, 0, 0, 0, false, []any{}),
-		"EEBUS_DISABLED_CONFIRMED":  stateEvidence("DISABLED_CONFIRMED", false, false, 0, 0, 0, false, []any{}),
-		"EEBUS_ENABLED_NO_SERVICES": stateEvidence("NO_SERVICES_OBSERVED", true, true, 0, 0, 0, true, []any{}),
-		"EEBUS_CONNECTED_CANDIDATE_ONLY": stateEvidence("CANDIDATE_ONLY_OBSERVED", true, true, 1, 1, 0, false, []any{
+func syntheticStateEvidenceV1() map[string]map[string]any {
+	return map[string]map[string]any{
+		"EEBUS_DISABLED_BASELINE":   stateEvidenceV1("BASELINE_CAPTURED", false, false, 0, 0, 0, 0, 0, false, []any{}),
+		"EEBUS_DISABLED_CONFIRMED":  stateEvidenceV1("DISABLED_CONFIRMED", false, false, 0, 0, 0, 0, 0, false, []any{}),
+		"EEBUS_ENABLED_NO_SERVICES": stateEvidenceV1("NO_SERVICES_OBSERVED", true, true, 0, 0, 0, 0, 0, true, []any{}),
+		"EEBUS_CONNECTED_CANDIDATE_ONLY": stateEvidenceV1("CANDIDATE_ONLY_OBSERVED", true, true, 1, 0, 1, 0, 0, false, []any{
 			map[string]any{"candidate_id": "m7-candidate-synthetic-0001", "status": "CANDIDATE", "terminal_negative_state": nil, "visibility_channel": "CANDIDATE_DEBUG_REPLAY"},
 		}),
-		"EEBUS_CONFLICTED_WITHHELD": stateEvidence("CONFLICT_WITHHELD_OBSERVED", true, true, 1, 0, 1, true, []any{
+		"EEBUS_CONFLICTED_WITHHELD": stateEvidenceV1("CONFLICT_WITHHELD_OBSERVED", true, true, 1, 0, 0, 1, 1, true, []any{
 			map[string]any{"candidate_id": "m7-candidate-synthetic-conflict-0001", "status": "WITHHELD", "terminal_negative_state": "CONFLICT", "visibility_channel": "CANDIDATE_DEBUG_REPLAY"},
 		}),
-		"EEBUS_DISABLED_ROLLBACK": stateEvidence("ROLLBACK_BASELINE_RESTORED", false, false, 0, 0, 0, false, []any{}),
+		"EEBUS_DISABLED_ROLLBACK": stateEvidenceV1("ROLLBACK_BASELINE_RESTORED", false, false, 0, 0, 0, 0, 0, false, []any{}),
 	}
-	value, ok := values[state]
-	return value, ok
 }
 
-func stateEvidence(outcome string, runtime, graph bool, services, candidates, conflicts int64, degraded bool, facts []any) map[string]any {
+func stateEvidenceV1(outcome string, runtime, graph bool, services, rawOnly, candidates, conflicts, withheld int64, degraded bool, facts []any) map[string]any {
 	return map[string]any{
 		"outcome": outcome, "eebus_runtime_enabled": runtime, "candidate_graph_enabled": graph,
-		"service_count": number(services), "candidate_count": number(candidates), "conflict_count": number(conflicts),
-		"degraded": degraded, "empty_success": false, "facts": facts,
+		"service_count": number(services), "raw_only_count": number(rawOnly), "candidate_count": number(candidates),
+		"conflict_count": number(conflicts), "withheld_count": number(withheld), "degraded": degraded,
+		"empty_success": false, "facts": facts,
 	}
+}
+
+func factSummariesV1(graph map[string]any) []any {
+	rawFacts, _ := arrayValueV1(graph["facts"])
+	result := make([]any, len(rawFacts))
+	for index, rawFact := range rawFacts {
+		fact := rawFact.(map[string]any)
+		result[index] = map[string]any{
+			"candidate_id": fact["candidate_id"], "status": fact["status"],
+			"terminal_negative_state": fact["terminal_negative_state"], "visibility_channel": "CANDIDATE_DEBUG_REPLAY",
+		}
+	}
+	return result
+}
+
+func factStatusCountsV1(facts []any) map[string]int64 {
+	counts := map[string]int64{"RAW_ONLY": 0, "CANDIDATE": 0, "CONFLICTED": 0, "WITHHELD": 0}
+	for _, rawFact := range facts {
+		counts[stringOrEmpty(rawFact.(map[string]any)["status"])]++
+	}
+	return counts
+}
+
+func checkRestart(evidence map[string]any) error {
+	runs := evidence["runs"].([]any)
+	transitions := make([]any, len(runs))
+	processIDs := make([]string, len(runs))
+	for index, rawRun := range runs {
+		run := rawRun.(map[string]any)
+		transitions[index] = run["state_evidence"].(map[string]any)["restart_transition"]
+		processIDs[index] = stringOrEmpty(run["provenance"].(map[string]any)["process_instance_id"])
+	}
+	if evidence["evidence_class"] == "SYNTHETIC_OFFLINE_FIXTURE" {
+		for _, transition := range transitions {
+			if transition != nil {
+				return fail("state.evidence")
+			}
+		}
+		return nil
+	}
+	if len(runs) != 4 || transitions[0] != nil || transitions[1] != nil || transitions[2] == nil || transitions[3] != nil ||
+		processIDs[0] != processIDs[1] || processIDs[2] != processIDs[3] || processIDs[0] == processIDs[2] {
+		return fail("state.evidence")
+	}
+	transition := transitions[2].(map[string]any)
+	processEvent := transition["process_event"].(map[string]any)
+	before := transition["before_snapshot"].(map[string]any)
+	after := transition["after_snapshot"].(map[string]any)
+	sessionEvent := transition["session_event"].(map[string]any)
+	thirdOffset, _ := integerValue(runs[2].(map[string]any)["capture_offset_ns"])
+	secondOffset, _ := integerValue(runs[1].(map[string]any)["capture_offset_ns"])
+	beforeTrust, _ := domainDigestV1(coexRestartTrustDomainV1, map[string]any{"trust_state_id": before["trust_state_id"]})
+	afterTrust, _ := domainDigestV1(coexRestartTrustDomainV1, map[string]any{"trust_state_id": after["trust_state_id"]})
+	beforePeer, _ := domainDigestV1(coexRestartPeerDomainV1, map[string]any{"peer_binding_id": before["peer_binding_id"]})
+	afterPeer, _ := domainDigestV1(coexRestartPeerDomainV1, map[string]any{"peer_binding_id": after["peer_binding_id"]})
+	if transition["before_process_instance_id"] != processIDs[1] || transition["after_process_instance_id"] != processIDs[2] ||
+		transition["before_trust_state_hash"] != transition["after_trust_state_hash"] || transition["before_peer_binding_hash"] != transition["after_peer_binding_hash"] ||
+		transition["session_reconnected"] != true || processEvent["event_id"] != transition["event_id"] ||
+		processEvent["event_type"] != "PROCESS_RESTART_OBSERVED" || processEvent["before_process_instance_id"] != processIDs[1] ||
+		processEvent["after_process_instance_id"] != processIDs[2] || processEvent["observed_at_offset_ns"] != number(thirdOffset) ||
+		before["process_instance_id"] != processIDs[1] || before["capture_offset_ns"] != number(secondOffset) ||
+		after["process_instance_id"] != processIDs[2] || after["capture_offset_ns"] != number(thirdOffset) ||
+		before["trust_state_id"] != after["trust_state_id"] || before["peer_binding_id"] != after["peer_binding_id"] ||
+		before["session_id"] == after["session_id"] || before["session_state"] != "CONNECTED" || after["session_state"] != "CONNECTED" ||
+		transition["before_trust_state_hash"] != beforeTrust || transition["after_trust_state_hash"] != afterTrust ||
+		transition["before_peer_binding_hash"] != beforePeer || transition["after_peer_binding_hash"] != afterPeer ||
+		sessionEvent["event_type"] != "SESSION_RECONNECTED_OBSERVED" || sessionEvent["process_instance_id"] != processIDs[2] ||
+		sessionEvent["session_id"] != after["session_id"] || sessionEvent["observed_at_offset_ns"] != number(thirdOffset) || sessionEvent["state"] != "CONNECTED" {
+		return fail("state.evidence")
+	}
+	return nil
 }
 
 func checkViewCoverage(evidence, registry map[string]any) error {
 	want, _ := stringsFromArray(registry["protected_views"])
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
+	for _, rawRun := range evidence["runs"].([]any) {
 		views := rawRun.(map[string]any)["protected_views"].([]any)
 		got := make([]string, len(views))
 		for index, rawView := range views {
@@ -420,16 +752,14 @@ func checkViewCoverage(evidence, registry map[string]any) error {
 
 func checkNormalization(evidence, registry map[string]any) error {
 	profile := evidence["normalization"].(map[string]any)
-	if profile["profile_id"] != "multi-runtime-coexistence-no-drift-v1" ||
-		profile["canonicalization"] != "RFC8785_JCS_INTEGER_SUBSET" || profile["timestamp_replacement"] != "<TIMESTAMP>" ||
-		profile["mask_replacement"] != "<MASKED>" || !reflect.DeepEqual(profile["view_rules"], registry["view_rules"]) {
+	if profile["profile_id"] != "multi-runtime-coexistence-no-drift-v1" || profile["canonicalization"] != "RFC8785_JCS_INTEGER_SUBSET" ||
+		profile["timestamp_replacement"] != "<TIMESTAMP>" || profile["mask_replacement"] != "<MASKED>" ||
+		!reflect.DeepEqual(profile["view_rules"], registry["view_rules"]) {
 		return fail("canonicalization.invalid")
 	}
 	rules := rulesByViewIDV1(registry)
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		views := rawRun.(map[string]any)["protected_views"].([]any)
-		for _, rawView := range views {
+	for _, rawRun := range evidence["runs"].([]any) {
+		for _, rawView := range rawRun.(map[string]any)["protected_views"].([]any) {
 			view := rawView.(map[string]any)
 			if _, err := normalizedPayload(view["payload"], rules[view["view_id"].(string)], profile); err != nil {
 				return fail("canonicalization.invalid")
@@ -442,10 +772,8 @@ func checkNormalization(evidence, registry map[string]any) error {
 func checkPayloadHashes(evidence, registry map[string]any) error {
 	profile := evidence["normalization"].(map[string]any)
 	rules := rulesByViewIDV1(registry)
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		views := rawRun.(map[string]any)["protected_views"].([]any)
-		for _, rawView := range views {
+	for _, rawRun := range evidence["runs"].([]any) {
+		for _, rawView := range rawRun.(map[string]any)["protected_views"].([]any) {
 			view := rawView.(map[string]any)
 			rule := rules[view["view_id"].(string)]
 			normalized, err := normalizedPayload(view["payload"], rule, profile)
@@ -453,8 +781,7 @@ func checkPayloadHashes(evidence, registry map[string]any) error {
 			shapeHash, shapeErr := domainDigestV1(coexShapeDomainV1, payloadShapeV1(view["payload"]))
 			canonicalHash, canonicalErr := domainDigestV1(coexCanonicalPayloadDomainV1, normalized)
 			if err != nil || rawErr != nil || shapeErr != nil || canonicalErr != nil || view["capture_path"] != rule["capture_path"] ||
-				view["media_type"] != "application/json" || view["raw_payload_hash"] != rawHash || view["shape_hash"] != shapeHash ||
-				view["canonical_payload_hash"] != canonicalHash {
+				view["media_type"] != "application/json" || view["raw_payload_hash"] != rawHash || view["shape_hash"] != shapeHash || view["canonical_payload_hash"] != canonicalHash {
 				return fail("hash.payload")
 			}
 		}
@@ -462,133 +789,8 @@ func checkPayloadHashes(evidence, registry map[string]any) error {
 	return nil
 }
 
-func checkAntiLeak(evidence map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		run := rawRun.(map[string]any)
-		for _, rawView := range run["protected_views"].([]any) {
-			if containsCandidateLeakV1(rawView.(map[string]any)["payload"]) {
-				return fail("anti_leak.candidate")
-			}
-		}
-	}
-	return nil
-}
-
-func containsCandidateLeakV1(value any) bool {
-	switch current := value.(type) {
-	case map[string]any:
-		for key, item := range current {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "candidate") || strings.Contains(lower, "conflict") {
-				return true
-			}
-			if containsCandidateLeakV1(item) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range current {
-			if containsCandidateLeakV1(item) {
-				return true
-			}
-		}
-	case string:
-		lower := strings.ToLower(current)
-		switch lower {
-		case "candidate", "withheld", "conflict", "withheld/conflict":
-			return true
-		default:
-			return false
-		}
-	}
-	return false
-}
-
-func checkAuthority(evidence map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs[:len(runs)-1] {
-		run := rawRun.(map[string]any)
-		registryView, registryOK := findViewV1(run, "semantic.registry")
-		routesView, routesOK := findViewV1(run, "command.routing")
-		registryData, registryDataOK := payloadData(registryView)
-		routesData, routesDataOK := payloadData(routesView)
-		if !registryOK || !routesOK || !registryDataOK || !routesDataOK || registryData["authority"] != "ebus.promoted" {
-			return fail("authority.ebus")
-		}
-		routes, ok := arrayValueV1(routesData["routes"])
-		if !ok {
-			return fail("authority.ebus")
-		}
-		for _, rawRoute := range routes {
-			route, valid := objectValueV1(rawRoute)
-			if !valid || route["source"] != "ebus" {
-				return fail("authority.ebus")
-			}
-		}
-	}
-	return nil
-}
-
-func checkScope(evidence, registry map[string]any) error {
-	scope := evidence["scope"].(map[string]any)
-	if scope["gate"] != registry["gate"] || !reflect.DeepEqual(scope["claims"], []any{"EEBUS-G18"}) ||
-		!reflect.DeepEqual(scope["excluded_gates"], registry["excluded_gates"]) || scope["live_vr940_claim"] != false ||
-		scope["public_version_policy"] != "V1_ONLY_NO_PUBLIC_V2" {
-		return fail("gate.scope")
-	}
-	runs, _ := arrayValueV1(evidence["runs"])
-	for _, rawRun := range runs {
-		run := rawRun.(map[string]any)
-		inventory, inventoryOK := findViewV1(run, "mcp.tool.inventory")
-		contractView, contractOK := findViewV1(run, "mcp.eebus.v1.contract")
-		graphqlView, graphqlOK := findViewV1(run, "graphql.schema")
-		semanticView, semanticOK := findViewV1(run, "semantic.registry")
-		inventoryData, inventoryDataOK := payloadData(inventory)
-		contractData, contractDataOK := payloadData(contractView)
-		graphqlData, graphqlDataOK := payloadData(graphqlView)
-		semanticData, semanticDataOK := payloadData(semanticView)
-		if !inventoryOK || !contractOK || !graphqlOK || !semanticOK || !inventoryDataOK || !contractDataOK || !graphqlDataOK || !semanticDataOK {
-			return fail("gate.scope")
-		}
-		tools, toolsOK := stringsFromArray(inventoryData["tools"])
-		if !toolsOK {
-			return fail("gate.scope")
-		}
-		for _, tool := range tools {
-			if containsV2Marker(tool) {
-				return fail("gate.scope")
-			}
-		}
-		version, versionOK := integerValue(contractData["version"])
-		publicV2, publicOK := boolValueV1(contractData["public_v2"])
-		if !versionOK || version != 1 || !publicOK || publicV2 || contractData["namespace"] != "eebus.v1" {
-			return fail("gate.scope")
-		}
-		queryFields, queryOK := stringsFromArray(graphqlData["query_fields"])
-		if !queryOK {
-			return fail("gate.scope")
-		}
-		for _, field := range queryFields {
-			lower := strings.ToLower(field)
-			if strings.Contains(lower, "eebus") || containsV2Marker(field) {
-				return fail("gate.scope")
-			}
-		}
-		if containsPublicV2(semanticData) {
-			return fail("gate.scope")
-		}
-		for _, rawView := range run["protected_views"].([]any) {
-			if containsV2String(rawView.(map[string]any)["payload"]) {
-				return fail("gate.scope")
-			}
-		}
-	}
-	return nil
-}
-
 func checkDrift(evidence, registry map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
+	runs := evidence["runs"].([]any)
 	baseline := runs[0].(map[string]any)
 	baselineViews := make(map[string]map[string]any)
 	for _, rawView := range baseline["protected_views"].([]any) {
@@ -598,8 +800,7 @@ func checkDrift(evidence, registry map[string]any) error {
 	profile := evidence["normalization"].(map[string]any)
 	rules := rulesByViewIDV1(registry)
 	for _, rawRun := range runs[1 : len(runs)-1] {
-		run := rawRun.(map[string]any)
-		for _, rawView := range run["protected_views"].([]any) {
+		for _, rawView := range rawRun.(map[string]any)["protected_views"].([]any) {
 			view := rawView.(map[string]any)
 			viewID := view["view_id"].(string)
 			original := baselineViews[viewID]
@@ -607,8 +808,7 @@ func checkDrift(evidence, registry map[string]any) error {
 			comparedNormalized, _ := normalizedPayload(view["payload"], rules[viewID], profile)
 			originalBytes, _ := marshalCanonicalV1(originalNormalized)
 			comparedBytes, _ := marshalCanonicalV1(comparedNormalized)
-			if view["shape_hash"] != original["shape_hash"] || view["canonical_payload_hash"] != original["canonical_payload_hash"] ||
-				!bytes.Equal(comparedBytes, originalBytes) {
+			if view["shape_hash"] != original["shape_hash"] || view["canonical_payload_hash"] != original["canonical_payload_hash"] || !bytes.Equal(comparedBytes, originalBytes) {
 				return fail("drift.consumer")
 			}
 		}
@@ -617,7 +817,7 @@ func checkDrift(evidence, registry map[string]any) error {
 }
 
 func checkRollback(evidence, registry map[string]any) error {
-	runs, _ := arrayValueV1(evidence["runs"])
+	runs := evidence["runs"].([]any)
 	baseline := runs[0].(map[string]any)
 	rollback := runs[len(runs)-1].(map[string]any)
 	profile := evidence["normalization"].(map[string]any)
@@ -635,15 +835,17 @@ func checkRollback(evidence, registry map[string]any) error {
 		rightNormalized, _ := normalizedPayload(right["payload"], rules[viewID], profile)
 		leftBytes, _ := marshalCanonicalV1(leftNormalized)
 		rightBytes, _ := marshalCanonicalV1(rightNormalized)
-		if left["view_id"] != right["view_id"] || left["shape_hash"] != right["shape_hash"] ||
-			left["canonical_payload_hash"] != right["canonical_payload_hash"] || !bytes.Equal(leftBytes, rightBytes) {
+		if left["view_id"] != right["view_id"] || left["shape_hash"] != right["shape_hash"] || left["canonical_payload_hash"] != right["canonical_payload_hash"] || !bytes.Equal(leftBytes, rightBytes) {
 			return fail("rollback.drift")
 		}
 	}
+	live := evidence["evidence_class"] == "CAPTURED_RUNTIME_EVIDENCE"
+	expectedState := "EEBUS_DISABLED_ROLLBACK"
+	if live {
+		expectedState = "EEBUS_CONNECTED_ROLLBACK"
+	}
 	config := rollback["provenance"].(map[string]any)["config"].(map[string]any)["payload"].(map[string]any)
-	runtimeEnabled, _ := boolValueV1(config["eebus_runtime_enabled"])
-	graphEnabled, _ := boolValueV1(config["candidate_graph_enabled"])
-	if rollback["state"] != "EEBUS_DISABLED_ROLLBACK" || runtimeEnabled || graphEnabled {
+	if rollback["state"] != expectedState || config["eebus_runtime_enabled"] != live || config["candidate_graph_enabled"] != false {
 		return fail("rollback.drift")
 	}
 	return nil
@@ -657,15 +859,28 @@ func checkEvidenceHash(evidence map[string]any) error {
 	return nil
 }
 
-func payloadData(view map[string]any) (map[string]any, bool) {
-	if view == nil {
-		return nil, false
+func mergeObjectsV1(left, right map[string]any) map[string]any {
+	result := make(map[string]any, len(left)+len(right))
+	for key, value := range left {
+		result[key] = value
 	}
-	payload, ok := objectValueV1(view["payload"])
-	if !ok {
-		return nil, false
+	for key, value := range right {
+		result[key] = value
 	}
-	return objectValueV1(payload["data"])
+	return result
+}
+
+func integerMapV1(values map[string]int64) map[string]any {
+	result := make(map[string]any, len(values))
+	for key, value := range values {
+		result[key] = number(value)
+	}
+	return result
+}
+
+func stringOrEmpty(value any) string {
+	result, _ := stringValueV1(value)
+	return result
 }
 
 func uniqueStrings(values []string) bool {
@@ -679,22 +894,6 @@ func uniqueStrings(values []string) bool {
 	return true
 }
 
-func sameStringSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	values := make(map[string]bool, len(left))
-	for _, value := range left {
-		values[value] = true
-	}
-	for _, value := range right {
-		if !values[value] {
-			return false
-		}
-	}
-	return true
-}
-
 func strictlyIncreasing(values []int64) bool {
 	for index := 1; index < len(values); index++ {
 		if values[index] <= values[index-1] {
@@ -704,56 +903,11 @@ func strictlyIncreasing(values []int64) bool {
 	return true
 }
 
-func containsPublicV2(value any) bool {
-	switch current := value.(type) {
-	case map[string]any:
-		for key, item := range current {
-			if mapEntryClaimsV2(key, item) {
-				return true
-			}
-			if containsPublicV2(item) {
-				return true
-			}
+func containsText(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
 		}
-	case []any:
-		for _, item := range current {
-			if containsPublicV2(item) {
-				return true
-			}
-		}
-	case string:
-		return containsV2Marker(current)
 	}
 	return false
-}
-
-func containsV2String(value any) bool {
-	switch current := value.(type) {
-	case map[string]any:
-		for key, item := range current {
-			if mapEntryClaimsV2(key, item) {
-				return true
-			}
-			if containsV2String(item) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range current {
-			if containsV2String(item) {
-				return true
-			}
-		}
-	case string:
-		return containsV2Marker(current)
-	}
-	return false
-}
-
-func mapEntryClaimsV2(key string, value any) bool {
-	if !containsV2Marker(key) {
-		return false
-	}
-	enabled, isBoolean := boolValueV1(value)
-	return !isBoolean || enabled
 }

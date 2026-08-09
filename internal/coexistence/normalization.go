@@ -63,12 +63,6 @@ func validRFC3339UTC(value string) bool {
 	return err == nil && parsed.Location() == time.UTC
 }
 
-func containsV2Marker(value string) bool {
-	lower := strings.ToLower(value)
-	return strings.Contains(lower, ".v2") || strings.Contains(lower, "_v2") ||
-		strings.Contains(lower, "/v2") || strings.Contains(lower, "-v2")
-}
-
 func pointerTarget(value any, pointer string) (string, func(string), error) {
 	if pointer == "" || pointer[0] != '/' {
 		return "", nil, fail("canonicalization.invalid")

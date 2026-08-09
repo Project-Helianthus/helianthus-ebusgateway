@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-helianthus.github.io/schemas/draft-candidate-fact-public-status-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "schema_version", "export_tier", "projection_id", "projection_hash", "source_commit", "docs_source_commit", "source_graph_id", "source_graph_hash", "source_replay_id", "source_replay_hash", "fact_count", "status_counts", "facts"],
+  "properties": {
+    "contract": {"const": "helianthus.platform.draft-candidate-fact-public-status.v1"},
+    "schema_version": {"const": 1},
+    "export_tier": {"const": "PUBLIC_REDACTED"},
+    "projection_id": {"type": "string", "pattern": "^dcfpsv1:sha256:[0-9a-f]{64}$"},
+    "projection_hash": {"$ref": "#/$defs/Digest"},
+    "source_commit": {"$ref": "#/$defs/SHA"},
+    "docs_source_commit": {"$ref": "#/$defs/SHA"},
+    "source_graph_id": {"type": "string", "pattern": "^dcfgv1:sha256:[0-9a-f]{64}$"},
+    "source_graph_hash": {"$ref": "#/$defs/Digest"},
+    "source_replay_id": {"type": "string", "pattern": "^dcfrv1:sha256:[0-9a-f]{64}$"},
+    "source_replay_hash": {"$ref": "#/$defs/Digest"},
+    "fact_count": {"type": "integer", "minimum": 1, "maximum": 64},
+    "status_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["RAW_ONLY", "WITHHELD"],
+      "properties": {
+        "RAW_ONLY": {"type": "integer", "minimum": 0, "maximum": 64},
+        "WITHHELD": {"type": "integer", "minimum": 0, "maximum": 64}
+      }
+    },
+    "facts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/Fact"}
+    }
+  },
+  "$defs": {
+    "Digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "SHA": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "Fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "status", "terminal_negative_state", "fact_hash"],
+      "properties": {
+        "candidate_id": {"type": "string", "pattern": "^m7-candidate-[0-9]{4}$"},
+        "status": {"enum": ["RAW_ONLY", "WITHHELD"]},
+        "terminal_negative_state": {"oneOf": [{"enum": ["NO_SIGNAL", "CLOUD_ONLY", "CONFLICT", "NOT_TESTED"]}, {"type": "null"}]},
+        "fact_hash": {"$ref": "#/$defs/Digest"}
+      }
+    }
+  }
+}

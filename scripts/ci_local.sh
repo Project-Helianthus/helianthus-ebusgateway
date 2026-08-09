@@ -32,6 +32,10 @@ go vet ./...
 echo "==> go build"
 go build ./...
 
+echo "==> linux 32-bit build"
+GOOS=linux GOARCH=386 go test -c -o /dev/null ./internal/syncevidence
+GOOS=linux GOARCH=arm GOARM=7 go test -c -o /dev/null ./internal/syncevidence
+
 echo "==> go test (race)"
 go test -race -count=1 ./...
 

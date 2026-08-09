@@ -10,16 +10,16 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence"
 )
 
-var sourceSHA256V1 = map[string]string{
-	"m7_graph":         "b5c5d79e540a1691ee60c6db3e9405a92d9d544d871c74b26800fe449a318b0e",
-	"m7_replay":        "8280f6278ffe8598dfd767bb5bf9e60dce3c145b4612174b7c5a32fbff282f5c",
-	"m7_registry":      "e6895b8d7406b58ed97599d8da7e9bd3b252e6e7ca3b0578ec6385bfe6dfe1c0",
-	"m7_source_bundle": "e6db2862f9001148deb6f40e286ee5f1eef2907812685a9b48128ddbfca5ce5a",
-	"m7_source_replay": "3061c507677f1f41861c20096ff7581ccb6e35c2e01bf66a568e2277df285539",
-	"m8_evidence":      "32049994cb8a89cd6c11f7852979e6d9b400c75fd106bde52ba28734cc9fd8f2",
-	"m8_report":        "24c875c9bb43ad3819da20403435d6d8a4533451154407df089302db45dbcc0c",
-	"m8_registry":      "8fab50c488cf99a5f6c29cb8cddc41df9728b5c5edde99e3c1e58d13c9f8407b",
-}
+const (
+	m7GatewaySourceCommitV1 = "8bcba2107d10b149f984ac9546ea6427a9cda8a1"
+	m7DocsSourceCommitV1    = "35d2eba256a77b6575a2b45c07e73f054ff74ced"
+	m8GatewaySourceCommitV1 = "89cf8876a9cd8aa4e6aab9ad21cc05cac523426a"
+	m8DocsSourceCommitV1    = "9cede4c61a4f73019142b7418cf6f87537cf645c"
+
+	m7LiveStatusSHA256V1     = "63ecafd94d507cedadc2cba4bb9ac108488d1020d3b43b0ad034409460826428"
+	m7StatusProjectionIDV1   = "dcfpsv1:sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8"
+	m7StatusProjectionHashV1 = "sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8"
+)
 
 type verifiedSourcesV1 struct {
 	graph    candidatefacts.GraphV1
@@ -36,86 +36,204 @@ type m7ReplayHeaderV1 struct {
 	ReplayHash string `json:"replay_hash"`
 }
 
+type m7StatusHeaderV1 struct {
+	Contract         string `json:"contract"`
+	SchemaVersion    uint64 `json:"schema_version"`
+	ExportTier       string `json:"export_tier"`
+	ProjectionID     string `json:"projection_id"`
+	ProjectionHash   string `json:"projection_hash"`
+	SourceCommit     string `json:"source_commit"`
+	DocsSourceCommit string `json:"docs_source_commit"`
+	SourceGraphID    string `json:"source_graph_id"`
+	SourceGraphHash  string `json:"source_graph_hash"`
+	SourceReplayID   string `json:"source_replay_id"`
+	SourceReplayHash string `json:"source_replay_hash"`
+	FactCount        uint64 `json:"fact_count"`
+	StatusCounts     struct {
+		RawOnly  uint64 `json:"RAW_ONLY"`
+		Withheld uint64 `json:"WITHHELD"`
+	} `json:"status_counts"`
+}
+
 type m8EvidenceHeaderV1 struct {
-	Contract      string `json:"contract"`
-	EvidenceID    string `json:"evidence_id"`
-	EvidenceHash  string `json:"evidence_hash"`
-	EvidenceClass string `json:"evidence_class"`
-	Scope         struct {
-		LiveVR940Claim bool `json:"live_vr940_claim"`
-	} `json:"scope"`
+	Contract      string                  `json:"contract"`
+	EvidenceID    string                  `json:"evidence_id"`
+	EvidenceHash  string                  `json:"evidence_hash"`
+	EvidenceClass string                  `json:"evidence_class"`
+	Runs          []m8EvidenceRunHeaderV1 `json:"runs"`
+}
+
+type m8EvidenceRunHeaderV1 struct {
+	Provenance struct {
+		Runtime struct {
+			SourceCommit string `json:"source_commit"`
+		} `json:"runtime"`
+	} `json:"provenance"`
 }
 
 type m8ReportHeaderV1 struct {
-	Contract     string `json:"contract"`
-	EvidenceID   string `json:"evidence_id"`
-	EvidenceHash string `json:"evidence_hash"`
-	ReportID     string `json:"report_id"`
-	ReportHash   string `json:"report_hash"`
-	Verdict      string `json:"verdict"`
+	Contract      string `json:"contract"`
+	EvidenceClass string `json:"evidence_class"`
+	EvidenceID    string `json:"evidence_id"`
+	EvidenceHash  string `json:"evidence_hash"`
+	ReportID      string `json:"report_id"`
+	ReportHash    string `json:"report_hash"`
+	Verdict       string `json:"verdict"`
 }
 
-func exactSource(name string, raw []byte) bool {
+func validateRegistryV1(raw []byte) error {
 	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:]) == sourceSHA256V1[name]
+	if hex.EncodeToString(digest[:]) != promotionRegistrySHA256V1 {
+		return fail("registry.binding")
+	}
+	return nil
 }
 
-func validateSources(inputs InputsV1) (verifiedSourcesV1, error) {
-	checks := []struct {
-		name     string
-		raw      []byte
-		category string
-	}{
-		{"m7_graph", inputs.M7Graph, "source.m7_graph"},
-		{"m7_replay", inputs.M7Replay, "source.m7_replay"},
-		{"m7_registry", inputs.M7Registry, "source.m7_registry"},
-		{"m7_source_bundle", inputs.M7SourceBundle, "source.m7_bundle"},
-		{"m7_source_replay", inputs.M7SourceReplay, "source.m7_bundle"},
-		{"m8_evidence", inputs.M8Evidence, "source.m8_evidence"},
-		{"m8_report", inputs.M8Report, "source.m8_report"},
-		{"m8_registry", inputs.M8Registry, "source.m8_registry"},
+func validateSyntheticInputs(inputs InputsV1) error {
+	if inputs.Profile != ProfileSyntheticConformanceV1 || len(inputs.Registry) == 0 ||
+		!bytes.Equal(inputs.Dossier, mustContractArtifactV1("docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json")) ||
+		hasCapturedInputs(inputs) {
+		return fail("synthetic.input")
 	}
-	for _, check := range checks {
-		if !exactSource(check.name, check.raw) {
-			return verifiedSourcesV1{}, fail(check.category)
-		}
-	}
+	return nil
+}
 
+func validateCapturedSources(inputs InputsV1) (verifiedSourcesV1, error) {
+	if inputs.Profile != ProfileCapturedZeroPromotionV1 || len(inputs.Dossier) != 0 || !hasCompleteCapturedInputs(inputs) {
+		return verifiedSourcesV1{}, fail("captured.input")
+	}
 	if err := candidatefacts.Verify(inputs.M7Graph, inputs.M7SourceBundle, inputs.M7SourceReplay); err != nil {
-		return verifiedSourcesV1{}, fail("source.m7_graph")
+		return verifiedSourcesV1{}, err
 	}
 	replayed, err := candidatefacts.Replay(inputs.M7Graph, inputs.M7SourceBundle, inputs.M7SourceReplay)
-	if err != nil || !bytes.Equal(replayed, inputs.M7Replay) {
-		return verifiedSourcesV1{}, fail("source.m7_replay")
+	if err != nil {
+		return verifiedSourcesV1{}, err
 	}
-	coexistenceInputs := coexistence.InputsV1{
-		Evidence:       inputs.M8Evidence,
-		Registry:       inputs.M8Registry,
-		M7Graph:        inputs.M7Graph,
-		M7Replay:       inputs.M7Replay,
-		M7Registry:     inputs.M7Registry,
-		M7SourceBundle: inputs.M7SourceBundle,
-		M7SourceReplay: inputs.M7SourceReplay,
-	}
-	if err := coexistence.Verify(coexistenceInputs); err != nil {
-		return verifiedSourcesV1{}, fail("source.m8_evidence")
-	}
-	report, err := coexistence.Report(coexistenceInputs)
-	if err != nil || !bytes.Equal(report, inputs.M8Report) {
-		return verifiedSourcesV1{}, fail("source.m8_report")
+	if !bytes.Equal(replayed, inputs.M7Replay) {
+		return verifiedSourcesV1{}, fail("projection.replay")
 	}
 
 	var sources verifiedSourcesV1
 	if err := json.Unmarshal(inputs.M7Graph, &sources.graph); err != nil ||
-		json.Unmarshal(inputs.M7Replay, &sources.replay) != nil ||
-		json.Unmarshal(inputs.M8Evidence, &sources.evidence) != nil ||
-		json.Unmarshal(inputs.M8Report, &sources.report) != nil {
-		return verifiedSourcesV1{}, fail("source.decode")
+		json.Unmarshal(inputs.M7Replay, &sources.replay) != nil {
+		return verifiedSourcesV1{}, fail("captured.input")
 	}
-	if sources.replay.GraphID != sources.graph.GraphID || sources.replay.GraphHash != sources.graph.GraphHash ||
-		sources.report.EvidenceID != sources.evidence.EvidenceID ||
-		sources.report.EvidenceHash != sources.evidence.EvidenceHash || sources.report.Verdict != "PASS" {
-		return verifiedSourcesV1{}, fail("source.binding")
+	if err := validateM7Status(inputs.M7LiveStatus, sources.graph, sources.replay); err != nil {
+		return verifiedSourcesV1{}, err
+	}
+
+	coexistenceInputs := coexistence.InputsV1{
+		Evidence:               inputs.M8Evidence,
+		Registry:               inputs.M8Registry,
+		M7Graph:                inputs.M7Graph,
+		M7Replay:               inputs.M7Replay,
+		M7Registry:             inputs.M7Registry,
+		M7SourceBundle:         inputs.M7SourceBundle,
+		M7SourceReplay:         inputs.M7SourceReplay,
+		M7LiveStatus:           inputs.M7LiveStatus,
+		M7TerminalGraph:        inputs.M7TerminalGraph,
+		M7TerminalReplay:       inputs.M7TerminalReplay,
+		M7TerminalSourceBundle: inputs.M7TerminalSourceBundle,
+		M7TerminalSourceReplay: inputs.M7TerminalSourceReplay,
+	}
+	if err := coexistence.Verify(coexistenceInputs); err != nil {
+		return verifiedSourcesV1{}, err
+	}
+	report, err := coexistence.Report(coexistenceInputs)
+	if err != nil {
+		return verifiedSourcesV1{}, err
+	}
+	if !bytes.Equal(report, inputs.M8Report) {
+		return verifiedSourcesV1{}, fail("captured.coexistence")
+	}
+	if err := json.Unmarshal(inputs.M8Evidence, &sources.evidence); err != nil ||
+		json.Unmarshal(inputs.M8Report, &sources.report) != nil {
+		return verifiedSourcesV1{}, fail("captured.input")
+	}
+	if err := validateM8RuntimeSourceCommits(sources.evidence); err != nil {
+		return verifiedSourcesV1{}, err
+	}
+	if sources.evidence.EvidenceClass != "CAPTURED_RUNTIME_EVIDENCE" ||
+		sources.report.EvidenceClass != "CAPTURED_RUNTIME_EVIDENCE" || sources.report.Verdict != "PASS" ||
+		sources.report.EvidenceID != sources.evidence.EvidenceID || sources.report.EvidenceHash != sources.evidence.EvidenceHash {
+		return verifiedSourcesV1{}, fail("captured.predecessor")
 	}
 	return sources, nil
+}
+
+func validateM7Status(raw []byte, graph candidatefacts.GraphV1, replay m7ReplayHeaderV1) error {
+	var status m7StatusHeaderV1
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return fail("captured.status")
+	}
+	if status.SourceCommit != m7GatewaySourceCommitV1 || status.DocsSourceCommit != m7DocsSourceCommitV1 {
+		return fail("captured.predecessor")
+	}
+	digest := sha256.Sum256(raw)
+	if hex.EncodeToString(digest[:]) != m7LiveStatusSHA256V1 ||
+		status.Contract != "helianthus.platform.draft-candidate-fact-public-status.v1" ||
+		status.SchemaVersion != SchemaVersionV1 || status.ExportTier != ExportTierPublicRedactedV1 ||
+		status.ProjectionID != m7StatusProjectionIDV1 || status.ProjectionHash != m7StatusProjectionHashV1 ||
+		status.SourceGraphID != graph.GraphID || status.SourceGraphHash != graph.GraphHash ||
+		status.SourceReplayID != replay.ReplayID || status.SourceReplayHash != replay.ReplayHash ||
+		status.FactCount != 18 || status.StatusCounts.RawOnly != 14 || status.StatusCounts.Withheld != 4 {
+		return fail("captured.status")
+	}
+	return nil
+}
+
+func validateM8RuntimeSourceCommits(evidence m8EvidenceHeaderV1) error {
+	for _, run := range evidence.Runs {
+		if run.Provenance.Runtime.SourceCommit != m8GatewaySourceCommitV1 {
+			return fail("captured.predecessor")
+		}
+	}
+	return nil
+}
+
+func hasCompleteCapturedInputs(inputs InputsV1) bool {
+	for _, raw := range [][]byte{
+		inputs.Registry, inputs.M7Graph, inputs.M7Replay, inputs.M7Registry, inputs.M7SourceBundle, inputs.M7SourceReplay,
+		inputs.M7LiveStatus, inputs.M7TerminalGraph, inputs.M7TerminalReplay, inputs.M7TerminalSourceBundle,
+		inputs.M7TerminalSourceReplay, inputs.M8Evidence, inputs.M8Report, inputs.M8Registry,
+	} {
+		if len(raw) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCapturedInputs(inputs InputsV1) bool {
+	for _, raw := range [][]byte{
+		inputs.M7Graph, inputs.M7Replay, inputs.M7Registry, inputs.M7SourceBundle, inputs.M7SourceReplay,
+		inputs.M7LiveStatus, inputs.M7TerminalGraph, inputs.M7TerminalReplay, inputs.M7TerminalSourceBundle,
+		inputs.M7TerminalSourceReplay, inputs.M8Evidence, inputs.M8Report, inputs.M8Registry,
+	} {
+		if len(raw) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneInputsV1(inputs InputsV1) InputsV1 {
+	return InputsV1{
+		Profile:                inputs.Profile,
+		Registry:               bytes.Clone(inputs.Registry),
+		Dossier:                bytes.Clone(inputs.Dossier),
+		M7Graph:                bytes.Clone(inputs.M7Graph),
+		M7Replay:               bytes.Clone(inputs.M7Replay),
+		M7Registry:             bytes.Clone(inputs.M7Registry),
+		M7SourceBundle:         bytes.Clone(inputs.M7SourceBundle),
+		M7SourceReplay:         bytes.Clone(inputs.M7SourceReplay),
+		M7LiveStatus:           bytes.Clone(inputs.M7LiveStatus),
+		M7TerminalGraph:        bytes.Clone(inputs.M7TerminalGraph),
+		M7TerminalReplay:       bytes.Clone(inputs.M7TerminalReplay),
+		M7TerminalSourceBundle: bytes.Clone(inputs.M7TerminalSourceBundle),
+		M7TerminalSourceReplay: bytes.Clone(inputs.M7TerminalSourceReplay),
+		M8Evidence:             bytes.Clone(inputs.M8Evidence),
+		M8Report:               bytes.Clone(inputs.M8Report),
+		M8Registry:             bytes.Clone(inputs.M8Registry),
+	}
 }

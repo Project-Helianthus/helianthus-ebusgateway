@@ -222,6 +222,9 @@ func sensitiveKeyV1(key string, value any) bool {
 }
 
 func identityKeyV1(tokens []string) bool {
+	if len(tokens) >= 2 && tokens[0] == "via" && tokens[len(tokens)-1] == "device" {
+		return true
+	}
 	if len(tokens) == 1 {
 		switch tokens[0] {
 		case "address", "addresses", "device", "endpoint", "host", "hostname", "id", "identifier", "identifiers", "identities", "identity", "ip", "ipv4", "ipv6", "selector", "selectors", "serial", "serials", "ski", "skis", "uid", "uids":

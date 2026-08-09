@@ -32,6 +32,44 @@ func TestMSP08ReviewRejectsAlternatePublicV2Spellings(t *testing.T) {
 	assertReviewCategory(t, evidence, "gate.scope")
 }
 
+func TestMSP08ReviewRejectsGraphQLV3SurfaceWithRecomputedEvidence(t *testing.T) {
+	evidence := reviewEvidence(t)
+	for _, rawRun := range arrayValue(t, evidence, "runs") {
+		run := asObject(t, rawRun, "run")
+		view := findView(t, run, "graphql.schema")
+		data := objectValue(t, objectValue(t, view, "payload"), "data")
+		data["query_fields"] = append(arrayValue(t, data, "query_fields"), "eebus.v3.runtime.status.get")
+		refreshViewHashes(t, evidence, run, view)
+	}
+	refreshEvidenceIdentity(t, evidence)
+
+	assertReviewCategory(t, evidence, "gate.scope")
+}
+
+func TestMSP08ReviewRejectsUnapprovedV1AliasInDebugWithRecomputedEvidence(t *testing.T) {
+	evidence := reviewEvidence(t)
+	for _, rawRun := range arrayValue(t, evidence, "runs") {
+		run := asObject(t, rawRun, "run")
+		view := findView(t, run, "debug.ebus")
+		data := objectValue(t, objectValue(t, view, "payload"), "data")
+		data["observed_tool"] = "eebus.v1.runtime.status"
+		refreshViewHashes(t, evidence, run, view)
+	}
+	refreshEvidenceIdentity(t, evidence)
+
+	assertReviewCategory(t, evidence, "gate.scope")
+}
+
+func TestMSP08ScopeAllowsBenignEEBusProseMetadata(t *testing.T) {
+	payload := map[string]any{
+		"data": map[string]any{"status": "ready"},
+		"meta": map[string]any{"note": "eeBUS raw runtime visibility remains operator-only"},
+	}
+	if containsEEBusPublicIdentifierOutsideV1Context("debug.ebus", payload) {
+		t.Fatal("benign eeBUS prose metadata must not be treated as a public identifier")
+	}
+}
+
 func TestMSP08ReviewRejectsImpossibleUTCTimestamps(t *testing.T) {
 	t.Run("capture clock anchor", func(t *testing.T) {
 		evidence := reviewEvidence(t)

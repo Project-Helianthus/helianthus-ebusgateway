@@ -451,8 +451,10 @@ func checkScope(evidence, registry map[string]any) error {
 			return fail("gate.scope")
 		}
 		for _, rawView := range run["protected_views"].([]any) {
-			payload := rawView.(map[string]any)["payload"]
-			if containsLaterMilestoneV1(payload) || containsNonV1OrWriteV1(payload) {
+			view := rawView.(map[string]any)
+			payload := view["payload"]
+			if containsLaterMilestoneV1(payload) || containsNonV1OrWriteV1(payload) ||
+				containsEEBusPublicIdentifierOutsideV1Context(stringOrEmpty(view["view_id"]), payload) {
 				return fail("gate.scope")
 			}
 		}
@@ -483,6 +485,63 @@ func containsNonV1OrWriteV1(value any) bool {
 func nonV1EEBusSurfaceV1(value string) bool {
 	compact := compactKeyV1(value)
 	return strings.Contains(compact, "eebusv2") || strings.Contains(compact, "eebus2") || strings.Contains(compact, "eebusexperimental") || strings.Contains(compact, "eebuslegacy")
+}
+
+func containsEEBusPublicIdentifierOutsideV1Context(viewID string, value any) bool {
+	return containsEEBusPublicIdentifierOutsideV1Path(viewID, nil, value)
+}
+
+func containsEEBusPublicIdentifierOutsideV1Path(viewID string, path []string, value any) bool {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, item := range current {
+			if isEEBusPublicIdentifierV1(key) || containsEEBusPublicIdentifierOutsideV1Path(viewID, append(path, key), item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range current {
+			if containsEEBusPublicIdentifierOutsideV1Path(viewID, append(path, "[]"), item) {
+				return true
+			}
+		}
+	case string:
+		return isEEBusPublicIdentifierV1(current) && !approvedEEBusPublicIdentifierV1(viewID, path, current)
+	}
+	return false
+}
+
+func approvedEEBusPublicIdentifierV1(viewID string, path []string, value string) bool {
+	switch viewID {
+	case "mcp.tool.inventory":
+		if !reflect.DeepEqual(path, []string{"data", "tools", "[]"}) {
+			return false
+		}
+		return value == "eebus.v1.runtime.status.get" || value == "eebus.v1.services.list"
+	case "mcp.eebus.v1.contract":
+		return reflect.DeepEqual(path, []string{"data", "namespace"}) && value == "eebus.v1"
+	default:
+		return false
+	}
+}
+
+func isEEBusPublicIdentifierV1(value string) bool {
+	compact := compactKeyV1(value)
+	for offset := 0; offset < len(compact); {
+		index := strings.Index(compact[offset:], "eebus")
+		if index < 0 {
+			return false
+		}
+		index += offset + len("eebus")
+		if index < len(compact) && compact[index] == 'v' {
+			index++
+		}
+		if index < len(compact) && compact[index] >= '0' && compact[index] <= '9' {
+			return true
+		}
+		offset = index
+	}
+	return false
 }
 
 func eebusWriteSurfaceV1(value string) bool {

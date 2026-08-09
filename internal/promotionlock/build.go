@@ -212,8 +212,8 @@ func hasExactEEBusIdentity(identity *candidatefacts.EEBusIdentityV1) bool {
 	if identity == nil || identity.Entity == "" || identity.Service == "" || identity.Feature == "" || len(identity.FeaturePath) < 3 {
 		return false
 	}
-	return identity.FeaturePath[0].Kind == "ENTITY" && identity.FeaturePath[0].Selector == identity.Entity &&
-		identity.FeaturePath[1].Kind == "SERVICE" && identity.FeaturePath[1].Selector == identity.Service &&
+	return identity.FeaturePath[0].Kind == "SERVICE" && identity.FeaturePath[0].Selector == identity.Service &&
+		identity.FeaturePath[1].Kind == "ENTITY" && identity.FeaturePath[1].Selector == identity.Entity &&
 		identity.FeaturePath[2].Kind == "FEATURE" && identity.FeaturePath[2].Selector == identity.Feature
 }
 

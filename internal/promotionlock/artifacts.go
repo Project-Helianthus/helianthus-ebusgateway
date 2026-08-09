@@ -6,13 +6,16 @@ import (
 	"encoding/hex"
 )
 
-// Executable contract copies include the PR #773 canonical terminal-source
-// path correction and its dependent synthetic goldens.
+// Executable contract copies are byte-identical to canonical docs commit
+// 58f683ca3faa752fd3bb4c5b37a42f35ab3cf249.
 //
 //go:embed contracts/*.json testdata/canonical/positive/*.json
 var contractFiles embed.FS
 
-const promotionRegistrySHA256V1 = "ad33736c00aa2c3ecaac981606d25c064088c80cb72ca5389b83c5d9df40f6a3"
+const (
+	canonicalDocsCommitV1     = "58f683ca3faa752fd3bb4c5b37a42f35ab3cf249"
+	promotionRegistrySHA256V1 = "ad33736c00aa2c3ecaac981606d25c064088c80cb72ca5389b83c5d9df40f6a3"
+)
 
 var artifactSHA256V1 = map[string]string{
 	"docs/platform/schemas/leaf-promotion-dossier-v1.schema.json":                                  "ee206ea23d595169d7dec2dd305250a1fd7320a630f89b3b9826b5098e3e1f74",

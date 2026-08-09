@@ -147,6 +147,9 @@ func intField(t *testing.T, object map[string]any, key string) int64 {
 }
 
 func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
+	if canonicalDocsCommitV1 != "58f683ca3faa752fd3bb4c5b37a42f35ab3cf249" {
+		t.Fatalf("canonical docs commit = %s", canonicalDocsCommitV1)
+	}
 	for path, want := range executableArtifactsV1 {
 		raw := contractArtifact(t, path)
 		digest := sha256.Sum256(raw)
@@ -158,6 +161,99 @@ func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
 		if bytes.Equal(raw, fresh) {
 			t.Fatalf("artifact %s aliases embedded storage", path)
 		}
+	}
+}
+
+func TestMSP085CandidateFactsEEBusPathOrderIsPreserved(t *testing.T) {
+	bundle := readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "m625-bundle.json")
+	sourceReplay := readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "m625-source-replay.json")
+	graphRaw, _, err := candidatefacts.BuildRawFirstV1(bundle, sourceReplay)
+	if err != nil {
+		t.Fatalf("candidatefacts.BuildRawFirstV1: %v", err)
+	}
+	var candidateGraph candidatefacts.GraphV1
+	if err := json.Unmarshal(graphRaw, &candidateGraph); err != nil {
+		t.Fatal(err)
+	}
+	var validIdentity *candidatefacts.EEBusIdentityV1
+	for index := range candidateGraph.Facts {
+		if candidateGraph.Facts[index].Provenance.EEBus != nil {
+			identity := *candidateGraph.Facts[index].Provenance.EEBus
+			identity.FeaturePath = append([]candidatefacts.EEBusPathSegmentV1(nil), identity.FeaturePath...)
+			validIdentity = &identity
+			break
+		}
+	}
+	if validIdentity == nil {
+		t.Fatal("candidatefacts build produced no valid EEBus path")
+	}
+
+	sources, _ := capturedAssessmentSources(t)
+	var candidateID string
+	for index := range sources.graph.Facts {
+		if sources.graph.Facts[index].Status == "RAW_ONLY" {
+			sources.graph.Facts[index].Provenance.EEBus = validIdentity
+			candidateID = sources.graph.Facts[index].CandidateID
+			break
+		}
+	}
+	assessment, err := buildCapturedAssessment(sources)
+	if err != nil {
+		t.Fatalf("buildCapturedAssessment: %v", err)
+	}
+	for _, item := range assessment.Assessments {
+		if item.CandidateID != candidateID {
+			continue
+		}
+		if !item.Eligibility.ExactEEBusPath {
+			t.Fatal("candidatefacts-valid path was not preserved as exact_eebus_path")
+		}
+		if member("EXACT_EEBUS_PATH_MISSING", item.WithholdingReasons...) {
+			t.Fatalf("candidatefacts-valid path gained EXACT_EEBUS_PATH_MISSING: %v", item.WithholdingReasons)
+		}
+		return
+	}
+	t.Fatalf("assessment for %s not found", candidateID)
+}
+
+func TestMSP085CapturedProfileBuildVerifyEndToEnd(t *testing.T) {
+	privateDir := os.Getenv("HELIANTHUS_PROMOTIONLOCK_CAPTURED_INPUT_DIR")
+	if privateDir == "" {
+		t.Skip("process-private captured inputs are not available")
+	}
+	sourceBundle := readTestFile(t, privateDir, "source-bundle.json")
+	sourceReplay := readTestFile(t, privateDir, "source-replay.json")
+	graph, replay, err := candidatefacts.BuildRawFirstV1(sourceBundle, sourceReplay)
+	if err != nil {
+		t.Fatalf("candidatefacts.BuildRawFirstV1: %v", err)
+	}
+	inputs := InputsV1{
+		Profile:                capturedProfileV1,
+		Registry:               contractArtifact(t, "docs/platform/schemas/leaf-promotion-registry-v1.json"),
+		M7Graph:                graph,
+		M7Replay:               replay,
+		M7Registry:             readTestFile(t, "..", "candidatefacts", "contracts", "draft-candidate-fact-registry-v1.json"),
+		M7SourceBundle:         sourceBundle,
+		M7SourceReplay:         sourceReplay,
+		M7LiveStatus:           readTestFile(t, "..", "coexistence", "testdata", "canonical", "positive", "live-public-status.json"),
+		M7TerminalGraph:        readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "positive", "source-terminal-graph.json"),
+		M7TerminalReplay:       readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "positive", "source-terminal-replay-result.json"),
+		M7TerminalSourceBundle: readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "source-terminal-bundle.json"),
+		M7TerminalSourceReplay: readTestFile(t, "..", "candidatefacts", "testdata", "canonical", "source", "source-terminal-replay-result.json"),
+		M8Evidence:             readTestFile(t, privateDir, "m8-evidence.json"),
+		M8Report:               readTestFile(t, privateDir, "m8-report.json"),
+		M8Registry:             readTestFile(t, "..", "coexistence", "contracts", "multi-runtime-coexistence-registry-v1.json"),
+	}
+	first, err := Build(inputs)
+	if err != nil {
+		t.Fatalf("Build(captured): %v", err)
+	}
+	second, err := Build(inputs)
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatalf("captured Build is not byte deterministic: %v", err)
+	}
+	if err := Verify(first, inputs); err != nil {
+		t.Fatalf("Verify(captured): %v", err)
 	}
 }
 
@@ -397,8 +493,8 @@ func TestMSP085PrivateAssessmentIsDeterministicAndNeverPromotionEligible(t *test
 	fact.Provenance.EEBus = &candidatefacts.EEBusIdentityV1{
 		Entity: "private-entity", Service: "private-service", Feature: "private-feature",
 		FeaturePath: []candidatefacts.EEBusPathSegmentV1{
-			{Kind: "ENTITY", Selector: "private-entity"},
 			{Kind: "SERVICE", Selector: "private-service"},
+			{Kind: "ENTITY", Selector: "private-entity"},
 			{Kind: "FEATURE", Selector: "private-feature"},
 		},
 	}

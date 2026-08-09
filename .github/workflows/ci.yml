@@ -41,6 +41,10 @@ jobs:
       - run: ./scripts/check_portal_assets.sh
       - run: go vet ./...
       - run: go build ./...
+      - name: Compile Linux 32-bit sync evidence
+        run: |
+          GOOS=linux GOARCH=386 go test -c -o /dev/null ./internal/syncevidence
+          GOOS=linux GOARCH=arm GOARM=7 go test -c -o /dev/null ./internal/syncevidence
 
   test:
     runs-on: ubuntu-latest

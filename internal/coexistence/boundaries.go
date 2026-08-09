@@ -527,21 +527,7 @@ func approvedEEBusPublicIdentifierV1(viewID string, path []string, value string)
 
 func isEEBusPublicIdentifierV1(value string) bool {
 	compact := compactKeyV1(value)
-	for offset := 0; offset < len(compact); {
-		index := strings.Index(compact[offset:], "eebus")
-		if index < 0 {
-			return false
-		}
-		index += offset + len("eebus")
-		if index < len(compact) && compact[index] == 'v' {
-			index++
-		}
-		if index < len(compact) && compact[index] >= '0' && compact[index] <= '9' {
-			return true
-		}
-		offset = index
-	}
-	return false
+	return strings.Contains(compact, "eebus") && !strings.ContainsAny(value, " \t\n\r")
 }
 
 func eebusWriteSurfaceV1(value string) bool {

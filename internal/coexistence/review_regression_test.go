@@ -60,6 +60,43 @@ func TestMSP08ReviewRejectsUnapprovedV1AliasInDebugWithRecomputedEvidence(t *tes
 	assertReviewCategory(t, evidence, "gate.scope")
 }
 
+func TestMSP08ReviewRejectsPermutedImmutableInputsWithRecomputedEvidence(t *testing.T) {
+	evidence := reviewEvidence(t)
+	for _, rawRun := range arrayValue(t, evidence, "runs") {
+		run := asObject(t, rawRun, "run")
+		inputs := arrayValue(t, objectValue(t, run, "provenance"), "immutable_inputs")
+		inputs[0], inputs[1] = inputs[1], inputs[0]
+	}
+	refreshEvidenceIdentity(t, evidence)
+
+	assertReviewCategory(t, evidence, "ordering.duplicate")
+}
+
+func TestMSP08ReviewRejectsUnversionedEEBusPublicIdentifiersWithRecomputedEvidence(t *testing.T) {
+	for _, fixture := range []struct {
+		name   string
+		viewID string
+	}{
+		{name: "GraphQL", viewID: "graphql.schema"},
+		{name: "HA", viewID: "ha.graphql.values"},
+		{name: "debug", viewID: "debug.ebus"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			evidence := reviewEvidence(t)
+			for _, rawRun := range arrayValue(t, evidence, "runs") {
+				run := asObject(t, rawRun, "run")
+				view := findView(t, run, fixture.viewID)
+				data := objectValue(t, objectValue(t, view, "payload"), "data")
+				data["eebusRuntimeStatus"] = "present"
+				refreshViewHashes(t, evidence, run, view)
+			}
+			refreshEvidenceIdentity(t, evidence)
+
+			assertReviewCategory(t, evidence, "gate.scope")
+		})
+	}
+}
+
 func TestMSP08ScopeAllowsBenignEEBusProseMetadata(t *testing.T) {
 	payload := map[string]any{
 		"data": map[string]any{"status": "ready"},

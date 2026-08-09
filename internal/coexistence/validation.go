@@ -77,7 +77,7 @@ func validateInputs(inputs InputsV1, requirePrivate bool) (*validationContextV1,
 		func() error { return checkConfig(evidence) },
 		func() error { return checkAuthMask(evidence) },
 		func() error { return checkClock(evidence) },
-		func() error { return checkOrdering(evidence, registry) },
+		func() error { return checkOrdering(evidence, registry, m7) },
 		func() error { return checkStates(evidence, m7.graph) },
 		func() error { return checkRestart(evidence) },
 		func() error { return checkViewCoverage(evidence, registry) },
@@ -562,7 +562,7 @@ func checkClock(evidence map[string]any) error {
 	return nil
 }
 
-func checkOrdering(evidence, registry map[string]any) error {
+func checkOrdering(evidence, registry map[string]any, m7 m7AuthorityV1) error {
 	runs := evidence["runs"].([]any)
 	profiles := registry["scenario_profiles"].(map[string]any)
 	wantStates, _ := stringsFromArray(profiles[evidence["evidence_class"].(string)])
@@ -596,6 +596,26 @@ func checkOrdering(evidence, registry map[string]any) error {
 		}
 		if !uniqueStrings(inputIDs) {
 			return fail("ordering.duplicate")
+		}
+		if len(viewIDs) == len(wantViews) {
+			wantInputIDs := make([]string, 0, len(wantViews)+len(m7.inputs)+4)
+			for _, viewID := range wantViews {
+				wantInputIDs = append(wantInputIDs, "view:"+viewID)
+			}
+			for _, input := range m7.inputs {
+				wantInputIDs = append(wantInputIDs, input.id)
+			}
+			if run["state_evidence"].(map[string]any)["restart_transition"] != nil {
+				wantInputIDs = append(wantInputIDs,
+					"restart:process-event",
+					"restart:before-snapshot",
+					"restart:after-snapshot",
+					"restart:session-event",
+				)
+			}
+			if !reflect.DeepEqual(inputIDs, wantInputIDs) {
+				return fail("ordering.duplicate")
+			}
 		}
 	}
 	return nil

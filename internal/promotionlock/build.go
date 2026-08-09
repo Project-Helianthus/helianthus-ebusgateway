@@ -258,6 +258,21 @@ func hashWithoutFieldV1(domain string, value any, field string) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func hashObjectWithoutFieldV1(domain string, object map[string]any, field string) string {
+	view := make(map[string]any, len(object)-1)
+	for key, value := range object {
+		if key != field {
+			view[key] = value
+		}
+	}
+	canonical, err := json.Marshal(view)
+	if err != nil {
+		panic("promotionlock: result hash canonicalization failed: " + err.Error())
+	}
+	digest := sha256.Sum256(append(append([]byte(domain), 0), canonical...))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func encodeCanonicalV1(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {

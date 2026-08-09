@@ -35,7 +35,7 @@ var (
 func Verify(raw []byte, inputs InputsV1) error {
 	raw = bytes.Clone(raw)
 	inputs = cloneInputsV1(inputs)
-	result, err := decodeResultV1(raw)
+	result, resultObject, err := decodeResultDocumentV1(raw)
 	if err != nil {
 		return err
 	}
@@ -75,45 +75,146 @@ func Verify(raw []byte, inputs InputsV1) error {
 	if !reflect.DeepEqual(gotView, wantView) {
 		return fail("captured.result")
 	}
-	if result.ResultHash != hashWithoutFieldV1(resultHashDomainV1, result, "result_hash") {
+	if result.ResultHash != hashObjectWithoutFieldV1(resultHashDomainV1, resultObject, "result_hash") {
 		return fail("hash.result")
 	}
 	return nil
 }
 
 func decodeResultV1(raw []byte) (ResultV1, error) {
+	result, _, err := decodeResultDocumentV1(raw)
+	return result, err
+}
+
+func decodeResultDocumentV1(raw []byte) (ResultV1, map[string]any, error) {
 	if len(raw) == 0 {
-		return ResultV1{}, fail("json.syntax")
+		return ResultV1{}, nil, fail("json.syntax")
 	}
 	if len(raw) > maxResultBytesV1 {
-		return ResultV1{}, fail("limits.exceeded")
+		return ResultV1{}, nil, fail("limits.exceeded")
 	}
 	if negativeZeroPatternV1.Match(raw) {
-		return ResultV1{}, fail("json.syntax")
+		return ResultV1{}, nil, fail("json.syntax")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	limits := jsonLimitsV1{}
 	if err := scanJSONValue(decoder, 0, &limits); err != nil {
 		if err == errLimitsExceededV1 {
-			return ResultV1{}, fail("limits.exceeded")
+			return ResultV1{}, nil, fail("limits.exceeded")
 		}
-		return ResultV1{}, fail("json.syntax")
+		return ResultV1{}, nil, fail("json.syntax")
 	}
 	if token, err := decoder.Token(); err != io.EOF || token != nil {
-		return ResultV1{}, fail("json.syntax")
+		return ResultV1{}, nil, fail("json.syntax")
+	}
+
+	var object map[string]any
+	objectDecoder := json.NewDecoder(bytes.NewReader(raw))
+	objectDecoder.UseNumber()
+	if err := objectDecoder.Decode(&object); err != nil || object == nil {
+		return ResultV1{}, nil, fail("json.syntax")
+	}
+	if err := validateExactResultDocumentV1(object); err != nil {
+		return ResultV1{}, nil, err
 	}
 
 	var result ResultV1
 	typed := json.NewDecoder(bytes.NewReader(raw))
 	typed.DisallowUnknownFields()
 	if err := typed.Decode(&result); err != nil {
-		return ResultV1{}, fail("captured.result")
+		return ResultV1{}, nil, fail("captured.result")
 	}
 	if err := ensureDecoderEOF(typed); err != nil {
-		return ResultV1{}, fail("json.syntax")
+		return ResultV1{}, nil, fail("json.syntax")
 	}
-	return result, nil
+	return result, object, nil
+}
+
+func validateExactResultDocumentV1(object map[string]any) error {
+	common := []string{
+		"contract", "schema_version", "profile", "export_tier", "replay_tool", "replay_version", "counts",
+		"dossier_count", "m9_consumer_gate", "verdict", "result_hash",
+	}
+	profile, ok := object["profile"].(string)
+	if !ok {
+		return fail("captured.result")
+	}
+	var topLevel []string
+	switch profile {
+	case ProfileSyntheticConformanceV1:
+		topLevel = append(append([]string(nil), common...), "dossier_id", "dossier_hash", "leaves")
+	case ProfileCapturedZeroPromotionV1:
+		topLevel = append(append([]string(nil), common...), "source_bindings", "assessments")
+	default:
+		return fail("captured.result")
+	}
+	if !hasExactKeysV1(object, topLevel...) {
+		return fail("captured.result")
+	}
+	if _, err := exactObjectV1(object["counts"], "total", "promoted", "withheld"); err != nil {
+		return err
+	}
+	if profile == ProfileSyntheticConformanceV1 {
+		return validateExactObjectListV1(object["leaves"],
+			"leaf_id", "semantic_path", "decision", "terminal_state", "visibility")
+	}
+	if _, err := exactObjectV1(object["source_bindings"],
+		"m7_gateway_source_commit", "m7_docs_source_commit", "m7_graph_id", "m7_graph_hash",
+		"m7_replay_id", "m7_replay_hash", "m7_status_projection_id", "m7_status_projection_hash",
+		"m8_gateway_source_commit", "m8_docs_source_commit", "m8_evidence_id", "m8_evidence_hash",
+		"m8_report_id", "m8_report_hash", "coexistence_verdict"); err != nil {
+		return err
+	}
+	assessments, ok := object["assessments"].([]any)
+	if !ok {
+		return fail("captured.result")
+	}
+	for _, rawAssessment := range assessments {
+		assessment, err := exactObjectV1(rawAssessment,
+			"candidate_id", "fact_hash", "source_status", "terminal_state", "decision", "withholding_reasons", "retest_trigger")
+		if err != nil {
+			return err
+		}
+		if _, err := exactObjectV1(assessment["retest_trigger"],
+			"trigger", "required_source_kinds", "minimum_new_samples"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExactObjectListV1(value any, keys ...string) error {
+	items, ok := value.([]any)
+	if !ok {
+		return fail("captured.result")
+	}
+	for _, item := range items {
+		if _, err := exactObjectV1(item, keys...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func exactObjectV1(value any, keys ...string) (map[string]any, error) {
+	object, ok := value.(map[string]any)
+	if !ok || !hasExactKeysV1(object, keys...) {
+		return nil, fail("captured.result")
+	}
+	return object, nil
+}
+
+func hasExactKeysV1(object map[string]any, keys ...string) bool {
+	if len(object) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := object[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 type sentinelErrorV1 string

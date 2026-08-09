@@ -56,10 +56,19 @@ type m7StatusHeaderV1 struct {
 }
 
 type m8EvidenceHeaderV1 struct {
-	Contract      string `json:"contract"`
-	EvidenceID    string `json:"evidence_id"`
-	EvidenceHash  string `json:"evidence_hash"`
-	EvidenceClass string `json:"evidence_class"`
+	Contract      string                  `json:"contract"`
+	EvidenceID    string                  `json:"evidence_id"`
+	EvidenceHash  string                  `json:"evidence_hash"`
+	EvidenceClass string                  `json:"evidence_class"`
+	Runs          []m8EvidenceRunHeaderV1 `json:"runs"`
+}
+
+type m8EvidenceRunHeaderV1 struct {
+	Provenance struct {
+		Runtime struct {
+			SourceCommit string `json:"source_commit"`
+		} `json:"runtime"`
+	} `json:"provenance"`
 }
 
 type m8ReportHeaderV1 struct {
@@ -141,6 +150,9 @@ func validateCapturedSources(inputs InputsV1) (verifiedSourcesV1, error) {
 		json.Unmarshal(inputs.M8Report, &sources.report) != nil {
 		return verifiedSourcesV1{}, fail("captured.input")
 	}
+	if err := validateM8RuntimeSourceCommits(sources.evidence); err != nil {
+		return verifiedSourcesV1{}, err
+	}
 	if sources.evidence.EvidenceClass != "CAPTURED_RUNTIME_EVIDENCE" ||
 		sources.report.EvidenceClass != "CAPTURED_RUNTIME_EVIDENCE" || sources.report.Verdict != "PASS" ||
 		sources.report.EvidenceID != sources.evidence.EvidenceID || sources.report.EvidenceHash != sources.evidence.EvidenceHash {
@@ -166,6 +178,15 @@ func validateM7Status(raw []byte, graph candidatefacts.GraphV1, replay m7ReplayH
 		status.SourceReplayID != replay.ReplayID || status.SourceReplayHash != replay.ReplayHash ||
 		status.FactCount != 18 || status.StatusCounts.RawOnly != 14 || status.StatusCounts.Withheld != 4 {
 		return fail("captured.status")
+	}
+	return nil
+}
+
+func validateM8RuntimeSourceCommits(evidence m8EvidenceHeaderV1) error {
+	for _, run := range evidence.Runs {
+		if run.Provenance.Runtime.SourceCommit != m8GatewaySourceCommitV1 {
+			return fail("captured.predecessor")
+		}
 	}
 	return nil
 }

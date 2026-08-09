@@ -434,6 +434,184 @@ func TestMSP085ResultValidationIsClosedAndPrecedenceStable(t *testing.T) {
 	}
 }
 
+func TestMSP085ResultJSONRejectsAliasesOmittedZeroesAndCaseConflicts(t *testing.T) {
+	inputs := syntheticInputs(t)
+	valid, err := Build(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		edit func(map[string]any)
+	}{
+		{
+			name: "top-level alias",
+			edit: func(value map[string]any) {
+				delete(value, "contract")
+				value["Contract"] = resultContractV1
+			},
+		},
+		{
+			name: "required zero omitted",
+			edit: func(value map[string]any) {
+				delete(value["counts"].(map[string]any), "promoted")
+			},
+		},
+		{
+			name: "nested alias",
+			edit: func(value map[string]any) {
+				counts := value["counts"].(map[string]any)
+				delete(counts, "promoted")
+				counts["Promoted"] = json.Number("0")
+			},
+		},
+		{
+			name: "conflicting case keys",
+			edit: func(value map[string]any) {
+				value["Contract"] = resultContractV1
+			},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			value := decodeObject(t, valid)
+			test.edit(value)
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Verify(raw, inputs); err == nil || err.Error() != "captured.result" {
+				t.Fatalf("Verify() error = %v; want captured.result", err)
+			}
+		})
+	}
+}
+
+func TestMSP085CapturedJSONRequiresExactNestedShapesAndForbidsFieldsByPresence(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	result, err := buildManifest(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		edit func(map[string]any)
+	}{
+		{
+			name: "required top-level zero omitted",
+			edit: func(value map[string]any) {
+				delete(value, "dossier_count")
+			},
+		},
+		{
+			name: "required null omitted",
+			edit: func(value map[string]any) {
+				for _, rawAssessment := range value["assessments"].([]any) {
+					assessment := rawAssessment.(map[string]any)
+					if assessment["terminal_state"] == nil {
+						delete(assessment, "terminal_state")
+						return
+					}
+				}
+				t.Fatal("fixture has no null assessment terminal_state")
+			},
+		},
+		{
+			name: "source binding alias",
+			edit: func(value map[string]any) {
+				bindings := value["source_bindings"].(map[string]any)
+				bindings["M8_GATEWAY_SOURCE_COMMIT"] = bindings["m8_gateway_source_commit"]
+				delete(bindings, "m8_gateway_source_commit")
+			},
+		},
+		{
+			name: "assessment alias",
+			edit: func(value map[string]any) {
+				assessment := value["assessments"].([]any)[0].(map[string]any)
+				assessment["Candidate_ID"] = assessment["candidate_id"]
+				delete(assessment, "candidate_id")
+			},
+		},
+		{
+			name: "retest alias",
+			edit: func(value map[string]any) {
+				assessment := value["assessments"].([]any)[0].(map[string]any)
+				retest := assessment["retest_trigger"].(map[string]any)
+				retest["Minimum_New_Samples"] = retest["minimum_new_samples"]
+				delete(retest, "minimum_new_samples")
+			},
+		},
+		{
+			name: "empty dossier id forbidden",
+			edit: func(value map[string]any) { value["dossier_id"] = "" },
+		},
+		{
+			name: "empty dossier hash forbidden",
+			edit: func(value map[string]any) { value["dossier_hash"] = "" },
+		},
+		{
+			name: "null leaves forbidden",
+			edit: func(value map[string]any) { value["leaves"] = nil },
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			value := decodeObject(t, raw)
+			test.edit(value)
+			mutated, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := decodeResultV1(mutated)
+			if err == nil {
+				err = validateResultShape(decoded, capturedProfileV1)
+			}
+			if err == nil || err.Error() != "captured.result" {
+				t.Fatalf("captured shape error = %v; want captured.result", err)
+			}
+		})
+	}
+}
+
+func TestMSP085CapturedEvidenceBindsEveryRuntimeToM8SourceCommit(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	evidence := decodeObject(t, mustJSON(t, sources.evidence))
+	runtime := func(sourceCommit string) map[string]any {
+		return map[string]any{"provenance": map[string]any{"runtime": map[string]any{"source_commit": sourceCommit}}}
+	}
+	evidence["runs"] = []any{runtime(m8GatewaySourceCommitV1), runtime(m8GatewaySourceCommitV1)}
+	if err := json.Unmarshal(mustJSON(t, evidence), &sources.evidence); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateM8RuntimeSourceCommits(sources.evidence); err != nil {
+		t.Fatalf("exact M8 runtime commits rejected: %v", err)
+	}
+
+	// This boundary receives evidence whose coexistence identities were already
+	// verified, so only the sibling source commit differs here.
+	evidence["runs"].([]any)[1] = runtime("89cf8876a9cd8aa4e6aab9ad21cc05cac523426b")
+	sources.evidence = m8EvidenceHeaderV1{}
+	if err := json.Unmarshal(mustJSON(t, evidence), &sources.evidence); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateM8RuntimeSourceCommits(sources.evidence); err == nil || err.Error() != "captured.predecessor" {
+		t.Fatalf("sibling runtime commit error = %v; want captured.predecessor", err)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestMSP085ProductionPackageHasNoProceduralAuthority(t *testing.T) {
 	raw := productionGoSource(t, ".")
 	for _, forbidden := range []string{

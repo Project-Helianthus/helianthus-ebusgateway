@@ -7,6 +7,12 @@
     "schema_version": 1,
     "schema_path": "docs/platform/schemas/leaf-promotion-dossier-v1.schema.json"
   },
+  "captured_assessment_contract": {
+    "contract": "helianthus.platform.leaf-promotion-captured-assessment.v1",
+    "schema_version": 1,
+    "schema_path": "docs/platform/schemas/leaf-promotion-captured-assessment-v1.schema.json",
+    "persistence": "FORBIDDEN_PRIVATE_DERIVATION_ONLY"
+  },
   "result_contract": {
     "contract": "helianthus.platform.leaf-promotion-lock-result.v1",
     "schema_version": 1,
@@ -25,6 +31,43 @@
     "m7_replay": "docs/platform/fixtures/candidate-fact-graph/v1/positive/replay-result.json",
     "m8_evidence": "docs/platform/fixtures/coexistence-no-drift/v1/positive/evidence.json",
     "m8_report": "docs/platform/fixtures/coexistence-no-drift/v1/positive/report.json"
+  },
+  "captured_runtime_sources": {
+    "m7_registry": "docs/platform/schemas/draft-candidate-fact-registry-v1.json",
+    "m7_public_status": "docs/platform/fixtures/candidate-fact-graph/v1/positive/live-public-status.json",
+    "m7_terminal_graph": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-graph.json",
+    "m7_terminal_replay": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-replay-result.json",
+    "m7_terminal_source_bundle": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-bundle.json",
+    "m7_terminal_source_replay": "docs/platform/fixtures/candidate-fact-graph/v1/positive/source-terminal-source-replay.json",
+    "m8_registry": "docs/platform/schemas/multi-runtime-coexistence-registry-v1.json",
+    "profile_fixture": "docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json"
+  },
+  "profiles": {
+    "SYNTHETIC_CONFORMANCE": {
+      "live_promotion_claim": false,
+      "persist_private_assessment": false
+    },
+    "CAPTURED_RUNTIME_ZERO_PROMOTION": {
+      "live_promotion_claim": false,
+      "persist_private_assessment": false
+    }
+  },
+  "captured_runtime_predecessors": {
+    "m7_gateway_source_commit": "8bcba2107d10b149f984ac9546ea6427a9cda8a1",
+    "m7_docs_source_commit": "35d2eba256a77b6575a2b45c07e73f054ff74ced",
+    "m8_gateway_source_commit": "89cf8876a9cd8aa4e6aab9ad21cc05cac523426a",
+    "m8_docs_source_commit": "9cede4c61a4f73019142b7418cf6f87537cf645c"
+  },
+  "captured_runtime_status_binding": {
+    "contract": "helianthus.platform.draft-candidate-fact-public-status.v1",
+    "projection_id": "dcfpsv1:sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
+    "projection_hash": "sha256:856cc167c33cad57c6b761fb82fe1e8872966bcc813a0f64c6b54b7b2dd7cfa8",
+    "source_graph_id": "dcfgv1:sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "source_graph_hash": "sha256:a7e4e661b2b78b37ff60f6f5c5b419d9af1cdf1b0f0570a9168b3ecbd3f99be9",
+    "source_replay_id": "dcfrv1:sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55",
+    "source_replay_hash": "sha256:3690beebdd13cb0109c2662f070edeee52906fd79c2ce44cb6e850361b82dc55",
+    "fact_count": 18,
+    "status_counts": {"RAW_ONLY": 14, "WITHHELD": 4}
   },
   "ebus_source_families": [
     "B509",
@@ -74,6 +117,16 @@
   "required_perturbation_cycles": 3,
   "zero_promotion_consumer_gate": "BLOCKED_ZERO_PROMOTED_LEAVES",
   "current_evidence_policy": "OFF_LAN_OR_SYNTHETIC_CANNOT_PROMOTE",
+  "captured_zero_promotion_reason_precedence": [
+    "SOURCE_STATUS_WITHHELD",
+    "SOURCE_STATUS_RAW_ONLY",
+    "EXACT_EBUS_IDENTITY_MISSING",
+    "EXACT_EBUS_IDENTITY_INELIGIBLE",
+    "EXACT_EEBUS_PATH_MISSING",
+    "COMPARATOR_NOT_MATCHED",
+    "CAPTURED_EVIDENCE_INELIGIBLE",
+    "COEXISTENCE_PROOF_MISSING"
+  ],
   "validation_precedence": [
     "json.syntax",
     "schema.dossier",
@@ -91,6 +144,24 @@
     "hash.replay",
     "consumer.block",
     "hash.dossier"
+  ],
+  "captured_validation_precedence": [
+    "json.syntax",
+    "limits.exceeded",
+    "registry.binding",
+    "captured.input",
+    "captured.predecessor",
+    "source.validator.category",
+    "captured.status",
+    "captured.coexistence",
+    "captured.schema",
+    "assessment.ordering",
+    "assessment.derivation",
+    "promotion.forbidden",
+    "consumer.block",
+    "redaction.public",
+    "captured.result",
+    "hash.result"
   ],
   "limits": {
     "max_dossier_bytes": 1048576,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://docs.helianthus.local/schemas/leaf-promotion-lock-result-v1.schema.json",
-  "title": "Helianthus Leaf Promotion Lock Result V1",
+  "$id": "https://docs.helianthus.local/schemas/leaf-promotion-captured-assessment-v1.schema.json",
+  "title": "Helianthus Private Captured Runtime Leaf Assessment V1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,97 +9,34 @@
     "schema_version",
     "profile",
     "export_tier",
-    "replay_tool",
-    "replay_version",
-    "counts",
-    "dossier_count",
+    "source_bindings",
+    "assessments",
+    "dossiers",
     "m9_consumer_gate",
-    "verdict",
-    "result_hash"
+    "assessment_hash"
   ],
   "properties": {
-    "contract": {"const": "helianthus.platform.leaf-promotion-lock-result.v1"},
+    "contract": {
+      "const": "helianthus.platform.leaf-promotion-captured-assessment.v1"
+    },
     "schema_version": {"const": 1},
-    "profile": {
-      "enum": ["SYNTHETIC_CONFORMANCE", "CAPTURED_RUNTIME_ZERO_PROMOTION"]
-    },
-    "export_tier": {"const": "PUBLIC_REDACTED"},
-    "dossier_id": {"$ref": "#/$defs/TokenV1"},
-    "dossier_hash": {"$ref": "#/$defs/DigestV1"},
-    "source_bindings": {"$ref": "#/$defs/PublicSourceBindingsV1"},
-    "replay_tool": {"const": "leaf-promotion-replay"},
-    "replay_version": {"const": 1},
-    "counts": {"$ref": "#/$defs/CountsV1"},
-    "dossier_count": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 64
-    },
-    "leaves": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 64,
-      "items": {"$ref": "#/$defs/SyntheticLeafV1"}
-    },
+    "profile": {"const": "CAPTURED_RUNTIME_ZERO_PROMOTION"},
+    "export_tier": {"const": "PRIVATE_OPERATOR"},
+    "source_bindings": {"$ref": "#/$defs/SourceBindingsV1"},
     "assessments": {
       "type": "array",
       "minItems": 1,
       "maxItems": 64,
-      "items": {"$ref": "#/$defs/PublicAssessmentV1"}
+      "items": {"$ref": "#/$defs/AssessmentV1"}
     },
-    "m9_consumer_gate": {
-      "enum": ["BLOCKED_ZERO_PROMOTED_LEAVES", "READY_FOR_M9"]
+    "dossiers": {
+      "type": "array",
+      "maxItems": 0
     },
-    "verdict": {"enum": ["VALID_ZERO_PROMOTION", "VALID_PROMOTION_LOCK"]},
-    "result_hash": {"$ref": "#/$defs/DigestV1"}
+    "m9_consumer_gate": {"const": "BLOCKED_ZERO_PROMOTED_LEAVES"},
+    "assessment_hash": {"$ref": "#/$defs/DigestV1"}
   },
-  "allOf": [
-    {
-      "if": {"properties": {"profile": {"const": "SYNTHETIC_CONFORMANCE"}}},
-      "then": {
-        "required": ["dossier_id", "dossier_hash", "leaves"],
-        "properties": {
-          "dossier_count": {"const": 1}
-        },
-        "not": {
-          "anyOf": [
-            {"required": ["source_bindings"]},
-            {"required": ["assessments"]}
-          ]
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {"profile": {"const": "CAPTURED_RUNTIME_ZERO_PROMOTION"}}
-      },
-      "then": {
-        "required": ["source_bindings", "assessments"],
-        "properties": {
-          "dossier_count": {"const": 0},
-          "m9_consumer_gate": {"const": "BLOCKED_ZERO_PROMOTED_LEAVES"},
-          "verdict": {"const": "VALID_ZERO_PROMOTION"},
-          "counts": {
-            "properties": {"promoted": {"const": 0}}
-          }
-        },
-        "not": {
-          "anyOf": [
-            {"required": ["dossier_id"]},
-            {"required": ["dossier_hash"]},
-            {"required": ["leaves"]}
-          ]
-        }
-      }
-    }
-  ],
   "$defs": {
-    "TokenV1": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "pattern": "^[\\x20-\\x7e]+$"
-    },
     "DigestV1": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
@@ -107,6 +44,12 @@
     "CommitV1": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
+    },
+    "TokenV1": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[\\x20-\\x7e]+$"
     },
     "CandidateIdV1": {
       "type": "string",
@@ -138,34 +81,7 @@
         {"type": "null"}
       ]
     },
-    "CountsV1": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["total", "promoted", "withheld"],
-      "properties": {
-        "total": {"type": "integer", "minimum": 1, "maximum": 64},
-        "promoted": {"type": "integer", "minimum": 0, "maximum": 64},
-        "withheld": {"type": "integer", "minimum": 0, "maximum": 64}
-      }
-    },
-    "SyntheticLeafV1": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["leaf_id", "semantic_path", "decision", "terminal_state", "visibility"],
-      "properties": {
-        "leaf_id": {"$ref": "#/$defs/TokenV1"},
-        "semantic_path": {
-          "type": "string",
-          "minLength": 2,
-          "maxLength": 512,
-          "pattern": "^/[a-z0-9_]+(?:/[a-z0-9_]+)*$"
-        },
-        "decision": {"enum": ["PROMOTED", "WITHHELD"]},
-        "terminal_state": {"$ref": "#/$defs/NullableTerminalV1"},
-        "visibility": {"enum": ["RAW_DEBUG_ONLY", "LOCKED_NOT_EXPOSED"]}
-      }
-    },
-    "PublicSourceBindingsV1": {
+    "SourceBindingsV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -203,6 +119,24 @@
         "coexistence_verdict": {"const": "PASS"}
       }
     },
+    "EligibilityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exact_ebus_identity",
+        "exact_eebus_path",
+        "comparator_match",
+        "captured_evidence_eligible",
+        "coexistence_no_drift"
+      ],
+      "properties": {
+        "exact_ebus_identity": {"type": "boolean"},
+        "exact_eebus_path": {"type": "boolean"},
+        "comparator_match": {"type": "boolean"},
+        "captured_evidence_eligible": {"type": "boolean"},
+        "coexistence_no_drift": {"type": "boolean"}
+      }
+    },
     "RetestV1": {
       "type": "object",
       "additionalProperties": false,
@@ -223,26 +157,39 @@
           "uniqueItems": true,
           "items": {"enum": ["EBUS", "EEBUS", "CLOUD_APP"]}
         },
-        "minimum_new_samples": {"type": "integer", "minimum": 1, "maximum": 1024}
+        "minimum_new_samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        }
       }
     },
-    "PublicAssessmentV1": {
+    "AssessmentV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "candidate_id",
+        "semantic_path",
         "fact_hash",
         "source_status",
         "terminal_state",
+        "eligibility",
         "decision",
         "withholding_reasons",
         "retest_trigger"
       ],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/CandidateIdV1"},
+        "semantic_path": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 512,
+          "pattern": "^/[a-z0-9_]+(?:/[a-z0-9_]+)*$"
+        },
         "fact_hash": {"$ref": "#/$defs/DigestV1"},
         "source_status": {"enum": ["RAW_ONLY", "WITHHELD"]},
         "terminal_state": {"$ref": "#/$defs/NullableTerminalV1"},
+        "eligibility": {"$ref": "#/$defs/EligibilityV1"},
         "decision": {"const": "WITHHELD"},
         "withholding_reasons": {
           "type": "array",
@@ -254,7 +201,7 @@
               "SOURCE_STATUS_RAW_ONLY",
               "SOURCE_STATUS_WITHHELD",
               "EXACT_EBUS_IDENTITY_MISSING",
-              "EXACT_EBUS_IDENTITY_INELIGIBLE",
+              "EXACT_EEBUS_IDENTITY_INELIGIBLE",
               "EXACT_EEBUS_PATH_MISSING",
               "COMPARATOR_NOT_MATCHED",
               "CAPTURED_EVIDENCE_INELIGIBLE",

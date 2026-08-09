@@ -297,6 +297,101 @@ func TestMSP085CapturedPublicResultRedactsPrivateIdentity(t *testing.T) {
 			t.Fatalf("public result leaks private semantic path %d", index)
 		}
 	}
+	if !leaksPrivateIdentityV1([]byte(`{"candidate_ref":"private"}`)) {
+		t.Fatal("public redaction no longer detects private candidate references")
+	}
+}
+
+func TestMSP085PrivateAssessmentIsDeterministicAndNeverPromotionEligible(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	first, err := buildCapturedAssessment(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildCapturedAssessment(sources)
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("private assessment is nondeterministic: %v", err)
+	}
+	if first.Contract != capturedAssessmentContractV1 || first.ExportTier != exportTierPrivateOperatorV1 ||
+		first.Profile != capturedProfileV1 || len(first.Assessments) != 18 || len(first.Dossiers) != 0 ||
+		first.M9ConsumerGate != M9BlockedZeroPromotedLeavesV1 ||
+		first.AssessmentHash != hashWithoutFieldV1(capturedAssessmentHashDomainV1, first, "assessment_hash") {
+		t.Fatalf("invalid private assessment closure: %#v", first)
+	}
+	for _, assessment := range first.Assessments {
+		wantSourceReason := "SOURCE_STATUS_RAW_ONLY"
+		if assessment.SourceStatus == "WITHHELD" {
+			wantSourceReason = "SOURCE_STATUS_WITHHELD"
+		}
+		wantReasons := []string{
+			wantSourceReason,
+			"EXACT_EBUS_IDENTITY_MISSING",
+			"EXACT_EEBUS_PATH_MISSING",
+			"COMPARATOR_NOT_MATCHED",
+			"CAPTURED_EVIDENCE_INELIGIBLE",
+		}
+		if !reflect.DeepEqual(assessment.WithholdingReasons, wantReasons) || assessment.Decision != "WITHHELD" ||
+			assessment.Eligibility.CapturedEvidenceEligible {
+			t.Fatalf("assessment escaped zero-promotion precedence: %#v", assessment)
+		}
+	}
+
+	fact := sources.graph.Facts[4]
+	fact.Provenance.EBus = &candidatefacts.EBusIdentityV1{Family: "B524"}
+	fact.Provenance.EEBus = &candidatefacts.EEBusIdentityV1{
+		Entity: "private-entity", Service: "private-service", Feature: "private-feature",
+		FeaturePath: []candidatefacts.EEBusPathSegmentV1{
+			{Kind: "ENTITY", Selector: "private-entity"},
+			{Kind: "SERVICE", Selector: "private-service"},
+			{Kind: "FEATURE", Selector: "private-feature"},
+		},
+	}
+	fact.Comparator.Outcome = "MATCH"
+	assessment := assessCandidate(fact, true)
+	if !assessment.Eligibility.ExactEBusIdentity || !assessment.Eligibility.ExactEEBusPath ||
+		!assessment.Eligibility.ComparatorMatch || assessment.Eligibility.CapturedEvidenceEligible ||
+		!reflect.DeepEqual(assessment.WithholdingReasons, []string{"SOURCE_STATUS_RAW_ONLY", "CAPTURED_EVIDENCE_INELIGIBLE"}) {
+		t.Fatalf("RAW_ONLY fact became promotion eligible: %#v", assessment)
+	}
+}
+
+func TestMSP085ProfilesRejectCrossBoundaryAndRegistrySubstitution(t *testing.T) {
+	synthetic := syntheticInputs(t)
+	synthetic.M7Graph = []byte(`{}`)
+	if _, err := Build(synthetic); err == nil || err.Error() != "synthetic.input" {
+		t.Fatalf("synthetic profile accepted captured input: %v", err)
+	}
+
+	unknown := syntheticInputs(t)
+	unknown.Profile = "CAPTURED_RUNTIME_PROMOTION"
+	if _, err := Build(unknown); err == nil || err.Error() != "captured.input" {
+		t.Fatalf("unknown profile error = %v", err)
+	}
+
+	tampered := capturedInputsWithSyntheticSources(t)
+	tampered.Registry = append(bytes.Clone(tampered.Registry), ' ')
+	if _, err := Build(tampered); err == nil || err.Error() != "registry.binding" {
+		t.Fatalf("registry substitution error = %v", err)
+	}
+
+	replayMismatch := capturedInputsWithSyntheticSources(t)
+	replayMismatch.M7Replay = append(bytes.Clone(replayMismatch.M7Replay), ' ')
+	if _, err := Build(replayMismatch); err == nil || err.Error() != "projection.replay" {
+		t.Fatalf("M7 replay substitution error = %v", err)
+	}
+}
+
+func TestMSP085CapturedAssessmentOrderingUsesPrivateDerivedOrder(t *testing.T) {
+	sources, _ := capturedAssessmentSources(t)
+	result, err := buildManifest(sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]PublicAssessmentV1(nil), result.Assessments...)
+	result.Assessments[0], result.Assessments[1] = result.Assessments[1], result.Assessments[0]
+	if !assessmentsOutOfOrder(result.Assessments, want) {
+		t.Fatal("permuted public assessments did not preserve private semantic-path ordering")
+	}
 }
 
 func TestMSP085ResultValidationIsClosedAndPrecedenceStable(t *testing.T) {

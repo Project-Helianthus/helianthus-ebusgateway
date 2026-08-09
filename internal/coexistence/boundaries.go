@@ -118,7 +118,7 @@ func containsCandidateLeakV1(value any, ids, terminal map[string]bool) bool {
 	switch current := value.(type) {
 	case map[string]any:
 		for key, item := range current {
-			if candidateCompactKeysV1[compactKeyV1(key)] || containsCandidateLeakV1(key, ids, terminal) || containsCandidateLeakV1(item, ids, terminal) {
+			if candidateLeakKeyV1(key) || containsCandidateLeakV1(key, ids, terminal) || containsCandidateLeakV1(item, ids, terminal) {
 				return true
 			}
 		}
@@ -142,6 +142,24 @@ func containsCandidateLeakV1(value any, ids, terminal map[string]bool) bool {
 		lower := strings.ToLower(current)
 		for terminalValue := range terminal {
 			if tokenContainsV1(lower, strings.ToLower(terminalValue)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func candidateLeakKeyV1(key string) bool {
+	if candidateCompactKeysV1[compactKeyV1(key)] {
+		return true
+	}
+	tokens := keyTokensV1(key)
+	for index, token := range tokens {
+		switch token {
+		case "candidate", "candidates", "conflict", "conflicted", "conflicts", "withheld", "rawonly":
+			return true
+		case "raw":
+			if index+1 < len(tokens) && tokens[index+1] == "only" {
 				return true
 			}
 		}

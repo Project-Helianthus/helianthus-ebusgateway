@@ -60,6 +60,58 @@ func TestMSP06ReferenceBindingRejectsWrongToolAndBoundary(t *testing.T) {
 	issue743AssertError(t, crossBoundary, "raw", "eebus.raw.read", "permission_denied")
 }
 
+func TestIssue780DropActiveDescendantIsAlreadyGoneWithinBoundary(t *testing.T) {
+	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
+	_, root := msp06CaptureRoot(t, server)
+	refs := msp06RootRefs(t, root)
+
+	descendant := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	if got := msp06AssertSuccess(t, descendant, msp06SnapshotDrop, "whole-root", "live")["status"]; got != "already_gone" {
+		t.Fatalf("active descendant drop status = %v, want already_gone", got)
+	}
+
+	crossBoundary := msp06Call(t, issue743OperatorHandler(t, server), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	issue743AssertError(t, crossBoundary, "raw", "eebus.raw.read", "permission_denied")
+
+	server.eebusV1.store.mu.Lock()
+	reference := server.eebusV1.store.activeTokens[refs["topology_ref"]]
+	reference.Binding.RuntimeKey = "tampered-descendant-runtime"
+	server.eebusV1.store.activeTokens[refs["topology_ref"]] = reference
+	server.eebusV1.store.mu.Unlock()
+	tampered := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	msp06AssertErrorMode(t, tampered, msp06SnapshotDrop, "whole-root", "live", "permission_denied")
+
+	rootDrop := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": root["snapshot_ref"]})
+	if got := msp06AssertSuccess(t, rootDrop, msp06SnapshotDrop, "whole-root", "live")["status"]; got != "dropped" {
+		t.Fatalf("root drop after descendant no-op = %v, want dropped", got)
+	}
+}
+
+func TestIssue780DropTombstonedDescendantIsAlreadyGoneWithinBoundary(t *testing.T) {
+	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
+	_, root := msp06CaptureRoot(t, server)
+	refs := msp06RootRefs(t, root)
+
+	dropRoot := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": root["snapshot_ref"]})
+	msp06AssertSuccess(t, dropRoot, msp06SnapshotDrop, "whole-root", "live")
+
+	descendant := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	if got := msp06AssertSuccess(t, descendant, msp06SnapshotDrop, "whole-root", "live")["status"]; got != "already_gone" {
+		t.Fatalf("tombstoned descendant drop status = %v, want already_gone", got)
+	}
+
+	crossBoundary := msp06Call(t, issue743OperatorHandler(t, server), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	issue743AssertError(t, crossBoundary, "raw", "eebus.raw.read", "permission_denied")
+
+	server.eebusV1.store.mu.Lock()
+	reference := server.eebusV1.store.tombstoneTokens[refs["topology_ref"]]
+	reference.Binding.RuntimeKey = "tampered-tombstone-descendant-runtime"
+	server.eebusV1.store.tombstoneTokens[refs["topology_ref"]] = reference
+	server.eebusV1.store.mu.Unlock()
+	tampered := msp06Call(t, server.Handler(), msp06SnapshotDrop, map[string]any{"snapshot_ref": refs["topology_ref"]})
+	msp06AssertErrorMode(t, tampered, msp06SnapshotDrop, "whole-root", "live", "permission_denied")
+}
+
 func TestIssue743ReferenceRuntimeKeyMustMatchActiveAndTombstoneRoot(t *testing.T) {
 	server, _ := msp06TestServer(t, &msp06Provider{snapshot: msp06Snapshot(t, "runtime-a")})
 	_, root := msp06CaptureRoot(t, server)

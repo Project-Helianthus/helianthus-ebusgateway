@@ -54,10 +54,14 @@ type eebusV1ReferenceBinding struct {
 }
 
 func (binding eebusV1ReferenceBinding) matches(tool, scope string, boundary eebusV1Boundary, runtimeKey string) bool {
+	return binding.matchesBoundary(boundary, runtimeKey) &&
+		binding.Tool == tool &&
+		binding.Scope == scope
+}
+
+func (binding eebusV1ReferenceBinding) matchesBoundary(boundary eebusV1Boundary, runtimeKey string) bool {
 	return binding.Version == eebusV1ReferenceVersion &&
 		binding.Contract == eebusV1Contract &&
-		binding.Tool == tool &&
-		binding.Scope == scope &&
 		binding.MaskTier == boundary.MaskTier &&
 		binding.AuthScope == boundary.AuthScope &&
 		binding.Boundary == boundary.AuthorizationBoundary &&
@@ -268,6 +272,12 @@ func (store *eebusV1SnapshotStore) drop(token string, boundaries ...eebusV1Bound
 			if root == nil {
 				return eebusV1DropResultV1{ErrorCode: "contract_violation"}
 			}
+			if !terminal.Binding.matchesBoundary(boundary, root.RuntimeKey) {
+				return eebusV1DropResultV1{ErrorCode: "permission_denied"}
+			}
+			if !terminal.Root {
+				return eebusV1DropResultV1{Status: "already_gone"}
+			}
 			if !terminal.Binding.matches(eebusV1SnapshotCaptureTool, "whole-root", boundary, root.RuntimeKey) {
 				return eebusV1DropResultV1{ErrorCode: "permission_denied"}
 			}
@@ -278,11 +288,14 @@ func (store *eebusV1SnapshotStore) drop(token string, boundaries ...eebusV1Bound
 	if root == nil {
 		return eebusV1DropResultV1{ErrorCode: "contract_violation"}
 	}
-	if !reference.Binding.matches(eebusV1SnapshotCaptureTool, "whole-root", boundary, root.RuntimeKey) {
+	if !reference.Binding.matchesBoundary(boundary, root.RuntimeKey) {
 		return eebusV1DropResultV1{ErrorCode: "permission_denied"}
 	}
 	if !reference.Root {
 		return eebusV1DropResultV1{Status: "already_gone"}
+	}
+	if !reference.Binding.matches(eebusV1SnapshotCaptureTool, "whole-root", boundary, root.RuntimeKey) {
+		return eebusV1DropResultV1{ErrorCode: "permission_denied"}
 	}
 	if root == nil || root.RootToken != token {
 		return eebusV1DropResultV1{Status: "already_gone"}

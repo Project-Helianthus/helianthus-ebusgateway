@@ -22,7 +22,10 @@ const (
 	spinegoModule  = "github.com/Project-Helianthus/helianthus-spine-go"
 )
 
-func TestIssue762ReleasedEEBusDependencyClosure(t *testing.T) {
+// This source-level contract is retained because it proves the declared and
+// selected transitive release graph; runtime behavior cannot detect an
+// accidental downgrade or a local replace directive.
+func TestIssue782ReleasedEEBusDependencyClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -36,10 +39,10 @@ func TestIssue762ReleasedEEBusDependencyClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.29",
-		eebusgoModule:  "v0.7.1-helianthus.14",
-		shipgoModule:   "v0.6.1-helianthus.12",
-		spinegoModule:  "v0.7.1-helianthus.8",
+		eebusregModule: "v0.1.30",
+		eebusgoModule:  "v0.7.1-helianthus.15",
+		shipgoModule:   "v0.6.1-helianthus.13",
+		spinegoModule:  "v0.7.1-helianthus.9",
 	}
 	declared := make(map[string]string, len(want))
 	for _, requirement := range parsed.Require {

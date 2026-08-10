@@ -170,7 +170,7 @@ func (parent *eebusV1PinnedParent) statChild() (eebusV1SocketIdentity, error) {
 	}
 	return eebusV1SocketIdentity{
 		device: uint64(stat.Dev), inode: stat.Ino, mode: stat.Mode, uid: stat.Uid,
-		ctimeS: stat.Ctim.Sec, ctimeN: stat.Ctim.Nsec,
+		ctimeS: int64(stat.Ctim.Sec), ctimeN: int64(stat.Ctim.Nsec),
 	}, nil
 }
 

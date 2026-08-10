@@ -233,6 +233,9 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 	}
 }
 
+// This AST check is retained because exact-once registration and ordering are
+// process-bootstrap invariants that cannot be exercised without constructing
+// the unrelated eBUS transport lifecycle.
 func TestIssue764GatewayRegistersPrivateCaptureExactlyOnceBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)

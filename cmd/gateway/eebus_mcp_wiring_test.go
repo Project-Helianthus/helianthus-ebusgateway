@@ -110,6 +110,9 @@ func TestIssue749GatewayCommandRouterUsesAdapterRuntime(t *testing.T) {
 	}
 }
 
+// This AST check is retained because registration count, conditionality, and
+// ordering belong to process bootstrap, which cannot be exercised without the
+// unrelated eBUS transport lifecycle.
 func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)

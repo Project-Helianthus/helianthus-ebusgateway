@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-func TestIssue762ReleasedDependencyClosurePinsEEBusregV0127(t *testing.T) {
+func TestIssue762ReleasedDependencyClosurePinsEEBusregV0128(t *testing.T) {
 	goMod, err := os.Open("../../go.mod")
 	if err != nil {
 		t.Fatal(err)

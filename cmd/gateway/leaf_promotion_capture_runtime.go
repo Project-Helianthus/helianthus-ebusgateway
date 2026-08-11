@@ -22,7 +22,7 @@ import (
 
 const (
 	leafPromotionCheckpointContract = "helianthus.platform.leaf-promotion-window-checkpoint.v1"
-	leafPromotionCheckpointDir      = "leaf-promotion"
+	leafPromotionCheckpointSuffix   = "-leaf-promotion"
 	leafPromotionCheckpointMaxBytes = 4 << 20
 )
 
@@ -308,7 +308,9 @@ func openLeafPromotionCheckpointRoot(stateRoot string) (string, error) {
 	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || rootInfo.Mode().Perm()&0o077 != 0 {
 		return "", errors.New("leaf promotion state root is unsafe")
 	}
-	root := filepath.Join(stateRoot, leafPromotionCheckpointDir)
+	// The protected eeBUS store has a closed on-disk layout. Promotion
+	// evidence therefore lives beside that store, never inside it.
+	root := filepath.Join(filepath.Dir(stateRoot), filepath.Base(stateRoot)+leafPromotionCheckpointSuffix)
 	if err := os.Mkdir(root, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", err
 	}

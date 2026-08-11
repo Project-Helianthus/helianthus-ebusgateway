@@ -21,6 +21,13 @@ func TestIssue784CheckpointPublicationIsImmutableAndRestartIdempotent(t *testing
 	if err != nil {
 		t.Fatalf("openLeafPromotionCheckpointRoot: %v", err)
 	}
+	entries, err := os.ReadDir(stateRoot)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("protected state root changed by evidence store: entries=%v err=%v", entries, err)
+	}
+	if root != stateRoot+leafPromotionCheckpointSuffix {
+		t.Fatalf("checkpoint root = %q; want sibling of protected store", root)
+	}
 	acquisitions := 0
 	runtime := &leafPromotionCaptureRuntime{
 		root: root, source: &leafPromotionLiveSource{}, processInstanceID: "process-one",

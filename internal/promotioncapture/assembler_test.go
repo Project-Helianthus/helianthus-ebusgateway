@@ -69,8 +69,26 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 			t.Fatalf("%s terminal = %v, want %s", candidateID, candidate.TerminalState, terminal)
 		}
 	}
-	if first.SourceBindings.ReplayHash == "" || first.CampaignHash == "" {
-		t.Fatal("campaign hashes are empty")
+	if first.CampaignHash != "sha256:458ce116327b359a3d7e3fa9e1f06751960444beaa0009e55f6289301b9859c6" {
+		t.Fatalf("campaign hash = %s", first.CampaignHash)
+	}
+	if first.SourceBindings.ReplayHash != "sha256:854f999bd6adb13cb2b25965debd2a5de8505c8131fd44e29d1aee1c788c9151" {
+		t.Fatalf("replay hash = %s", first.SourceBindings.ReplayHash)
+	}
+	wantDossiers := map[string]string{
+		"m7-candidate-0009": "sha256:3e1683606ca38c3f226b0b3f6b164d8ba46cc013cad5c304ef40b4dc0c2263a6",
+		"m7-candidate-0010": "sha256:afcc8ae66170f411eca44b0492470e0442ea19da4458b747c6877577652977d7",
+		"m7-candidate-0011": "sha256:3a138cd748bce86279a9dce52b9aef44f2e919738ceec2ec1b90758c43f0938f",
+		"m7-candidate-0012": "sha256:1f108adf07f7c7c6e813fdf85ed6fe3b276f8b2b46bb2371f7aae51a2afcaf9e",
+		"m7-candidate-0014": "sha256:8bc2146d007f9cc29630e7c9c178ecffec13835313c053f958659852382ccc5d",
+		"m7-candidate-0015": "sha256:36d21be845236c4467a954b333908e45a5085b024f2309b4eea0ed6accd61c74",
+		"m7-candidate-0016": "sha256:478c4c571cf9eb837bd070977c1ea69e1e1cea84a79f349612a0887411519d96",
+	}
+	for candidateID, want := range wantDossiers {
+		candidate := campaignCandidate(t, first, candidateID)
+		if candidate.DossierHash == nil || *candidate.DossierHash != want {
+			t.Fatalf("%s dossier hash = %v, want %s", candidateID, candidate.DossierHash, want)
+		}
 	}
 }
 

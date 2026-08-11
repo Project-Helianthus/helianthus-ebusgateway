@@ -15,6 +15,12 @@ import (
 
 const maximumInputBytes = 16 << 20
 
+type artifactSummary struct {
+	CampaignHash         string   `json:"campaign_hash"`
+	OutputFile           string   `json:"output_file"`
+	PromotedCandidateIDs []string `json:"promoted_candidate_ids"`
+}
+
 func main() {
 	var manifestPath string
 	var prePath string
@@ -57,7 +63,25 @@ func main() {
 	if err := writePrivateOutputs(outputDirectory, []privateOutput{{name: "private-campaign.json", content: raw}}); err != nil {
 		fatal(err)
 	}
-	_, _ = os.Stdout.Write(raw)
+	if err := writeArtifactSummary(os.Stdout, campaign); err != nil {
+		fatal(err)
+	}
+}
+
+func writeArtifactSummary(output io.Writer, campaign promotioncapture.Campaign) error {
+	if output == nil {
+		return errors.New("summary output is nil")
+	}
+	promoted := make([]string, 0)
+	for _, candidate := range campaign.Candidates {
+		if candidate.Decision == promotioncapture.DecisionPromoted {
+			promoted = append(promoted, candidate.CandidateID)
+		}
+	}
+	return json.NewEncoder(output).Encode(artifactSummary{
+		CampaignHash: campaign.CampaignHash, OutputFile: "private-campaign.json",
+		PromotedCandidateIDs: promoted,
+	})
 }
 
 func readPrivateJSON(path string, target any) error {

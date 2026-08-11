@@ -16,8 +16,8 @@ const (
 	evidenceSchemaSHA256 = "f95e1a0b4e27c6139b843d1476b427e56efc804b8ca080c883fc8ae3f4cff104"
 	reportSchemaSHA256   = "74035251d5ca175014df6f32ea3ded12a6075b78c3ab82b1f8cd8ab2deb7da6e"
 	statusSchemaSHA256   = "279acdfdf218c69ebf5ed53567040ca9084e950e53cc9b4f21f30e19e795752b"
-	positiveEvidenceSHA  = "32049994cb8a89cd6c11f7852979e6d9b400c75fd106bde52ba28734cc9fd8f2"
-	positiveReportSHA    = "24c875c9bb43ad3819da20403435d6d8a4533451154407df089302db45dbcc0c"
+	positiveEvidenceSHA  = "49c922974ea0e04c83bc08bc87379667984ae9379a4e9e6faae75771a9432ae6"
+	positiveReportSHA    = "8a6fbc4db1166aca40dcfd3f1088fabc36186b590f8059e362070fd7725f7e43"
 	liveStatusSHA256     = "63ecafd94d507cedadc2cba4bb9ac108488d1020d3b43b0ad034409460826428"
 )
 

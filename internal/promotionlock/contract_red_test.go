@@ -30,8 +30,8 @@ var executableArtifactsV1 = map[string]string{
 	"docs/platform/schemas/leaf-promotion-captured-assessment-v1.schema.json":                      "dc2ef02d81d5791ed363f1b18b87874400ab195fcc5463217bef3d165ca19731",
 	"docs/platform/schemas/leaf-promotion-lock-result-v1.schema.json":                              "f0da41bc87618bebc2a44b2192e7c7f3b41f75e94108d87e92122a16f5e19a54",
 	"docs/platform/schemas/leaf-promotion-registry-v1.json":                                        "ad33736c00aa2c3ecaac981606d25c064088c80cb72ca5389b83c5d9df40f6a3",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json":                       "3b12e3b6f625f6efb28fced19d679ab73b974fc4369e0dba9f61f1a2d104ec64",
-	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":                        "a4e5deb1027e337e917304addfa1aebaaf8f04659d7de38b36083c78525d1a04",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/dossier.json":                       "1f97fc824b88cd7a950488dd27a6cd26ffa7977a3355d3009de3759535ffb6c0",
+	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/result.json":                        "a8175dd33822a3174d74c9fae9541a3af4ba6a7a9cc0572ab6796e0e9d979d0c",
 	"docs/platform/fixtures/leaf-promotion-dossier/v1/positive/captured-runtime-zero-profile.json": "9b3f2643cb46e45b9b7c890f1ecca27b29942cd91419afb96b30c82912f68cc7",
 }
 
@@ -147,7 +147,7 @@ func intField(t *testing.T, object map[string]any, key string) int64 {
 }
 
 func TestMSP085EmbedsExactExecutableArtifacts(t *testing.T) {
-	if canonicalDocsCommitV1 != "58f683ca3faa752fd3bb4c5b37a42f35ab3cf249" {
+	if canonicalDocsCommitV1 != "bc3f4f949634bfcbe660984e13a97b11bd135eaf" {
 		t.Fatalf("canonical docs commit = %s", canonicalDocsCommitV1)
 	}
 	for path, want := range executableArtifactsV1 {

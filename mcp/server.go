@@ -464,6 +464,7 @@ type Server struct {
 	eebusV1                     *eebusV1Runtime
 	eebusV1CommandRouter        EEBusV1CommandRouter
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
+	leafPromotionCapture        LeafPromotionCapture
 
 	tools []Tool
 
@@ -1354,8 +1355,9 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
 		s.eebusV1Mu.RLock()
 		commandsRegistered := !eebusV1NilCommandRouter(s.eebusV1CommandRouter)
 		captureRegistered := !nilSynchronizedEvidenceCapture(s.synchronizedEvidenceCapture)
+		promotionRegistered := !nilLeafPromotionCapture(s.leafPromotionCapture)
 		s.eebusV1Mu.RUnlock()
-		if commandsRegistered || captureRegistered {
+		if commandsRegistered || captureRegistered || promotionRegistered {
 			tools = append([]Tool(nil), tools...)
 		}
 		if commandsRegistered {
@@ -1363,6 +1365,9 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
 		}
 		if captureRegistered {
 			tools = append(tools, synchronizedEvidenceCaptureTool())
+		}
+		if promotionRegistered {
+			tools = append(tools, leafPromotionCaptureTool())
 		}
 	}
 	return map[string]any{
@@ -1392,6 +1397,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	if rawCall.Name == synchronizedEvidenceCaptureToolName {
 		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
 		return s.handleSynchronizedEvidenceCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)
+	}
+	if rawCall.Name == leafPromotionCaptureToolName {
+		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
+		return s.handleLeafPromotionCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))

@@ -1933,6 +1933,13 @@ func startHTTPServer(
 			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
 		}
 	}
+	if source, ok := eebusProvider.(mcp.LeafPromotionCaptureSource); ok {
+		if capture := source.LeafPromotionCapture(); capture != nil {
+			if err := mcpServer.RegisterLeafPromotionCapture(capture); err != nil {
+				return nil, nil, fmt.Errorf("register leaf promotion capture: %w", err)
+			}
+		}
+	}
 	oneShotRuntime, err := newSynchronizedEvidenceOneShotRuntime(
 		cfg.EvidenceOneShotEnabled,
 		eebusProvider,

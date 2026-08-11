@@ -34,6 +34,10 @@ type LeafPromotionCapture interface {
 	CaptureLeafPromotion(context.Context, LeafPromotionCaptureRequest) LeafPromotionCaptureReceipt
 }
 
+type LeafPromotionCaptureSource interface {
+	LeafPromotionCapture() LeafPromotionCapture
+}
+
 func (server *Server) RegisterLeafPromotionCapture(capture LeafPromotionCapture) error {
 	if server == nil {
 		return errors.New("MCP server is nil")

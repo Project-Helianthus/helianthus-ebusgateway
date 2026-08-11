@@ -21,10 +21,24 @@ var (
 )
 
 type eebusRuntimeAdapter struct {
-	runtime eebusruntime.Runtime
+	runtime   eebusruntime.Runtime
+	promotion mcp.LeafPromotionCapture
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+}
+
+func (adapter *eebusRuntimeAdapter) SetLeafPromotionCapture(capture mcp.LeafPromotionCapture) {
+	if adapter != nil {
+		adapter.promotion = capture
+	}
+}
+
+func (adapter *eebusRuntimeAdapter) LeafPromotionCapture() mcp.LeafPromotionCapture {
+	if adapter == nil {
+		return nil
+	}
+	return adapter.promotion
 }
 
 func eebusMCPProvider(adapter *eebusRuntimeAdapter) mcp.EEBusV1Provider {

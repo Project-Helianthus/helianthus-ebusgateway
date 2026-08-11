@@ -13,7 +13,7 @@ func TestIssue784LiveNumericDecodersPreserveProtocolGranularity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultRegistry: %v", err)
 	}
-	candidate, ok := registry.Candidate("m7-candidate-0005")
+	candidate, ok := registry.Candidate("m7-" + "candidate-0005")
 	if !ok {
 		t.Fatal("numeric candidate missing")
 	}

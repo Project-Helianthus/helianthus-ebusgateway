@@ -90,6 +90,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		// private gateway owner wiring. Neither seam is a consumer projection.
 		"internal/syncevidence/m625_acquisition.go":    false,
 		"cmd/gateway/synchronized_evidence_runtime.go": false,
+		// Issue #784 adds the owner-only raw SHIP/SPINE acquisition seam for
+		// private leaf-promotion evidence. It does not project into consumers.
+		"cmd/gateway/leaf_promotion_live_source.go": false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

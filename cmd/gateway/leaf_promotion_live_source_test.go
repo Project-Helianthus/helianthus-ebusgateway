@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestIssue784LiveLocatorComparisonIncludesEntityPath(t *testing.T) {
 func TestIssue784B524ReaderRejectsDifferentDiscoveredController(t *testing.T) {
 	poller := &vaillantSemanticPoller{controller: 0x26}
 	reader := leafPromotionSemanticB524Reader{poller: poller}
-	if payload, _, ok := reader.ReadB524(t.Context(), promotioncapture.EBusSelector{TargetAddress: 0x15}); ok || payload != nil {
+	if payload, _, ok := reader.ReadB524(context.Background(), promotioncapture.EBusSelector{TargetAddress: 0x15}); ok || payload != nil {
 		t.Fatalf("different-controller read = %x/%t; want fail closed", payload, ok)
 	}
 }

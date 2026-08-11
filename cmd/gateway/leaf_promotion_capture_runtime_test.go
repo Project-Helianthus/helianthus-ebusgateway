@@ -38,11 +38,11 @@ func TestIssue784CheckpointPublicationIsImmutableAndRestartIdempotent(t *testing
 		return issue784Checkpoint(t, request.CampaignID, promotioncapture.WindowPhase(request.Phase), "process-one"), nil
 	}
 	request := mcp.LeafPromotionCaptureRequest{CampaignID: "m8-live-01", Phase: string(promotioncapture.PhasePreRestart)}
-	first := runtime.CaptureLeafPromotion(t.Context(), request)
+	first := runtime.CaptureLeafPromotion(context.Background(), request)
 	if first.Category != "PUBLISHED" || first.CampaignID != request.CampaignID || first.WindowHash == "" || first.ReceiptHash == "" {
 		t.Fatalf("first receipt = %+v", first)
 	}
-	second := runtime.CaptureLeafPromotion(t.Context(), request)
+	second := runtime.CaptureLeafPromotion(context.Background(), request)
 	if second.Category != "EXISTING" || second.WindowHash != first.WindowHash || second.ReceiptHash != first.ReceiptHash || acquisitions != 1 {
 		t.Fatalf("second receipt/acquisitions = %+v/%d", second, acquisitions)
 	}
@@ -60,7 +60,7 @@ func TestIssue784CheckpointPublicationIsImmutableAndRestartIdempotent(t *testing
 			return promotioncapture.WindowCheckpoint{}, nil
 		},
 	}
-	third := restarted.CaptureLeafPromotion(t.Context(), request)
+	third := restarted.CaptureLeafPromotion(context.Background(), request)
 	if third.Category != "EXISTING" || third.WindowHash != first.WindowHash || third.ReceiptHash != first.ReceiptHash {
 		t.Fatalf("restart receipt = %+v", third)
 	}

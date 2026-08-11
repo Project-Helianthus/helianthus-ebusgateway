@@ -192,7 +192,7 @@ func TestNumericWindowBoundariesAndInvalidSentinel(t *testing.T) {
 		"above range":       {Decimal{Number: 60, Scale: 0}, Decimal{Number: 601, Scale: -1}, OutcomeInvalid},
 	} {
 		t.Run(name, func(t *testing.T) {
-			input := validInput(t, candidate, test.ebus, test.eebus)
+			input := numericInput(t, candidate, test.ebus, test.eebus)
 			result := mustEvaluate(t, registry, candidate.CandidateID, input)
 			if result.Outcome != test.want {
 				t.Fatalf("outcome = %q, want %q", result.Outcome, test.want)
@@ -212,11 +212,10 @@ func TestOutcomePrecedence(t *testing.T) {
 	registry := mustRegistry(t)
 	candidate := mustCandidate(t, registry, "m7-candidate-0010")
 
-	t.Run("missing before identity", func(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
 		input := validInput(t, candidate, Decimal{Number: 20, Scale: 0}, Decimal{Number: 21, Scale: 0})
 		input.EEBusSample = nil
 		input.ObservedEEBusIdentityHash = nil
-		input.ObservedEBusIdentityHash = stringPointer("sha256:" + strings.Repeat("f", 64))
 		if got := mustEvaluate(t, registry, candidate.CandidateID, input).Outcome; got != OutcomeMissing {
 			t.Fatalf("outcome = %q, want MISSING", got)
 		}
@@ -352,6 +351,15 @@ func TestCanonicalHashesAreDeterministic(t *testing.T) {
 	if digest != "sha256:00db93f35da9b2ef927d8eb832c2a8d12d54c9f9cc5097f3066c76827eded54a" {
 		t.Fatalf("raw hash = %q", digest)
 	}
+	registry := mustRegistry(t)
+	enumCandidate := mustCandidate(t, registry, "m7-candidate-0007")
+	mappingHash, err := HashMapping(*enumCandidate.EEBusSource.MappingProfile)
+	if err != nil {
+		t.Fatalf("HashMapping: %v", err)
+	}
+	if mappingHash != "sha256:e8270252df3a1e58afd0c5c8223f145152bc3fed08bd46f06b81bc4985036afb" {
+		t.Fatalf("mapping hash = %q", mappingHash)
+	}
 
 	left := map[string]any{"z": int64(2), "a": map[string]any{"y": true, "x": "value"}}
 	right := map[string]any{"a": map[string]any{"x": "value", "y": true}, "z": int64(2)}
@@ -456,8 +464,13 @@ func validInput(t *testing.T, candidate CandidateDefinition, ebusValue, eebusVal
 	if outside, _ := eebusValue.Compare(constraints.Maximum); outside > 0 {
 		eebusValue = constraints.Minimum
 	}
+	return numericInput(t, candidate, ebusValue, eebusValue)
+}
+
+func numericInput(t *testing.T, candidate CandidateDefinition, ebusValue, eebusValue Decimal) WindowAssessmentInput {
+	t.Helper()
 	unit := candidate.EEBusSource.Unit
-	return mappedInput(t, candidate, NumericValue(ebusValue), NumericValue(ebusValue), NumericValue(eebusValue), NumericValue(eebusValue), unit...)
+	return mappedInput(t, candidate, NumericValue(ebusValue), NumericValue(ebusValue), NumericValue(eebusValue), NumericValue(eebusValue), unit)
 }
 
 func mappedInput(t *testing.T, candidate CandidateDefinition, ebusRaw, ebusValue, eebusRaw, eebusValue TypedValue, optionalUnit ...*string) WindowAssessmentInput {

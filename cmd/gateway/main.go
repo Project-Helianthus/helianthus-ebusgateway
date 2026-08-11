@@ -805,6 +805,21 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		builder.SetScheduleWriter(gatedGraphQLWriter)
 		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
 	}
+	if semanticPoller != nil && eebusAdapter != nil {
+		captureSource := newLeafPromotionLiveSource(
+			semanticPoller,
+			eebusAdapter,
+			eebusMCPCommandRouter(eebusAdapter),
+			builder.AdmittedMutationSource,
+		)
+		captureRuntime, captureErr := newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
+		if captureErr != nil {
+			return fmt.Errorf("leaf promotion capture runtime: %w", captureErr)
+		}
+		if captureRuntime != nil {
+			eebusAdapter.SetLeafPromotionCapture(captureRuntime)
+		}
+	}
 	if semanticPoller != nil && semanticPoller.shadow != nil && deduplicator != nil {
 		// Use the semantic shadow directly here. The broader runtime observer can
 		// fall back to the deduplicator itself, which would re-enter dedup locks

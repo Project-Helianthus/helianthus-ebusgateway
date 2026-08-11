@@ -66,10 +66,13 @@ type leafPromotionLiveSource struct {
 }
 
 type leafPromotionPreparedSource struct {
-	localSKI       string
-	admittedSource byte
-	binding        eebusraw.RuntimeBindingV1
-	candidates     map[string]leafPromotionPreparedCandidate
+	localSKI          string
+	localIdentityHash string
+	trustStateID      string
+	peerBindingID     string
+	admittedSource    byte
+	binding           eebusraw.RuntimeBindingV1
+	candidates        map[string]leafPromotionPreparedCandidate
 }
 
 type leafPromotionPreparedCandidate struct {
@@ -127,6 +130,27 @@ func (source *leafPromotionLiveSource) prepare(
 	prepared := leafPromotionPreparedSource{
 		localSKI: snapshot.Meta.LocalSKI, admittedSource: admitted,
 		candidates: make(map[string]leafPromotionPreparedCandidate, len(registry.Candidates())),
+	}
+	prepared.localIdentityHash, err = promotioncapture.CanonicalDigest(
+		"HELIANTHUS:LEAF-PROMOTION:LOCAL-IDENTITY:V1\x00",
+		map[string]any{"local_ski": snapshot.Meta.LocalSKI},
+	)
+	if err != nil {
+		return leafPromotionPreparedSource{}, err
+	}
+	prepared.trustStateID, err = promotioncapture.CanonicalDigest(
+		"HELIANTHUS:LEAF-PROMOTION:TRUST-STATE:V1\x00",
+		leafPromotionTrustBinding(snapshot),
+	)
+	if err != nil {
+		return leafPromotionPreparedSource{}, err
+	}
+	prepared.peerBindingID, err = promotioncapture.CanonicalDigest(
+		"HELIANTHUS:LEAF-PROMOTION:PEER-BINDING:V1\x00",
+		leafPromotionPeerBinding(snapshot),
+	)
+	if err != nil {
+		return leafPromotionPreparedSource{}, err
 	}
 	functionCache := make(map[string]eebusraw.ReadObservationV1)
 	featureCache := make(map[string]eebusraw.FeaturesGetDataV1)
@@ -563,6 +587,52 @@ func leafPromotionLocatorEqual(left, right eebusraw.FeatureLocatorV1) bool {
 		}
 	}
 	return true
+}
+
+func leafPromotionTrustBinding(snapshot eebusruntime.SnapshotV1) any {
+	type pairingRecord struct {
+		RemoteSKI string `json:"remote_ski"`
+		State     string `json:"state"`
+	}
+	records := make([]pairingRecord, 0, len(snapshot.Pairing))
+	for _, pairing := range snapshot.Pairing {
+		records = append(records, pairingRecord{RemoteSKI: pairing.RemoteSKI, State: string(pairing.State)})
+	}
+	sort.Slice(records, func(left, right int) bool {
+		if records[left].RemoteSKI != records[right].RemoteSKI {
+			return records[left].RemoteSKI < records[right].RemoteSKI
+		}
+		return records[left].State < records[right].State
+	})
+	return map[string]any{"pairing": records}
+}
+
+func leafPromotionPeerBinding(snapshot eebusruntime.SnapshotV1) any {
+	type peerRecord struct {
+		RemoteSKI     string `json:"remote_ski"`
+		SHIPID        string `json:"ship_id"`
+		DeviceAddress string `json:"device_address"`
+	}
+	records := make([]peerRecord, 0, len(snapshot.Devices))
+	for _, device := range snapshot.Devices {
+		shipID := ""
+		if device.SHIPID != nil {
+			shipID = *device.SHIPID
+		}
+		records = append(records, peerRecord{
+			RemoteSKI: device.SKI, SHIPID: shipID, DeviceAddress: device.Address,
+		})
+	}
+	sort.Slice(records, func(left, right int) bool {
+		if records[left].RemoteSKI != records[right].RemoteSKI {
+			return records[left].RemoteSKI < records[right].RemoteSKI
+		}
+		if records[left].SHIPID != records[right].SHIPID {
+			return records[left].SHIPID < records[right].SHIPID
+		}
+		return records[left].DeviceAddress < records[right].DeviceAddress
+	})
+	return map[string]any{"devices": records}
 }
 
 type leafPromotionSlots struct {

@@ -60,6 +60,34 @@ func TestMSP08ReviewRejectsAlternatePublicV2Spellings(t *testing.T) {
 	assertReviewCategory(t, evidence, "gate.scope")
 }
 
+func TestMSP08ReviewRejectsStableToolInventoryDrift(t *testing.T) {
+	for _, mutation := range []string{"missing", "stale", "reordered", "write"} {
+		t.Run(mutation, func(t *testing.T) {
+			evidence := reviewEvidence(t)
+			for _, rawRun := range arrayValue(t, evidence, "runs")[:4] {
+				run := asObject(t, rawRun, "run")
+				view := findView(t, run, "mcp.tool.inventory")
+				data := objectValue(t, objectValue(t, view, "payload"), "data")
+				tools := arrayValue(t, data, "tools")
+				switch mutation {
+				case "missing":
+					data["tools"] = append(tools[:6:6], tools[7:]...)
+				case "stale":
+					tools[0] = "ebus.v1.devices.list"
+				case "reordered":
+					tools[len(tools)-1], tools[len(tools)-2] = tools[len(tools)-2], tools[len(tools)-1]
+				case "write":
+					data["tools"] = append(tools, "eebus.v1.features.data.set")
+				}
+				refreshViewHashes(t, evidence, run, view)
+			}
+			refreshEvidenceIdentity(t, evidence)
+
+			assertReviewCategory(t, evidence, "gate.scope")
+		})
+	}
+}
+
 func TestMSP08ReviewRejectsGraphQLV3SurfaceWithRecomputedEvidence(t *testing.T) {
 	evidence := reviewEvidence(t)
 	for _, rawRun := range arrayValue(t, evidence, "runs") {

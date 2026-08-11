@@ -54,6 +54,27 @@ var identityPrefixesV1 = map[string]bool{
 	"spine": true, "target": true, "unique": true,
 }
 
+func approvedM8EEBusToolsV1() []string {
+	return []string{
+		"eebus.v1.runtime.status.get",
+		"eebus.v1.services.list",
+		"eebus.v1.services.get",
+		"eebus.v1.sessions.list",
+		"eebus.v1.sessions.get",
+		"eebus.v1.topology.get",
+		"eebus.v1.snapshot.capture",
+		"eebus.v1.snapshot.drop",
+		"eebus.v1.pairing.status.get",
+	}
+}
+
+func approvedM8ToolInventoryV1() []string {
+	return append([]string{
+		"ebus.v1.registry.devices.list",
+		"ebus.v1.semantic.snapshot.get",
+	}, approvedM8EEBusToolsV1()...)
+}
+
 var identitySuffixesV1 = map[string]bool{
 	"address": true, "addresses": true, "device": true, "devices": true, "entities": true,
 	"entity": true, "feature": true, "features": true, "id": true, "ids": true,
@@ -441,8 +462,8 @@ func checkScope(evidence, registry map[string]any) error {
 		scope["public_version_policy"] != "V1_ONLY_NO_PUBLIC_V2" {
 		return fail("gate.scope")
 	}
-	approvedEEBus := []string{"eebus.v1.runtime.status.get", "eebus.v1.services.list"}
-	approvedTools := []string{"ebus.v1.devices.list", "ebus.v1.zones.list", "eebus.v1.runtime.status.get", "eebus.v1.services.list"}
+	approvedEEBus := approvedM8EEBusToolsV1()
+	approvedTools := approvedM8ToolInventoryV1()
 	runs := evidence["runs"].([]any)
 	for runIndex, rawRun := range runs {
 		if runIndex == len(runs)-1 {
@@ -538,7 +559,12 @@ func approvedEEBusPublicIdentifierV1(viewID string, path []string, value string)
 		if !reflect.DeepEqual(path, []string{"data", "tools", "[]"}) {
 			return false
 		}
-		return value == "eebus.v1.runtime.status.get" || value == "eebus.v1.services.list"
+		for _, approved := range approvedM8EEBusToolsV1() {
+			if value == approved {
+				return true
+			}
+		}
+		return false
 	case "mcp.eebus.v1.contract":
 		return reflect.DeepEqual(path, []string{"data", "namespace"}) && value == "eebus.v1"
 	default:

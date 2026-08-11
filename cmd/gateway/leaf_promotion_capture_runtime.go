@@ -146,6 +146,8 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 		return promotioncapture.WindowCheckpoint{}, err
 	}
 
+	unlockWindow := runtime.source.lockCaptureWindow()
+	defer unlockWindow()
 	startedAt := runtime.now().UTC()
 	samples := make(map[string]leafPromotionWindowSamples, len(prepared.candidates))
 	for _, candidate := range registry.Candidates() {

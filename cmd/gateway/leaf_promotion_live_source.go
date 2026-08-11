@@ -62,6 +62,7 @@ type leafPromotionLiveSource struct {
 	ebus           leafPromotionB524Reader
 	eebus          leafPromotionEEBusRuntime
 	admittedSource func() (byte, bool)
+	windowLock     func() func()
 	now            func() time.Time
 }
 
@@ -103,8 +104,19 @@ func newLeafPromotionLiveSource(
 		ebus:           leafPromotionSemanticB524Reader{poller: poller},
 		eebus:          &synchronizedEvidenceM625Runtime{provider: provider, router: router},
 		admittedSource: admittedSource,
-		now:            time.Now,
+		windowLock: func() func() {
+			poller.pollMu.Lock()
+			return poller.pollMu.Unlock
+		},
+		now: time.Now,
 	}
+}
+
+func (source *leafPromotionLiveSource) lockCaptureWindow() func() {
+	if source == nil || source.windowLock == nil {
+		return func() {}
+	}
+	return source.windowLock()
 }
 
 func (source *leafPromotionLiveSource) prepare(

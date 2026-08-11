@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	RegistrySHA256     = "sha256:d17a66da1919796f57ecd2a515fa4e538c6be8d00a24c8c7e5d38bce7f36e3cd"
-	DocsContractCommit = "47a1cd088fa60c071162e4d2aec742de103fb9f9"
-	DocsEEBusCommit    = "657a36d07e52570326384b757a5382a6789f641b"
+	RegistrySHA256       = "sha256:d17a66da1919796f57ecd2a515fa4e538c6be8d00a24c8c7e5d38bce7f36e3cd"
+	DocsContractCommit   = "dc6f0658a3a7918c2d8ff6275382c0fe1b230c61"
+	DocsEEBusCommit      = "657a36d07e52570326384b757a5382a6789f641b"
+	CheckpointContractV1 = "helianthus.platform.leaf-promotion-window-checkpoint.v1"
 )
 
 var (
@@ -348,4 +349,90 @@ type WindowCheckpoint struct {
 	Candidates        []CapturedCandidateWindow `json:"candidates"`
 	CapturedAt        string                    `json:"captured_at"`
 	CheckpointHash    string                    `json:"checkpoint_hash"`
+}
+
+type EvidenceMode string
+
+const (
+	EvidenceModeLiveCapture EvidenceMode = "LIVE_CAPTURE"
+)
+
+type Decision string
+
+const (
+	DecisionPromoted Decision = "PROMOTED"
+	DecisionWithheld Decision = "WITHHELD"
+)
+
+type Visibility string
+
+const (
+	VisibilityLockedNotExposed Visibility = "LOCKED_NOT_EXPOSED"
+	VisibilityRawDebugOnly     Visibility = "RAW_DEBUG_ONLY"
+)
+
+type CampaignProvenance struct {
+	Class                  EvidenceMode `json:"class"`
+	FixtureID              *string      `json:"fixture_id"`
+	Generator              *string      `json:"generator"`
+	CaptureCampaignID      *string      `json:"capture_campaign_id"`
+	CaptureReceipts        []string     `json:"capture_receipts"`
+	DeploymentSourceCommit *string      `json:"deployment_source_commit"`
+	DeploymentSourceHash   *string      `json:"deployment_source_hash"`
+	DeploymentBinaryHash   *string      `json:"deployment_binary_hash"`
+}
+
+type CampaignSourceBindings struct {
+	RegistrySHA256      string `json:"registry_sha256"`
+	DocsEEBusCommit     string `json:"docs_eebus_commit"`
+	M7GraphID           string `json:"m7_graph_id"`
+	M7GraphHash         string `json:"m7_graph_hash"`
+	M7GraphBytesHash    string `json:"m7_graph_bytes_hash"`
+	M7ReplayID          string `json:"m7_replay_id"`
+	M7ReplayHash        string `json:"m7_replay_hash"`
+	M7ReplayBytesHash   string `json:"m7_replay_bytes_hash"`
+	M7StatusID          string `json:"m7_status_id"`
+	M7StatusHash        string `json:"m7_status_hash"`
+	M7StatusBytesHash   string `json:"m7_status_bytes_hash"`
+	M8EvidenceID        string `json:"m8_evidence_id"`
+	M8EvidenceHash      string `json:"m8_evidence_hash"`
+	M8EvidenceBytesHash string `json:"m8_evidence_bytes_hash"`
+	M8ReportID          string `json:"m8_report_id"`
+	M8ReportHash        string `json:"m8_report_hash"`
+	M8ReportBytesHash   string `json:"m8_report_bytes_hash"`
+	ReplayHash          string `json:"replay_hash"`
+}
+
+type CampaignAssemblyManifest struct {
+	EvidenceMode   EvidenceMode           `json:"evidence_mode"`
+	Provenance     CampaignProvenance     `json:"provenance"`
+	SourceBindings CampaignSourceBindings `json:"source_bindings"`
+}
+
+type CampaignCandidate struct {
+	CandidateID     string          `json:"candidate_id"`
+	FactHash        string          `json:"fact_hash"`
+	SourceStatus    string          `json:"source_status"`
+	SemanticPath    *string         `json:"semantic_path"`
+	ComparatorClass ComparatorClass `json:"comparator_class"`
+	EBusIdentity    *B524Identity   `json:"ebus_identity"`
+	EEBusIdentity   *EEBusIdentity  `json:"eebus_identity"`
+	Assessments     []Assessment    `json:"assessments"`
+	Decision        Decision        `json:"decision"`
+	TerminalState   *Outcome        `json:"terminal_state"`
+	Visibility      Visibility      `json:"visibility"`
+	DossierHash     *string         `json:"dossier_hash"`
+}
+
+type Campaign struct {
+	Contract       string                 `json:"contract"`
+	SchemaVersion  int                    `json:"schema_version"`
+	Profile        string                 `json:"profile"`
+	EvidenceMode   EvidenceMode           `json:"evidence_mode"`
+	ExportTier     string                 `json:"export_tier"`
+	Provenance     CampaignProvenance     `json:"provenance"`
+	SourceBindings CampaignSourceBindings `json:"source_bindings"`
+	Windows        []Window               `json:"windows"`
+	Candidates     []CampaignCandidate    `json:"candidates"`
+	CampaignHash   string                 `json:"campaign_hash"`
 }

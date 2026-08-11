@@ -1,7 +1,6 @@
 package promotioncapture
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -82,18 +81,26 @@ func BindCheckpointHash(checkpoint *WindowCheckpoint) error {
 }
 
 func digestWithoutField(domain string, value any, field string) (string, error) {
-	raw, err := json.Marshal(value)
+	object, err := objectWithoutField(value, field)
 	if err != nil {
 		return "", err
+	}
+	return CanonicalDigest(domain, object)
+}
+
+func objectWithoutField(value any, field string) (map[string]any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
 	var object map[string]any
 	if err := decoder.Decode(&object); err != nil {
-		return "", err
+		return nil, err
 	}
 	delete(object, field)
-	return CanonicalDigest(domain, object)
+	return object, nil
 }
 
 func cloneJSONPointer[T any](value *T) *T {
@@ -109,12 +116,4 @@ func cloneJSONPointer[T any](value *T) *T {
 		panic(err)
 	}
 	return &result
-}
-
-func digestHex(value string) ([]byte, bool) {
-	if !digestPattern.MatchString(value) {
-		return nil, false
-	}
-	decoded, err := hex.DecodeString(value[7:])
-	return decoded, err == nil
 }

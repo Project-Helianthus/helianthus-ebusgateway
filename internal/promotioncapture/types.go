@@ -263,10 +263,10 @@ type WindowAssessmentInput struct {
 }
 
 type WindowEvaluation struct {
-	CandidateID string
-	Outcome     Outcome
-	Fixed       bool
-	Assessment  *Assessment
+	CandidateID string      `json:"candidate_id"`
+	Outcome     Outcome     `json:"outcome"`
+	Fixed       bool        `json:"fixed"`
+	Assessment  *Assessment `json:"assessment"`
 }
 
 type NumericComparison struct {
@@ -279,4 +279,73 @@ type NumericComparison struct {
 type CaptureLimits struct {
 	MaxSkewNS int64 `json:"max_skew_ns"`
 	MaxAgeNS  int64 `json:"max_age_ns"`
+}
+
+// B524Identity is the exact private/operator eBUS selector bound to one
+// candidate. It intentionally stays inside the gateway implementation.
+type B524Identity struct {
+	Family           string `json:"family"`
+	TargetPseudonym  string `json:"target_pseudonym"`
+	TargetAddress    int    `json:"target_address"`
+	SourceAddress    int    `json:"source_address"`
+	Opcode           int    `json:"opcode"`
+	GG               int    `json:"GG"`
+	II               int    `json:"II"`
+	RR               int    `json:"RR"`
+	GroupMeaning     string `json:"group_meaning"`
+	InstanceGate     string `json:"instance_gate"`
+	RegisterCategory string `json:"register_category"`
+	UnitScaleSource  string `json:"unit_scale_source"`
+	SelectorHash     string `json:"selector_hash"`
+}
+
+// EEBusIdentity binds the complete catalog source profile to the observed
+// native SHIP/SPINE selectors. Operational protocol identity is private
+// evidence, not cryptographic secret material.
+type EEBusIdentity struct {
+	ServiceID            string               `json:"service_id"`
+	DeviceAddress        string               `json:"device_address"`
+	EntityAddress        []uint64             `json:"entity_address"`
+	FeatureAddress       uint64               `json:"feature_address"`
+	EntitySlot           string               `json:"entity_slot"`
+	EntityType           string               `json:"entity_type"`
+	FeatureType          string               `json:"feature_type"`
+	FeatureRole          string               `json:"feature_role"`
+	DescriptionFunctions []string             `json:"description_functions"`
+	ConstraintsFunction  *string              `json:"constraints_function"`
+	ValueFunctions       []string             `json:"value_functions"`
+	FieldPath            string               `json:"field_path"`
+	Descriptor           json.RawMessage      `json:"descriptor"`
+	Unit                 *string              `json:"unit"`
+	DeclaredConstraints  *DeclaredConstraints `json:"declared_constraints"`
+	Conversion           *Conversion          `json:"conversion"`
+	ExactMapping         *ProtocolMapping     `json:"exact_mapping"`
+	MappingProfile       *MappingProfile      `json:"mapping_profile"`
+	SourceProfileHash    string               `json:"source_profile_hash"`
+	IdentityHash         string               `json:"identity_hash"`
+}
+
+type CapturedCandidateWindow struct {
+	CandidateID         string              `json:"candidate_id"`
+	FactHash            string              `json:"fact_hash"`
+	SourceStatus        string              `json:"source_status"`
+	SemanticPath        *string             `json:"semantic_path"`
+	ComparatorClass     ComparatorClass     `json:"comparator_class"`
+	ProtocolEligibility ProtocolEligibility `json:"protocol_eligibility"`
+	EBusIdentity        *B524Identity       `json:"ebus_identity"`
+	EEBusIdentity       *EEBusIdentity      `json:"eebus_identity"`
+	Evaluation          WindowEvaluation    `json:"evaluation"`
+}
+
+type WindowCheckpoint struct {
+	Contract          string                    `json:"contract"`
+	SchemaVersion     int                       `json:"schema_version"`
+	CampaignID        string                    `json:"capture_campaign_id"`
+	ProcessInstanceID string                    `json:"process_instance_id"`
+	TrustStateID      string                    `json:"trust_state_id"`
+	PeerBindingID     string                    `json:"peer_binding_id"`
+	Window            Window                    `json:"window"`
+	Candidates        []CapturedCandidateWindow `json:"candidates"`
+	CapturedAt        string                    `json:"captured_at"`
+	CheckpointHash    string                    `json:"checkpoint_hash"`
 }

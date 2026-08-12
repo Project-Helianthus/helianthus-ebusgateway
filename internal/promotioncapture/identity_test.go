@@ -45,6 +45,35 @@ func TestIssue784CapturedIdentitiesBindCompletePrivateSelectors(t *testing.T) {
 	}
 }
 
+func TestIssue792EmptyDescriptionFunctionsRemainCanonicalArrays(t *testing.T) {
+	registry, err := DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok := registry.Candidate("m7-candidate-0019")
+	if !ok || candidate.EEBusSource == nil || len(candidate.EEBusSource.DescriptionFunctions) != 0 {
+		t.Fatal("gateway metadata candidate is incomplete")
+	}
+	identity, err := NewEEBusIdentity(
+		*candidate.EEBusSource, "service", "device", []uint64{0}, 1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	functions, ok := object["description_functions"].([]any)
+	if !ok || len(functions) != 0 {
+		t.Fatalf("description_functions must be [], got %s", raw)
+	}
+}
+
 func TestIssue784WindowCheckpointHashIsDeterministicAndSelfExcluding(t *testing.T) {
 	checkpoint := WindowCheckpoint{
 		Contract: "helianthus.internal.leaf-promotion-window-checkpoint.v1", SchemaVersion: 1,

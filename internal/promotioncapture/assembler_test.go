@@ -76,10 +76,10 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 			t.Fatalf("%s terminal = %v, want %s", candidateID, candidate.TerminalState, terminal)
 		}
 	}
-	if first.CampaignHash != "sha256:d773b1fc2296a1aaa62bcb746a44353f3f1fd58f6c0caf97b6e4a5779aa31940" {
+	if first.CampaignHash != "sha256:084c3278ec8dae07baa3a5f5848dbcb9f92e31444730406fce271c2bd4422ba2" {
 		t.Fatalf("campaign hash = %s", first.CampaignHash)
 	}
-	if first.SourceBindings.ReplayHash != "sha256:f801e9be69a45e96d1ee816d3ffc318bf52b75c8404557818356d1c4cd8fc3f4" {
+	if first.SourceBindings.ReplayHash != "sha256:f4c3aebfd457d5dbcbcad70cdc0d03e9d8025c97239660f85a4530dea307a756" {
 		t.Fatalf("replay hash = %s", first.SourceBindings.ReplayHash)
 	}
 	wantDossiers := map[string]string{
@@ -93,10 +93,10 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 		"m7-candidate-0015": "sha256:23d8a739d045ed51e6195de22a60c22e41f816303cbec1ef22ca239c8a17477a",
 		"m7-candidate-0016": "sha256:dc76344ab1fea2840826d70d823d32c3d009a126080914d99b60d0e2fe7ac035",
 		"m7-candidate-0017": "sha256:fdcbbb6159f13b19234fa48b9050fd586852284385ed016c2122319fb76ff1e2",
-		"m7-candidate-0019": "sha256:7fe867f55ed343c9ef28b5fb0f85be34c5919fa327340fa8a1cb3102a2cb6b92",
-		"m7-candidate-0020": "sha256:8fc03200bcf240bf169af270f0c414d97af18a902bb01dabf92ad1bf41ceee85",
-		"m7-candidate-0021": "sha256:75057eaa3afa6625fdf0c90f4fe7b1ac99e9bf11c76a067ba84787f8ac509c3a",
-		"m7-candidate-0022": "sha256:a0982a0168f480f05fd95223463cb514820dc81e582fd96269f2d314018637e4",
+		"m7-candidate-0019": "sha256:667208008f6ee3ab4d0a202b6b0db3de7d462071ebb6b8cb71a3268464407086",
+		"m7-candidate-0020": "sha256:69be20c9dab79c02b9968537484ac1ed147a88bb258320bf40e2d59aea538f15",
+		"m7-candidate-0021": "sha256:0e9b1f8028a162ac92d3164cf5c2d23c860745783464c879f51d557b230c0973",
+		"m7-candidate-0022": "sha256:5276700bf8cd3f4e69eb695dfd8d3ef878f2316097f1285d2bc02577408a2394",
 	}
 	actualDossiers := make(map[string]string)
 	for _, candidate := range first.Candidates {

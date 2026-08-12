@@ -71,18 +71,12 @@ func TestIssue788M8SourceScopeListsOnlyFrozenReadOnlyInventory(t *testing.T) {
 	server, _ := issue743Server(t)
 	handler := server.eebusV1OperatorHandler()
 
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request.Header.Set(m8SourceScopeHeader, m8SourceScopeV1)
-	request = request.WithContext(request.Context())
-	recorder := httptest.NewRecorder()
-
-	// Use the ordinary JSON-RPC helper body after adding the evidence-scope
-	// header so this exercises the production operator handler boundary.
-	request = httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
+	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
 		JSONRPC: "2.0", ID: 1, Method: "tools/list",
 	}))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(m8SourceScopeHeader, m8SourceScopeV1)
+	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
 	response := issue788DecodeResponse(t, recorder.Body.Bytes())
@@ -111,6 +105,33 @@ func TestIssue788M8SourceScopeListsOnlyFrozenReadOnlyInventory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, m8SourceToolInventoryV1) {
 		t.Fatalf("M8 inventory = %v, want %v", names, m8SourceToolInventoryV1)
+	}
+}
+
+func TestIssue788PublicHTTPCannotActivateM8SourceScope(t *testing.T) {
+	server, _ := issue743Server(t)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/list",
+	}))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(m8SourceScopeHeader, m8SourceScopeV1)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, request)
+
+	response := issue788DecodeResponse(t, recorder.Body.Bytes())
+	result, ok := response.Result.(map[string]any)
+	if response.Error != nil || !ok {
+		t.Fatalf("public tools/list = result:%T error:%+v", response.Result, response.Error)
+	}
+	items, ok := result["tools"].([]any)
+	if !ok || len(items) <= len(m8SourceToolInventoryV1) {
+		t.Fatalf("public header activated scoped inventory: %#v", result["tools"])
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if ok && item["name"] == m8SourceStateToolName {
+			t.Fatalf("public inventory exposed %s", m8SourceStateToolName)
+		}
 	}
 }
 

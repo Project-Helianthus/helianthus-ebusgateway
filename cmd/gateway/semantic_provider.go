@@ -630,12 +630,24 @@ type admittedMCPConfigWriter struct {
 	admitted admittedSourceProvider
 }
 
-func (writer admittedMCPConfigWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
-	available := writer.writer != nil && admittedSourceActive(writer.admitted)
-	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: available},
-		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: available},
-	}}
+type m8CommandRoutingSnapshotter interface {
+	M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error)
+}
+
+func (writer admittedMCPConfigWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	owner, ok := writer.writer.(m8CommandRoutingSnapshotter)
+	if !ok {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("config writer does not expose routing state")
+	}
+	fragment, err := owner.M8CommandRoutingState()
+	if err != nil {
+		return m8sourcestate.CommandRoutingFragment{}, err
+	}
+	available := admittedSourceActive(writer.admitted)
+	for index := range fragment.Routes {
+		fragment.Routes[index].Available = fragment.Routes[index].Available && available
+	}
+	return fragment, nil
 }
 
 func (writer admittedMCPConfigWriter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
@@ -663,12 +675,20 @@ type admittedMCPScheduleWriter struct {
 	admitted admittedSourceProvider
 }
 
-func (writer admittedMCPScheduleWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
-	available := writer.writer != nil && admittedSourceActive(writer.admitted)
-	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: available},
-		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: available},
-	}}
+func (writer admittedMCPScheduleWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	owner, ok := writer.writer.(m8CommandRoutingSnapshotter)
+	if !ok {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer does not expose routing state")
+	}
+	fragment, err := owner.M8CommandRoutingState()
+	if err != nil {
+		return m8sourcestate.CommandRoutingFragment{}, err
+	}
+	available := admittedSourceActive(writer.admitted)
+	for index := range fragment.Routes {
+		fragment.Routes[index].Available = fragment.Routes[index].Available && available
+	}
+	return fragment, nil
 }
 
 func (writer admittedMCPScheduleWriter) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
@@ -695,6 +715,26 @@ func (writer admittedMCPScheduleWriter) SetDhwTimeProgram(ctx context.Context, w
 // to the MCP ConfigWriter interface.
 type mcpConfigWriterAdapter struct {
 	poller *vaillantSemanticPoller
+}
+
+func (a *mcpConfigWriterAdapter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	if a == nil || a.poller == nil {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("config writer unavailable")
+	}
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
+	}}, nil
+}
+
+func (poller *vaillantSemanticPoller) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	if poller == nil {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer unavailable")
+	}
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
+	}}, nil
 }
 
 func (a *mcpConfigWriterAdapter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {

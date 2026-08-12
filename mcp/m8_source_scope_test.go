@@ -24,8 +24,8 @@ func (*issue788ConfigWriter) SetBoilerConfig(context.Context, string, string) Co
 	return ConfigSetResult{Success: true}
 }
 
-func (writer *issue788ConfigWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
-	return writer.routing
+func (writer *issue788ConfigWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	return writer.routing, nil
 }
 
 type issue788ScheduleWriter struct {
@@ -40,8 +40,8 @@ func (issue788ScheduleWriter) SetDhwTimeProgram(context.Context, int, []TimeProg
 	return &TimeProgramWriteResult{Success: true}, nil
 }
 
-func (writer issue788ScheduleWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
-	return writer.routing
+func (writer issue788ScheduleWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	return writer.routing, nil
 }
 
 type issue788DebugOwner struct {

@@ -79,7 +79,7 @@ type m8DebugSourceOwner interface {
 }
 
 type m8CommandRoutingOwner interface {
-	M8CommandRoutingState() m8sourcestate.CommandRoutingFragment
+	M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error)
 }
 
 type m8SemanticRegistryOwner interface {
@@ -128,7 +128,10 @@ func (server *Server) m8DirectCommandRoutingState() (m8sourcestate.CommandRoutin
 		if !ok {
 			return m8sourcestate.CommandRouting{}, fmt.Errorf("command routing owner does not expose M8 source state")
 		}
-		fragment := owner.M8CommandRoutingState()
+		fragment, err := owner.M8CommandRoutingState()
+		if err != nil {
+			return m8sourcestate.CommandRouting{}, err
+		}
 		state.Routes = append(state.Routes, fragment.Routes...)
 		if fragment.Fallback != nil {
 			if state.Fallback != nil {

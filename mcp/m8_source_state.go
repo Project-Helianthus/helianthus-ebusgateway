@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 )
 
 const m8SourceStateToolName = "helianthus.experimental.m8_source_state.get"
@@ -73,75 +74,75 @@ func (server *Server) m8SourceStateAvailable() bool {
 	return server.eebusV1 != nil
 }
 
-type m8DirectRoute struct {
-	SemanticPath string `json:"semantic_path"`
-	Source       string `json:"source"`
+type m8DebugSourceOwner interface {
+	M8DebugSourceState() m8sourcestate.DebugState
 }
 
-var m8SemanticReadTools = []string{
-	toolSemanticZonesGetName,
-	toolSemanticCircuitsGetName,
-	toolSemanticRadioGetName,
-	toolSemanticFM5ModeGetName,
-	toolSemanticSolarGetName,
-	toolSemanticCylindersGetName,
-	toolSemanticDHWGetName,
-	toolSemanticEnergyGetName,
-	toolSemanticBoilerGetName,
-	toolSemanticSystemGetName,
-	toolSemanticAdapterInfoGetName,
-	toolSemanticSchedulesGetName,
-	toolSemanticSnapshotName,
+type m8CommandRoutingOwner interface {
+	M8CommandRoutingState() m8sourcestate.CommandRoutingFragment
+}
+
+type m8SemanticRegistryOwner interface {
+	M8SemanticRegistryState() (m8sourcestate.SemanticRegistry, error)
 }
 
 func (server *Server) m8DirectSourceState(inputID string) (any, error) {
 	switch inputID {
 	case "ebus.debug":
-		deviceCount := 0
-		server.registry.IterateSnapshots(func(registry.DeviceEntrySnapshot) bool {
-			deviceCount++
-			return true
-		})
-		runtimeState := "unavailable"
-		if server.statusProvider != nil {
-			runtimeState = server.statusProvider.DaemonStatus().Status
+		owner, ok := server.bus.(m8DebugSourceOwner)
+		if !ok {
+			return nil, fmt.Errorf("eBUS debug owner does not expose M8 source state")
 		}
-		return map[string]any{
-			"bus_observability_registered": server.bus != nil,
-			"registry_device_count":        deviceCount,
-			"runtime_state":                runtimeState,
-			"semantic_provider_registered": server.semantic != nil,
-		}, nil
+		return owner.M8DebugSourceState(), nil
 	case "command.routing":
-		return map[string]any{"fallback": nil, "routes": server.m8DirectCommandRoutes()}, nil
+		return server.m8DirectCommandRoutingState()
 	case "semantic.registry":
-		leaves := make([]map[string]any, 0, len(m8SemanticReadTools))
-		if server.semantic != nil {
-			for _, name := range m8SemanticReadTools {
-				if server.hasToolNamed(name) {
-					leaves = append(leaves, map[string]any{
-						"path": "/mcp/" + name, "promotion_state": "PROMOTED", "source": "ebus",
-					})
-				}
+		owner, ok := server.semantic.(m8SemanticRegistryOwner)
+		if !ok {
+			return nil, fmt.Errorf("semantic registry owner does not expose M8 source state")
+		}
+		state, err := owner.M8SemanticRegistryState()
+		if err != nil {
+			return nil, err
+		}
+		state.Leaves = append([]m8sourcestate.SemanticLeaf(nil), state.Leaves...)
+		sort.Slice(state.Leaves, func(i, j int) bool { return state.Leaves[i].Path < state.Leaves[j].Path })
+		for index := 1; index < len(state.Leaves); index++ {
+			if state.Leaves[index-1].Path == state.Leaves[index].Path {
+				return nil, fmt.Errorf("duplicate semantic leaf %q", state.Leaves[index].Path)
 			}
 		}
-		return map[string]any{"authority": "ebus.promoted", "leaves": leaves}, nil
+		return state, nil
 	default:
 		return nil, fmt.Errorf("unsupported M8 source input %q", inputID)
 	}
 }
 
-func (server *Server) m8DirectCommandRoutes() []m8DirectRoute {
-	routes := make([]m8DirectRoute, 0, 4)
-	if server.configWriter != nil {
-		for _, name := range []string{toolSemanticSystemSetConfigName, toolSemanticBoilerSetConfigName} {
-			routes = append(routes, m8DirectRoute{SemanticPath: "/mcp/" + name, Source: "ebus"})
+func (server *Server) m8DirectCommandRoutingState() (m8sourcestate.CommandRouting, error) {
+	state := m8sourcestate.CommandRouting{Routes: []m8sourcestate.CommandRoute{}}
+	for _, candidate := range []any{server.configWriter, server.scheduleWriter} {
+		if candidate == nil {
+			continue
+		}
+		owner, ok := candidate.(m8CommandRoutingOwner)
+		if !ok {
+			return m8sourcestate.CommandRouting{}, fmt.Errorf("command routing owner does not expose M8 source state")
+		}
+		fragment := owner.M8CommandRoutingState()
+		state.Routes = append(state.Routes, fragment.Routes...)
+		if fragment.Fallback != nil {
+			if state.Fallback != nil {
+				return m8sourcestate.CommandRouting{}, fmt.Errorf("multiple command routing fallbacks")
+			}
+			fallback := *fragment.Fallback
+			state.Fallback = &fallback
 		}
 	}
-	if server.scheduleWriter != nil {
-		for _, name := range []string{toolSemanticSchedulesSetZoneName, toolSemanticSchedulesSetDhwName} {
-			routes = append(routes, m8DirectRoute{SemanticPath: "/mcp/" + name, Source: "ebus"})
+	sort.Slice(state.Routes, func(i, j int) bool { return state.Routes[i].SemanticPath < state.Routes[j].SemanticPath })
+	for index := 1; index < len(state.Routes); index++ {
+		if state.Routes[index-1].SemanticPath == state.Routes[index].SemanticPath {
+			return m8sourcestate.CommandRouting{}, fmt.Errorf("duplicate command route %q", state.Routes[index].SemanticPath)
 		}
 	}
-	return routes
+	return state, nil
 }

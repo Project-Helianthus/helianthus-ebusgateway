@@ -9,17 +9,60 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 )
 
-type issue788ConfigWriter struct{}
+type issue788ConfigWriter struct {
+	routing m8sourcestate.CommandRoutingFragment
+}
 
-func (issue788ConfigWriter) SetSystemConfig(context.Context, string, string) ConfigSetResult {
+func (*issue788ConfigWriter) SetSystemConfig(context.Context, string, string) ConfigSetResult {
 	return ConfigSetResult{Success: true}
 }
 
-func (issue788ConfigWriter) SetBoilerConfig(context.Context, string, string) ConfigSetResult {
+func (*issue788ConfigWriter) SetBoilerConfig(context.Context, string, string) ConfigSetResult {
 	return ConfigSetResult{Success: true}
+}
+
+func (writer *issue788ConfigWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
+	return writer.routing
+}
+
+type issue788ScheduleWriter struct {
+	routing m8sourcestate.CommandRoutingFragment
+}
+
+func (issue788ScheduleWriter) SetZoneTimeProgram(context.Context, int, int, []TimeProgramSlot) (*TimeProgramWriteResult, error) {
+	return &TimeProgramWriteResult{Success: true}, nil
+}
+
+func (issue788ScheduleWriter) SetDhwTimeProgram(context.Context, int, []TimeProgramSlot) (*TimeProgramWriteResult, error) {
+	return &TimeProgramWriteResult{Success: true}, nil
+}
+
+func (writer issue788ScheduleWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
+	return writer.routing
+}
+
+type issue788DebugOwner struct {
+	state m8sourcestate.DebugState
+}
+
+func (*issue788DebugOwner) Snapshot() BusObservabilitySnapshot { return BusObservabilitySnapshot{} }
+
+func (*issue788DebugOwner) ProtocolSpecimens(string) []BusProtocolSpecimen { return nil }
+
+func (owner *issue788DebugOwner) M8DebugSourceState() m8sourcestate.DebugState {
+	return owner.state
+}
+
+type issue788SemanticOwner struct {
+	testSemanticProvider
+	registry m8sourcestate.SemanticRegistry
+}
+
+func (owner *issue788SemanticOwner) M8SemanticRegistryState() (m8sourcestate.SemanticRegistry, error) {
+	return owner.registry, nil
 }
 
 func issue788RPCBody(t *testing.T, request rpcRequest) *bytes.Reader {
@@ -160,13 +203,28 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 
 func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *testing.T) {
 	server, _ := issue743Server(t)
-	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}})
-	server.SetSemanticProvider(testSemanticProvider{})
-	server.SetConfigWriter(issue788ConfigWriter{})
-	server.SetScheduleWriter(&testScheduleWriter{})
-	directRegistry := registry.NewDeviceRegistry(nil)
-	directRegistry.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
-	server.registry = directRegistry
+	debugOwner := &issue788DebugOwner{state: m8sourcestate.DebugState{
+		Status:       m8sourcestate.DebugStatus{TransportClass: "enh"},
+		ErrorClasses: []m8sourcestate.DebugError{{Scope: "decode", Class: "crc"}},
+	}}
+	semanticOwner := &issue788SemanticOwner{registry: m8sourcestate.SemanticRegistry{
+		Authority: "ebus.promoted",
+		Leaves: []m8sourcestate.SemanticLeaf{
+			{Path: "/zones/0", PromotionState: "PROMOTED", Source: "ebus"},
+		},
+	}}
+	configOwner := &issue788ConfigWriter{routing: m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
+	}}}
+	scheduleOwner := issue788ScheduleWriter{routing: m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
+	}}}
+	server.SetBusObservabilityProvider(debugOwner)
+	server.SetSemanticProvider(semanticOwner)
+	server.SetConfigWriter(configOwner)
+	server.SetScheduleWriter(scheduleOwner)
 
 	operator := issue743OperatorHandler(t, server)
 	for _, inputID := range m8SourceStateInputIDs {
@@ -177,7 +235,9 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 		data := msp06Map(t, result.envelope["data"], inputID)
 		switch inputID {
 		case "ebus.debug":
-			if data["runtime_state"] != "running" || data["semantic_provider_registered"] != true || data["registry_device_count"] != json.Number("1") {
+			status := msp06Map(t, data["status"], "debug status")
+			errors, ok := data["error_classes"].([]any)
+			if status["transport_class"] != "enh" || !ok || len(errors) != 1 {
 				t.Fatalf("%s data = %#v", inputID, data)
 			}
 		case "command.routing":
@@ -187,10 +247,26 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 			}
 		case "semantic.registry":
 			leaves, ok := data["leaves"].([]any)
-			if data["authority"] != "ebus.promoted" || !ok || len(leaves) != len(m8SemanticReadTools) {
+			if data["authority"] != "ebus.promoted" || !ok || len(leaves) != 1 {
 				t.Fatalf("%s data = %#v", inputID, data)
 			}
 		}
+	}
+
+	debugOwner.state.ErrorClasses[0].Class = "decode_timeout"
+	debugChanged := msp06Call(t, operator, m8SourceStateToolName, map[string]any{"input_id": "ebus.debug"})
+	if !bytes.Contains([]byte(debugChanged.raw), []byte(`"class":"decode_timeout"`)) {
+		t.Fatalf("debug owner mutation was not captured: %s", debugChanged.raw)
+	}
+	configOwner.routing.Routes[0].Source = "candidate"
+	routingChanged := msp06Call(t, operator, m8SourceStateToolName, map[string]any{"input_id": "command.routing"})
+	if !bytes.Contains([]byte(routingChanged.raw), []byte(`"source":"candidate"`)) {
+		t.Fatalf("routing owner mutation was not captured: %s", routingChanged.raw)
+	}
+	semanticOwner.registry.Leaves[0].PromotionState = "WITHHELD"
+	semanticChanged := msp06Call(t, operator, m8SourceStateToolName, map[string]any{"input_id": "semantic.registry"})
+	if !bytes.Contains([]byte(semanticChanged.raw), []byte(`"promotion_state":"WITHHELD"`)) {
+		t.Fatalf("semantic owner mutation was not captured: %s", semanticChanged.raw)
 	}
 
 	params := issue788RawJSON(t, map[string]any{
@@ -210,5 +286,36 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 	operator.ServeHTTP(recorder, request)
 	if bytes.Contains(recorder.Body.Bytes(), []byte(m8SourceStateToolName)) {
 		t.Fatalf("M8 scoped inventory leaked experimental source-state tool: %s", recorder.Body.Bytes())
+	}
+}
+
+func TestIssue788DirectSourceStateFailsClosedWithoutOwningSnapshot(t *testing.T) {
+	tests := []struct {
+		name    string
+		inputID string
+		install func(*Server)
+	}{
+		{
+			name: "debug", inputID: "ebus.debug",
+			install: func(server *Server) { server.SetBusObservabilityProvider(&testBusObservabilityProvider{}) },
+		},
+		{
+			name: "routing", inputID: "command.routing",
+			install: func(server *Server) { server.SetScheduleWriter(&testScheduleWriter{}) },
+		},
+		{
+			name: "semantic", inputID: "semantic.registry",
+			install: func(server *Server) { server.SetSemanticProvider(testSemanticProvider{}) },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, _ := issue743Server(t)
+			test.install(server)
+			result := msp06Call(t, issue743OperatorHandler(t, server), m8SourceStateToolName, map[string]any{"input_id": test.inputID})
+			if !result.isError || !bytes.Contains([]byte(result.raw), []byte(`"category":"ACQUISITION_FAILED"`)) {
+				t.Fatalf("result = %s; want fail-closed acquisition error", result.raw)
+			}
+		})
 	}
 }

@@ -82,6 +82,13 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("OnBusEvent error = %v", err)
 	}
+	direct := (mcpBusObservabilityProviderAdapter{store: store}).M8DebugSourceState()
+	if direct.Status.TransportClass != string(cfg.TransportConfig.Protocol) {
+		t.Fatalf("M8 transport class = %q; want %q", direct.Status.TransportClass, cfg.TransportConfig.Protocol)
+	}
+	if len(direct.FrameClasses) == 0 || direct.FrameClasses[0].Family == "" {
+		t.Fatalf("M8 frame classes = %#v; want owner-derived frame classification", direct.FrameClasses)
+	}
 
 	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
 	if err != nil {

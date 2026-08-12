@@ -78,6 +78,36 @@ func TestMCPSemanticProviderAdapterPreservesEmptyZones(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticProviderAdapterM8InventoryTracksMaterializedOwnerState(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	before, err := adapter.M8SemanticRegistryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaf := range before.Leaves {
+		if leaf.Path == "/zones/0/id" {
+			t.Fatalf("unpublished zone appeared in M8 inventory: %#v", before.Leaves)
+		}
+	}
+
+	provider.SetZones([]graphql.Zone{{ID: "owner-zone"}})
+	after, err := adapter.M8SemanticRegistryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, leaf := range after.Leaves {
+		if leaf.Path == "/zones/0/id" && leaf.Source == "ebus" && leaf.PromotionState == "PROMOTED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("materialized zone missing from M8 inventory: %#v", after.Leaves)
+	}
+}
+
 func TestMCPSemanticProviderAdapterPreservesEmptyCircuits(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	adapter := mcpSemanticProviderAdapter{provider: provider}
@@ -178,8 +208,20 @@ func TestAdmittedSemanticWritersBlockUntilSourceAdmitted(t *testing.T) {
 	if underlying.calls != 0 {
 		t.Fatalf("underlying calls before admission = %d; want 0", underlying.calls)
 	}
+	if routes := mcpConfigWriter.M8CommandRoutingState().Routes; len(routes) != 2 || routes[0].Available || routes[1].Available {
+		t.Fatalf("pre-admission config routes = %#v; want unavailable owner routes", routes)
+	}
+	if routes := mcpScheduleWriter.M8CommandRoutingState().Routes; len(routes) != 2 || routes[0].Available || routes[1].Available {
+		t.Fatalf("pre-admission schedule routes = %#v; want unavailable owner routes", routes)
+	}
 
 	admitted = true
+	if routes := mcpConfigWriter.M8CommandRoutingState().Routes; len(routes) != 2 || !routes[0].Available || !routes[1].Available {
+		t.Fatalf("admitted config routes = %#v; want available owner routes", routes)
+	}
+	if routes := mcpScheduleWriter.M8CommandRoutingState().Routes; len(routes) != 2 || !routes[0].Available || !routes[1].Available {
+		t.Fatalf("admitted schedule routes = %#v; want available owner routes", routes)
+	}
 	if result := graphWriter.SetSystemConfig(context.Background(), "x", "1"); !result.Success {
 		t.Fatalf("graph system after admission = %+v; want success", result)
 	}

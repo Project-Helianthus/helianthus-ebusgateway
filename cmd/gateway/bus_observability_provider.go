@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -49,6 +51,83 @@ func (adapter mcpBusObservabilityProviderAdapter) Snapshot() mcp.BusObservabilit
 		Messages:    mapMCPBusMessages(snapshot.Messages),
 		Periodicity: mapMCPBusPeriodicity(snapshot.Periodicity),
 	}
+}
+
+func (adapter mcpBusObservabilityProviderAdapter) M8DebugSourceState() m8sourcestate.DebugState {
+	snapshot := adapter.Snapshot()
+	state := m8sourcestate.DebugState{
+		ErrorClasses:        []m8sourcestate.DebugError{},
+		FrameClasses:        []m8sourcestate.DebugFrame{},
+		ReconstructorIssues: []string{},
+	}
+	if snapshot.Summary == nil {
+		return state
+	}
+	for _, item := range snapshot.Summary.Errors {
+		state.ErrorClasses = append(state.ErrorClasses, m8sourcestate.DebugError{Scope: item.Scope, Class: item.Class, Phase: item.Phase})
+	}
+	for _, item := range snapshot.Summary.Frames {
+		state.FrameClasses = append(state.FrameClasses, m8sourcestate.DebugFrame{
+			Scope: item.Scope, Source: item.Source, Target: item.Target, Family: item.Family, FrameType: item.FrameType,
+		})
+	}
+	if snapshot.Summary.Reconstructor != nil {
+		for _, item := range snapshot.Summary.Reconstructor.Recoveries {
+			state.ReconstructorIssues = append(state.ReconstructorIssues, item.Reason)
+		}
+	}
+	sort.Slice(state.ErrorClasses, func(i, j int) bool {
+		left, right := state.ErrorClasses[i], state.ErrorClasses[j]
+		return left.Scope+"\x00"+left.Class+"\x00"+left.Phase < right.Scope+"\x00"+right.Class+"\x00"+right.Phase
+	})
+	sort.Slice(state.FrameClasses, func(i, j int) bool {
+		left, right := state.FrameClasses[i], state.FrameClasses[j]
+		return left.Scope+"\x00"+left.Source+"\x00"+left.Target+"\x00"+left.Family+"\x00"+left.FrameType < right.Scope+"\x00"+right.Source+"\x00"+right.Target+"\x00"+right.Family+"\x00"+right.FrameType
+	})
+	sort.Strings(state.ReconstructorIssues)
+	status := snapshot.Summary.Status
+	if status == nil {
+		return state
+	}
+	state.Status = m8sourcestate.DebugStatus{
+		TransportClass:         status.TransportClass,
+		PublisherCadenceSource: status.PublisherCadenceSource,
+		Capability: m8sourcestate.DebugCapability{
+			ActiveSupported: status.Capability.ActiveSupported, PassiveSupported: status.Capability.PassiveSupported,
+			BroadcastSupported: status.Capability.BroadcastSupported, PassiveAvailable: status.Capability.PassiveAvailable,
+			PassiveState: status.Capability.PassiveState, PassiveReason: status.Capability.PassiveReason,
+			EndpointState: status.Capability.EndpointState, TapConnected: status.Capability.TapConnected,
+		},
+		Warmup: m8sourcestate.DebugWarmup{
+			State: status.Warmup.State, Blocker: status.Warmup.Blocker,
+			RequiredTransactions: status.Warmup.RequiredTransactions, CompletionMode: status.Warmup.CompletionMode,
+		},
+		TimingQuality: m8sourcestate.DebugTiming{
+			Active: status.TimingQuality.Active, Passive: status.TimingQuality.Passive,
+			Busy: status.TimingQuality.Busy, Periodicity: status.TimingQuality.Periodicity,
+		},
+		Degraded: m8sourcestate.DebugDegraded{Active: status.Degraded.Active, Reasons: append([]string(nil), status.Degraded.Reasons...)},
+		FeatureFlags: m8sourcestate.DebugFeatures{
+			ObserveFirstEnabled: status.FeatureFlags.ObserveFirstEnabled, PassiveStateDirectApply: status.FeatureFlags.PassiveStateDirectApply,
+			PassiveConfigDirectApply: status.FeatureFlags.PassiveConfigDirectApply, ExternalWritePolicy: status.FeatureFlags.ExternalWritePolicy,
+			Normalizations: append([]string(nil), status.FeatureFlags.Normalizations...),
+		},
+	}
+	if status.Startup != nil {
+		state.Status.StartupPhase = status.Startup.Phase
+	}
+	if status.BusAdmission != nil && status.BusAdmission.SourceSelection != nil {
+		selection := status.BusAdmission.SourceSelection
+		state.Status.Admission = &m8sourcestate.DebugAdmission{
+			State: selection.State, Mode: selection.Mode, Outcome: selection.Outcome, Reason: selection.Reason,
+			SelectedSource: selection.SelectedSource, FailedSource: selection.FailedSource, CompanionTarget: selection.CompanionTarget,
+			Retryable: selection.Retryable, NextAction: selection.NextAction, LastSuccessfulSource: selection.LastSuccessfulSource,
+			AutomaticRetryScheduled: selection.AutomaticRetryScheduled,
+		}
+	}
+	sort.Strings(state.Status.Degraded.Reasons)
+	sort.Strings(state.Status.FeatureFlags.Normalizations)
+	return state
 }
 
 func (adapter mcpBusObservabilityProviderAdapter) ProtocolSpecimens(family string) []mcp.BusProtocolSpecimen {

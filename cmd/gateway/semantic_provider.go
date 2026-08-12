@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -13,6 +20,92 @@ type mcpSemanticProviderAdapter struct {
 
 func newMCPSemanticProvider(provider graphql.SemanticProvider) mcp.SemanticProvider {
 	return mcpSemanticProviderAdapter{provider: provider}
+}
+
+func (adapter mcpSemanticProviderAdapter) M8SemanticRegistryState() (m8sourcestate.SemanticRegistry, error) {
+	state := m8sourcestate.SemanticRegistry{
+		Authority: "ebus.promoted",
+		Leaves:    []m8sourcestate.SemanticLeaf{},
+	}
+	if adapter.provider == nil {
+		return state, nil
+	}
+	values := []struct {
+		path  string
+		value any
+	}{
+		{path: "/zones", value: adapter.Zones()},
+		{path: "/dhw", value: adapter.DHW()},
+		{path: "/circuits", value: adapter.Circuits()},
+		{path: "/radio", value: adapter.RadioDevices()},
+		{path: "/solar", value: adapter.Solar()},
+		{path: "/cylinders", value: adapter.Cylinders()},
+		{path: "/energy", value: adapter.EnergyTotals()},
+		{path: "/boiler", value: adapter.BoilerStatus()},
+		{path: "/system", value: adapter.System()},
+		{path: "/schedules", value: adapter.Schedules()},
+		{path: "/adapter", value: adapter.AdapterHardwareInfo()},
+	}
+	if adapter.provider.FM5SemanticMode() != graphql.Fm5SemanticModeAbsent {
+		values = append(values, struct {
+			path  string
+			value any
+		}{path: "/fm5", value: adapter.provider.FM5SemanticMode()})
+	}
+	for _, item := range values {
+		paths, err := m8MaterializedLeafPaths(item.path, item.value)
+		if err != nil {
+			return m8sourcestate.SemanticRegistry{}, fmt.Errorf("capture semantic owner %s: %w", item.path, err)
+		}
+		for _, path := range paths {
+			state.Leaves = append(state.Leaves, m8sourcestate.SemanticLeaf{
+				Path: path, PromotionState: "PROMOTED", Source: "ebus",
+			})
+		}
+	}
+	return state, nil
+}
+
+func m8MaterializedLeafPaths(root string, value any) ([]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	paths := []string{}
+	var walk func(string, any)
+	walk = func(path string, current any) {
+		switch typed := current.(type) {
+		case nil:
+			return
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				escaped := strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
+				walk(path+"/"+escaped, typed[key])
+			}
+		case []any:
+			for index, item := range typed {
+				walk(path+"/"+strconv.Itoa(index), item)
+			}
+		default:
+			paths = append(paths, path)
+		}
+	}
+	walk(root, decoded)
+	return paths, nil
 }
 
 func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
@@ -537,6 +630,14 @@ type admittedMCPConfigWriter struct {
 	admitted admittedSourceProvider
 }
 
+func (writer admittedMCPConfigWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
+	available := writer.writer != nil && admittedSourceActive(writer.admitted)
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: available},
+		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: available},
+	}}
+}
+
 func (writer admittedMCPConfigWriter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
 	if !admittedSourceActive(writer.admitted) {
 		return mcp.ConfigSetResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
@@ -560,6 +661,14 @@ func (writer admittedMCPConfigWriter) SetBoilerConfig(ctx context.Context, field
 type admittedMCPScheduleWriter struct {
 	writer   mcp.ScheduleWriter
 	admitted admittedSourceProvider
+}
+
+func (writer admittedMCPScheduleWriter) M8CommandRoutingState() m8sourcestate.CommandRoutingFragment {
+	available := writer.writer != nil && admittedSourceActive(writer.admitted)
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: available},
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: available},
+	}}
 }
 
 func (writer admittedMCPScheduleWriter) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {

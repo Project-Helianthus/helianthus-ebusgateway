@@ -49,22 +49,30 @@ func (value TypedValue) Validate() error {
 	if value.Boolean != nil {
 		populated++
 	}
+	if value.String != nil {
+		populated++
+	}
 	if populated != 1 {
 		return fmt.Errorf("%w: typed value must contain exactly one value", ErrInvalidEvidence)
 	}
 	switch value.Kind {
 	case ValueNumeric:
-		if value.Decimal == nil || value.Enum != nil || value.Boolean != nil {
+		if value.Decimal == nil || value.Enum != nil || value.Boolean != nil || value.String != nil {
 			return fmt.Errorf("%w: malformed numeric value", ErrInvalidEvidence)
 		}
 		return value.Decimal.Validate()
 	case ValueEnum:
-		if value.Enum == nil || value.Decimal != nil || value.Boolean != nil || *value.Enum == "" {
+		if value.Enum == nil || value.Decimal != nil || value.Boolean != nil || value.String != nil || *value.Enum == "" {
 			return fmt.Errorf("%w: malformed enum value", ErrInvalidEvidence)
 		}
 	case ValueBoolean:
-		if value.Boolean == nil || value.Decimal != nil || value.Enum != nil {
+		if value.Boolean == nil || value.Decimal != nil || value.Enum != nil || value.String != nil {
 			return fmt.Errorf("%w: malformed boolean value", ErrInvalidEvidence)
+		}
+	case ValueString:
+		if value.String == nil || value.Decimal != nil || value.Enum != nil || value.Boolean != nil ||
+			*value.String == "" || len(*value.String) > 256 {
+			return fmt.Errorf("%w: malformed string value", ErrInvalidEvidence)
 		}
 	default:
 		return fmt.Errorf("%w: unknown value kind %q", ErrInvalidEvidence, value.Kind)

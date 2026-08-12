@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
@@ -90,4 +92,55 @@ func TestIssue790DecodeB555FallbackWithoutB524Relabel(t *testing.T) {
 		unit == nil || *unit != "degC" {
 		t.Fatalf("B555 decoded identity=%+v raw=%#v value=%#v unit=%#v", identity, raw, value, unit)
 	}
+}
+
+func TestIssue790CaptureSelectsB555OnlyWhenB524IsUnavailable(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatalf("DefaultRegistry: %v", err)
+	}
+	candidate, ok := registry.Candidate("m7-candidate-0006")
+	if !ok || candidate.EBusSelector == nil || candidate.EBusFallback == nil {
+		t.Fatal("candidate 0006 selectors missing")
+	}
+	b524, err := promotioncapture.NewB524Identity(*candidate.EBusSelector, 0xfd)
+	if err != nil {
+		t.Fatalf("NewB524Identity: %v", err)
+	}
+	b555, err := promotioncapture.NewB555Identity(*candidate.EBusFallback, 0x15, 0xfd)
+	if err != nil {
+		t.Fatalf("NewB555Identity: %v", err)
+	}
+	observedAt := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	source := leafPromotionLiveSource{
+		ebus:         issue790B524Reader{},
+		ebusFallback: issue790B555Reader{payload: []byte{0x26, 0x02}, observedAt: observedAt},
+	}
+	sample, identity, payload, err := source.captureEBusCandidate(
+		context.Background(),
+		leafPromotionPreparedCandidate{definition: candidate, ebusIdentity: &b524, ebusFallbackIdentity: &b555},
+		"capture", "poll", "sample",
+	)
+	if err != nil {
+		t.Fatalf("captureEBusCandidate: %v", err)
+	}
+	if identity == nil || identity.Family != "B555" || sample == nil || sample.Value.Decimal == nil ||
+		*sample.Value.Decimal != (promotioncapture.Decimal{Number: 55}) || len(payload) != 2 {
+		t.Fatalf("fallback capture identity=%+v sample=%+v payload=%x", identity, sample, payload)
+	}
+}
+
+type issue790B524Reader struct{}
+
+func (issue790B524Reader) ReadB524(context.Context, promotioncapture.EBusSelector) ([]byte, time.Time, bool) {
+	return nil, time.Time{}, false
+}
+
+type issue790B555Reader struct {
+	payload    []byte
+	observedAt time.Time
+}
+
+func (reader issue790B555Reader) ReadB555(context.Context, promotioncapture.B555Selector) ([]byte, time.Time, bool) {
+	return reader.payload, reader.observedAt, true
 }

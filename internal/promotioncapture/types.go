@@ -8,10 +8,12 @@ import (
 )
 
 const (
-	RegistrySHA256       = "sha256:d17a66da1919796f57ecd2a515fa4e538c6be8d00a24c8c7e5d38bce7f36e3cd"
-	DocsContractCommit   = "dc6f0658a3a7918c2d8ff6275382c0fe1b230c61"
-	DocsEEBusCommit      = "657a36d07e52570326384b757a5382a6789f641b"
+	RegistrySHA256       = "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678"
+	DocsContractCommit   = "c4cea33a3f6262e31801cad35d663e08317de4dd"
+	DocsEEBusCommit      = "ed5354421ddf0a2005f496e3fd65675990032b5e"
 	CheckpointContractV1 = "helianthus.platform.leaf-promotion-window-checkpoint.v1"
+
+	RetirementTerminalNotALeaf = "RETIRED_TERMINAL_NOT_A_LEAF"
 )
 
 var (
@@ -29,14 +31,23 @@ const (
 	ComparatorNumeric ComparatorClass = "NUMERIC_DECLARED_GRANULARITY"
 	ComparatorEnum    ComparatorClass = "ENUM_EXACT_MAPPING"
 	ComparatorBoolean ComparatorClass = "BOOLEAN_EXACT_MAPPING"
+	ComparatorString  ComparatorClass = "STRING_EXACT_STABILITY"
 )
 
 type ProtocolEligibility string
 
 const (
-	ProtocolTerminal                 ProtocolEligibility = "TERMINAL"
-	ProtocolEligible                 ProtocolEligibility = "ELIGIBLE"
-	ProtocolWithholdNoEBusCapability ProtocolEligibility = "WITHHOLD_NO_EBUS_CAPABILITY_SOURCE"
+	ProtocolTerminal      ProtocolEligibility = "TERMINAL"
+	ProtocolCrossProtocol ProtocolEligibility = "CROSS_PROTOCOL_EQUIVALENCE"
+	ProtocolEEBusNative   ProtocolEligibility = "EEBUS_NATIVE"
+)
+
+type ValidationMode string
+
+const (
+	ValidationCrossProtocol         ValidationMode = "CROSS_PROTOCOL_EQUIVALENCE"
+	ValidationEEBusNativeCapability ValidationMode = "EEBUS_NATIVE_CAPABILITY"
+	ValidationEEBusNativeMetadata   ValidationMode = "EEBUS_NATIVE_METADATA"
 )
 
 type Outcome string
@@ -54,6 +65,8 @@ const (
 	OutcomeCloudOnly         Outcome = "CLOUD_ONLY"
 	OutcomeNotTested         Outcome = "NOT_TESTED"
 	OutcomeNotEvaluated      Outcome = "NOT_EVALUATED"
+	OutcomeNativeValid       Outcome = "NATIVE_VALID"
+	OutcomeNativeDrift       Outcome = "NATIVE_DRIFT"
 )
 
 type Source string
@@ -76,6 +89,7 @@ const (
 	ValueNumeric ValueKind = "NUMERIC"
 	ValueEnum    ValueKind = "ENUM"
 	ValueBoolean ValueKind = "BOOLEAN"
+	ValueString  ValueKind = "STRING"
 )
 
 type ConversionMode string
@@ -96,6 +110,7 @@ type TypedValue struct {
 	Decimal *Decimal  `json:"decimal"`
 	Enum    *string   `json:"enum"`
 	Boolean *bool     `json:"boolean"`
+	String  *string   `json:"string"`
 }
 
 func NumericValue(value Decimal) TypedValue {
@@ -108,6 +123,10 @@ func EnumValue(value string) TypedValue {
 
 func BooleanValue(value bool) TypedValue {
 	return TypedValue{Kind: ValueBoolean, Boolean: &value}
+}
+
+func StringValue(value string) TypedValue {
+	return TypedValue{Kind: ValueString, String: &value}
 }
 
 type DeclaredConstraints struct {
@@ -135,6 +154,22 @@ type EBusSelector struct {
 	InstanceGate     string `json:"instance_gate"`
 	RegisterCategory string `json:"register_category"`
 	UnitScaleSource  string `json:"unit_scale_source"`
+}
+
+type B555Selector struct {
+	Family               string `json:"family"`
+	Operation            string `json:"operation"`
+	TargetPseudonymRule  string `json:"target_pseudonym_rule"`
+	DeviceFamily         string `json:"device_family"`
+	ScheduleProgram      string `json:"schedule_program"`
+	SlotIndex            int    `json:"slot_index"`
+	DayOfWeek            string `json:"day_of_week"`
+	TimeIdentity         string `json:"time_identity"`
+	OperationModeContext string `json:"operation_mode_context"`
+	UnitScaleSource      string `json:"unit_scale_source"`
+	FieldPath            string `json:"field_path"`
+	Unit                 string `json:"unit"`
+	CouplingRule         string `json:"coupling_rule"`
 }
 
 type ProtocolMapping struct {
@@ -168,9 +203,7 @@ type EEBusSource struct {
 	Descriptor           json.RawMessage      `json:"descriptor"`
 	Unit                 *string              `json:"unit"`
 	DeclaredConstraints  *DeclaredConstraints `json:"declared_constraints"`
-	Conversion           *Conversion          `json:"conversion"`
 	ExactMapping         *ProtocolMapping     `json:"exact_mapping"`
-	MappingProfile       *MappingProfile      `json:"mapping_profile"`
 }
 
 type CandidateDefinition struct {
@@ -178,19 +211,21 @@ type CandidateDefinition struct {
 	FactHash            string              `json:"fact_hash"`
 	SourceStatus        string              `json:"source_status"`
 	TerminalState       *Outcome            `json:"terminal_state"`
+	RetirementState     *string             `json:"retirement_state"`
+	ValidationMode      *ValidationMode     `json:"validation_mode"`
 	ComparatorClass     ComparatorClass     `json:"comparator_class"`
 	SemanticPath        *string             `json:"semantic_path"`
 	ProtocolEligibility ProtocolEligibility `json:"protocol_eligibility"`
 	EBusSelector        *EBusSelector       `json:"ebus_selector"`
+	EBusFallback        *B555Selector       `json:"ebus_fallback"`
 	EEBusSource         *EEBusSource        `json:"eebus_source"`
+	Conversion          *Conversion         `json:"conversion"`
+	MappingProfile      *MappingProfile     `json:"mapping_profile"`
 }
 
 func (candidate CandidateDefinition) FixedOutcome() (Outcome, bool) {
 	if candidate.ProtocolEligibility == ProtocolTerminal && candidate.TerminalState != nil {
 		return *candidate.TerminalState, true
-	}
-	if candidate.ProtocolEligibility == ProtocolWithholdNoEBusCapability {
-		return OutcomeNotComparable, true
 	}
 	return "", false
 }
@@ -261,6 +296,7 @@ type WindowAssessmentInput struct {
 	EBusSample                *Sample
 	EEBusSample               *Sample
 	ConflictSamples           []Sample
+	PreviousNativeValue       *TypedValue
 }
 
 type WindowEvaluation struct {
@@ -282,23 +318,36 @@ type CaptureLimits struct {
 	MaxAgeNS  int64 `json:"max_age_ns"`
 }
 
-// B524Identity is the exact private/operator eBUS selector bound to one
-// candidate. It intentionally stays inside the gateway implementation.
-type B524Identity struct {
-	Family           string `json:"family"`
-	TargetPseudonym  string `json:"target_pseudonym"`
-	TargetAddress    int    `json:"target_address"`
-	SourceAddress    int    `json:"source_address"`
-	Opcode           int    `json:"opcode"`
-	GG               int    `json:"GG"`
-	II               int    `json:"II"`
-	RR               int    `json:"RR"`
-	GroupMeaning     string `json:"group_meaning"`
-	InstanceGate     string `json:"instance_gate"`
-	RegisterCategory string `json:"register_category"`
-	UnitScaleSource  string `json:"unit_scale_source"`
-	SelectorHash     string `json:"selector_hash"`
+// EBusIdentity is the exact private/operator B524 or B555 identity. Custom
+// JSON encoding keeps the two protocol-family shapes disjoint.
+type EBusIdentity struct {
+	Family               string `json:"-"`
+	TargetPseudonym      string `json:"-"`
+	TargetAddress        int    `json:"-"`
+	SourceAddress        int    `json:"-"`
+	SelectorHash         string `json:"-"`
+	Opcode               int    `json:"-"`
+	GG                   int    `json:"-"`
+	II                   int    `json:"-"`
+	RR                   int    `json:"-"`
+	GroupMeaning         string `json:"-"`
+	InstanceGate         string `json:"-"`
+	RegisterCategory     string `json:"-"`
+	Operation            string `json:"-"`
+	TargetPseudonymRule  string `json:"-"`
+	DeviceFamily         string `json:"-"`
+	ScheduleProgram      string `json:"-"`
+	SlotIndex            int    `json:"-"`
+	DayOfWeek            string `json:"-"`
+	TimeIdentity         string `json:"-"`
+	OperationModeContext string `json:"-"`
+	UnitScaleSource      string `json:"-"`
+	FieldPath            string `json:"-"`
+	Unit                 string `json:"-"`
+	CouplingRule         string `json:"-"`
 }
+
+type B524Identity = EBusIdentity
 
 // EEBusIdentity binds the complete catalog source profile to the observed
 // native SHIP/SPINE selectors. Operational protocol identity is private
@@ -319,9 +368,7 @@ type EEBusIdentity struct {
 	Descriptor           json.RawMessage      `json:"descriptor"`
 	Unit                 *string              `json:"unit"`
 	DeclaredConstraints  *DeclaredConstraints `json:"declared_constraints"`
-	Conversion           *Conversion          `json:"conversion"`
 	ExactMapping         *ProtocolMapping     `json:"exact_mapping"`
-	MappingProfile       *MappingProfile      `json:"mapping_profile"`
 	SourceProfileHash    string               `json:"source_profile_hash"`
 	IdentityHash         string               `json:"identity_hash"`
 }
@@ -330,10 +377,12 @@ type CapturedCandidateWindow struct {
 	CandidateID         string              `json:"candidate_id"`
 	FactHash            string              `json:"fact_hash"`
 	SourceStatus        string              `json:"source_status"`
+	RetirementState     *string             `json:"retirement_state"`
 	SemanticPath        *string             `json:"semantic_path"`
+	ValidationMode      *ValidationMode     `json:"validation_mode"`
 	ComparatorClass     ComparatorClass     `json:"comparator_class"`
 	ProtocolEligibility ProtocolEligibility `json:"protocol_eligibility"`
-	EBusIdentity        *B524Identity       `json:"ebus_identity"`
+	EBusIdentity        *EBusIdentity       `json:"ebus_identity"`
 	EEBusIdentity       *EEBusIdentity      `json:"eebus_identity"`
 	Evaluation          WindowEvaluation    `json:"evaluation"`
 }
@@ -413,9 +462,11 @@ type CampaignCandidate struct {
 	CandidateID     string          `json:"candidate_id"`
 	FactHash        string          `json:"fact_hash"`
 	SourceStatus    string          `json:"source_status"`
+	RetirementState *string         `json:"retirement_state"`
 	SemanticPath    *string         `json:"semantic_path"`
+	ValidationMode  *ValidationMode `json:"validation_mode"`
 	ComparatorClass ComparatorClass `json:"comparator_class"`
-	EBusIdentity    *B524Identity   `json:"ebus_identity"`
+	EBusIdentity    *EBusIdentity   `json:"ebus_identity"`
 	EEBusIdentity   *EEBusIdentity  `json:"eebus_identity"`
 	Assessments     []Assessment    `json:"assessments"`
 	Decision        Decision        `json:"decision"`

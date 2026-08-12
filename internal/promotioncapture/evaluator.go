@@ -25,6 +25,12 @@ func (registry *Registry) EvaluateWindow(candidateID string, input WindowAssessm
 	if err := validateWindow(input.Window); err != nil {
 		return WindowEvaluation{}, err
 	}
+	if candidate.ProtocolEligibility == ProtocolEEBusNative {
+		return registry.evaluateNativeWindow(candidate, input)
+	}
+	if candidate.ProtocolEligibility != ProtocolCrossProtocol {
+		return WindowEvaluation{}, fmt.Errorf("%w: unsupported protocol eligibility %q", ErrInvalidEvidence, candidate.ProtocolEligibility)
+	}
 	comparator, err := comparatorFor(candidate)
 	if err != nil {
 		return WindowEvaluation{}, err
@@ -120,6 +126,57 @@ func (registry *Registry) EvaluateWindow(candidateID string, input WindowAssessm
 	return assessedEvaluation(candidateID, assessment), nil
 }
 
+func (registry *Registry) evaluateNativeWindow(candidate CandidateDefinition, input WindowAssessmentInput) (WindowEvaluation, error) {
+	if input.EBusSample != nil || input.ExpectedEBusIdentityHash != "" || input.ObservedEBusIdentityHash != nil ||
+		len(input.ConflictSamples) != 0 {
+		return WindowEvaluation{}, fmt.Errorf("%w: native assessment contains eBUS evidence", ErrInvalidEvidence)
+	}
+	if !digestPattern.MatchString(input.ExpectedEEBusIdentityHash) {
+		return WindowEvaluation{}, fmt.Errorf("%w: malformed expected eeBUS identity hash", ErrInvalidEvidence)
+	}
+	if input.Window.Phase == PhasePreRestart && input.PreviousNativeValue != nil {
+		return WindowEvaluation{}, fmt.Errorf("%w: PRE native assessment contains prior value", ErrInvalidEvidence)
+	}
+	comparator, err := comparatorFor(candidate)
+	if err != nil {
+		return WindowEvaluation{}, err
+	}
+	assessment := Assessment{
+		WindowID: input.Window.WindowID, EEBusSample: cloneSamplePointer(input.EEBusSample),
+		ObservedEEBusIdentityHash: cloneStringPointer(input.ObservedEEBusIdentityHash),
+		ConflictSamples:           []Sample{}, MaxSkewNS: registry.captureLimits.MaxSkewNS,
+		MaxAgeNS: registry.captureLimits.MaxAgeNS, Comparator: comparator,
+	}
+	outcome := OutcomeNativeDrift
+	if input.EEBusSample == nil {
+		if input.ObservedEEBusIdentityHash != nil {
+			return WindowEvaluation{}, fmt.Errorf("%w: missing native sample carries observed identity", ErrInvalidEvidence)
+		}
+		assessment.Comparator.Outcome = outcome
+		return assessedEvaluation(candidate.CandidateID, assessment), nil
+	}
+	if input.ObservedEEBusIdentityHash == nil || !digestPattern.MatchString(*input.ObservedEEBusIdentityHash) {
+		return WindowEvaluation{}, fmt.Errorf("%w: native sample lacks observed identity", ErrInvalidEvidence)
+	}
+	if err := validateSampleStructure(input.EEBusSample, SourceEEBus, input.Window, true); err != nil {
+		return WindowEvaluation{}, err
+	}
+	observed, _ := parseTimestamp(input.EEBusSample.ObservedAt)
+	windowEnd, _ := parseTimestamp(input.Window.EndedAt)
+	age := windowEnd.Sub(observed).Nanoseconds()
+	assessment.AgeNS = int64PointerValue(age)
+	localValid := *input.ObservedEEBusIdentityHash == input.ExpectedEEBusIdentityHash &&
+		input.EEBusSample.Valid && sampleGenerationMatches(*input.EEBusSample, input.Window) &&
+		age <= registry.captureLimits.MaxAgeNS && catalogNativeSampleValid(candidate, *input.EEBusSample)
+	stable := localValid && (input.Window.Phase == PhasePreRestart ||
+		(input.PreviousNativeValue != nil && typedSemanticEqual(input.EEBusSample.Value, *input.PreviousNativeValue)))
+	if stable {
+		outcome = OutcomeNativeValid
+	}
+	assessment.Comparator.Outcome = outcome
+	return assessedEvaluation(candidate.CandidateID, assessment), nil
+}
+
 func assessedEvaluation(candidateID string, assessment Assessment) WindowEvaluation {
 	return WindowEvaluation{
 		CandidateID: candidateID,
@@ -133,22 +190,35 @@ func comparatorFor(candidate CandidateDefinition) (Comparator, error) {
 	source := candidate.EEBusSource
 	switch candidate.ComparatorClass {
 	case ComparatorNumeric:
-		if source == nil || source.DeclaredConstraints == nil || source.Conversion == nil {
+		if source == nil || source.DeclaredConstraints == nil || candidate.Conversion == nil {
 			return Comparator{}, fmt.Errorf("%w: numeric catalog entry incomplete", ErrInvalidEvidence)
 		}
 		step := source.DeclaredConstraints.Step
-		conversion := *source.Conversion
+		conversion := *candidate.Conversion
 		comparator.DeclaredSpineStep = &step
 		comparator.Conversion = &conversion
 	case ComparatorEnum, ComparatorBoolean:
-		if source == nil || source.MappingProfile == nil {
+		if source == nil {
 			return Comparator{}, fmt.Errorf("%w: mapping catalog entry incomplete", ErrInvalidEvidence)
 		}
-		hash, err := HashMapping(*source.MappingProfile)
+		var mapping any
+		if candidate.ProtocolEligibility == ProtocolEEBusNative {
+			mapping = source.ExactMapping
+		} else {
+			mapping = candidate.MappingProfile
+		}
+		if reflectNil(mapping) {
+			return Comparator{}, fmt.Errorf("%w: mapping catalog entry incomplete", ErrInvalidEvidence)
+		}
+		hash, err := CanonicalDigest(MappingDomain, mapping)
 		if err != nil {
 			return Comparator{}, err
 		}
 		comparator.MappingHash = &hash
+	case ComparatorString:
+		if source == nil || candidate.ProtocolEligibility != ProtocolEEBusNative {
+			return Comparator{}, fmt.Errorf("%w: string catalog entry incomplete", ErrInvalidEvidence)
+		}
 	default:
 		return Comparator{}, fmt.Errorf("%w: ineligible comparator %q", ErrInvalidEvidence, candidate.ComparatorClass)
 	}
@@ -251,7 +321,7 @@ func validComparablePair(candidate CandidateDefinition, ebus, eebus Sample) (boo
 		return false, nil, nil
 	}
 	if candidate.ComparatorClass == ComparatorNumeric {
-		comparison, err := CompareNumeric(*ebus.Value.Decimal, *eebus.Value.Decimal, *candidate.EEBusSource.DeclaredConstraints, *candidate.EEBusSource.Conversion)
+		comparison, err := CompareNumeric(*ebus.Value.Decimal, *eebus.Value.Decimal, *candidate.EEBusSource.DeclaredConstraints, *candidate.Conversion)
 		if err != nil {
 			if err == ErrOutOfRange {
 				return false, nil, nil
@@ -273,12 +343,12 @@ func catalogSampleValid(candidate CandidateDefinition, sample Sample) bool {
 	}
 	switch candidate.ComparatorClass {
 	case ComparatorNumeric:
-		if sample.Value.Kind != ValueNumeric || source.Conversion == nil {
+		if sample.Value.Kind != ValueNumeric || candidate.Conversion == nil {
 			return false
 		}
-		expectedUnit := source.Conversion.TargetUnit
+		expectedUnit := candidate.Conversion.TargetUnit
 		if sample.Source == SourceEBus {
-			expectedUnit = source.Conversion.SourceUnit
+			expectedUnit = candidate.Conversion.SourceUnit
 		}
 		return stringPointersEqual(sample.Unit, &expectedUnit)
 	case ComparatorEnum:
@@ -295,7 +365,24 @@ func catalogSampleValid(candidate CandidateDefinition, sample Sample) bool {
 	if sample.Source == SourceEEBus {
 		return protocolMappingMatches(*source.ExactMapping, sample)
 	}
-	return eBusMappingMatches(*source.MappingProfile, sample)
+	return candidate.MappingProfile != nil && eBusMappingMatches(*candidate.MappingProfile, sample)
+}
+
+func catalogNativeSampleValid(candidate CandidateDefinition, sample Sample) bool {
+	if sample.Source != SourceEEBus || candidate.EEBusSource == nil || !stringPointersEqual(sample.Unit, candidate.EEBusSource.Unit) {
+		return false
+	}
+	switch {
+	case candidate.ValidationMode != nil && *candidate.ValidationMode == ValidationEEBusNativeCapability:
+		return sample.RawValue.Kind == ValueBoolean && sample.Value.Kind == ValueBoolean &&
+			typedSemanticEqual(sample.RawValue, sample.Value) && candidate.EEBusSource.ExactMapping != nil &&
+			protocolMappingMatches(*candidate.EEBusSource.ExactMapping, sample)
+	case candidate.ValidationMode != nil && *candidate.ValidationMode == ValidationEEBusNativeMetadata:
+		return sample.RawValue.Kind == ValueString && sample.Value.Kind == ValueString &&
+			typedSemanticEqual(sample.RawValue, sample.Value)
+	default:
+		return false
+	}
 }
 
 func protocolMappingMatches(mapping ProtocolMapping, sample Sample) bool {
@@ -332,7 +419,7 @@ func eBusMappingMatches(mapping MappingProfile, sample Sample) bool {
 }
 
 func crossProtocolMappingMatches(candidate CandidateDefinition, ebus, eebus Sample) bool {
-	profile := candidate.EEBusSource.MappingProfile
+	profile := candidate.MappingProfile
 	if profile == nil || ebus.RawValue.Kind != ValueNumeric || ebus.RawValue.Decimal == nil {
 		return false
 	}
@@ -379,7 +466,7 @@ func (registry *Registry) hasConflict(candidate CandidateDefinition, input Windo
 		if candidate.ComparatorClass == ComparatorNumeric {
 			value := *sample.Value.Decimal
 			if source == SourceEBus {
-				converted, err := convertExact(value, *candidate.EEBusSource.Conversion)
+				converted, err := convertExact(value, *candidate.Conversion)
 				if err != nil {
 					return false, err
 				}
@@ -426,11 +513,11 @@ func conflictValuesEqual(candidate CandidateDefinition, first, second Sample) (b
 		return false, err
 	}
 	if first.Source == SourceEBus {
-		left, err = convertExact(*first.Value.Decimal, *candidate.EEBusSource.Conversion)
+		left, err = convertExact(*first.Value.Decimal, *candidate.Conversion)
 		if err != nil {
 			return false, err
 		}
-		right, err = convertExact(*second.Value.Decimal, *candidate.EEBusSource.Conversion)
+		right, err = convertExact(*second.Value.Decimal, *candidate.Conversion)
 		if err != nil {
 			return false, err
 		}
@@ -460,6 +547,8 @@ func typedSemanticEqual(left, right TypedValue) bool {
 		return left.Enum != nil && right.Enum != nil && *left.Enum == *right.Enum
 	case ValueBoolean:
 		return left.Boolean != nil && right.Boolean != nil && *left.Boolean == *right.Boolean
+	case ValueString:
+		return left.String != nil && right.String != nil && *left.String == *right.String
 	default:
 		return false
 	}
@@ -626,5 +715,17 @@ func cloneTypedValue(value TypedValue) TypedValue {
 		boolean := *value.Boolean
 		clone.Boolean = &boolean
 	}
+	clone.String = cloneStringPointer(value.String)
 	return clone
+}
+
+func reflectNil(value any) bool {
+	switch typed := value.(type) {
+	case *ProtocolMapping:
+		return typed == nil
+	case *MappingProfile:
+		return typed == nil
+	default:
+		return value == nil
+	}
 }

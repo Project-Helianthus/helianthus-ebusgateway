@@ -124,9 +124,18 @@ func TestIssue784CheckpointRootRejectsUnsafePermissionsAndSymlink(t *testing.T) 
 	}
 }
 
+func TestIssue790PreviousNativeValueRejectsMisorderedCheckpoint(t *testing.T) {
+	checkpoint := promotioncapture.WindowCheckpoint{Candidates: []promotioncapture.CapturedCandidateWindow{
+		{CandidateID: "m7-candidate-0013"},
+	}}
+	if _, err := leafPromotionPreviousNativeValue(&checkpoint, 0, "m7-candidate-0008"); err == nil {
+		t.Fatal("misordered prior checkpoint candidate accepted")
+	}
+}
+
 func issue784Checkpoint(t *testing.T, campaign string, phase promotioncapture.WindowPhase, process string) promotioncapture.WindowCheckpoint {
 	t.Helper()
-	candidates := make([]promotioncapture.CapturedCandidateWindow, 18)
+	candidates := make([]promotioncapture.CapturedCandidateWindow, 22)
 	for index := range candidates {
 		candidates[index] = promotioncapture.CapturedCandidateWindow{
 			CandidateID: "fixed", Evaluation: promotioncapture.WindowEvaluation{CandidateID: "fixed", Outcome: promotioncapture.OutcomeNotTested, Fixed: true},

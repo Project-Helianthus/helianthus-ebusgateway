@@ -9,13 +9,13 @@ import (
 )
 
 func TestIssue790RegistryClosesTwentyTwoRecordsAndEighteenLeaves(t *testing.T) {
-	if RegistrySHA256 != "sha256:3dc531dddb3464c75aca42ccf914d98c7c3e872a2ad925229f2a207586e14b11" {
+	if RegistrySHA256 != "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678" {
 		t.Fatalf("RegistrySHA256 = %q", RegistrySHA256)
 	}
-	if DocsContractCommit != "624e51d42035c489e96c0720cdcc77f1ea441421" {
+	if DocsContractCommit != "c4cea33a3f6262e31801cad35d663e08317de4dd" {
 		t.Fatalf("DocsContractCommit = %q", DocsContractCommit)
 	}
-	if DocsEEBusCommit != "3576a14edbe08aeb757b9e53a03fb6e5be387dfe" {
+	if DocsEEBusCommit != "ed5354421ddf0a2005f496e3fd65675990032b5e" {
 		t.Fatalf("DocsEEBusCommit = %q", DocsEEBusCommit)
 	}
 
@@ -175,6 +175,35 @@ func TestIssue790EEBusIdentityContainsOnlySourceProfileAndNativeSelector(t *test
 	}
 	if !reflect.DeepEqual(object["field_path"], candidate.EEBusSource.FieldPath) {
 		t.Fatalf("field_path = %#v", object["field_path"])
+	}
+}
+
+func TestIssue790AllEighteenValidLeavesRemainLockedNotExposed(t *testing.T) {
+	registry := mustRegistry(t)
+	pre := assemblyCheckpoint(t, registry, PhasePreRestart, false)
+	post := assemblyCheckpoint(t, registry, PhasePostRestart, false)
+	campaign, err := AssembleCampaign(registry, assemblyManifest(pre.CampaignID), pre, post)
+	if err != nil {
+		t.Fatalf("AssembleCampaign: %v", err)
+	}
+	realLeaves := 0
+	retired := 0
+	for _, candidate := range campaign.Candidates {
+		if candidate.RetirementState != nil {
+			retired++
+			if candidate.Decision != DecisionWithheld || len(candidate.Assessments) != 0 {
+				t.Fatalf("retired candidate entered promotion denominator: %+v", candidate)
+			}
+			continue
+		}
+		realLeaves++
+		if candidate.Decision != DecisionPromoted || candidate.Visibility != VisibilityLockedNotExposed ||
+			candidate.TerminalState != nil || candidate.DossierHash == nil || len(candidate.Assessments) != 2 {
+			t.Fatalf("valid real leaf is not locked: %+v", candidate)
+		}
+	}
+	if len(campaign.Candidates) != 22 || realLeaves != 18 || retired != 4 {
+		t.Fatalf("records=%d real=%d retired=%d", len(campaign.Candidates), realLeaves, retired)
 	}
 }
 

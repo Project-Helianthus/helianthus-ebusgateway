@@ -31,6 +31,10 @@ type leafPromotionB524Reader interface {
 	ReadB524(context.Context, promotioncapture.EBusSelector) ([]byte, time.Time, bool)
 }
 
+type leafPromotionB555Reader interface {
+	ReadB555(context.Context, promotioncapture.B555Selector) ([]byte, time.Time, bool)
+}
+
 type leafPromotionSemanticB524Reader struct {
 	poller *vaillantSemanticPoller
 	now    func() time.Time
@@ -58,8 +62,35 @@ func (reader leafPromotionSemanticB524Reader) ReadB524(ctx context.Context, sele
 	return bytes.Clone(payload), now().UTC(), ok
 }
 
+func (reader leafPromotionSemanticB524Reader) ReadB555(ctx context.Context, selector promotioncapture.B555Selector) ([]byte, time.Time, bool) {
+	if reader.poller == nil || selector.Family != "B555" || selector.Operation != "TIMER_READ" ||
+		selector.ScheduleProgram != "DHW" || selector.SlotIndex != 0 || selector.DayOfWeek != "MONDAY" {
+		return nil, time.Time{}, false
+	}
+	reader.poller.mu.Lock()
+	controller := reader.poller.controller
+	reader.poller.mu.Unlock()
+	if controller != 0x15 {
+		return nil, time.Time{}, false
+	}
+	readCtx, cancel := context.WithTimeout(ctx, leafPromotionReadTimeout)
+	defer cancel()
+	slot := reader.poller.readB555Timer(readCtx, b555ZoneDHW, b555HCDHW, 0, byte(selector.SlotIndex))
+	if slot == nil || slot.TemperatureRaw == nil || *slot.TemperatureRaw < 0 || *slot.TemperatureRaw > math.MaxUint16 {
+		return nil, time.Time{}, false
+	}
+	payload := make([]byte, 2)
+	binary.LittleEndian.PutUint16(payload, uint16(*slot.TemperatureRaw))
+	now := reader.now
+	if now == nil {
+		now = time.Now
+	}
+	return payload, now().UTC(), true
+}
+
 type leafPromotionLiveSource struct {
 	ebus           leafPromotionB524Reader
+	ebusFallback   leafPromotionB555Reader
 	eebus          leafPromotionEEBusRuntime
 	admittedSource func() (byte, bool)
 	windowLock     func() func()
@@ -77,18 +108,20 @@ type leafPromotionPreparedSource struct {
 }
 
 type leafPromotionPreparedCandidate struct {
-	definition    promotioncapture.CandidateDefinition
-	ebusIdentity  *promotioncapture.B524Identity
-	eebusIdentity *promotioncapture.EEBusIdentity
-	locator       eebusraw.FeatureLocatorV1
+	definition           promotioncapture.CandidateDefinition
+	ebusIdentity         *promotioncapture.EBusIdentity
+	ebusFallbackIdentity *promotioncapture.EBusIdentity
+	eebusIdentity        *promotioncapture.EEBusIdentity
+	locator              eebusraw.FeatureLocatorV1
 }
 
 type leafPromotionCandidateSamples struct {
-	ebus        *promotioncapture.Sample
-	eebus       *promotioncapture.Sample
-	conflicts   []promotioncapture.Sample
-	eebusRaw    []byte
-	eebusResult *eebusraw.ReadObservationV1
+	ebus         *promotioncapture.Sample
+	eebus        *promotioncapture.Sample
+	conflicts    []promotioncapture.Sample
+	eebusRaw     []byte
+	eebusResult  *eebusraw.ReadObservationV1
+	ebusIdentity *promotioncapture.EBusIdentity
 }
 
 func newLeafPromotionLiveSource(
@@ -102,6 +135,7 @@ func newLeafPromotionLiveSource(
 	}
 	return &leafPromotionLiveSource{
 		ebus:           leafPromotionSemanticB524Reader{poller: poller},
+		ebusFallback:   leafPromotionSemanticB524Reader{poller: poller},
 		eebus:          &synchronizedEvidenceM625Runtime{provider: provider, router: router},
 		admittedSource: admittedSource,
 		windowLock: func() func() {
@@ -174,6 +208,15 @@ func (source *leafPromotionLiveSource) prepare(
 				return leafPromotionPreparedSource{}, identityErr
 			}
 			item.ebusIdentity = &identity
+		}
+		if candidate.EBusFallback != nil {
+			identity, identityErr := promotioncapture.NewB555Identity(
+				*candidate.EBusFallback, candidate.EBusSelector.TargetAddress, int(admitted),
+			)
+			if identityErr != nil {
+				return leafPromotionPreparedSource{}, identityErr
+			}
+			item.ebusFallbackIdentity = &identity
 		}
 		if candidate.EEBusSource != nil {
 			locator, locatorErr := leafPromotionLocatorForSource(snapshot, slots, *candidate.EEBusSource)
@@ -266,12 +309,16 @@ func (source *leafPromotionLiveSource) verifySourceProfile(
 		}
 		values[function] = observation.Value.Value()
 	}
-	actualDescriptor, err := leafPromotionDescriptor(candidate, values)
-	if err != nil {
-		return err
-	}
-	if !leafPromotionJSONEqual(profile.Descriptor, actualDescriptor) {
-		return errors.New("observed SPINE descriptor differs from the catalog")
+	if len(profile.DescriptionFunctions) > 0 {
+		actualDescriptor, err := leafPromotionDescriptor(candidate, values)
+		if err != nil {
+			return err
+		}
+		if !leafPromotionJSONEqual(profile.Descriptor, actualDescriptor) {
+			return errors.New("observed SPINE descriptor differs from the catalog")
+		}
+	} else if candidate.ValidationMode == nil || *candidate.ValidationMode != promotioncapture.ValidationEEBusNativeMetadata {
+		return errors.New("description-free SPINE source is not native metadata")
 	}
 	if candidate.ComparatorClass == promotioncapture.ComparatorNumeric {
 		observation, readErr := source.readEEBusFunction(ctx, locator, *profile.ConstraintsFunction, cache)
@@ -333,16 +380,21 @@ func (source *leafPromotionLiveSource) captureCandidate(
 	captureGeneration, pollGeneration, pollID string,
 ) (leafPromotionCandidateSamples, error) {
 	candidate := prepared.definition
-	if candidate.ProtocolEligibility != promotioncapture.ProtocolEligible ||
-		candidate.EBusSelector == nil || candidate.EEBusSource == nil || prepared.ebusIdentity == nil || prepared.eebusIdentity == nil {
-		return leafPromotionCandidateSamples{}, errors.New("candidate is not live-comparable")
+	if candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol &&
+		candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative {
+		return leafPromotionCandidateSamples{}, errors.New("candidate is not a real leaf")
 	}
-	payload, ebusObservedAt, ebusOK := source.ebus.ReadB524(ctx, *candidate.EBusSelector)
-	result := leafPromotionCandidateSamples{eebusRaw: bytes.Clone(payload)}
-	if ebusOK {
-		sample, err := leafPromotionEBusSample(candidate, payload, ebusObservedAt, captureGeneration, pollGeneration, pollID)
-		if err == nil {
-			result.ebus = &sample
+	if candidate.EEBusSource == nil || prepared.eebusIdentity == nil {
+		return leafPromotionCandidateSamples{}, errors.New("candidate eeBUS identity is unavailable")
+	}
+	result := leafPromotionCandidateSamples{}
+	if candidate.ProtocolEligibility == promotioncapture.ProtocolCrossProtocol {
+		var err error
+		result.ebus, result.ebusIdentity, result.eebusRaw, err = source.captureEBusCandidate(
+			ctx, prepared, captureGeneration, pollGeneration, pollID,
+		)
+		if err != nil {
+			return leafPromotionCandidateSamples{}, err
 		}
 	}
 
@@ -368,13 +420,41 @@ func (source *leafPromotionLiveSource) captureCandidate(
 	return result, nil
 }
 
+func (source *leafPromotionLiveSource) captureEBusCandidate(
+	ctx context.Context,
+	prepared leafPromotionPreparedCandidate,
+	captureGeneration, pollGeneration, pollID string,
+) (*promotioncapture.Sample, *promotioncapture.EBusIdentity, []byte, error) {
+	candidate := prepared.definition
+	if source == nil || source.ebus == nil || candidate.EBusSelector == nil || prepared.ebusIdentity == nil {
+		return nil, nil, nil, errors.New("candidate eBUS identity is unavailable")
+	}
+	identity := prepared.ebusIdentity
+	payload, observedAt, ok := source.ebus.ReadB524(ctx, *candidate.EBusSelector)
+	if !ok && candidate.EBusFallback != nil && prepared.ebusFallbackIdentity != nil && source.ebusFallback != nil {
+		payload, observedAt, ok = source.ebusFallback.ReadB555(ctx, *candidate.EBusFallback)
+		if ok {
+			identity = prepared.ebusFallbackIdentity
+		}
+	}
+	if !ok {
+		return nil, identity, bytes.Clone(payload), nil
+	}
+	sample, err := leafPromotionEBusSample(candidate, *identity, payload, observedAt, captureGeneration, pollGeneration, pollID)
+	if err != nil {
+		return nil, identity, bytes.Clone(payload), nil
+	}
+	return &sample, identity, bytes.Clone(payload), nil
+}
+
 func leafPromotionEBusSample(
 	candidate promotioncapture.CandidateDefinition,
+	identity promotioncapture.EBusIdentity,
 	payload []byte,
 	observedAt time.Time,
 	captureGeneration, pollGeneration, pollID string,
 ) (promotioncapture.Sample, error) {
-	raw, value, unit, err := leafPromotionDecodeEBus(candidate, payload)
+	raw, value, unit, err := leafPromotionDecodeEBus(candidate, identity, payload)
 	if err != nil {
 		return promotioncapture.Sample{}, err
 	}
@@ -411,20 +491,38 @@ func leafPromotionEEBusSample(
 	return sample, nil
 }
 
-func leafPromotionDecodeEBus(candidate promotioncapture.CandidateDefinition, payload []byte) (promotioncapture.TypedValue, promotioncapture.TypedValue, *string, error) {
+func leafPromotionDecodeEBus(candidate promotioncapture.CandidateDefinition, identity promotioncapture.EBusIdentity, payload []byte) (promotioncapture.TypedValue, promotioncapture.TypedValue, *string, error) {
 	if len(payload) == 0 || candidate.EEBusSource == nil {
 		return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("empty eBUS value")
 	}
 	if candidate.ComparatorClass == promotioncapture.ComparatorNumeric {
-		if len(payload) != 4 {
-			return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("numeric B524 value is not float32")
+		var value float64
+		switch identity.Family {
+		case "B524":
+			if len(payload) != 4 {
+				return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("numeric B524 value is not float32")
+			}
+			value = float64(math.Float32frombits(binary.LittleEndian.Uint32(payload)))
+		case "B555":
+			if candidate.EBusFallback == nil || len(payload) != 2 {
+				return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("numeric B555 timer value is not uint16")
+			}
+			raw := binary.LittleEndian.Uint16(payload)
+			if raw == math.MaxUint16 {
+				return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("numeric B555 timer value is unset")
+			}
+			value = float64(raw) / 10
+		default:
+			return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("unknown eBUS identity family")
 		}
-		value := math.Float32frombits(binary.LittleEndian.Uint32(payload))
-		decimal, err := leafPromotionDecimalString(strconv.FormatFloat(float64(value), 'f', -1, 32))
+		decimal, err := leafPromotionDecimalString(strconv.FormatFloat(value, 'f', -1, 32))
 		if err != nil {
 			return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, err
 		}
-		unit := candidate.EEBusSource.Conversion.SourceUnit
+		if candidate.Conversion == nil {
+			return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("numeric conversion is unavailable")
+		}
+		unit := candidate.Conversion.SourceUnit
 		typed := promotioncapture.NumericValue(decimal)
 		return typed, typed, &unit, nil
 	}
@@ -454,6 +552,14 @@ func leafPromotionDecodeEEBus(candidate promotioncapture.CandidateDefinition, va
 		typed := promotioncapture.NumericValue(decimal)
 		return typed, typed, cloneLeafPromotionString(profile.Unit), nil
 	}
+	if candidate.ComparatorClass == promotioncapture.ComparatorString {
+		text, ok := field.(string)
+		if !ok || text == "" || len(text) > 256 {
+			return promotioncapture.TypedValue{}, promotioncapture.TypedValue{}, nil, errors.New("SPINE metadata value is not a non-empty string")
+		}
+		typed := promotioncapture.StringValue(text)
+		return typed, typed, nil, nil
+	}
 	var raw promotioncapture.TypedValue
 	switch typed := field.(type) {
 	case bool:
@@ -476,7 +582,10 @@ func leafPromotionMappedValue(candidate promotioncapture.CandidateDefinition, ra
 	}
 	var normalized json.RawMessage
 	if ebus {
-		for _, pair := range profile.MappingProfile.Pairs {
+		if candidate.MappingProfile == nil {
+			return promotioncapture.TypedValue{}, errors.New("eBUS mapping profile unavailable")
+		}
+		for _, pair := range candidate.MappingProfile.Pairs {
 			if raw.Decimal != nil {
 				if comparison, _ := raw.Decimal.Compare(pair.EBusRaw); comparison == 0 {
 					normalized = pair.Normalized
@@ -661,11 +770,14 @@ func leafPromotionResolveSlots(snapshot eebusruntime.SnapshotV1) (leafPromotionS
 			return byType[key][left].EntityAddress < byType[key][right].EntityAddress
 		})
 	}
-	if len(byType["DHWCircuit"]) != 1 || len(byType["HVACRoom"]) != 2 || len(byType["TemperatureSensor"]) != 1 {
+	if len(byType["DeviceInformation"]) != 1 || len(byType["DHWCircuit"]) != 1 ||
+		len(byType["HeatingZone"]) != 2 || len(byType["HVACRoom"]) != 2 || len(byType["TemperatureSensor"]) != 1 {
 		return leafPromotionSlots{}, errors.New("VR940 candidate entity slots are ambiguous")
 	}
 	return leafPromotionSlots{byName: map[string]eebusruntime.EntityV1{
-		"dhw_circuit": byType["DHWCircuit"][0], "zone_1_room": byType["HVACRoom"][0],
+		"device_information": byType["DeviceInformation"][0], "dhw_circuit": byType["DHWCircuit"][0],
+		"zone_1": byType["HeatingZone"][0], "zone_2": byType["HeatingZone"][1],
+		"zone_1_room": byType["HVACRoom"][0],
 		"zone_2_room": byType["HVACRoom"][1], "outside_sensor": byType["TemperatureSensor"][0],
 	}}, nil
 }
@@ -873,6 +985,13 @@ func leafPromotionSelectField(value any, fieldPath string) (any, error) {
 	if !ok {
 		return nil, errors.New("SPINE value response is not an object")
 	}
+	if !strings.ContainsAny(fieldPath, "[].") {
+		result, found := root[fieldPath]
+		if !found {
+			return nil, errors.New("catalog direct field is absent from SPINE value")
+		}
+		return result, nil
+	}
 	open := strings.IndexByte(fieldPath, '[')
 	close := strings.IndexByte(fieldPath, ']')
 	dot := strings.IndexByte(fieldPath, '.')
@@ -959,4 +1078,5 @@ func leafPromotionSnakeCase(value string) string {
 }
 
 var _ leafPromotionB524Reader = leafPromotionSemanticB524Reader{}
+var _ leafPromotionB555Reader = leafPromotionSemanticB524Reader{}
 var _ leafPromotionEEBusRuntime = (*synchronizedEvidenceM625Runtime)(nil)

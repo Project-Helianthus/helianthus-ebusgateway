@@ -31,10 +31,10 @@ func AssembleCampaign(
 	if err := validateAssemblyManifest(manifest, pre.CampaignID); err != nil {
 		return Campaign{}, err
 	}
-	if err := validateCheckpoint(registry, pre, PhasePreRestart); err != nil {
+	if err := validateCheckpoint(registry, pre, PhasePreRestart, nil); err != nil {
 		return Campaign{}, fmt.Errorf("pre-restart checkpoint: %w", err)
 	}
-	if err := validateCheckpoint(registry, post, PhasePostRestart); err != nil {
+	if err := validateCheckpoint(registry, post, PhasePostRestart, &pre); err != nil {
 		return Campaign{}, fmt.Errorf("post-restart checkpoint: %w", err)
 	}
 	if err := validateRestartPair(pre, post); err != nil {
@@ -116,7 +116,7 @@ func validateAssemblyManifest(manifest CampaignAssemblyManifest, campaignID stri
 	return nil
 }
 
-func validateCheckpoint(registry *Registry, checkpoint WindowCheckpoint, phase WindowPhase) error {
+func validateCheckpoint(registry *Registry, checkpoint WindowCheckpoint, phase WindowPhase, previous *WindowCheckpoint) error {
 	if checkpoint.Contract != CheckpointContractV1 || checkpoint.SchemaVersion != 1 ||
 		!validToken(checkpoint.CampaignID) || !validToken(checkpoint.ProcessInstanceID) ||
 		!validToken(checkpoint.TrustStateID) || !validToken(checkpoint.PeerBindingID) ||
@@ -155,13 +155,19 @@ func validateCheckpoint(registry *Registry, checkpoint WindowCheckpoint, phase W
 		if captured.CandidateID != definition.CandidateID || captured.FactHash != definition.FactHash ||
 			captured.SourceStatus != definition.SourceStatus || captured.ComparatorClass != definition.ComparatorClass ||
 			captured.ProtocolEligibility != definition.ProtocolEligibility ||
+			!reflect.DeepEqual(captured.RetirementState, definition.RetirementState) ||
+			!reflect.DeepEqual(captured.ValidationMode, definition.ValidationMode) ||
 			!reflect.DeepEqual(captured.SemanticPath, definition.SemanticPath) {
 			return fmt.Errorf("%w: %s catalog metadata mismatch", ErrInvalidEvidence, definition.CandidateID)
 		}
 		if err := validateCapturedIdentity(definition, checkpoint.Window, captured); err != nil {
 			return fmt.Errorf("%s: %w", definition.CandidateID, err)
 		}
-		reevaluated, err := reevaluateCaptured(registry, definition, checkpoint.Window, captured)
+		var previousCandidate *CapturedCandidateWindow
+		if previous != nil {
+			previousCandidate = &previous.Candidates[index]
+		}
+		reevaluated, err := reevaluateCaptured(registry, definition, checkpoint.Window, captured, previousCandidate)
 		if err != nil {
 			return fmt.Errorf("%s: %w", definition.CandidateID, err)
 		}
@@ -179,15 +185,27 @@ func validateCapturedIdentity(definition CandidateDefinition, window Window, cap
 			return fmt.Errorf("%w: terminal candidate carries protocol identity", ErrInvalidEvidence)
 		}
 		return nil
-	case ProtocolWithholdNoEBusCapability:
+	case ProtocolEEBusNative:
 		if captured.EBusIdentity != nil || captured.EEBusIdentity == nil {
-			return fmt.Errorf("%w: capability-only identity mismatch", ErrInvalidEvidence)
+			return fmt.Errorf("%w: native identity mismatch", ErrInvalidEvidence)
 		}
-	case ProtocolEligible:
+	case ProtocolCrossProtocol:
 		if captured.EBusIdentity == nil || captured.EEBusIdentity == nil || definition.EBusSelector == nil {
-			return fmt.Errorf("%w: eligible identity missing", ErrInvalidEvidence)
+			return fmt.Errorf("%w: cross-protocol identity missing", ErrInvalidEvidence)
 		}
-		want, err := NewB524Identity(*definition.EBusSelector, window.AdmittedSource)
+		var want EBusIdentity
+		var err error
+		switch captured.EBusIdentity.Family {
+		case "B524":
+			want, err = NewB524Identity(*definition.EBusSelector, window.AdmittedSource)
+		case "B555":
+			if definition.EBusFallback == nil {
+				return fmt.Errorf("%w: unexpected B555 identity", ErrInvalidEvidence)
+			}
+			want, err = NewB555Identity(*definition.EBusFallback, definition.EBusSelector.TargetAddress, window.AdmittedSource)
+		default:
+			return fmt.Errorf("%w: unknown eBUS identity family", ErrInvalidEvidence)
+		}
 		if err != nil || !canonicalEqual(want, *captured.EBusIdentity) {
 			return fmt.Errorf("%w: eBUS selector mismatch", ErrInvalidEvidence)
 		}
@@ -212,24 +230,35 @@ func reevaluateCaptured(
 	definition CandidateDefinition,
 	window Window,
 	captured CapturedCandidateWindow,
+	previous *CapturedCandidateWindow,
 ) (WindowEvaluation, error) {
 	if _, fixed := definition.FixedOutcome(); fixed {
 		return registry.EvaluateWindow(definition.CandidateID, WindowAssessmentInput{})
 	}
-	if captured.Evaluation.Assessment == nil || captured.EBusIdentity == nil || captured.EEBusIdentity == nil {
-		return WindowEvaluation{}, fmt.Errorf("%w: eligible assessment missing", ErrInvalidEvidence)
+	if captured.Evaluation.Assessment == nil || captured.EEBusIdentity == nil {
+		return WindowEvaluation{}, fmt.Errorf("%w: real-leaf assessment missing", ErrInvalidEvidence)
 	}
 	assessment := captured.Evaluation.Assessment
-	return registry.EvaluateWindow(definition.CandidateID, WindowAssessmentInput{
+	input := WindowAssessmentInput{
 		Window:                    window,
-		ExpectedEBusIdentityHash:  captured.EBusIdentity.SelectorHash,
 		ExpectedEEBusIdentityHash: captured.EEBusIdentity.IdentityHash,
 		ObservedEBusIdentityHash:  assessment.ObservedEBusIdentityHash,
 		ObservedEEBusIdentityHash: assessment.ObservedEEBusIdentityHash,
 		EBusSample:                assessment.EBusSample,
 		EEBusSample:               assessment.EEBusSample,
 		ConflictSamples:           assessment.ConflictSamples,
-	})
+	}
+	if definition.ProtocolEligibility == ProtocolCrossProtocol {
+		if captured.EBusIdentity == nil {
+			return WindowEvaluation{}, fmt.Errorf("%w: cross-protocol eBUS identity missing", ErrInvalidEvidence)
+		}
+		input.ExpectedEBusIdentityHash = captured.EBusIdentity.SelectorHash
+	} else if previous != nil && previous.Evaluation.Outcome == OutcomeNativeValid &&
+		previous.Evaluation.Assessment != nil && previous.Evaluation.Assessment.EEBusSample != nil {
+		value := cloneTypedValue(previous.Evaluation.Assessment.EEBusSample.Value)
+		input.PreviousNativeValue = &value
+	}
+	return registry.EvaluateWindow(definition.CandidateID, input)
 }
 
 func validateRestartPair(pre, post WindowCheckpoint) error {
@@ -261,7 +290,8 @@ func assembleCandidate(
 ) (CampaignCandidate, error) {
 	candidate := CampaignCandidate{
 		CandidateID: definition.CandidateID, FactHash: definition.FactHash,
-		SourceStatus: definition.SourceStatus, SemanticPath: cloneStringPointer(definition.SemanticPath),
+		SourceStatus: definition.SourceStatus, RetirementState: cloneStringPointer(definition.RetirementState),
+		SemanticPath: cloneStringPointer(definition.SemanticPath), ValidationMode: cloneValidationModePointer(definition.ValidationMode),
 		ComparatorClass: definition.ComparatorClass, EBusIdentity: cloneJSONPointer(pre.EBusIdentity),
 		EEBusIdentity: cloneJSONPointer(pre.EEBusIdentity), Assessments: []Assessment{},
 		Decision: DecisionWithheld, Visibility: VisibilityRawDebugOnly,
@@ -277,6 +307,25 @@ func assembleCandidate(
 	candidate.Assessments = []Assessment{
 		cloneValue(*pre.Evaluation.Assessment),
 		cloneValue(*post.Evaluation.Assessment),
+	}
+	if definition.ProtocolEligibility == ProtocolEEBusNative {
+		if pre.Evaluation.Outcome == OutcomeNativeValid && post.Evaluation.Outcome == OutcomeNativeValid {
+			candidate.Decision = DecisionPromoted
+			candidate.Visibility = VisibilityLockedNotExposed
+			digest, err := digestWithoutField(DossierDomain, candidate, "dossier_hash")
+			if err != nil {
+				return CampaignCandidate{}, err
+			}
+			candidate.DossierHash = &digest
+			return candidate, nil
+		}
+		if pre.Evaluation.Outcome != OutcomeNativeDrift && pre.Evaluation.Outcome != OutcomeNativeValid ||
+			post.Evaluation.Outcome != OutcomeNativeDrift {
+			return CampaignCandidate{}, fmt.Errorf("%w: invalid native outcomes", ErrInvalidEvidence)
+		}
+		terminal := OutcomeNativeDrift
+		candidate.TerminalState = &terminal
+		return candidate, nil
 	}
 	for _, outcome := range []Outcome{pre.Evaluation.Outcome, post.Evaluation.Outcome} {
 		if outcome != OutcomeMatch {
@@ -296,6 +345,14 @@ func assembleCandidate(
 	}
 	candidate.DossierHash = &digest
 	return candidate, nil
+}
+
+func cloneValidationModePointer(value *ValidationMode) *ValidationMode {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func validToken(value string) bool {

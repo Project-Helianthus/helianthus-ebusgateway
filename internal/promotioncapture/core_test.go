@@ -20,34 +20,37 @@ func TestEmbeddedRegistryIsPinnedAndClosed(t *testing.T) {
 	if digest != RegistrySHA256 {
 		t.Fatalf("embedded registry digest = %s, want %s", digest, RegistrySHA256)
 	}
-	if RegistrySHA256 != "sha256:d17a66da1919796f57ecd2a515fa4e538c6be8d00a24c8c7e5d38bce7f36e3cd" {
+	if RegistrySHA256 != "sha256:00ceefc05439e9aec5830b640661cdc6be2b503f9365eed437e3dbffdf6d0678" {
 		t.Fatalf("unexpected pinned digest %q", RegistrySHA256)
 	}
 
 	registry := mustRegistry(t)
 	candidates := registry.Candidates()
-	if len(candidates) != 18 {
-		t.Fatalf("catalog length = %d, want 18", len(candidates))
+	if len(candidates) != 22 {
+		t.Fatalf("catalog length = %d, want 22", len(candidates))
 	}
 
 	wantEligibility := []ProtocolEligibility{
 		ProtocolTerminal, ProtocolTerminal, ProtocolTerminal, ProtocolTerminal,
-		ProtocolEligible, ProtocolEligible, ProtocolEligible, ProtocolWithholdNoEBusCapability,
-		ProtocolEligible, ProtocolEligible, ProtocolEligible, ProtocolEligible,
-		ProtocolWithholdNoEBusCapability, ProtocolEligible, ProtocolEligible, ProtocolEligible,
-		ProtocolWithholdNoEBusCapability, ProtocolEligible,
+		ProtocolCrossProtocol, ProtocolCrossProtocol, ProtocolCrossProtocol, ProtocolEEBusNative,
+		ProtocolCrossProtocol, ProtocolCrossProtocol, ProtocolCrossProtocol, ProtocolCrossProtocol,
+		ProtocolEEBusNative, ProtocolCrossProtocol, ProtocolCrossProtocol, ProtocolCrossProtocol,
+		ProtocolEEBusNative, ProtocolCrossProtocol, ProtocolEEBusNative, ProtocolEEBusNative,
+		ProtocolEEBusNative, ProtocolEEBusNative,
 	}
 	wantClasses := []ComparatorClass{
 		ComparatorNone, ComparatorNone, ComparatorNone, ComparatorNone,
 		ComparatorNumeric, ComparatorNumeric, ComparatorEnum, ComparatorBoolean,
 		ComparatorBoolean, ComparatorNumeric, ComparatorNumeric, ComparatorEnum,
 		ComparatorBoolean, ComparatorNumeric, ComparatorNumeric, ComparatorEnum,
-		ComparatorBoolean, ComparatorNumeric,
+		ComparatorBoolean, ComparatorNumeric, ComparatorString, ComparatorString,
+		ComparatorString, ComparatorString,
 	}
 	wantFixed := []Outcome{
 		OutcomeCloudOnly, OutcomeNotTested, OutcomeNotTested, OutcomeNotTested,
-		"", "", "", OutcomeNotComparable, "", "", "", "",
-		OutcomeNotComparable, "", "", "", OutcomeNotComparable, "",
+		"", "", "", "", "", "", "", "",
+		"", "", "", "", "", "", "", "",
+		"", "",
 	}
 
 	for i, candidate := range candidates {
@@ -77,7 +80,7 @@ func TestEmbeddedRegistryIsPinnedAndClosed(t *testing.T) {
 	if !ok || first.CandidateID != "m7-candidate-0001" {
 		t.Fatal("Candidates returned mutable registry storage")
 	}
-	if _, ok := registry.Candidate("m7-candidate-0019"); ok {
+	if _, ok := registry.Candidate("m7-candidate-0023"); ok {
 		t.Fatal("unregistered candidate was accepted")
 	}
 }
@@ -103,8 +106,12 @@ func TestAllCatalogRowsProduceTheirContractOutcome(t *testing.T) {
 			if err != nil {
 				t.Fatalf("EvaluateWindow: %v", err)
 			}
-			if result.Fixed || result.Outcome != OutcomeMatch || result.Assessment == nil {
-				t.Fatalf("eligible result = %#v, want MATCH assessment", result)
+			want := OutcomeMatch
+			if candidate.ProtocolEligibility == ProtocolEEBusNative {
+				want = OutcomeNativeValid
+			}
+			if result.Fixed || result.Outcome != want || result.Assessment == nil {
+				t.Fatalf("real-leaf result = %#v, want %s assessment", result, want)
 			}
 		})
 	}
@@ -348,12 +355,12 @@ func TestCanonicalHashesAreDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashRawValue: %v", err)
 	}
-	if digest != "sha256:00db93f35da9b2ef927d8eb832c2a8d12d54c9f9cc5097f3066c76827eded54a" {
+	if digest != "sha256:0621fc5f21a643eb033664301d46635d2b23f4961795dd36d8ed46959dbf8c8f" {
 		t.Fatalf("raw hash = %q", digest)
 	}
 	registry := mustRegistry(t)
 	enumCandidate := mustCandidate(t, registry, "m7-candidate-0007")
-	mappingHash, err := HashMapping(*enumCandidate.EEBusSource.MappingProfile)
+	mappingHash, err := HashMapping(*enumCandidate.MappingProfile)
 	if err != nil {
 		t.Fatalf("HashMapping: %v", err)
 	}
@@ -435,6 +442,13 @@ func testWindow() Window {
 
 func validInput(t *testing.T, candidate CandidateDefinition, ebusValue, eebusValue Decimal) WindowAssessmentInput {
 	t.Helper()
+	if candidate.ProtocolEligibility == ProtocolEEBusNative {
+		value := BooleanValue(false)
+		if candidate.ComparatorClass == ComparatorString {
+			value = StringValue("stable-native-value")
+		}
+		return nativeInput(t, candidate, testWindow(), value, nil)
+	}
 	if candidate.ComparatorClass == ComparatorEnum {
 		return mappedInput(t, candidate,
 			NumericValue(Decimal{Number: 0, Scale: 0}), EnumValue("off"),
@@ -550,6 +564,7 @@ func TestTypedValueConstructorsAreExclusive(t *testing.T) {
 		{NumericValue(Decimal{Number: 1, Scale: 0}), ValueNumeric},
 		{EnumValue("auto"), ValueEnum},
 		{BooleanValue(true), ValueBoolean},
+		{StringValue("label"), ValueString},
 	}
 	for _, test := range tests {
 		if test.value.Kind != test.kind {
@@ -570,11 +585,11 @@ func TestCandidateCopiesDoNotAliasNestedRegistryData(t *testing.T) {
 	registry := mustRegistry(t)
 	first := mustCandidate(t, registry, "m7-candidate-0007")
 	second := mustCandidate(t, registry, "m7-candidate-0007")
-	if first.EEBusSource == nil || second.EEBusSource == nil || first.EEBusSource.MappingProfile == nil {
+	if first.EEBusSource == nil || second.EEBusSource == nil || first.MappingProfile == nil {
 		t.Fatal("enum candidate mapping profile missing")
 	}
-	first.EEBusSource.MappingProfile.Pairs[0].Normalized = []byte(`"changed"`)
-	if reflect.DeepEqual(first.EEBusSource.MappingProfile.Pairs, second.EEBusSource.MappingProfile.Pairs) {
+	first.MappingProfile.Pairs[0].Normalized = []byte(`"changed"`)
+	if reflect.DeepEqual(first.MappingProfile.Pairs, second.MappingProfile.Pairs) {
 		t.Fatal("Candidate returned nested mutable registry storage")
 	}
 }

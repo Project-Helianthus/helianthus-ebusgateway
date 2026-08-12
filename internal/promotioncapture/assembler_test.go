@@ -8,8 +8,8 @@ import (
 
 func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 	registry := mustRegistry(t)
-	pre := assemblyCheckpoint(t, registry, PhasePreRestart)
-	post := assemblyCheckpoint(t, registry, PhasePostRestart)
+	pre := assemblyCheckpoint(t, registry, PhasePreRestart, true)
+	post := assemblyCheckpoint(t, registry, PhasePostRestart, true)
 	manifest := assemblyManifest(pre.CampaignID)
 
 	first, err := AssembleCampaign(registry, manifest, pre, post)
@@ -33,13 +33,20 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 	}
 
 	wantPromoted := []string{
+		"m7-candidate-0008",
 		"m7-candidate-0009",
 		"m7-candidate-0010",
 		"m7-candidate-0011",
 		"m7-candidate-0012",
+		"m7-candidate-0013",
 		"m7-candidate-0014",
 		"m7-candidate-0015",
 		"m7-candidate-0016",
+		"m7-candidate-0017",
+		"m7-candidate-0019",
+		"m7-candidate-0020",
+		"m7-candidate-0021",
+		"m7-candidate-0022",
 	}
 	var promoted []string
 	for _, candidate := range first.Candidates {
@@ -69,33 +76,43 @@ func TestAssembleCampaignPromotesOnlyTwoWindowMatches(t *testing.T) {
 			t.Fatalf("%s terminal = %v, want %s", candidateID, candidate.TerminalState, terminal)
 		}
 	}
-	if first.CampaignHash != "sha256:458ce116327b359a3d7e3fa9e1f06751960444beaa0009e55f6289301b9859c6" {
+	if first.CampaignHash != "sha256:d773b1fc2296a1aaa62bcb746a44353f3f1fd58f6c0caf97b6e4a5779aa31940" {
 		t.Fatalf("campaign hash = %s", first.CampaignHash)
 	}
-	if first.SourceBindings.ReplayHash != "sha256:854f999bd6adb13cb2b25965debd2a5de8505c8131fd44e29d1aee1c788c9151" {
+	if first.SourceBindings.ReplayHash != "sha256:f801e9be69a45e96d1ee816d3ffc318bf52b75c8404557818356d1c4cd8fc3f4" {
 		t.Fatalf("replay hash = %s", first.SourceBindings.ReplayHash)
 	}
 	wantDossiers := map[string]string{
-		"m7-candidate-0009": "sha256:3e1683606ca38c3f226b0b3f6b164d8ba46cc013cad5c304ef40b4dc0c2263a6",
-		"m7-candidate-0010": "sha256:afcc8ae66170f411eca44b0492470e0442ea19da4458b747c6877577652977d7",
-		"m7-candidate-0011": "sha256:3a138cd748bce86279a9dce52b9aef44f2e919738ceec2ec1b90758c43f0938f",
-		"m7-candidate-0012": "sha256:1f108adf07f7c7c6e813fdf85ed6fe3b276f8b2b46bb2371f7aae51a2afcaf9e",
-		"m7-candidate-0014": "sha256:8bc2146d007f9cc29630e7c9c178ecffec13835313c053f958659852382ccc5d",
-		"m7-candidate-0015": "sha256:36d21be845236c4467a954b333908e45a5085b024f2309b4eea0ed6accd61c74",
-		"m7-candidate-0016": "sha256:478c4c571cf9eb837bd070977c1ea69e1e1cea84a79f349612a0887411519d96",
+		"m7-candidate-0008": "sha256:60ae47f983fba5bc87df650dc1298e59a53caf26a5a9dfbb79903e05f4b98195",
+		"m7-candidate-0009": "sha256:9455d79766fcb5c5f0ecdc2d6b7e0cd1f1a2b9c14e2503def1dd0fb881d4bd64",
+		"m7-candidate-0010": "sha256:46e4fe683d8ec4e1c630089be7c0e0031778ef0bfc10cb64e9c71be3adefb91a",
+		"m7-candidate-0011": "sha256:35f199012777b88a54bab3a51d2c27e85545c2525189ec698cac827c4724058f",
+		"m7-candidate-0012": "sha256:d229e594511ed36d1be3ba44f7d530640ef4bfdbce1d3aba49ba252da76f83c3",
+		"m7-candidate-0013": "sha256:b51a9fd3096e6121fb6b63bb042ca658caa1acee168f1df616f5a52a8809d455",
+		"m7-candidate-0014": "sha256:306ed77f2db67b9b59372902c3fc33eb6be1467b46597cd8f685973eae44bcaf",
+		"m7-candidate-0015": "sha256:23d8a739d045ed51e6195de22a60c22e41f816303cbec1ef22ca239c8a17477a",
+		"m7-candidate-0016": "sha256:dc76344ab1fea2840826d70d823d32c3d009a126080914d99b60d0e2fe7ac035",
+		"m7-candidate-0017": "sha256:fdcbbb6159f13b19234fa48b9050fd586852284385ed016c2122319fb76ff1e2",
+		"m7-candidate-0019": "sha256:7fe867f55ed343c9ef28b5fb0f85be34c5919fa327340fa8a1cb3102a2cb6b92",
+		"m7-candidate-0020": "sha256:8fc03200bcf240bf169af270f0c414d97af18a902bb01dabf92ad1bf41ceee85",
+		"m7-candidate-0021": "sha256:75057eaa3afa6625fdf0c90f4fe7b1ac99e9bf11c76a067ba84787f8ac509c3a",
+		"m7-candidate-0022": "sha256:a0982a0168f480f05fd95223463cb514820dc81e582fd96269f2d314018637e4",
 	}
-	for candidateID, want := range wantDossiers {
-		candidate := campaignCandidate(t, first, candidateID)
-		if candidate.DossierHash == nil || *candidate.DossierHash != want {
-			t.Fatalf("%s dossier hash = %v, want %s", candidateID, candidate.DossierHash, want)
+	actualDossiers := make(map[string]string)
+	for _, candidate := range first.Candidates {
+		if candidate.DossierHash != nil {
+			actualDossiers[candidate.CandidateID] = *candidate.DossierHash
 		}
+	}
+	if !reflect.DeepEqual(actualDossiers, wantDossiers) {
+		t.Fatalf("dossier hashes = %#v, want %#v", actualDossiers, wantDossiers)
 	}
 }
 
 func TestAssembleCampaignRejectsOutcomeRewrittenAgainstSamples(t *testing.T) {
 	registry := mustRegistry(t)
-	pre := assemblyCheckpoint(t, registry, PhasePreRestart)
-	post := assemblyCheckpoint(t, registry, PhasePostRestart)
+	pre := assemblyCheckpoint(t, registry, PhasePreRestart, true)
+	post := assemblyCheckpoint(t, registry, PhasePostRestart, true)
 	for index := range pre.Candidates {
 		candidate := &pre.Candidates[index]
 		if candidate.CandidateID == "m7-candidate-0018" {
@@ -134,12 +151,12 @@ func assemblyManifest(campaignID string) CampaignAssemblyManifest {
 	}
 }
 
-func assemblyCheckpoint(t *testing.T, registry *Registry, phase WindowPhase) WindowCheckpoint {
+func assemblyCheckpoint(t *testing.T, registry *Registry, phase WindowPhase, withFailures bool) WindowCheckpoint {
 	t.Helper()
 	window := assemblyWindow(phase)
-	candidates := make([]CapturedCandidateWindow, 0, 18)
+	candidates := make([]CapturedCandidateWindow, 0, 22)
 	for index, definition := range registry.Candidates() {
-		var ebusIdentity *B524Identity
+		var ebusIdentity *EBusIdentity
 		var eebusIdentity *EEBusIdentity
 		if definition.EBusSelector != nil {
 			identity, err := NewB524Identity(*definition.EBusSelector, window.AdmittedSource)
@@ -160,8 +177,21 @@ func assemblyCheckpoint(t *testing.T, registry *Registry, phase WindowPhase) Win
 		}
 
 		input := WindowAssessmentInput{}
-		if definition.ProtocolEligibility == ProtocolEligible {
-			input = assemblyInput(t, definition, window, ebusIdentity, eebusIdentity)
+		switch definition.ProtocolEligibility {
+		case ProtocolCrossProtocol:
+			input = assemblyInput(t, definition, window, ebusIdentity, eebusIdentity, withFailures)
+		case ProtocolEEBusNative:
+			value := BooleanValue(false)
+			if definition.ComparatorClass == ComparatorString {
+				value = StringValue("stable-" + definition.CandidateID)
+			}
+			var previous *TypedValue
+			if phase == PhasePostRestart {
+				previous = &value
+			}
+			input = nativeInput(t, definition, window, value, previous)
+			input.ExpectedEEBusIdentityHash = eebusIdentity.IdentityHash
+			input.ObservedEEBusIdentityHash = stringPointer(eebusIdentity.IdentityHash)
 		}
 		evaluation, err := registry.EvaluateWindow(definition.CandidateID, input)
 		if err != nil {
@@ -169,7 +199,8 @@ func assemblyCheckpoint(t *testing.T, registry *Registry, phase WindowPhase) Win
 		}
 		candidates = append(candidates, CapturedCandidateWindow{
 			CandidateID: definition.CandidateID, FactHash: definition.FactHash,
-			SourceStatus: definition.SourceStatus, SemanticPath: definition.SemanticPath,
+			SourceStatus: definition.SourceStatus, RetirementState: definition.RetirementState,
+			SemanticPath: definition.SemanticPath, ValidationMode: definition.ValidationMode,
 			ComparatorClass: definition.ComparatorClass, ProtocolEligibility: definition.ProtocolEligibility,
 			EBusIdentity: ebusIdentity, EEBusIdentity: eebusIdentity, Evaluation: evaluation,
 		})
@@ -196,6 +227,7 @@ func assemblyInput(
 	window Window,
 	ebusIdentity *B524Identity,
 	eebusIdentity *EEBusIdentity,
+	withFailures bool,
 ) WindowAssessmentInput {
 	t.Helper()
 	constraints := candidate.EEBusSource.DeclaredConstraints
@@ -216,6 +248,9 @@ func assemblyInput(
 		assemblyRebindSample(input.EEBusSample, window, "2026-08-11T10:05:09.100000000Z")
 	}
 
+	if !withFailures {
+		return input
+	}
 	switch candidate.CandidateID {
 	case "m7-candidate-0005":
 		if window.Phase == PhasePostRestart {

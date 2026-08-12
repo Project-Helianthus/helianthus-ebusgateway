@@ -40,6 +40,7 @@ type registryDocument struct {
 	DocsEEBusSourceCommit string                `json:"docs_eebus_source_commit"`
 	CaptureLimits         CaptureLimits         `json:"capture_limits"`
 	SanitizedProvenance   json.RawMessage       `json:"sanitized_provenance"`
+	RetiredHistoryResult  string                `json:"retired_history_result"`
 	CandidateCatalog      []CandidateDefinition `json:"candidate_catalog"`
 	WindowPhases          []WindowPhase         `json:"window_phases"`
 	ComparatorClasses     []ComparatorClass     `json:"comparator_classes"`
@@ -47,6 +48,7 @@ type registryDocument struct {
 	PositiveVisibility    string                `json:"positive_visibility"`
 	WithheldVisibility    string                `json:"withheld_visibility"`
 	NumericMatchRule      string                `json:"numeric_match_rule"`
+	NativeMatchRule       string                `json:"native_match_rule"`
 	RequiredWindows       int                   `json:"required_windows"`
 	PublicForbiddenKeys   []string              `json:"public_forbidden_keys"`
 }
@@ -122,12 +124,13 @@ func validateRegistryDocument(document registryDocument) error {
 		document.SchemaVersion != 1 || document.Profile != "CAPTURED_RUNTIME_MULTI_LEAF_V1" ||
 		document.DocsEEBusSourceCommit != DocsEEBusCommit || document.RequiredWindows != 2 ||
 		document.NumericMatchRule != "ABS_DELTA_LE_DECLARED_SPINE_STEP_INCLUSIVE" ||
+		document.NativeMatchRule != "EXACT_TYPED_PRE_POST_STABILITY" ||
 		document.CaptureLimits.MaxSkewNS <= 0 || document.CaptureLimits.MaxAgeNS <= 0 {
 		return fmt.Errorf("registry binding: header mismatch")
 	}
 	if !equalWindowPhases(document.WindowPhases, []WindowPhase{PhasePreRestart, PhasePostRestart}) ||
-		!equalComparatorClasses(document.ComparatorClasses, []ComparatorClass{ComparatorNone, ComparatorNumeric, ComparatorEnum, ComparatorBoolean}) ||
-		len(document.CandidateCatalog) != 18 {
+		!equalComparatorClasses(document.ComparatorClasses, []ComparatorClass{ComparatorNone, ComparatorNumeric, ComparatorEnum, ComparatorBoolean, ComparatorString}) ||
+		len(document.CandidateCatalog) != 22 {
 		return fmt.Errorf("registry binding: closed catalog metadata mismatch")
 	}
 	seen := make(map[string]struct{}, len(document.CandidateCatalog))
@@ -153,57 +156,87 @@ func validateRegistryDocument(document registryDocument) error {
 func validateCandidateDefinition(candidate CandidateDefinition) error {
 	switch candidate.ProtocolEligibility {
 	case ProtocolTerminal:
-		if candidate.ComparatorClass != ComparatorNone || candidate.TerminalState == nil ||
-			candidate.EBusSelector != nil || candidate.EEBusSource != nil || candidate.SemanticPath != nil {
+		if candidate.ComparatorClass != ComparatorNone || candidate.TerminalState == nil || candidate.RetirementState == nil ||
+			*candidate.RetirementState != RetirementTerminalNotALeaf || candidate.ValidationMode != nil ||
+			candidate.EBusSelector != nil || candidate.EBusFallback != nil || candidate.EEBusSource != nil ||
+			candidate.Conversion != nil || candidate.MappingProfile != nil || candidate.SemanticPath != nil {
 			return fmt.Errorf("malformed terminal candidate")
 		}
 		return nil
-	case ProtocolWithholdNoEBusCapability:
-		if candidate.ComparatorClass != ComparatorBoolean || candidate.TerminalState != nil ||
-			candidate.EBusSelector != nil || candidate.EEBusSource == nil || candidate.SemanticPath == nil {
-			return fmt.Errorf("malformed noncomparable candidate")
-		}
-		if candidate.EEBusSource.ExactMapping == nil || candidate.EEBusSource.MappingProfile != nil ||
-			candidate.EEBusSource.Unit != nil || candidate.EEBusSource.DeclaredConstraints != nil ||
-			candidate.EEBusSource.Conversion != nil {
-			return fmt.Errorf("malformed noncomparable source")
-		}
-		return nil
-	case ProtocolEligible:
-		if candidate.TerminalState != nil || candidate.EBusSelector == nil ||
+	case ProtocolCrossProtocol:
+		if candidate.TerminalState != nil || candidate.RetirementState != nil || candidate.ValidationMode == nil ||
+			*candidate.ValidationMode != ValidationCrossProtocol || candidate.EBusSelector == nil ||
 			candidate.EEBusSource == nil || candidate.SemanticPath == nil {
-			return fmt.Errorf("malformed eligible candidate")
+			return fmt.Errorf("malformed cross-protocol candidate")
 		}
 		if candidate.EBusSelector.Family != "B524" || candidate.EBusSelector.TargetAddress != 0x15 {
 			return fmt.Errorf("unexpected eBUS selector")
+		}
+		if candidate.CandidateID == "m7-candidate-0006" {
+			if candidate.EBusFallback == nil || !validB555Selector(*candidate.EBusFallback) {
+				return fmt.Errorf("missing B555 fallback")
+			}
+		} else if candidate.EBusFallback != nil {
+			return fmt.Errorf("unexpected eBUS fallback")
+		}
+	case ProtocolEEBusNative:
+		if candidate.TerminalState != nil || candidate.RetirementState != nil || candidate.ValidationMode == nil ||
+			candidate.EBusSelector != nil || candidate.EBusFallback != nil || candidate.EEBusSource == nil ||
+			candidate.SemanticPath == nil || candidate.Conversion != nil || candidate.MappingProfile != nil {
+			return fmt.Errorf("malformed eeBUS-native candidate")
 		}
 	default:
 		return fmt.Errorf("unknown protocol eligibility %q", candidate.ProtocolEligibility)
 	}
 
 	source := candidate.EEBusSource
-	if source.FeatureRole != "server" || len(source.DescriptionFunctions) == 0 || len(source.ValueFunctions) == 0 || len(source.Descriptor) == 0 {
+	if source.FeatureRole != "server" || len(source.ValueFunctions) == 0 || len(source.Descriptor) == 0 {
 		return fmt.Errorf("incomplete eeBUS source")
 	}
 	switch candidate.ComparatorClass {
 	case ComparatorNumeric:
-		if source.Unit == nil || source.DeclaredConstraints == nil || source.Conversion == nil ||
-			source.ExactMapping != nil || source.MappingProfile != nil {
+		if candidate.ProtocolEligibility != ProtocolCrossProtocol || source.Unit == nil || source.DeclaredConstraints == nil || candidate.Conversion == nil ||
+			source.ExactMapping != nil || candidate.MappingProfile != nil {
 			return fmt.Errorf("malformed numeric source")
 		}
-		if _, err := CompareNumeric(source.DeclaredConstraints.Minimum, source.DeclaredConstraints.Minimum, *source.DeclaredConstraints, *source.Conversion); err != nil {
+		if _, err := CompareNumeric(source.DeclaredConstraints.Minimum, source.DeclaredConstraints.Minimum, *source.DeclaredConstraints, *candidate.Conversion); err != nil {
 			return fmt.Errorf("invalid numeric declaration: %w", err)
 		}
 	case ComparatorEnum, ComparatorBoolean:
-		if source.Unit != nil || source.DeclaredConstraints != nil || source.Conversion != nil ||
-			source.ExactMapping == nil || source.MappingProfile == nil ||
-			len(source.ExactMapping.Pairs) < 2 || len(source.MappingProfile.Pairs) == 0 {
+		if source.Unit != nil || source.DeclaredConstraints != nil || candidate.Conversion != nil ||
+			source.ExactMapping == nil || len(source.ExactMapping.Pairs) < 2 {
 			return fmt.Errorf("malformed mapped source")
+		}
+		if candidate.ProtocolEligibility == ProtocolCrossProtocol {
+			if candidate.MappingProfile == nil || len(candidate.MappingProfile.Pairs) == 0 || candidate.ValidationMode == nil ||
+				*candidate.ValidationMode != ValidationCrossProtocol {
+				return fmt.Errorf("malformed cross-protocol mapped source")
+			}
+		} else if candidate.ComparatorClass != ComparatorBoolean || candidate.MappingProfile != nil ||
+			candidate.ValidationMode == nil || *candidate.ValidationMode != ValidationEEBusNativeCapability {
+			return fmt.Errorf("malformed native capability source")
+		}
+	case ComparatorString:
+		if candidate.ProtocolEligibility != ProtocolEEBusNative || candidate.ValidationMode == nil ||
+			*candidate.ValidationMode != ValidationEEBusNativeMetadata || len(source.DescriptionFunctions) != 0 ||
+			source.Unit != nil || source.DeclaredConstraints != nil || source.ExactMapping != nil ||
+			candidate.Conversion != nil || candidate.MappingProfile != nil {
+			return fmt.Errorf("malformed native metadata source")
 		}
 	default:
 		return fmt.Errorf("unexpected comparator class %q", candidate.ComparatorClass)
 	}
 	return nil
+}
+
+func validB555Selector(selector B555Selector) bool {
+	return selector == (B555Selector{
+		Family: "B555", Operation: "TIMER_READ", TargetPseudonymRule: "active_controller_target_hash",
+		DeviceFamily: "BASV2", ScheduleProgram: "DHW", SlotIndex: 0, DayOfWeek: "MONDAY",
+		TimeIdentity: "00:00:00", OperationModeContext: "temp_slots_1_shared_setpoint",
+		UnitScaleSource: "B555_DHW_TEMPERATURE_RAW_DIV10_C", FieldPath: "timerSlot.temperature",
+		Unit: "degC", CouplingRule: "dhw_temp_slots_1_mirrors_b524_setpoint",
+	})
 }
 
 func cloneCandidate(candidate CandidateDefinition) CandidateDefinition {

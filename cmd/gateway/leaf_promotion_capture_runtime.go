@@ -37,9 +37,10 @@ type leafPromotionCaptureRuntime struct {
 }
 
 type leafPromotionWindowSamples struct {
-	ebus      *promotioncapture.Sample
-	eebus     *promotioncapture.Sample
-	conflicts []promotioncapture.Sample
+	ebus         *promotioncapture.Sample
+	eebus        *promotioncapture.Sample
+	conflicts    []promotioncapture.Sample
+	ebusIdentity *promotioncapture.EBusIdentity
 }
 
 func newLeafPromotionCaptureRuntime(stateRoot string, source *leafPromotionLiveSource) (*leafPromotionCaptureRuntime, error) {
@@ -154,7 +155,8 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 		if err := ctx.Err(); err != nil {
 			return promotioncapture.WindowCheckpoint{}, err
 		}
-		if candidate.ProtocolEligibility != promotioncapture.ProtocolEligible {
+		if candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol &&
+			candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative {
 			continue
 		}
 		pollID, idErr := runtime.randomID("sample")
@@ -169,6 +171,7 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 		}
 		samples[candidate.CandidateID] = leafPromotionWindowSamples{
 			ebus: captured.ebus, eebus: captured.eebus, conflicts: captured.conflicts,
+			ebusIdentity: captured.ebusIdentity,
 		}
 	}
 	endedAt := runtime.now().UTC()
@@ -199,10 +202,10 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 		preparedCandidate := prepared.candidates[definition.CandidateID]
 		captured := samples[definition.CandidateID]
 		input := promotioncapture.WindowAssessmentInput{Window: window, ConflictSamples: captured.conflicts}
-		if preparedCandidate.ebusIdentity != nil {
-			input.ExpectedEBusIdentityHash = preparedCandidate.ebusIdentity.SelectorHash
+		if captured.ebusIdentity != nil {
+			input.ExpectedEBusIdentityHash = captured.ebusIdentity.SelectorHash
 			if captured.ebus != nil {
-				input.ObservedEBusIdentityHash = leafPromotionStringPointer(preparedCandidate.ebusIdentity.SelectorHash)
+				input.ObservedEBusIdentityHash = leafPromotionStringPointer(captured.ebusIdentity.SelectorHash)
 			}
 		}
 		if preparedCandidate.eebusIdentity != nil {
@@ -212,15 +215,23 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 			}
 		}
 		input.EBusSample, input.EEBusSample = captured.ebus, captured.eebus
+		if definition.ProtocolEligibility == promotioncapture.ProtocolEEBusNative && before != nil {
+			previousValue, previousErr := leafPromotionPreviousNativeValue(before, len(candidates), definition.CandidateID)
+			if previousErr != nil {
+				return promotioncapture.WindowCheckpoint{}, previousErr
+			}
+			input.PreviousNativeValue = previousValue
+		}
 		evaluation, evaluateErr := registry.EvaluateWindow(definition.CandidateID, input)
 		if evaluateErr != nil {
 			return promotioncapture.WindowCheckpoint{}, fmt.Errorf("evaluate %s: %w", definition.CandidateID, evaluateErr)
 		}
 		candidates = append(candidates, promotioncapture.CapturedCandidateWindow{
 			CandidateID: definition.CandidateID, FactHash: definition.FactHash,
-			SourceStatus: definition.SourceStatus, SemanticPath: definition.SemanticPath,
+			SourceStatus: definition.SourceStatus, RetirementState: definition.RetirementState,
+			SemanticPath: definition.SemanticPath, ValidationMode: definition.ValidationMode,
 			ComparatorClass: definition.ComparatorClass, ProtocolEligibility: definition.ProtocolEligibility,
-			EBusIdentity: preparedCandidate.ebusIdentity, EEBusIdentity: preparedCandidate.eebusIdentity,
+			EBusIdentity: captured.ebusIdentity, EEBusIdentity: preparedCandidate.eebusIdentity,
 			Evaluation: evaluation,
 		})
 	}
@@ -234,6 +245,26 @@ func (runtime *leafPromotionCaptureRuntime) capture(
 		return promotioncapture.WindowCheckpoint{}, err
 	}
 	return checkpoint, nil
+}
+
+func leafPromotionPreviousNativeValue(
+	before *promotioncapture.WindowCheckpoint,
+	index int,
+	candidateID string,
+) (*promotioncapture.TypedValue, error) {
+	if before == nil {
+		return nil, nil
+	}
+	if index < 0 || index >= len(before.Candidates) || before.Candidates[index].CandidateID != candidateID {
+		return nil, fmt.Errorf("prior checkpoint candidate order mismatch at %s", candidateID)
+	}
+	previous := before.Candidates[index]
+	if previous.Evaluation.Outcome != promotioncapture.OutcomeNativeValid ||
+		previous.Evaluation.Assessment == nil || previous.Evaluation.Assessment.EEBusSample == nil {
+		return nil, nil
+	}
+	value := previous.Evaluation.Assessment.EEBusSample.Value
+	return &value, nil
 }
 
 func leafPromotionValidateRestart(
@@ -356,7 +387,7 @@ func (runtime *leafPromotionCaptureRuntime) load(
 	var checkpoint promotioncapture.WindowCheckpoint
 	if err := decoder.Decode(&checkpoint); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
 		checkpoint.Contract != leafPromotionCheckpointContract || checkpoint.SchemaVersion != 1 ||
-		checkpoint.CampaignID != campaignID || checkpoint.Window.Phase != phase || len(checkpoint.Candidates) != 18 {
+		checkpoint.CampaignID != campaignID || checkpoint.Window.Phase != phase || len(checkpoint.Candidates) != 22 {
 		return promotioncapture.WindowCheckpoint{}, nil, false, errors.New("leaf promotion checkpoint contract mismatch")
 	}
 	expected := checkpoint.CheckpointHash

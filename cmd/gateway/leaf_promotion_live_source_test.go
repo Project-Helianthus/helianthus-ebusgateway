@@ -19,7 +19,11 @@ func TestIssue784LiveNumericDecodersPreserveProtocolGranularity(t *testing.T) {
 		t.Fatal("numeric candidate missing")
 	}
 
-	_, ebusValue, ebusUnit, err := leafPromotionDecodeEBus(candidate, []byte{0x00, 0x40, 0x1c, 0x42})
+	identity, err := promotioncapture.NewB524Identity(*candidate.EBusSelector, 0xfd)
+	if err != nil {
+		t.Fatalf("NewB524Identity: %v", err)
+	}
+	_, ebusValue, ebusUnit, err := leafPromotionDecodeEBus(candidate, identity, []byte{0x00, 0x40, 0x1c, 0x42})
 	if err != nil {
 		t.Fatalf("leafPromotionDecodeEBus: %v", err)
 	}
@@ -47,7 +51,7 @@ func TestIssue784LiveNumericDecodersPreserveProtocolGranularity(t *testing.T) {
 		*ebusValue.Decimal,
 		*eebusValue.Decimal,
 		*candidate.EEBusSource.DeclaredConstraints,
-		*candidate.EEBusSource.Conversion,
+		*candidate.Conversion,
 	)
 	if err != nil {
 		t.Fatalf("CompareNumeric: %v", err)

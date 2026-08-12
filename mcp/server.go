@@ -1393,7 +1393,6 @@ type rawCallToolParams struct {
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (any, *rpcError) {
-	hasDuplicateKeys := eebusV1JSONHasDuplicateKeys(params)
 	var rawCall rawCallToolParams
 	if err := json.Unmarshal(params, &rawCall); err != nil {
 		return nil, rpcErrorInvalidParams("tools/call params invalid")
@@ -1409,6 +1408,7 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return nil, rpcErrorInvalidParams(fmt.Sprintf("tool %q is not callable in read-only evidence scope", rawCall.Name))
 		}
 	}
+	hasDuplicateKeys := eebusV1JSONHasDuplicateKeys(params)
 	if rawCall.Name == synchronizedEvidenceCaptureToolName {
 		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
 		return s.handleSynchronizedEvidenceCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)

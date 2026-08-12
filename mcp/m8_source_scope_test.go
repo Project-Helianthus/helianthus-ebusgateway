@@ -222,6 +222,23 @@ func TestIssue788M8SourceScopeRejectsSnapshotLifecycleBeforeStoreAccess(t *testi
 		t.Fatalf("scoped lifecycle calls changed active root count: got %d, want %d", got, beforeCapture)
 	}
 
+	duplicateParams := json.RawMessage(`{"name":"eebus.v1.snapshot.capture","arguments":{"nested":{"key":1,"key":2}}}`)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: duplicateParams,
+	}))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(m8SourceScopeHeader, m8SourceScopeV1)
+	recorder := httptest.NewRecorder()
+	operator.ServeHTTP(recorder, request)
+	response := issue788DecodeResponse(t, recorder.Body.Bytes())
+	want := `tool "` + msp06SnapshotCapture + `" is not callable in read-only evidence scope`
+	if response.Error == nil || response.Error.Message != want {
+		t.Fatalf("duplicate-key snapshot.capture error = %+v, want %q", response.Error, want)
+	}
+	if got := len(server.eebusV1.store.activeRoots); got != beforeCapture {
+		t.Fatalf("duplicate-key lifecycle call changed active root count: got %d, want %d", got, beforeCapture)
+	}
+
 	capture := msp06Call(t, operator, msp06SnapshotCapture, map[string]any{})
 	root := msp06Map(t, capture.envelope["data"], "capture data")
 	token, ok := root["snapshot_ref"].(string)
@@ -230,8 +247,8 @@ func TestIssue788M8SourceScopeRejectsSnapshotLifecycleBeforeStoreAccess(t *testi
 	}
 	beforeDropRoots := len(server.eebusV1.store.activeRoots)
 	beforeDropTokens := len(server.eebusV1.store.activeTokens)
-	response := issue788ScopedToolCall(t, operator, msp06SnapshotDrop, map[string]any{"snapshot_ref": token}, scopedHeaders)
-	want := `tool "` + msp06SnapshotDrop + `" is not callable in read-only evidence scope`
+	response = issue788ScopedToolCall(t, operator, msp06SnapshotDrop, map[string]any{"snapshot_ref": token}, scopedHeaders)
+	want = `tool "` + msp06SnapshotDrop + `" is not callable in read-only evidence scope`
 	if response.Error == nil || response.Error.Message != want {
 		t.Fatalf("snapshot.drop error = %+v, want %q", response.Error, want)
 	}

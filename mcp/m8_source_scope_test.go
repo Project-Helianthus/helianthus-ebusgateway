@@ -2,12 +2,27 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 )
+
+type issue788StateProvider struct{}
+
+func (issue788StateProvider) M8SourceState(_ context.Context, inputID string) (json.RawMessage, error) {
+	return issue788RawJSONNoTest(map[string]any{"source": inputID, "direct": true}), nil
+}
+
+func issue788RawJSONNoTest(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
 
 func issue788RPCBody(t *testing.T, request rpcRequest) *bytes.Reader {
 	t.Helper()
@@ -121,5 +136,43 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 		if response.Error == nil || response.Error.Message != `unknown tool "`+name+`"` {
 			t.Fatalf("%s error = %+v", name, response.Error)
 		}
+	}
+}
+
+func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *testing.T) {
+	server, _ := issue743Server(t)
+	if err := server.RegisterM8SourceStateProvider(issue788StateProvider{}); err != nil {
+		t.Fatal(err)
+	}
+
+	operator := issue743OperatorHandler(t, server)
+	for _, inputID := range m8SourceStateInputIDs {
+		result := msp06Call(t, operator, m8SourceStateToolName, map[string]any{"input_id": inputID})
+		if result.isError {
+			t.Fatalf("%s returned error: %s", inputID, result.raw)
+		}
+		data := msp06Map(t, result.envelope["data"], inputID)
+		if data["source"] != inputID || data["direct"] != true {
+			t.Fatalf("%s data = %#v", inputID, data)
+		}
+	}
+
+	params := issue788RawJSON(t, map[string]any{
+		"name": m8SourceStateToolName, "arguments": map[string]any{"input_id": "ebus.debug"},
+	})
+	public := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: params})
+	if public.Error == nil || public.Error.Message != `unknown tool "`+m8SourceStateToolName+`"` {
+		t.Fatalf("public error = %+v", public.Error)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
+		JSONRPC: "2.0", ID: 2, Method: "tools/list",
+	}))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(m8SourceScopeHeader, m8SourceScopeV1)
+	recorder := httptest.NewRecorder()
+	operator.ServeHTTP(recorder, request)
+	if bytes.Contains(recorder.Body.Bytes(), []byte(m8SourceStateToolName)) {
+		t.Fatalf("M8 scoped inventory leaked experimental source-state tool: %s", recorder.Body.Bytes())
 	}
 }

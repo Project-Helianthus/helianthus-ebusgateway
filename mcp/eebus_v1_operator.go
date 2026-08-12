@@ -58,6 +58,9 @@ func (endpoint *eebusV1OperatorEndpoint) Close() error {
 func (server *Server) eebusV1OperatorHandler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		ctx := context.WithValue(request.Context(), eebusV1BoundaryContextKey{}, eebusV1OperatorBoundary)
+		if request.Header.Get(m8SourceScopeHeader) == m8SourceScopeV1 {
+			ctx = context.WithValue(ctx, m8SourceScopeContextKey{}, true)
+		}
 		server.ServeHTTP(writer, request.WithContext(ctx))
 	})
 }

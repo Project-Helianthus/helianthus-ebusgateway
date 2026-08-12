@@ -1350,14 +1350,18 @@ func (s *Server) handleInitialize(params json.RawMessage) (any, *rpcError) {
 }
 
 func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
+	if m8SourceScopeFromContext(ctx) {
+		return map[string]any{"tools": s.m8SourceTools()}, nil
+	}
 	tools := s.tools
 	if eebusV1BoundaryFromContext(ctx) == eebusV1OperatorBoundary {
 		s.eebusV1Mu.RLock()
 		commandsRegistered := !eebusV1NilCommandRouter(s.eebusV1CommandRouter)
 		captureRegistered := !nilSynchronizedEvidenceCapture(s.synchronizedEvidenceCapture)
 		promotionRegistered := !nilLeafPromotionCapture(s.leafPromotionCapture)
+		m8SourceStateRegistered := s.eebusV1 != nil
 		s.eebusV1Mu.RUnlock()
-		if commandsRegistered || captureRegistered || promotionRegistered {
+		if commandsRegistered || captureRegistered || promotionRegistered || m8SourceStateRegistered {
 			tools = append([]Tool(nil), tools...)
 		}
 		if commandsRegistered {
@@ -1368,6 +1372,9 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
 		}
 		if promotionRegistered {
 			tools = append(tools, leafPromotionCaptureTool())
+		}
+		if m8SourceStateRegistered {
+			tools = append(tools, m8SourceStateTool())
 		}
 	}
 	return map[string]any{
@@ -1386,7 +1393,6 @@ type rawCallToolParams struct {
 }
 
 func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (any, *rpcError) {
-	hasDuplicateKeys := eebusV1JSONHasDuplicateKeys(params)
 	var rawCall rawCallToolParams
 	if err := json.Unmarshal(params, &rawCall); err != nil {
 		return nil, rpcErrorInvalidParams("tools/call params invalid")
@@ -1394,6 +1400,15 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	if rawCall.Name == "" {
 		return nil, rpcErrorInvalidParams("tools/call missing name")
 	}
+	if m8SourceScopeFromContext(ctx) {
+		if !m8SourceToolAllowed(rawCall.Name) {
+			return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+		}
+		if !m8SourceToolCallable(rawCall.Name) {
+			return nil, rpcErrorInvalidParams(fmt.Sprintf("tool %q is not callable in read-only evidence scope", rawCall.Name))
+		}
+	}
+	hasDuplicateKeys := eebusV1JSONHasDuplicateKeys(params)
 	if rawCall.Name == synchronizedEvidenceCaptureToolName {
 		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
 		return s.handleSynchronizedEvidenceCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)
@@ -1401,6 +1416,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	if rawCall.Name == leafPromotionCaptureToolName {
 		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)
 		return s.handleLeafPromotionCaptureRaw(ctx, rawCall.Arguments, invalidCallParams)
+	}
+	if rawCall.Name == m8SourceStateToolName {
+		return s.handleM8SourceState(ctx, rawCall.Arguments)
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))

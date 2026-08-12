@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -13,6 +15,26 @@ type mcpSemanticProviderAdapter struct {
 
 func newMCPSemanticProvider(provider graphql.SemanticProvider) mcp.SemanticProvider {
 	return mcpSemanticProviderAdapter{provider: provider}
+}
+
+func (adapter mcpSemanticProviderAdapter) M8SemanticRegistryState() (m8sourcestate.SemanticRegistry, error) {
+	owner, ok := adapter.provider.(interface {
+		SemanticRegistryState() (graphql.SemanticRegistrySnapshot, error)
+	})
+	if !ok {
+		return m8sourcestate.SemanticRegistry{}, fmt.Errorf("semantic provider does not expose owner-local registry state")
+	}
+	snapshot, err := owner.SemanticRegistryState()
+	if err != nil {
+		return m8sourcestate.SemanticRegistry{}, fmt.Errorf("capture semantic owner: %w", err)
+	}
+	state := m8sourcestate.SemanticRegistry{Authority: snapshot.Authority, Leaves: make([]m8sourcestate.SemanticLeaf, len(snapshot.Leaves))}
+	for index, leaf := range snapshot.Leaves {
+		state.Leaves[index] = m8sourcestate.SemanticLeaf{
+			Path: leaf.Path, PromotionState: leaf.PromotionState, Source: leaf.Source,
+		}
+	}
+	return state, nil
 }
 
 func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {
@@ -537,6 +559,26 @@ type admittedMCPConfigWriter struct {
 	admitted admittedSourceProvider
 }
 
+type m8CommandRoutingSnapshotter interface {
+	M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error)
+}
+
+func (writer admittedMCPConfigWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	owner, ok := writer.writer.(m8CommandRoutingSnapshotter)
+	if !ok {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("config writer does not expose routing state")
+	}
+	fragment, err := owner.M8CommandRoutingState()
+	if err != nil {
+		return m8sourcestate.CommandRoutingFragment{}, err
+	}
+	available := admittedSourceActive(writer.admitted)
+	for index := range fragment.Routes {
+		fragment.Routes[index].Available = fragment.Routes[index].Available && available
+	}
+	return fragment, nil
+}
+
 func (writer admittedMCPConfigWriter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {
 	if !admittedSourceActive(writer.admitted) {
 		return mcp.ConfigSetResult{Success: false, Error: semanticWriterSourceNotAdmittedError}
@@ -560,6 +602,22 @@ func (writer admittedMCPConfigWriter) SetBoilerConfig(ctx context.Context, field
 type admittedMCPScheduleWriter struct {
 	writer   mcp.ScheduleWriter
 	admitted admittedSourceProvider
+}
+
+func (writer admittedMCPScheduleWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	owner, ok := writer.writer.(m8CommandRoutingSnapshotter)
+	if !ok {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer does not expose routing state")
+	}
+	fragment, err := owner.M8CommandRoutingState()
+	if err != nil {
+		return m8sourcestate.CommandRoutingFragment{}, err
+	}
+	available := admittedSourceActive(writer.admitted)
+	for index := range fragment.Routes {
+		fragment.Routes[index].Available = fragment.Routes[index].Available && available
+	}
+	return fragment, nil
 }
 
 func (writer admittedMCPScheduleWriter) SetZoneTimeProgram(ctx context.Context, zone int, weekday int, slots []mcp.TimeProgramSlot) (*mcp.TimeProgramWriteResult, error) {
@@ -586,6 +644,26 @@ func (writer admittedMCPScheduleWriter) SetDhwTimeProgram(ctx context.Context, w
 // to the MCP ConfigWriter interface.
 type mcpConfigWriterAdapter struct {
 	poller *vaillantSemanticPoller
+}
+
+func (a *mcpConfigWriterAdapter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	if a == nil || a.poller == nil {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("config writer unavailable")
+	}
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
+	}}, nil
+}
+
+func (poller *vaillantSemanticPoller) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	if poller == nil {
+		return m8sourcestate.CommandRoutingFragment{}, fmt.Errorf("schedule writer unavailable")
+	}
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
+	}}, nil
 }
 
 func (a *mcpConfigWriterAdapter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {

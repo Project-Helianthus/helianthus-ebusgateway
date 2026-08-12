@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -78,6 +79,41 @@ func TestMCPSemanticProviderAdapterPreservesEmptyZones(t *testing.T) {
 	}
 }
 
+func TestMCPSemanticProviderAdapterM8InventoryTracksMaterializedOwnerState(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	adapter := mcpSemanticProviderAdapter{provider: provider}
+
+	before, err := adapter.M8SemanticRegistryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Leaves) != 0 {
+		t.Fatalf("unpublished/default semantic state appeared in M8 inventory: %#v", before.Leaves)
+	}
+
+	provider.SetZones([]graphql.Zone{{ID: "owner-zone"}})
+	after, err := adapter.M8SemanticRegistryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, leaf := range after.Leaves {
+		if leaf.Path == "/zones/0/ID" && leaf.Source == "ebus" && leaf.PromotionState == "PROMOTED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("materialized zone missing from M8 inventory: %#v", after.Leaves)
+	}
+}
+
+func TestMCPSemanticProviderAdapterRejectsNonOwnerProvider(t *testing.T) {
+	adapter := mcpSemanticProviderAdapter{}
+	if _, err := adapter.M8SemanticRegistryState(); err == nil {
+		t.Fatal("M8SemanticRegistryState accepted provider without owner-local inventory")
+	}
+}
+
 func TestMCPSemanticProviderAdapterPreservesEmptyCircuits(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	adapter := mcpSemanticProviderAdapter{provider: provider}
@@ -113,6 +149,13 @@ func TestMCPSemanticProviderAdapterPreservesEmptyRadioDevices(t *testing.T) {
 
 type recordingSemanticWriter struct {
 	calls int
+}
+
+func (*recordingSemanticWriter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_dhw_time_program", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.schedules.set_zone_time_program", Source: "ebus", Available: true},
+	}}, nil
 }
 
 func (writer *recordingSemanticWriter) SetBoilerConfig(context.Context, string, string) graphql.BoilerConfigMutationResult {
@@ -178,8 +221,36 @@ func TestAdmittedSemanticWritersBlockUntilSourceAdmitted(t *testing.T) {
 	if underlying.calls != 0 {
 		t.Fatalf("underlying calls before admission = %d; want 0", underlying.calls)
 	}
+	configRoutes, err := mcpConfigWriter.M8CommandRoutingState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes := configRoutes.Routes; len(routes) != 2 || routes[0].Available || routes[1].Available {
+		t.Fatalf("pre-admission config routes = %#v; want unavailable owner routes", routes)
+	}
+	scheduleRoutes, err := mcpScheduleWriter.M8CommandRoutingState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes := scheduleRoutes.Routes; len(routes) != 2 || routes[0].Available || routes[1].Available {
+		t.Fatalf("pre-admission schedule routes = %#v; want unavailable owner routes", routes)
+	}
 
 	admitted = true
+	configRoutes, err = mcpConfigWriter.M8CommandRoutingState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes := configRoutes.Routes; len(routes) != 2 || !routes[0].Available || !routes[1].Available {
+		t.Fatalf("admitted config routes = %#v; want available owner routes", routes)
+	}
+	scheduleRoutes, err = mcpScheduleWriter.M8CommandRoutingState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routes := scheduleRoutes.Routes; len(routes) != 2 || !routes[0].Available || !routes[1].Available {
+		t.Fatalf("admitted schedule routes = %#v; want available owner routes", routes)
+	}
 	if result := graphWriter.SetSystemConfig(context.Background(), "x", "1"); !result.Success {
 		t.Fatalf("graph system after admission = %+v; want success", result)
 	}
@@ -196,6 +267,13 @@ func TestAdmittedSemanticWritersBlockUntilSourceAdmitted(t *testing.T) {
 
 type admittedMCPConfigAdapter struct {
 	writer *recordingSemanticWriter
+}
+
+func (adapter admittedMCPConfigAdapter) M8CommandRoutingState() (m8sourcestate.CommandRoutingFragment, error) {
+	return m8sourcestate.CommandRoutingFragment{Routes: []m8sourcestate.CommandRoute{
+		{SemanticPath: "/mcp/ebus.v1.semantic.boiler_status.set_config", Source: "ebus", Available: true},
+		{SemanticPath: "/mcp/ebus.v1.semantic.system.set_config", Source: "ebus", Available: true},
+	}}, nil
 }
 
 func (adapter admittedMCPConfigAdapter) SetSystemConfig(ctx context.Context, field string, value string) mcp.ConfigSetResult {

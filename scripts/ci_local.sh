@@ -12,7 +12,13 @@ fi
 python3 scripts/source_selection_m4_gate.py
 
 echo "==> gofmt"
-unformatted="$(git ls-files '*.go' | xargs -n 50 gofmt -l || true)"
+unformatted="$(
+  git ls-files --cached --others --exclude-standard '*.go' |
+    while IFS= read -r path; do
+      [ ! -f "${path}" ] || printf '%s\0' "${path}"
+    done |
+    xargs -0 -n 50 gofmt -l || true
+)"
 if [ -n "${unformatted}" ]; then
   echo "gofmt required for:"
   echo "${unformatted}"
@@ -48,6 +54,8 @@ python3 scripts/passive_canary_verifier_test.py
 python3 scripts/source_selection_m4_gate_test.py
 python3 scripts/transport_gate_test.py
 python3 scripts/passive_smoke_gate_test.py
+python3 scripts/m8_source_clock_test.py
+python3 scripts/capture_m8_source_window_test.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

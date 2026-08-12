@@ -1,0 +1,321 @@
+package m8sourcecapture
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func validMetadata() Metadata {
+	capturedAt := time.Date(2026, 8, 12, 10, 11, 12, 123456789, time.UTC)
+	return Metadata{
+		Phase:                PhasePreRestart,
+		WindowID:             "before-window-1",
+		AuthScopeHash:        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ProcessInstanceID:    "process-0123456789abcdef0123456789abcdef",
+		ClockID:              "m8-test-clock",
+		MonotonicEpochID:     "monotonic-test-epoch",
+		WallAnchorUTC:        capturedAt.Add(-10 * time.Nanosecond),
+		CaptureStartOffsetNS: 10,
+		CaptureEndOffsetNS:   20,
+		CapturedAt:           capturedAt,
+	}
+}
+
+func validInputs() []Input {
+	inputs := make([]Input, len(inputDefinitions))
+	for index, definition := range inputDefinitions {
+		inputs[index] = Input{ID: definition.ID, Payload: []byte(`{"source":"` + definition.ID + `"}`)}
+	}
+	inputs[len(inputs)-1].Payload = []byte("2026-08-12T10:11:12.123456789Z\n")
+	return inputs
+}
+
+func TestPublish_ProducesCanonicalManifestAndPrivateRoot(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "before")
+	inputs := validInputs()
+
+	manifest, err := PublishGeneration(destination, validMetadata(), inputs)
+	if err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if !bytes.Contains(manifest, []byte(`"contract":"helianthus.platform.multi-runtime-source-capture-manifest.v1"`)) {
+		t.Fatalf("manifest missing contract: %s", manifest)
+	}
+	if bytes.Contains(manifest, []byte("\n")) {
+		t.Fatalf("manifest is not compact canonical JSON: %q", manifest)
+	}
+	var decoded struct {
+		Inputs []struct {
+			ID           string `json:"input_id"`
+			AuthBoundary string `json:"auth_boundary"`
+		} `json:"inputs"`
+	}
+	if err := json.Unmarshal(manifest, &decoded); err != nil {
+		t.Fatalf("manifest is invalid JSON: %v", err)
+	}
+	if len(decoded.Inputs) != len(inputDefinitions) || decoded.Inputs[0].ID != "tools.list" || decoded.Inputs[15].ID != "capture.timestamp" {
+		t.Fatalf("manifest inputs = %#v, want ordered contract inputs", decoded.Inputs)
+	}
+	for index, definition := range inputDefinitions {
+		if decoded.Inputs[index].ID != definition.ID || decoded.Inputs[index].AuthBoundary != definition.AuthBoundary {
+			t.Fatalf("manifest input %d = %#v, want %q/%q", index, decoded.Inputs[index], definition.ID, definition.AuthBoundary)
+		}
+	}
+
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("root mode = %o, want 0700", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("generation entry count = %d, want 3", len(entries))
+	}
+	storedManifest, err := os.ReadFile(filepath.Join(destination, ManifestFilename))
+	if err != nil || !bytes.Equal(storedManifest, manifest) {
+		t.Fatalf("stored manifest mismatch: %v", err)
+	}
+	metadataBytes, err := os.ReadFile(filepath.Join(destination, MetadataFilename))
+	if err != nil || !bytes.Contains(metadataBytes, []byte(`"clock_id":"m8-test-clock"`)) {
+		t.Fatalf("capture metadata mismatch: %v %s", err, metadataBytes)
+	}
+	entries, err = os.ReadDir(filepath.Join(destination, SourceDirectory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(inputDefinitions) {
+		t.Fatalf("source file count = %d, want %d", len(entries), len(inputDefinitions))
+	}
+	byName := make(map[string]os.DirEntry, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name()] = entry
+	}
+	for _, definition := range inputDefinitions {
+		entry, ok := byName[definition.Filename]
+		if !ok || entry.Type()&os.ModeSymlink != 0 {
+			t.Fatalf("missing regular source file %q", definition.Filename)
+		}
+		fileInfo, err := entry.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fileInfo.Mode().IsRegular() || fileInfo.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %v, want regular 0600", entry.Name(), fileInfo.Mode())
+		}
+	}
+}
+
+func TestPublish_RejectsWrongOrderSecretAndUnsafeDestination(t *testing.T) {
+	metadata := validMetadata()
+	inputs := validInputs()
+	inputs[0], inputs[1] = inputs[1], inputs[0]
+	if _, err := PublishGeneration(filepath.Join(t.TempDir(), "wrong-order"), metadata, inputs); err == nil {
+		t.Fatal("Publish accepted reordered inputs")
+	}
+
+	for _, payload := range [][]byte{
+		[]byte("Authorization: Bearer secret-value"),
+		[]byte(`{"token":"secret-value"}`),
+		[]byte(`{"accessToken":"secret-value"}`),
+		[]byte(`{"privateKey":"secret-value"}`),
+	} {
+		inputs = validInputs()
+		inputs[0].Payload = payload
+		if _, err := PublishGeneration(filepath.Join(t.TempDir(), "secret"), metadata, inputs); err == nil {
+			t.Fatalf("Publish accepted secret material %q", payload)
+		}
+	}
+
+	parent := t.TempDir()
+	if _, err := PublishGeneration(parent+"/../escape", metadata, validInputs()); err == nil {
+		t.Fatal("Publish accepted path traversal destination")
+	}
+}
+
+func TestPublish_RejectsEmptyOversizedAndMismatchedTimestamp(t *testing.T) {
+	metadata := validMetadata()
+	tests := []struct {
+		name   string
+		mutate func([]Input)
+	}{
+		{
+			name: "empty",
+			mutate: func(inputs []Input) {
+				inputs[3].Payload = nil
+			},
+		},
+		{
+			name: "oversized",
+			mutate: func(inputs []Input) {
+				inputs[3].Payload = make([]byte, maxInputBytes+1)
+			},
+		},
+		{
+			name: "timestamp mismatch",
+			mutate: func(inputs []Input) {
+				inputs[len(inputs)-1].Payload = []byte("2026-08-12T10:11:13Z\n")
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "capture")
+			inputs := validInputs()
+			test.mutate(inputs)
+			if _, err := PublishGeneration(destination, metadata, inputs); err == nil {
+				t.Fatal("Publish accepted invalid input")
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatalf("invalid capture published a root: %v", err)
+			}
+		})
+	}
+}
+
+func TestPublish_RejectsCaptureTimestampOutsideSharedClock(t *testing.T) {
+	metadata := validMetadata()
+	metadata.WallAnchorUTC = metadata.WallAnchorUTC.Add(time.Nanosecond)
+	destination := filepath.Join(t.TempDir(), "capture")
+	if _, err := PublishGeneration(destination, metadata, validInputs()); err == nil {
+		t.Fatal("Publish accepted a timestamp not derived from the shared clock")
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("invalid shared-clock capture published a root: %v", err)
+	}
+}
+
+func TestReadInputsRequiresExactSymlinkFreeRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := validInputs()
+	for index, definition := range inputDefinitions {
+		if err := os.WriteFile(filepath.Join(root, definition.Filename), inputs[index].Payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read, err := ReadInputs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != len(inputs) || read[0].ID != "tools.list" || !bytes.Equal(read[15].Payload, inputs[15].Payload) {
+		t.Fatalf("ReadInputs = %#v", read)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "extra.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadInputs(root); err == nil {
+		t.Fatal("ReadInputs accepted an extra file")
+	}
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(root, linked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadInputs(linked); err == nil {
+		t.Fatal("ReadInputs accepted a symlinked root")
+	}
+}
+
+func TestReadInputsRemainsBoundToOpenedDirectoryAfterPathSubstitution(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "source-root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := validInputs()
+	for index, definition := range inputDefinitions {
+		if err := os.WriteFile(filepath.Join(root, definition.Filename), inputs[index].Payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory, err := openSecureDirectory(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.close() }()
+
+	moved := filepath.Join(parent, "opened-root")
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	substitute := filepath.Join(parent, "substitute")
+	if err := os.Mkdir(substitute, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index, definition := range inputDefinitions {
+		payload := inputs[index].Payload
+		if index == 0 {
+			payload = []byte(`{"substituted":true}`)
+		}
+		if err := os.WriteFile(filepath.Join(substitute, definition.Filename), payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(substitute, root); err != nil {
+		t.Fatal(err)
+	}
+
+	read, err := readInputsFromDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(read[0].Payload, inputs[0].Payload) {
+		t.Fatalf("descriptor-bound read used substituted path: %s", read[0].Payload)
+	}
+}
+
+func TestPublishRemainsBoundToOpenedParentAfterPathSubstitution(t *testing.T) {
+	base := t.TempDir()
+	parentPath := filepath.Join(base, "private-parent")
+	if err := os.Mkdir(parentPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := openSecureDirectory(parentPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.close() }()
+
+	moved := filepath.Join(base, "opened-parent")
+	if err := os.Rename(parentPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	substitute := filepath.Join(base, "substitute-parent")
+	if err := os.Mkdir(substitute, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(substitute, parentPath); err != nil {
+		t.Fatal(err)
+	}
+
+	inputs := validInputs()
+	manifest, err := buildManifest(validMetadata(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := buildCaptureMetadata(validMetadata())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishPreparedGenerationAt(parent, "capture", manifest, metadata, inputs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "capture", ManifestFilename)); err != nil {
+		t.Fatalf("descriptor-bound destination missing: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(substitute, "capture")); !os.IsNotExist(err) {
+		t.Fatalf("publication escaped to substituted parent: %v", err)
+	}
+}

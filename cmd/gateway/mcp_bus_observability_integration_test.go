@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -81,6 +82,10 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 		HasRequest: true,
 	}); err != nil {
 		t.Fatalf("OnBusEvent error = %v", err)
+	}
+	direct := (mcpBusObservabilityProviderAdapter{store: store}).M8DebugSourceState()
+	if direct.Status.TransportClass != string(cfg.TransportConfig.Protocol) {
+		t.Fatalf("M8 transport class = %q; want %q", direct.Status.TransportClass, cfg.TransportConfig.Protocol)
 	}
 
 	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
@@ -229,6 +234,34 @@ func TestMCPBusObservabilityProviderAdapterWiresRealStore(t *testing.T) {
 	}
 	if got, _ := item["family"].(string); got != "B509" {
 		t.Fatalf("messages family = %q; want B509", got)
+	}
+}
+
+func TestM8DebugSourceStateIgnoresProcessLocalTelemetryAcrossRestart(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	startupAt := time.Date(2026, time.August, 12, 6, 0, 0, 0, time.UTC)
+	newStore := func() *ebusgateway.BusObservabilityStore {
+		store := ebusgateway.NewBusObservabilityStore(cfg)
+		store.SetStartupSurfaceProvider(func() *ebusgateway.BusObservabilityStartup {
+			return &ebusgateway.BusObservabilityStartup{LastUpdatedAt: &startupAt, Phase: "LIVE_READY", CacheEpoch: 1, LiveEpoch: 2}
+		})
+		store.RecordBusAdmissionTransition("active", 0x7F, 0x08, "active_probe_passed")
+		return store
+	}
+	pre := newStore()
+	if err := pre.OnBusEvent(protocol.BusEvent{
+		Kind:       protocol.BusEventAttemptComplete,
+		Request:    protocol.Frame{Source: 0x08, Target: 0x15, Primary: 0xB5, Secondary: 0x09},
+		HasRequest: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	post := newStore()
+	preState := (mcpBusObservabilityProviderAdapter{store: pre}).M8DebugSourceState()
+	postState := (mcpBusObservabilityProviderAdapter{store: post}).M8DebugSourceState()
+	if !reflect.DeepEqual(preState, postState) {
+		t.Fatalf("process-local telemetry changed M8 debug state:\nPRE  %#v\nPOST %#v", preState, postState)
 	}
 }
 

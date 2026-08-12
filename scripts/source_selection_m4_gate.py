@@ -171,7 +171,8 @@ def retained_rationale(path: pathlib.Path, pattern: LegacyPattern) -> str | None
 
 def tracked_files() -> list[pathlib.Path]:
     out = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "--cached"], cwd=REPO_ROOT, text=True)
-    return [pathlib.Path(line) for line in out.splitlines() if line]
+    paths = [pathlib.Path(line) for line in out.splitlines() if line]
+    return [path for path in paths if (REPO_ROOT / path).is_file()]
 
 
 def is_historical(path: pathlib.Path) -> bool:

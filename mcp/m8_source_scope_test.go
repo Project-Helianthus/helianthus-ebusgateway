@@ -201,6 +201,69 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 	}
 }
 
+func TestIssue788M8SourceScopeRejectsSnapshotLifecycleBeforeStoreAccess(t *testing.T) {
+	server, _ := issue743Server(t)
+	operator := server.eebusV1OperatorHandler()
+	scopedHeaders := map[string]string{m8SourceScopeHeader: m8SourceScopeV1}
+
+	beforeCapture := len(server.eebusV1.store.activeRoots)
+	for _, tool := range []string{msp06SnapshotCapture, msp06SnapshotDrop} {
+		params := map[string]any{}
+		if tool == msp06SnapshotDrop {
+			params["snapshot_ref"] = "not-a-valid-reference"
+		}
+		response := issue788ScopedToolCall(t, operator, tool, params, scopedHeaders)
+		want := `tool "` + tool + `" is not callable in read-only evidence scope`
+		if response.Error == nil || response.Error.Message != want {
+			t.Fatalf("%s error = %+v, want %q", tool, response.Error, want)
+		}
+	}
+	if got := len(server.eebusV1.store.activeRoots); got != beforeCapture {
+		t.Fatalf("scoped lifecycle calls changed active root count: got %d, want %d", got, beforeCapture)
+	}
+
+	capture := msp06Call(t, operator, msp06SnapshotCapture, map[string]any{})
+	root := msp06Map(t, capture.envelope["data"], "capture data")
+	token, ok := root["snapshot_ref"].(string)
+	if !ok || token == "" {
+		t.Fatalf("snapshot_ref = %#v", root["snapshot_ref"])
+	}
+	beforeDropRoots := len(server.eebusV1.store.activeRoots)
+	beforeDropTokens := len(server.eebusV1.store.activeTokens)
+	response := issue788ScopedToolCall(t, operator, msp06SnapshotDrop, map[string]any{"snapshot_ref": token}, scopedHeaders)
+	want := `tool "` + msp06SnapshotDrop + `" is not callable in read-only evidence scope`
+	if response.Error == nil || response.Error.Message != want {
+		t.Fatalf("snapshot.drop error = %+v, want %q", response.Error, want)
+	}
+	if got := len(server.eebusV1.store.activeRoots); got != beforeDropRoots {
+		t.Fatalf("scoped snapshot.drop changed active root count: got %d, want %d", got, beforeDropRoots)
+	}
+	if got := len(server.eebusV1.store.activeTokens); got != beforeDropTokens {
+		t.Fatalf("scoped snapshot.drop changed active token count: got %d, want %d", got, beforeDropTokens)
+	}
+
+	drop := msp06Call(t, operator, msp06SnapshotDrop, map[string]any{"snapshot_ref": token})
+	dropData := msp06Map(t, drop.envelope["data"], "drop data")
+	if drop.isError || dropData["status"] != "dropped" {
+		t.Fatalf("operator cleanup drop = %s", drop.raw)
+	}
+}
+
+func issue788ScopedToolCall(t *testing.T, handler http.Handler, tool string, arguments map[string]any, headers map[string]string) rpcResponse {
+	t.Helper()
+	params := issue788RawJSON(t, map[string]any{"name": tool, "arguments": arguments})
+	request := httptest.NewRequest(http.MethodPost, "/mcp", issue788RPCBody(t, rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: params,
+	}))
+	request.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return issue788DecodeResponse(t, recorder.Body.Bytes())
+}
+
 func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *testing.T) {
 	server, _ := issue743Server(t)
 	debugOwner := &issue788DebugOwner{state: m8sourcestate.DebugState{

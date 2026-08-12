@@ -36,6 +36,13 @@ func m8SourceToolAllowed(name string) bool {
 	return false
 }
 
+func m8SourceToolCallable(name string) bool {
+	if !m8SourceToolAllowed(name) {
+		return false
+	}
+	return name != eebusV1SnapshotCaptureTool && name != eebusV1SnapshotDropTool
+}
+
 func (s *Server) m8SourceTools() []Tool {
 	byName := make(map[string]Tool, len(s.tools))
 	for _, tool := range s.tools {

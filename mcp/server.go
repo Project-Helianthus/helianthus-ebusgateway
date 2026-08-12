@@ -1401,8 +1401,13 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	if rawCall.Name == "" {
 		return nil, rpcErrorInvalidParams("tools/call missing name")
 	}
-	if m8SourceScopeFromContext(ctx) && !m8SourceToolAllowed(rawCall.Name) {
-		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+	if m8SourceScopeFromContext(ctx) {
+		if !m8SourceToolAllowed(rawCall.Name) {
+			return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+		}
+		if !m8SourceToolCallable(rawCall.Name) {
+			return nil, rpcErrorInvalidParams(fmt.Sprintf("tool %q is not callable in read-only evidence scope", rawCall.Name))
+		}
 	}
 	if rawCall.Name == synchronizedEvidenceCaptureToolName {
 		invalidCallParams := hasDuplicateKeys || !synchronizedEvidenceCallParamsClosed(params)

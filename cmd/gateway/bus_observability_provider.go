@@ -55,36 +55,10 @@ func (adapter mcpBusObservabilityProviderAdapter) Snapshot() mcp.BusObservabilit
 
 func (adapter mcpBusObservabilityProviderAdapter) M8DebugSourceState() m8sourcestate.DebugState {
 	snapshot := adapter.Snapshot()
-	state := m8sourcestate.DebugState{
-		ErrorClasses:        []m8sourcestate.DebugError{},
-		FrameClasses:        []m8sourcestate.DebugFrame{},
-		ReconstructorIssues: []string{},
-	}
+	state := m8sourcestate.DebugState{}
 	if snapshot.Summary == nil {
 		return state
 	}
-	for _, item := range snapshot.Summary.Errors {
-		state.ErrorClasses = append(state.ErrorClasses, m8sourcestate.DebugError{Scope: item.Scope, Class: item.Class, Phase: item.Phase})
-	}
-	for _, item := range snapshot.Summary.Frames {
-		state.FrameClasses = append(state.FrameClasses, m8sourcestate.DebugFrame{
-			Scope: item.Scope, Source: item.Source, Target: item.Target, Family: item.Family, FrameType: item.FrameType,
-		})
-	}
-	if snapshot.Summary.Reconstructor != nil {
-		for _, item := range snapshot.Summary.Reconstructor.Recoveries {
-			state.ReconstructorIssues = append(state.ReconstructorIssues, item.Reason)
-		}
-	}
-	sort.Slice(state.ErrorClasses, func(i, j int) bool {
-		left, right := state.ErrorClasses[i], state.ErrorClasses[j]
-		return left.Scope+"\x00"+left.Class+"\x00"+left.Phase < right.Scope+"\x00"+right.Class+"\x00"+right.Phase
-	})
-	sort.Slice(state.FrameClasses, func(i, j int) bool {
-		left, right := state.FrameClasses[i], state.FrameClasses[j]
-		return left.Scope+"\x00"+left.Source+"\x00"+left.Target+"\x00"+left.Family+"\x00"+left.FrameType < right.Scope+"\x00"+right.Source+"\x00"+right.Target+"\x00"+right.Family+"\x00"+right.FrameType
-	})
-	sort.Strings(state.ReconstructorIssues)
 	status := snapshot.Summary.Status
 	if status == nil {
 		return state

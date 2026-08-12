@@ -204,8 +204,7 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *testing.T) {
 	server, _ := issue743Server(t)
 	debugOwner := &issue788DebugOwner{state: m8sourcestate.DebugState{
-		Status:       m8sourcestate.DebugStatus{TransportClass: "enh"},
-		ErrorClasses: []m8sourcestate.DebugError{{Scope: "decode", Class: "crc"}},
+		Status: m8sourcestate.DebugStatus{TransportClass: "enh"},
 	}}
 	semanticOwner := &issue788SemanticOwner{registry: m8sourcestate.SemanticRegistry{
 		Authority: "ebus.promoted",
@@ -236,8 +235,7 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 		switch inputID {
 		case "ebus.debug":
 			status := msp06Map(t, data["status"], "debug status")
-			errors, ok := data["error_classes"].([]any)
-			if status["transport_class"] != "enh" || !ok || len(errors) != 1 {
+			if status["transport_class"] != "enh" {
 				t.Fatalf("%s data = %#v", inputID, data)
 			}
 		case "command.routing":
@@ -253,9 +251,9 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 		}
 	}
 
-	debugOwner.state.ErrorClasses[0].Class = "decode_timeout"
+	debugOwner.state.Status.TransportClass = "ens"
 	debugChanged := msp06Call(t, operator, m8SourceStateToolName, map[string]any{"input_id": "ebus.debug"})
-	if !bytes.Contains([]byte(debugChanged.raw), []byte(`"class":"decode_timeout"`)) {
+	if !bytes.Contains([]byte(debugChanged.raw), []byte(`"transport_class":"ens"`)) {
 		t.Fatalf("debug owner mutation was not captured: %s", debugChanged.raw)
 	}
 	configOwner.routing.Routes[0].Source = "candidate"

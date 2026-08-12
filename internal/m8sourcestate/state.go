@@ -1,13 +1,9 @@
 package m8sourcestate
 
 // DebugState is the restart-stable structural projection owned by the live
-// eBUS observability store. It intentionally omits timestamps and cumulative
-// counters while retaining the observed error and frame classifications.
+// eBUS observability store. It intentionally omits process-local telemetry.
 type DebugState struct {
-	Status              DebugStatus  `json:"status"`
-	ErrorClasses        []DebugError `json:"error_classes"`
-	FrameClasses        []DebugFrame `json:"frame_classes"`
-	ReconstructorIssues []string     `json:"reconstructor_issues"`
+	Status DebugStatus `json:"status"`
 }
 
 type DebugStatus struct {
@@ -72,20 +68,6 @@ type DebugFeatures struct {
 	PassiveConfigDirectApply bool     `json:"passive_config_direct_apply"`
 	ExternalWritePolicy      string   `json:"external_write_policy"`
 	Normalizations           []string `json:"normalizations"`
-}
-
-type DebugError struct {
-	Scope string `json:"scope"`
-	Class string `json:"class"`
-	Phase string `json:"phase"`
-}
-
-type DebugFrame struct {
-	Scope     string `json:"scope"`
-	Source    string `json:"source"`
-	Target    string `json:"target"`
-	Family    string `json:"family"`
-	FrameType string `json:"frame_type"`
 }
 
 // CommandRoute describes one route owned by the installed command writer.

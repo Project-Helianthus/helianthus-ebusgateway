@@ -103,72 +103,30 @@ func PublishGeneration(destination string, metadata Metadata, inputs []Input) ([
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(destination); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%w: destination already exists or cannot be inspected", errInvalidCapture)
-	}
-
-	temporary, err := os.MkdirTemp(parent, ".m8sourcecapture-")
-	if err != nil {
-		return nil, fmt.Errorf("%w: create temporary root: %v", errInvalidCapture, err)
-	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.RemoveAll(temporary)
-		}
-	}()
-	if err := os.Chmod(temporary, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: secure temporary root: %v", errInvalidCapture, err)
-	}
-	sourceRoot := filepath.Join(temporary, SourceDirectory)
-	if err := os.Mkdir(sourceRoot, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: create source root: %v", errInvalidCapture, err)
-	}
-	for index, definition := range inputDefinitions {
-		path := filepath.Join(sourceRoot, definition.Filename)
-		if err := writePrivateFile(path, inputs[index].Payload); err != nil {
-			return nil, err
-		}
-	}
+	defer func() { _ = parent.close() }()
 	metadataBytes, err := buildCaptureMetadata(metadata)
 	if err != nil {
 		return nil, err
 	}
-	if err := writePrivateFile(filepath.Join(temporary, ManifestFilename), manifest); err != nil {
+	if err := publishPreparedGenerationAt(parent, finalName, manifest, metadataBytes, inputs); err != nil {
 		return nil, err
 	}
-	if err := writePrivateFile(filepath.Join(temporary, MetadataFilename), metadataBytes); err != nil {
-		return nil, err
-	}
-	if err := syncDirectory(sourceRoot); err != nil {
-		return nil, err
-	}
-	if err := syncDirectory(temporary); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(temporary, filepath.Join(parent, finalName)); err != nil {
-		return nil, fmt.Errorf("%w: atomically publish root: %v", errInvalidCapture, err)
-	}
-	if err := syncDirectory(parent); err != nil {
-		_ = os.RemoveAll(destination)
-		_ = syncDirectory(parent)
-		return nil, err
-	}
-	cleanup = false
 	return manifest, nil
 }
 
 // ReadInputs reads exactly the fixed sixteen regular files from an absolute,
 // symlink-free source root. It returns inputs in the contract-mandated order.
 func ReadInputs(root string) ([]Input, error) {
-	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
-		return nil, fmt.Errorf("%w: unsafe source root", errInvalidCapture)
+	directory, err := openSecureDirectory(root, true)
+	if err != nil {
+		return nil, err
 	}
-	info, err := os.Lstat(root)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%w: unsafe source root", errInvalidCapture)
-	}
-	entries, err := os.ReadDir(root)
+	defer func() { _ = directory.close() }()
+	return readInputsFromDirectory(directory)
+}
+
+func readInputsFromDirectory(directory *secureDirectory) ([]Input, error) {
+	entries, err := directory.entries()
 	if err != nil || len(entries) != len(inputDefinitions) {
 		return nil, fmt.Errorf("%w: source root contents", errInvalidCapture)
 	}
@@ -183,20 +141,9 @@ func ReadInputs(root string) ([]Input, error) {
 	}
 	inputs := make([]Input, 0, len(inputDefinitions))
 	for _, definition := range inputDefinitions {
-		path := filepath.Join(root, definition.Filename)
-		before, err := os.Lstat(path)
-		if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 || before.Size() < 1 || before.Size() > maxInputBytes {
-			return nil, fmt.Errorf("%w: unsafe input %s", errInvalidCapture, definition.ID)
-		}
-		file, err := os.Open(path)
+		payload, err := directory.readRegular(definition.Filename, maxInputBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: open input %s", errInvalidCapture, definition.ID)
-		}
-		after, statErr := file.Stat()
-		payload, readErr := io.ReadAll(io.LimitReader(file, maxInputBytes+1))
-		closeErr := file.Close()
-		if statErr != nil || !os.SameFile(before, after) || readErr != nil || closeErr != nil || len(payload) < 1 || len(payload) > maxInputBytes {
-			return nil, fmt.Errorf("%w: read input %s", errInvalidCapture, definition.ID)
+			return nil, fmt.Errorf("%w: read input %s", err, definition.ID)
 		}
 		inputs = append(inputs, Input{ID: definition.ID, Payload: payload})
 	}
@@ -352,47 +299,70 @@ func containsSecretKey(value any) bool {
 	return false
 }
 
-func publicationTarget(destination string) (string, string, error) {
+func publicationTarget(destination string) (*secureDirectory, string, error) {
 	if destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
-		return "", "", fmt.Errorf("%w: unsafe destination", errInvalidCapture)
+		return nil, "", fmt.Errorf("%w: unsafe destination", errInvalidCapture)
 	}
 	parent, name := filepath.Dir(destination), filepath.Base(destination)
-	if name == "." || name == string(filepath.Separator) || strings.Contains(name, string(filepath.Separator)) {
-		return "", "", fmt.Errorf("%w: unsafe destination", errInvalidCapture)
+	if !safeChildName(name) {
+		return nil, "", fmt.Errorf("%w: unsafe destination", errInvalidCapture)
 	}
-	info, err := os.Lstat(parent)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", "", fmt.Errorf("%w: destination parent", errInvalidCapture)
+	directory, err := openSecureDirectory(parent, false)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: destination parent", errInvalidCapture)
 	}
-	return parent, name, nil
+	return directory, name, nil
 }
 
-func writePrivateFile(path string, payload []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+func publishPreparedGenerationAt(parent *secureDirectory, finalName string, manifest, metadata []byte, inputs []Input) error {
+	if parent == nil || len(inputs) != len(inputDefinitions) || parent.absent(finalName) != nil {
+		return fmt.Errorf("%w: destination", errInvalidCapture)
+	}
+	temporaryName, temporary, err := parent.temporaryDirectory()
 	if err != nil {
-		return fmt.Errorf("%w: create source file: %v", errInvalidCapture, err)
+		return err
 	}
-	written, writeErr := file.Write(payload)
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if writeErr != nil || written != len(payload) || syncErr != nil || closeErr != nil {
-		return fmt.Errorf("%w: write source file", errInvalidCapture)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("%w: secure source file: %v", errInvalidCapture, err)
-	}
-	return nil
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
+	publishedName := ""
+	defer func() {
+		_ = temporary.close()
+		if publishedName == "" {
+			_ = parent.removeTree(temporaryName)
+		}
+	}()
+	source, err := temporary.childDirectory(SourceDirectory, true)
 	if err != nil {
-		return fmt.Errorf("%w: open directory for sync", errInvalidCapture)
+		return err
 	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if syncErr != nil || closeErr != nil {
-		return fmt.Errorf("%w: sync directory", errInvalidCapture)
+	for index, definition := range inputDefinitions {
+		if err := source.writeRegular(definition.Filename, inputs[index].Payload); err != nil {
+			_ = source.close()
+			return err
+		}
+	}
+	if err := source.sync(); err != nil {
+		_ = source.close()
+		return err
+	}
+	if err := source.close(); err != nil {
+		return fmt.Errorf("%w: close source directory", errInvalidCapture)
+	}
+	if err := temporary.writeRegular(ManifestFilename, manifest); err != nil {
+		return err
+	}
+	if err := temporary.writeRegular(MetadataFilename, metadata); err != nil {
+		return err
+	}
+	if err := temporary.sync(); err != nil {
+		return err
+	}
+	if err := parent.renameNoReplace(temporaryName, finalName); err != nil {
+		return err
+	}
+	publishedName = finalName
+	if err := parent.sync(); err != nil {
+		_ = parent.removeTree(finalName)
+		_ = parent.sync()
+		return err
 	}
 	return nil
 }

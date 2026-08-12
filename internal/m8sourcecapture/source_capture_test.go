@@ -195,6 +195,9 @@ func TestPublish_RejectsCaptureTimestampOutsideSharedClock(t *testing.T) {
 
 func TestReadInputsRequiresExactSymlinkFreeRoot(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	inputs := validInputs()
 	for index, definition := range inputDefinitions {
 		if err := os.WriteFile(filepath.Join(root, definition.Filename), inputs[index].Payload, 0o600); err != nil {
@@ -222,5 +225,97 @@ func TestReadInputsRequiresExactSymlinkFreeRoot(t *testing.T) {
 	}
 	if _, err := ReadInputs(linked); err == nil {
 		t.Fatal("ReadInputs accepted a symlinked root")
+	}
+}
+
+func TestReadInputsRemainsBoundToOpenedDirectoryAfterPathSubstitution(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "source-root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inputs := validInputs()
+	for index, definition := range inputDefinitions {
+		if err := os.WriteFile(filepath.Join(root, definition.Filename), inputs[index].Payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory, err := openSecureDirectory(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.close() }()
+
+	moved := filepath.Join(parent, "opened-root")
+	if err := os.Rename(root, moved); err != nil {
+		t.Fatal(err)
+	}
+	substitute := filepath.Join(parent, "substitute")
+	if err := os.Mkdir(substitute, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index, definition := range inputDefinitions {
+		payload := inputs[index].Payload
+		if index == 0 {
+			payload = []byte(`{"substituted":true}`)
+		}
+		if err := os.WriteFile(filepath.Join(substitute, definition.Filename), payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(substitute, root); err != nil {
+		t.Fatal(err)
+	}
+
+	read, err := readInputsFromDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(read[0].Payload, inputs[0].Payload) {
+		t.Fatalf("descriptor-bound read used substituted path: %s", read[0].Payload)
+	}
+}
+
+func TestPublishRemainsBoundToOpenedParentAfterPathSubstitution(t *testing.T) {
+	base := t.TempDir()
+	parentPath := filepath.Join(base, "private-parent")
+	if err := os.Mkdir(parentPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := openSecureDirectory(parentPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.close() }()
+
+	moved := filepath.Join(base, "opened-parent")
+	if err := os.Rename(parentPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	substitute := filepath.Join(base, "substitute-parent")
+	if err := os.Mkdir(substitute, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(substitute, parentPath); err != nil {
+		t.Fatal(err)
+	}
+
+	inputs := validInputs()
+	manifest, err := buildManifest(validMetadata(), inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := buildCaptureMetadata(validMetadata())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publishPreparedGenerationAt(parent, "capture", manifest, metadata, inputs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "capture", ManifestFilename)); err != nil {
+		t.Fatalf("descriptor-bound destination missing: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(substitute, "capture")); !os.IsNotExist(err) {
+		t.Fatalf("publication escaped to substituted parent: %v", err)
 	}
 }

@@ -50,7 +50,7 @@ if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or stat.S_IMODE(
     raise SystemExit("capture parent must be an existing private 0700 directory")
 PY
 else
-  mkdir -m 0700 -p "${parent}"
+  mkdir -p "${parent}"
 fi
 [[ ! -L "${parent}" && "$(dirname "${clock_state}")" == "${parent}" ]] || { echo "unsafe output or clock-state parent" >&2; exit 1; }
 [[ ! -e "${output}" ]] || { echo "unsafe or existing output" >&2; exit 1; }

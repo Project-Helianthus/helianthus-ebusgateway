@@ -465,7 +465,6 @@ type Server struct {
 	eebusV1CommandRouter        EEBusV1CommandRouter
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
 	leafPromotionCapture        LeafPromotionCapture
-	m8SourceState               M8SourceStateProvider
 
 	tools []Tool
 
@@ -1360,7 +1359,7 @@ func (s *Server) handleToolsList(ctx context.Context) (any, *rpcError) {
 		commandsRegistered := !eebusV1NilCommandRouter(s.eebusV1CommandRouter)
 		captureRegistered := !nilSynchronizedEvidenceCapture(s.synchronizedEvidenceCapture)
 		promotionRegistered := !nilLeafPromotionCapture(s.leafPromotionCapture)
-		m8SourceStateRegistered := !nilM8SourceStateProvider(s.m8SourceState)
+		m8SourceStateRegistered := s.eebusV1 != nil
 		s.eebusV1Mu.RUnlock()
 		if commandsRegistered || captureRegistered || promotionRegistered || m8SourceStateRegistered {
 			tools = append([]Tool(nil), tools...)

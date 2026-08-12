@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 --host HOST --port PORT --phase PRE_RESTART|POST_RESTART --window-id ID --output ABSOLUTE_DIR" >&2
+  echo "usage: $0 --host HOST --port PORT --phase PRE_RESTART|POST_RESTART --window-id ID --clock-id ID --clock-state ABSOLUTE_FILE --output ABSOLUTE_DIR" >&2
   exit 2
 }
 
@@ -11,12 +11,16 @@ port=""
 phase=""
 window_id=""
 output=""
+clock_id=""
+clock_state=""
 while (($#)); do
   case "$1" in
     --host) host="${2:-}"; shift 2 ;;
     --port) port="${2:-}"; shift 2 ;;
     --phase) phase="${2:-}"; shift 2 ;;
     --window-id) window_id="${2:-}"; shift 2 ;;
+    --clock-id) clock_id="${2:-}"; shift 2 ;;
+    --clock-state) clock_state="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -25,7 +29,9 @@ done
 [[ -n "${host}" && "${port}" =~ ^[0-9]+$ ]] || usage
 [[ "${phase}" == "PRE_RESTART" || "${phase}" == "POST_RESTART" ]] || usage
 [[ "${window_id}" =~ ^[A-Za-z0-9._-]+$ ]] || usage
+[[ "${clock_id}" =~ ^[A-Za-z0-9._-]+$ ]] || usage
 [[ "${output}" == /* && "${output}" != */../* && "${output}" != */.. ]] || usage
+[[ "${clock_state}" == /* && "${clock_state}" != */../* && "${clock_state}" != */.. ]] || usage
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
 
@@ -33,12 +39,12 @@ umask 077
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 parent="$(dirname "${output}")"
 mkdir -p "${parent}"
+[[ ! -L "${parent}" && "$(dirname "${clock_state}")" == "${parent}" ]] || { echo "unsafe output or clock-state parent" >&2; exit 1; }
 chmod 0700 "${parent}"
-[[ ! -L "${parent}" && ! -e "${output}" && ! -e "${output}.manifest.json" && ! -e "${output}.metadata.json" ]] || { echo "unsafe or existing output" >&2; exit 1; }
+[[ ! -e "${output}" ]] || { echo "unsafe or existing output" >&2; exit 1; }
 staging="${parent}/.$(basename "${output}").tmp.$$"
-metadata="${parent}/.$(basename "${output}").metadata.tmp.$$"
-manifest="${output}.manifest.json"
-trap 'rm -rf -- "${staging}" "${metadata}"' EXIT
+manifest="${output}/source-capture-manifest.json"
+trap 'rm -rf -- "${staging}"' EXIT
 mkdir -m 0700 "${staging}"
 
 ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${port}" "root@${host}")
@@ -67,8 +73,11 @@ rpc() {
   jq -e '.result.isError == false and (.result.content | length) == 1' "${destination}" >/dev/null
 }
 
-capture_start="$(python3 -c 'import time; print(time.monotonic_ns())')"
-captured_at="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"))')"
+clock_start="$(python3 "${repo_root}/scripts/m8_source_clock.py" start --state "${clock_state}" --clock-id "${clock_id}" --phase "${phase}")"
+capture_start="$(jq -er '.capture_start_offset_ns' <<<"${clock_start}")"
+captured_at="$(jq -er '.captured_at' <<<"${clock_start}")"
+wall_anchor_utc="$(jq -er '.wall_anchor_utc' <<<"${clock_start}")"
+monotonic_epoch_id="$(jq -er '.monotonic_epoch_id' <<<"${clock_start}")"
 
 printf '%s' '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | "${ssh_cmd[@]}" \
   "docker exec -i app_local_helianthus curl -fsS --unix-socket /data/eebus/operator-mcp.sock -H 'Content-Type: application/json' -H 'X-Helianthus-Evidence-Scope: m8-read-only-v1' --data-binary @- http://localhost/mcp" \
@@ -120,24 +129,20 @@ done
   "docker inspect app_local_helianthus | jq -c '[.[0] | {Id: .Id, State: {StartedAt: .State.StartedAt}}]'" \
   >"${staging}/container-inspect.json"
 printf '%s\n' "${captured_at}" >"${staging}/captured-at.txt"
-capture_end="$(python3 -c 'import time; print(time.monotonic_ns())')"
+capture_end="$(python3 "${repo_root}/scripts/m8_source_clock.py" end --state "${clock_state}" --clock-id "${clock_id}")"
 
 find "${staging}" -type f -exec chmod 0600 {} +
-jq -cn \
-  --arg phase "${phase}" --arg window_id "${window_id}" --arg captured_at "${captured_at}" \
-  --argjson capture_start_monotonic_ns "${capture_start}" --argjson capture_end_monotonic_ns "${capture_end}" \
-  '{phase:$phase,window_id:$window_id,captured_at:$captured_at,capture_start_monotonic_ns:$capture_start_monotonic_ns,capture_end_monotonic_ns:$capture_end_monotonic_ns}' \
-  >"${metadata}"
-chmod 0600 "${metadata}"
 
 publisher_args=(
-  --source-root "${staging}"
-  --destination "${output}"
-  --manifest "${manifest}"
-  --phase "${phase}"
-  --window-id "${window_id}"
-  --auth-scope-hash "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223"
-  --captured-at "${captured_at}"
+	--source-root "${staging}"
+	--destination "${output}"
+	--phase "${phase}"
+	--window-id "${window_id}"
+	--auth-scope-hash "sha256:fd99b012975e5e1c4309d4e64ab6f0520aaf890b95b6e3dd7a4b460df30e1223"
+	--captured-at "${captured_at}"
+	--clock-id "${clock_id}"
+	--monotonic-epoch-id "${monotonic_epoch_id}"
+	--wall-anchor-utc "${wall_anchor_utc}"
   --capture-start-offset-ns "${capture_start}"
   --capture-end-offset-ns "${capture_end}"
 )
@@ -150,6 +155,5 @@ else
   )
 fi
 rm -rf -- "${staging}"
-mv -- "${metadata}" "${output}.metadata.json"
 trap - EXIT
-printf '%s %s\n' "${output}" "${manifest}"
+printf '%s %s\n' "${output}/source" "${manifest}"

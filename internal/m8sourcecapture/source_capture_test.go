@@ -10,14 +10,18 @@ import (
 )
 
 func validMetadata() Metadata {
+	capturedAt := time.Date(2026, 8, 12, 10, 11, 12, 123456789, time.UTC)
 	return Metadata{
 		Phase:                PhasePreRestart,
 		WindowID:             "before-window-1",
 		AuthScopeHash:        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		ProcessInstanceID:    "process-0123456789abcdef0123456789abcdef",
+		ClockID:              "m8-test-clock",
+		MonotonicEpochID:     "monotonic-test-epoch",
+		WallAnchorUTC:        capturedAt.Add(-10 * time.Nanosecond),
 		CaptureStartOffsetNS: 10,
 		CaptureEndOffsetNS:   20,
-		CapturedAt:           time.Date(2026, 8, 12, 10, 11, 12, 123456789, time.UTC),
+		CapturedAt:           capturedAt,
 	}
 }
 
@@ -34,7 +38,7 @@ func TestPublish_ProducesCanonicalManifestAndPrivateRoot(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "before")
 	inputs := validInputs()
 
-	manifest, err := Publish(destination, validMetadata(), inputs)
+	manifest, err := PublishGeneration(destination, validMetadata(), inputs)
 	if err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -73,8 +77,23 @@ func TestPublish_ProducesCanonicalManifestAndPrivateRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(entries) != 3 {
+		t.Fatalf("generation entry count = %d, want 3", len(entries))
+	}
+	storedManifest, err := os.ReadFile(filepath.Join(destination, ManifestFilename))
+	if err != nil || !bytes.Equal(storedManifest, manifest) {
+		t.Fatalf("stored manifest mismatch: %v", err)
+	}
+	metadataBytes, err := os.ReadFile(filepath.Join(destination, MetadataFilename))
+	if err != nil || !bytes.Contains(metadataBytes, []byte(`"clock_id":"m8-test-clock"`)) {
+		t.Fatalf("capture metadata mismatch: %v %s", err, metadataBytes)
+	}
+	entries, err = os.ReadDir(filepath.Join(destination, SourceDirectory))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(entries) != len(inputDefinitions) {
-		t.Fatalf("file count = %d, want %d", len(entries), len(inputDefinitions))
+		t.Fatalf("source file count = %d, want %d", len(entries), len(inputDefinitions))
 	}
 	byName := make(map[string]os.DirEntry, len(entries))
 	for _, entry := range entries {
@@ -99,23 +118,25 @@ func TestPublish_RejectsWrongOrderSecretAndUnsafeDestination(t *testing.T) {
 	metadata := validMetadata()
 	inputs := validInputs()
 	inputs[0], inputs[1] = inputs[1], inputs[0]
-	if _, err := Publish(filepath.Join(t.TempDir(), "wrong-order"), metadata, inputs); err == nil {
+	if _, err := PublishGeneration(filepath.Join(t.TempDir(), "wrong-order"), metadata, inputs); err == nil {
 		t.Fatal("Publish accepted reordered inputs")
 	}
 
 	for _, payload := range [][]byte{
 		[]byte("Authorization: Bearer secret-value"),
 		[]byte(`{"token":"secret-value"}`),
+		[]byte(`{"accessToken":"secret-value"}`),
+		[]byte(`{"privateKey":"secret-value"}`),
 	} {
 		inputs = validInputs()
 		inputs[0].Payload = payload
-		if _, err := Publish(filepath.Join(t.TempDir(), "secret"), metadata, inputs); err == nil {
+		if _, err := PublishGeneration(filepath.Join(t.TempDir(), "secret"), metadata, inputs); err == nil {
 			t.Fatalf("Publish accepted secret material %q", payload)
 		}
 	}
 
 	parent := t.TempDir()
-	if _, err := Publish(parent+"/../escape", metadata, validInputs()); err == nil {
+	if _, err := PublishGeneration(parent+"/../escape", metadata, validInputs()); err == nil {
 		t.Fatal("Publish accepted path traversal destination")
 	}
 }
@@ -150,13 +171,25 @@ func TestPublish_RejectsEmptyOversizedAndMismatchedTimestamp(t *testing.T) {
 			destination := filepath.Join(t.TempDir(), "capture")
 			inputs := validInputs()
 			test.mutate(inputs)
-			if _, err := Publish(destination, metadata, inputs); err == nil {
+			if _, err := PublishGeneration(destination, metadata, inputs); err == nil {
 				t.Fatal("Publish accepted invalid input")
 			}
 			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
 				t.Fatalf("invalid capture published a root: %v", err)
 			}
 		})
+	}
+}
+
+func TestPublish_RejectsCaptureTimestampOutsideSharedClock(t *testing.T) {
+	metadata := validMetadata()
+	metadata.WallAnchorUTC = metadata.WallAnchorUTC.Add(time.Nanosecond)
+	destination := filepath.Join(t.TempDir(), "capture")
+	if _, err := PublishGeneration(destination, metadata, validInputs()); err == nil {
+		t.Fatal("Publish accepted a timestamp not derived from the shared clock")
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("invalid shared-clock capture published a root: %v", err)
 	}
 }
 

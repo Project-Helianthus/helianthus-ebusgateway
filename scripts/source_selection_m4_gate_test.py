@@ -93,6 +93,12 @@ class SourceSelectionM4GateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(legacy, result.stderr)
 
+    def test_ignores_tracked_file_deleted_from_worktree(self) -> None:
+        repo = self._create_temp_repo("deleted.go", "package deleted\n")
+        (repo / "deleted.go").unlink()
+        result = self._run_gate(repo)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

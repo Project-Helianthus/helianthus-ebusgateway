@@ -1977,15 +1977,6 @@ func startHTTPServer(
 		mcpServer.SetWatchSummaryProvider(newMCPWatchSummaryProvider(shadowCache))
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
-	if eebusProvider != nil {
-		provider := newM8SourceStateProvider(string(cfg.TransportConfig.Protocol), gateway.Registry, semanticProvider)
-		if provider == nil {
-			return nil, nil, fmt.Errorf("initialize M8 source-state provider")
-		}
-		if err := mcpServer.RegisterM8SourceStateProvider(provider); err != nil {
-			return nil, nil, fmt.Errorf("register M8 source-state provider: %w", err)
-		}
-	}
 
 	// M2a_GATEWAY_MCP (execution-plans#19): install Vaillant B503 MCP tool
 	// surface. Uses a deferred dispatcher stub — production B524-style raw

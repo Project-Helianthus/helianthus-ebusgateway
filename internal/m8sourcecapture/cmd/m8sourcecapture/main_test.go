@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -28,40 +27,21 @@ func TestProcessInstanceIDBindsContainerAndStart(t *testing.T) {
 	}
 }
 
-func TestWriteManifestRequiresNewPrivateRegularFile(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "capture.manifest.json")
-	if err := writeManifest(path, []byte(`{"contract":"test"}`)); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		t.Fatalf("manifest mode = %v, want regular 0600", info.Mode())
-	}
-	if err := writeManifest(path, []byte(`{}`)); err == nil {
-		t.Fatal("writeManifest overwrote existing output")
-	}
-}
-
-func TestValidateOutputPathsRequiresSiblingManifestAndDisjointSource(t *testing.T) {
+func TestValidateOutputPathsRequiresDisjointSourceAndGeneration(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "staging")
 	destination := filepath.Join(root, "capture")
-	manifest := destination + ".manifest.json"
-	if err := validateOutputPaths(source, destination, manifest); err != nil {
+	if err := validateOutputPaths(source, destination); err != nil {
 		t.Fatalf("valid capture layout rejected: %v", err)
 	}
 	for _, test := range []struct {
-		source, destination, manifest string
+		source, destination string
 	}{
-		{source, destination, filepath.Join(root, "other.json")},
-		{source, filepath.Join(source, "capture"), filepath.Join(source, "capture.manifest.json")},
-		{destination, destination, manifest},
+		{source, filepath.Join(source, "capture")},
+		{destination, destination},
+		{"relative", destination},
 	} {
-		if err := validateOutputPaths(test.source, test.destination, test.manifest); err == nil {
+		if err := validateOutputPaths(test.source, test.destination); err == nil {
 			t.Fatalf("unsafe layout accepted: %#v", test)
 		}
 	}

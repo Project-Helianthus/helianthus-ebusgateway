@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"reflect"
+
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 const m8SourceStateToolName = "helianthus.experimental.m8_source_state.get"
@@ -16,39 +16,6 @@ var m8SourceStateInputIDs = []string{
 	"ebus.debug",
 	"command.routing",
 	"semantic.registry",
-}
-
-type M8SourceStateProvider interface {
-	M8SourceState(context.Context, string) (json.RawMessage, error)
-}
-
-func (server *Server) RegisterM8SourceStateProvider(provider M8SourceStateProvider) error {
-	if server == nil {
-		return errors.New("MCP server is nil")
-	}
-	if nilM8SourceStateProvider(provider) {
-		return errors.New("M8 source-state provider is nil")
-	}
-	server.eebusV1Mu.Lock()
-	defer server.eebusV1Mu.Unlock()
-	if server.m8SourceState != nil {
-		return errors.New("M8 source-state provider is already registered")
-	}
-	server.m8SourceState = provider
-	return nil
-}
-
-func nilM8SourceStateProvider(provider M8SourceStateProvider) bool {
-	if provider == nil {
-		return true
-	}
-	value := reflect.ValueOf(provider)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
 }
 
 func m8SourceStateTool() Tool {
@@ -78,21 +45,14 @@ func (server *Server) handleM8SourceState(ctx context.Context, raw json.RawMessa
 	if err := decoder.Decode(&request); err != nil || decoder.Decode(&struct{}{}) != io.EOF || !m8SourceStateInputAllowed(request.InputID) {
 		return callToolResultText(mustJSON(map[string]any{"category": "INVALID_REQUEST"}), true), nil
 	}
-	server.eebusV1Mu.RLock()
-	provider := server.m8SourceState
-	server.eebusV1Mu.RUnlock()
-	if nilM8SourceStateProvider(provider) {
+	if !server.m8SourceStateAvailable() {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", m8SourceStateToolName))
 	}
-	value, err := provider.M8SourceState(ctx, request.InputID)
-	if err != nil || len(value) == 0 || !json.Valid(value) {
+	value, err := server.m8DirectSourceState(request.InputID)
+	if err != nil {
 		return callToolResultText(mustJSON(map[string]any{"category": "ACQUISITION_FAILED"}), true), nil
 	}
-	var decoded any
-	if err := json.Unmarshal(value, &decoded); err != nil {
-		return callToolResultText(mustJSON(map[string]any{"category": "ACQUISITION_FAILED"}), true), nil
-	}
-	return callToolResultText(mustJSON(map[string]any{"input_id": request.InputID, "data": decoded}), false), nil
+	return callToolResultText(mustJSON(map[string]any{"input_id": request.InputID, "data": value}), false), nil
 }
 
 func m8SourceStateInputAllowed(inputID string) bool {
@@ -102,4 +62,86 @@ func m8SourceStateInputAllowed(inputID string) bool {
 		}
 	}
 	return false
+}
+
+func (server *Server) m8SourceStateAvailable() bool {
+	if server == nil {
+		return false
+	}
+	server.eebusV1Mu.RLock()
+	defer server.eebusV1Mu.RUnlock()
+	return server.eebusV1 != nil
+}
+
+type m8DirectRoute struct {
+	SemanticPath string `json:"semantic_path"`
+	Source       string `json:"source"`
+}
+
+var m8SemanticReadTools = []string{
+	toolSemanticZonesGetName,
+	toolSemanticCircuitsGetName,
+	toolSemanticRadioGetName,
+	toolSemanticFM5ModeGetName,
+	toolSemanticSolarGetName,
+	toolSemanticCylindersGetName,
+	toolSemanticDHWGetName,
+	toolSemanticEnergyGetName,
+	toolSemanticBoilerGetName,
+	toolSemanticSystemGetName,
+	toolSemanticAdapterInfoGetName,
+	toolSemanticSchedulesGetName,
+	toolSemanticSnapshotName,
+}
+
+func (server *Server) m8DirectSourceState(inputID string) (any, error) {
+	switch inputID {
+	case "ebus.debug":
+		deviceCount := 0
+		server.registry.IterateSnapshots(func(registry.DeviceEntrySnapshot) bool {
+			deviceCount++
+			return true
+		})
+		runtimeState := "unavailable"
+		if server.statusProvider != nil {
+			runtimeState = server.statusProvider.DaemonStatus().Status
+		}
+		return map[string]any{
+			"bus_observability_registered": server.bus != nil,
+			"registry_device_count":        deviceCount,
+			"runtime_state":                runtimeState,
+			"semantic_provider_registered": server.semantic != nil,
+		}, nil
+	case "command.routing":
+		return map[string]any{"fallback": nil, "routes": server.m8DirectCommandRoutes()}, nil
+	case "semantic.registry":
+		leaves := make([]map[string]any, 0, len(m8SemanticReadTools))
+		if server.semantic != nil {
+			for _, name := range m8SemanticReadTools {
+				if server.hasToolNamed(name) {
+					leaves = append(leaves, map[string]any{
+						"path": "/mcp/" + name, "promotion_state": "PROMOTED", "source": "ebus",
+					})
+				}
+			}
+		}
+		return map[string]any{"authority": "ebus.promoted", "leaves": leaves}, nil
+	default:
+		return nil, fmt.Errorf("unsupported M8 source input %q", inputID)
+	}
+}
+
+func (server *Server) m8DirectCommandRoutes() []m8DirectRoute {
+	routes := make([]m8DirectRoute, 0, 4)
+	if server.configWriter != nil {
+		for _, name := range []string{toolSemanticSystemSetConfigName, toolSemanticBoilerSetConfigName} {
+			routes = append(routes, m8DirectRoute{SemanticPath: "/mcp/" + name, Source: "ebus"})
+		}
+	}
+	if server.scheduleWriter != nil {
+		for _, name := range []string{toolSemanticSchedulesSetZoneName, toolSemanticSchedulesSetDhwName} {
+			routes = append(routes, m8DirectRoute{SemanticPath: "/mcp/" + name, Source: "ebus"})
+		}
+	}
+	return routes
 }

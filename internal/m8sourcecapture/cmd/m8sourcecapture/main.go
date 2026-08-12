@@ -17,22 +17,25 @@ import (
 )
 
 func main() {
-	var sourceRoot, destination, manifestPath, phase, windowID, authScopeHash, capturedAt string
+	var sourceRoot, destination, phase, windowID, authScopeHash, capturedAt string
+	var clockID, monotonicEpochID, wallAnchorUTC string
 	var startOffset, endOffset int64
 	flag.StringVar(&sourceRoot, "source-root", "", "absolute raw source directory")
-	flag.StringVar(&destination, "destination", "", "absolute destination source root")
-	flag.StringVar(&manifestPath, "manifest", "", "absolute output manifest path")
+	flag.StringVar(&destination, "destination", "", "absolute destination generation")
 	flag.StringVar(&phase, "phase", "", "PRE_RESTART or POST_RESTART")
 	flag.StringVar(&windowID, "window-id", "", "capture window identity")
 	flag.StringVar(&authScopeHash, "auth-scope-hash", "", "effective M8 auth-scope SHA-256")
 	flag.StringVar(&capturedAt, "captured-at", "", "RFC3339 UTC capture timestamp")
+	flag.StringVar(&clockID, "clock-id", "", "shared PRE/POST capture clock identity")
+	flag.StringVar(&monotonicEpochID, "monotonic-epoch-id", "", "shared monotonic epoch identity")
+	flag.StringVar(&wallAnchorUTC, "wall-anchor-utc", "", "shared RFC3339 UTC clock anchor")
 	flag.Int64Var(&startOffset, "capture-start-offset-ns", -1, "monotonic capture start offset")
 	flag.Int64Var(&endOffset, "capture-end-offset-ns", -1, "monotonic capture end offset")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fatal(errors.New("unexpected positional arguments"))
 	}
-	if err := validateOutputPaths(sourceRoot, destination, manifestPath); err != nil {
+	if err := validateOutputPaths(sourceRoot, destination); err != nil {
 		fatal(err)
 	}
 
@@ -44,23 +47,26 @@ func main() {
 	if err != nil || instant.Location() != time.UTC || instant.Format(time.RFC3339Nano) != capturedAt {
 		fatal(errors.New("captured-at must be canonical RFC3339 UTC"))
 	}
+	wallAnchor, err := time.Parse(time.RFC3339Nano, wallAnchorUTC)
+	if err != nil || wallAnchor.Location() != time.UTC || wallAnchor.Format(time.RFC3339Nano) != wallAnchorUTC {
+		fatal(errors.New("wall-anchor-utc must be canonical RFC3339 UTC"))
+	}
 	processID, err := processInstanceID(inputs)
 	if err != nil {
 		fatal(err)
 	}
-	manifest, err := m8sourcecapture.Publish(destination, m8sourcecapture.Metadata{
+	_, err = m8sourcecapture.PublishGeneration(destination, m8sourcecapture.Metadata{
 		Phase: m8sourcecapture.Phase(phase), WindowID: windowID, AuthScopeHash: authScopeHash,
-		ProcessInstanceID: processID, CaptureStartOffsetNS: startOffset,
+		ProcessInstanceID: processID, ClockID: clockID, MonotonicEpochID: monotonicEpochID,
+		WallAnchorUTC: wallAnchor, CaptureStartOffsetNS: startOffset,
 		CaptureEndOffsetNS: endOffset, CapturedAt: instant,
 	}, inputs)
 	if err != nil {
 		fatal(err)
 	}
-	if err := writeManifest(manifestPath, manifest); err != nil {
-		_ = os.RemoveAll(destination)
-		fatal(err)
-	}
-	_, _ = fmt.Fprintf(os.Stdout, "%s %s %s\n", destination, manifestPath, processID)
+	_, _ = fmt.Fprintf(os.Stdout, "%s %s %s\n",
+		filepath.Join(destination, m8sourcecapture.SourceDirectory),
+		filepath.Join(destination, m8sourcecapture.ManifestFilename), processID)
 }
 
 func processInstanceID(inputs []m8sourcecapture.Input) (string, error) {
@@ -84,55 +90,14 @@ func processInstanceID(inputs []m8sourcecapture.Input) (string, error) {
 	return "process-" + hex.EncodeToString(digest[:16]), nil
 }
 
-func validateOutputPaths(sourceRoot, destination, manifestPath string) error {
+func validateOutputPaths(sourceRoot, destination string) error {
 	if sourceRoot == "" || !filepath.IsAbs(sourceRoot) || filepath.Clean(sourceRoot) != sourceRoot ||
-		destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination ||
-		manifestPath != destination+".manifest.json" || filepath.Dir(destination) != filepath.Dir(manifestPath) {
-		return errors.New("source, destination, and manifest paths are not a safe capture layout")
+		destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
+		return errors.New("source and destination paths are not a safe capture layout")
 	}
-	if sourceRoot == destination || sourceRoot == manifestPath || strings.HasPrefix(destination+string(filepath.Separator), sourceRoot+string(filepath.Separator)) {
+	if sourceRoot == destination || strings.HasPrefix(destination+string(filepath.Separator), sourceRoot+string(filepath.Separator)) {
 		return errors.New("source and output paths must be disjoint")
 	}
-	return nil
-}
-
-func writeManifest(path string, manifest []byte) error {
-	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return errors.New("unsafe manifest path")
-	}
-	parent, err := os.Lstat(filepath.Dir(path))
-	if err != nil || !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 {
-		return errors.New("unsafe manifest parent")
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	complete := false
-	defer func() {
-		if !complete {
-			_ = os.Remove(path)
-		}
-	}()
-	written, writeErr := file.Write(manifest)
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if written != len(manifest) {
-		writeErr = errors.Join(writeErr, errors.New("short manifest write"))
-	}
-	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	syncErr = directory.Sync()
-	closeErr = directory.Close()
-	if err := errors.Join(syncErr, closeErr); err != nil {
-		return err
-	}
-	complete = true
 	return nil
 }
 

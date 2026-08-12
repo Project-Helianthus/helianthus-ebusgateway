@@ -19,6 +19,10 @@ import (
 const (
 	Contract          = "helianthus.platform.multi-runtime-source-capture-manifest.v1"
 	ProjectionPolicy  = "M8_PROTECTED_VIEWS_SINGLE_WINDOW_V1"
+	MetadataContract  = "helianthus.platform.m8-source-capture-metadata.v1"
+	SourceDirectory   = "source"
+	ManifestFilename  = "source-capture-manifest.json"
+	MetadataFilename  = "capture-metadata.json"
 	maxInputBytes     = 2_097_152
 	maxTotalBytes     = 16_777_216
 	maxMetadataLength = 256
@@ -80,15 +84,17 @@ type Metadata struct {
 	WindowID             string
 	AuthScopeHash        string
 	ProcessInstanceID    string
+	ClockID              string
+	MonotonicEpochID     string
+	WallAnchorUTC        time.Time
 	CaptureStartOffsetNS int64
 	CaptureEndOffsetNS   int64
 	CapturedAt           time.Time
 }
 
-// Publish writes the sixteen source files under destination through a private
-// temporary sibling directory and returns the deterministic manifest bytes.
-// destination must be a new direct child path with no traversal components.
-func Publish(destination string, metadata Metadata, inputs []Input) ([]byte, error) {
+// PublishGeneration atomically publishes one private generation containing
+// the exact sixteen-file source root, its manifest, and capture-clock metadata.
+func PublishGeneration(destination string, metadata Metadata, inputs []Input) ([]byte, error) {
 	manifest, err := buildManifest(metadata, inputs)
 	if err != nil {
 		return nil, err
@@ -114,11 +120,28 @@ func Publish(destination string, metadata Metadata, inputs []Input) ([]byte, err
 	if err := os.Chmod(temporary, 0o700); err != nil {
 		return nil, fmt.Errorf("%w: secure temporary root: %v", errInvalidCapture, err)
 	}
+	sourceRoot := filepath.Join(temporary, SourceDirectory)
+	if err := os.Mkdir(sourceRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: create source root: %v", errInvalidCapture, err)
+	}
 	for index, definition := range inputDefinitions {
-		path := filepath.Join(temporary, definition.Filename)
+		path := filepath.Join(sourceRoot, definition.Filename)
 		if err := writePrivateFile(path, inputs[index].Payload); err != nil {
 			return nil, err
 		}
+	}
+	metadataBytes, err := buildCaptureMetadata(metadata)
+	if err != nil {
+		return nil, err
+	}
+	if err := writePrivateFile(filepath.Join(temporary, ManifestFilename), manifest); err != nil {
+		return nil, err
+	}
+	if err := writePrivateFile(filepath.Join(temporary, MetadataFilename), metadataBytes); err != nil {
+		return nil, err
+	}
+	if err := syncDirectory(sourceRoot); err != nil {
+		return nil, err
 	}
 	if err := syncDirectory(temporary); err != nil {
 		return nil, err
@@ -194,7 +217,7 @@ func buildManifest(metadata Metadata, inputs []Input) ([]byte, error) {
 		if input.ID != definition.ID || len(input.Payload) == 0 || len(input.Payload) > maxInputBytes {
 			return nil, fmt.Errorf("%w: invalid input %d", errInvalidCapture, index)
 		}
-		if secretPattern.Match(input.Payload) {
+		if containsSecretMaterial(definition, input.Payload) {
 			return nil, fmt.Errorf("%w: input %s", errSecretMaterial, input.ID)
 		}
 		total += len(input.Payload)
@@ -240,16 +263,93 @@ func validateMetadata(metadata Metadata) error {
 	if metadata.Phase != PhasePreRestart && metadata.Phase != PhasePostRestart {
 		return fmt.Errorf("%w: phase", errInvalidCapture)
 	}
-	for _, value := range []string{metadata.WindowID, metadata.ProcessInstanceID} {
+	for _, value := range []string{metadata.WindowID, metadata.ProcessInstanceID, metadata.ClockID, metadata.MonotonicEpochID} {
 		if len(value) == 0 || len(value) > maxMetadataLength || !tokenPattern.MatchString(value) {
 			return fmt.Errorf("%w: metadata token", errInvalidCapture)
 		}
 	}
 	if !hashPattern.MatchString(metadata.AuthScopeHash) || metadata.CaptureStartOffsetNS < 0 ||
-		metadata.CaptureEndOffsetNS < metadata.CaptureStartOffsetNS || metadata.CapturedAt.IsZero() {
+		metadata.CaptureEndOffsetNS < metadata.CaptureStartOffsetNS || metadata.CapturedAt.IsZero() || metadata.WallAnchorUTC.IsZero() ||
+		!metadata.CapturedAt.Equal(metadata.WallAnchorUTC.Add(time.Duration(metadata.CaptureStartOffsetNS))) {
 		return fmt.Errorf("%w: metadata binding", errInvalidCapture)
 	}
 	return nil
+}
+
+func buildCaptureMetadata(metadata Metadata) ([]byte, error) {
+	if err := validateMetadata(metadata); err != nil {
+		return nil, err
+	}
+	return canonicalJSON(map[string]any{
+		"capture_end_offset_ns":   metadata.CaptureEndOffsetNS,
+		"capture_start_offset_ns": metadata.CaptureStartOffsetNS,
+		"captured_at":             metadata.CapturedAt.UTC().Format(time.RFC3339Nano),
+		"clock_id":                metadata.ClockID,
+		"contract":                MetadataContract,
+		"monotonic_epoch_id":      metadata.MonotonicEpochID,
+		"phase":                   string(metadata.Phase),
+		"process_instance_id":     metadata.ProcessInstanceID,
+		"wall_anchor_utc":         metadata.WallAnchorUTC.UTC().Format(time.RFC3339Nano),
+		"window_id":               metadata.WindowID,
+	})
+}
+
+func canonicalJSON(value any) ([]byte, error) {
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, fmt.Errorf("%w: canonical JSON: %v", errInvalidCapture, err)
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'}), nil
+}
+
+func containsSecretMaterial(definition inputDefinition, payload []byte) bool {
+	if secretPattern.Match(payload) {
+		return true
+	}
+	if definition.ID == "capture.timestamp" {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return true
+	}
+	return containsSecretKey(value)
+}
+
+func containsSecretKey(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			normalized := strings.Map(func(char rune) rune {
+				if char >= 'A' && char <= 'Z' {
+					return char + ('a' - 'A')
+				}
+				if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' {
+					return char
+				}
+				return -1
+			}, key)
+			for _, secret := range []string{"authorization", "password", "passwords", "secret", "secrets", "token", "tokens", "cookie", "cookies", "privatekey", "accesskey", "accesskeys", "apikey", "apikeys", "credential", "credentials", "sessioncookie", "setcookie"} {
+				if normalized == secret || strings.HasSuffix(normalized, secret) {
+					return true
+				}
+			}
+			if containsSecretKey(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsSecretKey(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func publicationTarget(destination string) (string, string, error) {

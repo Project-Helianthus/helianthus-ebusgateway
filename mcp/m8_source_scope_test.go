@@ -8,20 +8,18 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
-type issue788StateProvider struct{}
+type issue788ConfigWriter struct{}
 
-func (issue788StateProvider) M8SourceState(_ context.Context, inputID string) (json.RawMessage, error) {
-	return issue788RawJSONNoTest(map[string]any{"source": inputID, "direct": true}), nil
+func (issue788ConfigWriter) SetSystemConfig(context.Context, string, string) ConfigSetResult {
+	return ConfigSetResult{Success: true}
 }
 
-func issue788RawJSONNoTest(value any) json.RawMessage {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return raw
+func (issue788ConfigWriter) SetBoilerConfig(context.Context, string, string) ConfigSetResult {
+	return ConfigSetResult{Success: true}
 }
 
 func issue788RPCBody(t *testing.T, request rpcRequest) *bytes.Reader {
@@ -162,9 +160,13 @@ func TestIssue788M8SourceScopeRejectsToolsOutsideFrozenInventory(t *testing.T) {
 
 func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *testing.T) {
 	server, _ := issue743Server(t)
-	if err := server.RegisterM8SourceStateProvider(issue788StateProvider{}); err != nil {
-		t.Fatal(err)
-	}
+	server.SetStatusProvider(testStatusProvider{daemon: ServiceStatus{Status: "running"}})
+	server.SetSemanticProvider(testSemanticProvider{})
+	server.SetConfigWriter(issue788ConfigWriter{})
+	server.SetScheduleWriter(&testScheduleWriter{})
+	directRegistry := registry.NewDeviceRegistry(nil)
+	directRegistry.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	server.registry = directRegistry
 
 	operator := issue743OperatorHandler(t, server)
 	for _, inputID := range m8SourceStateInputIDs {
@@ -173,8 +175,21 @@ func TestIssue788DirectSourceStateIsOperatorOnlyAndExcludedFromM8Inventory(t *te
 			t.Fatalf("%s returned error: %s", inputID, result.raw)
 		}
 		data := msp06Map(t, result.envelope["data"], inputID)
-		if data["source"] != inputID || data["direct"] != true {
-			t.Fatalf("%s data = %#v", inputID, data)
+		switch inputID {
+		case "ebus.debug":
+			if data["runtime_state"] != "running" || data["semantic_provider_registered"] != true || data["registry_device_count"] != json.Number("1") {
+				t.Fatalf("%s data = %#v", inputID, data)
+			}
+		case "command.routing":
+			routes, ok := data["routes"].([]any)
+			if !ok || len(routes) != 4 {
+				t.Fatalf("%s routes = %#v", inputID, data["routes"])
+			}
+		case "semantic.registry":
+			leaves, ok := data["leaves"].([]any)
+			if data["authority"] != "ebus.promoted" || !ok || len(leaves) != len(m8SemanticReadTools) {
+				t.Fatalf("%s data = %#v", inputID, data)
+			}
 		}
 	}
 

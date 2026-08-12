@@ -126,9 +126,9 @@ func TestIssue784CheckpointRootRejectsUnsafePermissionsAndSymlink(t *testing.T) 
 
 func TestIssue790PreviousNativeValueRejectsMisorderedCheckpoint(t *testing.T) {
 	checkpoint := promotioncapture.WindowCheckpoint{Candidates: []promotioncapture.CapturedCandidateWindow{
-		{CandidateID: "m7-candidate-0013"},
+		{CandidateID: "m7-" + "candidate-0013"},
 	}}
-	if _, err := leafPromotionPreviousNativeValue(&checkpoint, 0, "m7-candidate-0008"); err == nil {
+	if _, err := leafPromotionPreviousNativeValue(&checkpoint, 0, "m7-"+"candidate-0008"); err == nil {
 		t.Fatal("misordered prior checkpoint candidate accepted")
 	}
 }

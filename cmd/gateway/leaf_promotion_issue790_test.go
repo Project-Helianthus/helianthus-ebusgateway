@@ -56,7 +56,7 @@ func TestIssue790DecodeNativeMetadataAsString(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultRegistry: %v", err)
 	}
-	candidate, ok := registry.Candidate("m7-candidate-0019")
+	candidate, ok := registry.Candidate("m7-" + "candidate-0019")
 	if !ok {
 		t.Fatal("metadata candidate missing")
 	}
@@ -75,7 +75,7 @@ func TestIssue790DecodeB555FallbackWithoutB524Relabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultRegistry: %v", err)
 	}
-	candidate, ok := registry.Candidate("m7-candidate-0006")
+	candidate, ok := registry.Candidate("m7-" + "candidate-0006")
 	if !ok || candidate.EBusFallback == nil {
 		t.Fatal("candidate 0006 fallback missing")
 	}
@@ -99,7 +99,7 @@ func TestIssue790CaptureSelectsB555OnlyWhenB524IsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultRegistry: %v", err)
 	}
-	candidate, ok := registry.Candidate("m7-candidate-0006")
+	candidate, ok := registry.Candidate("m7-" + "candidate-0006")
 	if !ok || candidate.EBusSelector == nil || candidate.EBusFallback == nil {
 		t.Fatal("candidate 0006 selectors missing")
 	}

@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate"
@@ -23,89 +18,23 @@ func newMCPSemanticProvider(provider graphql.SemanticProvider) mcp.SemanticProvi
 }
 
 func (adapter mcpSemanticProviderAdapter) M8SemanticRegistryState() (m8sourcestate.SemanticRegistry, error) {
-	state := m8sourcestate.SemanticRegistry{
-		Authority: "ebus.promoted",
-		Leaves:    []m8sourcestate.SemanticLeaf{},
+	owner, ok := adapter.provider.(interface {
+		SemanticRegistryState() (graphql.SemanticRegistrySnapshot, error)
+	})
+	if !ok {
+		return m8sourcestate.SemanticRegistry{}, fmt.Errorf("semantic provider does not expose owner-local registry state")
 	}
-	if adapter.provider == nil {
-		return state, nil
+	snapshot, err := owner.SemanticRegistryState()
+	if err != nil {
+		return m8sourcestate.SemanticRegistry{}, fmt.Errorf("capture semantic owner: %w", err)
 	}
-	values := []struct {
-		path  string
-		value any
-	}{
-		{path: "/zones", value: adapter.Zones()},
-		{path: "/dhw", value: adapter.DHW()},
-		{path: "/circuits", value: adapter.Circuits()},
-		{path: "/radio", value: adapter.RadioDevices()},
-		{path: "/solar", value: adapter.Solar()},
-		{path: "/cylinders", value: adapter.Cylinders()},
-		{path: "/energy", value: adapter.EnergyTotals()},
-		{path: "/boiler", value: adapter.BoilerStatus()},
-		{path: "/system", value: adapter.System()},
-		{path: "/schedules", value: adapter.Schedules()},
-		{path: "/adapter", value: adapter.AdapterHardwareInfo()},
-	}
-	if adapter.provider.FM5SemanticMode() != graphql.Fm5SemanticModeAbsent {
-		values = append(values, struct {
-			path  string
-			value any
-		}{path: "/fm5", value: adapter.provider.FM5SemanticMode()})
-	}
-	for _, item := range values {
-		paths, err := m8MaterializedLeafPaths(item.path, item.value)
-		if err != nil {
-			return m8sourcestate.SemanticRegistry{}, fmt.Errorf("capture semantic owner %s: %w", item.path, err)
-		}
-		for _, path := range paths {
-			state.Leaves = append(state.Leaves, m8sourcestate.SemanticLeaf{
-				Path: path, PromotionState: "PROMOTED", Source: "ebus",
-			})
+	state := m8sourcestate.SemanticRegistry{Authority: snapshot.Authority, Leaves: make([]m8sourcestate.SemanticLeaf, len(snapshot.Leaves))}
+	for index, leaf := range snapshot.Leaves {
+		state.Leaves[index] = m8sourcestate.SemanticLeaf{
+			Path: leaf.Path, PromotionState: leaf.PromotionState, Source: leaf.Source,
 		}
 	}
 	return state, nil
-}
-
-func m8MaterializedLeafPaths(root string, value any) ([]string, error) {
-	if value == nil {
-		return nil, nil
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var decoded any
-	if err := decoder.Decode(&decoded); err != nil {
-		return nil, err
-	}
-	paths := []string{}
-	var walk func(string, any)
-	walk = func(path string, current any) {
-		switch typed := current.(type) {
-		case nil:
-			return
-		case map[string]any:
-			keys := make([]string, 0, len(typed))
-			for key := range typed {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				escaped := strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
-				walk(path+"/"+escaped, typed[key])
-			}
-		case []any:
-			for index, item := range typed {
-				walk(path+"/"+strconv.Itoa(index), item)
-			}
-		default:
-			paths = append(paths, path)
-		}
-	}
-	walk(root, decoded)
-	return paths, nil
 }
 
 func (adapter mcpSemanticProviderAdapter) Zones() []mcp.Zone {

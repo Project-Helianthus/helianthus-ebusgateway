@@ -38,9 +38,21 @@ command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
 umask 077
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 parent="$(dirname "${output}")"
-mkdir -p "${parent}"
+if [[ -e "${parent}" ]]; then
+  python3 - "${parent}" <<'PY'
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+info = os.lstat(path)
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+    raise SystemExit("capture parent must be an existing private 0700 directory")
+PY
+else
+  mkdir -m 0700 -p "${parent}"
+fi
 [[ ! -L "${parent}" && "$(dirname "${clock_state}")" == "${parent}" ]] || { echo "unsafe output or clock-state parent" >&2; exit 1; }
-chmod 0700 "${parent}"
 [[ ! -e "${output}" ]] || { echo "unsafe or existing output" >&2; exit 1; }
 staging="${parent}/.$(basename "${output}").tmp.$$"
 manifest="${output}/source-capture-manifest.json"

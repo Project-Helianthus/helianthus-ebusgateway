@@ -55,6 +55,7 @@ python3 scripts/source_selection_m4_gate_test.py
 python3 scripts/transport_gate_test.py
 python3 scripts/passive_smoke_gate_test.py
 python3 scripts/m8_source_clock_test.py
+python3 scripts/capture_m8_source_window_test.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

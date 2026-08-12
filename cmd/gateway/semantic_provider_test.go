@@ -87,10 +87,8 @@ func TestMCPSemanticProviderAdapterM8InventoryTracksMaterializedOwnerState(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leaf := range before.Leaves {
-		if leaf.Path == "/zones/0/id" {
-			t.Fatalf("unpublished zone appeared in M8 inventory: %#v", before.Leaves)
-		}
+	if len(before.Leaves) != 0 {
+		t.Fatalf("unpublished/default semantic state appeared in M8 inventory: %#v", before.Leaves)
 	}
 
 	provider.SetZones([]graphql.Zone{{ID: "owner-zone"}})
@@ -100,12 +98,19 @@ func TestMCPSemanticProviderAdapterM8InventoryTracksMaterializedOwnerState(t *te
 	}
 	found := false
 	for _, leaf := range after.Leaves {
-		if leaf.Path == "/zones/0/id" && leaf.Source == "ebus" && leaf.PromotionState == "PROMOTED" {
+		if leaf.Path == "/zones/0/ID" && leaf.Source == "ebus" && leaf.PromotionState == "PROMOTED" {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("materialized zone missing from M8 inventory: %#v", after.Leaves)
+	}
+}
+
+func TestMCPSemanticProviderAdapterRejectsNonOwnerProvider(t *testing.T) {
+	adapter := mcpSemanticProviderAdapter{}
+	if _, err := adapter.M8SemanticRegistryState(); err == nil {
+		t.Fatal("M8SemanticRegistryState accepted provider without owner-local inventory")
 	}
 }
 

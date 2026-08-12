@@ -88,7 +88,7 @@ func NewEEBusIdentity(source EEBusSource, serviceID, deviceAddress string, entit
 		EntityAddress: append([]uint64(nil), entityAddress...), FeatureAddress: featureAddress,
 		EntitySlot: source.EntitySlot, EntityType: source.EntityType,
 		FeatureType: source.FeatureType, FeatureRole: source.FeatureRole,
-		DescriptionFunctions: append([]string(nil), source.DescriptionFunctions...),
+		DescriptionFunctions: append([]string{}, source.DescriptionFunctions...),
 		ConstraintsFunction:  cloneStringPointer(source.ConstraintsFunction),
 		ValueFunctions:       append([]string(nil), source.ValueFunctions...), FieldPath: source.FieldPath,
 		Descriptor: append(json.RawMessage(nil), source.Descriptor...), Unit: cloneStringPointer(source.Unit),

@@ -164,6 +164,34 @@ func TestRefreshFM5Semantic_StaleEvidenceSkipsReadsAndRetainsCoherentFamily(t *t
 	}
 }
 
+func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t *testing.T) {
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	config := uint16(2)
+	reg := registry.NewDeviceRegistry(nil)
+	poller := &vaillantSemanticPoller{
+		reg:            reg,
+		controller:     0x15,
+		system:         &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices:   map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		nowFn:          time.Now,
+	}
+	captured := poller.captureFM5Evidence()
+	reg.Register(registry.DeviceInfo{
+		Address:      circuitManagingDeviceVR71Address,
+		Manufacturer: "Vaillant",
+		DeviceID:     circuitManagingDeviceVR71ID,
+	})
+
+	verdict := poller.commitFM5Acquisition(captured, graphql.Fm5Interpretation{
+		Mode:             graphql.Fm5SemanticModeInterpreted,
+		EvidenceRevision: "fm5-g0-a1",
+	}, &vaillantSolarSnapshot{}, map[byte]*vaillantCylinderSnapshot{})
+	if verdict.Mode != graphql.Fm5SemanticModeGPIOOnly || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
+		t.Fatalf("registry interleaving verdict = %#v; want GPIO_ONLY/INCOHERENT_ACQUISITION", verdict)
+	}
+}
+
 func TestNewGatewayBuildInfo_RejectsMissingReleaseAuthority(t *testing.T) {
 	if _, err := newGatewayBuildInfo("", "build-1"); err == nil {
 		t.Fatal("empty release version accepted")

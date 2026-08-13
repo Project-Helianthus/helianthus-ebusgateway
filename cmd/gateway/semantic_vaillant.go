@@ -1974,25 +1974,10 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 		incoherent,
 		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
 	)
+	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
 	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
-
-	p.mu.Lock()
-	if !currentEvidence.matchesLockedPoller(p) {
-		p.fm5EvidenceRevision++
-		verdict = graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeGPIOOnly,
-			DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
-			EvidenceRevision: formatFM5EvidenceRevision(currentEvidence.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
-		}
-	}
-	p.fm5Mode = verdict.Mode
-	p.fm5Interpretation = verdict
-	p.solar, p.solarCylinders = applyFM5Acquisition(
-		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
-	)
-	p.mu.Unlock()
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
 
@@ -5530,25 +5515,10 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 		incoherent,
 		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
 	)
+	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
 	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
-
-	p.mu.Lock()
-	if !currentEvidence.matchesLockedPoller(p) {
-		p.fm5EvidenceRevision++
-		verdict = graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeGPIOOnly,
-			DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
-			EvidenceRevision: formatFM5EvidenceRevision(currentEvidence.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
-		}
-	}
-	p.fm5Mode = verdict.Mode
-	p.fm5Interpretation = verdict
-	p.solar, p.solarCylinders = applyFM5Acquisition(
-		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
-	)
-	p.mu.Unlock()
 
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
@@ -5638,6 +5608,31 @@ func (capture fm5EvidenceCapture) matchesLockedPoller(p *vaillantSemanticPoller)
 	return capture.generation == p.fm5EvidenceGeneration &&
 		capture.controller == p.controller &&
 		uint16PointersEqual(capture.moduleConfig, moduleConfig)
+}
+
+func (p *vaillantSemanticPoller) commitFM5Acquisition(
+	captured fm5EvidenceCapture,
+	verdict graphql.Fm5Interpretation,
+	incomingSolar *vaillantSolarSnapshot,
+	incomingCylinders map[byte]*vaillantCylinderSnapshot,
+) graphql.Fm5Interpretation {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	registryFingerprint := p.fm5RegistryEvidenceFingerprint()
+	if !captured.matchesLockedPoller(p) || captured.registryEvidence != registryFingerprint {
+		p.fm5EvidenceRevision++
+		verdict = graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeGPIOOnly,
+			DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
+			EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
+		}
+	}
+	p.fm5Mode = verdict.Mode
+	p.fm5Interpretation = verdict
+	p.solar, p.solarCylinders = applyFM5Acquisition(
+		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
+	)
+	return verdict
 }
 
 func (p *vaillantSemanticPoller) updateSystemSnapshotLocked(snapshot *vaillantSystemSnapshot) {

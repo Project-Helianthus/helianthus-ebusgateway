@@ -91,6 +91,10 @@ func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
 		p.replace(next)
 		return
 	}
+	reader := &leafPromotionLiveSource{eebus: p.runtime}
+	featureCache := make(map[string]eebusraw.FeaturesGetDataV1)
+	functionCache := make(map[string]eebusraw.ReadObservationV1)
+	var binding eebusraw.RuntimeBindingV1
 	for _, candidate := range registry.Candidates() {
 		if candidate.SemanticPath == nil || candidate.EEBusSource == nil ||
 			(candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol && candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative) {
@@ -100,14 +104,28 @@ func (p *eebusPromotedSemanticProvider) Refresh(ctx context.Context) {
 		if locatorErr != nil || len(candidate.EEBusSource.ValueFunctions) == 0 {
 			continue
 		}
-		if !p.inventoryReadable(ctx, locator) {
+		inventory, inventoryErr := reader.readFeatureInventory(ctx, locator, featureCache)
+		if inventoryErr != nil {
 			continue
 		}
-		value, ok := p.readValue(ctx, locator, candidate.EEBusSource.ValueFunctions[0])
-		if !ok {
+		if binding == (eebusraw.RuntimeBindingV1{}) {
+			binding = inventory.Runtime
+		} else if inventory.Runtime != binding {
+			p.replace(graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{}})
+			return
+		}
+		if reader.verifySourceProfile(ctx, candidate, locator, inventory, functionCache) != nil {
 			continue
 		}
-		_, normalized, _, decodeErr := leafPromotionDecodeEEBus(candidate, value)
+		observation, readErr := reader.readEEBusFunction(ctx, locator, candidate.EEBusSource.ValueFunctions[0], functionCache)
+		if readErr != nil {
+			continue
+		}
+		if observation.Runtime != binding {
+			p.replace(graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{}})
+			return
+		}
+		_, normalized, _, decodeErr := leafPromotionDecodeEEBus(candidate, observation.Value.Value())
 		if decodeErr == nil {
 			applyPromotedValue(&next, *candidate.SemanticPath, normalized)
 		}
@@ -119,28 +137,6 @@ func (p *eebusPromotedSemanticProvider) replace(overlay graphql.PromotedSemantic
 	p.mu.Lock()
 	p.overlay = overlay
 	p.mu.Unlock()
-}
-
-func (p *eebusPromotedSemanticProvider) inventoryReadable(ctx context.Context, locator eebusraw.FeatureLocatorV1) bool {
-	auth := eebusraw.ReadAuthorizationV1{PrincipalClass: "owner", Scope: eebusraw.AuthScopeV1RawRead, Tool: eebusraw.ToolV1FeaturesGet, MaskTier: eebusraw.MaskTierRaw}
-	request := eebusraw.FeaturesGetRequestV1{Target: locator.Clone()}
-	data, terminal := p.runtime.FeaturesGet(ctx, auth, request)
-	return terminal == nil && eebusraw.ValidateFeaturesGetDataV1(request, data) == nil
-}
-
-func (p *eebusPromotedSemanticProvider) readValue(ctx context.Context, locator eebusraw.FeatureLocatorV1, function string) (any, bool) {
-	target := eebusraw.FeatureTargetV1{RemoteSKI: locator.RemoteSKI, SHIPID: locator.SHIPID, DeviceAddress: locator.DeviceAddress, EntityAddress: append([]uint64(nil), locator.EntityAddress...), FeatureAddress: locator.FeatureAddress, FeatureType: locator.FeatureType, FeatureRole: locator.FeatureRole, Function: function, Operation: eebusraw.OperationV1Read}
-	request := eebusraw.FeatureDataGetRequestV1{Targets: []eebusraw.FeatureTargetV1{target}, TimeoutMS: 3000}
-	auth := eebusraw.ReadAuthorizationV1{PrincipalClass: "owner", Scope: eebusraw.AuthScopeV1RawRead, Tool: eebusraw.ToolV1FeaturesDataGet, MaskTier: eebusraw.MaskTierRaw}
-	data, terminal := p.runtime.FeaturesDataGet(ctx, auth, request)
-	if terminal != nil || eebusraw.ValidateFeatureDataGetDataV1(request, data, terminal) != nil || !data.Complete || len(data.Results) != 1 || len(data.Failures) != 0 {
-		return nil, false
-	}
-	observation := data.Results[0]
-	if observation.Target.Function != function || !leafPromotionLocatorEqual(observation.Target.Locator(), target.Locator()) {
-		return nil, false
-	}
-	return observation.Value.Value(), true
 }
 
 func applyPromotedValue(overlay *graphql.PromotedSemanticOverlay, path string, value promotioncapture.TypedValue) {

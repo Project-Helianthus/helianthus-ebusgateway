@@ -307,6 +307,9 @@ func (source *leafPromotionLiveSource) verifySourceProfile(
 		if err != nil {
 			return err
 		}
+		if observation.Runtime != inventory.Runtime {
+			return errors.New("eeBUS generation changed during source-profile admission")
+		}
 		values[function] = observation.Value.Value()
 	}
 	if len(profile.DescriptionFunctions) > 0 {
@@ -324,6 +327,9 @@ func (source *leafPromotionLiveSource) verifySourceProfile(
 		observation, readErr := source.readEEBusFunction(ctx, locator, *profile.ConstraintsFunction, cache)
 		if readErr != nil {
 			return readErr
+		}
+		if observation.Runtime != inventory.Runtime {
+			return errors.New("eeBUS generation changed during source-profile admission")
 		}
 		constraints, constraintsErr := leafPromotionConstraints(candidate, observation.Value.Value())
 		if constraintsErr != nil || *profile.DeclaredConstraints != constraints {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,176 @@ func TestEEBusPromotedSemanticStartDoesNotBlockInitialRefresh(t *testing.T) {
 		t.Fatal("initial refresh was not started")
 	}
 	close(release)
+}
+
+func TestEEBusPromotedSemanticCanonicalProfileAdmissionRejectsDrift(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	measurement, ok := registry.Candidate("m7-" + "candidate-0005")
+	if !ok {
+		t.Fatal("measurement candidate missing")
+	}
+	enumCandidate, ok := registry.Candidate("m7-" + "candidate-0007")
+	if !ok {
+		t.Fatal("enum candidate missing")
+	}
+	overrun, ok := registry.Candidate("m7-" + "candidate-0009")
+	if !ok {
+		t.Fatal("overrun candidate missing")
+	}
+
+	tests := []struct {
+		name      string
+		candidate promotioncapture.CandidateDefinition
+		values    map[string]any
+		omit      string
+	}{
+		{
+			name:      "secondary value function missing",
+			candidate: overrun,
+			omit:      "hvacOverrunListData",
+		},
+		{
+			name:      "descriptor drift",
+			candidate: measurement,
+			values: map[string]any{
+				"measurementDescriptionListData": map[string]any{"measurementDescriptionData": []any{map[string]any{
+					"measurementId": int64(0), "commodityType": "air", "measurementType": "temperature", "scopeType": "wrong", "unit": "degC",
+				}}},
+			},
+		},
+		{
+			name:      "constraints drift",
+			candidate: measurement,
+			values: map[string]any{
+				"measurementDescriptionListData": promotedMeasurementDescription("domesticHotWater", "dhwTemperature"),
+				"measurementConstraintsListData": promotedMeasurementConstraints(-1),
+			},
+		},
+		{
+			name:      "enum description drift",
+			candidate: enumCandidate,
+			values: map[string]any{
+				"hvacSystemFunctionDescriptionListData": map[string]any{"hvacSystemFunctionDescriptionData": []any{map[string]any{"systemFunctionId": int64(0), "systemFunctionType": "dhw"}}},
+				"hvacOperationModeDescriptionListData": map[string]any{"hvacOperationModeDescriptionData": []any{
+					map[string]any{"operationModeId": int64(0), "operationModeType": "auto"},
+					map[string]any{"operationModeId": int64(1), "operationModeType": "on"},
+					map[string]any{"operationModeId": int64(2), "operationModeType": "changed"},
+				}},
+				"hvacSystemFunctionOperationModeRelationListData": map[string]any{"hvacSystemFunctionOperationModeRelationData": []any{map[string]any{
+					"systemFunctionId": int64(0), "operationModeId": []any{int64(0), int64(1), int64(2)},
+				}}},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			locator := promotedProfileLocator(test.candidate)
+			inventory := promotedProfileInventory(test.candidate, locator, test.omit)
+			runtime := &promotedProfileRuntime{binding: inventory.Runtime, values: test.values}
+			reader := &leafPromotionLiveSource{eebus: runtime}
+			if err := reader.verifySourceProfile(context.Background(), test.candidate, locator, inventory, map[string]eebusraw.ReadObservationV1{}); err == nil {
+				t.Fatal("drifted source profile was admitted")
+			}
+		})
+	}
+}
+
+func TestEEBusPromotedSemanticCanonicalProfileAdmissionAcceptsExactProfile(t *testing.T) {
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok := registry.Candidate("m7-" + "candidate-0005")
+	if !ok {
+		t.Fatal("measurement candidate missing")
+	}
+	locator := promotedProfileLocator(candidate)
+	inventory := promotedProfileInventory(candidate, locator, "")
+	runtime := &promotedProfileRuntime{binding: inventory.Runtime, values: map[string]any{
+		"measurementDescriptionListData": promotedMeasurementDescription("domesticHotWater", "dhwTemperature"),
+		"measurementConstraintsListData": promotedMeasurementConstraints(0),
+	}}
+	reader := &leafPromotionLiveSource{eebus: runtime}
+	if err := reader.verifySourceProfile(context.Background(), candidate, locator, inventory, map[string]eebusraw.ReadObservationV1{}); err != nil {
+		t.Fatalf("exact source profile rejected: %v", err)
+	}
+}
+
+func promotedProfileLocator(candidate promotioncapture.CandidateDefinition) eebusraw.FeatureLocatorV1 {
+	return eebusraw.FeatureLocatorV1{
+		RemoteSKI: strings.Repeat("a", 40), SHIPID: "m9-profile-ship", DeviceAddress: "m9-profile-device",
+		EntityAddress: []uint64{1}, FeatureAddress: 2, FeatureType: candidate.EEBusSource.FeatureType,
+		FeatureRole: eebusraw.FeatureRoleV1Server,
+	}
+}
+
+func promotedProfileInventory(candidate promotioncapture.CandidateDefinition, locator eebusraw.FeatureLocatorV1, omit string) eebusraw.FeaturesGetDataV1 {
+	profile := candidate.EEBusSource
+	functions := append([]string(nil), profile.DescriptionFunctions...)
+	if profile.ConstraintsFunction != nil {
+		functions = append(functions, *profile.ConstraintsFunction)
+	}
+	functions = append(functions, profile.ValueFunctions...)
+	descriptors := make([]eebusraw.FunctionDescriptorV1, 0, len(functions))
+	for _, function := range functions {
+		if function != omit {
+			descriptors = append(descriptors, eebusraw.FunctionDescriptorV1{Function: function, PossibleOperations: eebusraw.FullOperationsV1{Read: true}})
+		}
+	}
+	return eebusraw.FeaturesGetDataV1{Feature: locator, Functions: descriptors, Runtime: eebusraw.RuntimeBindingV1{RuntimeEpoch: 7, ConnectionGeneration: 3}}
+}
+
+func promotedMeasurementDescription(commodity, scope string) map[string]any {
+	return map[string]any{"measurementDescriptionData": []any{map[string]any{
+		"measurementId": int64(0), "commodityType": commodity, "measurementType": "temperature", "scopeType": scope, "unit": "degC",
+	}}}
+}
+
+func promotedMeasurementConstraints(minimum int64) map[string]any {
+	return map[string]any{"measurementConstraintsData": []any{map[string]any{
+		"measurementId": int64(0),
+		"valueRangeMin": map[string]any{"number": minimum, "scale": int64(-6)},
+		"valueRangeMax": map[string]any{"number": int64(99), "scale": int64(0)},
+		"valueStepSize": map[string]any{"number": int64(1), "scale": int64(0)},
+	}}}
+}
+
+type promotedProfileRuntime struct {
+	binding eebusraw.RuntimeBindingV1
+	values  map[string]any
+}
+
+func (*promotedProfileRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
+	return eebusruntime.SnapshotV1{}, nil
+}
+
+func (*promotedProfileRuntime) FeaturesGet(context.Context, eebusraw.ReadAuthorizationV1, eebusraw.FeaturesGetRequestV1) (eebusraw.FeaturesGetDataV1, *eebusraw.ErrorV1) {
+	return eebusraw.FeaturesGetDataV1{}, nil
+}
+
+func (runtime *promotedProfileRuntime) FeaturesDataGet(_ context.Context, _ eebusraw.ReadAuthorizationV1, request eebusraw.FeatureDataGetRequestV1) (eebusraw.FeatureDataGetDataV1, *eebusraw.ErrorV1) {
+	target := request.Targets[0]
+	value, err := eebusraw.NewTypedValueV1(runtime.values[target.Function])
+	if err != nil {
+		panic(err)
+	}
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	observation := eebusraw.ReadObservationV1{
+		Target: target, Runtime: runtime.binding,
+		RawRequest:  eebusraw.ProtocolMessageV1{Classifier: "READ", CorrelationKey: 1, Function: target.Function},
+		RawResponse: eebusraw.ProtocolMessageV1{Classifier: "REPLY", CorrelationKey: 1, Function: target.Function, Data: &value},
+		Value:       value, RequestedAt: now, ReceivedAt: now.Add(time.Millisecond), DataTimestamp: now.Add(time.Millisecond), Source: eebusraw.ObservationSourceV1Live,
+		ReadToken: eebusraw.ReadTokenV1{ReadToken: strings.Repeat("E", 43), ExpiresAt: now.Add(time.Minute), BindingHash: eebusraw.HashV1("sha256:" + strings.Repeat("1", 64))},
+	}
+	observation.DataHash, err = observation.ComputeDataHash()
+	if err != nil {
+		panic(err)
+	}
+	return eebusraw.FeatureDataGetDataV1{Results: []eebusraw.ReadObservationV1{observation}, Complete: true}, nil
 }
 
 func promotedValueFor(class promotioncapture.ComparatorClass, path string) promotioncapture.TypedValue {

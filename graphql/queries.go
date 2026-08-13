@@ -27,6 +27,7 @@ type graphqlSchemaTypes struct {
 	circuitStatusType       *graphqlgo.Object
 	radioDeviceType         *graphqlgo.Object
 	fm5SemanticMode         *graphqlgo.Enum
+	fm5Interpretation       *graphqlgo.Object
 	solarStatusType         *graphqlgo.Object
 	cylinderStatusType      *graphqlgo.Object
 	energyTotals            *graphqlgo.Object
@@ -1943,6 +1944,45 @@ func buildSchemaTypes() graphqlSchemaTypes {
 			string(Fm5SemanticModeInterpreted): &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeInterpreted)},
 			string(Fm5SemanticModeGPIOOnly):    &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeGPIOOnly)},
 			string(Fm5SemanticModeAbsent):      &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticModeAbsent)},
+		},
+	})
+	fm5SemanticDegradedReasonType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+		Name: "Fm5SemanticDegradedReason",
+		Values: graphqlgo.EnumValueConfigMap{
+			string(Fm5SemanticDegradedReasonControllerUnreachable):         &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonControllerUnreachable)},
+			string(Fm5SemanticDegradedReasonConfigurationUnavailable):      &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonConfigurationUnavailable)},
+			string(Fm5SemanticDegradedReasonConfigurationNotInterpretable): &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonConfigurationNotInterpretable)},
+			string(Fm5SemanticDegradedReasonSolarAcquisitionFailed):        &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonSolarAcquisitionFailed)},
+			string(Fm5SemanticDegradedReasonCylinderAcquisitionFailed):     &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonCylinderAcquisitionFailed)},
+			string(Fm5SemanticDegradedReasonEvidenceStale):                 &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonEvidenceStale)},
+			string(Fm5SemanticDegradedReasonIncoherentAcquisition):         &graphqlgo.EnumValueConfig{Value: string(Fm5SemanticDegradedReasonIncoherentAcquisition)},
+		},
+	})
+	fm5InterpretationType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "Fm5Interpretation",
+		Fields: graphqlgo.Fields{
+			"mode": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(fm5SemanticModeType),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return string(params.Source.(Fm5Interpretation).Mode), nil
+				},
+			},
+			"degradedReason": &graphqlgo.Field{
+				Type: fm5SemanticDegradedReasonType,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					reason := params.Source.(Fm5Interpretation).DegradedReason
+					if reason == "" {
+						return nil, nil
+					}
+					return string(reason), nil
+				},
+			},
+			"evidenceRevision": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.String),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return params.Source.(Fm5Interpretation).EvidenceRevision, nil
+				},
+			},
 		},
 	})
 
@@ -4946,6 +4986,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		circuitStatusType:       circuitStatusType,
 		radioDeviceType:         radioDeviceType,
 		fm5SemanticMode:         fm5SemanticModeType,
+		fm5Interpretation:       fm5InterpretationType,
 		solarStatusType:         solarStatusType,
 		cylinderStatusType:      cylinderStatusType,
 		energyTotals:            energyTotalsType,
@@ -5068,6 +5109,20 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 						mode = Fm5SemanticModeAbsent
 					}
 					return string(mode), nil
+				},
+			},
+			"fm5Interpretation": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.fm5Interpretation),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					provider := builder.semanticProvider()
+					if typed, ok := provider.(FM5InterpretationProvider); ok {
+						verdict := typed.FM5Interpretation()
+						if err := verdict.Validate(); err != nil {
+							return nil, err
+						}
+						return verdict, nil
+					}
+					return legacyFM5Interpretation(provider.FM5SemanticMode()), nil
 				},
 			},
 			"fm5_semantic_mode": &graphqlgo.Field{

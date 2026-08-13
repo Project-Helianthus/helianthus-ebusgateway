@@ -1,6 +1,8 @@
 package graphql
 
 import (
+	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -133,6 +135,73 @@ const (
 	Fm5SemanticModeGPIOOnly    Fm5SemanticMode = "GPIO_ONLY"
 	Fm5SemanticModeAbsent      Fm5SemanticMode = "ABSENT"
 )
+
+type Fm5SemanticDegradedReason string
+
+const (
+	Fm5SemanticDegradedReasonControllerUnreachable         Fm5SemanticDegradedReason = "CONTROLLER_UNREACHABLE"
+	Fm5SemanticDegradedReasonConfigurationUnavailable      Fm5SemanticDegradedReason = "CONFIGURATION_UNAVAILABLE"
+	Fm5SemanticDegradedReasonConfigurationNotInterpretable Fm5SemanticDegradedReason = "CONFIGURATION_NOT_INTERPRETABLE"
+	Fm5SemanticDegradedReasonSolarAcquisitionFailed        Fm5SemanticDegradedReason = "SOLAR_ACQUISITION_FAILED"
+	Fm5SemanticDegradedReasonCylinderAcquisitionFailed     Fm5SemanticDegradedReason = "CYLINDER_ACQUISITION_FAILED"
+	Fm5SemanticDegradedReasonEvidenceStale                 Fm5SemanticDegradedReason = "EVIDENCE_STALE"
+	Fm5SemanticDegradedReasonIncoherentAcquisition         Fm5SemanticDegradedReason = "INCOHERENT_ACQUISITION"
+)
+
+type Fm5Interpretation struct {
+	Mode             Fm5SemanticMode
+	DegradedReason   Fm5SemanticDegradedReason
+	EvidenceRevision string
+}
+
+func (value Fm5Interpretation) Validate() error {
+	if strings.TrimSpace(value.EvidenceRevision) == "" {
+		return errors.New("fm5 evidence revision is required")
+	}
+	switch value.Mode {
+	case Fm5SemanticModeInterpreted, Fm5SemanticModeAbsent:
+		if value.DegradedReason != "" {
+			return errors.New("fm5 degraded reason is forbidden outside GPIO_ONLY")
+		}
+	case Fm5SemanticModeGPIOOnly:
+		if !validFm5SemanticDegradedReason(value.DegradedReason) {
+			return errors.New("fm5 GPIO_ONLY requires one closed degraded reason")
+		}
+	default:
+		return errors.New("invalid fm5 semantic mode")
+	}
+	return nil
+}
+
+func validFm5SemanticDegradedReason(reason Fm5SemanticDegradedReason) bool {
+	switch reason {
+	case Fm5SemanticDegradedReasonControllerUnreachable,
+		Fm5SemanticDegradedReasonConfigurationUnavailable,
+		Fm5SemanticDegradedReasonConfigurationNotInterpretable,
+		Fm5SemanticDegradedReasonSolarAcquisitionFailed,
+		Fm5SemanticDegradedReasonCylinderAcquisitionFailed,
+		Fm5SemanticDegradedReasonEvidenceStale,
+		Fm5SemanticDegradedReasonIncoherentAcquisition:
+		return true
+	default:
+		return false
+	}
+}
+
+func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
+	if mode == "" {
+		mode = Fm5SemanticModeAbsent
+	}
+	verdict := Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
+	if mode == Fm5SemanticModeGPIOOnly {
+		verdict.DegradedReason = Fm5SemanticDegradedReasonIncoherentAcquisition
+	}
+	return verdict
+}
+
+type FM5InterpretationProvider interface {
+	FM5Interpretation() Fm5Interpretation
+}
 
 type SolarStatus struct {
 	CollectorTemperatureC *float64

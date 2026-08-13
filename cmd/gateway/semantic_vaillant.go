@@ -272,6 +272,7 @@ var (
 	passiveShadowSubscriberPriority = ebusgateway.DedupSubscriberCritical
 	passiveShadowSubscriberBuffer   = 256
 	passiveShadowRetryDelay         = 100 * time.Millisecond
+	defaultFM5EvidenceTTL           = 30 * time.Minute
 )
 
 func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, provider *graphql.LiveSemanticProvider, hub *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
@@ -320,6 +321,7 @@ type vaillantSemanticPoller struct {
 	zoneHitThreshold         int
 	dhwStaleTTL              time.Duration
 	deviceSlotRediscoveryTTL time.Duration
+	fm5EvidenceTTL           time.Duration
 	circuitFullScanInterval  time.Duration
 
 	pollMu sync.Mutex
@@ -358,17 +360,22 @@ type vaillantSemanticPoller struct {
 	startupSemanticPrimed       bool
 	startupRadioDevicesProbed   bool
 	fm5Mode                     graphql.Fm5SemanticMode
+	fm5Interpretation           graphql.Fm5Interpretation
+	fm5EvidenceRevision         uint64
+	fm5EvidenceGeneration       uint64
+	fm5IdentityObservedAt       time.Time
 	solar                       *vaillantSolarSnapshot
 	solarCylinders              map[byte]*vaillantCylinderSnapshot
 
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
 
-	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
-	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
-	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
-	routerPlanesRefreshFn  func()
-	nowFn                  func() time.Time
+	refreshFromEbusdGrabFn       func(context.Context) (map[byte]bool, bool)
+	b524ProbeFn                  func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
+	sendFrameFn                  func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
+	routerPlanesRefreshFn        func()
+	withFM5ObservationGeneration func(func(uint64)) bool
+	nowFn                        func() time.Time
 }
 
 type regulatorEnrichment struct {
@@ -712,6 +719,7 @@ func newVaillantSemanticPoller(cfg ebusgateway.Config, gateway *ebusgateway.Gate
 		zoneHitThreshold:         cfg.SemanticZonePresenceHitThreshold,
 		dhwStaleTTL:              cfg.SemanticDHWStaleTTL,
 		deviceSlotRediscoveryTTL: 30 * time.Minute,
+		fm5EvidenceTTL:           defaultFM5EvidenceTTL,
 		circuitFullScanInterval:  semanticCircuitFullScanInterval,
 
 		catalog:    catalog,
@@ -1760,7 +1768,7 @@ func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
 		if snapshot.SystemFlowTemperature != nil {
 			snapshot.SystemFlowTemperatureLiveAt = p.now()
 		}
-		p.system = mergeSystemSnapshotNonDestructive(p.system, snapshot)
+		p.updateSystemSnapshotLocked(mergeSystemSnapshotNonDestructive(p.system, snapshot))
 		source = semanticSnapshotSourceLive
 	}
 	hasSnapshot := p.system != nil
@@ -1829,6 +1837,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	if len(discovered) == 0 {
 		if readAny {
 			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+			p.fm5EvidenceGeneration++
 		}
 		p.mu.Unlock()
 		if readAny {
@@ -1841,6 +1850,12 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	}
 	for key, snapshot := range discovered {
 		p.radioDevices[key] = snapshot
+	}
+	if readAny {
+		p.fm5EvidenceGeneration++
+		if hasFM5EvidenceFromRadioMap(p.radioDevices) {
+			p.fm5IdentityObservedAt = p.now()
+		}
 	}
 	p.mu.Unlock()
 	source := semanticSnapshotSourceCache
@@ -1937,47 +1952,33 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 		return
 	}
 
-	p.mu.Lock()
-	controller := p.controller
-	systemSnapshot := cloneSystemSnapshot(p.system)
-	var moduleConfig *uint16
-	if p.system != nil {
-		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
-	}
-	radioSnapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices))
-	for _, snapshot := range p.radioDevices {
-		if snapshot != nil {
-			radioSnapshots = append(radioSnapshots, cloneRadioSnapshot(snapshot))
-		}
-	}
-	p.mu.Unlock()
-
-	fm5GateSatisfied := moduleConfig != nil && *moduleConfig <= 2
+	evidence := p.captureFM5Evidence()
+	fm5GateSatisfied := evidence.moduleConfig != nil && *evidence.moduleConfig <= 2
+	evidenceStale := evidence.staleAt(p.now(), p.fm5EvidenceTTL)
 	var incomingSolar *vaillantSolarSnapshot
 	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
 	solarReadable := false
 	cylindersReadable := false
-	if controller != 0 && fm5GateSatisfied {
+	if evidence.controller != 0 && fm5GateSatisfied && !evidenceStale {
 		incomingSolar, solarReadable = p.readSolarSnapshotStartup(ctx)
 		incomingCylinders, cylindersReadable = p.readCylinderSnapshotsStartup(ctx)
 	}
-	hasFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
-	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
-	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+	currentEvidence := p.captureFM5Evidence()
+	incoherent := !evidence.sameGeneration(currentEvidence)
+	verdict := deriveFM5Interpretation(
+		evidence.controller != 0,
+		evidence.moduleConfig,
+		solarReadable,
+		cylindersReadable,
+		evidence.hasEvidence() || currentEvidence.hasEvidence(),
+		evidenceStale,
+		incoherent,
+		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
+	)
+	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
+	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
-
-	p.mu.Lock()
-	p.fm5Mode = nextMode
-	switch nextMode {
-	case graphql.Fm5SemanticModeInterpreted:
-		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
-		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
-	default:
-		p.solar = nil
-		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
-	}
-	p.mu.Unlock()
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
 
@@ -2474,6 +2475,7 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
 		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
 		p.fm5Mode = graphql.Fm5SemanticModeAbsent
+		p.fm5EvidenceGeneration++
 		p.solar = nil
 		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
 		p.startupSemanticPrimed = false
@@ -2533,6 +2535,9 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 	prevController := p.controller
 	prevBoilerAddress := p.boilerAddress
 	p.controller = controller
+	if controller != prevController {
+		p.fm5EvidenceGeneration++
+	}
 	p.boilerAddress = boilerAddress
 	p.regulatorCapability = regCap
 	primeStartup := !p.startupSemanticPrimed
@@ -5142,7 +5147,7 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	}
 
 	p.mu.Lock()
-	p.system = mergeSystemSnapshotNonDestructive(p.system, snapshot)
+	p.updateSystemSnapshotLocked(mergeSystemSnapshotNonDestructive(p.system, snapshot))
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
@@ -5221,6 +5226,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		if discoveryObserved {
 			p.mu.Lock()
 			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+			p.fm5EvidenceGeneration++
 			p.mu.Unlock()
 			p.publishRadioDevices(semanticSnapshotSourceLive)
 			p.refreshFM5Semantic(ctx)
@@ -5299,6 +5305,10 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 	p.mu.Lock()
 	p.radioDevices = discovered
+	p.fm5EvidenceGeneration++
+	if hasFM5EvidenceFromRadioMap(discovered) {
+		p.fm5IdentityObservedAt = p.now()
+	}
 	p.mu.Unlock()
 
 	p.publishRadioDevices(semanticSnapshotSourceLive)
@@ -5481,50 +5491,35 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 		return
 	}
 
-	p.mu.Lock()
-	controller := p.controller
-	var moduleConfig *uint16
-	systemSnapshot := cloneSystemSnapshot(p.system)
-	if p.system != nil {
-		moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
-	}
-	radioSnapshots := make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices))
-	for _, snapshot := range p.radioDevices {
-		if snapshot == nil {
-			continue
-		}
-		radioSnapshots = append(radioSnapshots, cloneRadioSnapshot(snapshot))
-	}
-	p.mu.Unlock()
-
-	hasFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
-	fm5GateSatisfied := moduleConfig != nil && *moduleConfig <= 2
+	evidence := p.captureFM5Evidence()
+	fm5GateSatisfied := evidence.moduleConfig != nil && *evidence.moduleConfig <= 2
+	evidenceStale := evidence.staleAt(p.now(), p.fm5EvidenceTTL)
 
 	var incomingSolar *vaillantSolarSnapshot
 	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
 	solarReadable := false
 	cylindersReadable := false
-	if controller != 0 && fm5GateSatisfied {
+	if evidence.controller != 0 && fm5GateSatisfied && !evidenceStale {
 		incomingSolar, solarReadable = p.readSolarSnapshot(ctx)
 		incomingCylinders, cylindersReadable = p.readCylinderSnapshots(ctx)
 	}
 
-	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
-	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+	currentEvidence := p.captureFM5Evidence()
+	incoherent := !evidence.sameGeneration(currentEvidence)
+	verdict := deriveFM5Interpretation(
+		evidence.controller != 0,
+		evidence.moduleConfig,
+		solarReadable,
+		cylindersReadable,
+		evidence.hasEvidence() || currentEvidence.hasEvidence(),
+		evidenceStale,
+		incoherent,
+		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
+	)
+	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
+	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
-
-	p.mu.Lock()
-	p.fm5Mode = nextMode
-	switch nextMode {
-	case graphql.Fm5SemanticModeInterpreted:
-		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
-		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
-	default:
-		p.solar = nil
-		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
-	}
-	p.mu.Unlock()
 
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
@@ -5539,6 +5534,241 @@ func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable,
 	return graphql.Fm5SemanticModeAbsent
 }
 
+type fm5EvidenceCapture struct {
+	controller         byte
+	moduleConfig       *uint16
+	systemSnapshot     *vaillantSystemSnapshot
+	radioSnapshots     []*vaillantRadioDeviceSnapshot
+	registryEvidence   string
+	registryGeneration uint64
+	registryCoherent   bool
+	identityObservedAt time.Time
+	generation         uint64
+}
+
+func (p *vaillantSemanticPoller) captureFM5Evidence() fm5EvidenceCapture {
+	if p == nil {
+		return fm5EvidenceCapture{}
+	}
+	p.mu.Lock()
+	capture := fm5EvidenceCapture{
+		controller:         p.controller,
+		systemSnapshot:     cloneSystemSnapshot(p.system),
+		identityObservedAt: p.fm5IdentityObservedAt,
+		generation:         p.fm5EvidenceGeneration,
+		radioSnapshots:     make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices)),
+	}
+	if p.system != nil {
+		capture.moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
+	}
+	for _, snapshot := range p.radioDevices {
+		if snapshot != nil {
+			capture.radioSnapshots = append(capture.radioSnapshots, cloneRadioSnapshot(snapshot))
+		}
+	}
+	p.mu.Unlock()
+
+	capture.registryEvidence, capture.registryGeneration, capture.registryCoherent = p.captureFM5RegistryEvidence()
+	if capture.hasEvidence() && capture.identityObservedAt.IsZero() {
+		observedAt := p.now()
+		p.mu.Lock()
+		if p.fm5IdentityObservedAt.IsZero() {
+			p.fm5IdentityObservedAt = observedAt
+		}
+		capture.identityObservedAt = p.fm5IdentityObservedAt
+		capture.generation = p.fm5EvidenceGeneration
+		p.mu.Unlock()
+	}
+	return capture
+}
+
+func (capture fm5EvidenceCapture) hasEvidence() bool {
+	return capture.registryEvidence != "" || hasFM5EvidenceFromRadioSnapshots(capture.radioSnapshots)
+}
+
+func (capture fm5EvidenceCapture) staleAt(now time.Time, ttl time.Duration) bool {
+	if !capture.hasEvidence() || capture.identityObservedAt.IsZero() || ttl <= 0 {
+		return false
+	}
+	return now.Sub(capture.identityObservedAt) > ttl
+}
+
+func (capture fm5EvidenceCapture) sameGeneration(other fm5EvidenceCapture) bool {
+	return capture.registryCoherent && other.registryCoherent &&
+		capture.generation == other.generation &&
+		capture.controller == other.controller &&
+		uint16PointersEqual(capture.moduleConfig, other.moduleConfig) &&
+		capture.registryGeneration == other.registryGeneration &&
+		capture.registryEvidence == other.registryEvidence
+}
+
+func (capture fm5EvidenceCapture) matchesLockedPoller(p *vaillantSemanticPoller) bool {
+	if p == nil {
+		return false
+	}
+	var moduleConfig *uint16
+	if p.system != nil {
+		moduleConfig = p.system.ModuleConfigurationVR71
+	}
+	return capture.generation == p.fm5EvidenceGeneration &&
+		capture.controller == p.controller &&
+		uint16PointersEqual(capture.moduleConfig, moduleConfig)
+}
+
+func (p *vaillantSemanticPoller) commitFM5Acquisition(
+	captured fm5EvidenceCapture,
+	verdict graphql.Fm5Interpretation,
+	incomingSolar *vaillantSolarSnapshot,
+	incomingCylinders map[byte]*vaillantCylinderSnapshot,
+) graphql.Fm5Interpretation {
+	commit := func(registryGeneration uint64, registryCoherent bool) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !registryCoherent || !captured.registryCoherent ||
+			captured.registryGeneration != registryGeneration ||
+			!captured.matchesLockedPoller(p) {
+			p.fm5EvidenceRevision++
+			verdict = graphql.Fm5Interpretation{
+				Mode:             graphql.Fm5SemanticModeGPIOOnly,
+				DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
+				EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
+			}
+		}
+		p.fm5Mode = verdict.Mode
+		p.fm5Interpretation = verdict
+		p.solar, p.solarCylinders = applyFM5Acquisition(
+			p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
+		)
+	}
+
+	withGeneration := p.withFM5ObservationGeneration
+	if withGeneration == nil && p.reg != nil {
+		withGeneration = p.reg.WithObservationGeneration
+	}
+	if withGeneration == nil {
+		commit(0, true)
+		return verdict
+	}
+	committed := false
+	if withGeneration(func(current uint64) {
+		// Do not call any DeviceRegistry method from this callback. The
+		// registry read lock is deliberately held across the generation
+		// comparison and semantic commit.
+		commit(current, true)
+		committed = true
+	}) && committed {
+		return verdict
+	}
+	commit(captured.registryGeneration, false)
+	return verdict
+}
+
+func (p *vaillantSemanticPoller) updateSystemSnapshotLocked(snapshot *vaillantSystemSnapshot) {
+	var previousConfig *uint16
+	if p.system != nil {
+		previousConfig = p.system.ModuleConfigurationVR71
+	}
+	var nextConfig *uint16
+	if snapshot != nil {
+		nextConfig = snapshot.ModuleConfigurationVR71
+	}
+	p.system = snapshot
+	if !uint16PointersEqual(previousConfig, nextConfig) {
+		p.fm5EvidenceGeneration++
+	}
+}
+
+func uint16PointersEqual(left, right *uint16) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func hasFM5EvidenceFromRadioMap(snapshots map[radioDeviceKey]*vaillantRadioDeviceSnapshot) bool {
+	for _, snapshot := range snapshots {
+		if hasFM5EvidenceFromRadioSnapshots([]*vaillantRadioDeviceSnapshot{snapshot}) {
+			return true
+		}
+	}
+	return false
+}
+
+func deriveFM5Interpretation(
+	controllerReachable bool,
+	moduleConfig *uint16,
+	solarReadable bool,
+	cylindersReadable bool,
+	hasEvidence bool,
+	evidenceStale bool,
+	incoherent bool,
+	evidenceRevision string,
+) graphql.Fm5Interpretation {
+	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
+	if !hasEvidence {
+		verdict.Mode = graphql.Fm5SemanticModeAbsent
+		return verdict
+	}
+	verdict.Mode = graphql.Fm5SemanticModeGPIOOnly
+	switch {
+	case incoherent:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonIncoherentAcquisition
+	case !controllerReachable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonControllerUnreachable
+	case moduleConfig == nil:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationUnavailable
+	case *moduleConfig > 2:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
+	case evidenceStale:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonEvidenceStale
+	case !solarReadable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed
+	case !cylindersReadable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed
+	default:
+		verdict.Mode = graphql.Fm5SemanticModeInterpreted
+	}
+	return verdict
+}
+
+func applyFM5Acquisition(
+	previousSolar *vaillantSolarSnapshot,
+	previousCylinders map[byte]*vaillantCylinderSnapshot,
+	incomingSolar *vaillantSolarSnapshot,
+	incomingCylinders map[byte]*vaillantCylinderSnapshot,
+	verdict graphql.Fm5Interpretation,
+) (*vaillantSolarSnapshot, map[byte]*vaillantCylinderSnapshot) {
+	switch {
+	case verdict.Mode == graphql.Fm5SemanticModeInterpreted:
+		return mergeSolarSnapshotNonDestructive(previousSolar, incomingSolar),
+			mergeCylinderSnapshotMapNonDestructive(previousCylinders, incomingCylinders)
+	case isFM5StructuralWithdrawal(verdict):
+		return nil, make(map[byte]*vaillantCylinderSnapshot)
+	default:
+		return cloneSolarSnapshot(previousSolar), cloneCylinderSnapshotsMap(previousCylinders)
+	}
+}
+
+func isFM5StructuralWithdrawal(verdict graphql.Fm5Interpretation) bool {
+	return verdict.Mode == graphql.Fm5SemanticModeAbsent ||
+		(verdict.Mode == graphql.Fm5SemanticModeGPIOOnly &&
+			verdict.DegradedReason == graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
+}
+
+func (p *vaillantSemanticPoller) nextFM5EvidenceRevision(startGeneration, endGeneration uint64) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fm5EvidenceRevision++
+	return formatFM5EvidenceRevision(startGeneration, endGeneration, p.fm5EvidenceRevision)
+}
+
+func formatFM5EvidenceRevision(startGeneration, endGeneration, acquisition uint64) string {
+	if startGeneration != endGeneration {
+		return fmt.Sprintf("fm5-g%d-%d-a%d", startGeneration, endGeneration, acquisition)
+	}
+	return fmt.Sprintf("fm5-g%d-a%d", endGeneration, acquisition)
+}
+
 func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
 	if p == nil || p.provider == nil {
 		return
@@ -5549,18 +5779,22 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 	if mode == "" {
 		mode = graphql.Fm5SemanticModeAbsent
 	}
+	verdict := p.fm5Interpretation
+	if verdict.Mode == "" {
+		verdict = graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
+	}
 	solarSnapshot := cloneSolarSnapshot(p.solar)
 	cylindersSnapshot := cloneCylinderSnapshotsMap(p.solarCylinders)
 	p.mu.Unlock()
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetFM5SemanticModeFromCache(mode)
+		p.provider.SetFM5InterpretationFromCache(verdict)
 	default:
-		p.provider.SetFM5SemanticMode(mode)
+		p.provider.SetFM5Interpretation(verdict)
 	}
 
-	if mode != graphql.Fm5SemanticModeInterpreted {
+	if isFM5StructuralWithdrawal(verdict) || (solarSnapshot == nil && len(cylindersSnapshot) == 0) {
 		emptySolar := &graphql.SolarStatus{}
 		emptyCylinders := []graphql.CylinderStatus{}
 		switch source {
@@ -5776,20 +6010,45 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 }
 
 func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
+	return p.fm5RegistryEvidenceFingerprint() != ""
+}
+
+func (p *vaillantSemanticPoller) captureFM5RegistryEvidence() (string, uint64, bool) {
 	if p == nil || p.reg == nil {
-		return false
+		return "", 0, true
+	}
+	for range 3 {
+		var before uint64
+		if !p.reg.WithObservationGeneration(func(current uint64) { before = current }) {
+			return "", 0, false
+		}
+		fingerprint := p.fm5RegistryEvidenceFingerprint()
+		var after uint64
+		if !p.reg.WithObservationGeneration(func(current uint64) { after = current }) {
+			return fingerprint, before, false
+		}
+		if before == after {
+			return fingerprint, after, true
+		}
+	}
+	return p.fm5RegistryEvidenceFingerprint(), 0, false
+}
+
+func (p *vaillantSemanticPoller) fm5RegistryEvidenceFingerprint() string {
+	if p == nil || p.reg == nil {
+		return ""
 	}
 	// P9.3 — race-free DeviceID read via snapshot.
-	found := false
+	identities := make([]string, 0, 1)
 	p.reg.IterateSnapshots(func(snap registry.DeviceEntrySnapshot) bool {
 		deviceID := normalizeDeviceID(snap.DeviceID)
 		if strings.HasPrefix(deviceID, "VR71") || strings.HasPrefix(deviceID, "FM5") {
-			found = true
-			return false
+			identities = append(identities, fmt.Sprintf("%02x:%s", snap.PrimaryAddress, deviceID))
 		}
 		return true
 	})
-	return found
+	slices.Sort(identities)
+	return strings.Join(identities, "|")
 }
 
 func mergeSolarSnapshotNonDestructive(existing, incoming *vaillantSolarSnapshot) *vaillantSolarSnapshot {
@@ -7406,7 +7665,7 @@ func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, 
 
 	normalizedValue := strings.TrimSpace(rawValue)
 	p.mu.Lock()
-	p.system = systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue)
+	p.updateSystemSnapshotLocked(systemSnapshotWithConfigValue(p.system, fieldName, normalizedValue))
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)
@@ -7462,7 +7721,7 @@ func (p *vaillantSemanticPoller) writeSystemCStringPair(ctx context.Context, fie
 	}
 
 	p.mu.Lock()
-	p.system = systemSnapshotWithConfigValue(p.system, fieldName, trimmed)
+	p.updateSystemSnapshotLocked(systemSnapshotWithConfigValue(p.system, fieldName, trimmed))
 	p.mu.Unlock()
 
 	p.publishSystem(semanticSnapshotSourceLive)

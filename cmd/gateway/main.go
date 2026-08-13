@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	buildVersion                              = "0.6.32"
+	buildVersion                              = "dev"
 	buildID                                   = "unknown"
 	wireObserveFirstObserversFn               = wireObserveFirstObservers
 	startDiscoveryScanLoopFn                  = startDiscoveryScanLoopWithClassifier
@@ -163,6 +163,11 @@ func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
+	resolvedBuildInfo, err := newGatewayBuildInfo(buildVersion, buildID)
+	if err != nil {
+		return fmt.Errorf("gateway build identity: %w", err)
+	}
+
 	applyTransportSourcePolicy(&cfg)
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
 		return fmt.Errorf("validate synchronized evidence config: %w", err)
@@ -235,7 +240,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	// Errors during Load are tolerated — Manager.Load returns an empty
 	// state on missing/corrupt and the gateway continues without a hint.
 	// (runtime-state-w19-26.locked M2_GATEWAY_LOADER + M4_SOURCE_SELECTION_HINT)
-	runtimeStateMgr, runtimeState := initRuntimeStateManager(ctx, cfg)
+	runtimeStateMgr, runtimeState := initRuntimeStateManager(ctx, cfg, resolvedBuildInfo)
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1100,7 +1105,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1938,6 +1943,7 @@ func startHTTPServer(
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
+	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
@@ -2148,8 +2154,8 @@ func startHTTPServer(
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
 			MCPPath:          cfg.MCPPath,
-			GatewayVersion:   buildVersion,
-			BuildID:          buildID,
+			GatewayVersion:   buildInfo.ReleaseVersion,
+			BuildID:          buildInfo.BuildID,
 			ListRegistry: func() []portal.RegistryDevice {
 				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
@@ -2206,19 +2212,27 @@ func startHTTPServer(
 				if semanticProvider == nil {
 					return portal.SemanticSnapshot{}
 				}
+				verdict := portalFM5Interpretation(semanticProvider)
+				var degradedReason *string
+				if verdict.DegradedReason != "" {
+					reason := string(verdict.DegradedReason)
+					degradedReason = &reason
+				}
 				return portal.SemanticSnapshot{
-					Zones:        mapPortalZones(semanticProvider.Zones()),
-					DHW:          mapPortalDHW(semanticProvider.DHW()),
-					Energy:       mapPortalEnergyTotals(semanticProvider.EnergyTotals()),
-					BoilerStatus: mapPortalBoilerStatus(semanticProvider.BoilerStatus()),
-					System:       mapPortalSystemStatus(semanticProvider.System()),
-					Circuits:     mapPortalCircuits(semanticProvider.Circuits()),
-					RadioDevices: mapPortalRadioDevices(semanticProvider.RadioDevices()),
-					FM5Mode:      string(semanticProvider.FM5SemanticMode()),
-					Solar:        mapPortalSolarStatus(semanticProvider.Solar()),
-					Cylinders:    mapPortalCylinders(semanticProvider.Cylinders()),
-					AdapterInfo:  mapPortalAdapterInfo(semanticProvider.AdapterHardwareInfo()),
-					CapturedUTC:  time.Now().UTC().Format(time.RFC3339),
+					Zones:               mapPortalZones(semanticProvider.Zones()),
+					DHW:                 mapPortalDHW(semanticProvider.DHW()),
+					Energy:              mapPortalEnergyTotals(semanticProvider.EnergyTotals()),
+					BoilerStatus:        mapPortalBoilerStatus(semanticProvider.BoilerStatus()),
+					System:              mapPortalSystemStatus(semanticProvider.System()),
+					Circuits:            mapPortalCircuits(semanticProvider.Circuits()),
+					RadioDevices:        mapPortalRadioDevices(semanticProvider.RadioDevices()),
+					FM5Mode:             string(verdict.Mode),
+					FM5DegradedReason:   degradedReason,
+					FM5EvidenceRevision: verdict.EvidenceRevision,
+					Solar:               mapPortalSolarStatus(semanticProvider.Solar()),
+					Cylinders:           mapPortalCylinders(semanticProvider.Cylinders()),
+					AdapterInfo:         mapPortalAdapterInfo(semanticProvider.AdapterHardwareInfo()),
+					CapturedUTC:         time.Now().UTC().Format(time.RFC3339),
 				}
 			},
 			GetBusObservability: getPortalBusObservability,
@@ -2360,6 +2374,27 @@ func startHTTPServer(
 	}()
 
 	return server, advertiser, nil
+}
+
+func portalFM5Interpretation(provider graphql.SemanticProvider) graphql.Fm5Interpretation {
+	if provider == nil {
+		return graphql.Fm5Interpretation{Mode: graphql.Fm5SemanticModeAbsent, EvidenceRevision: "initial"}
+	}
+	if typed, ok := provider.(graphql.FM5InterpretationProvider); ok {
+		verdict := typed.FM5Interpretation()
+		if verdict.Validate() == nil {
+			return verdict
+		}
+	}
+	mode := provider.FM5SemanticMode()
+	if mode == "" {
+		mode = graphql.Fm5SemanticModeAbsent
+	}
+	verdict := graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
+	if mode == graphql.Fm5SemanticModeGPIOOnly {
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonIncoherentAcquisition
+	}
+	return verdict
 }
 
 func normalizeMountPath(path string, fallback string) string {
@@ -2941,10 +2976,10 @@ func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 // On Manager.Load failure (missing / corrupt file), Manager.Load returns an
 // empty state and the gateway continues without a hint — the cache is a
 // best-effort optimisation, not a startup requirement (AD11 + M2 spec).
-func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config) (*runtimestate.Manager, *runtimestate.State) {
+func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildInfo gatewayBuildInfo) (*runtimestate.Manager, *runtimestate.State) {
 	mgr := runtimestate.New(runtimestate.Options{
 		Path:         cfg.RuntimeStatePath,
-		GatewayBuild: fmt.Sprintf("%s+%s", buildVersion, buildID),
+		GatewayBuild: fmt.Sprintf("%s+%s", buildInfo.ReleaseVersion, buildInfo.BuildID),
 		AddonVersion: "", // populated by add-on via future flag if needed
 	})
 	state, err := mgr.Load(ctx)

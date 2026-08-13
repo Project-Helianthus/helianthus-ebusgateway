@@ -313,6 +313,60 @@ const (
 	Fm5SemanticModeAbsent      Fm5SemanticMode = "ABSENT"
 )
 
+type Fm5SemanticDegradedReason string
+
+type Fm5Interpretation struct {
+	Mode             Fm5SemanticMode            `json:"mode"`
+	DegradedReason   *Fm5SemanticDegradedReason `json:"degraded_reason"`
+	EvidenceRevision string                     `json:"evidence_revision"`
+}
+
+func (value Fm5Interpretation) validate() error {
+	if strings.TrimSpace(value.EvidenceRevision) == "" {
+		return errors.New("fm5 evidence revision is required")
+	}
+	if value.Mode == Fm5SemanticModeGPIOOnly {
+		if value.DegradedReason == nil || strings.TrimSpace(string(*value.DegradedReason)) == "" {
+			return errors.New("fm5 GPIO_ONLY requires a degraded reason")
+		}
+		switch *value.DegradedReason {
+		case "CONTROLLER_UNREACHABLE",
+			"CONFIGURATION_UNAVAILABLE",
+			"CONFIGURATION_NOT_INTERPRETABLE",
+			"SOLAR_ACQUISITION_FAILED",
+			"CYLINDER_ACQUISITION_FAILED",
+			"EVIDENCE_STALE",
+			"INCOHERENT_ACQUISITION":
+		default:
+			return errors.New("fm5 degraded reason is outside the closed set")
+		}
+		return nil
+	}
+	if value.Mode != Fm5SemanticModeInterpreted && value.Mode != Fm5SemanticModeAbsent {
+		return errors.New("invalid fm5 semantic mode")
+	}
+	if value.DegradedReason != nil {
+		return errors.New("fm5 degraded reason is forbidden outside GPIO_ONLY")
+	}
+	return nil
+}
+
+func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
+	if mode == "" {
+		mode = Fm5SemanticModeAbsent
+	}
+	verdict := Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
+	if mode == Fm5SemanticModeGPIOOnly {
+		reason := Fm5SemanticDegradedReason("INCOHERENT_ACQUISITION")
+		verdict.DegradedReason = &reason
+	}
+	return verdict
+}
+
+type FM5InterpretationProvider interface {
+	FM5Interpretation() Fm5Interpretation
+}
+
 type SolarStatus struct {
 	CollectorTemperatureC *float64 `json:"collector_temperature_c,omitempty"`
 	ReturnTemperatureC    *float64 `json:"return_temperature_c,omitempty"`
@@ -475,48 +529,49 @@ type Server struct {
 }
 
 const (
-	toolRuntimeStatusGetName         = "ebus.v1.runtime.status.get"
-	toolBusSummaryGetName            = "ebus.v1.bus.summary.get"
-	toolBusMessagesListName          = "ebus.v1.bus.messages.list"
-	toolBusPeriodicityListName       = "ebus.v1.bus.periodicity.list"
-	toolBusProtocolSpecimensListName = "ebus.v1.bus.protocol_specimens.list"
-	toolWatchSummaryGetName          = "ebus.v1.watch.summary.get"
-	toolSemanticZonesGetName         = "ebus.v1.semantic.zones.get"
-	toolSemanticCircuitsGetName      = "ebus.v1.semantic.circuits.get"
-	toolSemanticRadioGetName         = "ebus.v1.semantic.radio_devices.get"
-	toolSemanticFM5ModeGetName       = "ebus.v1.semantic.fm5_mode.get"
-	toolSemanticSolarGetName         = "ebus.v1.semantic.solar.get"
-	toolSemanticCylindersGetName     = "ebus.v1.semantic.cylinders.get"
-	toolSemanticDHWGetName           = "ebus.v1.semantic.dhw.get"
-	toolSemanticEnergyGetName        = "ebus.v1.semantic.energy_totals.get"
-	toolSemanticBoilerGetName        = "ebus.v1.semantic.boiler_status.get"
-	toolSemanticSystemGetName        = "ebus.v1.semantic.system.get"
-	toolSemanticSchedulesGetName     = "ebus.v1.semantic.schedules.get"
-	toolSemanticSchedulesSetZoneName = "ebus.v1.semantic.schedules.set_zone_time_program"
-	toolSemanticSchedulesSetDhwName  = "ebus.v1.semantic.schedules.set_dhw_time_program"
-	toolSemanticSystemSetConfigName  = "ebus.v1.semantic.system.set_config"
-	toolSemanticBoilerSetConfigName  = "ebus.v1.semantic.boiler_status.set_config"
-	toolSemanticAdapterInfoGetName   = "ebus.v1.semantic.adapter_info.get"
-	toolSemanticSnapshotName         = "ebus.v1.semantic.snapshot.get"
-	toolSnapshotCaptureName          = "ebus.v1.snapshot.capture"
-	toolSnapshotDropName             = "ebus.v1.snapshot.drop"
-	toolDevicesV1Name                = "ebus.v1.registry.devices.list"
-	toolDeviceGetV1Name              = "ebus.v1.registry.devices.get"
-	toolPlanesListV1Name             = "ebus.v1.registry.planes.list"
-	toolMethodsListV1Name            = "ebus.v1.registry.methods.list"
-	toolInvokeV1Name                 = "ebus.v1.rpc.invoke"
-	toolDevicesLegacyName            = "ebus.devices"
-	toolInvokeLegacyName             = "ebus.invoke"
-	methodMutabilityUnknown          = "unknown"
-	methodMutabilityReadOnly         = "read_only"
-	methodMutabilityMutating         = "mutating"
-	methodDangerUnknown              = "unknown"
-	methodDangerSafe                 = "safe"
-	methodDangerDangerous            = "dangerous"
-	defaultInvokeTimeout             = 3 * time.Second
-	defaultIdempotencyTTL            = 30 * time.Second
-	defaultSnapshotTTL               = 5 * time.Minute
-	defaultSnapshotReadTTL           = 10 * time.Second
+	toolRuntimeStatusGetName             = "ebus.v1.runtime.status.get"
+	toolBusSummaryGetName                = "ebus.v1.bus.summary.get"
+	toolBusMessagesListName              = "ebus.v1.bus.messages.list"
+	toolBusPeriodicityListName           = "ebus.v1.bus.periodicity.list"
+	toolBusProtocolSpecimensListName     = "ebus.v1.bus.protocol_specimens.list"
+	toolWatchSummaryGetName              = "ebus.v1.watch.summary.get"
+	toolSemanticZonesGetName             = "ebus.v1.semantic.zones.get"
+	toolSemanticCircuitsGetName          = "ebus.v1.semantic.circuits.get"
+	toolSemanticRadioGetName             = "ebus.v1.semantic.radio_devices.get"
+	toolSemanticFM5ModeGetName           = "ebus.v1.semantic.fm5_mode.get"
+	toolSemanticFM5InterpretationGetName = "ebus.v1.semantic.fm5_interpretation.get"
+	toolSemanticSolarGetName             = "ebus.v1.semantic.solar.get"
+	toolSemanticCylindersGetName         = "ebus.v1.semantic.cylinders.get"
+	toolSemanticDHWGetName               = "ebus.v1.semantic.dhw.get"
+	toolSemanticEnergyGetName            = "ebus.v1.semantic.energy_totals.get"
+	toolSemanticBoilerGetName            = "ebus.v1.semantic.boiler_status.get"
+	toolSemanticSystemGetName            = "ebus.v1.semantic.system.get"
+	toolSemanticSchedulesGetName         = "ebus.v1.semantic.schedules.get"
+	toolSemanticSchedulesSetZoneName     = "ebus.v1.semantic.schedules.set_zone_time_program"
+	toolSemanticSchedulesSetDhwName      = "ebus.v1.semantic.schedules.set_dhw_time_program"
+	toolSemanticSystemSetConfigName      = "ebus.v1.semantic.system.set_config"
+	toolSemanticBoilerSetConfigName      = "ebus.v1.semantic.boiler_status.set_config"
+	toolSemanticAdapterInfoGetName       = "ebus.v1.semantic.adapter_info.get"
+	toolSemanticSnapshotName             = "ebus.v1.semantic.snapshot.get"
+	toolSnapshotCaptureName              = "ebus.v1.snapshot.capture"
+	toolSnapshotDropName                 = "ebus.v1.snapshot.drop"
+	toolDevicesV1Name                    = "ebus.v1.registry.devices.list"
+	toolDeviceGetV1Name                  = "ebus.v1.registry.devices.get"
+	toolPlanesListV1Name                 = "ebus.v1.registry.planes.list"
+	toolMethodsListV1Name                = "ebus.v1.registry.methods.list"
+	toolInvokeV1Name                     = "ebus.v1.rpc.invoke"
+	toolDevicesLegacyName                = "ebus.devices"
+	toolInvokeLegacyName                 = "ebus.invoke"
+	methodMutabilityUnknown              = "unknown"
+	methodMutabilityReadOnly             = "read_only"
+	methodMutabilityMutating             = "mutating"
+	methodDangerUnknown                  = "unknown"
+	methodDangerSafe                     = "safe"
+	methodDangerDangerous                = "dangerous"
+	defaultInvokeTimeout                 = 3 * time.Second
+	defaultIdempotencyTTL                = 30 * time.Second
+	defaultSnapshotTTL                   = 5 * time.Minute
+	defaultSnapshotReadTTL               = 10 * time.Second
 )
 
 var errInvokePermissionDenied = errors.New("invoke permission denied")
@@ -628,6 +683,7 @@ type snapshotState struct {
 	circuits       []CircuitStatus
 	radio          []RadioDevice
 	fm5Mode        Fm5SemanticMode
+	fm5Verdict     Fm5Interpretation
 	solar          *SolarStatus
 	cylinders      []CylinderStatus
 	dhw            *DhwStatus
@@ -795,6 +851,17 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		{
 			Name:        toolSemanticFM5ModeGetName,
 			Description: "Get semantic FM5 mode snapshot.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consistency": consistencyInputProperty(),
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Name:        toolSemanticFM5InterpretationGetName,
+			Description: "Get the atomic semantic FM5 mode, degraded reason, and evidence revision.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1534,6 +1601,16 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		}
 		mode := s.snapshotFM5Mode(snapshot)
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(mode, nil, consistency)), false), nil
+	case toolSemanticFM5InterpretationGetName:
+		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		verdict := s.snapshotFM5Interpretation(snapshot)
+		if err := verdict.validate(); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(verdict, nil, consistency)), false), nil
 	case toolSemanticSolarGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {
@@ -2005,6 +2082,7 @@ func (s *Server) captureSnapshot() (snapshotID string, createdAt time.Time, err 
 		circuits:       s.snapshotCircuits(nil),
 		radio:          s.snapshotRadioDevices(nil),
 		fm5Mode:        s.snapshotFM5Mode(nil),
+		fm5Verdict:     s.snapshotFM5Interpretation(nil),
 		solar:          s.snapshotSolar(nil),
 		cylinders:      s.snapshotCylinders(nil),
 		dhw:            s.snapshotDHW(nil),
@@ -2115,6 +2193,7 @@ func cloneSnapshotState(snapshot snapshotState) snapshotState {
 		circuits:       cloneCircuits(snapshot.circuits),
 		radio:          cloneRadioDevices(snapshot.radio),
 		fm5Mode:        snapshot.fm5Mode,
+		fm5Verdict:     snapshot.fm5Verdict,
 		solar:          solarCopy,
 		cylinders:      cylindersCopy,
 		dhw:            dhwCopy,
@@ -2982,6 +3061,23 @@ func (s *Server) snapshotFM5Mode(snapshot *snapshotState) Fm5SemanticMode {
 		return Fm5SemanticModeAbsent
 	}
 	return mode
+}
+
+func (s *Server) snapshotFM5Interpretation(snapshot *snapshotState) Fm5Interpretation {
+	if snapshot != nil {
+		verdict := snapshot.fm5Verdict
+		if verdict.Mode == "" {
+			verdict.Mode = s.snapshotFM5Mode(snapshot)
+			verdict = legacyFM5Interpretation(s.snapshotFM5Mode(snapshot))
+		}
+		return verdict
+	}
+	if s != nil && s.semantic != nil {
+		if provider, ok := s.semantic.(FM5InterpretationProvider); ok {
+			return provider.FM5Interpretation()
+		}
+	}
+	return legacyFM5Interpretation(s.snapshotFM5Mode(nil))
 }
 
 func (s *Server) snapshotSolar(snapshot *snapshotState) *SolarStatus {

@@ -309,3 +309,29 @@ test("PortalShell renders promoted false and zero values distinctly from unavail
   assert.match(semanticList.innerHTML, /brand=&lt;empty&gt; vendor=&lt;empty&gt;/);
   assert.match(semanticList.innerHTML, /<strong>Office<\/strong>.*current=unavailable.*target=unavailable/);
 });
+
+test("PortalShell renders the provider-owned FM5 degraded verdict", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sourcePath = path.resolve(here, "../src/app.js");
+  const source = await readFile(sourcePath, "utf8");
+  for (const reason of ["EVIDENCE_STALE", "INCOHERENT_ACQUISITION"]) {
+    const snapshot = createDeferredResponse({
+      fm5_semantic_mode: "GPIO_ONLY",
+      fm5_semantic_degraded_reason: reason,
+      fm5_semantic_evidence_revision: "fm5-g7-a42",
+    });
+    const semanticList = { innerHTML: "" };
+    const { shell } = createPortalShellHarness({
+      source,
+      sourcePath,
+      elements: new Map(),
+      fetchImpl() { return snapshot.promise; },
+    });
+    const token = shell.beginBootstrapLifecycle();
+    const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
+    snapshot.resolve();
+    await render;
+
+    assert.match(semanticList.innerHTML, new RegExp(`mode=GPIO_ONLY reason=${reason} revision=fm5-g7-a42`));
+  }
+});

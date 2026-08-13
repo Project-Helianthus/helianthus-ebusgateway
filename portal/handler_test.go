@@ -741,7 +741,8 @@ func TestSemanticSnapshotEndpoint_ExtensionFamilies(t *testing.T) {
 						RoomHumidityPct:      &roomHumidity,
 					},
 				},
-				FM5Mode: "INTERPRETED",
+				FM5Mode:             "INTERPRETED",
+				FM5EvidenceRevision: "fm5-acq-7",
 				Solar: &SemanticSolarStatus{
 					CollectorTemperatureC: &solarCollectorTemperature,
 					ReturnTemperatureC:    &solarReturnTemperature,
@@ -777,6 +778,12 @@ func TestSemanticSnapshotEndpoint_ExtensionFamilies(t *testing.T) {
 	}
 	if payload["fm5_semantic_mode"] != "INTERPRETED" {
 		t.Fatalf("fm5_semantic_mode=%v; want INTERPRETED", payload["fm5_semantic_mode"])
+	}
+	if payload["fm5_semantic_degraded_reason"] != nil {
+		t.Fatalf("fm5_semantic_degraded_reason=%v; want null", payload["fm5_semantic_degraded_reason"])
+	}
+	if payload["fm5_semantic_evidence_revision"] != "fm5-acq-7" {
+		t.Fatalf("fm5_semantic_evidence_revision=%v; want fm5-acq-7", payload["fm5_semantic_evidence_revision"])
 	}
 	radioDevices := payload["radio_devices"].([]any)
 	if len(radioDevices) != 1 {

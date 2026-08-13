@@ -38,7 +38,9 @@ func (*modbusV1FixtureProvider) ProfileObservation(_ context.Context, profileID,
 	return ModbusProfileObservationResult{
 		ProfileID:          profileID,
 		SampleID:           sampleID,
-		SourceValidity:     "valid",
+		SourceValidity:     "invalid",
+		SourceTime:         "2026-08-13T10:00:00Z",
+		LocalReceiptTime:   "2026-08-13T10:00:01Z",
 		DetectionEvidence:  []string{"detector:standard-only"},
 		ActivationEvidence: []string{"activation:fixture"},
 		Replay: []ModbusReplayView{{
@@ -110,6 +112,12 @@ func TestModbusV1ProfileObservationRetainsEvidenceAndReplay(t *testing.T) {
 		t.Fatalf("profile observation failed: %s", result.raw)
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
+	meta := msp06Map(t, result.envelope["meta"], "meta")
+	consistency := msp06Map(t, meta["consistency"], "consistency")
+	if data["source_validity"] != "invalid" || consistency["mode"] != "RETAINED_SOURCE_OBSERVATION" ||
+		meta["data_timestamp"] != "2026-08-13T10:00:01Z" {
+		t.Fatalf("retained source facts changed: data=%+v meta=%+v", data, meta)
+	}
 	if !reflect.DeepEqual(data["detection_evidence"], []any{"detector:standard-only"}) {
 		t.Fatalf("detection evidence = %#v", data["detection_evidence"])
 	}
@@ -140,7 +148,7 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 		},
 		"modbus_v1_profile_observation": ModbusProfileObservationResult{
 			ProfileID: "sunspec.phase1", ProfileVersion: "1.0.0", CodecVersion: "1.0.0",
-			SampleID: "sample-91", PollGenerationID: 96, SourceValidity: "valid",
+			SampleID: "sample-91", PollGenerationID: 96, SourceValidity: "invalid",
 			SourceTime: "2026-08-13T10:00:00Z", LocalReceiptTime: "2026-08-13T10:00:01Z",
 			DetectionEvidence:  []string{"detector:standard-only"},
 			ActivationEvidence: []string{"activation:fixture"},
@@ -150,8 +158,11 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 	}
 	for name, data := range fixtures {
 		t.Run(name, func(t *testing.T) {
-			envelope := newModbusV1Envelope(data, nil)
-			envelope["meta"].(map[string]any)["data_timestamp"] = "2026-08-13T10:00:02Z"
+			mode := "LIVE"
+			if name == "modbus_v1_profile_observation" {
+				mode = "RETAINED_SOURCE_OBSERVATION"
+			}
+			envelope := newModbusV1Envelope(data, nil, true, mode, "2026-08-13T10:00:02Z")
 			got := mustJSON(envelope)
 			path := filepath.Join("testdata", name+".golden.json")
 			want, err := os.ReadFile(path)
@@ -161,7 +172,7 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 			if got != strings.TrimSpace(string(want)) {
 				t.Fatalf("golden mismatch for %s:\nwant: %s\ngot:  %s", name, strings.TrimSpace(string(want)), got)
 			}
-			second := newModbusV1Envelope(data, nil)
+			second := newModbusV1Envelope(data, nil, true, mode, "2026-08-13T10:00:03Z")
 			if envelope["meta"].(map[string]any)["data_hash"] != second["meta"].(map[string]any)["data_hash"] {
 				t.Fatal("data_hash changed for identical data")
 			}

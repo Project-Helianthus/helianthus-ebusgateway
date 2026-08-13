@@ -1,8 +1,10 @@
 package modbusadapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -541,6 +543,14 @@ func TestAdapterViewsPublishWithoutChangingSampleFacts(t *testing.T) {
 	observation, err := attempt.Publish(context.Background())
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
+	}
+	encodedObservation, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatalf("Marshal observation: %v", err)
+	}
+	if string(encodedObservation) == "{}" || !bytes.Contains(encodedObservation, []byte(`"runtime_normalizations"`)) ||
+		!bytes.Contains(encodedObservation, []byte(config.Endpoint.Endpoint)) {
+		t.Fatalf("observation JSON omitted exact provenance: %s", encodedObservation)
 	}
 	if err := adapter.RecordProfileObservation(ProfileObservationRecord{
 		Observation:        observation,

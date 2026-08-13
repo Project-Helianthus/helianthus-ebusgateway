@@ -14,7 +14,11 @@ const (
 	ModbusV1ProfileObservationGetTool = "modbus.v1.profile.observation.get"
 	modbusV1MaxReadWords              = 125
 	modbusV1MaxIdentityBytes          = 128
+	ModbusV1MaxRawReadsPerWindow      = 4
+	ModbusV1RawReadWindow             = time.Second
 )
+
+var ErrModbusV1ResourceExhausted = errors.New("Modbus V1 raw read quota exhausted")
 
 // ModbusRawReadRequest is the closed read-only phase-one operation surface.
 type ModbusRawReadRequest struct {
@@ -122,23 +126,34 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 	}
 	var data any
 	var err error
+	providerCalled := false
+	consistencyMode := "LIVE"
+	dataTimestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	switch name {
 	case ModbusV1RawReadTool:
 		var request ModbusRawReadRequest
 		request, err = parseModbusRawReadRequest(args)
 		if err == nil {
+			providerCalled = true
 			data, err = provider.RawRead(ctx, request)
 		}
 	case ModbusV1ProfileObservationGetTool:
+		consistencyMode = "RETAINED_SOURCE_OBSERVATION"
 		var profileID, sampleID string
 		profileID, sampleID, err = parseModbusProfileRequest(args)
 		if err == nil {
+			providerCalled = true
 			data, err = provider.ProfileObservation(ctx, profileID, sampleID)
+			if result, ok := data.(ModbusProfileObservationResult); ok && result.LocalReceiptTime != "" {
+				dataTimestamp = result.LocalReceiptTime
+			}
 		}
 	default:
 		return nil, false
 	}
-	return callToolResultText(mustJSON(newModbusV1Envelope(data, err)), err != nil), true
+	return callToolResultText(mustJSON(newModbusV1Envelope(
+		data, err, providerCalled, consistencyMode, dataTimestamp,
+	)), err != nil), true
 }
 
 func parseModbusRawReadRequest(args map[string]any) (ModbusRawReadRequest, error) {
@@ -206,22 +221,43 @@ func boundedIdentity(value any) (string, bool) {
 	return text, ok && text != "" && len(text) <= modbusV1MaxIdentityBytes
 }
 
-func newModbusV1Envelope(data any, err error) map[string]any {
+func newModbusV1Envelope(
+	data any,
+	err error,
+	providerCalled bool,
+	consistencyMode string,
+	dataTimestamp string,
+) map[string]any {
 	var envelopeError any
 	if err != nil {
+		code := "INVALID_ARGUMENT"
+		retriable := false
+		if providerCalled {
+			code = "UNAVAILABLE"
+			retriable = true
+		}
+		if errors.Is(err, ErrModbusV1ResourceExhausted) {
+			code = "RESOURCE_EXHAUSTED"
+		}
 		envelopeError = map[string]any{
-			"code":         "INVALID_OR_UNAVAILABLE",
+			"code":         code,
 			"message":      err.Error(),
-			"retriable":    false,
+			"retriable":    retriable,
 			"source_layer": "modbus",
 		}
 	}
 	return map[string]any{
 		"meta": map[string]any{
 			"contract":       map[string]any{"name": "helianthus-modbus-mcp", "major": 1, "minor": 0},
-			"consistency":    map[string]any{"mode": "LIVE"},
-			"data_timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+			"consistency":    map[string]any{"mode": consistencyMode},
+			"data_timestamp": dataTimestamp,
 			"data_hash":      hashData(data),
+			"limits": map[string]any{
+				"raw_read_max_words":           modbusV1MaxReadWords,
+				"raw_reads_per_window":         ModbusV1MaxRawReadsPerWindow,
+				"raw_read_window_milliseconds": ModbusV1RawReadWindow.Milliseconds(),
+				"identity_max_bytes":           modbusV1MaxIdentityBytes,
+			},
 		},
 		"data":  data,
 		"error": envelopeError,

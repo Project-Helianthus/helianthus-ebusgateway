@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,20 +18,32 @@ import (
 )
 
 type gatewayModbusMCPProvider struct {
-	adapter *modbusadapter.Adapter
+	adapter modbusMCPAdapter
 	nextID  atomic.Uint64
+	rateMu  sync.Mutex
+	rateAt  time.Time
+	rateN   int
+	now     func() time.Time
+}
+
+type modbusMCPAdapter interface {
+	ExecuteRead(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
+	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
 }
 
 func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Provider {
 	if adapter == nil {
 		return nil
 	}
-	return &gatewayModbusMCPProvider{adapter: adapter}
+	return &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
 }
 
 func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request mcp.ModbusRawReadRequest) (mcp.ModbusRawReadResult, error) {
 	if provider == nil || provider.adapter == nil {
 		return mcp.ModbusRawReadResult{}, errors.New("modbus provider unavailable")
+	}
+	if !provider.admitRawRead() {
+		return mcp.ModbusRawReadResult{}, mcp.ErrModbusV1ResourceExhausted
 	}
 	function := modbus.FunctionCode(request.Function)
 	read, err := modbus.NewReadRegistersRequest(function, request.Offset, request.Quantity)
@@ -80,6 +94,21 @@ func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request m
 		return result, nil
 	}
 	return mcp.ModbusRawReadResult{}, errors.New("modbus runtime returned no matching logical view")
+}
+
+func (provider *gatewayModbusMCPProvider) admitRawRead() bool {
+	provider.rateMu.Lock()
+	defer provider.rateMu.Unlock()
+	now := provider.now()
+	if provider.rateAt.IsZero() || now.Before(provider.rateAt) || now.Sub(provider.rateAt) >= mcp.ModbusV1RawReadWindow {
+		provider.rateAt = now
+		provider.rateN = 0
+	}
+	if provider.rateN >= mcp.ModbusV1MaxRawReadsPerWindow {
+		return false
+	}
+	provider.rateN++
+	return true
 }
 
 func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, profileID, sampleID string) (mcp.ModbusProfileObservationResult, error) {
@@ -136,7 +165,7 @@ func redactModbusEndpoints(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if key == "endpoint" {
+			if strings.EqualFold(key, "endpoint") {
 				if endpoint, ok := child.(string); ok {
 					typed[key] = endpointReference(endpoint)
 				}

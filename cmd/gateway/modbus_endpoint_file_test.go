@@ -44,17 +44,21 @@ func TestBindFlagsKeepsModbusEndpointFileOutOfRuntimeConfig(t *testing.T) {
 }
 
 func TestResolveModbusEndpointFileLoadsProtectedBoundedValue(t *testing.T) {
-	path := writeProtectedEndpointFile(t, "tcp://192.0.2.40:502", 0o600)
-	cfg := ebusgateway.ModbusTCPConfig{Enabled: true, DialTimeout: 3 * time.Second}
+	for _, mode := range []os.FileMode{0o400, 0o600} {
+		t.Run(mode.String(), func(t *testing.T) {
+			path := writeProtectedEndpointFile(t, "tcp://192.0.2.40:502", mode)
+			cfg := ebusgateway.ModbusTCPConfig{Enabled: true, DialTimeout: 3 * time.Second}
 
-	if err := resolveModbusEndpointFile(&cfg, path); err != nil {
-		t.Fatalf("resolve endpoint file: %v", err)
-	}
-	if cfg.Endpoint != "tcp://192.0.2.40:502" {
-		t.Fatalf("endpoint = %q", cfg.Endpoint)
-	}
-	if _, err := mapModbusRuntimeConfig(cfg); err != nil {
-		t.Fatalf("map resolved config: %v", err)
+			if err := resolveModbusEndpointFile(&cfg, path); err != nil {
+				t.Fatalf("resolve endpoint file: %v", err)
+			}
+			if cfg.Endpoint != "tcp://192.0.2.40:502" {
+				t.Fatalf("endpoint = %q", cfg.Endpoint)
+			}
+			if _, err := mapModbusRuntimeConfig(cfg); err != nil {
+				t.Fatalf("map resolved config: %v", err)
+			}
+		})
 	}
 }
 
@@ -99,14 +103,17 @@ func TestResolveModbusEndpointFileRejectsUnsafeFilesAndBounds(t *testing.T) {
 	unsafeMode := writeProtectedEndpointFile(t, "tcp://192.0.2.40:502", 0o644)
 	empty := writeProtectedEndpointFile(t, "", 0o600)
 	oversized := writeProtectedEndpointFile(t, strings.Repeat("x", 513), 0o600)
+	invalid := writeProtectedEndpointFile(t, "tcp://sensitive.internal:502\n", 0o600)
 	directory := t.TempDir()
 
 	for name, path := range map[string]string{
-		"symlink":    symlink,
+		"symlink":     symlink,
 		"unsafe-mode": unsafeMode,
-		"empty":      empty,
-		"oversized":  oversized,
-		"directory":  directory,
+		"empty":       empty,
+		"oversized":   oversized,
+		"invalid":     invalid,
+		"directory":   directory,
+		"missing":     filepath.Join(t.TempDir(), "missing"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := ebusgateway.ModbusTCPConfig{Enabled: true, DialTimeout: time.Second}
@@ -119,4 +126,3 @@ func TestResolveModbusEndpointFileRejectsUnsafeFilesAndBounds(t *testing.T) {
 		})
 	}
 }
-

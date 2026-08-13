@@ -107,6 +107,34 @@ func TestMCPSemanticProviderAdapterM8InventoryTracksMaterializedOwnerState(t *te
 	}
 }
 
+func TestMCPSemanticProviderAdapterM8InventorySurvivesPromotedProjection(t *testing.T) {
+	owner := graphql.NewLiveSemanticProvider()
+	owner.SetZones([]graphql.Zone{{ID: "owner-zone"}})
+	promotedTemp := 21.5
+	provider := graphql.NewPromotedSemanticProvider(owner, func() graphql.PromotedSemanticOverlay {
+		return graphql.PromotedSemanticOverlay{Zones: map[string]graphql.PromotedZoneOverlay{
+			"owner-zone": {CurrentTempC: &promotedTemp},
+		}}
+	})
+
+	state, err := (mcpSemanticProviderAdapter{provider: provider}).M8SemanticRegistryState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundOwner := false
+	for _, leaf := range state.Leaves {
+		if leaf.Path == "/zones/0/ID" && leaf.Source == "ebus" {
+			foundOwner = true
+		}
+		if leaf.Path == "/zones/0/State/CurrentTempC" {
+			t.Fatalf("promoted overlay leaked into owner inventory: %#v", state.Leaves)
+		}
+	}
+	if !foundOwner {
+		t.Fatalf("owner inventory missing behind promoted projection: %#v", state.Leaves)
+	}
+}
+
 func TestMCPSemanticProviderAdapterRejectsNonOwnerProvider(t *testing.T) {
 	adapter := mcpSemanticProviderAdapter{}
 	if _, err := adapter.M8SemanticRegistryState(); err == nil {

@@ -117,6 +117,21 @@ function formatYesNo(value) {
   return "n/a";
 }
 
+function formatSemanticTemperature(value) {
+  return value == null ? "unavailable" : formatTemperature(value);
+}
+
+function formatSemanticToggle(value) {
+  return value == null ? "unavailable" : formatToggle(value);
+}
+
+function formatSemanticText(value) {
+  if (value == null) {
+    return "unavailable";
+  }
+  return value === "" ? "<empty>" : String(value);
+}
+
 function formatInteger(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) {
@@ -1511,15 +1526,17 @@ class PortalShell extends HTMLElement {
           const state = zone.state || {};
           const config = zone.config || {};
           const name = escapeHtml(zone.name || zone.id || "zone");
-          const mode = escapeHtml(config.operating_mode || "n/a");
+          const mode = escapeHtml(formatSemanticText(config.operating_mode));
           const preset = escapeHtml(config.preset || "n/a");
-          const current = formatTemperature(state.current_temp_c);
-          const target = formatTemperature(config.target_temp_c);
+          const current = formatSemanticTemperature(state.current_temp_c);
+          const target = formatSemanticTemperature(config.target_temp_c);
           const demand = formatPercent(state.heating_demand_pct);
           const hvacAction = escapeHtml(state.hvac_action || "n/a");
           const circuitType = escapeHtml(config.circuit_type || "n/a");
+          const changeable = escapeHtml(formatSemanticToggle(config.operation_mode_changeable));
+          const source = escapeHtml(formatSemanticText(config.source_label));
           rows.push(
-            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)} hvac=${hvacAction} circuit=${circuitType}</span></li>`,
+            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} mode_changeable=${changeable} source=${source} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)} hvac=${hvacAction} circuit=${circuitType}</span></li>`,
           );
         });
       }
@@ -1533,7 +1550,7 @@ class PortalShell extends HTMLElement {
         const specialFunction = dhwState.special_function
           ? ` special=${escapeHtml(dhwState.special_function)}`
           : "";
-        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(dhwConfig.operating_mode || "n/a")}${dhwPreset} current=${escapeHtml(formatTemperature(dhwState.current_temp_c))} target=${escapeHtml(formatTemperature(dhwConfig.target_temp_c))}${dhwDemand}${specialFunction}</span></li>`);
+        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(formatSemanticText(dhwConfig.operating_mode))} mode_changeable=${escapeHtml(formatSemanticToggle(dhwConfig.operation_mode_changeable))} current=${escapeHtml(formatSemanticTemperature(dhwState.current_temp_c))} target=${escapeHtml(formatSemanticTemperature(dhwConfig.target_temp_c))} overrun=${escapeHtml(formatSemanticToggle(dhwState.overrun_active))}${dhwPreset}${dhwDemand}${specialFunction}</span></li>`);
       }
       if (payload.boiler_status) {
         const boilerState = payload.boiler_status.state || {};
@@ -1548,7 +1565,7 @@ class PortalShell extends HTMLElement {
         const systemConfig = payload.system.config || {};
         const systemPressure = formatFixed(systemState.system_water_pressure, 2);
         rows.push(
-          `<li><strong>System</strong> <span class="muted-inline">flow=${escapeHtml(formatTemperature(systemState.system_flow_temperature))} pressure=${escapeHtml(systemPressure === "n/a" ? systemPressure : `${systemPressure}bar`)} outdoor=${escapeHtml(formatTemperature(systemState.outdoor_temperature))} maintenance=${escapeHtml(formatYesNo(systemState.maintenance_due))} adaptive=${escapeHtml(formatYesNo(systemConfig.adaptive_heating_curve))}</span></li>`,
+          `<li><strong>System</strong> <span class="muted-inline">brand=${escapeHtml(formatSemanticText(payload.system.gateway_brand))} vendor=${escapeHtml(formatSemanticText(payload.system.gateway_vendor))} flow=${escapeHtml(formatTemperature(systemState.system_flow_temperature))} pressure=${escapeHtml(systemPressure === "n/a" ? systemPressure : `${systemPressure}bar`)} outdoor=${escapeHtml(formatSemanticTemperature(systemState.outdoor_temperature))} maintenance=${escapeHtml(formatYesNo(systemState.maintenance_due))} adaptive=${escapeHtml(formatYesNo(systemConfig.adaptive_heating_curve))}</span></li>`,
         );
       }
       if (payload.fm5_semantic_mode) {

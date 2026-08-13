@@ -137,6 +137,11 @@ func (p promotedSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return p.base.AdapterHardwareInfo()
 }
 
+// BaseSemanticProvider returns the owner-local provider beneath this public
+// projection. Owner-only consumers such as stable eBUS MCP tools must unwrap
+// the projection instead of observing cross-protocol fill values.
+func (p promotedSemanticProvider) BaseSemanticProvider() SemanticProvider { return p.base }
+
 func copyFloat(value *float64) *float64 {
 	if value == nil {
 		return nil

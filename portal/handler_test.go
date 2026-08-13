@@ -622,6 +622,63 @@ func TestSemanticSnapshotEndpoint(t *testing.T) {
 	}
 }
 
+func TestSemanticSnapshotEndpoint_PromotedFieldsArePublicAndNilSafe(t *testing.T) {
+	zero := 0.0
+	falseValue := false
+	empty := ""
+	zoneLabel1 := "Zone 1"
+	zoneLabel2 := "Zone 2"
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot {
+			return SemanticSnapshot{
+				Zones: []SemanticZone{
+					{ID: "zone-1", Name: "Kitchen", State: SemanticZoneState{CurrentTempC: &zero}, Config: SemanticZoneConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue, SourceLabel: &zoneLabel1}},
+					{ID: "zone-2", Name: "Office", State: SemanticZoneState{CurrentTempC: &zero}, Config: SemanticZoneConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue, SourceLabel: &zoneLabel2}},
+				},
+				DHW:    &SemanticDHW{State: SemanticDhwState{CurrentTempC: &zero, OverrunActive: &falseValue}, Config: SemanticDhwConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue}},
+				System: &SemanticSystemStatus{State: SemanticSystemState{OutdoorTemperature: &zero}, GatewayBrand: &empty, GatewayVendor: &empty},
+			}
+		},
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d; want %d", rec.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	zones := payload["zones"].([]any)
+	if len(zones) != 2 {
+		t.Fatalf("zones=%d; want 2", len(zones))
+	}
+	for index, want := range []struct{ id, name, label string }{{"zone-1", "Kitchen", "Zone 1"}, {"zone-2", "Office", "Zone 2"}} {
+		zone := zones[index].(map[string]any)
+		if zone["id"] != want.id || zone["name"] != want.name {
+			t.Fatalf("zone identity=%#v; want %s/%s", zone, want.id, want.name)
+		}
+		state := zone["state"].(map[string]any)
+		config := zone["config"].(map[string]any)
+		if state["current_temp_c"] != zero || config["target_temp_c"] != zero || config["operation_mode_changeable"] != falseValue || config["source_label"] != want.label {
+			t.Fatalf("zone promoted fields=%#v", zone)
+		}
+	}
+	dhw := payload["dhw"].(map[string]any)
+	if dhw["state"].(map[string]any)["current_temp_c"] != zero || dhw["state"].(map[string]any)["overrun_active"] != falseValue || dhw["config"].(map[string]any)["target_temp_c"] != zero || dhw["config"].(map[string]any)["operation_mode_changeable"] != falseValue {
+		t.Fatalf("dhw promoted fields=%#v", dhw)
+	}
+	system := payload["system"].(map[string]any)
+	if system["state"].(map[string]any)["outdoor_temperature"] != zero || system["gateway_brand"] != empty || system["gateway_vendor"] != empty {
+		t.Fatalf("system promoted fields=%#v", system)
+	}
+	for _, forbidden := range []string{"ship_id", "spine", "candidate_ref", "user_label", "remote_ski", "device_address"} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("semantic REST leaked %q: %s", forbidden, rec.Body.String())
+		}
+	}
+}
+
 func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
 	h := NewHandler(Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)

@@ -195,7 +195,9 @@ class TransportGateTests(unittest.TestCase):
             base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
             modified_text=(
                 "package main\n\nfunc main() {\n"
-                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)\n"
+                "\tportalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)\n"
+                "\tOperationModeChangeable:    cloneBoolPtr(zone.Config.OperationModeChangeable),\n"
+                "\tportalSemanticProvider,\n"
                 "\tsemanticRuntime.Start(ctx)\n}\n"
             ),
         )
@@ -216,7 +218,7 @@ class TransportGateTests(unittest.TestCase):
             base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
             modified_text=(
                 "package main\n\nfunc main() {\n"
-                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), transport)\n"
+                "\tportalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), transport)\n"
                 "\tsemanticRuntime.Start(ctx)\n}\n"
             ),
         )

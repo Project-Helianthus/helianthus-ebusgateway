@@ -98,7 +98,19 @@ def normalize(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped in {"}", ")"} or stripped.startswith("//"):
         return None
-    if stripped == "wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)":
+    compact = re.sub(r"\s+", " ", stripped)
+    if compact in {
+        "wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)",
+        "portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)",
+        "portalSemanticProvider,",
+        "semanticRuntime.Provider(),",
+        "OperationModeChangeable: cloneBoolPtr(zone.Config.OperationModeChangeable),",
+        "SourceLabel: cloneStringPtr(zone.Config.SourceLabel),",
+        "OverrunActive: cloneBoolPtr(status.State.OverrunActive),",
+        "OperationModeChangeable: cloneBoolPtr(status.Config.OperationModeChangeable),",
+        "GatewayBrand: cloneStringPtr(status.GatewayBrand),",
+        "GatewayVendor: cloneStringPtr(status.GatewayVendor),",
+    }:
         return None
     if re.fullmatch(r'buildVersion\s*=\s*"[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?"', stripped):
         return None

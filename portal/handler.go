@@ -147,6 +147,8 @@ type SemanticZoneState struct {
 
 type SemanticZoneConfig struct {
 	OperatingMode              string   `json:"operating_mode,omitempty"`
+	OperationModeChangeable    *bool    `json:"operation_mode_changeable,omitempty"`
+	SourceLabel                *string  `json:"source_label,omitempty"`
 	Preset                     string   `json:"preset,omitempty"`
 	TargetTempC                *float64 `json:"target_temp_c,omitempty"`
 	AllowedModes               []string `json:"allowed_modes,omitempty"`
@@ -164,14 +166,16 @@ type SemanticZone struct {
 
 type SemanticDhwState struct {
 	CurrentTempC     *float64 `json:"current_temp_c,omitempty"`
+	OverrunActive    *bool    `json:"overrun_active,omitempty"`
 	SpecialFunction  string   `json:"special_function,omitempty"`
 	HeatingDemandPct *float64 `json:"heating_demand_pct,omitempty"`
 }
 
 type SemanticDhwConfig struct {
-	OperatingMode string   `json:"operating_mode,omitempty"`
-	Preset        string   `json:"preset,omitempty"`
-	TargetTempC   *float64 `json:"target_temp_c,omitempty"`
+	OperatingMode           string   `json:"operating_mode,omitempty"`
+	OperationModeChangeable *bool    `json:"operation_mode_changeable,omitempty"`
+	Preset                  string   `json:"preset,omitempty"`
+	TargetTempC             *float64 `json:"target_temp_c,omitempty"`
 }
 
 type SemanticDHW struct {
@@ -287,9 +291,11 @@ type SemanticSystemProperties struct {
 }
 
 type SemanticSystemStatus struct {
-	State      SemanticSystemState      `json:"state"`
-	Config     SemanticSystemConfig     `json:"config"`
-	Properties SemanticSystemProperties `json:"properties"`
+	State         SemanticSystemState      `json:"state"`
+	Config        SemanticSystemConfig     `json:"config"`
+	Properties    SemanticSystemProperties `json:"properties"`
+	GatewayBrand  *string                  `json:"gateway_brand,omitempty"`
+	GatewayVendor *string                  `json:"gateway_vendor,omitempty"`
 }
 
 type SemanticCircuitState struct {

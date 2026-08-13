@@ -529,7 +529,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	gateway.RefreshRouterPlanes()
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
-	wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
+	portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
@@ -1085,7 +1085,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		gateway,
 		builder,
 		hub,
-		semanticRuntime.Provider(),
+		portalSemanticProvider,
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
 		scheduleWriter,
@@ -2365,6 +2365,8 @@ func mapPortalZones(zones []graphql.Zone) []portal.SemanticZone {
 			},
 			Config: portal.SemanticZoneConfig{
 				OperatingMode:              zone.Config.OperatingMode,
+				OperationModeChangeable:    cloneBoolPtr(zone.Config.OperationModeChangeable),
+				SourceLabel:                cloneStringPtr(zone.Config.SourceLabel),
 				Preset:                     zone.Config.Preset,
 				TargetTempC:                cloneFloatPtr(zone.Config.TargetTempC),
 				AllowedModes:               append([]string(nil), zone.Config.AllowedModes...),
@@ -2384,13 +2386,15 @@ func mapPortalDHW(status *graphql.DhwStatus) *portal.SemanticDHW {
 	return &portal.SemanticDHW{
 		State: portal.SemanticDhwState{
 			CurrentTempC:     cloneFloatPtr(status.State.CurrentTempC),
+			OverrunActive:    cloneBoolPtr(status.State.OverrunActive),
 			SpecialFunction:  status.State.SpecialFunction,
 			HeatingDemandPct: cloneFloatPtr(status.State.HeatingDemandPct),
 		},
 		Config: portal.SemanticDhwConfig{
-			OperatingMode: status.Config.OperatingMode,
-			Preset:        status.Config.Preset,
-			TargetTempC:   cloneFloatPtr(status.Config.TargetTempC),
+			OperatingMode:           status.Config.OperatingMode,
+			OperationModeChangeable: cloneBoolPtr(status.Config.OperationModeChangeable),
+			Preset:                  status.Config.Preset,
+			TargetTempC:             cloneFloatPtr(status.Config.TargetTempC),
 		},
 	}
 }
@@ -2529,6 +2533,8 @@ func mapPortalSystemStatus(status *graphql.SystemStatus) *portal.SemanticSystemS
 			SystemScheme:            cloneIntPtr(status.Properties.SystemScheme),
 			ModuleConfigurationVR71: cloneIntPtr(status.Properties.ModuleConfigurationVR71),
 		},
+		GatewayBrand:  cloneStringPtr(status.GatewayBrand),
+		GatewayVendor: cloneStringPtr(status.GatewayVendor),
 	}
 }
 

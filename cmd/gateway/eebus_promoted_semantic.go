@@ -26,19 +26,21 @@ func newEEBusPromotedSemanticProvider(adapter *eebusRuntimeAdapter) *eebusPromot
 	return &eebusPromotedSemanticProvider{runtime: adapter.runtime}
 }
 
-// wireEEBusPromotedSemanticGraphQL composes only the public-safe overlay into
-// GraphQL. The base provider remains the eBUS owner used by polling, MCP, and
-// Portal wiring until their separately serialized M9 milestones.
-func wireEEBusPromotedSemanticGraphQL(ctx context.Context, builder *graphql.Builder, base graphql.SemanticProvider, adapter *eebusRuntimeAdapter) {
+// wireEEBusPromotedSemanticGraphQL composes the public-safe overlay for
+// GraphQL and its serialized Portal consumer. The base provider remains the
+// eBUS owner used by polling, MCP, and status.
+func wireEEBusPromotedSemanticGraphQL(ctx context.Context, builder *graphql.Builder, base graphql.SemanticProvider, adapter *eebusRuntimeAdapter) graphql.SemanticProvider {
 	if builder == nil {
-		return
+		return base
 	}
 	promoted := newEEBusPromotedSemanticProvider(adapter)
 	if promoted == nil {
-		return
+		return base
 	}
 	promoted.Start(ctx)
-	builder.SetSemanticProvider(graphql.NewPromotedSemanticProvider(base, promoted.Overlay))
+	composed := graphql.NewPromotedSemanticProvider(base, promoted.Overlay)
+	builder.SetSemanticProvider(composed)
+	return composed
 }
 
 func (p *eebusPromotedSemanticProvider) Overlay() graphql.PromotedSemanticOverlay {

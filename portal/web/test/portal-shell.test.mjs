@@ -277,3 +277,35 @@ test("PortalShell renders unsupported adapter info with an unsupported label", a
   assert.ok(identityBody.innerHTML.includes("Unsupported/Unknown"), "unsupported adapter info should show an unsupported label");
   assert.ok(!identityBody.innerHTML.includes("Serial"), "unsupported adapter info must not be labeled as Serial");
 });
+
+test("PortalShell renders promoted false and zero values distinctly from unavailable", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sourcePath = path.resolve(here, "../src/app.js");
+  const source = await readFile(sourcePath, "utf8");
+  const snapshot = createDeferredResponse({
+    zones: [{
+      id: "zone-1", name: "Kitchen", state: { current_temp_c: 0 },
+      config: { target_temp_c: 0, operating_mode: "", operation_mode_changeable: false, source_label: "Zone 1" },
+    }, { id: "zone-2", name: "Office", state: {}, config: {} }],
+    dhw: { state: { current_temp_c: 0, overrun_active: false }, config: { target_temp_c: 0, operating_mode: "", operation_mode_changeable: false } },
+    system: { state: { outdoor_temperature: 0 }, gateway_brand: "", gateway_vendor: "" },
+  });
+  const semanticList = { innerHTML: "" };
+  const { shell } = createPortalShellHarness({
+    source,
+    sourcePath,
+    elements: new Map(),
+    fetchImpl() { return snapshot.promise; },
+  });
+  const token = shell.beginBootstrapLifecycle();
+  const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
+  snapshot.resolve();
+  await render;
+
+  assert.match(semanticList.innerHTML, /current=0\.0°C target=0\.0°C/);
+  assert.match(semanticList.innerHTML, /mode_changeable=off/);
+  assert.match(semanticList.innerHTML, /overrun=off/);
+  assert.match(semanticList.innerHTML, /mode=&lt;empty&gt;/);
+  assert.match(semanticList.innerHTML, /brand=&lt;empty&gt; vendor=&lt;empty&gt;/);
+  assert.match(semanticList.innerHTML, /<strong>Office<\/strong>.*current=unavailable.*target=unavailable/);
+});

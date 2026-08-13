@@ -1,7 +1,5 @@
 package graphql
 
-import "fmt"
-
 // NewPromotedSemanticProvider composes a narrow, protocol-neutral overlay
 // over the established semantic provider. Existing non-null values always win.
 func NewPromotedSemanticProvider(base SemanticProvider, overlay func() PromotedSemanticOverlay) SemanticProvider {
@@ -139,18 +137,10 @@ func (p promotedSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return p.base.AdapterHardwareInfo()
 }
 
-// SemanticRegistryState remains an inventory of the owner-materialized eBUS
-// registry. The promoted overlay is a public projection and is intentionally
-// excluded from the owner-local M8 source-state surface.
-func (p promotedSemanticProvider) SemanticRegistryState() (SemanticRegistrySnapshot, error) {
-	owner, ok := p.base.(interface {
-		SemanticRegistryState() (SemanticRegistrySnapshot, error)
-	})
-	if !ok {
-		return SemanticRegistrySnapshot{}, fmt.Errorf("base semantic provider does not expose owner-local registry state")
-	}
-	return owner.SemanticRegistryState()
-}
+// BaseSemanticProvider returns the owner-local provider beneath this public
+// projection. Owner-only consumers such as stable eBUS MCP tools must unwrap
+// the projection instead of observing cross-protocol fill values.
+func (p promotedSemanticProvider) BaseSemanticProvider() SemanticProvider { return p.base }
 
 func copyFloat(value *float64) *float64 {
 	if value == nil {

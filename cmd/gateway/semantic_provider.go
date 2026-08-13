@@ -14,6 +14,11 @@ type mcpSemanticProviderAdapter struct {
 }
 
 func newMCPSemanticProvider(provider graphql.SemanticProvider) mcp.SemanticProvider {
+	if projected, ok := provider.(interface {
+		BaseSemanticProvider() graphql.SemanticProvider
+	}); ok {
+		provider = projected.BaseSemanticProvider()
+	}
 	return mcpSemanticProviderAdapter{provider: provider}
 }
 

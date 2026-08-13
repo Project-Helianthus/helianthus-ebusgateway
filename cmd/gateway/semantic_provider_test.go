@@ -117,7 +117,11 @@ func TestMCPSemanticProviderAdapterM8InventorySurvivesPromotedProjection(t *test
 		}}
 	})
 
-	state, err := (mcpSemanticProviderAdapter{provider: provider}).M8SemanticRegistryState()
+	adapter, ok := newMCPSemanticProvider(provider).(mcpSemanticProviderAdapter)
+	if !ok {
+		t.Fatalf("MCP semantic adapter type = %T", newMCPSemanticProvider(provider))
+	}
+	state, err := adapter.M8SemanticRegistryState()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +136,13 @@ func TestMCPSemanticProviderAdapterM8InventorySurvivesPromotedProjection(t *test
 	}
 	if !foundOwner {
 		t.Fatalf("owner inventory missing behind promoted projection: %#v", state.Leaves)
+	}
+	zones := adapter.Zones()
+	if len(zones) != 1 || zones[0].ID != "owner-zone" {
+		t.Fatalf("MCP owner zones = %#v", zones)
+	}
+	if zones[0].State.CurrentTempC != nil {
+		t.Fatalf("promoted value leaked into stable eBUS MCP: %#v", zones[0])
 	}
 }
 

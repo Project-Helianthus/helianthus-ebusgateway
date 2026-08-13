@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,5 +155,45 @@ func TestRedactFileSourcedModbusErrorLeavesInlineErrorUnchanged(t *testing.T) {
 	original := errors.New("dial tcp://inline.internal:502 failed")
 	if got := redactFileSourcedModbusError(original, ""); got != original {
 		t.Fatalf("inline error identity changed: got %v want %v", got, original)
+	}
+}
+
+func TestRedactFileSourcedModbusErrorRemovesResolvedNetworkAddresses(t *testing.T) {
+	endpoint := "tcp://modbus.internal:502"
+	for name, address := range map[string]*net.TCPAddr{
+		"ipv4": {IP: net.ParseIP("192.0.2.40"), Port: 502},
+		"ipv6": {IP: net.ParseIP("2001:db8::40"), Port: 502},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dialError := &net.OpError{
+				Op:   "dial",
+				Net:  "tcp",
+				Addr: address,
+				Err:  errors.New("connection refused"),
+			}
+			wrapped := fmt.Errorf(
+				"modbus startup: %w",
+				errors.Join(errors.New("sidecar failed"), dialError),
+			)
+
+			redacted := redactFileSourcedModbusError(wrapped, endpoint)
+			if strings.Contains(redacted.Error(), address.String()) ||
+				strings.Contains(redacted.Error(), "modbus.internal") {
+				t.Fatalf("redacted error leaks remote address: %v", redacted)
+			}
+			if !strings.Contains(redacted.Error(), "[REDACTED_MODBUS_ENDPOINT]") {
+				t.Fatalf("redacted error has no marker: %v", redacted)
+			}
+		})
+	}
+}
+
+func TestRedactFileSourcedModbusErrorRemovesWrappedDNSName(t *testing.T) {
+	endpoint := "tcp://configured.invalid:502"
+	dnsError := &net.DNSError{Name: "canonical.internal", Err: "no such host"}
+	redacted := redactFileSourcedModbusError(fmt.Errorf("resolve: %w", dnsError), endpoint)
+	if strings.Contains(redacted.Error(), "configured.invalid") ||
+		strings.Contains(redacted.Error(), "canonical.internal") {
+		t.Fatalf("redacted error leaks DNS name: %v", redacted)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"sort"
@@ -77,6 +78,7 @@ func redactFileSourcedModbusError(err error, endpoint string) error {
 	if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
 		values = append(values, parsed.Host, parsed.Hostname())
 	}
+	values = append(values, modbusErrorNetworkAddresses(err, 0)...)
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	message := err.Error()
 	for _, value := range values {
@@ -85,4 +87,27 @@ func redactFileSourcedModbusError(err error, endpoint string) error {
 		}
 	}
 	return errors.New(message)
+}
+
+func modbusErrorNetworkAddresses(err error, depth int) []string {
+	if err == nil || depth > 32 {
+		return nil
+	}
+	values := make([]string, 0, 2)
+	if networkError, ok := err.(*net.OpError); ok && networkError.Addr != nil {
+		values = append(values, networkError.Addr.String())
+	}
+	if dnsError, ok := err.(*net.DNSError); ok && dnsError.Name != "" {
+		values = append(values, dnsError.Name)
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			values = append(values, modbusErrorNetworkAddresses(child, depth+1)...)
+		}
+		return values
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		values = append(values, modbusErrorNetworkAddresses(wrapped.Unwrap(), depth+1)...)
+	}
+	return values
 }

@@ -529,6 +529,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	gateway.RefreshRouterPlanes()
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
+	wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
 	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)

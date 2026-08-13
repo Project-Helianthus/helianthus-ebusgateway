@@ -196,6 +196,48 @@ class PassiveSmokeGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("passive smoke gate: not triggered.", result.stdout)
 
+    def test_passive_smoke_gate_skips_exact_m9_graphql_wiring_call(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
+            modified_text=(
+                "package main\n\nfunc main() {\n"
+                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)\n"
+                "\tsemanticRuntime.Start(ctx)\n}\n"
+            ),
+        )
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("passive smoke gate: not triggered.", result.stdout)
+
+    def test_passive_smoke_gate_rejects_nearby_m9_runtime_call(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
+            modified_text=(
+                "package main\n\nfunc main() {\n"
+                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), transport)\n"
+                "\tsemanticRuntime.Start(ctx)\n}\n"
+            ),
+        )
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

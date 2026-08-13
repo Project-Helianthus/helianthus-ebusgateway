@@ -93,6 +93,9 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		// Issue #784 adds the owner-only raw SHIP/SPINE acquisition seam for
 		// private leaf-promotion evidence. It does not project into consumers.
 		"cmd/gateway/leaf_promotion_live_source.go": false,
+		// Issue #794 consumes the same facades at the adapter boundary and
+		// emits only typed, public-safe semantic overlay values.
+		"cmd/gateway/eebus_promoted_semantic.go": false,
 	}
 	var unexpected []string
 	err = filepath.WalkDir(".", func(path string, entry os.DirEntry, walkErr error) error {

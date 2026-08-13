@@ -1118,6 +1118,14 @@ func cloneZoneConfig(c ZoneConfig) ZoneConfig {
 		v := *c.TargetTempC
 		out.TargetTempC = &v
 	}
+	if c.OperationModeChangeable != nil {
+		v := *c.OperationModeChangeable
+		out.OperationModeChangeable = &v
+	}
+	if c.SourceLabel != nil {
+		v := *c.SourceLabel
+		out.SourceLabel = &v
+	}
 	if len(c.AllowedModes) > 0 {
 		out.AllowedModes = make([]string, len(c.AllowedModes))
 		copy(out.AllowedModes, c.AllowedModes)
@@ -1149,6 +1157,10 @@ func cloneDhwState(s DhwState) DhwState {
 		v := *s.CurrentTempC
 		out.CurrentTempC = &v
 	}
+	if s.OverrunActive != nil {
+		v := *s.OverrunActive
+		out.OverrunActive = &v
+	}
 	if s.HeatingDemandPct != nil {
 		v := *s.HeatingDemandPct
 		out.HeatingDemandPct = &v
@@ -1161,6 +1173,10 @@ func cloneDhwConfig(c DhwConfig) DhwConfig {
 	if c.TargetTempC != nil {
 		v := *c.TargetTempC
 		out.TargetTempC = &v
+	}
+	if c.OperationModeChangeable != nil {
+		v := *c.OperationModeChangeable
+		out.OperationModeChangeable = &v
 	}
 	return out
 }

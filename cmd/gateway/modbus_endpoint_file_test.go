@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -124,5 +125,33 @@ func TestResolveModbusEndpointFileRejectsUnsafeFilesAndBounds(t *testing.T) {
 				t.Fatalf("unsafe endpoint file populated config: %q", cfg.Endpoint)
 			}
 		})
+	}
+}
+
+func TestRedactFileSourcedModbusErrorRemovesEndpointVariants(t *testing.T) {
+	endpoint := "tcp://sensitive.internal:502"
+	err := errors.New(
+		"dial tcp://sensitive.internal:502 via sensitive.internal:502: " +
+			"lookup sensitive.internal: no such host",
+	)
+
+	redacted := redactFileSourcedModbusError(err, endpoint)
+	if redacted == nil {
+		t.Fatal("redacted error is nil")
+	}
+	for _, secret := range []string{endpoint, "sensitive.internal:502", "sensitive.internal"} {
+		if strings.Contains(redacted.Error(), secret) {
+			t.Fatalf("redacted startup error contains %q: %v", secret, redacted)
+		}
+	}
+	if !strings.Contains(redacted.Error(), "[REDACTED_MODBUS_ENDPOINT]") {
+		t.Fatalf("redacted startup error has no marker: %v", redacted)
+	}
+}
+
+func TestRedactFileSourcedModbusErrorLeavesInlineErrorUnchanged(t *testing.T) {
+	original := errors.New("dial tcp://inline.internal:502 failed")
+	if got := redactFileSourcedModbusError(original, ""); got != original {
+		t.Fatalf("inline error identity changed: got %v want %v", got, original)
 	}
 }

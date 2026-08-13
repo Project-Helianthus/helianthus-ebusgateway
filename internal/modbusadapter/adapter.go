@@ -123,6 +123,13 @@ func Start(
 	}, nil
 }
 
+// ValidateTCPEndpoint applies the endpoint grammar used by Start without
+// opening a connection.
+func ValidateTCPEndpoint(endpoint string) error {
+	_, err := dialAddress(endpoint)
+	return err
+}
+
 func dialAddress(endpoint string) (string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "tcp" || parsed.Host == "" ||

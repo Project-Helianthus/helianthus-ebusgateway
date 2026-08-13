@@ -133,6 +133,9 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, cfg); err != nil {
+		if inputs.modbusEndpointFile != "" {
+			err = redactFileSourcedModbusError(err, cfg.ModbusTCPConfig.Endpoint)
+		}
 		log.Fatalf("gateway: %v", err)
 	}
 }

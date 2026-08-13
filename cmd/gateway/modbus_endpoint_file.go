@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"io"
-	"net"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"syscall"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 )
 
 const maxModbusEndpointFileBytes = 512
@@ -60,20 +62,27 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 		return errors.New("invalid Modbus TCP endpoint file")
 	}
 	endpoint := string(content)
-	if !validModbusTCPEndpoint(endpoint) {
+	if err := modbusadapter.ValidateTCPEndpoint(endpoint); err != nil {
 		return errors.New("invalid Modbus TCP endpoint file")
 	}
 	config.Endpoint = endpoint
 	return nil
 }
 
-func validModbusTCPEndpoint(endpoint string) bool {
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "tcp" || parsed.Host == "" ||
-		parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" ||
-		parsed.Fragment != "" {
-		return false
+func redactFileSourcedModbusError(err error, endpoint string) error {
+	if err == nil || endpoint == "" {
+		return err
 	}
-	_, _, err = net.SplitHostPort(parsed.Host)
-	return err == nil
+	values := []string{endpoint}
+	if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
+		values = append(values, parsed.Host, parsed.Hostname())
+	}
+	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	message := err.Error()
+	for _, value := range values {
+		if value != "" {
+			message = strings.ReplaceAll(message, value, "[REDACTED_MODBUS_ENDPOINT]")
+		}
+	}
+	return errors.New(message)
 }

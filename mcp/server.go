@@ -1450,6 +1450,10 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		return result, nil
 	}
 
+	if result, handled := s.handleModbusV1Call(ctx, call.Name, call.Arguments); handled {
+		return result, nil
+	}
+
 	switch call.Name {
 	case toolRuntimeStatusGetName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)

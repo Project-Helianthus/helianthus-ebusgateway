@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -124,5 +127,44 @@ func TestModbusV1NilProviderIsInert(t *testing.T) {
 	RegisterModbusV1Tools(server, nil)
 	if server.hasToolNamed(ModbusV1RawReadTool) || server.hasToolNamed(ModbusV1ProfileObservationGetTool) {
 		t.Fatal("nil provider exposed Modbus tools")
+	}
+}
+
+func TestModbusV1GoldenEnvelopes(t *testing.T) {
+	fixtures := map[string]any{
+		"modbus_v1_raw_read": ModbusRawReadResult{
+			EndpointRef: "sha256:endpoint", UnitID: 1, Function: 3, Offset: 40000, Quantity: 2,
+			Words: []uint16{0x5375, 0x6e53}, WireBytesHex: "53756e53", WireResponseID: 91,
+			LogicalViewID: 92, PhysicalRequestID: 93, ConnectionID: 94,
+			TransportGeneration: 95, PollGenerationID: 96, DeadlineIdentity: 97,
+		},
+		"modbus_v1_profile_observation": ModbusProfileObservationResult{
+			ProfileID: "sunspec.phase1", ProfileVersion: "1.0.0", CodecVersion: "1.0.0",
+			SampleID: "sample-91", PollGenerationID: 96, SourceValidity: "valid",
+			SourceTime: "2026-08-13T10:00:00Z", LocalReceiptTime: "2026-08-13T10:00:01Z",
+			DetectionEvidence:  []string{"detector:standard-only"},
+			ActivationEvidence: []string{"activation:fixture"},
+			Observation:        map[string]any{"endpoint": "sha256:endpoint", "normalization_version": "1.0.0"},
+			Replay:             []ModbusReplayView{{LogicalViewID: 92, WireResponseID: 91, Offset: 40000, Words: []uint16{0x5375, 0x6e53}}},
+		},
+	}
+	for name, data := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			envelope := newModbusV1Envelope(data, nil)
+			envelope["meta"].(map[string]any)["data_timestamp"] = "2026-08-13T10:00:02Z"
+			got := mustJSON(envelope)
+			path := filepath.Join("testdata", name+".golden.json")
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read golden %s: %v", path, err)
+			}
+			if got != strings.TrimSpace(string(want)) {
+				t.Fatalf("golden mismatch for %s:\nwant: %s\ngot:  %s", name, strings.TrimSpace(string(want)), got)
+			}
+			second := newModbusV1Envelope(data, nil)
+			if envelope["meta"].(map[string]any)["data_hash"] != second["meta"].(map[string]any)["data_hash"] {
+				t.Fatal("data_hash changed for identical data")
+			}
+		})
 	}
 }

@@ -18,7 +18,7 @@ const (
 	ModbusV1RawReadWindow             = time.Second
 )
 
-var ErrModbusV1ResourceExhausted = errors.New("Modbus V1 raw read quota exhausted")
+var ErrModbusV1ResourceExhausted = errors.New("modbus V1 raw read quota exhausted")
 
 // ModbusRawReadRequest is the closed read-only phase-one operation surface.
 type ModbusRawReadRequest struct {

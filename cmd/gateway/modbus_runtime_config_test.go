@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"testing"
 	"time"
 
@@ -14,6 +15,22 @@ func TestMapModbusRuntimeConfigDisabledIsInert(t *testing.T) {
 	}
 	if config.Enabled {
 		t.Fatal("disabled config became enabled")
+	}
+}
+
+func TestBindFlagsModbusTCP(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("modbus", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	if err := fs.Parse([]string{
+		"-modbus-tcp-enabled",
+		"-modbus-tcp-endpoint", "tcp://192.0.2.10:502",
+		"-modbus-tcp-dial-timeout", "3s",
+	}); err != nil {
+		t.Fatalf("parse Modbus flags: %v", err)
+	}
+	if !cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.Endpoint != "tcp://192.0.2.10:502" || cfg.ModbusTCPConfig.DialTimeout != 3*time.Second {
+		t.Fatalf("Modbus config = %+v", cfg.ModbusTCPConfig)
 	}
 }
 

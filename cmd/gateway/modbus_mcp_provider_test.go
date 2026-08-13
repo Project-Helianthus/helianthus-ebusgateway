@@ -43,7 +43,8 @@ func TestEndpointReferenceDoesNotExposeEndpoint(t *testing.T) {
 func TestRedactModbusEndpointsCoversNestedObservationProvenance(t *testing.T) {
 	const endpoint = "tcp://operator:secret@192.0.2.10:502"
 	observation := map[string]any{
-		"endpoint": endpoint,
+		"endpoint":          endpoint,
+		"endpoint_identity": endpoint,
 		"dependencies": []any{map[string]any{
 			"view": map[string]any{"Endpoint": endpoint, "words": []any{1.0, 2.0}},
 		}},
@@ -52,6 +53,9 @@ func TestRedactModbusEndpointsCoversNestedObservationProvenance(t *testing.T) {
 	redactModbusEndpoints(observation)
 	if got := observation["endpoint"]; got != endpointReference(endpoint) {
 		t.Fatalf("top-level endpoint = %q", got)
+	}
+	if got := observation["endpoint_identity"]; got != endpointReference(endpoint) {
+		t.Fatalf("endpoint identity = %q", got)
 	}
 	view := observation["dependencies"].([]any)[0].(map[string]any)["view"].(map[string]any)
 	if got := view["Endpoint"]; got != endpointReference(endpoint) {

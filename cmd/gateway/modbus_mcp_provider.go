@@ -165,7 +165,7 @@ func redactModbusEndpoints(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
-			if strings.EqualFold(key, "endpoint") {
+			if strings.Contains(strings.ToLower(key), "endpoint") {
 				if endpoint, ok := child.(string); ok {
 					typed[key] = endpointReference(endpoint)
 				}

@@ -122,14 +122,20 @@ func (observer *runtimeWatchObserver) Observe(key ebusgateway.WatchKey) ebusgate
 
 func main() {
 	cfg := ebusgateway.DefaultConfig()
-	bindFlags(flag.CommandLine, &cfg)
+	inputs := bindFlags(flag.CommandLine, &cfg)
 	flag.Parse()
+	if err := resolveModbusEndpointFile(&cfg.ModbusTCPConfig, inputs.modbusEndpointFile); err != nil {
+		log.Fatalf("gateway: %v", err)
+	}
 	applyTransportSourcePolicy(&cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := run(ctx, cfg); err != nil {
+		if inputs.modbusEndpointFile != "" {
+			err = redactFileSourcedModbusError(err, cfg.ModbusTCPConfig.Endpoint)
+		}
 		log.Fatalf("gateway: %v", err)
 	}
 }
@@ -1312,9 +1318,10 @@ func gatewayMDNSText(cfg ebusgateway.Config) []string {
 	return text
 }
 
-func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
+func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
+	inputs := &gatewayFlagInputs{}
 	if fs == nil || cfg == nil {
-		return
+		return inputs
 	}
 
 	fs.StringVar((*string)(&cfg.TransportConfig.Protocol), "transport", string(cfg.TransportConfig.Protocol), "transport protocol: enh, ens, udp-plain, tcp-plain, or ebusd-tcp")
@@ -1325,6 +1332,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
 	fs.BoolVar(&cfg.ModbusTCPConfig.Enabled, "modbus-tcp-enabled", cfg.ModbusTCPConfig.Enabled, "enable the read-only Modbus TCP sidecar")
 	fs.StringVar(&cfg.ModbusTCPConfig.Endpoint, "modbus-tcp-endpoint", cfg.ModbusTCPConfig.Endpoint, "Modbus TCP endpoint URI (tcp://host:port)")
+	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
 	fs.BoolVar(
@@ -1463,6 +1471,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		return nil
 	})
 	fs.BoolVar(&cfg.StartupSource.Validate, "startup-source-override-validate", cfg.StartupSource.Validate, "run source-address selector in advisory-only mode alongside startup-source-override")
+	return inputs
 }
 
 // parseHexByteList parses a comma-separated list of hex byte literals

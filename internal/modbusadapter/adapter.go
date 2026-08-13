@@ -124,7 +124,7 @@ func dialAddress(endpoint string) (string, error) {
 // EnqueueRead admits a logical request without exposing connection ownership.
 func (adapter *Adapter) EnqueueRead(plan ReadPlan) (modbus.TCPRequestHandle, error) {
 	if adapter == nil || adapter.endpoint == nil {
-		return modbus.TCPRequestHandle{}, errors.New("Modbus TCP adapter unavailable")
+		return modbus.TCPRequestHandle{}, errors.New("modbus TCP adapter unavailable")
 	}
 	return adapter.endpoint.EnqueueRead(modbus.TCPReadPlan{
 		Connection:         adapter.connection,
@@ -151,7 +151,7 @@ func (adapter *Adapter) Write(
 	dispatch modbus.TCPDispatch,
 ) (modbus.OwnerTransition, error) {
 	if adapter == nil || adapter.endpoint == nil {
-		return modbus.OwnerTransition{}, errors.New("Modbus TCP adapter unavailable")
+		return modbus.OwnerTransition{}, errors.New("modbus TCP adapter unavailable")
 	}
 	return adapter.endpoint.Write(ctx, dispatch)
 }
@@ -159,7 +159,7 @@ func (adapter *Adapter) Write(
 // Read returns the public runtime batch unchanged.
 func (adapter *Adapter) Read(ctx context.Context) (modbus.TCPReadBatch, error) {
 	if adapter == nil || adapter.endpoint == nil {
-		return modbus.TCPReadBatch{}, errors.New("Modbus TCP adapter unavailable")
+		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
 	}
 	return adapter.endpoint.Read(ctx, adapter.connection)
 }
@@ -167,7 +167,7 @@ func (adapter *Adapter) Read(ctx context.Context) (modbus.TCPReadBatch, error) {
 // Cancel delegates cancellation to the endpoint owner.
 func (adapter *Adapter) Cancel(handle modbus.TCPRequestHandle) error {
 	if adapter == nil || adapter.endpoint == nil {
-		return errors.New("Modbus TCP adapter unavailable")
+		return errors.New("modbus TCP adapter unavailable")
 	}
 	return adapter.endpoint.Cancel(handle)
 }

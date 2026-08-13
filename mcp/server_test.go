@@ -1386,39 +1386,42 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("fm5 interpretation payload is atomic", func(t *testing.T) {
-		degradedReason := Fm5SemanticDegradedReason("CONTROLLER_UNREACHABLE")
-		verdictServer, err := NewServer(reg, &testInvoker{})
-		if err != nil {
-			t.Fatalf("NewServer error = %v", err)
-		}
-		verdictServer.SetSemanticProvider(testFM5InterpretationProvider{
-			testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly},
-			verdict: Fm5Interpretation{
-				Mode:             Fm5SemanticModeGPIOOnly,
-				DegradedReason:   &degradedReason,
-				EvidenceRevision: "fm5-acq-17",
-			},
-		})
+		for index, reason := range []Fm5SemanticDegradedReason{"EVIDENCE_STALE", "INCOHERENT_ACQUISITION"} {
+			t.Run(string(reason), func(t *testing.T) {
+				verdictServer, err := NewServer(reg, &testInvoker{})
+				if err != nil {
+					t.Fatalf("NewServer error = %v", err)
+				}
+				verdictServer.SetSemanticProvider(testFM5InterpretationProvider{
+					testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly},
+					verdict: Fm5Interpretation{
+						Mode:             Fm5SemanticModeGPIOOnly,
+						DegradedReason:   &reason,
+						EvidenceRevision: "fm5-g7-a17",
+					},
+				})
 
-		res := doRPC(t, verdictServer.Handler(), rpcRequest{
-			JSONRPC: "2.0",
-			ID:      23,
-			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
-		})
-		envelope := envelopeFromResult(t, res)
-		data, ok := envelope["data"].(map[string]any)
-		if !ok {
-			t.Fatalf("fm5 interpretation data type = %T; want map", envelope["data"])
-		}
-		if got := data["mode"]; got != string(Fm5SemanticModeGPIOOnly) {
-			t.Fatalf("fm5 interpretation mode = %v; want %s", got, Fm5SemanticModeGPIOOnly)
-		}
-		if got := data["degraded_reason"]; got != string(degradedReason) {
-			t.Fatalf("fm5 interpretation degraded_reason = %v; want %s", got, degradedReason)
-		}
-		if got := data["evidence_revision"]; got != "fm5-acq-17" {
-			t.Fatalf("fm5 interpretation evidence_revision = %v; want fm5-acq-17", got)
+				res := doRPC(t, verdictServer.Handler(), rpcRequest{
+					JSONRPC: "2.0",
+					ID:      23 + index,
+					Method:  "tools/call",
+					Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+				})
+				envelope := envelopeFromResult(t, res)
+				data, ok := envelope["data"].(map[string]any)
+				if !ok {
+					t.Fatalf("fm5 interpretation data type = %T; want map", envelope["data"])
+				}
+				if got := data["mode"]; got != string(Fm5SemanticModeGPIOOnly) {
+					t.Fatalf("fm5 interpretation mode = %v; want %s", got, Fm5SemanticModeGPIOOnly)
+				}
+				if got := data["degraded_reason"]; got != string(reason) {
+					t.Fatalf("fm5 interpretation degraded_reason = %v; want %s", got, reason)
+				}
+				if got := data["evidence_revision"]; got != "fm5-g7-a17" {
+					t.Fatalf("fm5 interpretation evidence_revision = %v; want fm5-g7-a17", got)
+				}
+			})
 		}
 	})
 

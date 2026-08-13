@@ -370,11 +370,12 @@ type vaillantSemanticPoller struct {
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
 
-	refreshFromEbusdGrabFn func(context.Context) (map[byte]bool, bool)
-	b524ProbeFn            func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
-	sendFrameFn            func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
-	routerPlanesRefreshFn  func()
-	nowFn                  func() time.Time
+	refreshFromEbusdGrabFn       func(context.Context) (map[byte]bool, bool)
+	b524ProbeFn                  func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
+	sendFrameFn                  func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
+	routerPlanesRefreshFn        func()
+	withFM5ObservationGeneration func(func(uint64)) bool
+	nowFn                        func() time.Time
 }
 
 type regulatorEnrichment struct {
@@ -5539,6 +5540,8 @@ type fm5EvidenceCapture struct {
 	systemSnapshot     *vaillantSystemSnapshot
 	radioSnapshots     []*vaillantRadioDeviceSnapshot
 	registryEvidence   string
+	registryGeneration uint64
+	registryCoherent   bool
 	identityObservedAt time.Time
 	generation         uint64
 }
@@ -5565,7 +5568,7 @@ func (p *vaillantSemanticPoller) captureFM5Evidence() fm5EvidenceCapture {
 	}
 	p.mu.Unlock()
 
-	capture.registryEvidence = p.fm5RegistryEvidenceFingerprint()
+	capture.registryEvidence, capture.registryGeneration, capture.registryCoherent = p.captureFM5RegistryEvidence()
 	if capture.hasEvidence() && capture.identityObservedAt.IsZero() {
 		observedAt := p.now()
 		p.mu.Lock()
@@ -5591,9 +5594,11 @@ func (capture fm5EvidenceCapture) staleAt(now time.Time, ttl time.Duration) bool
 }
 
 func (capture fm5EvidenceCapture) sameGeneration(other fm5EvidenceCapture) bool {
-	return capture.generation == other.generation &&
+	return capture.registryCoherent && other.registryCoherent &&
+		capture.generation == other.generation &&
 		capture.controller == other.controller &&
 		uint16PointersEqual(capture.moduleConfig, other.moduleConfig) &&
+		capture.registryGeneration == other.registryGeneration &&
 		capture.registryEvidence == other.registryEvidence
 }
 
@@ -5616,22 +5621,45 @@ func (p *vaillantSemanticPoller) commitFM5Acquisition(
 	incomingSolar *vaillantSolarSnapshot,
 	incomingCylinders map[byte]*vaillantCylinderSnapshot,
 ) graphql.Fm5Interpretation {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	registryFingerprint := p.fm5RegistryEvidenceFingerprint()
-	if !captured.matchesLockedPoller(p) || captured.registryEvidence != registryFingerprint {
-		p.fm5EvidenceRevision++
-		verdict = graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeGPIOOnly,
-			DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
-			EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
+	commit := func(registryGeneration uint64, registryCoherent bool) {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !registryCoherent || !captured.registryCoherent ||
+			captured.registryGeneration != registryGeneration ||
+			!captured.matchesLockedPoller(p) {
+			p.fm5EvidenceRevision++
+			verdict = graphql.Fm5Interpretation{
+				Mode:             graphql.Fm5SemanticModeGPIOOnly,
+				DegradedReason:   graphql.Fm5SemanticDegradedReasonIncoherentAcquisition,
+				EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
+			}
 		}
+		p.fm5Mode = verdict.Mode
+		p.fm5Interpretation = verdict
+		p.solar, p.solarCylinders = applyFM5Acquisition(
+			p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
+		)
 	}
-	p.fm5Mode = verdict.Mode
-	p.fm5Interpretation = verdict
-	p.solar, p.solarCylinders = applyFM5Acquisition(
-		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
-	)
+
+	withGeneration := p.withFM5ObservationGeneration
+	if withGeneration == nil && p.reg != nil {
+		withGeneration = p.reg.WithObservationGeneration
+	}
+	if withGeneration == nil {
+		commit(0, true)
+		return verdict
+	}
+	committed := false
+	if withGeneration(func(current uint64) {
+		// Do not call any DeviceRegistry method from this callback. The
+		// registry read lock is deliberately held across the generation
+		// comparison and semantic commit.
+		commit(current, true)
+		committed = true
+	}) && committed {
+		return verdict
+	}
+	commit(captured.registryGeneration, false)
 	return verdict
 }
 
@@ -5983,6 +6011,27 @@ func preserveExistingRegistryMetadata(reg *registry.DeviceRegistry, info registr
 
 func (p *vaillantSemanticPoller) hasFM5RegistryEvidence() bool {
 	return p.fm5RegistryEvidenceFingerprint() != ""
+}
+
+func (p *vaillantSemanticPoller) captureFM5RegistryEvidence() (string, uint64, bool) {
+	if p == nil || p.reg == nil {
+		return "", 0, true
+	}
+	for range 3 {
+		var before uint64
+		if !p.reg.WithObservationGeneration(func(current uint64) { before = current }) {
+			return "", 0, false
+		}
+		fingerprint := p.fm5RegistryEvidenceFingerprint()
+		var after uint64
+		if !p.reg.WithObservationGeneration(func(current uint64) { after = current }) {
+			return fingerprint, before, false
+		}
+		if before == after {
+			return fingerprint, after, true
+		}
+	}
+	return p.fm5RegistryEvidenceFingerprint(), 0, false
 }
 
 func (p *vaillantSemanticPoller) fm5RegistryEvidenceFingerprint() string {

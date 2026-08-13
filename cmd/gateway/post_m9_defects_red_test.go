@@ -177,6 +177,9 @@ func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t
 		nowFn:          time.Now,
 	}
 	captured := poller.captureFM5Evidence()
+	if !captured.registryCoherent {
+		t.Fatal("initial registry capture is incoherent")
+	}
 	reg.Register(registry.DeviceInfo{
 		Address:      circuitManagingDeviceVR71Address,
 		Manufacturer: "Vaillant",
@@ -189,6 +192,78 @@ func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t
 	}, &vaillantSolarSnapshot{}, map[byte]*vaillantCylinderSnapshot{})
 	if verdict.Mode != graphql.Fm5SemanticModeGPIOOnly || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
 		t.Fatalf("registry interleaving verdict = %#v; want GPIO_ONLY/INCOHERENT_ACQUISITION", verdict)
+	}
+}
+
+func TestCommitFM5Acquisition_SerializesWriterAfterCommitWithoutDeadlock(t *testing.T) {
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	config := uint16(2)
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{
+		Address:      circuitManagingDeviceVR71Address,
+		Manufacturer: "Vaillant",
+		DeviceID:     circuitManagingDeviceVR71ID,
+	})
+	poller := &vaillantSemanticPoller{
+		reg:            reg,
+		controller:     0x15,
+		system:         &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices:   map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+		nowFn:          time.Now,
+	}
+	captured := poller.captureFM5Evidence()
+	if !captured.registryCoherent {
+		t.Fatal("initial registry capture is incoherent")
+	}
+
+	readLocked := make(chan struct{})
+	poller.withFM5ObservationGeneration = func(fn func(uint64)) bool {
+		return reg.WithObservationGeneration(func(current uint64) {
+			close(readLocked)
+			fn(current)
+		})
+	}
+	poller.mu.Lock()
+	commitDone := make(chan graphql.Fm5Interpretation, 1)
+	go func() {
+		commitDone <- poller.commitFM5Acquisition(captured, graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeInterpreted,
+			EvidenceRevision: "fm5-g0-a1",
+		}, &vaillantSolarSnapshot{}, map[byte]*vaillantCylinderSnapshot{})
+	}()
+	<-readLocked
+
+	writerDone := make(chan struct{})
+	go func() {
+		reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address + 1,
+			Manufacturer: "Vaillant",
+			DeviceID:     "VR71-WRITER-AFTER",
+		})
+		close(writerDone)
+	}()
+	poller.mu.Unlock()
+
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	var verdict graphql.Fm5Interpretation
+	select {
+	case verdict = <-commitDone:
+	case <-deadline.C:
+		t.Fatal("FM5 commit deadlocked with queued registry writer")
+	}
+	select {
+	case <-writerDone:
+	case <-deadline.C:
+		t.Fatal("registry writer did not complete after FM5 read critical section")
+	}
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" {
+		t.Fatalf("serialized commit verdict = %#v; want INTERPRETED", verdict)
+	}
+	_, afterGeneration, coherent := poller.captureFM5RegistryEvidence()
+	if !coherent || afterGeneration != captured.registryGeneration+1 {
+		t.Fatalf("writer-after generation = %d coherent=%t; want %d true", afterGeneration, coherent, captured.registryGeneration+1)
 	}
 }
 

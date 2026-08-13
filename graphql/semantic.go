@@ -16,6 +16,8 @@ type ZoneState struct {
 
 type ZoneConfig struct {
 	OperatingMode              string
+	OperationModeChangeable    *bool
+	SourceLabel                *string
 	Preset                     string
 	TargetTempC                *float64
 	AllowedModes               []string
@@ -42,16 +44,18 @@ type Zone struct {
 
 type DhwState struct {
 	CurrentTempC     *float64
+	OverrunActive    *bool
 	SpecialFunction  string
 	HeatingDemandPct *float64
 }
 
 type DhwConfig struct {
-	OperatingMode    string
-	Preset           string
-	TargetTempC      *float64
-	HolidayStartDate string
-	HolidayEndDate   string
+	OperatingMode           string
+	OperationModeChangeable *bool
+	Preset                  string
+	TargetTempC             *float64
+	HolidayStartDate        string
+	HolidayEndDate          string
 }
 
 type DhwStatus struct {
@@ -251,9 +255,42 @@ type BoilerStatus struct {
 }
 
 type SystemStatus struct {
-	State      SystemState
-	Config     SystemConfig
-	Properties SystemProperties
+	State         SystemState
+	Config        SystemConfig
+	Properties    SystemProperties
+	GatewayBrand  *string
+	GatewayVendor *string
+}
+
+// PromotedSemanticOverlay is the protocol-neutral, public-safe contribution
+// from an additional runtime. It intentionally carries only the fixed M9
+// semantic leaves; transport and protocol identities stay at the adapter edge.
+type PromotedSemanticOverlay struct {
+	Zones  map[string]PromotedZoneOverlay
+	DHW    PromotedDHWOverlay
+	System PromotedSystemOverlay
+}
+
+type PromotedZoneOverlay struct {
+	CurrentTempC            *float64
+	TargetTempC             *float64
+	OperatingMode           *string
+	OperationModeChangeable *bool
+	SourceLabel             *string
+}
+
+type PromotedDHWOverlay struct {
+	CurrentTempC            *float64
+	TargetTempC             *float64
+	OperatingMode           *string
+	OperationModeChangeable *bool
+	OverrunActive           *bool
+}
+
+type PromotedSystemOverlay struct {
+	OutdoorTemperature *float64
+	GatewayBrand       *string
+	GatewayVendor      *string
 }
 
 type SystemState struct {
@@ -573,6 +610,14 @@ func cloneSystemStatus(status *SystemStatus) *SystemStatus {
 	cp.State = cloneSystemState(cp.State)
 	cp.Config = cloneSystemConfig(cp.Config)
 	cp.Properties = cloneSystemProperties(cp.Properties)
+	if status.GatewayBrand != nil {
+		v := *status.GatewayBrand
+		cp.GatewayBrand = &v
+	}
+	if status.GatewayVendor != nil {
+		v := *status.GatewayVendor
+		cp.GatewayVendor = &v
+	}
 	return &cp
 }
 

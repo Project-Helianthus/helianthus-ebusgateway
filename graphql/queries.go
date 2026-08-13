@@ -206,6 +206,20 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	zoneConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "ZoneConfig",
 		Fields: graphqlgo.Fields{
+			"operation_mode_changeable": &graphqlgo.Field{Type: graphqlgo.Boolean, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				config, ok := params.Source.(ZoneConfig)
+				if !ok || config.OperationModeChangeable == nil {
+					return nil, nil
+				}
+				return *config.OperationModeChangeable, nil
+			}},
+			"source_label": &graphqlgo.Field{Type: graphqlgo.String, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				config, ok := params.Source.(ZoneConfig)
+				if !ok || config.SourceLabel == nil {
+					return nil, nil
+				}
+				return *config.SourceLabel, nil
+			}},
 			"operatingMode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -914,6 +928,13 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	dhwStateType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "DhwState",
 		Fields: graphqlgo.Fields{
+			"overrun_active": &graphqlgo.Field{Type: graphqlgo.Boolean, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				state, ok := params.Source.(DhwState)
+				if !ok || state.OverrunActive == nil {
+					return nil, nil
+				}
+				return *state.OverrunActive, nil
+			}},
 			"currentTempC": &graphqlgo.Field{
 				Type: graphqlgo.Float,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -998,6 +1019,13 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	dhwConfigType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "DhwConfig",
 		Fields: graphqlgo.Fields{
+			"operation_mode_changeable": &graphqlgo.Field{Type: graphqlgo.Boolean, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				config, ok := params.Source.(DhwConfig)
+				if !ok || config.OperationModeChangeable == nil {
+					return nil, nil
+				}
+				return *config.OperationModeChangeable, nil
+			}},
 			"operatingMode": &graphqlgo.Field{
 				Type: graphqlgo.String,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
@@ -3499,6 +3527,20 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	systemStatusType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "SystemStatus",
 		Fields: graphqlgo.Fields{
+			"gateway_brand": &graphqlgo.Field{Type: graphqlgo.String, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				status, ok := params.Source.(*SystemStatus)
+				if !ok || status == nil || status.GatewayBrand == nil {
+					return nil, nil
+				}
+				return *status.GatewayBrand, nil
+			}},
+			"gateway_vendor": &graphqlgo.Field{Type: graphqlgo.String, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				status, ok := params.Source.(*SystemStatus)
+				if !ok || status == nil || status.GatewayVendor == nil {
+					return nil, nil
+				}
+				return *status.GatewayVendor, nil
+			}},
 			"state": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(systemStateType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

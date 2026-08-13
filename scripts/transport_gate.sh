@@ -104,6 +104,8 @@ def normalize(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped in {"}", ")"} or stripped.startswith("//"):
         return None
+    if stripped == "wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)":
+        return None
     if re.fullmatch(r'buildVersion\s*=\s*"[0-9]+(?:\.[0-9]+)+(?:[-+][0-9A-Za-z.-]+)?"', stripped):
         return None
     for old, new in replacements:

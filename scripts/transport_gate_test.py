@@ -189,6 +189,48 @@ class TransportGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("transport gate: not triggered.", result.stdout)
 
+    def test_transport_gate_skips_exact_m9_graphql_wiring_call(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
+            modified_text=(
+                "package main\n\nfunc main() {\n"
+                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)\n"
+                "\tsemanticRuntime.Start(ctx)\n}\n"
+            ),
+        )
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("transport gate: not triggered.", result.stdout)
+
+    def test_transport_gate_rejects_nearby_m9_runtime_call(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\tsemanticRuntime.Start(ctx)\n}\n",
+            modified_text=(
+                "package main\n\nfunc main() {\n"
+                "\twireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), transport)\n"
+                "\tsemanticRuntime.Start(ctx)\n}\n"
+            ),
+        )
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
     def test_transport_gate_skips_non_transport_gateway_observability_file(self) -> None:
         repo_path, _ = self._create_temp_repo("cmd/gateway/bus_observability_provider.go")
         result = subprocess.run(

@@ -29,7 +29,7 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 		return nil
 	}
 	if config.Endpoint != "" {
-		return errors.New("Modbus TCP endpoint inputs are mutually exclusive")
+		return errors.New("modbus TCP endpoint inputs are mutually exclusive")
 	}
 
 	before, err := os.Lstat(path)

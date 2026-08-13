@@ -358,6 +358,8 @@ type vaillantSemanticPoller struct {
 	startupSemanticPrimed       bool
 	startupRadioDevicesProbed   bool
 	fm5Mode                     graphql.Fm5SemanticMode
+	fm5Interpretation           graphql.Fm5Interpretation
+	fm5EvidenceRevision         uint64
 	solar                       *vaillantSolarSnapshot
 	solarCylinders              map[byte]*vaillantCylinderSnapshot
 
@@ -1962,21 +1964,24 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 		incomingCylinders, cylindersReadable = p.readCylinderSnapshotsStartup(ctx)
 	}
 	hasFM5Evidence := hasFM5EvidenceFromRadioSnapshots(radioSnapshots) || p.hasFM5RegistryEvidence()
-	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
-	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+	verdict := deriveFM5Interpretation(
+		controller != 0,
+		moduleConfig,
+		solarReadable,
+		cylindersReadable,
+		hasFM5Evidence,
+		p.nextFM5EvidenceRevision(),
+	)
+	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
 
 	p.mu.Lock()
-	p.fm5Mode = nextMode
-	switch nextMode {
-	case graphql.Fm5SemanticModeInterpreted:
-		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
-		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
-	default:
-		p.solar = nil
-		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
-	}
+	p.fm5Mode = verdict.Mode
+	p.fm5Interpretation = verdict
+	p.solar, p.solarCylinders = applyFM5Acquisition(
+		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
+	)
 	p.mu.Unlock()
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
 }
@@ -5509,21 +5514,24 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 		incomingCylinders, cylindersReadable = p.readCylinderSnapshots(ctx)
 	}
 
-	nextMode := deriveFM5SemanticMode(controller != 0, fm5GateSatisfied, solarReadable, cylindersReadable, hasFM5Evidence)
-	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, nextMode) {
+	verdict := deriveFM5Interpretation(
+		controller != 0,
+		moduleConfig,
+		solarReadable,
+		cylindersReadable,
+		hasFM5Evidence,
+		p.nextFM5EvidenceRevision(),
+	)
+	for _, info := range fm5InventoryRegistryInfos(systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
 	}
 
 	p.mu.Lock()
-	p.fm5Mode = nextMode
-	switch nextMode {
-	case graphql.Fm5SemanticModeInterpreted:
-		p.solar = mergeSolarSnapshotNonDestructive(p.solar, incomingSolar)
-		p.solarCylinders = mergeCylinderSnapshotMapNonDestructive(p.solarCylinders, incomingCylinders)
-	default:
-		p.solar = nil
-		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
-	}
+	p.fm5Mode = verdict.Mode
+	p.fm5Interpretation = verdict
+	p.solar, p.solarCylinders = applyFM5Acquisition(
+		p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
+	)
 	p.mu.Unlock()
 
 	p.publishFM5Semantic(semanticSnapshotSourceLive)
@@ -5539,6 +5547,68 @@ func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable,
 	return graphql.Fm5SemanticModeAbsent
 }
 
+func deriveFM5Interpretation(
+	controllerReachable bool,
+	moduleConfig *uint16,
+	solarReadable bool,
+	cylindersReadable bool,
+	hasEvidence bool,
+	evidenceRevision string,
+) graphql.Fm5Interpretation {
+	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
+	if !hasEvidence {
+		verdict.Mode = graphql.Fm5SemanticModeAbsent
+		return verdict
+	}
+	verdict.Mode = graphql.Fm5SemanticModeGPIOOnly
+	switch {
+	case !controllerReachable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonControllerUnreachable
+	case moduleConfig == nil:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationUnavailable
+	case *moduleConfig > 2:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
+	case !solarReadable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed
+	case !cylindersReadable:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed
+	default:
+		verdict.Mode = graphql.Fm5SemanticModeInterpreted
+	}
+	return verdict
+}
+
+func applyFM5Acquisition(
+	previousSolar *vaillantSolarSnapshot,
+	previousCylinders map[byte]*vaillantCylinderSnapshot,
+	incomingSolar *vaillantSolarSnapshot,
+	incomingCylinders map[byte]*vaillantCylinderSnapshot,
+	verdict graphql.Fm5Interpretation,
+) (*vaillantSolarSnapshot, map[byte]*vaillantCylinderSnapshot) {
+	switch {
+	case verdict.Mode == graphql.Fm5SemanticModeInterpreted:
+		return mergeSolarSnapshotNonDestructive(previousSolar, incomingSolar),
+			mergeCylinderSnapshotMapNonDestructive(previousCylinders, incomingCylinders)
+	case isFM5StructuralWithdrawal(verdict):
+		return nil, make(map[byte]*vaillantCylinderSnapshot)
+	default:
+		return cloneSolarSnapshot(previousSolar), cloneCylinderSnapshotsMap(previousCylinders)
+	}
+}
+
+func isFM5StructuralWithdrawal(verdict graphql.Fm5Interpretation) bool {
+	return verdict.Mode == graphql.Fm5SemanticModeAbsent ||
+		(verdict.Mode == graphql.Fm5SemanticModeGPIOOnly &&
+			verdict.DegradedReason == graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
+}
+
+func (p *vaillantSemanticPoller) nextFM5EvidenceRevision() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.fm5EvidenceRevision++
+	return fmt.Sprintf("fm5-acq-%d", p.fm5EvidenceRevision)
+}
+
 func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSource) {
 	if p == nil || p.provider == nil {
 		return
@@ -5549,18 +5619,22 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 	if mode == "" {
 		mode = graphql.Fm5SemanticModeAbsent
 	}
+	verdict := p.fm5Interpretation
+	if verdict.Mode == "" {
+		verdict = graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
+	}
 	solarSnapshot := cloneSolarSnapshot(p.solar)
 	cylindersSnapshot := cloneCylinderSnapshotsMap(p.solarCylinders)
 	p.mu.Unlock()
 
 	switch source {
 	case semanticSnapshotSourceCache:
-		p.provider.SetFM5SemanticModeFromCache(mode)
+		p.provider.SetFM5InterpretationFromCache(verdict)
 	default:
-		p.provider.SetFM5SemanticMode(mode)
+		p.provider.SetFM5Interpretation(verdict)
 	}
 
-	if mode != graphql.Fm5SemanticModeInterpreted {
+	if isFM5StructuralWithdrawal(verdict) || (solarSnapshot == nil && len(cylindersSnapshot) == 0) {
 		emptySolar := &graphql.SolarStatus{}
 		emptyCylinders := []graphql.CylinderStatus{}
 		switch source {

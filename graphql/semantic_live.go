@@ -57,16 +57,17 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu        sync.RWMutex
-	zones     []Zone
-	dhw       *DhwStatus
-	circuits  []CircuitStatus
-	radio     []RadioDevice
-	fm5Mode   Fm5SemanticMode
-	solar     *SolarStatus
-	cylinders []CylinderStatus
-	energy    *EnergyTotals
-	boiler    *BoilerStatus
+	mu         sync.RWMutex
+	zones      []Zone
+	dhw        *DhwStatus
+	circuits   []CircuitStatus
+	radio      []RadioDevice
+	fm5Mode    Fm5SemanticMode
+	fm5Verdict Fm5Interpretation
+	solar      *SolarStatus
+	cylinders  []CylinderStatus
+	energy     *EnergyTotals
+	boiler     *BoilerStatus
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
@@ -100,6 +101,7 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 		phase:            SemanticStartupPhaseBootInit,
 		startupUpdatedAt: time.Now().UTC(),
 		fm5Mode:          Fm5SemanticModeAbsent,
+		fm5Verdict:       Fm5Interpretation{Mode: Fm5SemanticModeAbsent, EvidenceRevision: "initial"},
 		energyMerge:      newEnergyMergeStore(),
 	}
 }
@@ -255,6 +257,22 @@ func (provider *LiveSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
 	return provider.fm5Mode
 }
 
+func (provider *LiveSemanticProvider) FM5Interpretation() Fm5Interpretation {
+	if provider == nil {
+		return Fm5Interpretation{Mode: Fm5SemanticModeAbsent, EvidenceRevision: "initial"}
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	verdict := provider.fm5Verdict
+	if verdict.Mode == "" {
+		verdict.Mode = Fm5SemanticModeAbsent
+	}
+	if strings.TrimSpace(verdict.EvidenceRevision) == "" {
+		verdict.EvidenceRevision = "legacy"
+	}
+	return verdict
+}
+
 func (provider *LiveSemanticProvider) Solar() *SolarStatus {
 	if provider == nil {
 		return nil
@@ -286,10 +304,28 @@ func (provider *LiveSemanticProvider) SetFM5SemanticMode(mode Fm5SemanticMode) {
 		mode = Fm5SemanticModeAbsent
 	}
 	provider.fm5Mode = mode
+	provider.fm5Verdict = legacyFM5Interpretation(mode)
 }
 
 func (provider *LiveSemanticProvider) SetFM5SemanticModeFromCache(mode Fm5SemanticMode) {
 	provider.SetFM5SemanticMode(mode)
+}
+
+func (provider *LiveSemanticProvider) SetFM5Interpretation(verdict Fm5Interpretation) {
+	if provider == nil {
+		return
+	}
+	if err := verdict.Validate(); err != nil {
+		return
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	provider.fm5Mode = verdict.Mode
+	provider.fm5Verdict = verdict
+}
+
+func (provider *LiveSemanticProvider) SetFM5InterpretationFromCache(verdict Fm5Interpretation) {
+	provider.SetFM5Interpretation(verdict)
 }
 
 func (provider *LiveSemanticProvider) SetSolar(status *SolarStatus) {

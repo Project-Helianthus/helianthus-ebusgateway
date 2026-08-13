@@ -1307,6 +1307,11 @@ func TestQueryResolvers_Integration(t *testing.T) {
 						roomHumidityPct
 					}
 					fm5SemanticMode
+					fm5Interpretation {
+						mode
+						degradedReason
+						evidenceRevision
+					}
 					solar {
 						collectorTemperatureC
 						returnTemperatureC
@@ -1459,8 +1464,13 @@ func TestQueryResolvers_Integration(t *testing.T) {
 				RoomTemperatureC     *float64 `json:"roomTemperatureC"`
 				RoomHumidityPct      *float64 `json:"roomHumidityPct"`
 			} `json:"radioDevices"`
-			FM5SemanticMode string `json:"fm5SemanticMode"`
-			Solar           *struct {
+			FM5SemanticMode   string `json:"fm5SemanticMode"`
+			FM5Interpretation struct {
+				Mode             string  `json:"mode"`
+				DegradedReason   *string `json:"degradedReason"`
+				EvidenceRevision string  `json:"evidenceRevision"`
+			} `json:"fm5Interpretation"`
+			Solar *struct {
 				CollectorTemperatureC *float64 `json:"collectorTemperatureC"`
 				ReturnTemperatureC    *float64 `json:"returnTemperatureC"`
 				PumpActive            *bool    `json:"pumpActive"`
@@ -1532,6 +1542,9 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		}
 		if response.FM5SemanticMode != "ABSENT" {
 			t.Fatalf("fm5SemanticMode = %q; want ABSENT", response.FM5SemanticMode)
+		}
+		if response.FM5Interpretation.Mode != "ABSENT" || response.FM5Interpretation.DegradedReason != nil || response.FM5Interpretation.EvidenceRevision != "initial" {
+			t.Fatalf("fm5Interpretation = %#v; want ABSENT/null/initial", response.FM5Interpretation)
 		}
 		if response.Solar != nil {
 			t.Fatalf("solar expected nil with static provider")

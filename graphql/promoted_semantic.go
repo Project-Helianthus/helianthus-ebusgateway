@@ -128,11 +128,17 @@ func (p promotedSemanticProvider) System() *SystemStatus {
 func (p promotedSemanticProvider) Circuits() []CircuitStatus        { return p.base.Circuits() }
 func (p promotedSemanticProvider) RadioDevices() []RadioDevice      { return p.base.RadioDevices() }
 func (p promotedSemanticProvider) FM5SemanticMode() Fm5SemanticMode { return p.base.FM5SemanticMode() }
-func (p promotedSemanticProvider) Solar() *SolarStatus              { return p.base.Solar() }
-func (p promotedSemanticProvider) Cylinders() []CylinderStatus      { return p.base.Cylinders() }
-func (p promotedSemanticProvider) EnergyTotals() *EnergyTotals      { return p.base.EnergyTotals() }
-func (p promotedSemanticProvider) BoilerStatus() *BoilerStatus      { return p.base.BoilerStatus() }
-func (p promotedSemanticProvider) Schedules() *ScheduleStatus       { return p.base.Schedules() }
+func (p promotedSemanticProvider) FM5Interpretation() Fm5Interpretation {
+	if provider, ok := p.base.(FM5InterpretationProvider); ok {
+		return provider.FM5Interpretation()
+	}
+	return legacyFM5Interpretation(p.base.FM5SemanticMode())
+}
+func (p promotedSemanticProvider) Solar() *SolarStatus         { return p.base.Solar() }
+func (p promotedSemanticProvider) Cylinders() []CylinderStatus { return p.base.Cylinders() }
+func (p promotedSemanticProvider) EnergyTotals() *EnergyTotals { return p.base.EnergyTotals() }
+func (p promotedSemanticProvider) BoilerStatus() *BoilerStatus { return p.base.BoilerStatus() }
+func (p promotedSemanticProvider) Schedules() *ScheduleStatus  { return p.base.Schedules() }
 func (p promotedSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return p.base.AdapterHardwareInfo()
 }

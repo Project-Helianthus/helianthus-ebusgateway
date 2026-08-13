@@ -106,3 +106,21 @@ func TestNewGatewayBuildInfo_RejectsMissingReleaseAuthority(t *testing.T) {
 		t.Fatalf("development build info = %#v, %v", dev, err)
 	}
 }
+
+type legacyOnlySemanticProvider struct {
+	graphql.SemanticProvider
+}
+
+func TestPortalFM5Interpretation_LegacyGPIOOnlyIsExplained(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeGPIOOnly)
+	legacy := legacyOnlySemanticProvider{SemanticProvider: provider}
+
+	verdict := portalFM5Interpretation(legacy)
+	if err := verdict.Validate(); err != nil {
+		t.Fatalf("Portal fallback verdict invalid: %v", err)
+	}
+	if verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
+		t.Fatalf("Portal fallback reason = %q; want %q", verdict.DegradedReason, graphql.Fm5SemanticDegradedReasonIncoherentAcquisition)
+	}
+}

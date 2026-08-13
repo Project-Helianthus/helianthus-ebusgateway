@@ -40,3 +40,16 @@ func TestFM5InterpretationValidationRejectsUnexplainedGPIOOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestLiveSemanticProvider_LegacyGPIOOnlyCannotBecomeUnexplained(t *testing.T) {
+	provider := NewLiveSemanticProvider()
+	provider.SetFM5SemanticMode(Fm5SemanticModeGPIOOnly)
+
+	verdict := provider.FM5Interpretation()
+	if err := verdict.Validate(); err != nil {
+		t.Fatalf("legacy GPIO_ONLY verdict is invalid: %v", err)
+	}
+	if verdict.DegradedReason != Fm5SemanticDegradedReasonIncoherentAcquisition {
+		t.Fatalf("legacy GPIO_ONLY reason = %q; want %q", verdict.DegradedReason, Fm5SemanticDegradedReasonIncoherentAcquisition)
+	}
+}

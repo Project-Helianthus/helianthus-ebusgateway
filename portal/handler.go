@@ -96,18 +96,20 @@ type RegistryPlane struct {
 }
 
 type SemanticSnapshot struct {
-	Zones        []SemanticZone        `json:"zones"`
-	DHW          *SemanticDHW          `json:"dhw,omitempty"`
-	Energy       *SemanticEnergyTotals `json:"energy_totals,omitempty"`
-	BoilerStatus *SemanticBoilerStatus `json:"boiler_status,omitempty"`
-	System       *SemanticSystemStatus `json:"system,omitempty"`
-	Circuits     []SemanticCircuit     `json:"circuits,omitempty"`
-	RadioDevices []SemanticRadioDevice `json:"radio_devices,omitempty"`
-	FM5Mode      string                `json:"fm5_semantic_mode,omitempty"`
-	Solar        *SemanticSolarStatus  `json:"solar,omitempty"`
-	Cylinders    []SemanticCylinder    `json:"cylinders,omitempty"`
-	AdapterInfo  *SemanticAdapterInfo  `json:"adapter_info,omitempty"`
-	CapturedUTC  string                `json:"captured_utc"`
+	Zones               []SemanticZone        `json:"zones"`
+	DHW                 *SemanticDHW          `json:"dhw,omitempty"`
+	Energy              *SemanticEnergyTotals `json:"energy_totals,omitempty"`
+	BoilerStatus        *SemanticBoilerStatus `json:"boiler_status,omitempty"`
+	System              *SemanticSystemStatus `json:"system,omitempty"`
+	Circuits            []SemanticCircuit     `json:"circuits,omitempty"`
+	RadioDevices        []SemanticRadioDevice `json:"radio_devices,omitempty"`
+	FM5Mode             string                `json:"fm5_semantic_mode,omitempty"`
+	FM5DegradedReason   *string               `json:"fm5_semantic_degraded_reason"`
+	FM5EvidenceRevision string                `json:"fm5_semantic_evidence_revision,omitempty"`
+	Solar               *SemanticSolarStatus  `json:"solar,omitempty"`
+	Cylinders           []SemanticCylinder    `json:"cylinders,omitempty"`
+	AdapterInfo         *SemanticAdapterInfo  `json:"adapter_info,omitempty"`
+	CapturedUTC         string                `json:"captured_utc"`
 }
 
 type SemanticAdapterInfo struct {

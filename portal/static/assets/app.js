@@ -1570,7 +1570,9 @@ class PortalShell extends HTMLElement {
         );
       }
       if (payload.fm5_semantic_mode) {
-        rows.push(`<li><strong>FM5</strong> <span class="muted-inline">mode=${escapeHtml(payload.fm5_semantic_mode)}</span></li>`);
+        const degradedReason = payload.fm5_semantic_degraded_reason || "none";
+        const evidenceRevision = payload.fm5_semantic_evidence_revision || "unavailable";
+        rows.push(`<li><strong>FM5</strong> <span class="muted-inline">mode=${escapeHtml(payload.fm5_semantic_mode)} reason=${escapeHtml(degradedReason)} revision=${escapeHtml(evidenceRevision)}</span></li>`);
       }
       if (payload.solar) {
         const solar = payload.solar || {};

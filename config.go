@@ -125,6 +125,7 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
+	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool
 	BusConfig                protocol.BusConfig

@@ -178,6 +178,23 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
+	modbusAdapter, err := startModbusRuntime(
+		ctx,
+		cfg.ModbusTCPConfig,
+		dialModbusEndpointFn,
+		newModbusEndpointFn,
+	)
+	if err != nil {
+		return fmt.Errorf("Modbus TCP sidecar: %w", err)
+	}
+	if modbusAdapter != nil {
+		defer func() {
+			if err := modbusAdapter.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown Modbus TCP sidecar: %w", err))
+			}
+		}()
+	}
+
 	eebusAdapter, err := startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)

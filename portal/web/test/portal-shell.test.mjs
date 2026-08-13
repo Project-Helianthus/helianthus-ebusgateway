@@ -285,9 +285,9 @@ test("PortalShell renders promoted false and zero values distinctly from unavail
   const snapshot = createDeferredResponse({
     zones: [{
       id: "zone-1", name: "Kitchen", state: { current_temp_c: 0 },
-      config: { target_temp_c: 0, operating_mode: "", operation_mode_changeable: false, source_label: "Zone 1" },
+      config: { target_temp_c: 0, operating_mode: "auto", operation_mode_changeable: false, source_label: "Zone 1" },
     }, { id: "zone-2", name: "Office", state: {}, config: {} }],
-    dhw: { state: { current_temp_c: 0, overrun_active: false }, config: { target_temp_c: 0, operating_mode: "", operation_mode_changeable: false } },
+    dhw: { state: { current_temp_c: 0, overrun_active: false }, config: { target_temp_c: 0, operating_mode: "auto", operation_mode_changeable: false } },
     system: { state: { outdoor_temperature: 0 }, gateway_brand: "", gateway_vendor: "" },
   });
   const semanticList = { innerHTML: "" };
@@ -305,7 +305,7 @@ test("PortalShell renders promoted false and zero values distinctly from unavail
   assert.match(semanticList.innerHTML, /current=0\.0°C target=0\.0°C/);
   assert.match(semanticList.innerHTML, /mode_changeable=off/);
   assert.match(semanticList.innerHTML, /overrun=off/);
-  assert.match(semanticList.innerHTML, /mode=&lt;empty&gt;/);
+  assert.match(semanticList.innerHTML, /mode=auto/);
   assert.match(semanticList.innerHTML, /brand=&lt;empty&gt; vendor=&lt;empty&gt;/);
   assert.match(semanticList.innerHTML, /<strong>Office<\/strong>.*current=unavailable.*target=unavailable/);
 });

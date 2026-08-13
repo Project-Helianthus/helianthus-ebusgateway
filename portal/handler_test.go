@@ -632,10 +632,10 @@ func TestSemanticSnapshotEndpoint_PromotedFieldsArePublicAndNilSafe(t *testing.T
 		ListSemantic: func() SemanticSnapshot {
 			return SemanticSnapshot{
 				Zones: []SemanticZone{
-					{ID: "zone-1", Name: "Kitchen", State: SemanticZoneState{CurrentTempC: &zero}, Config: SemanticZoneConfig{TargetTempC: &zero, OperatingMode: empty, OperationModeChangeable: &falseValue, SourceLabel: &zoneLabel1}},
+					{ID: "zone-1", Name: "Kitchen", State: SemanticZoneState{CurrentTempC: &zero}, Config: SemanticZoneConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue, SourceLabel: &zoneLabel1}},
 					{ID: "zone-2", Name: "Office", State: SemanticZoneState{CurrentTempC: &zero}, Config: SemanticZoneConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue, SourceLabel: &zoneLabel2}},
 				},
-				DHW:    &SemanticDHW{State: SemanticDhwState{CurrentTempC: &zero, OverrunActive: &falseValue}, Config: SemanticDhwConfig{TargetTempC: &zero, OperatingMode: empty, OperationModeChangeable: &falseValue}},
+				DHW:    &SemanticDHW{State: SemanticDhwState{CurrentTempC: &zero, OverrunActive: &falseValue}, Config: SemanticDhwConfig{TargetTempC: &zero, OperatingMode: "auto", OperationModeChangeable: &falseValue}},
 				System: &SemanticSystemStatus{State: SemanticSystemState{OutdoorTemperature: &zero}, GatewayBrand: &empty, GatewayVendor: &empty},
 			}
 		},

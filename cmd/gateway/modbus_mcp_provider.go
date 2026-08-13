@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -126,6 +127,10 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 		return mcp.ModbusProfileObservationResult{}, fmt.Errorf("decode profile observation envelope: %w", err)
 	}
 	redactModbusEndpoints(observation)
+	sanitizedObservation, err := json.Marshal(observation)
+	if err != nil {
+		return mcp.ModbusProfileObservationResult{}, fmt.Errorf("encode sanitized profile observation: %w", err)
+	}
 	replay := record.Observation.Replay()
 	views := make([]mcp.ModbusReplayView, 0, len(replay))
 	for _, dependency := range replay {
@@ -149,9 +154,9 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 		SourceValidity:     string(spec.SourceValidity),
 		SourceTime:         sourceTime,
 		LocalReceiptTime:   spec.LocalReceiptTime.UTC().Format(time.RFC3339Nano),
-		DetectionEvidence:  record.DetectionEvidence,
-		ActivationEvidence: record.ActivationEvidence,
-		Observation:        observation,
+		DetectionEvidence:  append([]string{}, record.DetectionEvidence...),
+		ActivationEvidence: append([]string{}, record.ActivationEvidence...),
+		ObservationJSONB64: base64.StdEncoding.EncodeToString(sanitizedObservation),
 		Replay:             views,
 	}, nil
 }

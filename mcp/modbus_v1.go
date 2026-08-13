@@ -64,7 +64,7 @@ type ModbusProfileObservationResult struct {
 	LocalReceiptTime   string             `json:"local_receipt_time,omitempty"`
 	DetectionEvidence  []string           `json:"detection_evidence"`
 	ActivationEvidence []string           `json:"activation_evidence"`
-	Observation        any                `json:"observation,omitempty"`
+	ObservationJSONB64 string             `json:"observation_json_base64"`
 	Replay             []ModbusReplayView `json:"replay"`
 }
 
@@ -150,6 +150,9 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 		}
 	default:
 		return nil, false
+	}
+	if err != nil {
+		data = nil
 	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(
 		data, err, providerCalled, consistencyMode, dataTimestamp,

@@ -96,6 +96,13 @@ func TestModbusV1ReadRejectsWritesUnboundedRangesAndUnknownArguments(t *testing.
 		if !result.isError {
 			t.Fatalf("unsafe arguments accepted: %+v", arguments)
 		}
+		if result.envelope["data"] != nil {
+			t.Fatalf("error data = %#v; want null", result.envelope["data"])
+		}
+		envelopeError := msp06Map(t, result.envelope["error"], "error")
+		if len(envelopeError) != 4 || envelopeError["code"] != "INVALID_ARGUMENT" || envelopeError["retriable"] != false {
+			t.Fatalf("error envelope = %#v", envelopeError)
+		}
 	}
 }
 
@@ -120,6 +127,9 @@ func TestModbusV1ProfileObservationRetainsEvidenceAndReplay(t *testing.T) {
 	}
 	if !reflect.DeepEqual(data["detection_evidence"], []any{"detector:standard-only"}) {
 		t.Fatalf("detection evidence = %#v", data["detection_evidence"])
+	}
+	if _, ok := data["observation_json_base64"].(string); !ok || data["observation"] != nil {
+		t.Fatalf("observation boundary = %#v", data)
 	}
 	replay := msp06Slice(t, data["replay"], "replay")
 	if len(replay) != 1 || msp06Map(t, replay[0], "replay[0]")["wire_response_id"] == nil {
@@ -152,7 +162,7 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 			SourceTime: "2026-08-13T10:00:00Z", LocalReceiptTime: "2026-08-13T10:00:01Z",
 			DetectionEvidence:  []string{"detector:standard-only"},
 			ActivationEvidence: []string{"activation:fixture"},
-			Observation:        map[string]any{"endpoint": "sha256:endpoint", "normalization_version": "1.0.0"},
+			ObservationJSONB64: "eyJlbmRwb2ludCI6InNoYTI1NjplbmRwb2ludCIsIm5vcm1hbGl6YXRpb25fdmVyc2lvbiI6IjEuMC4wIn0=",
 			Replay:             []ModbusReplayView{{LogicalViewID: 92, WireResponseID: 91, Offset: 40000, Words: []uint16{0x5375, 0x6e53}}},
 		},
 	}

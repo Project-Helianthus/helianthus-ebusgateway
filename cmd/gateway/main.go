@@ -1080,6 +1080,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		semanticProvider graphql.SemanticProvider,
 		eebusProvider mcp.EEBusV1Provider,
 		eebusCommandRouter mcp.EEBusV1CommandRouter,
+		modbusProvider mcp.ModbusV1Provider,
 		scheduleWriter mcp.ScheduleWriter,
 		configWriter mcp.ConfigWriter,
 		busObservability *ebusgateway.BusObservabilityStore,
@@ -1093,7 +1094,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			scheduleWriter, configWriter, busObservability, shadowCache,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1105,6 +1106,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		portalSemanticProvider,
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
+		newGatewayModbusMCPProvider(modbusAdapter),
 		scheduleWriter,
 		configWriter,
 		busObservability,
@@ -1321,6 +1323,9 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.DurationVar(&cfg.TransportConfig.ReadTimeout, "read-timeout", cfg.TransportConfig.ReadTimeout, "transport read timeout")
 	fs.DurationVar(&cfg.TransportConfig.WriteTimeout, "write-timeout", cfg.TransportConfig.WriteTimeout, "transport write timeout")
 	fs.DurationVar(&cfg.TransportConfig.DialTimeout, "dial-timeout", cfg.TransportConfig.DialTimeout, "transport dial timeout")
+	fs.BoolVar(&cfg.ModbusTCPConfig.Enabled, "modbus-tcp-enabled", cfg.ModbusTCPConfig.Enabled, "enable the read-only Modbus TCP sidecar")
+	fs.StringVar(&cfg.ModbusTCPConfig.Endpoint, "modbus-tcp-endpoint", cfg.ModbusTCPConfig.Endpoint, "Modbus TCP endpoint URI (tcp://host:port)")
+	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
 	fs.BoolVar(
 		&cfg.EvidenceOneShotEnabled,
@@ -1919,6 +1924,7 @@ func startHTTPServer(
 	semanticProvider graphql.SemanticProvider,
 	eebusProvider mcp.EEBusV1Provider,
 	eebusCommandRouter mcp.EEBusV1CommandRouter,
+	modbusProvider mcp.ModbusV1Provider,
 	scheduleWriter mcp.ScheduleWriter,
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
@@ -1966,6 +1972,7 @@ func startHTTPServer(
 			return nil, nil, fmt.Errorf("register eeBUS MCP command router: %w", err)
 		}
 	}
+	mcp.RegisterModbusV1Tools(mcpServer, modbusProvider)
 	if source, ok := eebusProvider.(mcp.LeafPromotionCaptureSource); ok {
 		if capture := source.LeafPromotionCapture(); capture != nil {
 			if err := mcpServer.RegisterLeafPromotionCapture(capture); err != nil {

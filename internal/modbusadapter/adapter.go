@@ -10,6 +10,7 @@ import (
 	"time"
 
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 // Endpoint is the public Modbus TCP runtime surface used by the gateway.
@@ -57,6 +58,19 @@ type Adapter struct {
 
 	closeOnce sync.Once
 	closeErr  error
+	executeMu sync.Mutex
+	profileMu sync.RWMutex
+	profiles  map[string]ProfileObservationRecord
+}
+
+const maxRetainedProfileObservations = 32
+
+// ProfileObservationRecord retains one exact registry-owned observation and
+// the evidence labels supplied by its future detector/poller owner.
+type ProfileObservationRecord struct {
+	Observation        modbusreg.Observation
+	DetectionEvidence  []string
+	ActivationEvidence []string
 }
 
 // Start constructs and connects one endpoint. Disabled configuration is inert.
@@ -105,6 +119,7 @@ func Start(
 		endpoint:   endpoint,
 		connection: handle,
 		source:     config.Endpoint.RuntimeAcquisitionSource,
+		profiles:   make(map[string]ProfileObservationRecord),
 	}, nil
 }
 
@@ -162,6 +177,67 @@ func (adapter *Adapter) Read(ctx context.Context) (modbus.TCPReadBatch, error) {
 		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
 	}
 	return adapter.endpoint.Read(ctx, adapter.connection)
+}
+
+// ExecuteRead serializes one bounded request through the endpoint owner. It
+// preserves the runtime batch unchanged and never interprets register values.
+func (adapter *Adapter) ExecuteRead(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
+	if adapter == nil || adapter.endpoint == nil {
+		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
+	}
+	adapter.executeMu.Lock()
+	defer adapter.executeMu.Unlock()
+	handle, err := adapter.EnqueueRead(plan)
+	if err != nil {
+		return modbus.TCPReadBatch{}, err
+	}
+	dispatch, ok := adapter.Dispatch()
+	if !ok || dispatch.RequestID() != handle.RequestID() {
+		_ = adapter.Cancel(handle)
+		return modbus.TCPReadBatch{}, errors.New("modbus TCP endpoint did not dispatch the admitted request")
+	}
+	if _, err := adapter.Write(ctx, dispatch); err != nil {
+		return modbus.TCPReadBatch{}, err
+	}
+	return adapter.Read(ctx)
+}
+
+// RecordProfileObservation retains a bounded exact replay record. Profile
+// decoding and evidence production remain owned outside the adapter.
+func (adapter *Adapter) RecordProfileObservation(record ProfileObservationRecord) error {
+	if adapter == nil {
+		return errors.New("modbus TCP adapter unavailable")
+	}
+	spec := record.Observation.Spec()
+	if spec.ProfileID == "" || spec.SampleID == "" {
+		return errors.New("profile observation identity is incomplete")
+	}
+	key := spec.ProfileID + "\x00" + spec.SampleID
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
+	if _, exists := adapter.profiles[key]; !exists && len(adapter.profiles) >= maxRetainedProfileObservations {
+		return errors.New("profile observation retention limit reached")
+	}
+	record.DetectionEvidence = append([]string(nil), record.DetectionEvidence...)
+	record.ActivationEvidence = append([]string(nil), record.ActivationEvidence...)
+	adapter.profiles[key] = record
+	return nil
+}
+
+// ProfileObservation returns one immutable retained sample by exact identity.
+func (adapter *Adapter) ProfileObservation(profileID, sampleID string) (ProfileObservationRecord, bool) {
+	if adapter == nil {
+		return ProfileObservationRecord{}, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	record, ok := adapter.profiles[profileID+"\x00"+sampleID]
+	if !ok {
+		return ProfileObservationRecord{}, false
+	}
+	record.DetectionEvidence = append([]string(nil), record.DetectionEvidence...)
+	record.ActivationEvidence = append([]string(nil), record.ActivationEvidence...)
+	return record, true
 }
 
 // Cancel delegates cancellation to the endpoint owner.

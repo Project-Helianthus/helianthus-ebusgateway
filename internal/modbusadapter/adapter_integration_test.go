@@ -1,8 +1,10 @@
 package modbusadapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -358,6 +360,47 @@ func TestAdapterPreservesCoalescedWireAndLogicalViewProvenance(t *testing.T) {
 	}
 }
 
+func TestAdapterExecuteReadUsesOwnedEndpoint(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	done := serveResponse(listener, []uint16{0x5375, 0x6e53})
+	adapter, err := Start(
+		context.Background(),
+		integrationConfig(t, "tcp://"+listener.Addr().String()),
+		realDialer,
+		realFactory,
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = adapter.Close() }()
+	request, err := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, 40000, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := adapter.ExecuteRead(context.Background(), ReadPlan{
+		UnitID: 1, AuthorizationScope: "mcp:modbus.raw.read", PollGeneration: 7,
+		DeadlineIdentity: 8, Timeout: time.Second,
+		Reads: []modbus.TCPLogicalRead{{LogicalViewID: 9, Request: request}},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteRead: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("fake peer: %v", err)
+	}
+	if len(batch.Views) != 1 || !reflect.DeepEqual(batch.Views[0].Words(), []uint16{0x5375, 0x6e53}) {
+		t.Fatalf("batch views = %+v", batch.Views)
+	}
+	provenance := batch.Views[0].Provenance()
+	if provenance.AuthorizationScope != "mcp:modbus.raw.read" || provenance.PollGeneration != 7 || provenance.DeadlineIdentity != 8 {
+		t.Fatalf("provenance changed: %+v", provenance)
+	}
+}
+
 type observationCommitter struct {
 	mu      sync.Mutex
 	state   modbusreg.SampleLedgerState
@@ -500,6 +543,26 @@ func TestAdapterViewsPublishWithoutChangingSampleFacts(t *testing.T) {
 	observation, err := attempt.Publish(context.Background())
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
+	}
+	encodedObservation, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatalf("Marshal observation: %v", err)
+	}
+	if string(encodedObservation) == "{}" || !bytes.Contains(encodedObservation, []byte(`"runtime_normalizations"`)) ||
+		!bytes.Contains(encodedObservation, []byte(config.Endpoint.Endpoint)) {
+		t.Fatalf("observation JSON omitted exact provenance: %s", encodedObservation)
+	}
+	if err := adapter.RecordProfileObservation(ProfileObservationRecord{
+		Observation:        observation,
+		DetectionEvidence:  []string{"detector:standard-only"},
+		ActivationEvidence: []string{"activation:runtime"},
+	}); err != nil {
+		t.Fatalf("RecordProfileObservation: %v", err)
+	}
+	retained, ok := adapter.ProfileObservation(observation.Spec().ProfileID, observation.SampleID())
+	if !ok || retained.Observation.SampleID() != observation.SampleID() ||
+		!reflect.DeepEqual(retained.DetectionEvidence, []string{"detector:standard-only"}) {
+		t.Fatalf("retained profile observation changed: %+v, ok=%v", retained, ok)
 	}
 	spec := observation.Spec()
 	if spec.PollGenerationID != 91 || spec.SourceValidity != modbusreg.SourceValid ||

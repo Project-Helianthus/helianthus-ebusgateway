@@ -204,6 +204,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 				result = errors.Join(result, fmt.Errorf("shutdown Modbus TCP sidecar: %w", err))
 			}
 		}()
+		sunSpecWorker := newGatewaySunSpecLiveSmokeWorker(ctx, modbusAdapter, log.Printf)
+		if sunSpecWorker != nil {
+			sunSpecWorker.Start()
+			defer func() { _ = sunSpecWorker.Close() }()
+		}
 	}
 
 	eebusAdapter, eebusAdmin, eebusAdminAuthConfig, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)

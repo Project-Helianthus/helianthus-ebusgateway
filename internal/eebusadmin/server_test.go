@@ -493,6 +493,59 @@ func TestIssue809OwnerLifecycleMutationsUseOnlyCurrentServerHeldCapabilities(t *
 	}
 }
 
+func TestIssue809ConnectedBrowseCapabilityCannotAuthorizeTrustMutation(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 51
+	snapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: ski, TrustState: "durably_trusted", ConnectionState: "connected", Endpoint: "192.0.2.20:4712"}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: snapshot}}
+	handler := newIssue809Server(t, admin)
+	cookie, csrf := issue809OwnerSession(t, handler)
+	connected := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=connected", nil)
+	connected.AddCookie(cookie)
+	connectedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(connectedResponse, connected)
+	var envelope struct {
+		Data struct {
+			Partners []struct {
+				PartnerID string `json:"partner_id"`
+			} `json:"partners"`
+		} `json:"data"`
+	}
+	if connectedResponse.Code != http.StatusOK || json.Unmarshal(connectedResponse.Body.Bytes(), &envelope) != nil || len(envelope.Data.Partners) != 1 {
+		t.Fatalf("connected status=%d body=%s", connectedResponse.Code, connectedResponse.Body.String())
+	}
+	mutation := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/partners/"+envelope.Data.Partners[0].PartnerID+":retry", cookie, csrf, "connected-cannot-retry", `{"state_revision":51}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, mutation)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("connected capability retry status=%d body=%s", response.Code, response.Body.String())
+	}
+	admin.mu.Lock()
+	defer admin.mu.Unlock()
+	if len(admin.retryCalls) != 0 {
+		t.Fatalf("connected browse capability reached retry runtime %d times", len(admin.retryCalls))
+	}
+}
+
+func TestIssue809MultipleCurrentCandidatesFailClosedWithoutPartialRows(t *testing.T) {
+	snapshot := testAdminSnapshot()
+	snapshot.Candidates = []eebusruntime.CandidateV1{
+		{SKI: strings.Repeat("a", 40), State: "tls_bound"},
+		{SKI: strings.Repeat("b", 40), State: "tls_bound"},
+	}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Candidate: snapshot}}
+	handler := newIssue809Server(t, admin)
+	cookie, _ := issue809OwnerSession(t, handler)
+	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), strings.Repeat("a", 40)) || strings.Contains(response.Body.String(), strings.Repeat("b", 40)) {
+		t.Fatalf("multiple-candidate response status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func newIssue809Server(t *testing.T, admin eebusruntime.AdminV1) http.Handler {
 	t.Helper()
 	handler, err := NewServer(Config{

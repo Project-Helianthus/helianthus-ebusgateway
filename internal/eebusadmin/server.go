@@ -59,6 +59,7 @@ type capabilityRecord struct {
 	observation eebusruntime.ObservationHandleV1
 	selection   eebusruntime.SelectionHandleV1
 	candidate   eebusruntime.CandidateHandleV1
+	trustAction bool
 }
 
 func NewServer(config Config) (http.Handler, error) {
@@ -213,7 +214,7 @@ func (server *server) projectPartners(identity authenticatedRequest, view eebusr
 		for _, partner := range snapshot.Trusted {
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, RemoteSHIPID: partner.SHIPID, TrustState: partner.TrustState, LastSeen: partner.LastSeen}
 			if identity.principal == PrincipalPortalOwner {
-				id, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner}, "partner|"+partner.SKI)
+				id, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner, trustAction: true}, "partner|"+partner.SKI)
 				if err != nil {
 					return nil, err
 				}
@@ -255,6 +256,9 @@ func (server *server) projectPartners(identity authenticatedRequest, view eebusr
 			rows = append(rows, row)
 		}
 	case eebusruntime.AdminViewV1Candidate:
+		if len(snapshot.Candidates) > 1 {
+			return nil, errors.New("multiple current candidates")
+		}
 		for _, candidate := range snapshot.Candidates {
 			_, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityCandidate, revision: snapshot.StateRevision, ski: candidate.SKI, candidate: candidate.Candidate}, "candidate|current")
 			if err != nil {
@@ -408,7 +412,7 @@ func (server *server) mutateTrustedPartner(w http.ResponseWriter, request *http.
 		return
 	}
 	record, ok := server.resolveCapability(id, session.id, capabilityPartner, body.StateRevision)
-	if !ok {
+	if !ok || !record.trustAction {
 		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
 		return
 	}

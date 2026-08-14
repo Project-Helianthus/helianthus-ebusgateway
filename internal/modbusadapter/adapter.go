@@ -55,12 +55,17 @@ type Adapter struct {
 	endpoint   Endpoint
 	connection modbus.TCPConnectionHandle
 	source     *modbus.RuntimeAcquisitionSource
+	config     Config
+	dial       Dialer
 
-	closeOnce sync.Once
-	closeErr  error
-	executeMu sync.Mutex
-	profileMu sync.RWMutex
-	profiles  map[string]ProfileObservationRecord
+	closeOnce    sync.Once
+	closeErr     error
+	executeMu    sync.Mutex
+	connectionMu sync.RWMutex
+	closed       bool
+	lastRequest  modbus.TCPRequestHandle
+	profileMu    sync.RWMutex
+	profiles     map[string]ProfileObservationRecord
 }
 
 const maxRetainedProfileObservations = 32
@@ -119,6 +124,8 @@ func Start(
 		endpoint:   endpoint,
 		connection: handle,
 		source:     config.Endpoint.RuntimeAcquisitionSource,
+		config:     config,
+		dial:       dial,
 		profiles:   make(map[string]ProfileObservationRecord),
 	}, nil
 }
@@ -148,7 +155,12 @@ func (adapter *Adapter) EnqueueRead(plan ReadPlan) (modbus.TCPRequestHandle, err
 	if adapter == nil || adapter.endpoint == nil {
 		return modbus.TCPRequestHandle{}, errors.New("modbus TCP adapter unavailable")
 	}
-	return adapter.endpoint.EnqueueRead(modbus.TCPReadPlan{
+	adapter.connectionMu.Lock()
+	defer adapter.connectionMu.Unlock()
+	if adapter.closed {
+		return modbus.TCPRequestHandle{}, errors.New("modbus TCP adapter is closed")
+	}
+	handle, err := adapter.endpoint.EnqueueRead(modbus.TCPReadPlan{
 		Connection:         adapter.connection,
 		UnitID:             plan.UnitID,
 		AuthorizationScope: plan.AuthorizationScope,
@@ -157,6 +169,10 @@ func (adapter *Adapter) EnqueueRead(plan ReadPlan) (modbus.TCPRequestHandle, err
 		Timeout:            plan.Timeout,
 		Reads:              append([]modbus.TCPLogicalRead(nil), plan.Reads...),
 	})
+	if err == nil {
+		adapter.lastRequest = handle
+	}
+	return handle, err
 }
 
 // Dispatch delegates deterministic fair service to helianthus-modbus.
@@ -183,7 +199,81 @@ func (adapter *Adapter) Read(ctx context.Context) (modbus.TCPReadBatch, error) {
 	if adapter == nil || adapter.endpoint == nil {
 		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
 	}
+	adapter.connectionMu.RLock()
+	defer adapter.connectionMu.RUnlock()
+	if adapter.closed {
+		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter is closed")
+	}
 	return adapter.endpoint.Read(ctx, adapter.connection)
+}
+
+type reconnectEndpoint interface {
+	CloseConnection(modbus.TCPConnectionHandle) error
+	WaitReconnect(context.Context, modbus.TCPRequestHandle, modbus.DelayWaiter) error
+}
+
+type contextDelayWaiter struct{}
+
+func (contextDelayWaiter) Wait(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Reconnect retires the old endpoint-owned generation before a fresh dial.
+// It never moves an admitted request across generations; endpoint-owned
+// backoff is consumed only as recovery authorization for the next poll.
+func (adapter *Adapter) Reconnect(ctx context.Context) error {
+	if adapter == nil || adapter.endpoint == nil || ctx == nil {
+		return errors.New("modbus TCP adapter unavailable")
+	}
+	reconnector, ok := adapter.endpoint.(reconnectEndpoint)
+	if !ok {
+		return errors.New("modbus TCP endpoint does not support reconnect")
+	}
+	adapter.executeMu.Lock()
+	defer adapter.executeMu.Unlock()
+	adapter.connectionMu.Lock()
+	defer adapter.connectionMu.Unlock()
+	if adapter.closed {
+		return errors.New("modbus TCP adapter is closed")
+	}
+	oldConnection, request := adapter.connection, adapter.lastRequest
+	if err := reconnector.CloseConnection(oldConnection); err != nil {
+		return fmt.Errorf("retire Modbus TCP connection: %w", err)
+	}
+	adapter.lastRequest = modbus.TCPRequestHandle{}
+	if request.RequestID() != 0 {
+		if err := reconnector.WaitReconnect(ctx, request, contextDelayWaiter{}); err != nil {
+			// Closing a queued, never-written request terminalizes it without
+			// granting retry/backoff. A real failed request may authorize the
+			// endpoint-owned wait; neither kind is ever retried on this handle.
+			if ctx.Err() != nil {
+				return fmt.Errorf("wait endpoint reconnect backoff: %w", err)
+			}
+		}
+	}
+	address, err := dialAddress(adapter.config.Endpoint.Endpoint)
+	if err != nil {
+		return err
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, adapter.config.DialTimeout)
+	defer cancel()
+	connection, err := adapter.dial(dialCtx, "tcp", address)
+	if err != nil {
+		return fmt.Errorf("redial Modbus TCP endpoint: %w", err)
+	}
+	handle, err := adapter.endpoint.OpenConnection(connection)
+	if err != nil {
+		return errors.Join(fmt.Errorf("reopen Modbus TCP endpoint: %w", err), connection.Close())
+	}
+	adapter.connection = handle
+	return nil
 }
 
 // ExecuteRead serializes one bounded request through the endpoint owner. It
@@ -277,6 +367,9 @@ func (adapter *Adapter) Close() error {
 		return nil
 	}
 	adapter.closeOnce.Do(func() {
+		adapter.connectionMu.Lock()
+		adapter.closed = true
+		adapter.connectionMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
 	})
 	return adapter.closeErr

@@ -109,14 +109,26 @@ func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *test
 		t.Fatalf("NewSunSpecProducer: %v", err)
 	}
 
-	result, err := producer.QualifyMixedGenerationForTest(context.Background(), SunSpecPollIdentity{
-		PollGeneration: 43, DeadlineIdentity: 93,
-	})
+	views, err := producer.acquire(context.Background(), SunSpecPollIdentity{PollGeneration: 43, DeadlineIdentity: 93})
 	if err != nil {
-		t.Fatalf("QualifyMixedGenerationForTest: %v", err)
+		t.Fatalf("acquire: %v", err)
 	}
-	if result.Outcome != SunSpecQualificationIncoherentCapture || result.ObservationCount != 0 || result.SampleID != "" {
-		t.Fatalf("mixed generation result = %#v; want incoherent capture without publication", result)
+	capture, _, err := sunSpecCapture(views)
+	if err != nil {
+		t.Fatalf("sunSpecCapture(valid): %v", err)
+	}
+	mixed := capture.Views()
+	record := mixed[1].Record()
+	record.TransportGeneration++
+	mixed[1], err = modbusreg.NewLogicalViewSnapshot(record)
+	if err != nil {
+		t.Fatalf("NewLogicalViewSnapshot(mixed): %v", err)
+	}
+	if _, _, err := sunSpecCaptureSnapshots(mixed); err == nil {
+		t.Fatal("mixed connection/generation capture was accepted")
+	}
+	if _, ok := adapter.ProfileObservation("sunspec.phase1", "gateway-modbus:1"); ok {
+		t.Fatal("mixed capture was retained")
 	}
 }
 
@@ -188,13 +200,18 @@ func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, uni
 	if len(requests) == 0 {
 		t.Fatal("producer did not issue discovery reads")
 	}
+	if requests[0].Offset != 40000 || requests[0].WordCount != 1 {
+		t.Fatalf("first discovery request = %+v; want exact base view 40000 x 1", requests[0])
+	}
 	var total uint16
+	nextOffset := uint16(40000)
 	for _, request := range requests {
 		if request.UnitID != unitID || request.Function != modbus.FunctionReadHoldingRegisters ||
-			request.Offset < 40000 || request.WordCount == 0 || request.WordCount > 125 {
+			request.Offset != nextOffset || request.WordCount == 0 || request.WordCount > 125 {
 			t.Fatalf("discovery request = %+v; want bounded unit-1 FC03 from PDU 40000", request)
 		}
 		total += request.WordCount
+		nextOffset += request.WordCount
 	}
 	if total > modbusreg.MaxSunSpecPhaseOneChainWords {
 		t.Fatalf("discovery read budget = %d; want <= %d words", total, modbusreg.MaxSunSpecPhaseOneChainWords)

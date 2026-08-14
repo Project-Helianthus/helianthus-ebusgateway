@@ -3,7 +3,6 @@ package modbusadapter
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,15 +16,14 @@ func TestAdapterReconnectRetiresOldGenerationBeforeFreshDialAndNeverRetriesStale
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
-	var accepted sync.WaitGroup
-	accepted.Add(2)
+	accepted := make(chan struct{}, 2)
 	go func() {
 		for range 2 {
 			connection, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			accepted.Done()
+			accepted <- struct{}{}
 			go func() {
 				defer func() { _ = connection.Close() }()
 				<-time.After(time.Second)
@@ -59,7 +57,13 @@ func TestAdapterReconnectRetiresOldGenerationBeforeFreshDialAndNeverRetriesStale
 	if err := adapter.Reconnect(context.Background()); err != nil {
 		t.Fatalf("Reconnect: %v", err)
 	}
-	accepted.Wait()
+	for range 2 {
+		select {
+		case <-accepted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for reconnect accepts")
+		}
+	}
 	if adapter.connection.Generation() == oldConnection.Generation() {
 		t.Fatalf("reconnect reused transport generation %d", oldConnection.Generation())
 	}

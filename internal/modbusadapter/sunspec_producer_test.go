@@ -222,13 +222,18 @@ func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, uni
 	if len(requests) == 0 {
 		t.Fatal("producer did not issue discovery reads")
 	}
+	if requests[0].Offset != 40000 || requests[0].WordCount != 1 {
+		t.Fatalf("first discovery request = %+v; want exact base view 40000 x 1", requests[0])
+	}
 	var total uint16
+	nextOffset := uint16(40000)
 	for _, request := range requests {
 		if request.UnitID != unitID || request.Function != modbus.FunctionReadHoldingRegisters ||
-			request.Offset < 40000 || request.WordCount == 0 || request.WordCount > 125 {
+			request.Offset != nextOffset || request.WordCount == 0 || request.WordCount > 125 {
 			t.Fatalf("discovery request = %+v; want bounded unit-1 FC03 from PDU 40000", request)
 		}
 		total += request.WordCount
+		nextOffset += request.WordCount
 	}
 	if total > 1024 {
 		t.Fatalf("discovery read budget = %d; want <= 1024 words", total)

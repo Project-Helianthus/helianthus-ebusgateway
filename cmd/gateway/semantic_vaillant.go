@@ -5721,15 +5721,6 @@ func uint16PointersEqual(left, right *uint16) bool {
 	return *left == *right
 }
 
-func hasFM5EvidenceFromRadioMap(snapshots map[radioDeviceKey]*vaillantRadioDeviceSnapshot) bool {
-	for _, snapshot := range snapshots {
-		if hasFM5EvidenceFromRadioSnapshots([]*vaillantRadioDeviceSnapshot{snapshot}) {
-			return true
-		}
-	}
-	return false
-}
-
 func deriveFM5Interpretation(
 	controllerReachable bool,
 	moduleConfig *uint16,

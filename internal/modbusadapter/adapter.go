@@ -244,18 +244,16 @@ func (adapter *Adapter) Reconnect(ctx context.Context) error {
 		return errors.New("modbus TCP adapter is closed")
 	}
 	oldConnection, request := adapter.connection, adapter.lastRequest
-	if err := reconnector.CloseConnection(oldConnection); err != nil {
+	beforeRetirement := adapter.endpoint.Snapshot()
+	if err := reconnector.CloseConnection(oldConnection); err != nil && !beforeRetirement.ReconnectRequired {
 		return fmt.Errorf("retire Modbus TCP connection: %w", err)
 	}
 	adapter.lastRequest = modbus.TCPRequestHandle{}
-	if request.RequestID() != 0 {
+	// A failed socket may already have retired its handle. Only the endpoint's
+	// public state authorizes consuming request-bound reconnect backoff.
+	if request.RequestID() != 0 && beforeRetirement.ReconnectRequired {
 		if err := reconnector.WaitReconnect(ctx, request, contextDelayWaiter{}); err != nil {
-			// Closing a queued, never-written request terminalizes it without
-			// granting retry/backoff. A real failed request may authorize the
-			// endpoint-owned wait; neither kind is ever retried on this handle.
-			if ctx.Err() != nil {
-				return fmt.Errorf("wait endpoint reconnect backoff: %w", err)
-			}
+			return fmt.Errorf("wait endpoint reconnect backoff: %w", err)
 		}
 	}
 	address, err := dialAddress(adapter.config.Endpoint.Endpoint)

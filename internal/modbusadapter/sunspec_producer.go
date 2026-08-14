@@ -56,7 +56,7 @@ type sunSpecSourceView struct {
 }
 
 func NewSunSpecProducer(adapter *Adapter, config SunSpecProducerConfig) (*SunSpecProducer, error) {
-	if adapter == nil || adapter.RuntimeAcquisitionSource() == nil || config.UnitID == 0 ||
+	if adapter == nil || adapter.RuntimeAcquisitionSource() == nil || config.UnitID == 0 || config.UnitID > 247 ||
 		config.AuthorizationScope == "" || config.ReadTimeout <= 0 {
 		return nil, errors.New("SunSpec producer configuration is incomplete")
 	}
@@ -141,7 +141,9 @@ func (producer *SunSpecProducer) acquire(ctx context.Context, identity SunSpecPo
 		if modelID == 0xffff {
 			break
 		}
-		if length == 0 || len(words)+int(length) > modbusreg.MaxSunSpecPhaseOneChainWords {
+		// The dynamic budget includes the following header: otherwise a model
+		// payload can reach the bound and then over-read its terminator.
+		if length == 0 || len(words)+int(length)+2 > modbusreg.MaxSunSpecPhaseOneChainWords {
 			break
 		}
 		for remaining := length; remaining > 0; {
@@ -176,6 +178,9 @@ func (producer *SunSpecProducer) qualifyCapture(ctx context.Context, identity Su
 	if err != nil {
 		return SunSpecQualificationResult{Outcome: SunSpecQualificationIncoherentCapture}, nil
 	}
+	if !completeSunSpecChain(raw) {
+		return SunSpecQualificationResult{Outcome: SunSpecQualificationIncoherentCapture}, nil
+	}
 	if deferredSunSpecModelInRaw(raw) {
 		return SunSpecQualificationResult{Outcome: SunSpecQualificationUnsupportedProfile, UnsupportedProfile: sunSpecProfileID}, nil
 	}
@@ -184,28 +189,30 @@ func (producer *SunSpecProducer) qualifyCapture(ctx context.Context, identity Su
 		return SunSpecQualificationResult{Outcome: SunSpecQualificationIncoherentCapture}, nil
 	}
 	now := time.Now().UTC()
-	attempt, err := producer.factory.BeginRuntimeAttempt(modbusreg.RuntimeAttemptRequest{Source: producer.adapter.RuntimeAcquisitionSource(), AttemptKey: fmt.Sprintf("sunspec-%d", identity.PollGeneration), Identity: modbusreg.AttemptIdentity{PollGenerationID: identity.PollGeneration}, Observation: modbusreg.RuntimeObservationFacts{SourceValidity: modbusreg.SourceValid, SourceTime: modbusreg.SourceTimeObserved(now), LocalReceiptTime: now, LocalReceiptTimePresent: true}, Dependencies: []modbusreg.RuntimeDependencyFacts{{SourceTime: modbusreg.SourceTimeUnavailable()}}, Diagnostics: []string{"sunspec_detection:standard_chain"}})
+	attempt, err := producer.factory.BeginRuntimeAttempt(modbusreg.RuntimeAttemptRequest{Source: producer.adapter.RuntimeAcquisitionSource(), AttemptKey: fmt.Sprintf("sunspec-%d", identity.PollGeneration), Identity: modbusreg.AttemptIdentity{PollGenerationID: identity.PollGeneration}, Observation: modbusreg.RuntimeObservationFacts{SourceValidity: modbusreg.SourceValid, SourceTime: modbusreg.SourceTimeUnavailable(), LocalReceiptTime: now, LocalReceiptTimePresent: true}, Dependencies: []modbusreg.RuntimeDependencyFacts{{SourceTime: modbusreg.SourceTimeUnavailable()}}, Diagnostics: []string{"sunspec_detection:standard_chain"}})
 	if err != nil {
 		return SunSpecQualificationResult{}, fmt.Errorf("begin SunSpec observation: %w", err)
 	}
+	published := false
+	defer func() {
+		if !published {
+			_, _ = attempt.Cancel()
+		}
+	}()
 	normalization, err := producer.adapter.RuntimeAcquisitionSource().ParseNormalizationRecord([]byte(`{"schema_version":1,"source_kind":"runtime","source_evidence_id":"urn:helianthus:evidence:sunspec-phase-one-v1","documentary_notation":"40001","documentary_address":40001,"documentary_address_base":"one_based_register","function_code":3,"logical_table":"holding_registers","normalized_zero_based_pdu_offset":40000,"word_count":1}`))
 	if err != nil {
-		_, _ = attempt.Cancel()
 		return SunSpecQualificationResult{}, err
 	}
 	if err := attempt.Issue(0, views[0].view, normalization); err != nil {
-		_, _ = attempt.Cancel()
 		return SunSpecQualificationResult{}, err
 	}
 	if err := attempt.Admit(); err != nil {
 		return SunSpecQualificationResult{}, err
 	}
 	if outcome, err := attempt.Claim(0); err != nil || outcome != modbusreg.ClaimSucceeded {
-		_, _ = attempt.Cancel()
 		return SunSpecQualificationResult{}, fmt.Errorf("claim SunSpec observation: %w", err)
 	}
 	if err := attempt.Seal(); err != nil {
-		_, _ = attempt.Cancel()
 		return SunSpecQualificationResult{}, err
 	}
 	observation, err := attempt.Publish(ctx)
@@ -222,6 +229,7 @@ func (producer *SunSpecProducer) qualifyCapture(ctx context.Context, identity Su
 	if err := producer.adapter.RecordProfileObservation(ProfileObservationRecord{Observation: observation, DetectionEvidence: []string{"sunspec_detection:standard_chain"}, ActivationEvidence: []string{"sunspec_activation:coherent_chain"}}); err != nil {
 		return SunSpecQualificationResult{}, err
 	}
+	published = true
 	_ = activated
 	return SunSpecQualificationResult{Outcome: SunSpecQualificationSupported, ObservationCount: 1, SampleID: observation.Spec().SampleID, Chain: chain}, nil
 }
@@ -296,6 +304,23 @@ func deferredSunSpecModelInRaw(words []uint16) bool {
 			return true
 		}
 		if id == 0xffff || length == 0 || offset+2+int(length) > len(words) {
+			return false
+		}
+		offset += 2 + int(length)
+	}
+	return false
+}
+
+func completeSunSpecChain(words []uint16) bool {
+	if len(words) < 4 || words[0] != 0x5375 || words[1] != 0x6e53 {
+		return false
+	}
+	for offset := 2; offset+1 < len(words); {
+		id, length := words[offset], words[offset+1]
+		if id == 0xffff {
+			return length == 0 && offset+2 == len(words)
+		}
+		if length == 0 || offset+2+int(length) > len(words) {
 			return false
 		}
 		offset += 2 + int(length)

@@ -78,14 +78,16 @@ type httpMutationReplay struct {
 }
 
 type mutationResponseCapture struct {
-	header    http.Header
-	status    int
-	body      bytes.Buffer
-	invoked   bool
-	action    string
-	cacheKey  string
-	binding   string
-	expiresAt time.Time
+	header             http.Header
+	status             int
+	body               bytes.Buffer
+	invoked            bool
+	locked             bool
+	action             string
+	idempotencyOutcome string
+	cacheKey           string
+	binding            string
+	expiresAt          time.Time
 }
 
 func (capture *mutationResponseCapture) Header() http.Header { return capture.header }
@@ -141,12 +143,16 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	destination := w
 	if identity.principal == PrincipalPortalOwner && request.Method != http.MethodGet && request.Method != http.MethodHead {
 		capture, handled := server.beginHTTPMutation(w, request, identity.session)
-		if handled {
-			return
-		}
 		if capture != nil {
 			w = capture
+			if handled {
+				server.finishHTTPMutation(destination, capture)
+				return
+			}
 			defer server.finishHTTPMutation(destination, capture)
+		}
+		if handled {
+			return
 		}
 	}
 
@@ -215,32 +221,36 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 }
 
 func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Request, session ownerSession) (*mutationResponseCapture, bool) {
+	capture := &mutationResponseCapture{
+		header: make(http.Header), action: auditAction(request.Method, request.URL.Path),
+		idempotencyOutcome: "rejected",
+	}
 	if request.URL.RawQuery != "" {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
-		return nil, true
+		server.writeError(capture, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		return capture, true
 	}
 	idempotencyKey := request.Header.Get("Idempotency-Key")
 	if !validIdempotencyKey(idempotencyKey) {
-		return nil, false
+		return capture, false
 	}
 	content, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBodyBytes+1))
 	request.Body = io.NopCloser(bytes.NewReader(content))
 	if err != nil || len(content) > maxRequestBodyBytes {
-		return nil, false
+		return capture, false
 	}
 	var body any
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.UseNumber()
 	if decoder.Decode(&body) != nil {
-		return nil, false
+		return capture, false
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, false
+		return capture, false
 	}
 	canonical, err := json.Marshal(body)
 	if err != nil {
-		return nil, false
+		return capture, false
 	}
 	binding := request.Method + "\x00" + request.URL.Path + "\x00" + string(canonical)
 	cacheKey := session.id + "\x00" + idempotencyKey
@@ -255,22 +265,29 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 	if replay, ok := server.mutationReplays[cacheKey]; ok {
 		server.mutationMu.Unlock()
 		if replay.binding != binding {
-			server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "idempotency_conflict")
-			return nil, true
+			capture.idempotencyOutcome = "conflict"
+			server.writeError(capture, PrincipalPortalOwner, http.StatusConflict, "idempotency_conflict")
+			return capture, true
 		}
-		server.writeHTTPMutationReplay(w, replay)
-		return nil, true
+		capture.idempotencyOutcome = "replayed"
+		writeHTTPMutationReplay(capture, replay)
+		return capture, true
 	}
 	if len(server.mutationReplays) >= maxHTTPMutationReplays {
 		server.mutationMu.Unlock()
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
-		return nil, true
+		server.writeError(capture, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		return capture, true
 	}
 	expiresAt := now.Add(2 * time.Minute)
 	if session.expiresAt.Before(expiresAt) {
 		expiresAt = session.expiresAt
 	}
-	return &mutationResponseCapture{header: make(http.Header), action: auditAction(request.Method, request.URL.Path), cacheKey: cacheKey, binding: binding, expiresAt: expiresAt}, false
+	capture.locked = true
+	capture.idempotencyOutcome = "executed"
+	capture.cacheKey = cacheKey
+	capture.binding = binding
+	capture.expiresAt = expiresAt
+	return capture, false
 }
 
 func (server *server) finishHTTPMutation(destination http.ResponseWriter, capture *mutationResponseCapture) {
@@ -279,13 +296,13 @@ func (server *server) finishHTTPMutation(destination http.ResponseWriter, captur
 		status = http.StatusOK
 	}
 	body := append([]byte(nil), capture.body.Bytes()...)
-	if capture.invoked && len(body) != 0 {
+	if capture.locked && capture.invoked && len(body) != 0 {
 		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, action: capture.action, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
 	}
-	server.mutationMu.Unlock()
-	if capture.invoked {
-		server.emitMutationAudit(capture.action, status, body, "executed")
+	if capture.locked {
+		server.mutationMu.Unlock()
 	}
+	server.emitMutationAudit(capture.action, status, body, capture.idempotencyOutcome, capture.invoked)
 	for key, values := range capture.header {
 		destination.Header()[key] = append([]string(nil), values...)
 	}
@@ -299,9 +316,8 @@ func markHTTPMutationInvoked(w http.ResponseWriter) {
 	}
 }
 
-func (server *server) writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
+func writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
 	body := bytes.Replace(replay.body, []byte(`"replayed":false`), []byte(`"replayed":true`), 1)
-	server.emitMutationAudit(replay.action, replay.status, body, "replayed")
 	w.WriteHeader(replay.status)
 	_, _ = w.Write(body)
 }
@@ -329,7 +345,7 @@ func auditAction(method, requestPath string) string {
 	}
 }
 
-func (server *server) emitMutationAudit(action string, status int, body []byte, idempotencyOutcome string) {
+func (server *server) emitMutationAudit(action string, status int, body []byte, idempotencyOutcome string, invoked bool) {
 	if server.audit == nil {
 		return
 	}
@@ -351,9 +367,13 @@ func (server *server) emitMutationAudit(action string, status int, body []byte, 
 		reason = sanitizedAuditReason(envelope.Data.Outcome)
 		resulting = "changed"
 	}
+	prior := "authenticated"
+	if invoked {
+		prior = "precondition_accepted"
+	}
 	event := AuditEvent{
 		Action: action, Principal: PrincipalPortalOwner, RequestID: envelope.RequestID,
-		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: "precondition_accepted",
+		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: prior,
 		ResultingStateClass: resulting, Timestamp: server.auth.now(), Reason: reason,
 	}
 	func() {
@@ -980,7 +1000,7 @@ func (server *server) writeError(w http.ResponseWriter, principal Principal, sta
 		server.writeJSON(w, status, haEnvelope{Contract: ContractV1, Error: &errorData{Code: code}})
 		return
 	}
-	server.writeJSON(w, status, ownerEnvelope{Contract: ContractV1, Error: &errorData{Code: code}})
+	server.writeJSON(w, status, ownerEnvelope{Contract: ContractV1, RequestID: server.requestID(), Error: &errorData{Code: code}})
 }
 
 func (server *server) writeJSON(w http.ResponseWriter, status int, value any) {

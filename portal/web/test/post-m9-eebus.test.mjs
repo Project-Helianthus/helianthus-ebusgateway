@@ -11,14 +11,17 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
   const source = await readFile(sourcePath, "utf8");
   class FakeHTMLElement {}
   const storageWrites = [];
+  const documentListeners = new Map();
   let uuidSequence = 0;
   const sandbox = {
     console: { error() {}, warn() {}, log() {} },
     document: {
       documentElement: { setAttribute() {} },
       visibilityState: "visible",
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(name, handler) { documentListeners.set(name, handler); },
+      removeEventListener(name, handler) {
+        if (documentListeners.get(name) === handler) documentListeners.delete(name);
+      },
     },
     customElements: { define() {} },
     HTMLElement: FakeHTMLElement,
@@ -44,7 +47,7 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
   shell._eebusAdminPath = "/admin/eebus/v1";
-  return { shell, storageWrites };
+  return { shell, storageWrites, documentListeners, document: sandbox.document };
 }
 
 function response(payload, csrf = "") {
@@ -153,6 +156,47 @@ test("lost mutation response retains the exact idempotency binding and selection
   assert.equal(calls[0].init.headers["Idempotency-Key"], calls[1].init.headers["Idempotency-Key"]);
   assert.equal(shell._eebusSelection, undefined, "terminal replay consumes selection authority");
   assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires active-memory idempotency state");
+});
+
+test("hidden refresh clears candidate UI but retains only active-memory authority for exact mutation replay", async () => {
+  const calls = [];
+  let attempt = 0;
+  const candidate = { textContent: "sensitive-candidate" };
+  const input = { value: "a".repeat(40) };
+  const { shell, documentListeners, document, storageWrites } = await issue809Shell(async (url, init = {}) => {
+    calls.push({ url, init });
+    if (String(url).endsWith("/status")) return response({ state_revision: 14, data: { status: "ready" } });
+    if (++attempt === 1) throw new Error("response lost after effect");
+    return response({ state_revision: 15, data: { outcome: "confirmed", replayed: true } });
+  }, new Map([
+    ['[data-role="eebus-candidate"]', candidate],
+    ['[data-role="eebus-confirm-ski"]', input],
+  ]));
+  shell._eebusCSRFToken = "csrf";
+  shell._eebusStateRevision = 14;
+  shell._eebusCandidate = { remote_ski: "a".repeat(40) };
+  shell._eebusSelection = { id: "selection-1" };
+  shell._eebusUntrustArmedID = "partner-1";
+  shell.bindEEBusAdminEvents();
+
+  await assert.rejects(shell.confirmEEBusCandidate("a".repeat(40)), /response lost/);
+  document.visibilityState = "hidden";
+  documentListeners.get("visibilitychange")();
+  await shell.refreshEEBusStatus();
+
+  assert.equal(candidate.textContent, "", "candidate raw UI clears while hidden");
+  assert.equal(input.value, "", "candidate input clears while hidden");
+  assert.equal(shell._eebusCandidate?.remote_ski, "a".repeat(40), "candidate authority remains only for exact replay");
+  assert.equal(shell._eebusSelection?.id, "selection-1", "selection authority remains for exact replay");
+  assert.equal(shell._eebusUntrustArmedID, "partner-1", "untrust arm remains for exact replay");
+  assert.ok(shell._eebusPendingMutation, "ambiguous mutation remains active-memory only");
+  assert.equal(storageWrites.length, 0, "replay authority is never persisted");
+  await assert.rejects(shell.openEEBusPairingWindow(), /previous eeBUS mutation outcome is unknown/);
+
+  await shell.confirmEEBusCandidate("a".repeat(40));
+  assert.equal(calls.filter((call) => call.url.endsWith("candidate:confirm")).length, 2);
+  assert.equal(calls[0].init.headers["Idempotency-Key"], calls[2].init.headers["Idempotency-Key"]);
+  assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires pending authority");
 });
 
 test("SPINE browser loads root and expands only opaque server-issued node identifiers", async () => {

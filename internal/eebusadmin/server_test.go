@@ -349,6 +349,70 @@ func TestIssue809MutationEmitsSanitizedAuditOutcome(t *testing.T) {
 	}
 }
 
+func TestIssue809AuthenticatedPreCaptureMutationRejectionsEmitOneSanitizedAudit(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+	var events []AuditEvent
+	handler, err := NewServer(Config{
+		Admin: admin,
+		Audit: func(event AuditEvent) { events = append(events, event) },
+		Auth: AuthConfig{
+			OwnerUsername: "owner", OwnerSecret: []byte(testOwnerSecret), HASecret: []byte(testHASecret),
+			OwnerOrigin: testOwnerOrigin, SessionTTL: 15 * time.Minute,
+			Now: func() time.Time { return time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC) }, Random: rand.Reader,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, _ := issue809OwnerSession(t, handler)
+	csrfRejected := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, "wrong-csrf", "sensitive-idempotency-key", `{"duration_seconds":60,"state_revision":7}`)
+	csrfResponse := httptest.NewRecorder()
+	handler.ServeHTTP(csrfResponse, csrfRejected)
+	if csrfResponse.Code != http.StatusForbidden {
+		t.Fatalf("CSRF rejection status=%d body=%s", csrfResponse.Code, csrfResponse.Body.String())
+	}
+
+	haRejected := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", strings.NewReader(`{"duration_seconds":60,"state_revision":7}`))
+	haRejected.Header.Set("Authorization", "Bearer "+testHASecret)
+	haRejected.Header.Set("Content-Type", "application/json")
+	haRejected.Header.Set("Idempotency-Key", "sensitive-idempotency-key")
+	haResponse := httptest.NewRecorder()
+	handler.ServeHTTP(haResponse, haRejected)
+	if haResponse.Code != http.StatusForbidden {
+		t.Fatalf("HA rejection status=%d body=%s", haResponse.Code, haResponse.Body.String())
+	}
+
+	unauthenticated := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", nil)
+	unauthenticatedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unauthenticatedResponse, unauthenticated)
+	if unauthenticatedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d body=%s", unauthenticatedResponse.Code, unauthenticatedResponse.Body.String())
+	}
+	if len(events) != 2 {
+		t.Fatalf("audit events=%d, want one for each authenticated pre-capture rejection", len(events))
+	}
+	for _, event := range events {
+		if event.Action != "open_pairing_window" || event.IdempotencyOutcome != "rejected" || event.PriorStateClass != "authenticated" || event.ResultingStateClass != "rejected" || event.RequestID == "" {
+			t.Fatalf("unexpected rejection audit event: %#v", event)
+		}
+	}
+	if events[0].Principal != PrincipalPortalOwner || events[0].Reason != "csrf_rejected" {
+		t.Fatalf("owner CSRF audit=%#v", events[0])
+	}
+	if events[1].Principal != PrincipalHAIntegration || events[1].Reason != "forbidden" {
+		t.Fatalf("HA forbidden audit=%#v", events[1])
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"sensitive-idempotency-key", testOwnerSecret, testHASecret, "endpoint", "expected_ski", "token", "key"} {
+		if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
+			t.Fatalf("audit leaks %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func TestIssue809UnknownRuntimeErrorIsNotReflected(t *testing.T) {
 	handler, err := NewServer(Config{Admin: &adminV1Stub{snapshot: testAdminSnapshot()}, Auth: issue809AuthConfig()})
 	if err != nil {

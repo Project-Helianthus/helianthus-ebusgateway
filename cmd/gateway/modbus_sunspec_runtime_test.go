@@ -13,10 +13,14 @@ type sunSpecLiveSmokeFakeDriver struct {
 	polls          []sunSpecLiveSmokePollResult
 	pollCalls      []sunSpecLiveSmokeAttempt
 	reconnectCalls int
+	pollFn         func(context.Context, sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error)
 }
 
-func (driver *sunSpecLiveSmokeFakeDriver) Poll(_ context.Context, attempt sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+func (driver *sunSpecLiveSmokeFakeDriver) Poll(ctx context.Context, attempt sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
 	driver.pollCalls = append(driver.pollCalls, attempt)
+	if driver.pollFn != nil {
+		return driver.pollFn(ctx, attempt)
+	}
 	if len(driver.polls) == 0 {
 		return sunSpecLiveSmokePollResult{}, errors.New("unexpected third poll")
 	}
@@ -91,6 +95,90 @@ func TestRunSunSpecLiveSmokeReconnectsOnceOnlyForReconnectRequiredError(t *testi
 	}
 	if qualifier.attempts[0].DeadlineID != final.DeadlineID || qualifier.attempts[0].Deadline <= 0 {
 		t.Fatalf("qualifier attempt = %#v; want final total deadline", qualifier.attempts[0])
+	}
+}
+
+func TestRunSunSpecLiveSmokeEnforcesTotalAttemptDeadlineOnPollContext(t *testing.T) {
+	const attemptTimeout = 25 * time.Millisecond
+	var sawDeadline bool
+	var pollErr error
+	driver := &sunSpecLiveSmokeFakeDriver{pollFn: func(ctx context.Context, _ sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return sunSpecLiveSmokePollResult{}, errors.New("poll context has no deadline")
+		}
+		sawDeadline = true
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > attemptTimeout {
+			return sunSpecLiveSmokePollResult{}, fmt.Errorf("poll deadline remaining = %s; want within (0, %s]", remaining, attemptTimeout)
+		}
+		<-ctx.Done()
+		pollErr = ctx.Err()
+		return sunSpecLiveSmokePollResult{}, pollErr
+	}}
+
+	started := time.Now()
+	result := runSunSpecLiveSmoke(context.Background(), attemptTimeout, driver, &sunSpecLiveSmokeFakeQualifier{}, func(string, ...any) {})
+	elapsed := time.Since(started)
+
+	if result.Decision != sunSpecLiveSmokeDecisionStop {
+		t.Fatalf("decision = %q; want STOP", result.Decision)
+	}
+	if !sawDeadline || !errors.Is(pollErr, context.DeadlineExceeded) {
+		t.Fatalf("saw deadline=%v poll error=%v; want real expired poll context", sawDeadline, pollErr)
+	}
+	if elapsed < attemptTimeout || elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed = %s; want bounded by attempt timeout", elapsed)
+	}
+}
+
+func TestSunSpecLiveSmokeWorkerCloseCancelsAndJoinsPollBeforeReturning(t *testing.T) {
+	pollStarted := make(chan struct{})
+	cancelObserved := make(chan struct{})
+	allowPollExit := make(chan struct{})
+	pollExited := make(chan struct{})
+	driver := &sunSpecLiveSmokeFakeDriver{pollFn: func(ctx context.Context, _ sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+		close(pollStarted)
+		<-ctx.Done()
+		close(cancelObserved)
+		<-allowPollExit
+		defer close(pollExited)
+		return sunSpecLiveSmokePollResult{}, ctx.Err()
+	}}
+	worker := newSunSpecLiveSmokeWorker(context.Background(), time.Minute, driver, &sunSpecLiveSmokeFakeQualifier{}, func(string, ...any) {})
+	worker.Start()
+
+	select {
+	case <-pollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start Poll")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- worker.Close() }()
+	select {
+	case <-cancelObserved:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel Poll context")
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before Poll exited: %v", err)
+	default:
+	}
+
+	close(allowPollExit)
+	select {
+	case <-pollExited:
+	case <-time.After(time.Second):
+		t.Fatal("Poll did not exit after cancellation")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close error = %v; want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not join exited Poll")
 	}
 }
 

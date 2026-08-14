@@ -37,7 +37,6 @@ import (
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
-	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 var (
@@ -174,10 +173,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
 		return fmt.Errorf("validate synchronized evidence config: %w", err)
 	}
-	if err := validateEEBusAdminRuntimeConfig(cfg); err != nil {
-		return fmt.Errorf("validate eeBUS admin configuration: %w", err)
-	}
-
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
 	}
@@ -211,20 +206,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
-	var eebusAdminAuthConfig eebusadmin.AuthConfig
-	if cfg.EEBusAdminConfig.Enabled {
-		eebusAdminAuthConfig, err = loadEEBusAdminAuthConfig(cfg.EEBusAdminConfig)
-		if err != nil {
-			return fmt.Errorf("eeBUS admin boundary: %w", err)
-		}
-	}
-	var eebusAdapter *eebusRuntimeAdapter
-	var eebusAdmin eebusruntime.AdminV1
-	if cfg.EEBusAdminConfig.Enabled {
-		eebusAdapter, eebusAdmin, err = startEEBusOperatorRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusOperatorRuntimeFn)
-	} else {
-		eebusAdapter, err = startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
-	}
+	eebusAdapter, eebusAdmin, eebusAdminAuthConfig, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)
 	}
@@ -235,10 +217,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			}
 		}()
 	}
-	var eebusAdminHandler http.Handler
-	if cfg.EEBusAdminConfig.Enabled {
+	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
+	if eebusAdminAvailable {
 		var authErr error
-		eebusAdminHandler, authErr = eebusadmin.NewServer(eebusadmin.Config{
+		availableHandler, authErr := eebusadmin.NewServer(eebusadmin.Config{
 			Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig,
 			Audit: func(event eebusadmin.AuditEvent) {
 				log.Printf("eebus_admin_audit action=%s principal=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
@@ -247,7 +229,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			},
 		})
 		if authErr != nil {
-			return fmt.Errorf("eeBUS admin boundary: %w", authErr)
+			log.Printf("eeBUS admin boundary unavailable reason=http_boundary")
+			eebusAdminAvailable = false
+		} else {
+			eebusAdminHandler = availableHandler
 		}
 	}
 	if evidenceRuntime != nil {
@@ -1138,7 +1123,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, eebusAdminAvailable, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1978,6 +1963,7 @@ func startHTTPServer(
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
 	eebusAdminHandler http.Handler,
+	eebusAdminAvailable bool,
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2161,9 +2147,7 @@ func startHTTPServer(
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
-	if eebusAdminHandler != nil {
-		mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
-	}
+	mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
 	if cfg.DumpUploadPath != "" {
 		uploadPath := cfg.DumpUploadPath
 		if !strings.HasPrefix(uploadPath, "/") {
@@ -2193,7 +2177,7 @@ func startHTTPServer(
 			SubscriptionPath: cfg.SubscriptionPath,
 			MCPPath:          cfg.MCPPath,
 			EEBusAdminPath: func() string {
-				if eebusAdminHandler != nil {
+				if eebusAdminAvailable {
 					return "/admin/eebus/v1"
 				}
 				return ""

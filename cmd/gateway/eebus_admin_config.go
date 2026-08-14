@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 const (
@@ -123,4 +126,25 @@ func validateEEBusAdminRuntimeConfig(config ebusgateway.Config) error {
 		return fmt.Errorf("eeBUS admin boundary requires enabled eeBUS runtime")
 	}
 	return nil
+}
+
+func startEEBusAdminAwareRuntime(ctx context.Context, config ebusgateway.Config) (*eebusRuntimeAdapter, eebusruntime.AdminV1, eebusadmin.AuthConfig, bool, error) {
+	if config.EEBusAdminConfig.Enabled {
+		if validationErr := validateEEBusAdminRuntimeConfig(config); validationErr != nil {
+			log.Printf("eeBUS admin boundary unavailable reason=configuration")
+		} else if auth, authErr := loadEEBusAdminAuthConfig(config.EEBusAdminConfig); authErr != nil {
+			log.Printf("eeBUS admin boundary unavailable reason=credentials")
+		} else {
+			adapter, admin, runtimeErr := startEEBusOperatorRuntime(ctx, config.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusOperatorRuntimeFn)
+			if runtimeErr == nil {
+				return adapter, admin, auth, true, nil
+			}
+			log.Printf("eeBUS admin boundary unavailable reason=operator_runtime")
+		}
+	}
+	adapter, err := startEEBusRuntime(ctx, config.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
+	if err != nil {
+		return nil, nil, eebusadmin.AuthConfig{}, false, err
+	}
+	return adapter, nil, eebusadmin.AuthConfig{}, false, nil
 }

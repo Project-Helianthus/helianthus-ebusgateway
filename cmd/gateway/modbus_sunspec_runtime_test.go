@@ -56,6 +56,11 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 		want          sunSpecLiveSmokeDecision
 	}{
 		{name: "matched", qualification: goSunSpecQualification(), want: sunSpecLiveSmokeDecisionGO},
+		{name: "contradictory matched tuple", qualification: sunSpecLiveSmokeQualification{
+			Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
+			Capability: modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+			Flavor:     modbusreg.SunSpecFroniusObservedFlavorID,
+		}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "not qualified", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationNoGo}, want: sunSpecLiveSmokeDecisionNoGo},
 		{name: "stop", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationStop}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "qualifier error", qualification: sunSpecLiveSmokeQualification{Err: errors.New("qualifier failure")}, want: sunSpecLiveSmokeDecisionStop},
@@ -242,10 +247,12 @@ func TestRunSunSpecLiveSmokeSanitizesFailureAndNoGoEvidence(t *testing.T) {
 
 func goSunSpecQualification() sunSpecLiveSmokeQualification {
 	return sunSpecLiveSmokeQualification{
-		Outcome:    modbusadapter.SunSpecQualificationGO,
-		Sample:     "sample-1",
-		Capability: modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
-		Flavor:     modbusreg.SunSpecFroniusObservedFlavorID,
+		Outcome:          modbusadapter.SunSpecQualificationGO,
+		Sample:           "sample-1",
+		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+		Flavor:           modbusreg.SunSpecFroniusObservedFlavorID,
+		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
+		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
 	}
 }
 

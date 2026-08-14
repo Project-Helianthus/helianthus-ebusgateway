@@ -80,6 +80,24 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 	}
 }
 
+func TestRunSunSpecLiveSmokeAcceptsRegistrySelectedV11Qualification(t *testing.T) {
+	driver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{{}}}
+	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{
+		Outcome:          modbusadapter.SunSpecQualificationGO,
+		Sample:           "sample-v1.1",
+		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+		Flavor:           "sunspec.flavor.fronius.gen24.float.observed@1.1.0",
+		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
+		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+	}}}
+
+	result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, qualifier, func(string, ...any) {})
+	if result.Decision != sunSpecLiveSmokeDecisionGO ||
+		result.Flavor != "sunspec.flavor.fronius.gen24.float.observed@1.1.0" {
+		t.Fatalf("V1.1 result = %#v; want registry-selected GO", result)
+	}
+}
+
 func TestRunSunSpecLiveSmokeReconnectsOnceOnlyForReconnectRequiredError(t *testing.T) {
 	driver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{
 		{Snapshot: sunSpecLiveSmokeSnapshot{ReconnectRequired: true}, Err: errors.New("first transport failure")},

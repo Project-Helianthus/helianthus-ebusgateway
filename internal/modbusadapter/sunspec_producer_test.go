@@ -74,6 +74,47 @@ func TestSunSpecProducerQualifiesExactObservedFroniusChainThroughRegistry(t *tes
 	}
 }
 
+func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistry(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	listener, requests := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{
+		UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	result, err := producer.Qualify(context.Background(), SunSpecPollIdentity{
+		PollGeneration: 44, DeadlineIdentity: 94,
+	})
+	if err != nil {
+		t.Fatalf("Qualify(controls chain): %v", err)
+	}
+	if result.Outcome != SunSpecQualificationGO || result.ObservationCount != 1 || result.SampleID == "" {
+		t.Fatalf("qualification result = %#v; want one GO observation", result)
+	}
+	if result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
+		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+		result.FlavorID != "sunspec.flavor.fronius.gen24.float.observed@1.1.0" ||
+		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+		t.Fatalf("registry decisions = %#v; want exact capability and V1.1 flavor match", result)
+	}
+	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []modbusreg.SunSpecWireKey{
+		{ModelID: 1, ModelLength: 65}, {ModelID: 113, ModelLength: 60},
+		{ModelID: 120, ModelLength: 26}, {ModelID: 121, ModelLength: 30},
+		{ModelID: 122, ModelLength: 44}, {ModelID: 123, ModelLength: 24},
+		{ModelID: 160, ModelLength: 88}, {ModelID: 124, ModelLength: 24},
+	}) {
+		t.Fatalf("published SunSpec chain = %v; want exact observed Fronius controls chain", got)
+	}
+	assertBoundedFC03Discovery(t, requests(), 1)
+}
+
 func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *testing.T) {
 	listener, _ := serveSunSpecChain(t, admittedFloatChainWords())
 	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
@@ -134,7 +175,7 @@ func TestSunSpecProducerSourceDelegatesSemanticSelectionToModbusreg(t *testing.T
 	for _, required := range []string{
 		"NewStandardSunSpecDecoderRegistry",
 		"EvaluateThreePhaseMonitoring",
-		"EvaluateFroniusObservedFlavor",
+		"SelectFroniusObservedFlavor",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("producer does not delegate through %s", required)
@@ -143,6 +184,7 @@ func TestSunSpecProducerSourceDelegatesSemanticSelectionToModbusreg(t *testing.T
 	for _, forbidden := range []string{
 		"sunspec.phase1",
 		"deferredSunSpecModelInRaw",
+		"EvaluateFroniusObservedFlavor(snapshot)",
 		"id >= 111",
 		"id >= 120",
 		"id >= 200",
@@ -258,6 +300,19 @@ func observedFroniusFloatWords() []uint16 {
 		sunSpecFixtureModel{120, 26, make([]uint16, 26)},
 		sunSpecFixtureModel{121, 30, make([]uint16, 30)},
 		sunSpecFixtureModel{122, 44, make([]uint16, 44)},
+		sunSpecFixtureModel{160, 88, mpptPayload(4)},
+		sunSpecFixtureModel{124, 24, make([]uint16, 24)},
+	)
+}
+
+func observedFroniusFloatControlsWords() []uint16 {
+	return sunSpecFixtureWords(
+		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
+		sunSpecFixtureModel{113, 60, floatInverterPayload()},
+		sunSpecFixtureModel{120, 26, make([]uint16, 26)},
+		sunSpecFixtureModel{121, 30, make([]uint16, 30)},
+		sunSpecFixtureModel{122, 44, make([]uint16, 44)},
+		sunSpecFixtureModel{123, 24, make([]uint16, 24)},
 		sunSpecFixtureModel{160, 88, mpptPayload(4)},
 		sunSpecFixtureModel{124, 24, make([]uint16, 24)},
 	)

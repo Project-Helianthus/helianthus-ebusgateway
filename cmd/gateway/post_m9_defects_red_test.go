@@ -26,7 +26,7 @@ func TestDeriveFM5Interpretation_CoherentClassificationsAndUnavailableBootstrap(
 		wantReason          graphql.Fm5SemanticDegradedReason
 	}{
 		{"incomplete bootstrap", false, nil, false, false, false, false, false, "", ""},
-		{"fresh coherent absence", true, &configInterpretable, false, false, false, false, false, graphql.Fm5SemanticModeAbsent, ""},
+		{"no completed negative identity acquisition", true, &configInterpretable, false, false, false, false, false, "", ""},
 		{"configuration deliberately unsupported", true, &configUnsupported, false, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable},
 		{"coherent interpretation", true, &configInterpretable, true, true, true, false, false, graphql.Fm5SemanticModeInterpreted, ""},
 	}
@@ -312,6 +312,215 @@ func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t
 	}
 	if verdict.EvidenceRevision == "fm5-g0-a0" {
 		t.Fatalf("registry interleaving revision = %q; want advanced revision", verdict.EvidenceRevision)
+	}
+}
+
+func TestRefreshDiscovery_TransientRootFailureRetainsFM5ClassificationAndValues(t *testing.T) {
+	config := uint16(2)
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	collector := 61.5
+	temperature := 47.25
+	provider := graphql.NewLiveSemanticProvider()
+	previous := graphql.Fm5Interpretation{
+		Mode:             graphql.Fm5SemanticModeInterpreted,
+		EvidenceRevision: "fm5-g7-a41",
+	}
+	provider.SetFM5Interpretation(previous)
+	provider.SetSolar(&graphql.SolarStatus{CollectorTemperatureC: &collector})
+	provider.SetCylinders([]graphql.CylinderStatus{{Index: 0, TemperatureC: &temperature}})
+
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	poller := &vaillantSemanticPoller{
+		reg:                   reg,
+		provider:              provider,
+		controller:            0x15,
+		system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		zones:                 make(map[byte]*vaillantZoneSnapshot),
+		presence:              make(map[byte]*zonePresenceRecord),
+		circuits:              make(map[byte]*vaillantCircuitSnapshot),
+		fm5Mode:               graphql.Fm5SemanticModeInterpreted,
+		fm5Interpretation:     previous,
+		fm5EvidenceRevision:   41,
+		fm5EvidenceGeneration: 7,
+		fm5IdentityObservedAt: time.Now(),
+		solar:                 &vaillantSolarSnapshot{CollectorTemperatureC: &collector},
+		solarCylinders:        map[byte]*vaillantCylinderSnapshot{0: {Instance: 0, TemperatureC: &temperature}},
+		b524ProbeFn:           mockB524Probe(map[byte]bool{}, nil),
+		nowFn:                 time.Now,
+	}
+
+	poller.refreshDiscovery(context.Background())
+
+	verdict := provider.FM5Interpretation()
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonControllerUnreachable {
+		t.Errorf("root-discovery failure verdict = %#v; want retained INTERPRETED/CONTROLLER_UNREACHABLE", verdict)
+	}
+	if verdict.EvidenceRevision == "" || verdict.EvidenceRevision == previous.EvidenceRevision {
+		t.Errorf("root-discovery failure revision = %q; want advancement from %q", verdict.EvidenceRevision, previous.EvidenceRevision)
+	}
+	if got := provider.FM5SemanticMode(); got != graphql.Fm5SemanticModeInterpreted {
+		t.Errorf("root-discovery failure legacy scalar = %s; want retained INTERPRETED", got)
+	}
+	if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collector {
+		t.Errorf("root-discovery failure solar = %#v; want retained collector temperature %.2f", solar, collector)
+	}
+	if cylinders := provider.Cylinders(); len(cylinders) != 1 || cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temperature {
+		t.Errorf("root-discovery failure cylinders = %#v; want retained temperature %.2f", cylinders, temperature)
+	}
+}
+
+func TestRefreshFM5Semantic_StaleIdentityOutranksUnsupportedConfiguration(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	configUnsupported := uint16(3)
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	newPoller := func(provider *graphql.LiveSemanticProvider) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{
+			reg:                   registry.NewDeviceRegistry(nil),
+			provider:              provider,
+			controller:            0x15,
+			system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &configUnsupported},
+			radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+			solarCylinders:        make(map[byte]*vaillantCylinderSnapshot),
+			fm5EvidenceTTL:        5 * time.Minute,
+			fm5IdentityObservedAt: now.Add(-6 * time.Minute),
+			fm5EvidenceGeneration: 7,
+			fm5EvidenceRevision:   41,
+			nowFn:                 func() time.Time { return now },
+		}
+	}
+
+	t.Run("bootstrap remains unavailable", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider)
+		poller.refreshFM5Semantic(context.Background())
+		if got := provider.FM5Interpretation(); got.Mode != "" || got.DegradedReason != "" || got.EvidenceRevision != "" {
+			t.Fatalf("stale unsupported bootstrap verdict = %#v; want unavailable zero tuple", got)
+		}
+	})
+
+	t.Run("coherent family retains prior classification and values", func(t *testing.T) {
+		collector := 61.5
+		temperature := 47.25
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider)
+		poller.fm5Mode = graphql.Fm5SemanticModeInterpreted
+		poller.fm5Interpretation = graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeInterpreted,
+			EvidenceRevision: "fm5-g7-a41",
+		}
+		poller.solar = &vaillantSolarSnapshot{CollectorTemperatureC: &collector}
+		poller.solarCylinders[0] = &vaillantCylinderSnapshot{Instance: 0, TemperatureC: &temperature}
+
+		poller.refreshFM5Semantic(context.Background())
+		got := provider.FM5Interpretation()
+		if got.Mode != graphql.Fm5SemanticModeInterpreted || got.DegradedReason != graphql.Fm5SemanticDegradedReasonEvidenceStale {
+			t.Errorf("stale unsupported retained verdict = %#v; want INTERPRETED/EVIDENCE_STALE", got)
+		}
+		if got.EvidenceRevision == "" || got.EvidenceRevision == "fm5-g7-a41" {
+			t.Errorf("stale unsupported revision = %q; want advancement", got.EvidenceRevision)
+		}
+		if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collector {
+			t.Errorf("stale unsupported solar = %#v; want retained coherent value", solar)
+		}
+		if cylinders := provider.Cylinders(); len(cylinders) != 1 || cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temperature {
+			t.Errorf("stale unsupported cylinders = %#v; want retained coherent value", cylinders)
+		}
+	})
+}
+
+func TestRefreshFM5Semantic_AbsenceRequiresFreshCompletedNegativeIdentityAcquisition(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	newPoller := func(provider *graphql.LiveSemanticProvider) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{
+			reg:            registry.NewDeviceRegistry(nil),
+			provider:       provider,
+			controller:     0x15,
+			system:         &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+			radioDevices:   make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+			solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
+			fm5EvidenceTTL: 5 * time.Minute,
+			nowFn:          func() time.Time { return now },
+		}
+	}
+
+	provider := graphql.NewLiveSemanticProvider()
+	poller := newPoller(provider)
+	poller.refreshFM5Semantic(context.Background())
+	if got := provider.FM5Interpretation(); got.Mode != "" || got.DegradedReason != "" || got.EvidenceRevision != "" {
+		t.Errorf("unobserved startup verdict = %#v; want unavailable zero tuple", got)
+	}
+
+	provider = graphql.NewLiveSemanticProvider()
+	poller = newPoller(provider)
+	poller.startupRadioDevicesProbed = true
+	poller.fm5IdentityObservedAt = now
+	poller.refreshFM5Semantic(context.Background())
+	if got := provider.FM5Interpretation(); got.Mode != graphql.Fm5SemanticModeAbsent || got.DegradedReason != "" || got.EvidenceRevision == "" {
+		t.Errorf("fresh completed negative verdict = %#v; want healthy ABSENT with revision", got)
+	}
+}
+
+func TestFM5Acquisition_EmptyEvidenceGenerationInterleavingRetainsPriorClassification(t *testing.T) {
+	configUnsupported := uint16(3)
+	collector := 61.5
+	temperature := 47.25
+	reg := registry.NewDeviceRegistry(nil)
+	poller := &vaillantSemanticPoller{
+		reg:          reg,
+		controller:   0x15,
+		system:       &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &configUnsupported},
+		radioDevices: make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		fm5Mode:      graphql.Fm5SemanticModeInterpreted,
+		fm5Interpretation: graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeInterpreted,
+			EvidenceRevision: "fm5-g7-a41",
+		},
+		fm5EvidenceGeneration: 7,
+		fm5EvidenceRevision:   41,
+		solar:                 &vaillantSolarSnapshot{CollectorTemperatureC: &collector},
+		solarCylinders:        map[byte]*vaillantCylinderSnapshot{0: {Instance: 0, TemperatureC: &temperature}},
+		nowFn:                 time.Now,
+	}
+
+	before := poller.captureFM5Evidence()
+	reg.Register(registry.DeviceInfo{Address: 0x08, Manufacturer: "Vaillant", DeviceID: "BAI00"})
+	after := poller.captureFM5Evidence()
+	if before.hasEvidence() || after.hasEvidence() {
+		t.Fatal("non-FM5 registry mutation unexpectedly fabricated FM5 identity evidence")
+	}
+	if before.sameGeneration(after) {
+		t.Fatal("registry observation-generation interleaving was not detected")
+	}
+
+	verdict := deriveFM5Interpretation(
+		before.controller != 0,
+		before.moduleConfig,
+		false,
+		false,
+		false,
+		false,
+		true,
+		poller.nextFM5EvidenceRevision(before.generation, after.generation),
+	)
+	verdict = poller.commitFM5Acquisition(after, verdict, nil, nil)
+
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
+		t.Errorf("empty-evidence interleaving verdict = %#v; want retained INTERPRETED/INCOHERENT_ACQUISITION", verdict)
+	}
+	if verdict.EvidenceRevision == "" || verdict.EvidenceRevision == "fm5-g7-a41" {
+		t.Errorf("empty-evidence interleaving revision = %q; want advancement", verdict.EvidenceRevision)
+	}
+	if poller.fm5Mode != graphql.Fm5SemanticModeInterpreted {
+		t.Errorf("empty-evidence interleaving legacy scalar = %s; want retained INTERPRETED", poller.fm5Mode)
+	}
+	if poller.solar == nil || poller.solar.CollectorTemperatureC == nil || *poller.solar.CollectorTemperatureC != collector {
+		t.Errorf("empty-evidence interleaving solar = %#v; want retained coherent value", poller.solar)
+	}
+	if poller.solarCylinders[0] == nil || poller.solarCylinders[0].TemperatureC == nil || *poller.solarCylinders[0].TemperatureC != temperature {
+		t.Errorf("empty-evidence interleaving cylinders = %#v; want retained coherent value", poller.solarCylinders)
 	}
 }
 

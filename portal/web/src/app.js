@@ -217,7 +217,9 @@ class PortalShell extends HTMLElement {
 
   disconnectedCallback() {
     this.endBootstrapLifecycle();
-	this.clearEEBusCandidate();
+	this.clearEEBusVisibilityAuthority();
+	this.clearEEBusSPINETree();
+	this.clearEEBusPendingMutation();
 	if (this._eebusVisibilityHandler && typeof document.removeEventListener === "function") {
 	  document.removeEventListener("visibilitychange", this._eebusVisibilityHandler);
 	  this._eebusVisibilityHandler = undefined;
@@ -2434,7 +2436,7 @@ class PortalShell extends HTMLElement {
 		path,
 		body: serializedBody,
 		idempotencyKey: crypto.randomUUID(),
-		expiresAt: Date.now() + 5 * 60 * 1000,
+		expiresAt: Date.now() + 2 * 60 * 1000,
 	  };
 	  this._eebusPendingMutation = pending;
 	  this._eebusPendingMutationTimer = setTimeout(() => {

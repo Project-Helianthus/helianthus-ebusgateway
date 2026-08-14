@@ -224,7 +224,7 @@ test("disconnect clears all active eeBUS authority including pending replay", as
   shell._eebusSpinePartnerID = "partner-1";
   shell._eebusSpineSnapshotID = "snapshot-1";
   shell._eebusPendingMutation = { method: "POST", path: "/candidate:confirm", body: "{}", idempotencyKey: "key", expiresAt: Date.now() + 1 };
-  shell._eebusPendingMutationTimer = 123;
+  shell._eebusPendingMutationTimer = { cleared: false };
 
   shell.disconnectedCallback();
 

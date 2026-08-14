@@ -1018,6 +1018,283 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		}
 		assertRetained(t, provider)
 	})
+
+	t.Run("complete FM negative survives non-FM detail timeout", func(t *testing.T) {
+		provider := newProvider()
+		poller := newPoller(provider)
+		regulatorConnectedReads := 0
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == remoteFunctionalModules.group {
+				switch addr {
+				case device_slot_connected:
+					return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+				case device_slot_class_address:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+				case device_slot_firmware:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+				case device_slot_hardware_identifier:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+				}
+			}
+			if group == remoteRegulators.group && instance == 0x01 && addr == device_slot_connected {
+				regulatorConnectedReads++
+				if regulatorConnectedReads > 1 {
+					cancel()
+					return nil, errors.New("current regulator detail timeout")
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+
+		poller.refreshRadioDevices(ctx)
+		if regulatorConnectedReads < 2 {
+			t.Fatalf("regulator connected reads = %d; want discovery success then detail timeout", regulatorConnectedReads)
+		}
+		got := provider.FM5Interpretation()
+		if got.Mode != graphql.Fm5SemanticModeAbsent || got.DegradedReason != "" {
+			t.Errorf("complete negative with non-FM detail timeout verdict = %#v; want healthy ABSENT", got)
+		}
+		if got.EvidenceRevision == "" || got.EvidenceRevision == previous.EvidenceRevision {
+			t.Errorf("complete negative with non-FM detail timeout revision = %q; want advancement", got.EvidenceRevision)
+		}
+		if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC != nil {
+			t.Errorf("complete negative with non-FM detail timeout solar = %#v; want cleared structural plane", solar)
+		}
+		if cylinders := provider.Cylinders(); len(cylinders) != 0 {
+			t.Errorf("complete negative with non-FM detail timeout cylinders = %#v; want cleared structural plane", cylinders)
+		}
+	})
+}
+
+func TestRefreshSystem_FM5ConfigurationRequiresCurrentAcquisition(t *testing.T) {
+	now := time.Date(2026, 8, 15, 18, 0, 0, 0, time.UTC)
+	configInterpretable := uint16(2)
+	configUnsupported := uint16(3)
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	collector := 61.5
+	temperature := 47.25
+	previous := graphql.Fm5Interpretation{
+		Mode:             graphql.Fm5SemanticModeInterpreted,
+		EvidenceRevision: "fm5-g7-a41",
+	}
+	newPoller := func(provider *graphql.LiveSemanticProvider, config *uint16) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{
+			scheduler:             ebusgateway.NewSemanticReadScheduler(),
+			reg:                   registry.NewDeviceRegistry(nil),
+			provider:              provider,
+			source:                0x7F,
+			controller:            0x15,
+			requestTimeout:        50 * time.Millisecond,
+			system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: config},
+			radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+			fm5Mode:               previous.Mode,
+			fm5Interpretation:     previous,
+			fm5EvidenceRevision:   41,
+			fm5EvidenceGeneration: 7,
+			fm5IdentityObservedAt: now,
+			fm5EvidenceTTL:        5 * time.Minute,
+			solar:                 &vaillantSolarSnapshot{CollectorTemperatureC: &collector},
+			solarCylinders:        map[byte]*vaillantCylinderSnapshot{0: {Instance: 0, TemperatureC: &temperature}},
+			nowFn:                 func() time.Time { return now },
+		}
+	}
+	newProvider := func() *graphql.LiveSemanticProvider {
+		provider := graphql.NewLiveSemanticProvider()
+		provider.SetFM5Interpretation(previous)
+		provider.SetSolar(&graphql.SolarStatus{CollectorTemperatureC: &collector})
+		provider.SetCylinders([]graphql.CylinderStatus{{Index: 0, TemperatureC: &temperature}})
+		return provider
+	}
+	assertRetained := func(t *testing.T, provider *graphql.LiveSemanticProvider, familyReads int) {
+		t.Helper()
+		got := provider.FM5Interpretation()
+		if got.Mode != graphql.Fm5SemanticModeInterpreted || got.DegradedReason != graphql.Fm5SemanticDegradedReasonConfigurationUnavailable {
+			t.Errorf("configuration timeout verdict = %#v; want retained INTERPRETED/CONFIGURATION_UNAVAILABLE", got)
+		}
+		if got.EvidenceRevision == "" || got.EvidenceRevision == previous.EvidenceRevision {
+			t.Errorf("configuration timeout revision = %q; want advancement from %q", got.EvidenceRevision, previous.EvidenceRevision)
+		}
+		if familyReads != 0 {
+			t.Errorf("configuration timeout family reads = %d; want 0", familyReads)
+		}
+		if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collector {
+			t.Errorf("configuration timeout solar = %#v; want retained collector temperature", solar)
+		}
+		if cylinders := provider.Cylinders(); len(cylinders) != 1 || cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temperature {
+			t.Errorf("configuration timeout cylinders = %#v; want retained temperature", cylinders)
+		}
+	}
+
+	t.Run("all system fields fail", func(t *testing.T) {
+		provider := newProvider()
+		poller := newPoller(provider, &configInterpretable)
+		familyReads := 0
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) == 6 && (frame.Data[2] == localSolar.group || frame.Data[2] == localCylinders.group) {
+				familyReads++
+			}
+			cancel()
+			return nil, errors.New("system acquisition timeout")
+		}
+
+		poller.refreshSystem(ctx)
+		assertRetained(t, provider, familyReads)
+	})
+
+	t.Run("another system field succeeds", func(t *testing.T) {
+		provider := newProvider()
+		poller := newPoller(provider, &configInterpretable)
+		familyReads := 0
+		configReads := 0
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			group := frame.Data[2]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == localRegulator.group && addr == system_module_configuration_vr71 {
+				configReads++
+				return nil, errors.New("module configuration timeout")
+			}
+			if group == localSolar.group || group == localCylinders.group {
+				familyReads++
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+
+		poller.refreshSystem(context.Background())
+		if configReads == 0 {
+			t.Fatal("module_configuration_vr71 read was not attempted")
+		}
+		assertRetained(t, provider, familyReads)
+	})
+
+	t.Run("stale unsupported config cannot classify bootstrap", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider, &configUnsupported)
+		poller.fm5Mode = ""
+		poller.fm5Interpretation = graphql.Fm5Interpretation{}
+		poller.solar = nil
+		poller.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			group := frame.Data[2]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == localRegulator.group && addr == system_module_configuration_vr71 {
+				return nil, errors.New("module configuration timeout")
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+
+		poller.refreshSystem(context.Background())
+		if got := provider.FM5Interpretation(); got != (graphql.Fm5Interpretation{}) {
+			t.Errorf("stale unsupported config bootstrap verdict = %#v; want unavailable zero tuple", got)
+		}
+	})
+}
+
+func TestFM5PositiveIdentityDoesNotRequireNegativeNamespaceCompleteness(t *testing.T) {
+	now := time.Date(2026, 8, 15, 19, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	newPoller := func(provider *graphql.LiveSemanticProvider, reg *registry.DeviceRegistry) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{
+			scheduler:       ebusgateway.NewSemanticReadScheduler(),
+			reg:             reg,
+			provider:        provider,
+			source:          0x7F,
+			controller:      0x15,
+			requestTimeout:  50 * time.Millisecond,
+			system:          &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+			radioDevices:    make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+			solarCylinders:  make(map[byte]*vaillantCylinderSnapshot),
+			fm5EvidenceTTL:  5 * time.Minute,
+			deviceSlotCache: make(map[deviceSlotKey]bool),
+			nowFn:           func() time.Time { return now },
+		}
+	}
+	assertInterpreted := func(t *testing.T, provider *graphql.LiveSemanticProvider) {
+		t.Helper()
+		got := provider.FM5Interpretation()
+		if got.Mode != graphql.Fm5SemanticModeInterpreted || got.DegradedReason != "" || got.EvidenceRevision == "" {
+			t.Fatalf("positive partial-namespace verdict = %#v; want healthy INTERPRETED with revision", got)
+		}
+	}
+	responder := func(positiveInstance byte, timeoutInstance *byte) func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == remoteFunctionalModules.group {
+				if timeoutInstance != nil && instance == *timeoutInstance && addr == device_slot_connected {
+					return nil, errors.New("unrelated functional-module slot timeout")
+				}
+				switch addr {
+				case device_slot_connected:
+					return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+				case device_slot_class_address:
+					value := byte(0xFF)
+					if instance == positiveInstance {
+						value = circuitManagingDeviceVR71Address
+					}
+					return testB524ResponseForSelectorPayload(frame.Data, value), nil
+				case device_slot_firmware:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+				case device_slot_hardware_identifier:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+				}
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+	}
+
+	t.Run("startup registry-seeded low-slot positive", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		reg := registry.NewDeviceRegistry(nil)
+		reg.Register(registry.DeviceInfo{Address: circuitManagingDeviceVR71Address, Manufacturer: "Vaillant", DeviceID: circuitManagingDeviceVR71ID})
+		poller := newPoller(provider, reg)
+		poller.sendFrameFn = responder(0x00, nil)
+
+		poller.refreshRadioDevicesStartup(context.Background())
+		poller.refreshFM5SemanticStartup(context.Background())
+		assertInterpreted(t, provider)
+	})
+
+	t.Run("startup positive with unrelated slot timeout", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider, registry.NewDeviceRegistry(nil))
+		timeoutInstance := byte(0x07)
+		poller.sendFrameFn = responder(0x04, &timeoutInstance)
+
+		poller.refreshRadioDevicesStartup(context.Background())
+		poller.refreshFM5SemanticStartup(context.Background())
+		assertInterpreted(t, provider)
+	})
+
+	t.Run("steady positive with unrelated slot timeout", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider, registry.NewDeviceRegistry(nil))
+		timeoutInstance := byte(0x07)
+		poller.sendFrameFn = responder(0x04, &timeoutInstance)
+
+		poller.refreshRadioDevices(context.Background())
+		assertInterpreted(t, provider)
+	})
 }
 
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {

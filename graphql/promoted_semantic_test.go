@@ -6,6 +6,15 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
+type promotedLegacyFM5Provider struct {
+	SemanticProvider
+	mode Fm5SemanticMode
+}
+
+func (provider promotedLegacyFM5Provider) FM5SemanticMode() Fm5SemanticMode {
+	return provider.mode
+}
+
 func TestPromotedSemanticGraphQL_AllEighteenValuesFillOnlyMissing(t *testing.T) {
 	base := NewLiveSemanticProvider()
 	ebusTemp := 19.5
@@ -61,6 +70,27 @@ func TestPromotedSemanticOverlayDoesNotCreateZonesOrSurviveClear(t *testing.T) {
 	o = PromotedSemanticOverlay{}
 	if zones := provider.Zones(); zones[0].Config.SourceLabel != nil {
 		t.Fatalf("cleared overlay retained value: %#v", zones[0])
+	}
+}
+
+func TestPromotedSemanticProvider_LegacyOnlyFM5InterpretationIsUnavailable(t *testing.T) {
+	base := promotedLegacyFM5Provider{
+		SemanticProvider: NewLiveSemanticProvider(),
+		mode:             Fm5SemanticModeGPIOOnly,
+	}
+	provider := NewPromotedSemanticProvider(base, func() PromotedSemanticOverlay {
+		return PromotedSemanticOverlay{}
+	})
+
+	if got := provider.FM5SemanticMode(); got != Fm5SemanticModeGPIOOnly {
+		t.Fatalf("legacy FM5 scalar = %s; want stable GPIO_ONLY", got)
+	}
+	interpretationProvider, ok := provider.(FM5InterpretationProvider)
+	if !ok {
+		t.Fatal("promoted provider does not expose FM5InterpretationProvider")
+	}
+	if got := interpretationProvider.FM5Interpretation(); got != (Fm5Interpretation{}) {
+		t.Fatalf("legacy-only promoted FM5 interpretation = %#v; want unavailable zero tuple", got)
 	}
 }
 

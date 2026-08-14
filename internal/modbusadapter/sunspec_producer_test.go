@@ -100,7 +100,7 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 	}
 	if result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
 		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
-		result.FlavorID != "sunspec.flavor.fronius.gen24.float.observed@1.1.0" ||
+		result.FlavorID != modbusreg.SunSpecFroniusObservedFlavorV11ID ||
 		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
 		t.Fatalf("registry decisions = %#v; want exact capability and V1.1 flavor match", result)
 	}
@@ -111,6 +111,16 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 		{ModelID: 160, ModelLength: 88}, {ModelID: 124, ModelLength: 24},
 	}) {
 		t.Fatalf("published SunSpec chain = %v; want exact observed Fronius controls chain", got)
+	}
+	controls := result.Chain.ByModelID(123)
+	if len(controls) != 1 || controls[0].Disposition != modbusreg.SunSpecChainDispositionAdmitted {
+		t.Fatalf("Model 123 occurrences = %#v; want one admitted standard model", controls)
+	}
+	decoderKey, ok := controls[0].DecoderKey()
+	if !ok || decoderKey != (modbusreg.SunSpecDecoderKey{
+		ModelID: 123, ModelLength: 24, SchemaRevision: modbusreg.SunSpecModelsRevisionV1,
+	}) {
+		t.Fatalf("Model 123 decoder key = %#v, %v; want exact standard registry key", decoderKey, ok)
 	}
 	assertBoundedFC03Discovery(t, requests(), 1)
 }

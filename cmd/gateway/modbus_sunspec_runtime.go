@@ -16,6 +16,7 @@ const (
 	sunSpecLiveSmokeAuthorizationScope = "smoke:fronius-readonly"
 	sunSpecLiveSmokeReadTimeout        = 2 * time.Second
 	sunSpecLiveSmokeAttemptTimeout     = 30 * time.Second
+	sunSpecLiveSmokeCurrentFlavor      = modbusreg.SunSpecFroniusObservedFlavorV11ID
 )
 
 type sunSpecLiveSmokeDecision string
@@ -179,7 +180,7 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 	case modbusadapter.SunSpecQualificationGO:
 		if qualification.Sample == "" ||
 			qualification.Capability != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
-			qualification.Flavor != modbusreg.SunSpecFroniusObservedFlavorID ||
+			!isSupportedSunSpecLiveSmokeFlavor(qualification.Flavor) ||
 			qualification.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
 			qualification.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
 			base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
@@ -198,6 +199,10 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
 		return base
 	}
+}
+
+func isSupportedSunSpecLiveSmokeFlavor(flavor string) bool {
+	return flavor == modbusreg.SunSpecFroniusObservedFlavorID || flavor == sunSpecLiveSmokeCurrentFlavor
 }
 
 type sunSpecLiveSmokeWorker struct {

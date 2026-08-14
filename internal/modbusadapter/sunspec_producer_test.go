@@ -163,6 +163,9 @@ func TestSunSpecProducerFailsClosedForObservedFloatProfileWithoutRetention(t *te
 		result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("float chain result = %#v; want typed fail-closed unsupported profile", result)
 	}
+	if _, ok := adapter.ProfileObservation("sunspec.phase1", "gateway-modbus:1"); ok {
+		t.Fatal("float chain profile observation was retained")
+	}
 }
 
 func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *testing.T) {

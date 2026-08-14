@@ -2303,6 +2303,7 @@ class PortalShell extends HTMLElement {
       if (document.visibilityState !== "visible") {
         this.clearEEBusCandidate();
         this._eebusSelection = undefined;
+		this._eebusPendingMutation = undefined;
         this.clearEEBusSPINETree();
       }
     };
@@ -2312,7 +2313,11 @@ class PortalShell extends HTMLElement {
   }
 
   async eebusAdminFetch(path, options = {}) {
-    if (!this._eebusAdminPath) throw new Error("eeBUS admin boundary unavailable");
+    if (!this._eebusAdminPath) {
+	  const error = new Error("eeBUS admin boundary unavailable");
+	  error.eebusTerminal = true;
+	  throw error;
+	}
     const method = options.method || "GET";
     const headers = { Accept: "application/json", ...(options.headers || {}) };
     const init = { method, credentials: "same-origin", headers };
@@ -2321,7 +2326,11 @@ class PortalShell extends HTMLElement {
       init.body = JSON.stringify(options.body);
     }
     if (method !== "GET" && method !== "HEAD") {
-      if (!this._eebusCSRFToken) throw new Error("owner session is not authenticated");
+      if (!this._eebusCSRFToken) {
+		const error = new Error("owner session is not authenticated");
+		error.eebusTerminal = true;
+		throw error;
+	  }
       headers["X-CSRF-Token"] = this._eebusCSRFToken;
       headers["Idempotency-Key"] = options.idempotencyKey || crypto.randomUUID();
     }
@@ -2329,9 +2338,11 @@ class PortalShell extends HTMLElement {
     const csrf = response.headers?.get?.("X-CSRF-Token");
     if (csrf) this._eebusCSRFToken = csrf;
     const payload = await response.json();
-	this.clearEEBusCandidate();
+    this.clearEEBusCandidate();
     if (!response.ok || payload?.error) {
-      throw new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
+	  const error = new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
+	  error.eebusTerminal = true;
+	  throw error;
     }
     if (Number.isSafeInteger(payload?.state_revision) && payload.state_revision > 0) {
       this._eebusStateRevision = payload.state_revision;
@@ -2410,20 +2421,43 @@ class PortalShell extends HTMLElement {
   }
 
   async eebusMutation(path, body, method = "POST") {
-    const payload = await this.eebusAdminFetch(path, { method, body });
-    this.applyEEBusStatus(payload);
-    return payload;
+	const binding = `${method}\u0000${path}\u0000${JSON.stringify(body)}`;
+	let pending = this._eebusPendingMutation;
+	if (pending && pending.binding !== binding) {
+	  throw new Error("previous eeBUS mutation outcome is unknown; retry the exact action");
+	}
+	if (!pending) {
+	  pending = { binding, idempotencyKey: crypto.randomUUID() };
+	  this._eebusPendingMutation = pending;
+	}
+	try {
+	  const payload = await this.eebusAdminFetch(path, { method, body, idempotencyKey: pending.idempotencyKey });
+	  this._eebusPendingMutation = undefined;
+	  this.applyEEBusStatus(payload);
+	  return payload;
+	} catch (error) {
+	  if (error?.eebusTerminal) this._eebusPendingMutation = undefined;
+	  throw error;
+	}
   }
 
   openEEBusPairingWindow() {
     return this.eebusMutation("/pairing-window:open", { duration_seconds: 300, state_revision: this._eebusStateRevision });
   }
 
-  closeEEBusPairingWindow() {
-	const operation = this.eebusMutation("/pairing-window:close", { state_revision: this._eebusStateRevision });
-	this.clearEEBusCandidate();
-	this._eebusSelection = undefined;
-	return operation;
+  async closeEEBusPairingWindow() {
+	try {
+	  const result = await this.eebusMutation("/pairing-window:close", { state_revision: this._eebusStateRevision });
+	  this.clearEEBusCandidate();
+	  this._eebusSelection = undefined;
+	  return result;
+	} catch (error) {
+	  if (error?.eebusTerminal) {
+		this.clearEEBusCandidate();
+		this._eebusSelection = undefined;
+	  }
+	  throw error;
+	}
   }
 
   async selectEEBusObservation(observationID) {
@@ -2442,24 +2476,36 @@ class PortalShell extends HTMLElement {
   async connectEEBusSelection() {
     const selectionID = this._eebusSelection?.id;
     if (!selectionID) throw new Error("no active eeBUS selection");
-    this._eebusSelection = undefined;
-    return this.eebusMutation(`/selections/${encodeURIComponent(selectionID)}:connect`, { state_revision: this._eebusStateRevision });
+	try {
+	  const result = await this.eebusMutation(`/selections/${encodeURIComponent(selectionID)}:connect`, { state_revision: this._eebusStateRevision });
+	  this._eebusSelection = undefined;
+	  return result;
+	} catch (error) {
+	  if (error?.eebusTerminal) this._eebusSelection = undefined;
+	  throw error;
+	}
   }
 
   async confirmEEBusCandidate(expectedSKI) {
     if (!this._eebusCandidate || expectedSKI !== this._eebusCandidate.remote_ski) throw new Error("candidate SKI comparison does not match");
     try {
-      return await this.eebusMutation("/candidate:confirm", { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
-    } finally {
-      this.clearEEBusCandidate();
+	  const result = await this.eebusMutation("/candidate:confirm", { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
+	  this.clearEEBusCandidate();
+	  return result;
+	} catch (error) {
+	  if (error?.eebusTerminal) this.clearEEBusCandidate();
+	  throw error;
     }
   }
 
   async cancelEEBusCandidate() {
     try {
-      return await this.eebusMutation("/candidate:cancel", { state_revision: this._eebusStateRevision });
-    } finally {
-      this.clearEEBusCandidate();
+	  const result = await this.eebusMutation("/candidate:cancel", { state_revision: this._eebusStateRevision });
+	  this.clearEEBusCandidate();
+	  return result;
+	} catch (error) {
+	  if (error?.eebusTerminal) this.clearEEBusCandidate();
+	  throw error;
     }
   }
 
@@ -2474,8 +2520,14 @@ class PortalShell extends HTMLElement {
 
   async untrustEEBusPartner(partnerID) {
 	if (!partnerID || this._eebusUntrustArmedID !== partnerID) throw new Error("untrust is not armed for this partner");
-	this._eebusUntrustArmedID = undefined;
-	return this.eebusMutation(`/partners/${encodeURIComponent(partnerID)}/trust`, { state_revision: this._eebusStateRevision }, "DELETE");
+	try {
+	  const result = await this.eebusMutation(`/partners/${encodeURIComponent(partnerID)}/trust`, { state_revision: this._eebusStateRevision }, "DELETE");
+	  this._eebusUntrustArmedID = undefined;
+	  return result;
+	} catch (error) {
+	  if (error?.eebusTerminal) this._eebusUntrustArmedID = undefined;
+	  throw error;
+	}
   }
 
   clearEEBusCandidate() {

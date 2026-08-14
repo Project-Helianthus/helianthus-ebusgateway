@@ -1810,17 +1810,19 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			classRaw, classOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 			firmwareRaw, firmwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_firmware)
 			hardwareRaw, hardwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_hardware_identifier)
-			if !classOK || len(classRaw) == 0 || !firmwareOK || len(firmwareRaw) < 3 || !hardwareOK || len(hardwareRaw) == 0 {
+			tuple := decodeFunctionalModuleIdentityTuple(
+				connectedRaw, true,
+				classRaw, classOK,
+				firmwareRaw, firmwareOK,
+				hardwareRaw, hardwareOK,
+			)
+			if !tuple.complete {
 				fm5NamespaceComplete = false
 			}
-			if len(classRaw) > 0 && classRaw[0] != 0xFF {
-				value := classRaw[0]
-				classAddress = &value
-			}
-			firmware = decodeB524FirmwareVersion(firmwareRaw)
-			if value, ok := decodeB524Uint16(hardwareRaw); ok && value != 0xFFFF {
-				hardware = &value
-			}
+			connected = tuple.connected
+			classAddress = tuple.classAddress
+			firmware = tuple.firmware
+			hardware = tuple.hardware
 		} else {
 			classAddress = p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 		}
@@ -1871,6 +1873,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	p.mu.Lock()
 	p.startupRadioDevicesProbed = readAny
 	p.fm5IdentityScanComplete = fm5NamespaceComplete
+	p.fm5IdentityIncoherent = !fm5NamespaceComplete
 	if fm5NamespaceComplete {
 		p.fm5RegistryEvidenceIgnored = !liveFM5Evidence
 	} else if liveFM5Evidence {
@@ -5261,41 +5264,87 @@ func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshot(ctx contex
 	if !connectedOK || len(connectedRaw) == 0 {
 		return nil, false, false
 	}
-	connected := connectedRaw[0] == 1
 	classRaw, classOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
 	firmwareRaw, firmwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_firmware)
 	hardwareRaw, hardwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_hardware_identifier)
-	complete := classOK && len(classRaw) > 0 &&
-		firmwareOK && len(firmwareRaw) >= 3 &&
-		hardwareOK && len(hardwareRaw) >= 2
-
-	var classAddress *uint8
-	if len(classRaw) > 0 && classRaw[0] != 0xFF {
-		value := classRaw[0]
-		classAddress = &value
-	}
-	firmware := decodeB524FirmwareVersion(firmwareRaw)
-	var hardware *uint16
-	if value, ok := decodeB524Uint16(hardwareRaw); ok && value != 0xFFFF {
-		hardware = &value
-	}
-	if !connected && !hasRemoteIdentityEvidence(classAddress, firmware, hardware) {
-		return nil, true, complete
+	tuple := decodeFunctionalModuleIdentityTuple(
+		connectedRaw, connectedOK,
+		classRaw, classOK,
+		firmwareRaw, firmwareOK,
+		hardwareRaw, hardwareOK,
+	)
+	if !tuple.connected && !hasRemoteIdentityEvidence(tuple.classAddress, tuple.firmware, tuple.hardware) {
+		return nil, true, tuple.complete
 	}
 	slotMode := "active"
-	if !connected {
+	if !tuple.connected {
 		slotMode = "inventory"
 	}
 	return &vaillantRadioDeviceSnapshot{
 		Group:              remoteFunctionalModules.group,
 		Instance:           instance,
 		SlotMode:           slotMode,
-		DeviceConnected:    cloneBoilerBoolPtr(&connected),
-		DeviceClassAddress: cloneUint8Ptr(classAddress),
-		DeviceModel:        decodeRadioDeviceModel(classAddress),
-		FirmwareVersion:    cloneStringPtr(firmware),
-		HardwareIdentifier: cloneUint16Ptr(hardware),
-	}, true, complete
+		DeviceConnected:    cloneBoilerBoolPtr(&tuple.connected),
+		DeviceClassAddress: cloneUint8Ptr(tuple.classAddress),
+		DeviceModel:        decodeRadioDeviceModel(tuple.classAddress),
+		FirmwareVersion:    cloneStringPtr(tuple.firmware),
+		HardwareIdentifier: cloneUint16Ptr(tuple.hardware),
+	}, true, tuple.complete
+}
+
+type functionalModuleIdentityTuple struct {
+	connected    bool
+	classAddress *uint8
+	firmware     *string
+	hardware     *uint16
+	complete     bool
+}
+
+func decodeFunctionalModuleIdentityTuple(
+	connectedRaw []byte,
+	connectedOK bool,
+	classRaw []byte,
+	classOK bool,
+	firmwareRaw []byte,
+	firmwareOK bool,
+	hardwareRaw []byte,
+	hardwareOK bool,
+) functionalModuleIdentityTuple {
+	connected, connectedValid := decodeExactB524Bool(connectedRaw)
+	tuple := functionalModuleIdentityTuple{
+		connected: connected,
+		complete: connectedOK && connectedValid &&
+			classOK && len(classRaw) >= 1 &&
+			firmwareOK && len(firmwareRaw) >= 3 &&
+			hardwareOK && len(hardwareRaw) >= 2,
+	}
+	if classOK && len(classRaw) >= 1 && classRaw[0] != 0xFF {
+		value := classRaw[0]
+		tuple.classAddress = &value
+	}
+	if firmwareOK && len(firmwareRaw) >= 3 {
+		tuple.firmware = decodeB524FirmwareVersion(firmwareRaw)
+	}
+	if hardwareOK && len(hardwareRaw) >= 2 {
+		if value, ok := decodeB524Uint16(hardwareRaw); ok && value != 0xFFFF {
+			tuple.hardware = &value
+		}
+	}
+	return tuple
+}
+
+func decodeExactB524Bool(raw []byte) (bool, bool) {
+	if len(raw) == 0 {
+		return false, false
+	}
+	switch raw[0] {
+	case 0:
+		return false, true
+	case 1:
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
@@ -5453,7 +5502,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 		discovered[radioDeviceKey{Group: group, Instance: instance}] = device
 	}
 
-	if !readAny && len(phaseOneFM5Snapshots) == 0 {
+	if !readAny && len(phaseOneFM5Snapshots) == 0 && !fm5SlotReadAttempted {
 		return
 	}
 

@@ -5330,6 +5330,9 @@ func decodeFunctionalModuleIdentityTuple(
 			tuple.hardware = &value
 		}
 	}
+	if tuple.connected && !hasRemoteIdentityEvidence(tuple.classAddress, tuple.firmware, tuple.hardware) {
+		tuple.complete = false
+	}
 	return tuple
 }
 

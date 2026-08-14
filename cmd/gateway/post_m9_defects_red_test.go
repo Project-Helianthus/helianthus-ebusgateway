@@ -646,6 +646,20 @@ func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryId
 		if len(frame.Data) != 6 {
 			return nil, errors.New("invalid B524 selector")
 		}
+		group := frame.Data[2]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == remoteFunctionalModules.group {
+			switch addr {
+			case device_slot_connected:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+			case device_slot_class_address:
+				return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+			case device_slot_firmware:
+				return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+			case device_slot_hardware_identifier:
+				return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+			}
+		}
 		return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
 	}
 

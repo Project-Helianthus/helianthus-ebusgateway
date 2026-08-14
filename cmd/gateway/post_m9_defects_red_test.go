@@ -284,6 +284,50 @@ func TestNewGatewayBuildInfo_RejectsMissingReleaseAuthority(t *testing.T) {
 	}
 }
 
+func TestResolveGatewayBuildInfo_UsesOneResolvedIdentityAcrossEvidenceSurfaces(t *testing.T) {
+	originalResolver := gatewayBuildRevisionResolver
+	t.Cleanup(func() { gatewayBuildRevisionResolver = originalResolver })
+	calls := 0
+	gatewayBuildRevisionResolver = func() (string, error) {
+		calls++
+		return "0123456789abcdef0123456789abcdef01234567", nil
+	}
+
+	info, err := resolveGatewayBuildInfo("0.6.42", "unknown")
+	if err != nil {
+		t.Fatalf("resolveGatewayBuildInfo() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("revision resolver calls = %d; want 1", calls)
+	}
+	if info.BuildID != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("BuildID = %q; want resolved full revision", info.BuildID)
+	}
+	if got, want := info.EvidenceVersion(), "0.6.42+git.0123456789abcdef0123456789abcdef01234567"; got != want {
+		t.Fatalf("EvidenceVersion() = %q; want %q", got, want)
+	}
+	oneShot := info.OneShotEvidenceIdentity()
+	if oneShot.RecorderVersion != info.EvidenceVersion() || oneShot.ReplayVersion != info.EvidenceVersion() || oneShot.OperationVersion != "git:"+info.BuildID {
+		t.Fatalf("one-shot identity = %#v; want the same resolved build identity", oneShot)
+	}
+	if got, want := gatewayBuildString(info), "0.6.42+0123456789abcdef0123456789abcdef01234567"; got != want {
+		t.Fatalf("gateway build = %q; want %q", got, want)
+	}
+}
+
+func TestGatewayBuildInfo_ExplicitNonRevisionBuildIDHasClosedEvidenceForm(t *testing.T) {
+	info, err := resolveGatewayBuildInfo("0.6.42", "ci-build-42")
+	if err != nil {
+		t.Fatalf("resolveGatewayBuildInfo() error = %v", err)
+	}
+	if got, want := info.EvidenceVersion(), "0.6.42+build.ci-build-42"; got != want {
+		t.Fatalf("EvidenceVersion() = %q; want %q", got, want)
+	}
+	if got, want := info.OneShotEvidenceIdentity().OperationVersion, "build:ci-build-42"; got != want {
+		t.Fatalf("OperationVersion = %q; want %q", got, want)
+	}
+}
+
 type legacyOnlySemanticProvider struct {
 	graphql.SemanticProvider
 }

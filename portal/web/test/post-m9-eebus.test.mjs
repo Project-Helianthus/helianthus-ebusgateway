@@ -158,7 +158,7 @@ test("lost mutation response retains the exact idempotency binding and selection
   assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires active-memory idempotency state");
 });
 
-test("hidden refresh clears candidate UI but retains only active-memory authority for exact mutation replay", async () => {
+test("lost confirm response clears visibility authority and retries only the frozen request", async () => {
   const calls = [];
   let attempt = 0;
   const candidate = { textContent: "sensitive-candidate" };
@@ -186,16 +186,19 @@ test("hidden refresh clears candidate UI but retains only active-memory authorit
 
   assert.equal(candidate.textContent, "", "candidate raw UI clears while hidden");
   assert.equal(input.value, "", "candidate input clears while hidden");
-  assert.equal(shell._eebusCandidate?.remote_ski, "a".repeat(40), "candidate authority remains only for exact replay");
-  assert.equal(shell._eebusSelection?.id, "selection-1", "selection authority remains for exact replay");
-  assert.equal(shell._eebusUntrustArmedID, "partner-1", "untrust arm remains for exact replay");
-  assert.ok(shell._eebusPendingMutation, "ambiguous mutation remains active-memory only");
+  assert.equal(shell._eebusCandidate, undefined, "candidate model clears while hidden");
+  assert.equal(shell._eebusSelection, undefined, "selection clears while hidden");
+  assert.equal(shell._eebusUntrustArmedID, undefined, "untrust arm clears while hidden");
+  assert.equal(shell._eebusSpinePartnerID, undefined, "SPINE partner clears while hidden");
+  assert.equal(shell._eebusSpineSnapshotID, undefined, "SPINE snapshot clears while hidden");
+  assert.deepEqual(Object.keys(shell._eebusPendingMutation).sort(), ["body", "expiresAt", "idempotencyKey", "method", "path"], "pending state retains only a frozen bounded request");
   assert.equal(storageWrites.length, 0, "replay authority is never persisted");
   await assert.rejects(shell.openEEBusPairingWindow(), /previous eeBUS mutation outcome is unknown/);
 
-  await shell.confirmEEBusCandidate("a".repeat(40));
+  await shell.retryPendingEEBusMutation();
   assert.equal(calls.filter((call) => call.url.endsWith("candidate:confirm")).length, 2);
   assert.equal(calls[0].init.headers["Idempotency-Key"], calls[2].init.headers["Idempotency-Key"]);
+  assert.equal(calls[0].init.body, calls[2].init.body, "retry must send its frozen pre-refresh revision/body");
   assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires pending authority");
 });
 

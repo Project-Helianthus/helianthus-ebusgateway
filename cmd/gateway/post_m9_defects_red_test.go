@@ -10,7 +10,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
-func TestDeriveFM5Interpretation_ClosedReasonsAndPrecedence(t *testing.T) {
+func TestDeriveFM5Interpretation_CoherentClassificationsAndUnavailableBootstrap(t *testing.T) {
 	configInterpretable := uint16(2)
 	configUnsupported := uint16(3)
 	tests := []struct {
@@ -25,14 +25,9 @@ func TestDeriveFM5Interpretation_ClosedReasonsAndPrecedence(t *testing.T) {
 		wantMode            graphql.Fm5SemanticMode
 		wantReason          graphql.Fm5SemanticDegradedReason
 	}{
-		{"absent without evidence", false, nil, false, false, false, false, false, graphql.Fm5SemanticModeAbsent, ""},
-		{"controller unavailable", false, nil, false, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonControllerUnreachable},
-		{"configuration unavailable", true, nil, false, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonConfigurationUnavailable},
+		{"incomplete bootstrap", false, nil, false, false, false, false, false, "", ""},
+		{"fresh coherent absence", true, &configInterpretable, false, false, false, false, false, graphql.Fm5SemanticModeAbsent, ""},
 		{"configuration deliberately unsupported", true, &configUnsupported, false, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable},
-		{"stale identity before family reads", true, &configInterpretable, false, false, true, true, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonEvidenceStale},
-		{"solar read failed before cylinder", true, &configInterpretable, false, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed},
-		{"cylinder read failed", true, &configInterpretable, true, false, true, false, false, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed},
-		{"generation changed during acquisition", true, &configInterpretable, true, true, true, false, true, graphql.Fm5SemanticModeGPIOOnly, graphql.Fm5SemanticDegradedReasonIncoherentAcquisition},
 		{"coherent interpretation", true, &configInterpretable, true, true, true, false, false, graphql.Fm5SemanticModeInterpreted, ""},
 	}
 
@@ -51,8 +46,50 @@ func TestDeriveFM5Interpretation_ClosedReasonsAndPrecedence(t *testing.T) {
 			if got.Mode != test.wantMode || got.DegradedReason != test.wantReason {
 				t.Fatalf("deriveFM5Interpretation() = %#v; want mode=%s reason=%s", got, test.wantMode, test.wantReason)
 			}
-			if got.EvidenceRevision != "acq-42" {
+			if test.wantMode == "" && got.EvidenceRevision != "" {
+				t.Fatalf("unavailable bootstrap evidence revision = %q; want empty", got.EvidenceRevision)
+			}
+			if test.wantMode != "" && got.EvidenceRevision != "acq-42" {
 				t.Fatalf("evidence revision = %q; want acq-42", got.EvidenceRevision)
+			}
+		})
+	}
+}
+
+func TestDeriveFM5Interpretation_TransientReasonPrecedence(t *testing.T) {
+	configInterpretable := uint16(2)
+	tests := []struct {
+		name                string
+		controllerReachable bool
+		moduleConfig        *uint16
+		solarReadable       bool
+		cylindersReadable   bool
+		evidenceStale       bool
+		incoherent          bool
+		wantReason          graphql.Fm5SemanticDegradedReason
+	}{
+		{"controller unavailable", false, nil, false, false, false, false, graphql.Fm5SemanticDegradedReasonControllerUnreachable},
+		{"configuration unavailable", true, nil, false, false, false, false, graphql.Fm5SemanticDegradedReasonConfigurationUnavailable},
+		{"stale identity before family reads", true, &configInterpretable, false, false, true, false, graphql.Fm5SemanticDegradedReasonEvidenceStale},
+		{"solar read failed before cylinder", true, &configInterpretable, false, false, false, false, graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed},
+		{"cylinder read failed", true, &configInterpretable, true, false, false, false, graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed},
+		{"generation changed during acquisition", true, &configInterpretable, true, true, false, true, graphql.Fm5SemanticDegradedReasonIncoherentAcquisition},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := deriveFM5Interpretation(
+				test.controllerReachable,
+				test.moduleConfig,
+				test.solarReadable,
+				test.cylindersReadable,
+				true,
+				test.evidenceStale,
+				test.incoherent,
+				"acq-42",
+			)
+			if got.DegradedReason != test.wantReason {
+				t.Fatalf("deriveFM5Interpretation() = %#v; want reason=%s", got, test.wantReason)
 			}
 		})
 	}
@@ -72,7 +109,7 @@ func TestApplyFM5Acquisition_RetainsTransientAndWithdrawsStructural(t *testing.T
 		nil,
 		nil,
 		graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeGPIOOnly,
+			Mode:             graphql.Fm5SemanticModeInterpreted,
 			DegradedReason:   graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed,
 			EvidenceRevision: "acq-43",
 		},
@@ -97,6 +134,71 @@ func TestApplyFM5Acquisition_RetainsTransientAndWithdrawsStructural(t *testing.T
 	)
 	if withdrawnSolar != nil || len(withdrawnCylinders) != 0 {
 		t.Fatalf("structural withdrawal = solar %#v cylinders %#v; want empty", withdrawnSolar, withdrawnCylinders)
+	}
+}
+
+func TestCommitFM5Acquisition_RetainsCoherentModeAcrossTransientFailures(t *testing.T) {
+	config := uint16(2)
+	tests := []struct {
+		coherentMode graphql.Fm5SemanticMode
+		reason       graphql.Fm5SemanticDegradedReason
+	}{
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonControllerUnreachable},
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonConfigurationUnavailable},
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed},
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed},
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonEvidenceStale},
+		{graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticDegradedReasonIncoherentAcquisition},
+		{graphql.Fm5SemanticModeAbsent, graphql.Fm5SemanticDegradedReasonControllerUnreachable},
+	}
+
+	for _, test := range tests {
+		t.Run(string(test.coherentMode)+"/"+string(test.reason), func(t *testing.T) {
+			collector := 61.5
+			temperature := 47.25
+			poller := &vaillantSemanticPoller{
+				controller:            0x15,
+				system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+				fm5Mode:               test.coherentMode,
+				fm5Interpretation:     graphql.Fm5Interpretation{Mode: test.coherentMode, EvidenceRevision: "fm5-g7-a41"},
+				fm5EvidenceGeneration: 7,
+				solarCylinders:        make(map[byte]*vaillantCylinderSnapshot),
+			}
+			if test.coherentMode == graphql.Fm5SemanticModeInterpreted {
+				poller.solar = &vaillantSolarSnapshot{CollectorTemperatureC: &collector}
+				poller.solarCylinders[0] = &vaillantCylinderSnapshot{Instance: 0, TemperatureC: &temperature}
+			}
+			captured := fm5EvidenceCapture{
+				controller:       0x15,
+				moduleConfig:     &config,
+				generation:       7,
+				registryCoherent: true,
+			}
+
+			got := poller.commitFM5Acquisition(captured, graphql.Fm5Interpretation{
+				Mode:             graphql.Fm5SemanticModeGPIOOnly,
+				DegradedReason:   test.reason,
+				EvidenceRevision: "fm5-g7-a42",
+			}, nil, nil)
+
+			if got.Mode != test.coherentMode || got.DegradedReason != test.reason {
+				t.Fatalf("transient commit verdict = %#v; want retained %s/%s", got, test.coherentMode, test.reason)
+			}
+			if got.EvidenceRevision != "fm5-g7-a42" || got.EvidenceRevision == "fm5-g7-a41" {
+				t.Fatalf("transient commit revision = %q; want advanced fm5-g7-a42", got.EvidenceRevision)
+			}
+			if poller.fm5Mode != test.coherentMode {
+				t.Fatalf("legacy FM5 scalar = %s; want retained %s", poller.fm5Mode, test.coherentMode)
+			}
+			if test.coherentMode == graphql.Fm5SemanticModeInterpreted {
+				if poller.solar == nil || poller.solar.CollectorTemperatureC == nil || *poller.solar.CollectorTemperatureC != collector {
+					t.Fatalf("retained solar = %#v; want prior coherent value", poller.solar)
+				}
+				if poller.solarCylinders[0] == nil || poller.solarCylinders[0].TemperatureC == nil || *poller.solarCylinders[0].TemperatureC != temperature {
+					t.Fatalf("retained cylinders = %#v; want prior coherent value", poller.solarCylinders)
+				}
+			}
+		})
 	}
 }
 
@@ -149,13 +251,22 @@ func TestRefreshFM5Semantic_StaleEvidenceSkipsReadsAndRetainsCoherentFamily(t *t
 		fm5EvidenceTTL:        5 * time.Minute,
 		fm5IdentityObservedAt: now.Add(-6 * time.Minute),
 		fm5EvidenceGeneration: 7,
-		nowFn:                 func() time.Time { return now },
+		fm5Mode:               graphql.Fm5SemanticModeInterpreted,
+		fm5Interpretation: graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeInterpreted,
+			EvidenceRevision: "fm5-g7-a41",
+		},
+		fm5EvidenceRevision: 41,
+		nowFn:               func() time.Time { return now },
 	}
 
 	poller.refreshFM5Semantic(context.Background())
 	verdict := provider.FM5Interpretation()
-	if verdict.Mode != graphql.Fm5SemanticModeGPIOOnly || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonEvidenceStale {
-		t.Fatalf("stale refresh verdict = %#v; want GPIO_ONLY/EVIDENCE_STALE", verdict)
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonEvidenceStale {
+		t.Fatalf("stale refresh verdict = %#v; want INTERPRETED/EVIDENCE_STALE", verdict)
+	}
+	if verdict.EvidenceRevision == "fm5-g7-a41" {
+		t.Fatalf("stale refresh evidence revision = %q; want advanced revision", verdict.EvidenceRevision)
 	}
 	if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collector {
 		t.Fatalf("stale refresh solar = %#v; want retained coherent snapshot", solar)
@@ -170,10 +281,15 @@ func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t
 	config := uint16(2)
 	reg := registry.NewDeviceRegistry(nil)
 	poller := &vaillantSemanticPoller{
-		reg:            reg,
-		controller:     0x15,
-		system:         &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
-		radioDevices:   map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		reg:          reg,
+		controller:   0x15,
+		system:       &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices: map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		fm5Mode:      graphql.Fm5SemanticModeInterpreted,
+		fm5Interpretation: graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeInterpreted,
+			EvidenceRevision: "fm5-g0-a0",
+		},
 		solarCylinders: make(map[byte]*vaillantCylinderSnapshot),
 		nowFn:          time.Now,
 	}
@@ -191,8 +307,11 @@ func TestCommitFM5Acquisition_RegistryMutationAfterPostReadCaptureIsIncoherent(t
 		Mode:             graphql.Fm5SemanticModeInterpreted,
 		EvidenceRevision: "fm5-g0-a1",
 	}, &vaillantSolarSnapshot{}, map[byte]*vaillantCylinderSnapshot{})
-	if verdict.Mode != graphql.Fm5SemanticModeGPIOOnly || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
-		t.Fatalf("registry interleaving verdict = %#v; want GPIO_ONLY/INCOHERENT_ACQUISITION", verdict)
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
+		t.Fatalf("registry interleaving verdict = %#v; want INTERPRETED/INCOHERENT_ACQUISITION", verdict)
+	}
+	if verdict.EvidenceRevision == "fm5-g0-a0" {
+		t.Fatalf("registry interleaving revision = %q; want advanced revision", verdict.EvidenceRevision)
 	}
 }
 
@@ -364,7 +483,18 @@ type legacyOnlySemanticProvider struct {
 	graphql.SemanticProvider
 }
 
-func TestPortalFM5Interpretation_LegacyGPIOOnlyIsExplained(t *testing.T) {
+func TestPortalFM5Interpretation_UnavailableBeforeFirstCoherentClassification(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+
+	if got := portalFM5Interpretation(provider); got != (graphql.Fm5Interpretation{}) {
+		t.Fatalf("Portal FM5 interpretation = %#v; want unavailable zero tuple", got)
+	}
+	if got := provider.FM5SemanticMode(); got != graphql.Fm5SemanticModeAbsent {
+		t.Fatalf("legacy FM5 scalar = %s; want stable ABSENT", got)
+	}
+}
+
+func TestPortalFM5Interpretation_LegacyGPIOOnlyIsStructurallyExplained(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeGPIOOnly)
 	legacy := legacyOnlySemanticProvider{SemanticProvider: provider}
@@ -373,7 +503,7 @@ func TestPortalFM5Interpretation_LegacyGPIOOnlyIsExplained(t *testing.T) {
 	if err := verdict.Validate(); err != nil {
 		t.Fatalf("Portal fallback verdict invalid: %v", err)
 	}
-	if verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
-		t.Fatalf("Portal fallback reason = %q; want %q", verdict.DegradedReason, graphql.Fm5SemanticDegradedReasonIncoherentAcquisition)
+	if verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable {
+		t.Fatalf("Portal fallback reason = %q; want %q", verdict.DegradedReason, graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
 	}
 }

@@ -1210,7 +1210,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		associatedCircuit := 1
 		roomTemperatureZoneMapping := 2
 		semantic.SetFM5Interpretation(Fm5Interpretation{
-			Mode:             Fm5SemanticModeGPIOOnly,
+			Mode:             Fm5SemanticModeInterpreted,
 			DegradedReason:   Fm5SemanticDegradedReasonEvidenceStale,
 			EvidenceRevision: "fm5-g7-a3",
 		})
@@ -1545,11 +1545,11 @@ func TestQueryResolvers_Integration(t *testing.T) {
 		if len(response.RadioDevices) != 0 {
 			t.Fatalf("radioDevices = %d; want 0", len(response.RadioDevices))
 		}
-		if response.FM5SemanticMode != "GPIO_ONLY" {
-			t.Fatalf("fm5SemanticMode = %q; want GPIO_ONLY", response.FM5SemanticMode)
+		if response.FM5SemanticMode != "INTERPRETED" {
+			t.Fatalf("fm5SemanticMode = %q; want INTERPRETED", response.FM5SemanticMode)
 		}
-		if response.FM5Interpretation.Mode != "GPIO_ONLY" || response.FM5Interpretation.DegradedReason == nil || *response.FM5Interpretation.DegradedReason != "EVIDENCE_STALE" || response.FM5Interpretation.EvidenceRevision != "fm5-g7-a3" {
-			t.Fatalf("fm5Interpretation = %#v; want GPIO_ONLY/EVIDENCE_STALE/fm5-g7-a3", response.FM5Interpretation)
+		if response.FM5Interpretation.Mode != "INTERPRETED" || response.FM5Interpretation.DegradedReason == nil || *response.FM5Interpretation.DegradedReason != "EVIDENCE_STALE" || response.FM5Interpretation.EvidenceRevision != "fm5-g7-a3" {
+			t.Fatalf("fm5Interpretation = %#v; want INTERPRETED/EVIDENCE_STALE/fm5-g7-a3", response.FM5Interpretation)
 		}
 		if response.Solar != nil {
 			t.Fatalf("solar expected nil with static provider")
@@ -2194,5 +2194,39 @@ func TestQueryResolvers_DevicesReflectLateRegistryPopulation(t *testing.T) {
 	}
 	if response.Devices[0].Address != 21 || response.Devices[0].DeviceID != "BASV2" {
 		t.Fatalf("device payload = %+v; want address=21 deviceId=BASV2", response.Devices[0])
+	}
+}
+
+func TestQueryResolvers_FM5InterpretationNullBeforeFirstCoherentClassification(t *testing.T) {
+	builder := NewBuilder(registry.NewDeviceRegistry(nil), nil)
+	builder.SetSemanticProvider(NewLiveSemanticProvider())
+	handler, err := NewHandler(builder)
+	if err != nil {
+		t.Fatalf("NewHandler error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5SemanticMode fm5Interpretation { mode degradedReason evidenceRevision } }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Data   map[string]any `json:"data"`
+		Errors []any          `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if len(response.Errors) != 0 {
+		t.Fatalf("errors = %#v; want none", response.Errors)
+	}
+	if got := response.Data["fm5SemanticMode"]; got != string(Fm5SemanticModeAbsent) {
+		t.Fatalf("legacy fm5SemanticMode = %#v; want stable ABSENT", got)
+	}
+	if got, ok := response.Data["fm5Interpretation"]; !ok || got != nil {
+		t.Fatalf("fm5Interpretation = %#v present=%t; want explicit null", got, ok)
 	}
 }

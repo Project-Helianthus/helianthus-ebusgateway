@@ -706,8 +706,10 @@ func TestSemanticSnapshotEndpoint_PromotedFieldsArePublicAndNilSafe(t *testing.T
 	}
 }
 
-func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
-	h := NewHandler(Options{})
+func TestSemanticSnapshotEndpoint_UnavailableFM5FieldsAreOmitted(t *testing.T) {
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot { return SemanticSnapshot{} },
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -721,6 +723,15 @@ func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
 	zones := payload["zones"].([]any)
 	if len(zones) != 0 {
 		t.Fatalf("zones=%d; want 0", len(zones))
+	}
+	for _, field := range []string{
+		"fm5_semantic_mode",
+		"fm5_semantic_degraded_reason",
+		"fm5_semantic_evidence_revision",
+	} {
+		if value, ok := payload[field]; ok {
+			t.Fatalf("unavailable FM5 field %q published as %#v; want omitted", field, value)
+		}
 	}
 }
 

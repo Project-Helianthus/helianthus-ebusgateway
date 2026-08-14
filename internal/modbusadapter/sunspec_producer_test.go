@@ -93,8 +93,33 @@ func TestSunSpecProducerReservesTerminatorInsideReadBudget(t *testing.T) {
 func TestDeferredSunSpecModelRequiresCompleteTerminatedChain(t *testing.T) {
 	// A float-family header alone is not sufficient evidence of a structurally
 	// complete unsupported profile.
-	if deferredSunSpecModelInRaw([]uint16{0x5375, 0x6e53, 113, 1, 0}) {
-		t.Fatal("truncated deferred chain was classified as unsupported profile")
+	if completeSunSpecChain([]uint16{0x5375, 0x6e53, 113, 1, 0}) {
+		t.Fatal("truncated deferred chain was accepted as structurally complete")
+	}
+}
+
+func TestSunSpecProducerClassifiesTruncatedDeferredChainAsIncoherentWithoutRetention(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, sunSpecWords(113, 1, 0xffff, 0))
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	identity := SunSpecPollIdentity{PollGeneration: 45, DeadlineIdentity: 95}
+	views, err := producer.acquire(context.Background(), identity)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	result, err := producer.qualifyCapture(context.Background(), identity, views[:len(views)-1])
+	if err != nil || result.Outcome != SunSpecQualificationIncoherentCapture {
+		t.Fatalf("truncated deferred chain = %#v, %v; want incoherent capture", result, err)
+	}
+	if _, ok := adapter.ProfileObservation("sunspec.phase1", "gateway-modbus:1"); ok {
+		t.Fatal("truncated deferred chain was retained")
 	}
 }
 

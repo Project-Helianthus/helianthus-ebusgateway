@@ -109,7 +109,18 @@ func TestAdapterReconnectAfterSocketLossRetiresFailedGenerationAndHonorsBackoff(
 	if err != nil {
 		t.Fatalf("NewReadRegistersRequest: %v", err)
 	}
-	if _, err := adapter.ExecuteRead(context.Background(), ReadPlan{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", PollGeneration: 62, DeadlineIdentity: 72, Timeout: time.Second, Reads: []modbus.TCPLogicalRead{{LogicalViewID: 82, Request: request}}}); err == nil {
+	stale, err := adapter.EnqueueRead(ReadPlan{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", PollGeneration: 62, DeadlineIdentity: 72, Timeout: time.Second, Reads: []modbus.TCPLogicalRead{{LogicalViewID: 82, Request: request}}})
+	if err != nil {
+		t.Fatalf("EnqueueRead: %v", err)
+	}
+	dispatch, ok := adapter.Dispatch()
+	if !ok || dispatch.RequestID() != stale.RequestID() {
+		t.Fatalf("Dispatch = %#v, %v; want failed request %d", dispatch, ok, stale.RequestID())
+	}
+	if _, err := adapter.Write(context.Background(), dispatch); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := adapter.Read(context.Background()); err == nil {
 		t.Fatal("ExecuteRead after peer socket loss unexpectedly succeeded")
 	}
 	if snapshot := adapter.Snapshot(); !snapshot.ReconnectRequired {
@@ -128,7 +139,7 @@ func TestAdapterReconnectAfterSocketLossRetiresFailedGenerationAndHonorsBackoff(
 	if adapter.connection.Generation() == old.Generation() {
 		t.Fatalf("reconnect reused failed transport generation %d", old.Generation())
 	}
-	if snapshot := adapter.Snapshot(); snapshot.Resources.QueuedRequests != 0 || snapshot.Resources.RetainedRetries != 0 {
-		t.Fatalf("failed generation retained stale request: %#v", snapshot.Resources)
+	if dispatch, ok := adapter.Dispatch(); ok && dispatch.RequestID() == stale.RequestID() {
+		t.Fatalf("stale failed request %d was retried on recovered generation", stale.RequestID())
 	}
 }

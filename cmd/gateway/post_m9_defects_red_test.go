@@ -603,6 +603,102 @@ func TestFM5IdentityClassification_RequiresCompleteFunctionalModuleNamespaceScan
 	})
 }
 
+func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTuple(t *testing.T) {
+	now := time.Date(2026, 8, 15, 16, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	tests := []struct {
+		name            string
+		firmwarePayload []byte
+		hardwarePayload []byte
+		firmwareTimeout bool
+		wantMode        graphql.Fm5SemanticMode
+	}{
+		{
+			name:            "firmware-only identity",
+			firmwarePayload: []byte{0x00, 0x00, 0x00},
+			hardwarePayload: []byte{0xFF, 0xFF},
+			wantMode:        graphql.Fm5SemanticModeInterpreted,
+		},
+		{
+			name:            "hardware-only identity",
+			firmwarePayload: []byte{0xFF, 0xFF, 0xFF},
+			hardwarePayload: []byte{0x34, 0x12},
+			wantMode:        graphql.Fm5SemanticModeInterpreted,
+		},
+		{
+			name:            "missing firmware field",
+			firmwarePayload: []byte{0xFF, 0xFF, 0xFF},
+			hardwarePayload: []byte{0xFF, 0xFF},
+			firmwareTimeout: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := graphql.NewLiveSemanticProvider()
+			poller := &vaillantSemanticPoller{
+				scheduler:       ebusgateway.NewSemanticReadScheduler(),
+				reg:             registry.NewDeviceRegistry(nil),
+				provider:        provider,
+				source:          0x7F,
+				controller:      0x15,
+				requestTimeout:  50 * time.Millisecond,
+				system:          &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+				radioDevices:    make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+				solarCylinders:  make(map[byte]*vaillantCylinderSnapshot),
+				fm5EvidenceTTL:  5 * time.Minute,
+				deviceSlotCache: make(map[deviceSlotKey]bool),
+				nowFn:           func() time.Time { return now },
+			}
+			poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+				if len(frame.Data) != 6 {
+					return nil, errors.New("invalid B524 selector")
+				}
+				group := frame.Data[2]
+				instance := frame.Data[3]
+				addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+				if group == remoteFunctionalModules.group {
+					switch addr {
+					case device_slot_connected:
+						return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+					case device_slot_class_address:
+						return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+					case device_slot_firmware:
+						if instance == 0x04 && test.firmwareTimeout {
+							return nil, errors.New("firmware timeout")
+						}
+						payload := []byte{0xFF, 0xFF, 0xFF}
+						if instance == 0x04 {
+							payload = test.firmwarePayload
+						}
+						return testB524ResponseForSelectorPayload(frame.Data, payload...), nil
+					case device_slot_hardware_identifier:
+						payload := []byte{0xFF, 0xFF}
+						if instance == 0x04 {
+							payload = test.hardwarePayload
+						}
+						return testB524ResponseForSelectorPayload(frame.Data, payload...), nil
+					}
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+			}
+
+			poller.refreshRadioDevicesStartup(context.Background())
+			poller.refreshFM5Semantic(context.Background())
+			got := provider.FM5Interpretation()
+			if test.wantMode == "" {
+				if got.Mode != "" || got.DegradedReason != "" || got.EvidenceRevision != "" {
+					t.Fatalf("incomplete startup identity tuple verdict = %#v; want unavailable zero tuple", got)
+				}
+				return
+			}
+			if got.Mode != test.wantMode || got.DegradedReason != "" || got.EvidenceRevision == "" {
+				t.Fatalf("startup identity tuple verdict = %#v; want healthy %s with revision", got, test.wantMode)
+			}
+		})
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

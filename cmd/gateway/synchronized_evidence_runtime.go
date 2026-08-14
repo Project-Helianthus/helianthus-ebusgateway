@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +101,7 @@ func newSynchronizedEvidenceOneShotRuntime(
 	enabled bool,
 	provider synchronizedEvidenceSnapshotProvider,
 	router mcp.EEBusV1CommandRouter,
+	buildInfo gatewayBuildInfo,
 ) (*synchronizedEvidenceOneShotRuntime, error) {
 	if !enabled {
 		return nil, nil
@@ -122,7 +121,7 @@ func newSynchronizedEvidenceOneShotRuntime(
 		reader:        reader,
 		clockFactory:  func() syncevidence.Clock { return newSynchronizedEvidenceClock() },
 		entropy:       synchronizedEvidenceEntropy,
-		buildIdentity: synchronizedEvidenceOneShotBuildIdentity,
+		buildIdentity: func() (syncevidence.OneShotBuildIdentity, error) { return buildInfo.OneShotEvidenceIdentity(), nil },
 		execute:       syncevidence.ExecuteOneShot,
 	}, nil
 }
@@ -303,40 +302,6 @@ func contentEvidenceRef(digest string) syncevidence.EvidenceRefV1 {
 		Kind: syncevidence.EvidenceKindContent, DigestAlgorithm: syncevidence.DigestAlgorithmContentBytes,
 		Digest: "sha256:" + digest,
 	}
-}
-
-func synchronizedEvidenceBuildVersion() (string, error) {
-	revision, err := synchronizedEvidenceBuildRevision()
-	if err != nil {
-		return "", err
-	}
-	return buildVersion + "+git." + revision, nil
-}
-
-func synchronizedEvidenceOneShotBuildIdentity() (syncevidence.OneShotBuildIdentity, error) {
-	revision, err := synchronizedEvidenceBuildRevision()
-	if err != nil {
-		return syncevidence.OneShotBuildIdentity{}, err
-	}
-	version := buildVersion + "+git." + revision
-	return syncevidence.OneShotBuildIdentity{
-		RecorderVersion:  version,
-		ReplayVersion:    version,
-		OperationVersion: "git:" + revision,
-	}, nil
-}
-
-func synchronizedEvidenceBuildRevision() (string, error) {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "", errors.New("read build information")
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" && len(setting.Value) == 40 && strings.Trim(setting.Value, "0123456789abcdef") == "" {
-			return setting.Value, nil
-		}
-	}
-	return "", errors.New("full build revision unavailable")
 }
 
 var _ syncevidence.EBusSnapshotReader = unavailableEBusEvidenceReader{}

@@ -14,10 +14,12 @@ import (
 )
 
 type eebusRuntimeFactory func(eebusruntime.Config) (eebusruntime.Runtime, error)
+type eebusOperatorRuntimeFactory func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error)
 
 var (
 	resolveEEBusInterfaceAddressesFn eebusInterfaceAddressResolver = resolveEEBusInterfaceAddresses
 	newEEBusRuntimeFn                eebusRuntimeFactory           = eebusruntime.New
+	newEEBusOperatorRuntimeFn        eebusOperatorRuntimeFactory   = eebusruntime.NewOperatorRuntimeV1
 )
 
 type eebusRuntimeAdapter struct {
@@ -26,6 +28,49 @@ type eebusRuntimeAdapter struct {
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+}
+
+func startEEBusOperatorRuntime(
+	ctx context.Context,
+	config ebusgateway.EEBusConfig,
+	resolve eebusInterfaceAddressResolver,
+	factory eebusOperatorRuntimeFactory,
+) (*eebusRuntimeAdapter, eebusruntime.AdminV1, error) {
+	runtimeConfig, err := mapEEBusRuntimeConfig(config, resolve)
+	if err != nil {
+		return nil, nil, fmt.Errorf("map eeBUS runtime configuration: %w", err)
+	}
+	if !config.Enabled {
+		return nil, nil, nil
+	}
+	if factory == nil {
+		return nil, nil, errors.New("enabled eeBUS admin configuration requires an operator runtime factory")
+	}
+	profile, err := loadEEBusMutationLabProfile(runtimeConfig.StateRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load eeBUS mutation lab profile: %w", err)
+	}
+	if profile != nil {
+		runtimeConfig.MutationLabProfiles = []eebusraw.MutationLabProfileV1{profile.Clone()}
+	}
+	runtime, admin, factoryErr := factory(runtimeConfig)
+	if runtime == nil || admin == nil {
+		if runtime != nil {
+			factoryErr = errors.Join(factoryErr, runtime.Shutdown())
+		}
+		if factoryErr != nil {
+			return nil, nil, fmt.Errorf("construct eeBUS operator runtime: %w", factoryErr)
+		}
+		return nil, nil, errors.New("construct eeBUS operator runtime: factory returned incomplete capability pair")
+	}
+	adapter := &eebusRuntimeAdapter{runtime: runtime}
+	if factoryErr != nil {
+		return nil, nil, fmt.Errorf("construct eeBUS operator runtime: %w", errors.Join(factoryErr, adapter.Shutdown()))
+	}
+	if err := runtime.Start(ctx); err != nil {
+		return nil, nil, fmt.Errorf("start eeBUS operator runtime: %w", errors.Join(err, adapter.Shutdown()))
+	}
+	return adapter, admin, nil
 }
 
 func (adapter *eebusRuntimeAdapter) SetLeafPromotionCapture(capture mcp.LeafPromotionCapture) {

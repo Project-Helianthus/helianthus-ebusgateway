@@ -25,6 +25,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
@@ -163,7 +164,7 @@ func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
-	resolvedBuildInfo, err := newGatewayBuildInfo(buildVersion, buildID)
+	resolvedBuildInfo, err := resolveGatewayBuildInfo(buildVersion, buildID)
 	if err != nil {
 		return fmt.Errorf("gateway build identity: %w", err)
 	}
@@ -172,7 +173,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
 		return fmt.Errorf("validate synchronized evidence config: %w", err)
 	}
-
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
 	}
@@ -206,7 +206,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
-	eebusAdapter, err := startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
+	eebusAdapter, eebusAdmin, eebusAdminAuthConfig, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)
 	}
@@ -217,18 +217,32 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			}
 		}()
 	}
-	if evidenceRuntime != nil {
-		version, versionErr := synchronizedEvidenceBuildVersion()
-		if versionErr != nil {
-			return fmt.Errorf("synchronized evidence build identity: %w", versionErr)
+	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
+	if eebusAdminAvailable {
+		var authErr error
+		availableHandler, authErr := eebusadmin.NewServer(eebusadmin.Config{
+			Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig,
+			Audit: func(event eebusadmin.AuditEvent) {
+				log.Printf("eebus_admin_audit action=%s principal=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
+					event.Action, event.Principal, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
+					event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
+			},
+		})
+		if authErr != nil {
+			log.Printf("eeBUS admin boundary unavailable reason=http_boundary")
+			eebusAdminAvailable = false
+		} else {
+			eebusAdminHandler = availableHandler
 		}
+	}
+	if evidenceRuntime != nil {
 		var captureEEBus eebusEvidenceCapture
 		if eebusAdapter != nil {
 			captureEEBus = func(pseudonymKey []byte) (json.RawMessage, time.Time, error) {
 				return mcp.CaptureEEBusV1ServicesEvidence(eebusAdapter, pseudonymKey)
 			}
 		}
-		if err := evidenceRuntime.Configure(captureEEBus, version, newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
+		if err := evidenceRuntime.Configure(captureEEBus, resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
 			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
 		}
 	}
@@ -1105,7 +1119,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, eebusAdminAvailable, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1340,6 +1354,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
+	bindEEBusAdminFlags(fs, cfg)
 	fs.BoolVar(
 		&cfg.EvidenceOneShotEnabled,
 		"synchronized-evidence-one-shot-enabled",
@@ -1943,6 +1958,8 @@ func startHTTPServer(
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
+	eebusAdminHandler http.Handler,
+	eebusAdminAvailable bool,
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -1999,6 +2016,7 @@ func startHTTPServer(
 		cfg.EvidenceOneShotEnabled,
 		eebusProvider,
 		eebusCommandRouter,
+		buildInfo,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -2126,6 +2144,7 @@ func startHTTPServer(
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+	mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
 	if cfg.DumpUploadPath != "" {
 		uploadPath := cfg.DumpUploadPath
 		if !strings.HasPrefix(uploadPath, "/") {
@@ -2154,8 +2173,14 @@ func startHTTPServer(
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
 			MCPPath:          cfg.MCPPath,
-			GatewayVersion:   buildInfo.ReleaseVersion,
-			BuildID:          buildInfo.BuildID,
+			EEBusAdminPath: func() string {
+				if eebusAdminAvailable {
+					return "/admin/eebus/v1"
+				}
+				return ""
+			}(),
+			GatewayVersion: buildInfo.ReleaseVersion,
+			BuildID:        buildInfo.BuildID,
 			ListRegistry: func() []portal.RegistryDevice {
 				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
@@ -2979,7 +3004,7 @@ func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildInfo gatewayBuildInfo) (*runtimestate.Manager, *runtimestate.State) {
 	mgr := runtimestate.New(runtimestate.Options{
 		Path:         cfg.RuntimeStatePath,
-		GatewayBuild: fmt.Sprintf("%s+%s", buildInfo.ReleaseVersion, buildInfo.BuildID),
+		GatewayBuild: gatewayBuildString(buildInfo),
 		AddonVersion: "", // populated by add-on via future flag if needed
 	})
 	state, err := mgr.Load(ctx)

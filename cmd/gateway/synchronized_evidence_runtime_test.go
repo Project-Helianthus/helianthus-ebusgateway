@@ -175,6 +175,7 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 		true,
 		eebusMCPProvider(adapter),
 		eebusMCPCommandRouter(adapter),
+		gatewayBuildInfo{ReleaseVersion: "test", BuildID: "test-build"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -221,13 +222,14 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 		t.Fatalf("calls/maximum concurrency = %d/%d", calls, maximum)
 	}
 
-	if absent, err := newSynchronizedEvidenceOneShotRuntime(true, nil, nil); err != nil || absent != nil {
+	if absent, err := newSynchronizedEvidenceOneShotRuntime(true, nil, nil, gatewayBuildInfo{ReleaseVersion: "test", BuildID: "test-build"}); err != nil || absent != nil {
 		t.Fatalf("disabled one-shot runtime = %#v, %v", absent, err)
 	}
 	if absent, err := newSynchronizedEvidenceOneShotRuntime(
 		false,
 		eebusMCPProvider(adapter),
 		eebusMCPCommandRouter(adapter),
+		gatewayBuildInfo{ReleaseVersion: "test", BuildID: "test-build"},
 	); err != nil || absent != nil {
 		t.Fatalf("explicitly disabled one-shot runtime = %#v, %v", absent, err)
 	}

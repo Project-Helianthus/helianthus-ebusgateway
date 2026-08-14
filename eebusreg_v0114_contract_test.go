@@ -25,7 +25,7 @@ const (
 // This source-level contract is retained because it proves the declared and
 // selected transitive release graph; runtime behavior cannot detect an
 // accidental downgrade or a local replace directive.
-func TestIssue782ReleasedEEBusDependencyClosure(t *testing.T) {
+func TestIssue809ReleasedEEBusDependencyClosure(t *testing.T) {
 	contents, err := os.ReadFile("go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
@@ -39,9 +39,9 @@ func TestIssue782ReleasedEEBusDependencyClosure(t *testing.T) {
 	}
 
 	want := map[string]string{
-		eebusregModule: "v0.1.30",
-		eebusgoModule:  "v0.7.1-helianthus.15",
-		shipgoModule:   "v0.6.1-helianthus.13",
+		eebusregModule: "v0.1.31",
+		eebusgoModule:  "v0.7.1-helianthus.17",
+		shipgoModule:   "v0.6.1-helianthus.15",
 		spinegoModule:  "v0.7.1-helianthus.9",
 	}
 	declared := make(map[string]string, len(want))

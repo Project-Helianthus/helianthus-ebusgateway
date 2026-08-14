@@ -52,6 +52,7 @@ type Options struct {
 	SnapshotPath        string
 	SubscriptionPath    string
 	MCPPath             string
+	EEBusAdminPath      string
 	GatewayVersion      string
 	BuildID             string
 	ListRegistry        func() []RegistryDevice
@@ -922,12 +923,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				// of section-l7-catalog, otherwise the bootstrap fetch
 				// surfaces a broken section. Codex P2 on PR #507.
 				"ebus_standard": h.opts.EbusStandardServer != nil,
+				"eebus_admin":   h.opts.EEBusAdminPath != "",
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
 				"snapshot":              h.opts.SnapshotPath,
 				"subscriptions":         h.opts.SubscriptionPath,
 				"mcp":                   h.opts.MCPPath,
+				"eebus_admin":           h.opts.EEBusAdminPath,
 				"bus_observability":     "/portal/api/v1/bus/observability",
 				"search":                "/portal/api/v1/search",
 				"stream":                "/portal/api/v1/stream",

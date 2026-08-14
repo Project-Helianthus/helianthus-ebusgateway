@@ -70,6 +70,7 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 	}
 
 	allowedConfigReferences := []string{
+		"cmd/gateway/eebus_admin_config.go",
 		"cmd/gateway/eebus_config_flags.go",
 		"cmd/gateway/eebus_runtime_adapter.go",
 		"cmd/gateway/eebus_runtime_config.go",
@@ -80,6 +81,12 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"cmd/gateway/eebus_mutation_lab_profile.go": false,
 		"cmd/gateway/eebus_runtime_adapter.go":      false,
 		"cmd/gateway/eebus_runtime_config.go":       false,
+		// Issue #809 adds the authenticated operator boundary as a private
+		// gateway seam. Portal receives only its same-origin route metadata.
+		"cmd/gateway/eebus_admin_config.go": false,
+		"internal/eebusadmin/server.go":     false,
+		"internal/eebusadmin/spine.go":      false,
+		"internal/eebusadmin/types.go":      false,
 		// MSP-06 adds one typed, read-only provider seam from the runtime into MCP.
 		"mcp/eebus_v1.go": false,
 		// Issue #747 adds one isolated command router over the canonical runtime.

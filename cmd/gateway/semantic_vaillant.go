@@ -5634,7 +5634,10 @@ func (p *vaillantSemanticPoller) commitFM5Acquisition(
 				EvidenceRevision: formatFM5EvidenceRevision(captured.generation, p.fm5EvidenceGeneration, p.fm5EvidenceRevision),
 			}
 		}
-		p.fm5Mode = verdict.Mode
+		verdict = retainFM5StructuralMode(p.fm5Interpretation, verdict)
+		if verdict.Mode != "" {
+			p.fm5Mode = verdict.Mode
+		}
 		p.fm5Interpretation = verdict
 		p.solar, p.solarCylinders = applyFM5Acquisition(
 			p.solar, p.solarCylinders, incomingSolar, incomingCylinders, verdict,
@@ -5704,11 +5707,16 @@ func deriveFM5Interpretation(
 	incoherent bool,
 	evidenceRevision string,
 ) graphql.Fm5Interpretation {
-	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
 	if !hasEvidence {
-		verdict.Mode = graphql.Fm5SemanticModeAbsent
-		return verdict
+		if !controllerReachable || moduleConfig == nil || evidenceStale || incoherent {
+			return graphql.Fm5Interpretation{}
+		}
+		return graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeAbsent,
+			EvidenceRevision: evidenceRevision,
+		}
 	}
+	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
 	verdict.Mode = graphql.Fm5SemanticModeGPIOOnly
 	switch {
 	case incoherent:
@@ -5731,6 +5739,39 @@ func deriveFM5Interpretation(
 	return verdict
 }
 
+func retainFM5StructuralMode(previous, candidate graphql.Fm5Interpretation) graphql.Fm5Interpretation {
+	if !isFM5TransientAcquisitionReason(candidate.DegradedReason) {
+		return candidate
+	}
+	if previous.Validate() != nil {
+		return graphql.Fm5Interpretation{}
+	}
+	switch previous.Mode {
+	case graphql.Fm5SemanticModeInterpreted, graphql.Fm5SemanticModeAbsent:
+		candidate.Mode = previous.Mode
+		return candidate
+	case graphql.Fm5SemanticModeGPIOOnly:
+		previous.EvidenceRevision = candidate.EvidenceRevision
+		return previous
+	default:
+		return graphql.Fm5Interpretation{}
+	}
+}
+
+func isFM5TransientAcquisitionReason(reason graphql.Fm5SemanticDegradedReason) bool {
+	switch reason {
+	case graphql.Fm5SemanticDegradedReasonControllerUnreachable,
+		graphql.Fm5SemanticDegradedReasonConfigurationUnavailable,
+		graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed,
+		graphql.Fm5SemanticDegradedReasonCylinderAcquisitionFailed,
+		graphql.Fm5SemanticDegradedReasonEvidenceStale,
+		graphql.Fm5SemanticDegradedReasonIncoherentAcquisition:
+		return true
+	default:
+		return false
+	}
+}
+
 func applyFM5Acquisition(
 	previousSolar *vaillantSolarSnapshot,
 	previousCylinders map[byte]*vaillantCylinderSnapshot,
@@ -5739,6 +5780,8 @@ func applyFM5Acquisition(
 	verdict graphql.Fm5Interpretation,
 ) (*vaillantSolarSnapshot, map[byte]*vaillantCylinderSnapshot) {
 	switch {
+	case isFM5TransientAcquisitionReason(verdict.DegradedReason):
+		return cloneSolarSnapshot(previousSolar), cloneCylinderSnapshotsMap(previousCylinders)
 	case verdict.Mode == graphql.Fm5SemanticModeInterpreted:
 		return mergeSolarSnapshotNonDestructive(previousSolar, incomingSolar),
 			mergeCylinderSnapshotMapNonDestructive(previousCylinders, incomingCylinders)
@@ -5750,7 +5793,7 @@ func applyFM5Acquisition(
 }
 
 func isFM5StructuralWithdrawal(verdict graphql.Fm5Interpretation) bool {
-	return verdict.Mode == graphql.Fm5SemanticModeAbsent ||
+	return (verdict.Mode == graphql.Fm5SemanticModeAbsent && verdict.DegradedReason == "") ||
 		(verdict.Mode == graphql.Fm5SemanticModeGPIOOnly &&
 			verdict.DegradedReason == graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
 }
@@ -5775,14 +5818,7 @@ func (p *vaillantSemanticPoller) publishFM5Semantic(source semanticSnapshotSourc
 	}
 
 	p.mu.Lock()
-	mode := p.fm5Mode
-	if mode == "" {
-		mode = graphql.Fm5SemanticModeAbsent
-	}
 	verdict := p.fm5Interpretation
-	if verdict.Mode == "" {
-		verdict = graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
-	}
 	solarSnapshot := cloneSolarSnapshot(p.solar)
 	cylindersSnapshot := cloneCylinderSnapshotsMap(p.solarCylinders)
 	p.mu.Unlock()

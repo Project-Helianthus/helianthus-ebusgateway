@@ -2408,10 +2408,13 @@ func startHTTPServer(
 
 func portalFM5Interpretation(provider graphql.SemanticProvider) graphql.Fm5Interpretation {
 	if provider == nil {
-		return graphql.Fm5Interpretation{Mode: graphql.Fm5SemanticModeAbsent, EvidenceRevision: "initial"}
+		return graphql.Fm5Interpretation{}
 	}
 	if typed, ok := provider.(graphql.FM5InterpretationProvider); ok {
 		verdict := typed.FM5Interpretation()
+		if verdict == (graphql.Fm5Interpretation{}) {
+			return verdict
+		}
 		if verdict.Validate() == nil {
 			return verdict
 		}
@@ -2422,7 +2425,7 @@ func portalFM5Interpretation(provider graphql.SemanticProvider) graphql.Fm5Inter
 	}
 	verdict := graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
 	if mode == graphql.Fm5SemanticModeGPIOOnly {
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonIncoherentAcquisition
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
 	}
 	return verdict
 }

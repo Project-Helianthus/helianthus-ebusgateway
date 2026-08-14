@@ -326,29 +326,28 @@ func (value Fm5Interpretation) validate() error {
 		return errors.New("fm5 evidence revision is required")
 	}
 	if value.Mode == Fm5SemanticModeGPIOOnly {
-		if value.DegradedReason == nil || strings.TrimSpace(string(*value.DegradedReason)) == "" {
-			return errors.New("fm5 GPIO_ONLY requires a degraded reason")
-		}
-		switch *value.DegradedReason {
-		case "CONTROLLER_UNREACHABLE",
-			"CONFIGURATION_UNAVAILABLE",
-			"CONFIGURATION_NOT_INTERPRETABLE",
-			"SOLAR_ACQUISITION_FAILED",
-			"CYLINDER_ACQUISITION_FAILED",
-			"EVIDENCE_STALE",
-			"INCOHERENT_ACQUISITION":
-		default:
-			return errors.New("fm5 degraded reason is outside the closed set")
+		if value.DegradedReason == nil || *value.DegradedReason != "CONFIGURATION_NOT_INTERPRETABLE" {
+			return errors.New("fm5 GPIO_ONLY requires CONFIGURATION_NOT_INTERPRETABLE")
 		}
 		return nil
 	}
 	if value.Mode != Fm5SemanticModeInterpreted && value.Mode != Fm5SemanticModeAbsent {
 		return errors.New("invalid fm5 semantic mode")
 	}
-	if value.DegradedReason != nil {
-		return errors.New("fm5 degraded reason is forbidden outside GPIO_ONLY")
+	if value.DegradedReason == nil {
+		return nil
 	}
-	return nil
+	switch *value.DegradedReason {
+	case "CONTROLLER_UNREACHABLE",
+		"CONFIGURATION_UNAVAILABLE",
+		"SOLAR_ACQUISITION_FAILED",
+		"CYLINDER_ACQUISITION_FAILED",
+		"EVIDENCE_STALE",
+		"INCOHERENT_ACQUISITION":
+		return nil
+	default:
+		return errors.New("fm5 retained structural mode requires a transient degraded reason")
+	}
 }
 
 func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
@@ -357,7 +356,7 @@ func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
 	}
 	verdict := Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
 	if mode == Fm5SemanticModeGPIOOnly {
-		reason := Fm5SemanticDegradedReason("INCOHERENT_ACQUISITION")
+		reason := Fm5SemanticDegradedReason("CONFIGURATION_NOT_INTERPRETABLE")
 		verdict.DegradedReason = &reason
 	}
 	return verdict
@@ -1607,6 +1606,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
 		verdict := s.snapshotFM5Interpretation(snapshot)
+		if verdict == (Fm5Interpretation{}) {
+			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, nil, consistency)), false), nil
+		}
 		if err := verdict.validate(); err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
 		}
@@ -3065,12 +3067,7 @@ func (s *Server) snapshotFM5Mode(snapshot *snapshotState) Fm5SemanticMode {
 
 func (s *Server) snapshotFM5Interpretation(snapshot *snapshotState) Fm5Interpretation {
 	if snapshot != nil {
-		verdict := snapshot.fm5Verdict
-		if verdict.Mode == "" {
-			verdict.Mode = s.snapshotFM5Mode(snapshot)
-			verdict = legacyFM5Interpretation(s.snapshotFM5Mode(snapshot))
-		}
-		return verdict
+		return snapshot.fm5Verdict
 	}
 	if s != nil && s.semantic != nil {
 		if provider, ok := s.semantic.(FM5InterpretationProvider); ok {

@@ -105,7 +105,7 @@ type SemanticSnapshot struct {
 	Circuits            []SemanticCircuit     `json:"circuits,omitempty"`
 	RadioDevices        []SemanticRadioDevice `json:"radio_devices,omitempty"`
 	FM5Mode             string                `json:"fm5_semantic_mode,omitempty"`
-	FM5DegradedReason   *string               `json:"fm5_semantic_degraded_reason"`
+	FM5DegradedReason   *string               `json:"fm5_semantic_degraded_reason,omitempty"`
 	FM5EvidenceRevision string                `json:"fm5_semantic_evidence_revision,omitempty"`
 	Solar               *SemanticSolarStatus  `json:"solar,omitempty"`
 	Cylinders           []SemanticCylinder    `json:"cylinders,omitempty"`

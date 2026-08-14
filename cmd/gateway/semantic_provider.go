@@ -202,14 +202,14 @@ func (adapter mcpSemanticProviderAdapter) FM5SemanticMode() mcp.Fm5SemanticMode 
 
 func (adapter mcpSemanticProviderAdapter) FM5Interpretation() mcp.Fm5Interpretation {
 	if adapter.provider == nil {
-		return mcp.Fm5Interpretation{Mode: mcp.Fm5SemanticModeAbsent, EvidenceRevision: "initial"}
+		return mcp.Fm5Interpretation{}
 	}
 	provider, ok := adapter.provider.(graphql.FM5InterpretationProvider)
 	if !ok {
 		mode := adapter.FM5SemanticMode()
 		out := mcp.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
 		if mode == mcp.Fm5SemanticModeGPIOOnly {
-			reason := mcp.Fm5SemanticDegradedReason(graphql.Fm5SemanticDegradedReasonIncoherentAcquisition)
+			reason := mcp.Fm5SemanticDegradedReason(graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
 			out.DegradedReason = &reason
 		}
 		return out

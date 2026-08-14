@@ -1838,6 +1838,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 		if readAny {
 			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
 			p.fm5EvidenceGeneration++
+			p.fm5IdentityObservedAt = p.now()
 		}
 		p.mu.Unlock()
 		if readAny {
@@ -1853,9 +1854,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	}
 	if readAny {
 		p.fm5EvidenceGeneration++
-		if hasFM5EvidenceFromRadioMap(p.radioDevices) {
-			p.fm5IdentityObservedAt = p.now()
-		}
+		p.fm5IdentityObservedAt = p.now()
 	}
 	p.mu.Unlock()
 	source := semanticSnapshotSourceCache
@@ -1954,7 +1953,8 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 
 	evidence := p.captureFM5Evidence()
 	fm5GateSatisfied := evidence.moduleConfig != nil && *evidence.moduleConfig <= 2
-	evidenceStale := evidence.staleAt(p.now(), p.fm5EvidenceTTL)
+	observedAt := p.now()
+	evidenceStale := evidence.staleAt(observedAt, p.fm5EvidenceTTL)
 	var incomingSolar *vaillantSolarSnapshot
 	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
 	solarReadable := false
@@ -1965,16 +1965,28 @@ func (p *vaillantSemanticPoller) refreshFM5SemanticStartup(ctx context.Context) 
 	}
 	currentEvidence := p.captureFM5Evidence()
 	incoherent := !evidence.sameGeneration(currentEvidence)
-	verdict := deriveFM5Interpretation(
-		evidence.controller != 0,
-		evidence.moduleConfig,
-		solarReadable,
-		cylindersReadable,
-		evidence.hasEvidence() || currentEvidence.hasEvidence(),
-		evidenceStale,
-		incoherent,
-		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
-	)
+	evidenceRevision := p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation)
+	negativeIdentityObserved := evidence.hasNegativeObservation() && currentEvidence.hasNegativeObservation()
+	freshNegativeIdentityObserved := evidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL) &&
+		currentEvidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL)
+	var verdict graphql.Fm5Interpretation
+	if freshNegativeIdentityObserved && !incoherent && evidence.controller != 0 && evidence.moduleConfig != nil {
+		verdict = graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeAbsent,
+			EvidenceRevision: evidenceRevision,
+		}
+	} else {
+		verdict = deriveFM5Interpretation(
+			evidence.controller != 0,
+			evidence.moduleConfig,
+			solarReadable,
+			cylindersReadable,
+			evidence.hasEvidence() || currentEvidence.hasEvidence() || negativeIdentityObserved,
+			evidenceStale,
+			incoherent,
+			evidenceRevision,
+		)
+	}
 	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
 	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
@@ -2473,13 +2485,8 @@ func (p *vaillantSemanticPoller) refreshDiscovery(ctx context.Context) {
 		p.zones = make(map[byte]*vaillantZoneSnapshot)
 		p.presence = make(map[byte]*zonePresenceRecord)
 		p.circuits = make(map[byte]*vaillantCircuitSnapshot)
-		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
-		p.fm5Mode = graphql.Fm5SemanticModeAbsent
 		p.fm5EvidenceGeneration++
-		p.solar = nil
-		p.solarCylinders = make(map[byte]*vaillantCylinderSnapshot)
 		p.startupSemanticPrimed = false
-		p.startupRadioDevicesProbed = false
 		semanticZoneCount.Set(0)
 		p.mu.Unlock()
 		if regCap != prev {
@@ -5227,6 +5234,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 			p.mu.Lock()
 			p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
 			p.fm5EvidenceGeneration++
+			p.fm5IdentityObservedAt = p.now()
 			p.mu.Unlock()
 			p.publishRadioDevices(semanticSnapshotSourceLive)
 			p.refreshFM5Semantic(ctx)
@@ -5306,9 +5314,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	p.mu.Lock()
 	p.radioDevices = discovered
 	p.fm5EvidenceGeneration++
-	if hasFM5EvidenceFromRadioMap(discovered) {
-		p.fm5IdentityObservedAt = p.now()
-	}
+	p.fm5IdentityObservedAt = p.now()
 	p.mu.Unlock()
 
 	p.publishRadioDevices(semanticSnapshotSourceLive)
@@ -5493,7 +5499,8 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 
 	evidence := p.captureFM5Evidence()
 	fm5GateSatisfied := evidence.moduleConfig != nil && *evidence.moduleConfig <= 2
-	evidenceStale := evidence.staleAt(p.now(), p.fm5EvidenceTTL)
+	observedAt := p.now()
+	evidenceStale := evidence.staleAt(observedAt, p.fm5EvidenceTTL)
 
 	var incomingSolar *vaillantSolarSnapshot
 	incomingCylinders := make(map[byte]*vaillantCylinderSnapshot)
@@ -5506,16 +5513,28 @@ func (p *vaillantSemanticPoller) refreshFM5Semantic(ctx context.Context) {
 
 	currentEvidence := p.captureFM5Evidence()
 	incoherent := !evidence.sameGeneration(currentEvidence)
-	verdict := deriveFM5Interpretation(
-		evidence.controller != 0,
-		evidence.moduleConfig,
-		solarReadable,
-		cylindersReadable,
-		evidence.hasEvidence() || currentEvidence.hasEvidence(),
-		evidenceStale,
-		incoherent,
-		p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation),
-	)
+	evidenceRevision := p.nextFM5EvidenceRevision(evidence.generation, currentEvidence.generation)
+	negativeIdentityObserved := evidence.hasNegativeObservation() && currentEvidence.hasNegativeObservation()
+	freshNegativeIdentityObserved := evidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL) &&
+		currentEvidence.hasFreshNegativeObservation(observedAt, p.fm5EvidenceTTL)
+	var verdict graphql.Fm5Interpretation
+	if freshNegativeIdentityObserved && !incoherent && evidence.controller != 0 && evidence.moduleConfig != nil {
+		verdict = graphql.Fm5Interpretation{
+			Mode:             graphql.Fm5SemanticModeAbsent,
+			EvidenceRevision: evidenceRevision,
+		}
+	} else {
+		verdict = deriveFM5Interpretation(
+			evidence.controller != 0,
+			evidence.moduleConfig,
+			solarReadable,
+			cylindersReadable,
+			evidence.hasEvidence() || currentEvidence.hasEvidence() || negativeIdentityObserved,
+			evidenceStale,
+			incoherent,
+			evidenceRevision,
+		)
+	}
 	verdict = p.commitFM5Acquisition(currentEvidence, verdict, incomingSolar, incomingCylinders)
 	for _, info := range fm5InventoryRegistryInfos(evidence.systemSnapshot, verdict.Mode) {
 		p.reg.Register(preserveExistingRegistryMetadata(p.reg, info))
@@ -5535,15 +5554,16 @@ func deriveFM5SemanticMode(controllerReachable, fm5GateSatisfied, solarReadable,
 }
 
 type fm5EvidenceCapture struct {
-	controller         byte
-	moduleConfig       *uint16
-	systemSnapshot     *vaillantSystemSnapshot
-	radioSnapshots     []*vaillantRadioDeviceSnapshot
-	registryEvidence   string
-	registryGeneration uint64
-	registryCoherent   bool
-	identityObservedAt time.Time
-	generation         uint64
+	controller                  byte
+	moduleConfig                *uint16
+	systemSnapshot              *vaillantSystemSnapshot
+	radioSnapshots              []*vaillantRadioDeviceSnapshot
+	registryEvidence            string
+	registryGeneration          uint64
+	registryCoherent            bool
+	identityAcquisitionComplete bool
+	identityObservedAt          time.Time
+	generation                  uint64
 }
 
 func (p *vaillantSemanticPoller) captureFM5Evidence() fm5EvidenceCapture {
@@ -5552,11 +5572,12 @@ func (p *vaillantSemanticPoller) captureFM5Evidence() fm5EvidenceCapture {
 	}
 	p.mu.Lock()
 	capture := fm5EvidenceCapture{
-		controller:         p.controller,
-		systemSnapshot:     cloneSystemSnapshot(p.system),
-		identityObservedAt: p.fm5IdentityObservedAt,
-		generation:         p.fm5EvidenceGeneration,
-		radioSnapshots:     make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices)),
+		controller:                  p.controller,
+		systemSnapshot:              cloneSystemSnapshot(p.system),
+		identityAcquisitionComplete: p.startupRadioDevicesProbed || p.deviceSlotDiscoveryDone,
+		identityObservedAt:          p.fm5IdentityObservedAt,
+		generation:                  p.fm5EvidenceGeneration,
+		radioSnapshots:              make([]*vaillantRadioDeviceSnapshot, 0, len(p.radioDevices)),
 	}
 	if p.system != nil {
 		capture.moduleConfig = cloneUint16Ptr(p.system.ModuleConfigurationVR71)
@@ -5587,10 +5608,18 @@ func (capture fm5EvidenceCapture) hasEvidence() bool {
 }
 
 func (capture fm5EvidenceCapture) staleAt(now time.Time, ttl time.Duration) bool {
-	if !capture.hasEvidence() || capture.identityObservedAt.IsZero() || ttl <= 0 {
+	if (!capture.hasEvidence() && !capture.identityAcquisitionComplete) || capture.identityObservedAt.IsZero() || ttl <= 0 {
 		return false
 	}
 	return now.Sub(capture.identityObservedAt) > ttl
+}
+
+func (capture fm5EvidenceCapture) hasFreshNegativeObservation(now time.Time, ttl time.Duration) bool {
+	return capture.hasNegativeObservation() && !capture.staleAt(now, ttl)
+}
+
+func (capture fm5EvidenceCapture) hasNegativeObservation() bool {
+	return !capture.hasEvidence() && capture.identityAcquisitionComplete && !capture.identityObservedAt.IsZero()
 }
 
 func (capture fm5EvidenceCapture) sameGeneration(other fm5EvidenceCapture) bool {
@@ -5598,6 +5627,8 @@ func (capture fm5EvidenceCapture) sameGeneration(other fm5EvidenceCapture) bool 
 		capture.generation == other.generation &&
 		capture.controller == other.controller &&
 		uint16PointersEqual(capture.moduleConfig, other.moduleConfig) &&
+		capture.identityAcquisitionComplete == other.identityAcquisitionComplete &&
+		capture.identityObservedAt.Equal(other.identityObservedAt) &&
 		capture.registryGeneration == other.registryGeneration &&
 		capture.registryEvidence == other.registryEvidence
 }
@@ -5612,7 +5643,9 @@ func (capture fm5EvidenceCapture) matchesLockedPoller(p *vaillantSemanticPoller)
 	}
 	return capture.generation == p.fm5EvidenceGeneration &&
 		capture.controller == p.controller &&
-		uint16PointersEqual(capture.moduleConfig, moduleConfig)
+		uint16PointersEqual(capture.moduleConfig, moduleConfig) &&
+		capture.identityAcquisitionComplete == (p.startupRadioDevicesProbed || p.deviceSlotDiscoveryDone) &&
+		capture.identityObservedAt.Equal(p.fm5IdentityObservedAt)
 }
 
 func (p *vaillantSemanticPoller) commitFM5Acquisition(
@@ -5707,28 +5740,21 @@ func deriveFM5Interpretation(
 	incoherent bool,
 	evidenceRevision string,
 ) graphql.Fm5Interpretation {
-	if !hasEvidence {
-		if !controllerReachable || moduleConfig == nil || evidenceStale || incoherent {
-			return graphql.Fm5Interpretation{}
-		}
-		return graphql.Fm5Interpretation{
-			Mode:             graphql.Fm5SemanticModeAbsent,
-			EvidenceRevision: evidenceRevision,
-		}
-	}
 	verdict := graphql.Fm5Interpretation{EvidenceRevision: evidenceRevision}
 	verdict.Mode = graphql.Fm5SemanticModeGPIOOnly
 	switch {
 	case incoherent:
 		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonIncoherentAcquisition
+	case !hasEvidence:
+		return graphql.Fm5Interpretation{}
 	case !controllerReachable:
 		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonControllerUnreachable
 	case moduleConfig == nil:
 		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationUnavailable
-	case *moduleConfig > 2:
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
 	case evidenceStale:
 		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonEvidenceStale
+	case *moduleConfig > 2:
+		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
 	case !solarReadable:
 		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonSolarAcquisitionFailed
 	case !cylindersReadable:

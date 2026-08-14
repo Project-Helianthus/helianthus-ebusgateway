@@ -1802,13 +1802,34 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 		}
 		readAny = true
 		connected := connectedRaw[0] == 1
-		classAddress := p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
-		if grp.group == remoteFunctionalModules.group && classAddress == nil {
-			fm5NamespaceComplete = false
+		var classAddress *uint8
+		var firmware *string
+		var hardware *uint16
+		if grp.group == remoteFunctionalModules.group {
+			classRaw, classOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
+			firmwareRaw, firmwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_firmware)
+			hardwareRaw, hardwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_hardware_identifier)
+			if !classOK || len(classRaw) == 0 || !firmwareOK || len(firmwareRaw) < 3 || !hardwareOK || len(hardwareRaw) == 0 {
+				fm5NamespaceComplete = false
+			}
+			if len(classRaw) > 0 && classRaw[0] != 0xFF {
+				value := classRaw[0]
+				classAddress = &value
+			}
+			firmware = decodeB524FirmwareVersion(firmwareRaw)
+			if value, ok := decodeB524Uint16(hardwareRaw); ok && value != 0xFFFF {
+				hardware = &value
+			}
+		} else {
+			classAddress = p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 		}
 		key := radioDeviceKey{Group: grp.group, Instance: instance}
 		verified[key] = true
 		include, slotMode := startupRadioDeviceInclude(grp.group, connected, classAddress)
+		if grp.group == remoteFunctionalModules.group && !include && hasRemoteIdentityEvidence(classAddress, firmware, hardware) {
+			include = true
+			slotMode = "inventory"
+		}
 		if !include {
 			delete(discovered, key)
 			return
@@ -1820,6 +1841,8 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			DeviceConnected:    &connected,
 			DeviceClassAddress: cloneUint8Ptr(classAddress),
 			DeviceModel:        decodeRadioDeviceModel(classAddress),
+			FirmwareVersion:    cloneStringPtr(firmware),
+			HardwareIdentifier: cloneUint16Ptr(hardware),
 		}
 	}
 

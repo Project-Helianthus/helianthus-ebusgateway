@@ -41,11 +41,13 @@ type sunSpecLiveSmokePollResult struct {
 }
 
 type sunSpecLiveSmokeQualification struct {
-	Outcome    modbusadapter.SunSpecQualificationOutcome
-	Sample     string
-	Capability string
-	Flavor     string
-	Err        error
+	Outcome          modbusadapter.SunSpecQualificationOutcome
+	Sample           string
+	Capability       string
+	Flavor           string
+	CapabilityReason modbusreg.SunSpecCapabilityReason
+	FlavorReason     modbusreg.SunSpecFroniusFlavorReason
+	Err              error
 }
 
 type sunSpecLiveSmokeResult struct {
@@ -94,10 +96,12 @@ func (modbusSunSpecLiveSmokeQualifier) Qualify(_ context.Context, _ sunSpecLiveS
 		return sunSpecLiveSmokeQualification{Err: poll.Err}
 	}
 	return sunSpecLiveSmokeQualification{
-		Outcome:    poll.Qualification.Outcome,
-		Sample:     poll.Qualification.SampleID,
-		Capability: poll.Qualification.CapabilityID,
-		Flavor:     poll.Qualification.FlavorID,
+		Outcome:          poll.Qualification.Outcome,
+		Sample:           poll.Qualification.SampleID,
+		Capability:       poll.Qualification.CapabilityID,
+		Flavor:           poll.Qualification.FlavorID,
+		CapabilityReason: poll.Qualification.CapabilityReason,
+		FlavorReason:     poll.Qualification.FlavorReason,
 	}
 }
 
@@ -175,7 +179,9 @@ func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualificatio
 	case modbusadapter.SunSpecQualificationGO:
 		if qualification.Sample == "" ||
 			qualification.Capability != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
-			qualification.Flavor != modbusreg.SunSpecFroniusObservedFlavorID {
+			qualification.Flavor != modbusreg.SunSpecFroniusObservedFlavorID ||
+			qualification.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+			qualification.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
 			base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
 			return base
 		}

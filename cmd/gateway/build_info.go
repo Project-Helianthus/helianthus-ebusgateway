@@ -35,10 +35,10 @@ func resolveGatewayBuildInfo(releaseVersion, buildIdentity string) (gatewayBuild
 		return newGatewayBuildInfo(releaseVersion, buildIdentity)
 	}
 	revision, err := gatewayBuildRevisionResolver()
-	if err != nil {
-		return gatewayBuildInfo{}, err
+	if err == nil && isFullGitRevision(revision) {
+		return newGatewayBuildInfo(releaseVersion, revision)
 	}
-	return newGatewayBuildInfo(releaseVersion, revision)
+	return newGatewayBuildInfo(releaseVersion, "unknown")
 }
 
 func (info gatewayBuildInfo) EvidenceVersion() string {

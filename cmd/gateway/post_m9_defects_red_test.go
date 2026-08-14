@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -311,6 +312,37 @@ func TestResolveGatewayBuildInfo_UsesOneResolvedIdentityAcrossEvidenceSurfaces(t
 		t.Fatalf("one-shot identity = %#v; want the same resolved build identity", oneShot)
 	}
 	if got, want := gatewayBuildString(info), "0.6.42+0123456789abcdef0123456789abcdef01234567"; got != want {
+		t.Fatalf("gateway build = %q; want %q", got, want)
+	}
+}
+
+func TestResolveGatewayBuildInfo_UnavailableRevisionFallsBackToSingleUnknownIdentity(t *testing.T) {
+	originalResolver := gatewayBuildRevisionResolver
+	t.Cleanup(func() { gatewayBuildRevisionResolver = originalResolver })
+	calls := 0
+	gatewayBuildRevisionResolver = func() (string, error) {
+		calls++
+		return "", errors.New("vcs metadata omitted")
+	}
+
+	info, err := resolveGatewayBuildInfo("dev", "unknown")
+	if err != nil {
+		t.Fatalf("resolveGatewayBuildInfo() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("revision resolver calls = %d; want 1", calls)
+	}
+	if info.BuildID != "unknown" {
+		t.Fatalf("BuildID = %q; want unknown fallback", info.BuildID)
+	}
+	if got, want := info.EvidenceVersion(), "dev+build.unknown"; got != want {
+		t.Fatalf("EvidenceVersion() = %q; want %q", got, want)
+	}
+	oneShot := info.OneShotEvidenceIdentity()
+	if oneShot.RecorderVersion != "dev+build.unknown" || oneShot.ReplayVersion != "dev+build.unknown" || oneShot.OperationVersion != "build:unknown" {
+		t.Fatalf("one-shot identity = %#v; want same unknown fallback", oneShot)
+	}
+	if got, want := gatewayBuildString(info), "dev+unknown"; got != want {
 		t.Fatalf("gateway build = %q; want %q", got, want)
 	}
 }

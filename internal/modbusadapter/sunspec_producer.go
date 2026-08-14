@@ -110,7 +110,6 @@ func (producer *SunSpecProducer) qualify(ctx context.Context, identity SunSpecPo
 			Outcome:          SunSpecQualificationStop,
 			CapabilityID:     modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
 			CapabilityReason: modbusreg.SunSpecCapabilityReasonInvalidChain,
-			FlavorID:         modbusreg.SunSpecFroniusObservedFlavorID,
 		}, nil
 	}
 	return producer.classify(identity, snapshot), nil
@@ -203,7 +202,6 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 	capability := producer.registry.EvaluateThreePhaseMonitoring(snapshot)
 	result := SunSpecQualificationResult{
 		CapabilityID: capability.ProfileID(), CapabilityReason: capability.Reason(),
-		FlavorID: modbusreg.SunSpecFroniusObservedFlavorID, Chain: snapshot,
 	}
 	if !capability.Admitted() {
 		if capability.Reason() == modbusreg.SunSpecCapabilityReasonInvalidChain {
@@ -214,21 +212,40 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		return result
 	}
 
-	flavor := producer.registry.EvaluateFroniusObservedFlavor(snapshot)
-	result.FlavorID, result.FlavorReason = flavor.FlavorID(), flavor.Reason()
-	if flavor.Matched() {
+	selection := producer.registry.SelectFroniusObservedFlavor(snapshot)
+	if selection.Matched() {
+		flavor, ok := selection.Decision()
+		if !ok || selection.Reason() != modbusreg.SunSpecFroniusFlavorSelectionReasonMatched ||
+			!flavor.Matched() || flavor.Reason() != modbusreg.SunSpecFroniusFlavorReasonMatched {
+			result.Outcome = SunSpecQualificationStop
+			return result
+		}
+		result.FlavorID, result.FlavorReason = flavor.FlavorID(), flavor.Reason()
 		result.Outcome = SunSpecQualificationGO
 		result.ObservationCount = 1
 		result.SampleID = fmt.Sprintf("sunspec-%d-%d", identity.PollGeneration, identity.DeadlineIdentity)
+		result.Chain = snapshot
 		return result
 	}
-	switch flavor.Reason() {
-	case modbusreg.SunSpecFroniusFlavorReasonCommonIdentityMismatch,
-		modbusreg.SunSpecFroniusFlavorReasonFirmwareMismatch,
-		modbusreg.SunSpecFroniusFlavorReasonChainMismatch:
+	switch selection.Reason() {
+	case modbusreg.SunSpecFroniusFlavorSelectionReasonNoMatch:
 		result.Outcome = SunSpecQualificationNoGo
+		result.FlavorReason = commonRejectedFroniusFlavorReason(selection.Evaluations())
 	default:
 		result.Outcome = SunSpecQualificationStop
 	}
 	return result
+}
+
+func commonRejectedFroniusFlavorReason(evaluations []modbusreg.SunSpecFroniusFlavorDecision) modbusreg.SunSpecFroniusFlavorReason {
+	if len(evaluations) == 0 || evaluations[0].Matched() {
+		return ""
+	}
+	reason := evaluations[0].Reason()
+	for _, evaluation := range evaluations[1:] {
+		if evaluation.Matched() || evaluation.Reason() != reason {
+			return ""
+		}
+	}
+	return reason
 }

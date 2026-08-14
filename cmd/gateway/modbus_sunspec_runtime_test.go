@@ -61,6 +61,13 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 			Capability: modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
 			Flavor:     modbusreg.SunSpecFroniusObservedFlavorID,
 		}, want: sunSpecLiveSmokeDecisionStop},
+		{name: "unselected flavor", qualification: sunSpecLiveSmokeQualification{
+			Outcome: modbusadapter.SunSpecQualificationGO, Sample: "sample-1",
+			Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+			Flavor:           "sunspec.flavor.fronius.unselected@1.0.0",
+			CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
+			FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+		}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "not qualified", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationNoGo}, want: sunSpecLiveSmokeDecisionNoGo},
 		{name: "stop", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationStop}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "qualifier error", qualification: sunSpecLiveSmokeQualification{Err: errors.New("qualifier failure")}, want: sunSpecLiveSmokeDecisionStop},
@@ -77,6 +84,24 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 				t.Fatalf("polls=%d qualifications=%d reconnects=%d; want 1, 1, 0", len(driver.pollCalls), len(qualifier.attempts), driver.reconnectCalls)
 			}
 		})
+	}
+}
+
+func TestRunSunSpecLiveSmokeAcceptsRegistrySelectedV11Qualification(t *testing.T) {
+	driver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{{}}}
+	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{
+		Outcome:          modbusadapter.SunSpecQualificationGO,
+		Sample:           "sample-v1.1",
+		Capability:       modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+		Flavor:           sunSpecLiveSmokeCurrentFlavor,
+		CapabilityReason: modbusreg.SunSpecCapabilityReasonAdmitted,
+		FlavorReason:     modbusreg.SunSpecFroniusFlavorReasonMatched,
+	}}}
+
+	result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, qualifier, func(string, ...any) {})
+	if result.Decision != sunSpecLiveSmokeDecisionGO ||
+		result.Flavor != sunSpecLiveSmokeCurrentFlavor {
+		t.Fatalf("V1.1 result = %#v; want registry-selected GO", result)
 	}
 }
 

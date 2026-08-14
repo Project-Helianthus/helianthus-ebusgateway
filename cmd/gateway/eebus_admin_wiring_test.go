@@ -54,7 +54,8 @@ func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *
 	source := string(content)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
-		`eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig}`,
+		`Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig`,
+		`Audit: func(event eebusadmin.AuditEvent)`,
 		`EEBusAdminPath: func() string`,
 	} {
 		if !strings.Contains(source, required) {

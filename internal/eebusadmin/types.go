@@ -30,6 +30,20 @@ type Config struct {
 	Admin eebusruntime.AdminV1
 	Raw   RawSnapshotProvider
 	Auth  AuthConfig
+	Audit func(AuditEvent)
+}
+
+// AuditEvent deliberately has no representation for operational identities,
+// endpoints, credentials, request bodies, or transport/store internals.
+type AuditEvent struct {
+	Action              string    `json:"action"`
+	Principal           Principal `json:"principal"`
+	RequestID           string    `json:"request_id"`
+	IdempotencyOutcome  string    `json:"idempotency_outcome"`
+	PriorStateClass     string    `json:"prior_state_class"`
+	ResultingStateClass string    `json:"resulting_state_class"`
+	Timestamp           time.Time `json:"timestamp"`
+	Reason              string    `json:"reason"`
 }
 
 type errorData struct {

@@ -28,6 +28,7 @@ type server struct {
 	admin eebusruntime.AdminV1
 	raw   RawSnapshotProvider
 	auth  *authentication
+	audit func(AuditEvent)
 
 	projectionMu       sync.Mutex
 	projectionRevision uint64
@@ -70,6 +71,7 @@ type capabilityRecord struct {
 
 type httpMutationReplay struct {
 	binding   string
+	action    string
 	status    int
 	body      []byte
 	expiresAt time.Time
@@ -80,6 +82,7 @@ type mutationResponseCapture struct {
 	status    int
 	body      bytes.Buffer
 	invoked   bool
+	action    string
 	cacheKey  string
 	binding   string
 	expiresAt time.Time
@@ -107,7 +110,7 @@ func NewServer(config Config) (http.Handler, error) {
 		return nil, err
 	}
 	return &server{
-		admin: config.Admin, raw: config.Raw, auth: auth,
+		admin: config.Admin, raw: config.Raw, auth: auth, audit: config.Audit,
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
 		projectionHashes: make(map[string][32]byte),
 		spineSnapshots:   make(map[string]*spineSnapshot),
@@ -255,7 +258,7 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 			server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "idempotency_conflict")
 			return nil, true
 		}
-		writeHTTPMutationReplay(w, replay)
+		server.writeHTTPMutationReplay(w, replay)
 		return nil, true
 	}
 	if len(server.mutationReplays) >= maxHTTPMutationReplays {
@@ -267,7 +270,7 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 	if session.expiresAt.Before(expiresAt) {
 		expiresAt = session.expiresAt
 	}
-	return &mutationResponseCapture{header: make(http.Header), cacheKey: cacheKey, binding: binding, expiresAt: expiresAt}, false
+	return &mutationResponseCapture{header: make(http.Header), action: auditAction(request.Method, request.URL.Path), cacheKey: cacheKey, binding: binding, expiresAt: expiresAt}, false
 }
 
 func (server *server) finishHTTPMutation(destination http.ResponseWriter, capture *mutationResponseCapture) {
@@ -277,9 +280,12 @@ func (server *server) finishHTTPMutation(destination http.ResponseWriter, captur
 	}
 	body := append([]byte(nil), capture.body.Bytes()...)
 	if capture.invoked && len(body) != 0 {
-		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
+		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, action: capture.action, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
 	}
 	server.mutationMu.Unlock()
+	if capture.invoked {
+		server.emitMutationAudit(capture.action, status, body, "executed")
+	}
 	for key, values := range capture.header {
 		destination.Header()[key] = append([]string(nil), values...)
 	}
@@ -293,10 +299,79 @@ func markHTTPMutationInvoked(w http.ResponseWriter) {
 	}
 }
 
-func writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
+func (server *server) writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
 	body := bytes.Replace(replay.body, []byte(`"replayed":false`), []byte(`"replayed":true`), 1)
+	server.emitMutationAudit(replay.action, replay.status, body, "replayed")
 	w.WriteHeader(replay.status)
 	_, _ = w.Write(body)
+}
+
+func auditAction(method, requestPath string) string {
+	switch {
+	case method == http.MethodPost && requestPath == "/admin/eebus/v1/pairing-window:open":
+		return "open_pairing_window"
+	case method == http.MethodPost && requestPath == "/admin/eebus/v1/pairing-window:close":
+		return "close_pairing_window"
+	case method == http.MethodPost && requestPath == "/admin/eebus/v1/candidate:confirm":
+		return "confirm_candidate"
+	case method == http.MethodPost && requestPath == "/admin/eebus/v1/candidate:cancel":
+		return "cancel_candidate"
+	case method == http.MethodPost && strings.HasPrefix(requestPath, "/admin/eebus/v1/observations/") && strings.HasSuffix(requestPath, ":select"):
+		return "select_observation"
+	case method == http.MethodPost && strings.HasPrefix(requestPath, "/admin/eebus/v1/selections/") && strings.HasSuffix(requestPath, ":connect"):
+		return "connect_selection"
+	case method == http.MethodPost && strings.HasPrefix(requestPath, "/admin/eebus/v1/partners/") && strings.HasSuffix(requestPath, ":retry"):
+		return "retry_trusted_partner"
+	case method == http.MethodDelete && strings.HasPrefix(requestPath, "/admin/eebus/v1/partners/") && strings.HasSuffix(requestPath, "/trust"):
+		return "untrust_partner"
+	default:
+		return "unknown_mutation"
+	}
+}
+
+func (server *server) emitMutationAudit(action string, status int, body []byte, idempotencyOutcome string) {
+	if server.audit == nil {
+		return
+	}
+	var envelope struct {
+		RequestID string `json:"request_id"`
+		Data      struct {
+			Outcome string `json:"outcome"`
+		} `json:"data"`
+		Error *errorData `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return
+	}
+	reason := "unknown_state"
+	resulting := "rejected"
+	if envelope.Error != nil {
+		reason = sanitizedAuditReason(envelope.Error.Code)
+	} else if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		reason = sanitizedAuditReason(envelope.Data.Outcome)
+		resulting = "changed"
+	}
+	event := AuditEvent{
+		Action: action, Principal: PrincipalPortalOwner, RequestID: envelope.RequestID,
+		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: "precondition_accepted",
+		ResultingStateClass: resulting, Timestamp: server.auth.now(), Reason: reason,
+	}
+	func() {
+		defer func() { _ = recover() }()
+		server.audit(event)
+	}()
+}
+
+func sanitizedAuditReason(value string) string {
+	if value == "" || len(value) > 64 {
+		return "unknown_state"
+	}
+	for index, character := range value {
+		if (character < 'a' || character > 'z') && (index == 0 || character < '0' || character > '9') && character != '_' {
+			return "unknown_state"
+		}
+	}
+	return value
 }
 
 func (server *server) partners(w http.ResponseWriter, request *http.Request, identity authenticatedRequest) {
@@ -729,20 +804,22 @@ func (server *server) status(w http.ResponseWriter, request *http.Request, princ
 			server.writeAdminFailure(w, principal, connectedFailure)
 			return
 		}
+		data := projectHAStatus(snapshot, connected)
 		if connected.StateRevision != snapshot.StateRevision {
-			server.writeError(w, principal, http.StatusConflict, "state_conflict")
-			return
-		}
-		trustedConnected := uint16(0)
-		for _, partner := range connected.Connected {
-			if partner.TrustState == "trusted" || partner.TrustState == "durably_trusted" {
-				trustedConnected++
+			nextTrusted, nextFailure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Trusted})
+			if nextFailure != nil {
+				server.writeAdminFailure(w, principal, nextFailure)
+				return
 			}
-		}
-		data := haStatus{
-			Listener: snapshot.Listener, Discovery: snapshot.Discovery,
-			TrustedCount: snapshot.TrustedCount, ConnectedCount: trustedConnected,
-			DiscoveredCount: snapshot.DiscoveredCount, DegradedCode: haDegradedCode(snapshot.DegradedCode),
+			nextConnected, nextConnectedFailure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Connected})
+			if nextConnectedFailure != nil {
+				server.writeAdminFailure(w, principal, nextConnectedFailure)
+				return
+			}
+			if next := projectHAStatus(nextTrusted, nextConnected); next != data {
+				server.writeError(w, principal, http.StatusConflict, "state_conflict")
+				return
+			}
 		}
 		revision, err := server.acceptHAProjection(data)
 		if err != nil {
@@ -762,6 +839,20 @@ func (server *server) status(w http.ResponseWriter, request *http.Request, princ
 	server.writeJSON(w, http.StatusOK, ownerEnvelope{
 		Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.StateRevision, Data: data,
 	})
+}
+
+func projectHAStatus(trusted, connected eebusruntime.AdminSnapshotV1) haStatus {
+	trustedConnected := uint16(0)
+	for _, partner := range connected.Connected {
+		if partner.TrustState == "trusted" || partner.TrustState == "durably_trusted" {
+			trustedConnected++
+		}
+	}
+	return haStatus{
+		Listener: trusted.Listener, Discovery: trusted.Discovery,
+		TrustedCount: trusted.TrustedCount, ConnectedCount: trustedConnected,
+		DiscoveredCount: trusted.DiscoveredCount, DegradedCode: haDegradedCode(trusted.DegradedCode),
+	}
 }
 
 type openPairingWindowBody struct {

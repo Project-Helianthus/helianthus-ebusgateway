@@ -2279,9 +2279,8 @@ class PortalShell extends HTMLElement {
         if (!button) return;
         const action = button.getAttribute("data-eebus-action");
         const id = button.getAttribute("data-eebus-id") || "";
-        const ski = button.getAttribute("data-eebus-ski") || "";
         const operations = {
-          select: () => this.selectEEBusObservation(id, ski),
+          select: () => this.selectEEBusObservation(id),
           connect: () => this.connectEEBusSelection(),
           retry: () => this.retryEEBusPartner(id),
 		  "arm-untrust": () => this.armEEBusUntrust(id),
@@ -2394,9 +2393,8 @@ class PortalShell extends HTMLElement {
     const rendered = rows.map((row) => {
       const safe = escapeHtml(JSON.stringify(row, null, 2));
       const id = escapeHtml(row.partner_id || row.observation_id || "");
-      const ski = escapeHtml(row.remote_ski || "");
       let actions = "";
-      if (view === "discovered" && row.observation_id) actions += `<button class="button" data-eebus-action="select" data-eebus-id="${id}" data-eebus-ski="${ski}">Select without dial</button>`;
+      if (view === "discovered" && row.observation_id) actions += `<button class="button" data-eebus-action="select" data-eebus-id="${id}">Select without dial</button>`;
 	  if (view === "trusted" && row.partner_id) {
 		actions += `<button class="button" data-eebus-action="retry" data-eebus-id="${id}">Retry</button>`;
 		actions += this._eebusUntrustArmedID === row.partner_id
@@ -2429,7 +2427,11 @@ class PortalShell extends HTMLElement {
 	return operation;
   }
 
-  async selectEEBusObservation(observationID, expectedSKI) {
+  async selectEEBusObservation(observationID) {
+    const input = this.querySelector('[data-role="eebus-select-ski"]');
+    const expectedSKI = input?.value || "";
+    if (input) input.value = "";
+    if (!/^[0-9a-f]{40}$/.test(expectedSKI)) throw new Error("enter the complete OOB SKI before selection");
     const payload = await this.eebusMutation(`/observations/${encodeURIComponent(observationID)}:select`, { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
     const selectionID = payload?.data?.selection_id;
     if (!selectionID) throw new Error("selection authority missing");
@@ -2843,6 +2845,7 @@ class PortalShell extends HTMLElement {
 			    </select>
 			    <button class="button" data-role="eebus-refresh-partners" type="button">Refresh partners</button>
 			  </div>
+			  <input class="search timeline-filter" data-role="eebus-select-ski" autocomplete="off" placeholder="Enter the independent OOB 40-character SKI before Select" />
 			  <div data-role="eebus-partners"><div class="muted-inline">No partner view loaded.</div></div>
 			  <div class="eebus-candidate-panel">
 			    <h3>OOB candidate</h3>

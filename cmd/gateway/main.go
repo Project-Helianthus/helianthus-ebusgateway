@@ -238,7 +238,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	var eebusAdminHandler http.Handler
 	if cfg.EEBusAdminConfig.Enabled {
 		var authErr error
-		eebusAdminHandler, authErr = eebusadmin.NewServer(eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig})
+		eebusAdminHandler, authErr = eebusadmin.NewServer(eebusadmin.Config{
+			Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig,
+			Audit: func(event eebusadmin.AuditEvent) {
+				log.Printf("eebus_admin_audit action=%s principal=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
+					event.Action, event.Principal, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
+					event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
+			},
+		})
 		if authErr != nil {
 			return fmt.Errorf("eeBUS admin boundary: %w", authErr)
 		}

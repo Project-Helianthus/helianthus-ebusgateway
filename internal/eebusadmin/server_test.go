@@ -314,15 +314,24 @@ func TestIssue809MutationEmitsSanitizedAuditOutcome(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("mutation status=%d body=%s", response.Code, response.Body.String())
 	}
-	if len(events) != 1 {
-		t.Fatalf("audit events=%d, want 1", len(events))
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":60,"state_revision":7}`))
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":120,"state_revision":7}`))
+	rejected := httptest.NewRecorder()
+	handler.ServeHTTP(rejected, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-invalid-1", `{"duration_seconds":0,"state_revision":7}`))
+	if replay.Code != http.StatusOK || conflict.Code != http.StatusConflict || rejected.Code != http.StatusBadRequest {
+		t.Fatalf("terminal statuses replay/conflict/rejected=%d/%d/%d", replay.Code, conflict.Code, rejected.Code)
 	}
-	encoded, err := json.Marshal(events[0])
+	if len(events) != 4 {
+		t.Fatalf("audit events=%d, want executed/replayed/conflict/rejected", len(events))
+	}
+	encoded, err := json.Marshal(events)
 	if err != nil {
 		t.Fatal(err)
 	}
 	audit := string(encoded)
-	for _, required := range []string{"open_pairing_window", "portal_owner", "executed", "precondition_accepted", "changed"} {
+	for _, required := range []string{"open_pairing_window", "portal_owner", "executed", "replayed", "conflict", "rejected", "precondition_accepted", "changed"} {
 		if !strings.Contains(audit, required) {
 			t.Errorf("audit missing %q: %s", required, audit)
 		}
@@ -330,6 +339,12 @@ func TestIssue809MutationEmitsSanitizedAuditOutcome(t *testing.T) {
 	for _, forbidden := range []string{"audit-open-1", testOwnerSecret, testHASecret, "expected_ski", "endpoint", "token", "key"} {
 		if strings.Contains(strings.ToLower(audit), strings.ToLower(forbidden)) {
 			t.Errorf("audit leaks %q: %s", forbidden, audit)
+		}
+	}
+	for _, recorder := range []*httptest.ResponseRecorder{conflict, rejected} {
+		var envelope ownerEnvelope
+		if json.Unmarshal(recorder.Body.Bytes(), &envelope) != nil || envelope.RequestID == "" {
+			t.Fatalf("owner terminal error lacks audit request_id: %s", recorder.Body.String())
 		}
 	}
 }

@@ -109,6 +109,27 @@ test("confirm mutation carries CSRF, revision and exact SKI but no transport coo
   assert.equal(shell._eebusCandidate, undefined);
 });
 
+test("selection requires independently entered OOB SKI and never copies discovery identity into action authority", async () => {
+  const calls = [];
+  const partners = { innerHTML: "" };
+  const selectSKI = { value: "c".repeat(40) };
+  const { shell } = await issue809Shell(async (url, init = {}) => {
+    calls.push({ url, init });
+    return response({ state_revision: 8, data: { outcome: "selected", selection_id: "selection-1" } });
+  }, new Map([
+    ['[data-role="eebus-partners"]', partners],
+    ['[data-role="eebus-select-ski"]', selectSKI],
+  ]));
+  shell._eebusCSRFToken = "csrf";
+  shell._eebusStateRevision = 7;
+  shell.renderEEBusPartners([{ observation_id: "observation-1", remote_ski: "d".repeat(40), view: "discovered" }], "discovered");
+  assert.doesNotMatch(partners.innerHTML, /data-eebus-ski=/, "discovery identity must not become button authority");
+
+  await shell.selectEEBusObservation("observation-1");
+  assert.equal(JSON.parse(calls[0].init.body).expected_ski, "c".repeat(40));
+  assert.equal(selectSKI.value, "", "OOB input must be cleared after use");
+});
+
 test("SPINE browser loads root and expands only opaque server-issued node identifiers", async () => {
   const calls = [];
   const tree = { innerHTML: "" };

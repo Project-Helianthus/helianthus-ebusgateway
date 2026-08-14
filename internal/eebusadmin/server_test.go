@@ -248,7 +248,7 @@ func TestIssue809HAProjectionIsByteIdenticalAcrossCandidateOnlyLifecycle(t *test
 	}
 }
 
-func TestIssue809HAStatusRejectsCrossRevisionComposition(t *testing.T) {
+func TestIssue809HAStatusIgnoresCandidateOnlyOwnerRevisionChurn(t *testing.T) {
 	trusted := testAdminSnapshot()
 	connected := trusted
 	connected.StateRevision++
@@ -260,10 +260,54 @@ func TestIssue809HAStatusRejectsCrossRevisionComposition(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+testHASecret)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("cross-revision HA status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("candidate-only revision churn HA status=%d body=%s", response.Code, response.Body.String())
 	}
-	assertIssue809ErrorEnvelope(t, response.Body.String(), "state_conflict")
+	if strings.Contains(response.Body.String(), "state_conflict") || strings.Contains(response.Body.String(), "state_revision") {
+		t.Fatalf("candidate-only owner revision became an HA side channel: %s", response.Body.String())
+	}
+}
+
+func TestIssue809MutationEmitsSanitizedAuditOutcome(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+	var events []AuditEvent
+	handler, err := NewServer(Config{
+		Admin: admin,
+		Audit: func(event AuditEvent) { events = append(events, event) },
+		Auth: AuthConfig{
+			OwnerUsername: "owner", OwnerSecret: []byte(testOwnerSecret), HASecret: []byte(testHASecret),
+			OwnerOrigin: testOwnerOrigin, SessionTTL: 15 * time.Minute,
+			Now: func() time.Time { return time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC) }, Random: rand.Reader,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := issue809OwnerSession(t, handler)
+	request := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":60,"state_revision":7}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("mutation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit events=%d, want 1", len(events))
+	}
+	encoded, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := string(encoded)
+	for _, required := range []string{"open_pairing_window", "portal_owner", "executed", "precondition_accepted", "changed"} {
+		if !strings.Contains(audit, required) {
+			t.Errorf("audit missing %q: %s", required, audit)
+		}
+	}
+	for _, forbidden := range []string{"audit-open-1", testOwnerSecret, testHASecret, "expected_ski", "endpoint", "token", "key"} {
+		if strings.Contains(strings.ToLower(audit), strings.ToLower(forbidden)) {
+			t.Errorf("audit leaks %q: %s", forbidden, audit)
+		}
+	}
 }
 
 func TestIssue809UnknownRuntimeErrorIsNotReflected(t *testing.T) {

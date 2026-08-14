@@ -494,16 +494,29 @@ func TestPortalFM5Interpretation_UnavailableBeforeFirstCoherentClassification(t 
 	}
 }
 
-func TestPortalFM5Interpretation_LegacyGPIOOnlyIsStructurallyExplained(t *testing.T) {
+func TestPortalFM5Interpretation_LegacyOnlyProviderIsUnavailable(t *testing.T) {
 	provider := graphql.NewLiveSemanticProvider()
 	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeGPIOOnly)
 	legacy := legacyOnlySemanticProvider{SemanticProvider: provider}
 
-	verdict := portalFM5Interpretation(legacy)
-	if err := verdict.Validate(); err != nil {
-		t.Fatalf("Portal fallback verdict invalid: %v", err)
+	if got := legacy.FM5SemanticMode(); got != graphql.Fm5SemanticModeGPIOOnly {
+		t.Fatalf("legacy FM5 scalar = %s; want stable GPIO_ONLY", got)
 	}
-	if verdict.DegradedReason != graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable {
-		t.Fatalf("Portal fallback reason = %q; want %q", verdict.DegradedReason, graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable)
+	if got := portalFM5Interpretation(legacy); got != (graphql.Fm5Interpretation{}) {
+		t.Fatalf("Portal legacy-only interpretation = %#v; want unavailable zero tuple", got)
+	}
+}
+
+func TestMCPSemanticProviderAdapter_LegacyOnlyInterpretationIsUnavailable(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetFM5SemanticMode(graphql.Fm5SemanticModeGPIOOnly)
+	legacy := legacyOnlySemanticProvider{SemanticProvider: provider}
+
+	if got := legacy.FM5SemanticMode(); got != graphql.Fm5SemanticModeGPIOOnly {
+		t.Fatalf("legacy FM5 scalar = %s; want stable GPIO_ONLY", got)
+	}
+	mcpVerdict := (mcpSemanticProviderAdapter{provider: legacy}).FM5Interpretation()
+	if mcpVerdict.Mode != "" || mcpVerdict.DegradedReason != nil || mcpVerdict.EvidenceRevision != "" {
+		t.Fatalf("MCP adapter legacy-only interpretation = %#v; want unavailable zero tuple", mcpVerdict)
 	}
 }

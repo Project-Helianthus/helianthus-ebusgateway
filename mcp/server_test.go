@@ -1454,6 +1454,34 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
+	t.Run("fm5 interpretation is null for legacy scalar only provider", func(t *testing.T) {
+		legacyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		legacyServer.SetSemanticProvider(testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly})
+
+		modeEnvelope := envelopeFromResult(t, doRPC(t, legacyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      25,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_mode.get","arguments":{}}`),
+		}))
+		if got := modeEnvelope["data"]; got != string(Fm5SemanticModeGPIOOnly) {
+			t.Fatalf("legacy fm5 mode = %#v; want stable GPIO_ONLY", got)
+		}
+
+		interpretationEnvelope := envelopeFromResult(t, doRPC(t, legacyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      26,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+		}))
+		if interpretationEnvelope["data"] != nil || interpretationEnvelope["error"] != nil {
+			t.Fatalf("legacy-only FM5 envelope = %#v; want data=null error=null", interpretationEnvelope)
+		}
+	})
+
 	t.Run("fm5 interpretation rejects transient GPIO only", func(t *testing.T) {
 		invalidServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
@@ -1471,7 +1499,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 
 		res := doRPC(t, invalidServer.Handler(), rpcRequest{
 			JSONRPC: "2.0",
-			ID:      25,
+			ID:      27,
 			Method:  "tools/call",
 			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
 		})

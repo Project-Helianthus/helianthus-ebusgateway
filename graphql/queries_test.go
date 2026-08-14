@@ -54,6 +54,15 @@ func (provider testGatewayIdentityProvider) GatewayIdentity() GatewayIdentity {
 	return provider.identity
 }
 
+type legacyFM5ScalarOnlyProvider struct {
+	SemanticProvider
+	mode Fm5SemanticMode
+}
+
+func (provider legacyFM5ScalarOnlyProvider) FM5SemanticMode() Fm5SemanticMode {
+	return provider.mode
+}
+
 type driftingBusObservabilityProvider struct {
 	mu    sync.Mutex
 	calls int
@@ -2228,5 +2237,42 @@ func TestQueryResolvers_FM5InterpretationNullBeforeFirstCoherentClassification(t
 	}
 	if got, ok := response.Data["fm5Interpretation"]; !ok || got != nil {
 		t.Fatalf("fm5Interpretation = %#v present=%t; want explicit null", got, ok)
+	}
+}
+
+func TestQueryResolvers_FM5InterpretationNullForLegacyScalarOnlyProvider(t *testing.T) {
+	builder := NewBuilder(registry.NewDeviceRegistry(nil), nil)
+	builder.SetSemanticProvider(legacyFM5ScalarOnlyProvider{
+		SemanticProvider: NewLiveSemanticProvider(),
+		mode:             Fm5SemanticModeGPIOOnly,
+	})
+	handler, err := NewHandler(builder)
+	if err != nil {
+		t.Fatalf("NewHandler error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ fm5SemanticMode fm5Interpretation { mode degradedReason evidenceRevision } }"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Data   map[string]any `json:"data"`
+		Errors []any          `json:"errors"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("json.Unmarshal response: %v body=%s", err, rec.Body.String())
+	}
+	if len(response.Errors) != 0 {
+		t.Fatalf("errors = %#v; want none", response.Errors)
+	}
+	if got := response.Data["fm5SemanticMode"]; got != string(Fm5SemanticModeGPIOOnly) {
+		t.Fatalf("legacy fm5SemanticMode = %#v; want stable GPIO_ONLY", got)
+	}
+	if got, ok := response.Data["fm5Interpretation"]; !ok || got != nil {
+		t.Fatalf("legacy-only fm5Interpretation = %#v present=%t; want explicit null", got, ok)
 	}
 }

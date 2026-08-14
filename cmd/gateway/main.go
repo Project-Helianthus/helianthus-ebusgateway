@@ -164,7 +164,7 @@ func recordBusAdmissionTransitionWithStabilityRefresh(ctx context.Context, store
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
-	resolvedBuildInfo, err := newGatewayBuildInfo(buildVersion, buildID)
+	resolvedBuildInfo, err := resolveGatewayBuildInfo(buildVersion, buildID)
 	if err != nil {
 		return fmt.Errorf("gateway build identity: %w", err)
 	}
@@ -236,17 +236,13 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 	}
 	if evidenceRuntime != nil {
-		version, versionErr := synchronizedEvidenceBuildVersion()
-		if versionErr != nil {
-			return fmt.Errorf("synchronized evidence build identity: %w", versionErr)
-		}
 		var captureEEBus eebusEvidenceCapture
 		if eebusAdapter != nil {
 			captureEEBus = func(pseudonymKey []byte) (json.RawMessage, time.Time, error) {
 				return mcp.CaptureEEBusV1ServicesEvidence(eebusAdapter, pseudonymKey)
 			}
 		}
-		if err := evidenceRuntime.Configure(captureEEBus, version, newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
+		if err := evidenceRuntime.Configure(captureEEBus, resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
 			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
 		}
 	}
@@ -2020,6 +2016,7 @@ func startHTTPServer(
 		cfg.EvidenceOneShotEnabled,
 		eebusProvider,
 		eebusCommandRouter,
+		buildInfo,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -3007,7 +3004,7 @@ func applyStaticSeedTable(reg *registry.DeviceRegistry) {
 func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildInfo gatewayBuildInfo) (*runtimestate.Manager, *runtimestate.State) {
 	mgr := runtimestate.New(runtimestate.Options{
 		Path:         cfg.RuntimeStatePath,
-		GatewayBuild: fmt.Sprintf("%s+%s", buildInfo.ReleaseVersion, buildInfo.BuildID),
+		GatewayBuild: gatewayBuildString(buildInfo),
 		AddonVersion: "", // populated by add-on via future flag if needed
 	})
 	state, err := mgr.Load(ctx)

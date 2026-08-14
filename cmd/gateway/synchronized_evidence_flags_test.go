@@ -30,6 +30,7 @@ func TestIssue764SynchronizedEvidenceOneShotFlagIsExplicitOptIn(t *testing.T) {
 		cfg.EvidenceOneShotEnabled,
 		eebusMCPProvider(adapter),
 		eebusMCPCommandRouter(adapter),
+		gatewayBuildInfo{ReleaseVersion: "test", BuildID: "test-build"},
 	)
 	if err != nil || runtime == nil {
 		t.Fatalf("construct enabled one-shot runtime = %#v, %v", runtime, err)
@@ -63,6 +64,7 @@ func TestIssue764SynchronizedEvidenceOneShotDefaultIsInert(t *testing.T) {
 		cfg.EvidenceOneShotEnabled,
 		eebusMCPProvider(adapter),
 		eebusMCPCommandRouter(adapter),
+		gatewayBuildInfo{ReleaseVersion: "test", BuildID: "test-build"},
 	)
 	if err != nil || runtime != nil {
 		t.Fatalf("default one-shot runtime = %#v, %v", runtime, err)

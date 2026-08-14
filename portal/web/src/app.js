@@ -2301,7 +2301,7 @@ class PortalShell extends HTMLElement {
     }
     this._eebusVisibilityHandler = () => {
       if (document.visibilityState !== "visible") {
-        this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
+        this.clearEEBusVisibilityAuthority();
         this.clearEEBusSPINETree();
       }
     };
@@ -2319,7 +2319,10 @@ class PortalShell extends HTMLElement {
     const method = options.method || "GET";
     const headers = { Accept: "application/json", ...(options.headers || {}) };
     const init = { method, credentials: "same-origin", headers };
-    if (options.body !== undefined) {
+    if (options.serializedBody !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = options.serializedBody;
+    } else if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(options.body);
     }
@@ -2336,7 +2339,7 @@ class PortalShell extends HTMLElement {
     const csrf = response.headers?.get?.("X-CSRF-Token");
     if (csrf) this._eebusCSRFToken = csrf;
     const payload = await response.json();
-    this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
+    this.clearEEBusCandidate();
     if (!response.ok || payload?.error) {
 	  const error = new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
 	  error.eebusTerminal = true;
@@ -2375,7 +2378,7 @@ class PortalShell extends HTMLElement {
   async refreshEEBusPartners(view) {
     const allowed = new Set(["trusted", "connected", "discovered", "candidate"]);
     if (!allowed.has(view)) throw new Error("invalid eeBUS partner view");
-	this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
+	this.clearEEBusCandidate();
 	if (!this._eebusPendingMutation) this._eebusUntrustArmedID = undefined;
 	const payload = await this.eebusAdminFetch(`/partners?view=${encodeURIComponent(view)}`);
 	const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
@@ -2419,23 +2422,52 @@ class PortalShell extends HTMLElement {
   }
 
   async eebusMutation(path, body, method = "POST") {
-	const binding = `${method}\u0000${path}\u0000${JSON.stringify(body)}`;
+	const serializedBody = JSON.stringify(body);
+	const binding = `${method}\u0000${path}\u0000${serializedBody}`;
 	let pending = this._eebusPendingMutation;
-	if (pending && pending.binding !== binding) {
+	if (pending && `${pending.method}\u0000${pending.path}\u0000${pending.body}` !== binding) {
 	  throw new Error("previous eeBUS mutation outcome is unknown; retry the exact action");
 	}
 	if (!pending) {
-	  pending = { binding, idempotencyKey: crypto.randomUUID() };
+	  pending = {
+		method,
+		path,
+		body: serializedBody,
+		idempotencyKey: crypto.randomUUID(),
+		expiresAt: Date.now() + 5 * 60 * 1000,
+	  };
 	  this._eebusPendingMutation = pending;
+	  this._eebusPendingMutationTimer = setTimeout(() => {
+		if (this._eebusPendingMutation === pending) this.clearEEBusPendingMutation();
+	  }, Math.max(0, pending.expiresAt - Date.now()));
 	}
 	try {
-	  const payload = await this.eebusAdminFetch(path, { method, body, idempotencyKey: pending.idempotencyKey });
-	  this._eebusPendingMutation = undefined;
+	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey });
+	  this.clearEEBusPendingMutation();
 	  this.clearEEBusCandidate();
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
-	  if (error?.eebusTerminal) this._eebusPendingMutation = undefined;
+	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
+	  throw error;
+	}
+  }
+
+  async retryPendingEEBusMutation() {
+	const pending = this._eebusPendingMutation;
+	if (!pending) throw new Error("no pending eeBUS mutation to retry");
+	if (!Number.isFinite(pending.expiresAt) || pending.expiresAt <= Date.now()) {
+	  this.clearEEBusPendingMutation();
+	  throw new Error("pending eeBUS mutation replay expired");
+	}
+	try {
+	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey });
+	  this.clearEEBusPendingMutation();
+	  this.clearEEBusCandidate();
+	  this.applyEEBusStatus(payload);
+	  return payload;
+	} catch (error) {
+	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
 	  throw error;
 	}
   }
@@ -2529,12 +2561,12 @@ class PortalShell extends HTMLElement {
 	}
   }
 
-  clearEEBusCandidate({ preserveAuthority = false } = {}) {
-	if (!preserveAuthority && this._eebusCandidateTimer) {
+	clearEEBusCandidate() {
+	  if (this._eebusCandidateTimer) {
 	  clearTimeout(this._eebusCandidateTimer);
 	  this._eebusCandidateTimer = undefined;
 	}
-	if (!preserveAuthority) this._eebusCandidate = undefined;
+	this._eebusCandidate = undefined;
     const candidate = this.querySelector?.('[data-role="eebus-candidate"]');
     if (candidate) candidate.textContent = "";
 	const input = this.querySelector?.('[data-role="eebus-confirm-ski"]');
@@ -2543,6 +2575,20 @@ class PortalShell extends HTMLElement {
 	  const partners = this.querySelector?.('[data-role="eebus-partners"]');
 	  if (partners) partners.innerHTML = '<div class="muted-inline">Candidate view cleared.</div>';
 	}
+  }
+
+  clearEEBusVisibilityAuthority() {
+	this.clearEEBusCandidate();
+	this._eebusSelection = undefined;
+	this._eebusUntrustArmedID = undefined;
+  }
+
+  clearEEBusPendingMutation() {
+	if (this._eebusPendingMutationTimer) {
+	  clearTimeout(this._eebusPendingMutationTimer);
+	  this._eebusPendingMutationTimer = undefined;
+	}
+	this._eebusPendingMutation = undefined;
   }
 
   showEEBusError(error) {

@@ -12,12 +12,14 @@ import (
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
-func TestIssue809RunRejectsProtectedCredentialsBeforeStartingOperatorRuntime(t *testing.T) {
+func TestIssue809BrokenCredentialsDegradeOnlyAdminBoundary(t *testing.T) {
 	originalResolver := resolveEEBusInterfaceAddressesFn
 	originalFactory := newEEBusOperatorRuntimeFn
+	originalRuntimeFactory := newEEBusRuntimeFn
 	t.Cleanup(func() {
 		resolveEEBusInterfaceAddressesFn = originalResolver
 		newEEBusOperatorRuntimeFn = originalFactory
+		newEEBusRuntimeFn = originalRuntimeFactory
 	})
 
 	runtime := &msp05bRuntime{}
@@ -25,7 +27,11 @@ func TestIssue809RunRejectsProtectedCredentialsBeforeStartingOperatorRuntime(t *
 		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
 	}
 	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
-		return runtime, issue809AdminStub{}, nil
+		t.Fatal("broken credentials must not start the operator runtime")
+		return nil, nil, errors.New("unreachable")
+	}
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return runtime, nil
 	}
 
 	cfg := ebusgateway.DefaultConfig()
@@ -34,16 +40,17 @@ func TestIssue809RunRejectsProtectedCredentialsBeforeStartingOperatorRuntime(t *
 	cfg.EEBusAdminConfig.OwnerOrigin = "http://gateway.test:8080"
 	cfg.EEBusAdminConfig.OwnerSecretPath = t.TempDir() + "/missing-owner"
 	cfg.EEBusAdminConfig.HASecretPath = t.TempDir() + "/missing-ha"
-	err := run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "eeBUS admin boundary") {
-		t.Fatalf("run error=%v, want sanitized admin boundary failure", err)
+	adapter, admin, _, available, err := startEEBusAdminAwareRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("fallback runtime: %v", err)
 	}
-	if runtime.startCalls != 0 || runtime.stopCalls != 0 {
-		t.Fatalf("operator runtime start/shutdown=%d/%d, want 0/0", runtime.startCalls, runtime.stopCalls)
+	if adapter == nil || admin != nil || available {
+		t.Fatalf("fallback adapter/admin/available=%v/%v/%v", adapter, admin, available)
 	}
-	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), cfg.EEBusAdminConfig.OwnerSecretPath) {
-		t.Fatalf("admin startup error leaks protected path: %v", err)
+	if runtime.startCalls != 1 {
+		t.Fatalf("ordinary runtime start=%d, want 1", runtime.startCalls)
 	}
+	_ = adapter.Shutdown()
 }
 
 func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *testing.T) {
@@ -54,6 +61,7 @@ func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *
 	source := string(content)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
+		`eebusAdminHandler := eebusadmin.NewUnavailableHandler()`,
 		`Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig`,
 		`Audit: func(event eebusadmin.AuditEvent)`,
 		`EEBusAdminPath: func() string`,

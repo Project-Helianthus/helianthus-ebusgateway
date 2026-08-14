@@ -126,6 +126,30 @@ func TestIssue809AdminBoundaryFailsClosedBeforeRuntimeContact(t *testing.T) {
 	}
 }
 
+func TestIssue809UnavailableBoundaryIsAlwaysMountedAndReturnsNoOperationalData(t *testing.T) {
+	handler := NewUnavailableHandler()
+	for _, test := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/admin/eebus/v1/status"},
+		{method: http.MethodPost, path: "/admin/eebus/v1/pairing-window:open", body: `{"duration_seconds":60,"state_revision":7}`},
+	} {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer must-not-be-reflected")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s %s status=%d body=%s", test.method, test.path, response.Code, response.Body.String())
+		}
+		assertIssue809ErrorEnvelope(t, response.Body.String(), "admin_boundary_unavailable")
+		if strings.Contains(response.Body.String(), "must-not-be-reflected") {
+			t.Fatalf("unavailable boundary reflected authentication material: %s", response.Body.String())
+		}
+	}
+}
+
 func TestIssue809OwnerSessionRequiresCSRFAndStrictSameOrigin(t *testing.T) {
 	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
 	handler := newIssue809Server(t, admin)

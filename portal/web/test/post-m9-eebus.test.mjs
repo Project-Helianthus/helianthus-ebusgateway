@@ -12,6 +12,7 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
   class FakeHTMLElement {}
   const storageWrites = [];
   const documentListeners = new Map();
+	const timers = new Map();
   let uuidSequence = 0;
   const sandbox = {
     console: { error() {}, warn() {}, log() {} },
@@ -37,8 +38,12 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
     TextDecoder,
     setInterval: () => 1,
     clearInterval() {},
-    setTimeout,
-    clearTimeout,
+	setTimeout: (callback, delay) => {
+	  const timer = { callback, delay, cleared: false };
+	  timers.set(timer, timer);
+	  return timer;
+	},
+	clearTimeout: (timer) => { if (timer) timer.cleared = true; },
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -47,7 +52,7 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
   shell._eebusAdminPath = "/admin/eebus/v1";
-  return { shell, storageWrites, documentListeners, document: sandbox.document };
+  return { shell, storageWrites, documentListeners, document: sandbox.document, timers };
 }
 
 function response(payload, csrf = "") {
@@ -200,6 +205,36 @@ test("lost confirm response clears visibility authority and retries only the fro
   assert.equal(calls[0].init.headers["Idempotency-Key"], calls[2].init.headers["Idempotency-Key"]);
   assert.equal(calls[0].init.body, calls[2].init.body, "retry must send its frozen pre-refresh revision/body");
   assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires pending authority");
+});
+
+test("pending replay expires no later than the two-minute authenticated server TTL", async () => {
+  const { shell } = await issue809Shell(async () => { throw new Error("response lost"); });
+  shell._eebusCSRFToken = "csrf";
+  shell._eebusStateRevision = 14;
+  const before = Date.now();
+  await assert.rejects(shell.openEEBusPairingWindow(), /response lost/);
+  assert.ok(shell._eebusPendingMutation.expiresAt - before <= 2 * 60 * 1000, "local replay TTL must not outlive authenticated server replay TTL");
+});
+
+test("disconnect clears all active eeBUS authority including pending replay", async () => {
+  const { shell } = await issue809Shell(async () => response({ state_revision: 1, data: {} }));
+  shell._eebusCandidate = { remote_ski: "a".repeat(40) };
+  shell._eebusSelection = { id: "selection-1" };
+  shell._eebusUntrustArmedID = "partner-1";
+  shell._eebusSpinePartnerID = "partner-1";
+  shell._eebusSpineSnapshotID = "snapshot-1";
+  shell._eebusPendingMutation = { method: "POST", path: "/candidate:confirm", body: "{}", idempotencyKey: "key", expiresAt: Date.now() + 1 };
+  shell._eebusPendingMutationTimer = 123;
+
+  shell.disconnectedCallback();
+
+  assert.equal(shell._eebusCandidate, undefined);
+  assert.equal(shell._eebusSelection, undefined);
+  assert.equal(shell._eebusUntrustArmedID, undefined);
+  assert.equal(shell._eebusSpinePartnerID, undefined);
+  assert.equal(shell._eebusSpineSnapshotID, undefined);
+  assert.equal(shell._eebusPendingMutation, undefined);
+  assert.equal(shell._eebusPendingMutationTimer, undefined);
 });
 
 test("SPINE browser loads root and expands only opaque server-issued node identifiers", async () => {

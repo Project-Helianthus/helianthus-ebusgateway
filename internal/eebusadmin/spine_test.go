@@ -188,10 +188,15 @@ func issue809GetSpinePage(t *testing.T, handler http.Handler, cookie *http.Cooki
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {
-		Data issue809SpinePage `json:"data"`
+		RequestID     string            `json:"request_id"`
+		StateRevision uint64            `json:"state_revision"`
+		Data          issue809SpinePage `json:"data"`
 	}
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &envelope) != nil {
 		t.Fatalf("SPINE status=%d body=%s", response.Code, response.Body.String())
+	}
+	if envelope.RequestID == "" || envelope.StateRevision == 0 {
+		t.Fatalf("SPINE owner envelope lacks request/revision: %s", response.Body.String())
 	}
 	return envelope.Data
 }

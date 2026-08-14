@@ -25,6 +25,7 @@ type RawSnapshotProvider interface {
 type spineSnapshot struct {
 	id        string
 	hash      string
+	revision  uint64
 	sessionID string
 	partnerID string
 	expiresAt time.Time
@@ -47,9 +48,11 @@ type spineNode struct {
 }
 
 type spinePageEnvelope struct {
-	Contract string    `json:"contract"`
-	Data     spinePage `json:"data"`
-	Error    any       `json:"error"`
+	Contract      string    `json:"contract"`
+	RequestID     string    `json:"request_id"`
+	StateRevision uint64    `json:"state_revision"`
+	Data          spinePage `json:"data"`
+	Error         any       `json:"error"`
 }
 
 type spinePage struct {
@@ -128,7 +131,7 @@ func (server *server) spineRoot(w http.ResponseWriter, session ownerSession, par
 		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
-	snapshot, err := server.buildSpineSnapshot(raw.Clone(), session, partnerID, partner.ski)
+	snapshot, err := server.buildSpineSnapshot(raw.Clone(), session, partnerID, partner.ski, partner.revision)
 	if err != nil {
 		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
@@ -147,7 +150,7 @@ func (server *server) spineRoot(w http.ResponseWriter, session ownerSession, par
 		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
-	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, Data: page})
+	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.revision, Data: page})
 }
 
 func (server *server) spineExistingPage(w http.ResponseWriter, session ownerSession, partnerID string, shape spineQuery) {
@@ -181,10 +184,10 @@ func (server *server) spineExistingPage(w http.ResponseWriter, session ownerSess
 		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
-	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, Data: page})
+	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.revision, Data: page})
 }
 
-func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, session ownerSession, partnerID, ski string) (*spineSnapshot, error) {
+func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, session ownerSession, partnerID, ski string, revision uint64) (*spineSnapshot, error) {
 	id, err := randomToken(server.auth.random)
 	if err != nil {
 		return nil, err
@@ -193,7 +196,7 @@ func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, session ow
 	if session.expiresAt.Before(expiresAt) {
 		expiresAt = session.expiresAt
 	}
-	result := &spineSnapshot{id: id, hash: raw.Meta.DataHash, sessionID: session.id, partnerID: partnerID, expiresAt: expiresAt, nodes: make(map[string]spineNode), children: make(map[string][]string), cursors: make(map[string]spineCursor)}
+	result := &spineSnapshot{id: id, hash: raw.Meta.DataHash, revision: revision, sessionID: session.id, partnerID: partnerID, expiresAt: expiresAt, nodes: make(map[string]spineNode), children: make(map[string][]string), cursors: make(map[string]spineCursor)}
 	deviceIDs := make(map[string]string)
 	entityIDs := make(map[string]string)
 	featureIDs := make(map[string]string)

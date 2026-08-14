@@ -149,6 +149,7 @@ func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *te
 		result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("flavor-mismatch result = %#v; want closed NO_GO without observation", result)
 	}
+	assertNoSunSpecQualificationChain(t, result)
 }
 
 func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *testing.T) {
@@ -173,6 +174,14 @@ func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *test
 	}
 	if result.Outcome != SunSpecQualificationStop || result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("mixed generation result = %#v; want STOP without publication", result)
+	}
+	assertNoSunSpecQualificationChain(t, result)
+}
+
+func assertNoSunSpecQualificationChain(t *testing.T, result SunSpecQualificationResult) {
+	t.Helper()
+	if len(result.Chain.RawWords()) != 0 || len(result.Chain.Occurrences()) != 0 || len(result.Chain.SourceViews()) != 0 {
+		t.Fatalf("%s result retained qualification chain evidence", result.Outcome)
 	}
 }
 

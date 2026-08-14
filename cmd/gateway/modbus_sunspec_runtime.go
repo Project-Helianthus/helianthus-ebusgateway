@@ -8,12 +8,12 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 const (
 	sunSpecLiveSmokeUnitID             = byte(1)
 	sunSpecLiveSmokeAuthorizationScope = "smoke:fronius-readonly"
-	sunSpecLiveSmokeProfile            = "sunspec.phase1"
 	sunSpecLiveSmokeReadTimeout        = 2 * time.Second
 	sunSpecLiveSmokeAttemptTimeout     = 30 * time.Second
 )
@@ -41,22 +41,22 @@ type sunSpecLiveSmokePollResult struct {
 }
 
 type sunSpecLiveSmokeQualification struct {
-	Supported          bool
-	UnsupportedProfile bool
-	Incoherent         bool
-	Sample             string
-	Profile            string
-	Err                error
+	Outcome    modbusadapter.SunSpecQualificationOutcome
+	Sample     string
+	Capability string
+	Flavor     string
+	Err        error
 }
 
 type sunSpecLiveSmokeResult struct {
-	Decision  sunSpecLiveSmokeDecision
-	Outcome   string
-	Category  string
-	Attempts  int
-	Recovered bool
-	Sample    string
-	Profile   string
+	Decision   sunSpecLiveSmokeDecision
+	Outcome    string
+	Category   string
+	Attempts   int
+	Recovered  bool
+	Sample     string
+	Capability string
+	Flavor     string
 }
 
 type sunSpecLiveSmokeDriver interface {
@@ -93,25 +93,13 @@ func (modbusSunSpecLiveSmokeQualifier) Qualify(_ context.Context, _ sunSpecLiveS
 	if poll.Err != nil {
 		return sunSpecLiveSmokeQualification{Err: poll.Err}
 	}
-	switch poll.Qualification.Outcome {
-	case modbusadapter.SunSpecQualificationSupported:
-		return sunSpecLiveSmokeQualification{
-			Supported: true, Sample: poll.Qualification.SampleID, Profile: sunSpecLiveSmokeProfile,
-		}
-	case modbusadapter.SunSpecQualificationUnsupportedProfile:
-		return sunSpecLiveSmokeQualification{UnsupportedProfile: true}
-	case modbusadapter.SunSpecQualificationIncoherentCapture:
-		return sunSpecLiveSmokeQualification{Incoherent: true}
-	default:
-		return sunSpecLiveSmokeQualification{Err: errUnknownSunSpecQualificationOutcome}
+	return sunSpecLiveSmokeQualification{
+		Outcome:    poll.Qualification.Outcome,
+		Sample:     poll.Qualification.SampleID,
+		Capability: poll.Qualification.CapabilityID,
+		Flavor:     poll.Qualification.FlavorID,
 	}
 }
-
-type categoricalSunSpecLiveSmokeError string
-
-func (err categoricalSunSpecLiveSmokeError) Error() string { return string(err) }
-
-const errUnknownSunSpecQualificationOutcome categoricalSunSpecLiveSmokeError = "unknown SunSpec qualification outcome"
 
 var sunSpecLiveSmokeIdentity atomic.Uint64
 
@@ -178,32 +166,32 @@ func runSunSpecLiveSmoke(
 }
 
 func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualification, base sunSpecLiveSmokeResult) sunSpecLiveSmokeResult {
-	base.Sample, base.Profile = "", ""
+	base.Sample, base.Capability, base.Flavor = "", "", ""
 	if qualification.Err != nil {
 		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "error", "qualification_error"
 		return base
 	}
-	states := 0
-	for _, set := range []bool{qualification.Supported, qualification.UnsupportedProfile, qualification.Incoherent} {
-		if set {
-			states++
+	switch qualification.Outcome {
+	case modbusadapter.SunSpecQualificationGO:
+		if qualification.Sample == "" ||
+			qualification.Capability != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
+			qualification.Flavor != modbusreg.SunSpecFroniusObservedFlavorID {
+			base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
+			return base
 		}
-	}
-	if states != 1 {
+		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionGO, "qualified", "registry_match"
+		base.Sample, base.Capability, base.Flavor = qualification.Sample, qualification.Capability, qualification.Flavor
+		return base
+	case modbusadapter.SunSpecQualificationNoGo:
+		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionNoGo, "not_qualified", "registry_no_match"
+		return base
+	case modbusadapter.SunSpecQualificationStop:
+		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "registry_stop"
+		return base
+	default:
 		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "invalid_qualification"
 		return base
 	}
-	if qualification.Supported {
-		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionGO, "supported", "qualified"
-		base.Sample, base.Profile = qualification.Sample, qualification.Profile
-		return base
-	}
-	if qualification.UnsupportedProfile {
-		base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionNoGo, "unsupported_profile", "unsupported_profile"
-		return base
-	}
-	base.Decision, base.Outcome, base.Category = sunSpecLiveSmokeDecisionStop, "incoherent", "incoherent_capture"
-	return base
 }
 
 type sunSpecLiveSmokeWorker struct {

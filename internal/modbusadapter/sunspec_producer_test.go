@@ -114,11 +114,11 @@ func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *test
 		t.Fatalf("NewSunSpecProducer: %v", err)
 	}
 
-	result, err := producer.QualifyMixedGenerationForTest(context.Background(), SunSpecPollIdentity{
+	result, err := producer.qualifyMixedGenerationForTest(context.Background(), SunSpecPollIdentity{
 		PollGeneration: 43, DeadlineIdentity: 93,
 	})
 	if err != nil {
-		t.Fatalf("QualifyMixedGenerationForTest: %v", err)
+		t.Fatalf("qualifyMixedGenerationForTest: %v", err)
 	}
 	if result.Outcome != SunSpecQualificationStop || result.ObservationCount != 0 || result.SampleID != "" {
 		t.Fatalf("mixed generation result = %#v; want STOP without publication", result)
@@ -222,8 +222,8 @@ func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, uni
 	if len(requests) == 0 {
 		t.Fatal("producer did not issue discovery reads")
 	}
-	if requests[0].Offset != 40000 || requests[0].WordCount != 1 {
-		t.Fatalf("first discovery request = %+v; want exact base view 40000 x 1", requests[0])
+	if requests[0].Offset != 40000 || requests[0].WordCount != 2 {
+		t.Fatalf("first discovery request = %+v; want exact SunSpec signature at 40000 x 2", requests[0])
 	}
 	var total uint16
 	nextOffset := uint16(40000)

@@ -2,6 +2,7 @@ package modbusadapter
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 type sunSpecLiveSmokeFakeDriver struct {
@@ -52,9 +55,9 @@ func TestRunSunSpecLiveSmokeMapsQualificationDecision(t *testing.T) {
 		qualification sunSpecLiveSmokeQualification
 		want          sunSpecLiveSmokeDecision
 	}{
-		{name: "supported", qualification: sunSpecLiveSmokeQualification{Supported: true}, want: sunSpecLiveSmokeDecisionGO},
-		{name: "unsupported profile", qualification: sunSpecLiveSmokeQualification{UnsupportedProfile: true}, want: sunSpecLiveSmokeDecisionNoGo},
-		{name: "incoherent", qualification: sunSpecLiveSmokeQualification{Incoherent: true}, want: sunSpecLiveSmokeDecisionStop},
+		{name: "matched", qualification: goSunSpecQualification(), want: sunSpecLiveSmokeDecisionGO},
+		{name: "not qualified", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationNoGo}, want: sunSpecLiveSmokeDecisionNoGo},
+		{name: "stop", qualification: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationStop}, want: sunSpecLiveSmokeDecisionStop},
 		{name: "qualifier error", qualification: sunSpecLiveSmokeQualification{Err: errors.New("qualifier failure")}, want: sunSpecLiveSmokeDecisionStop},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -77,7 +80,7 @@ func TestRunSunSpecLiveSmokeReconnectsOnceOnlyForReconnectRequiredError(t *testi
 		{Snapshot: sunSpecLiveSmokeSnapshot{ReconnectRequired: true}, Err: errors.New("first transport failure")},
 		{},
 	}}
-	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{Supported: true}}}
+	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{goSunSpecQualification()}}
 
 	result := runSunSpecLiveSmoke(context.Background(), time.Second, driver, qualifier, func(string, ...any) {})
 	if result.Decision != sunSpecLiveSmokeDecisionGO {
@@ -188,8 +191,8 @@ func TestRunSunSpecLiveSmokeDoesNotReconnectOutsideRecoverableError(t *testing.T
 		poll sunSpecLiveSmokePollResult
 		qual sunSpecLiveSmokeQualification
 	}{
-		{name: "successful unsupported profile", qual: sunSpecLiveSmokeQualification{UnsupportedProfile: true}},
-		{name: "successful incoherent", qual: sunSpecLiveSmokeQualification{Incoherent: true}},
+		{name: "successful no-go", qual: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationNoGo}},
+		{name: "successful stop", qual: sunSpecLiveSmokeQualification{Outcome: modbusadapter.SunSpecQualificationStop}},
 		{name: "error without reconnect required", poll: sunSpecLiveSmokePollResult{Err: errors.New("non-recoverable transport failure")}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -226,13 +229,23 @@ func TestRunSunSpecLiveSmokeSanitizesFailureAndNoGoEvidence(t *testing.T) {
 
 	noGoDriver := &sunSpecLiveSmokeFakeDriver{polls: []sunSpecLiveSmokePollResult{{}}}
 	noGoQualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{{
-		UnsupportedProfile: true,
-		Sample:             "sample-must-not-be-published",
-		Profile:            "profile-must-not-be-published",
+		Outcome:    modbusadapter.SunSpecQualificationNoGo,
+		Sample:     "sample-must-not-be-published",
+		Capability: "capability-must-not-be-published",
+		Flavor:     "flavor-must-not-be-published",
 	}}}
 	noGo := runSunSpecLiveSmoke(context.Background(), time.Second, noGoDriver, noGoQualifier, func(string, ...any) {})
-	if noGo.Decision != sunSpecLiveSmokeDecisionNoGo || noGo.Sample != "" || noGo.Profile != "" {
-		t.Fatalf("NO_GO result = %#v; want no sample or profile", noGo)
+	if noGo.Decision != sunSpecLiveSmokeDecisionNoGo || noGo.Sample != "" || noGo.Capability != "" || noGo.Flavor != "" {
+		t.Fatalf("NO_GO result = %#v; want no sample, capability, or flavor", noGo)
+	}
+}
+
+func goSunSpecQualification() sunSpecLiveSmokeQualification {
+	return sunSpecLiveSmokeQualification{
+		Outcome:    modbusadapter.SunSpecQualificationGO,
+		Sample:     "sample-1",
+		Capability: modbusreg.SunSpecThreePhaseMonitoringCapabilityID,
+		Flavor:     modbusreg.SunSpecFroniusObservedFlavorID,
 	}
 }
 

@@ -1,6 +1,7 @@
 package eebusadmin
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,8 @@ import (
 
 const maxRequestBodyBytes = 4096
 
+const maxHTTPMutationReplays = 128
+
 type server struct {
 	admin eebusruntime.AdminV1
 	raw   RawSnapshotProvider
@@ -37,6 +40,9 @@ type server struct {
 
 	spineMu        sync.Mutex
 	spineSnapshots map[string]*spineSnapshot
+
+	mutationMu      sync.Mutex
+	mutationReplays map[string]httpMutationReplay
 }
 
 type capabilityKind string
@@ -62,6 +68,36 @@ type capabilityRecord struct {
 	trustAction bool
 }
 
+type httpMutationReplay struct {
+	binding   string
+	status    int
+	body      []byte
+	expiresAt time.Time
+}
+
+type mutationResponseCapture struct {
+	header    http.Header
+	status    int
+	body      bytes.Buffer
+	invoked   bool
+	cacheKey  string
+	binding   string
+	expiresAt time.Time
+}
+
+func (capture *mutationResponseCapture) Header() http.Header { return capture.header }
+func (capture *mutationResponseCapture) WriteHeader(status int) {
+	if capture.status == 0 {
+		capture.status = status
+	}
+}
+func (capture *mutationResponseCapture) Write(content []byte) (int, error) {
+	if capture.status == 0 {
+		capture.status = http.StatusOK
+	}
+	return capture.body.Write(content)
+}
+
 func NewServer(config Config) (http.Handler, error) {
 	if config.Admin == nil {
 		return nil, errors.New("admin capability is required")
@@ -75,6 +111,7 @@ func NewServer(config Config) (http.Handler, error) {
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
 		projectionHashes: make(map[string][32]byte),
 		spineSnapshots:   make(map[string]*spineSnapshot),
+		mutationReplays:  make(map[string]httpMutationReplay),
 	}, nil
 }
 
@@ -97,6 +134,17 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if identity.principal == PrincipalPortalOwner && !server.auth.validateCSRF(request, identity.session) {
 		server.writeError(w, identity.principal, http.StatusForbidden, "csrf_rejected")
 		return
+	}
+	destination := w
+	if identity.principal == PrincipalPortalOwner && request.Method != http.MethodGet && request.Method != http.MethodHead {
+		capture, handled := server.beginHTTPMutation(w, request, identity.session)
+		if handled {
+			return
+		}
+		if capture != nil {
+			w = capture
+			defer server.finishHTTPMutation(destination, capture)
+		}
 	}
 
 	switch {
@@ -161,6 +209,94 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	default:
 		server.writeError(w, identity.principal, http.StatusNotFound, "invalid_request")
 	}
+}
+
+func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Request, session ownerSession) (*mutationResponseCapture, bool) {
+	if request.URL.RawQuery != "" {
+		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		return nil, true
+	}
+	idempotencyKey := request.Header.Get("Idempotency-Key")
+	if !validIdempotencyKey(idempotencyKey) {
+		return nil, false
+	}
+	content, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBodyBytes+1))
+	request.Body = io.NopCloser(bytes.NewReader(content))
+	if err != nil || len(content) > maxRequestBodyBytes {
+		return nil, false
+	}
+	var body any
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if decoder.Decode(&body) != nil {
+		return nil, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	canonical, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	binding := request.Method + "\x00" + request.URL.Path + "\x00" + string(canonical)
+	cacheKey := session.id + "\x00" + idempotencyKey
+
+	server.mutationMu.Lock()
+	now := server.auth.now()
+	for key, replay := range server.mutationReplays {
+		if !now.Before(replay.expiresAt) {
+			delete(server.mutationReplays, key)
+		}
+	}
+	if replay, ok := server.mutationReplays[cacheKey]; ok {
+		server.mutationMu.Unlock()
+		if replay.binding != binding {
+			server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "idempotency_conflict")
+			return nil, true
+		}
+		writeHTTPMutationReplay(w, replay)
+		return nil, true
+	}
+	if len(server.mutationReplays) >= maxHTTPMutationReplays {
+		server.mutationMu.Unlock()
+		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		return nil, true
+	}
+	expiresAt := now.Add(2 * time.Minute)
+	if session.expiresAt.Before(expiresAt) {
+		expiresAt = session.expiresAt
+	}
+	return &mutationResponseCapture{header: make(http.Header), cacheKey: cacheKey, binding: binding, expiresAt: expiresAt}, false
+}
+
+func (server *server) finishHTTPMutation(destination http.ResponseWriter, capture *mutationResponseCapture) {
+	status := capture.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := append([]byte(nil), capture.body.Bytes()...)
+	if capture.invoked && len(body) != 0 {
+		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
+	}
+	server.mutationMu.Unlock()
+	for key, values := range capture.header {
+		destination.Header()[key] = append([]string(nil), values...)
+	}
+	destination.WriteHeader(status)
+	_, _ = destination.Write(body)
+}
+
+func markHTTPMutationInvoked(w http.ResponseWriter) {
+	if capture, ok := w.(*mutationResponseCapture); ok {
+		capture.invoked = true
+	}
+}
+
+func writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
+	body := bytes.Replace(replay.body, []byte(`"replayed":false`), []byte(`"replayed":true`), 1)
+	w.WriteHeader(replay.status)
+	_, _ = w.Write(body)
 }
 
 func (server *server) partners(w http.ResponseWriter, request *http.Request, identity authenticatedRequest) {
@@ -293,6 +429,7 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "observation_stale")
 		return
 	}
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Select(request.Context(), eebusruntime.SelectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Observation: record.observation, ExpectedSKI: body.ExpectedSKI})
 	if failure != nil {
 		server.invalidateCapabilities()
@@ -328,6 +465,7 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	server.deleteCapability(id)
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Selection: record.selection})
 	if failure != nil {
 		server.invalidateCapabilities()
@@ -352,6 +490,7 @@ func (server *server) confirmCandidate(w http.ResponseWriter, request *http.Requ
 		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "candidate_expired")
 		return
 	}
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Confirm(request.Context(), eebusruntime.ConfirmRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Candidate: record.candidate, ExpectedSKI: body.ExpectedSKI})
 	if failure != nil {
 		server.invalidateCapabilities()
@@ -371,6 +510,7 @@ func (server *server) closePairingWindow(w http.ResponseWriter, request *http.Re
 		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.ClosePairingWindow(request.Context(), eebusruntime.ClosePairingWindowRequestV1{MutationPreconditionV1: mutationPrecondition(request, body.StateRevision)})
 	server.finishMutation(w, result, failure)
 }
@@ -389,6 +529,7 @@ func (server *server) cancelCandidate(w http.ResponseWriter, request *http.Reque
 		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "candidate_expired")
 		return
 	}
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Cancel(request.Context(), eebusruntime.CancelRequestV1{MutationPreconditionV1: mutationPrecondition(request, body.StateRevision), Candidate: record.candidate})
 	server.finishMutation(w, result, failure)
 }
@@ -419,6 +560,7 @@ func (server *server) mutateTrustedPartner(w http.ResponseWriter, request *http.
 	precondition := mutationPrecondition(request, body.StateRevision)
 	var result eebusruntime.AdminMutationResultV1
 	var failure *eebusruntime.AdminErrorV1
+	markHTTPMutationInvoked(w)
 	if retry {
 		result, failure = server.admin.RetryTrusted(request.Context(), eebusruntime.RetryTrustedRequestV1{MutationPreconditionV1: precondition, Partner: record.partner})
 	} else {
@@ -642,6 +784,7 @@ func (server *server) openPairingWindow(w http.ResponseWriter, request *http.Req
 		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	markHTTPMutationInvoked(w)
 	result, failure := server.admin.OpenPairingWindow(request.Context(), eebusruntime.OpenPairingWindowRequestV1{
 		MutationPreconditionV1: eebusruntime.MutationPreconditionV1{
 			IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision,

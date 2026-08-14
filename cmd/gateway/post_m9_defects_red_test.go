@@ -621,11 +621,12 @@ func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTu
 	now := time.Date(2026, 8, 15, 16, 0, 0, 0, time.UTC)
 	config := uint16(2)
 	tests := []struct {
-		name            string
-		firmwarePayload []byte
-		hardwarePayload []byte
-		firmwareTimeout bool
-		wantMode        graphql.Fm5SemanticMode
+		name             string
+		connectedPayload []byte
+		firmwarePayload  []byte
+		hardwarePayload  []byte
+		firmwareTimeout  bool
+		wantMode         graphql.Fm5SemanticMode
 	}{
 		{
 			name:            "firmware-only identity",
@@ -644,6 +645,17 @@ func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTu
 			firmwarePayload: []byte{0xFF, 0xFF, 0xFF},
 			hardwarePayload: []byte{0xFF, 0xFF},
 			firmwareTimeout: true,
+		},
+		{
+			name:             "invalid connected sentinel",
+			connectedPayload: []byte{0xFF},
+			firmwarePayload:  []byte{0xFF, 0xFF, 0xFF},
+			hardwarePayload:  []byte{0xFF, 0xFF},
+		},
+		{
+			name:            "short hardware field",
+			firmwarePayload: []byte{0xFF, 0xFF, 0xFF},
+			hardwarePayload: []byte{0xFF},
 		},
 	}
 
@@ -674,7 +686,11 @@ func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTu
 				if group == remoteFunctionalModules.group {
 					switch addr {
 					case device_slot_connected:
-						return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+						payload := []byte{0x00}
+						if instance == 0x04 && test.connectedPayload != nil {
+							payload = test.connectedPayload
+						}
+						return testB524ResponseForSelectorPayload(frame.Data, payload...), nil
 					case device_slot_class_address:
 						return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
 					case device_slot_firmware:
@@ -830,6 +846,39 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		assertRetained(t, provider)
 	})
 
+	t.Run("full scan invalid connected sentinel", func(t *testing.T) {
+		provider := newProvider()
+		poller := newPoller(provider)
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			group := frame.Data[2]
+			instance := frame.Data[3]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == remoteFunctionalModules.group {
+				switch addr {
+				case device_slot_connected:
+					value := byte(0x00)
+					if instance == 0x04 {
+						value = 0xFF
+					}
+					return testB524ResponseForSelectorPayload(frame.Data, value), nil
+				case device_slot_class_address:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+				case device_slot_firmware:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+				case device_slot_hardware_identifier:
+					return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+				}
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+
+		poller.refreshRadioDevices(context.Background())
+		assertRetained(t, provider)
+	})
+
 	t.Run("cached hardware identity then later detail timeout", func(t *testing.T) {
 		provider := newProvider()
 		poller := newPoller(provider)
@@ -871,6 +920,47 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		}
 
 		poller.refreshRadioDevices(ctx)
+		assertRetained(t, provider)
+	})
+
+	t.Run("cached identity then first connected read timeout", func(t *testing.T) {
+		provider := newProvider()
+		poller := newPoller(provider)
+		hardware := uint16(0x1234)
+		poller.radioDevices = map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteFunctionalModules.group, Instance: 0x04}: {
+				Group:              remoteFunctionalModules.group,
+				Instance:           0x04,
+				SlotMode:           "inventory",
+				HardwareIdentifier: &hardware,
+			},
+		}
+		poller.deviceSlotCache[deviceSlotKey{Group: remoteFunctionalModules.group, Instance: 0x04}] = true
+		poller.deviceSlotDiscoveryDone = true
+		poller.deviceSlotDiscoveryAt = now
+		poller.deviceSlotRediscoveryTTL = time.Hour
+		connectedReads := 0
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			if frame.Data[2] == remoteFunctionalModules.group {
+				addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+				if addr == device_slot_connected {
+					connectedReads++
+					cancel()
+					return nil, errors.New("current connected timeout")
+				}
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+
+		poller.refreshRadioDevices(ctx)
+		if connectedReads == 0 {
+			t.Fatal("current device_connected read was not attempted")
+		}
 		assertRetained(t, provider)
 	})
 }

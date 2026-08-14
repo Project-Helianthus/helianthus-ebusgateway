@@ -137,7 +137,15 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if identity.principal == PrincipalPortalOwner && !server.auth.validateCSRF(request, identity.session) {
+		if isHTTPMutation(request) {
+			server.emitPreCaptureMutationRejection(auditAction(request.Method, request.URL.Path), identity.principal, "csrf_rejected")
+		}
 		server.writeError(w, identity.principal, http.StatusForbidden, "csrf_rejected")
+		return
+	}
+	if identity.principal == PrincipalHAIntegration && isHTTPMutation(request) {
+		server.emitPreCaptureMutationRejection(auditAction(request.Method, request.URL.Path), identity.principal, "forbidden")
+		server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
 		return
 	}
 	destination := w
@@ -375,6 +383,30 @@ func (server *server) emitMutationAudit(action string, status int, body []byte, 
 		Action: action, Principal: PrincipalPortalOwner, RequestID: envelope.RequestID,
 		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: prior,
 		ResultingStateClass: resulting, Timestamp: server.auth.now(), Reason: reason,
+	}
+	func() {
+		defer func() { _ = recover() }()
+		server.audit(event)
+	}()
+}
+
+func isHTTPMutation(request *http.Request) bool {
+	return request.Method != http.MethodGet && request.Method != http.MethodHead
+}
+
+func (server *server) emitPreCaptureMutationRejection(action string, principal Principal, reason string) {
+	if server.audit == nil {
+		return
+	}
+	event := AuditEvent{
+		Action:              action,
+		Principal:           principal,
+		RequestID:           server.requestID(),
+		IdempotencyOutcome:  "rejected",
+		PriorStateClass:     "authenticated",
+		ResultingStateClass: "rejected",
+		Timestamp:           server.auth.now(),
+		Reason:              sanitizedAuditReason(reason),
 	}
 	func() {
 		defer func() { _ = recover() }()

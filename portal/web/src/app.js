@@ -2301,9 +2301,7 @@ class PortalShell extends HTMLElement {
     }
     this._eebusVisibilityHandler = () => {
       if (document.visibilityState !== "visible") {
-        this.clearEEBusCandidate();
-        this._eebusSelection = undefined;
-		this._eebusPendingMutation = undefined;
+        this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
         this.clearEEBusSPINETree();
       }
     };
@@ -2338,7 +2336,7 @@ class PortalShell extends HTMLElement {
     const csrf = response.headers?.get?.("X-CSRF-Token");
     if (csrf) this._eebusCSRFToken = csrf;
     const payload = await response.json();
-    this.clearEEBusCandidate();
+    this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
     if (!response.ok || payload?.error) {
 	  const error = new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
 	  error.eebusTerminal = true;
@@ -2377,8 +2375,8 @@ class PortalShell extends HTMLElement {
   async refreshEEBusPartners(view) {
     const allowed = new Set(["trusted", "connected", "discovered", "candidate"]);
     if (!allowed.has(view)) throw new Error("invalid eeBUS partner view");
-	this.clearEEBusCandidate();
-	this._eebusUntrustArmedID = undefined;
+	this.clearEEBusCandidate({ preserveAuthority: !!this._eebusPendingMutation });
+	if (!this._eebusPendingMutation) this._eebusUntrustArmedID = undefined;
 	const payload = await this.eebusAdminFetch(`/partners?view=${encodeURIComponent(view)}`);
 	const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
 	this._eebusPartnerView = view;
@@ -2433,6 +2431,7 @@ class PortalShell extends HTMLElement {
 	try {
 	  const payload = await this.eebusAdminFetch(path, { method, body, idempotencyKey: pending.idempotencyKey });
 	  this._eebusPendingMutation = undefined;
+	  this.clearEEBusCandidate();
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
@@ -2530,12 +2529,12 @@ class PortalShell extends HTMLElement {
 	}
   }
 
-  clearEEBusCandidate() {
-	if (this._eebusCandidateTimer) {
+  clearEEBusCandidate({ preserveAuthority = false } = {}) {
+	if (!preserveAuthority && this._eebusCandidateTimer) {
 	  clearTimeout(this._eebusCandidateTimer);
 	  this._eebusCandidateTimer = undefined;
 	}
-	this._eebusCandidate = undefined;
+	if (!preserveAuthority) this._eebusCandidate = undefined;
     const candidate = this.querySelector?.('[data-role="eebus-candidate"]');
     if (candidate) candidate.textContent = "";
 	const input = this.querySelector?.('[data-role="eebus-confirm-ski"]');

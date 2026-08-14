@@ -241,7 +241,7 @@ test("pending replay control refreshes status before replaying only its frozen r
   assert.equal(shell._eebusSelection, undefined);
   retryControl.clickHandler();
   await replayDone;
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(calls[1].url, "/admin/eebus/v1/status", "retry validates authenticated status first");
   assert.equal(calls[2].url, calls[0].url, "replay uses the original endpoint");
@@ -254,12 +254,34 @@ test("pending replay control refreshes status before replaying only its frozen r
 });
 
 test("pending replay expires no later than the two-minute authenticated server TTL", async () => {
-  const { shell } = await issue809Shell(async () => { throw new Error("response lost"); });
+  const retryControl = { disabled: true, addEventListener() {} };
+  const { shell } = await issue809Shell(async () => { throw new Error("response lost"); }, new Map([
+    ['[data-role="eebus-retry-pending"]', retryControl],
+  ]));
   shell._eebusCSRFToken = "csrf";
   shell._eebusStateRevision = 14;
   const before = Date.now();
   await assert.rejects(shell.openEEBusPairingWindow(), /response lost/);
   assert.ok(shell._eebusPendingMutation.expiresAt - before <= 2 * 60 * 1000, "local replay TTL must not outlive authenticated server replay TTL");
+  assert.equal(retryControl.disabled, false);
+  shell._eebusPendingMutationTimer.callback();
+  assert.equal(shell._eebusPendingMutation, undefined, "expiry clears pending replay");
+  assert.equal(retryControl.disabled, true, "expiry disables retry control");
+});
+
+test("terminal status refresh clears pending replay before it can be retried", async () => {
+  const retryControl = { disabled: true, addEventListener(name, handler) { if (name === "click") this.clickHandler = handler; } };
+  const { shell } = await issue809Shell(async () => response({ error: { code: "owner_session_invalid" } }), new Map([
+    ['[data-role="eebus-retry-pending"]', retryControl],
+  ]));
+  shell._eebusPendingMutation = { method: "POST", path: "/candidate:confirm", body: "{}", idempotencyKey: "key", expiresAt: Date.now() + 1 };
+  shell._eebusPendingMutationTimer = { cleared: false };
+  shell.updateEEBusPendingRetryControl();
+  shell.bindEEBusAdminEvents();
+  retryControl.clickHandler();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shell._eebusPendingMutation, undefined);
+  assert.equal(retryControl.disabled, true);
 });
 
 test("disconnect clears all active eeBUS authority including pending replay", async () => {

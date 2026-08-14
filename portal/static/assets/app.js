@@ -2263,6 +2263,7 @@ class PortalShell extends HTMLElement {
       void this.loginEEBusAdmin(username?.value || "", value).catch((error) => this.showEEBusError(error));
     });
     onClick("eebus-refresh-status", () => void this.refreshEEBusStatus().catch((error) => this.showEEBusError(error)));
+	 onClick("eebus-retry-pending", () => void this.refreshAndRetryPendingEEBusMutation().catch((error) => this.showEEBusError(error)));
     onClick("eebus-refresh-partners", () => {
       const view = this.querySelector('[data-role="eebus-partner-view"]')?.value || "trusted";
       void this.refreshEEBusPartners(view).catch((error) => this.showEEBusError(error));
@@ -2443,6 +2444,7 @@ class PortalShell extends HTMLElement {
 	  this._eebusPendingMutationTimer = setTimeout(() => {
 		if (this._eebusPendingMutation === pending) this.clearEEBusPendingMutation();
 	  }, Math.max(0, pending.expiresAt - Date.now()));
+	  this.updateEEBusPendingRetryControl();
 	}
 	try {
 	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey });
@@ -2469,6 +2471,16 @@ class PortalShell extends HTMLElement {
 	  this.clearEEBusCandidate();
 	  this.applyEEBusStatus(payload);
 	  return payload;
+	} catch (error) {
+	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
+	  throw error;
+	}
+  }
+
+  async refreshAndRetryPendingEEBusMutation() {
+	try {
+	  await this.refreshEEBusStatus();
+	  return await this.retryPendingEEBusMutation();
 	} catch (error) {
 	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
 	  throw error;
@@ -2592,6 +2604,12 @@ class PortalShell extends HTMLElement {
 	  this._eebusPendingMutationTimer = undefined;
 	}
 	this._eebusPendingMutation = undefined;
+	this.updateEEBusPendingRetryControl();
+  }
+
+  updateEEBusPendingRetryControl() {
+	const retry = this.querySelector?.('[data-role="eebus-retry-pending"]');
+	if (retry) retry.disabled = !this._eebusPendingMutation;
   }
 
   showEEBusError(error) {
@@ -2937,6 +2955,7 @@ class PortalShell extends HTMLElement {
 			    <button class="button" data-role="eebus-window-open" type="button">Open pairing window</button>
 			    <button class="button" data-role="eebus-window-close" type="button">Close pairing window</button>
 			    <button class="button" data-role="eebus-candidate-cancel" type="button">Cancel candidate</button>
+			    <button class="button" data-role="eebus-retry-pending" type="button" disabled>Retry pending action</button>
 			  </div>
 			  <div class="snapshot-controls">
 			    <select class="select" data-role="eebus-partner-view" aria-label="eeBUS partner view">

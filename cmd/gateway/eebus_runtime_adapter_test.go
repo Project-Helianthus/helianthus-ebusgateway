@@ -17,6 +17,76 @@ import (
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 )
 
+type issue809AdminStub struct{}
+
+func (issue809AdminStub) Snapshot(context.Context, eebusruntime.AdminSnapshotRequestV1) (eebusruntime.AdminSnapshotV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Snapshot")
+}
+func (issue809AdminStub) OpenPairingWindow(context.Context, eebusruntime.OpenPairingWindowRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected OpenPairingWindow")
+}
+func (issue809AdminStub) ClosePairingWindow(context.Context, eebusruntime.ClosePairingWindowRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected ClosePairingWindow")
+}
+func (issue809AdminStub) Select(context.Context, eebusruntime.SelectRequestV1) (eebusruntime.AdminSelectionResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Select")
+}
+func (issue809AdminStub) Connect(context.Context, eebusruntime.ConnectRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Connect")
+}
+func (issue809AdminStub) Confirm(context.Context, eebusruntime.ConfirmRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Confirm")
+}
+func (issue809AdminStub) Cancel(context.Context, eebusruntime.CancelRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Cancel")
+}
+func (issue809AdminStub) RetryTrusted(context.Context, eebusruntime.RetryTrustedRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected RetryTrusted")
+}
+func (issue809AdminStub) Untrust(context.Context, eebusruntime.UntrustRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+	panic("unexpected Untrust")
+}
+
+func TestIssue809OperatorRuntimeReturnsSeparateCapability(t *testing.T) {
+	runtime := &msp05bRuntime{}
+	admin := issue809AdminStub{}
+	adapter, gotAdmin, err := startEEBusOperatorRuntime(
+		context.Background(),
+		msp05bEnabledConfig(),
+		func(string) ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil },
+		func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+			return runtime, admin, nil
+		},
+	)
+	if err != nil || adapter == nil || gotAdmin == nil {
+		t.Fatalf("operator runtime=(%v,%v,%v), want complete capability pair", adapter, gotAdmin, err)
+	}
+	if adapter.runtime != runtime || runtime.startCalls != 1 {
+		t.Fatalf("adapter/runtime start=%v/%d", adapter.runtime, runtime.startCalls)
+	}
+	if err := adapter.Shutdown(); err != nil || runtime.stopCalls != 1 {
+		t.Fatalf("shutdown=(%v,%d)", err, runtime.stopCalls)
+	}
+}
+
+func TestIssue809OperatorRuntimeFailsClosedOnMissingAdminCapability(t *testing.T) {
+	runtime := &msp05bRuntime{}
+	adapter, admin, err := startEEBusOperatorRuntime(
+		context.Background(),
+		msp05bEnabledConfig(),
+		func(string) ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil },
+		func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+			return runtime, nil, nil
+		},
+	)
+	if err == nil || adapter != nil || admin != nil {
+		t.Fatalf("incomplete factory=(%v,%v,%v), want closed failure", adapter, admin, err)
+	}
+	if runtime.startCalls != 0 || runtime.stopCalls != 1 {
+		t.Fatalf("incomplete factory calls start/stop=%d/%d, want 0/1", runtime.startCalls, runtime.stopCalls)
+	}
+}
+
 type msp05bRuntime struct {
 	startErr    error
 	shutdownErr error

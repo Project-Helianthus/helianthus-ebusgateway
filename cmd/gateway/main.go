@@ -25,6 +25,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
@@ -36,6 +37,7 @@ import (
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
+	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
 var (
@@ -172,6 +174,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
 		return fmt.Errorf("validate synchronized evidence config: %w", err)
 	}
+	if err := validateEEBusAdminRuntimeConfig(cfg); err != nil {
+		return fmt.Errorf("validate eeBUS admin configuration: %w", err)
+	}
 
 	if len(cfg.Providers) == 0 {
 		cfg.Providers = vaillantproviders.Default()
@@ -206,7 +211,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
-	eebusAdapter, err := startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
+	var eebusAdminAuthConfig eebusadmin.AuthConfig
+	if cfg.EEBusAdminConfig.Enabled {
+		eebusAdminAuthConfig, err = loadEEBusAdminAuthConfig(cfg.EEBusAdminConfig)
+		if err != nil {
+			return fmt.Errorf("eeBUS admin boundary: %w", err)
+		}
+	}
+	var eebusAdapter *eebusRuntimeAdapter
+	var eebusAdmin eebusruntime.AdminV1
+	if cfg.EEBusAdminConfig.Enabled {
+		eebusAdapter, eebusAdmin, err = startEEBusOperatorRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusOperatorRuntimeFn)
+	} else {
+		eebusAdapter, err = startEEBusRuntime(ctx, cfg.EEBusConfig, resolveEEBusInterfaceAddressesFn, newEEBusRuntimeFn)
+	}
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)
 	}
@@ -216,6 +234,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
 			}
 		}()
+	}
+	var eebusAdminHandler http.Handler
+	if cfg.EEBusAdminConfig.Enabled {
+		var authErr error
+		eebusAdminHandler, authErr = eebusadmin.NewServer(eebusadmin.Config{Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig})
+		if authErr != nil {
+			return fmt.Errorf("eeBUS admin boundary: %w", authErr)
+		}
 	}
 	if evidenceRuntime != nil {
 		version, versionErr := synchronizedEvidenceBuildVersion()
@@ -1105,7 +1131,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1340,6 +1366,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
+	bindEEBusAdminFlags(fs, cfg)
 	fs.BoolVar(
 		&cfg.EvidenceOneShotEnabled,
 		"synchronized-evidence-one-shot-enabled",
@@ -1943,6 +1970,7 @@ func startHTTPServer(
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
+	eebusAdminHandler http.Handler,
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2126,6 +2154,9 @@ func startHTTPServer(
 	mux.Handle(cfg.SnapshotPath, snapshotHandler)
 	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
 	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+	if eebusAdminHandler != nil {
+		mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
+	}
 	if cfg.DumpUploadPath != "" {
 		uploadPath := cfg.DumpUploadPath
 		if !strings.HasPrefix(uploadPath, "/") {
@@ -2154,8 +2185,14 @@ func startHTTPServer(
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
 			MCPPath:          cfg.MCPPath,
-			GatewayVersion:   buildInfo.ReleaseVersion,
-			BuildID:          buildInfo.BuildID,
+			EEBusAdminPath: func() string {
+				if eebusAdminHandler != nil {
+					return "/admin/eebus/v1"
+				}
+				return ""
+			}(),
+			GatewayVersion: buildInfo.ReleaseVersion,
+			BuildID:        buildInfo.BuildID,
 			ListRegistry: func() []portal.RegistryDevice {
 				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))

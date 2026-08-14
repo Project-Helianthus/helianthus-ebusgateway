@@ -217,6 +217,11 @@ class PortalShell extends HTMLElement {
 
   disconnectedCallback() {
     this.endBootstrapLifecycle();
+	this.clearEEBusCandidate();
+	if (this._eebusVisibilityHandler && typeof document.removeEventListener === "function") {
+	  document.removeEventListener("visibilitychange", this._eebusVisibilityHandler);
+	  this._eebusVisibilityHandler = undefined;
+	}
     if (this.streamSource) {
       this.streamSource.close();
       this.streamSource = undefined;
@@ -394,6 +399,7 @@ class PortalShell extends HTMLElement {
     this.bindExplorerEvents();
     this.bindL7CatalogEvents();
     this.bindVaillantB503Events();
+	this.bindEEBusAdminEvents();
   }
 
   // bindL7CatalogEvents wires the L7 Standard Catalog section (M5_PORTAL)
@@ -528,6 +534,12 @@ class PortalShell extends HTMLElement {
         this.handleVaillantB503NavAway();
       }
     }
+	if (previousTarget === "section-eebus" && targetID !== "section-eebus") {
+	  this.clearEEBusCandidate();
+	  this._eebusSelection = undefined;
+	  this._eebusUntrustArmedID = undefined;
+	  this.clearEEBusSPINETree();
+	}
     this._activeSectionTarget = targetID;
 
     const sectionMap = {
@@ -542,6 +554,7 @@ class PortalShell extends HTMLElement {
       "section-issue-builder": ["section-issue-builder"],
       "section-l7-catalog": ["section-l7-catalog"],
       "section-vaillant-b503": ["section-vaillant-b503"],
+	  "section-eebus": ["section-eebus"],
     };
     const visible = new Set(sectionMap[targetID] || [targetID]);
     visible.add("section-search");
@@ -576,6 +589,9 @@ class PortalShell extends HTMLElement {
         this.refreshVaillantB503Capability();
       }
     }
+	if (targetID === "section-eebus" && this._capabilityEEBusAdmin) {
+	  void this.refreshEEBusStatus();
+	}
   }
 
   async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
@@ -617,6 +633,9 @@ class PortalShell extends HTMLElement {
         ? bootstrap.endpoints.graphql
         : "/graphql";
       this._graphqlEndpoint = gqlEndpoint;
+	  this._eebusAdminPath = capabilities.eebus_admin && typeof bootstrap.endpoints?.eebus_admin === "string"
+	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
+	    : "";
       this.applyCapabilityState(capabilities);
       const firstEnabled = this.querySelector("[data-nav-target]:not([disabled])");
       if (firstEnabled) {
@@ -800,6 +819,8 @@ class PortalShell extends HTMLElement {
     // Codex P2 on PR #507.
     this.setNavState("l7-catalog", cap.ebus_standard);
     this._capabilityEbusStandard = Boolean(cap.ebus_standard);
+	this.setNavState("eebus", cap.eebus_admin);
+	this._capabilityEEBusAdmin = Boolean(cap.eebus_admin);
     // Vaillant B503 nav — stays enabled whenever the pane exists so the
     // operator can navigate in and see an unavailable/placeholder state
     // surfaced from the GraphQL vaillantCapabilities query. If the whole
@@ -2226,6 +2247,300 @@ class PortalShell extends HTMLElement {
     }
   }
 
+  bindEEBusAdminEvents() {
+    const onClick = (role, action) => {
+      const element = this.querySelector(`[data-role="${role}"]`);
+      if (element) element.addEventListener("click", action);
+    };
+    onClick("eebus-login", () => {
+      const username = this.querySelector('[data-role="eebus-owner-username"]');
+      const password = this.querySelector('[data-role="eebus-owner-password"]');
+      const value = password?.value || "";
+      if (password) password.value = "";
+      void this.loginEEBusAdmin(username?.value || "", value).catch((error) => this.showEEBusError(error));
+    });
+    onClick("eebus-refresh-status", () => void this.refreshEEBusStatus().catch((error) => this.showEEBusError(error)));
+    onClick("eebus-refresh-partners", () => {
+      const view = this.querySelector('[data-role="eebus-partner-view"]')?.value || "trusted";
+      void this.refreshEEBusPartners(view).catch((error) => this.showEEBusError(error));
+    });
+    onClick("eebus-window-open", () => void this.openEEBusPairingWindow().catch((error) => this.showEEBusError(error)));
+    onClick("eebus-window-close", () => void this.closeEEBusPairingWindow().catch((error) => this.showEEBusError(error)));
+    onClick("eebus-candidate-cancel", () => void this.cancelEEBusCandidate().catch((error) => this.showEEBusError(error)));
+    onClick("eebus-candidate-confirm", () => {
+      const value = this.querySelector('[data-role="eebus-confirm-ski"]')?.value || "";
+      void this.confirmEEBusCandidate(value).catch((error) => this.showEEBusError(error));
+    });
+    const partners = this.querySelector('[data-role="eebus-partners"]');
+    if (partners) {
+      partners.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("[data-eebus-action]");
+        if (!button) return;
+        const action = button.getAttribute("data-eebus-action");
+        const id = button.getAttribute("data-eebus-id") || "";
+        const ski = button.getAttribute("data-eebus-ski") || "";
+        const operations = {
+          select: () => this.selectEEBusObservation(id, ski),
+          connect: () => this.connectEEBusSelection(),
+          retry: () => this.retryEEBusPartner(id),
+		  "arm-untrust": () => this.armEEBusUntrust(id),
+		  untrust: () => this.untrustEEBusPartner(id),
+          spine: () => this.loadEEBusSPINERoot(id),
+        };
+        if (operations[action]) void operations[action]().catch((error) => this.showEEBusError(error));
+      });
+    }
+    const tree = this.querySelector('[data-role="eebus-spine-tree"]');
+    if (tree) {
+      tree.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("[data-eebus-spine-action]");
+        if (!button) return;
+        const nodeID = button.getAttribute("data-eebus-node") || "";
+        const cursor = button.getAttribute("data-eebus-cursor") || "";
+        void this.loadEEBusSPINEChildren(nodeID, cursor).catch((error) => this.showEEBusError(error));
+      });
+    }
+    this._eebusVisibilityHandler = () => {
+      if (document.visibilityState !== "visible") {
+        this.clearEEBusCandidate();
+        this._eebusSelection = undefined;
+        this.clearEEBusSPINETree();
+      }
+    };
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", this._eebusVisibilityHandler);
+    }
+  }
+
+  async eebusAdminFetch(path, options = {}) {
+    if (!this._eebusAdminPath) throw new Error("eeBUS admin boundary unavailable");
+    const method = options.method || "GET";
+    const headers = { Accept: "application/json", ...(options.headers || {}) };
+    const init = { method, credentials: "same-origin", headers };
+    if (options.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(options.body);
+    }
+    if (method !== "GET" && method !== "HEAD") {
+      if (!this._eebusCSRFToken) throw new Error("owner session is not authenticated");
+      headers["X-CSRF-Token"] = this._eebusCSRFToken;
+      headers["Idempotency-Key"] = options.idempotencyKey || crypto.randomUUID();
+    }
+    const response = await fetch(`${this._eebusAdminPath}${path}`, init);
+    const csrf = response.headers?.get?.("X-CSRF-Token");
+    if (csrf) this._eebusCSRFToken = csrf;
+    const payload = await response.json();
+	this.clearEEBusCandidate();
+    if (!response.ok || payload?.error) {
+      throw new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
+    }
+    if (Number.isSafeInteger(payload?.state_revision) && payload.state_revision > 0) {
+      this._eebusStateRevision = payload.state_revision;
+    }
+    return payload;
+  }
+
+  async loginEEBusAdmin(username, password) {
+    if (!username || !password) throw new Error("owner credentials are required");
+    let authorization;
+    try {
+      authorization = `Basic ${btoa(`${username}:${password}`)}`;
+    } finally {
+      password = "";
+    }
+    const payload = await this.eebusAdminFetch("/status", { headers: { Authorization: authorization } });
+    this.applyEEBusStatus(payload);
+    return payload;
+  }
+
+  async refreshEEBusStatus() {
+    const payload = await this.eebusAdminFetch("/status");
+    this.applyEEBusStatus(payload);
+    return payload;
+  }
+
+  applyEEBusStatus(payload) {
+    const status = this.querySelector('[data-role="eebus-status"]');
+    if (status) status.textContent = JSON.stringify(payload?.data || {}, null, 2);
+  }
+
+  async refreshEEBusPartners(view) {
+    const allowed = new Set(["trusted", "connected", "discovered", "candidate"]);
+    if (!allowed.has(view)) throw new Error("invalid eeBUS partner view");
+	this.clearEEBusCandidate();
+	this._eebusUntrustArmedID = undefined;
+	const payload = await this.eebusAdminFetch(`/partners?view=${encodeURIComponent(view)}`);
+	const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
+	this._eebusPartnerView = view;
+	this._eebusPartnerRows = view === "candidate" ? undefined : rows.map((row) => ({ ...row }));
+	if (view === "candidate" && rows.length === 1) {
+	  this._eebusCandidate = { ...rows[0] };
+      const candidate = this.querySelector('[data-role="eebus-candidate"]');
+	  if (candidate) candidate.textContent = JSON.stringify(this._eebusCandidate, null, 2);
+	  const expiry = Date.parse(this._eebusCandidate.candidate_expires_at || "");
+	  if (Number.isFinite(expiry)) {
+		const delay = Math.max(0, Math.min(expiry - Date.now(), 24 * 60 * 60 * 1000));
+		this._eebusCandidateTimer = setTimeout(() => this.clearEEBusCandidate(), delay);
+	  }
+    }
+    this.renderEEBusPartners(rows, view);
+    return payload;
+  }
+
+  renderEEBusPartners(rows, view) {
+    const container = this.querySelector('[data-role="eebus-partners"]');
+    if (!container) return;
+    const rendered = rows.map((row) => {
+      const safe = escapeHtml(JSON.stringify(row, null, 2));
+      const id = escapeHtml(row.partner_id || row.observation_id || "");
+      const ski = escapeHtml(row.remote_ski || "");
+      let actions = "";
+      if (view === "discovered" && row.observation_id) actions += `<button class="button" data-eebus-action="select" data-eebus-id="${id}" data-eebus-ski="${ski}">Select without dial</button>`;
+	  if (view === "trusted" && row.partner_id) {
+		actions += `<button class="button" data-eebus-action="retry" data-eebus-id="${id}">Retry</button>`;
+		actions += this._eebusUntrustArmedID === row.partner_id
+		  ? `<button class="button" data-eebus-action="untrust" data-eebus-id="${id}">Confirm untrust</button>`
+		  : `<button class="button" data-eebus-action="arm-untrust" data-eebus-id="${id}">Arm untrust</button>`;
+	  }
+      if ((view === "trusted" || view === "connected") && row.partner_id) actions += `<button class="button" data-eebus-action="spine" data-eebus-id="${id}">Browse SPINE</button>`;
+      return `<article class="eebus-partner"><pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
+    }).join("");
+    const connect = this._eebusSelection
+      ? `<button class="button" data-eebus-action="connect">Connect selected partner</button>`
+      : "";
+    container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
+  }
+
+  async eebusMutation(path, body, method = "POST") {
+    const payload = await this.eebusAdminFetch(path, { method, body });
+    this.applyEEBusStatus(payload);
+    return payload;
+  }
+
+  openEEBusPairingWindow() {
+    return this.eebusMutation("/pairing-window:open", { duration_seconds: 300, state_revision: this._eebusStateRevision });
+  }
+
+  closeEEBusPairingWindow() {
+	const operation = this.eebusMutation("/pairing-window:close", { state_revision: this._eebusStateRevision });
+	this.clearEEBusCandidate();
+	this._eebusSelection = undefined;
+	return operation;
+  }
+
+  async selectEEBusObservation(observationID, expectedSKI) {
+    const payload = await this.eebusMutation(`/observations/${encodeURIComponent(observationID)}:select`, { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
+    const selectionID = payload?.data?.selection_id;
+    if (!selectionID) throw new Error("selection authority missing");
+    this._eebusSelection = { id: selectionID };
+    this.renderEEBusPartners([], "discovered");
+    return payload;
+  }
+
+  async connectEEBusSelection() {
+    const selectionID = this._eebusSelection?.id;
+    if (!selectionID) throw new Error("no active eeBUS selection");
+    this._eebusSelection = undefined;
+    return this.eebusMutation(`/selections/${encodeURIComponent(selectionID)}:connect`, { state_revision: this._eebusStateRevision });
+  }
+
+  async confirmEEBusCandidate(expectedSKI) {
+    if (!this._eebusCandidate || expectedSKI !== this._eebusCandidate.remote_ski) throw new Error("candidate SKI comparison does not match");
+    try {
+      return await this.eebusMutation("/candidate:confirm", { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
+    } finally {
+      this.clearEEBusCandidate();
+    }
+  }
+
+  async cancelEEBusCandidate() {
+    try {
+      return await this.eebusMutation("/candidate:cancel", { state_revision: this._eebusStateRevision });
+    } finally {
+      this.clearEEBusCandidate();
+    }
+  }
+
+  retryEEBusPartner(partnerID) {
+	return this.eebusMutation(`/partners/${encodeURIComponent(partnerID)}:retry`, { state_revision: this._eebusStateRevision });
+  }
+
+  armEEBusUntrust(partnerID) {
+	this._eebusUntrustArmedID = partnerID;
+	this.renderEEBusPartners(this._eebusPartnerRows || [], this._eebusPartnerView || "trusted");
+  }
+
+  async untrustEEBusPartner(partnerID) {
+	if (!partnerID || this._eebusUntrustArmedID !== partnerID) throw new Error("untrust is not armed for this partner");
+	this._eebusUntrustArmedID = undefined;
+	return this.eebusMutation(`/partners/${encodeURIComponent(partnerID)}/trust`, { state_revision: this._eebusStateRevision }, "DELETE");
+  }
+
+  clearEEBusCandidate() {
+	if (this._eebusCandidateTimer) {
+	  clearTimeout(this._eebusCandidateTimer);
+	  this._eebusCandidateTimer = undefined;
+	}
+	this._eebusCandidate = undefined;
+    const candidate = this.querySelector?.('[data-role="eebus-candidate"]');
+    if (candidate) candidate.textContent = "";
+	const input = this.querySelector?.('[data-role="eebus-confirm-ski"]');
+	if (input) input.value = "";
+	if (this._eebusPartnerView === "candidate") {
+	  const partners = this.querySelector?.('[data-role="eebus-partners"]');
+	  if (partners) partners.innerHTML = '<div class="muted-inline">Candidate view cleared.</div>';
+	}
+  }
+
+  showEEBusError(error) {
+    const status = this.querySelector('[data-role="eebus-status"]');
+    if (status) status.textContent = `eeBUS: ${error?.message || "unknown error"}`;
+  }
+
+  async loadEEBusSPINERoot(partnerID) {
+    this.clearEEBusSPINETree();
+    const payload = await this.eebusAdminFetch(`/partners/${encodeURIComponent(partnerID)}/spine?request=root`);
+    this._eebusSpinePartnerID = partnerID;
+    this._eebusSpineSnapshotID = payload?.data?.snapshot_id;
+    if (!this._eebusSpineSnapshotID) throw new Error("SPINE snapshot authority missing");
+    this.renderEEBusSPINEPage(payload.data, false);
+    return payload;
+  }
+
+  async loadEEBusSPINEChildren(nodeID, cursor = "") {
+    if (!this._eebusSpinePartnerID || !this._eebusSpineSnapshotID || !nodeID) throw new Error("SPINE snapshot expired");
+    const request = cursor ? "continue" : "children";
+    const query = new URLSearchParams({ request, snapshot_id: this._eebusSpineSnapshotID, parent_node_id: nodeID });
+    if (cursor) query.set("cursor", cursor);
+    const payload = await this.eebusAdminFetch(`/partners/${encodeURIComponent(this._eebusSpinePartnerID)}/spine?${query.toString()}`);
+    this.renderEEBusSPINEPage(payload.data, true);
+    return payload;
+  }
+
+  renderEEBusSPINEPage(page, append) {
+    const tree = this.querySelector('[data-role="eebus-spine-tree"]');
+    if (!tree) return;
+    const nodes = Array.isArray(page?.nodes) ? page.nodes : [];
+    const html = nodes.map((node) => {
+      const nodeID = escapeHtml(node.node_id || "");
+      const kind = escapeHtml(node.kind || "opaque");
+      const payload = escapeHtml(JSON.stringify(node.payload ?? null, null, 2));
+      return `<article class="eebus-spine-node" data-kind="${kind}"><strong>${kind}</strong><pre>${payload}</pre><button class="button" data-eebus-spine-action="children" data-eebus-node="${nodeID}">Expand</button></article>`;
+    }).join("");
+    const next = page?.next_cursor
+      ? `<button class="button" data-eebus-spine-action="continue" data-eebus-node="${escapeHtml(page.parent_node_id || "")}" data-eebus-cursor="${escapeHtml(page.next_cursor)}">More</button>`
+      : "";
+    if (append) tree.innerHTML += html + next;
+    else tree.innerHTML = html + next;
+  }
+
+  clearEEBusSPINETree() {
+    this._eebusSpinePartnerID = undefined;
+    this._eebusSpineSnapshotID = undefined;
+    const tree = this.querySelector?.('[data-role="eebus-spine-tree"]');
+    if (tree) tree.innerHTML = "";
+  }
+
   render() {
     this.innerHTML = `
       <div class="shell">
@@ -2252,6 +2567,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
             <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
             <button data-role="nav-vaillant-b503" data-nav-target="section-vaillant-b503" disabled><span class="nav-bullet"></span> Vaillant B503</button>
+			<button data-role="nav-eebus" data-nav-target="section-eebus" disabled><span class="nav-bullet"></span> eeBUS</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
@@ -2505,6 +2821,37 @@ class PortalShell extends HTMLElement {
                 <div class="muted-inline">Loading Vaillant B503 capability...</div>
               </div>
             </section>
+			<section id="section-eebus" class="registry-preview">
+			  <h2>eeBUS SHIP / SPINE</h2>
+			  <p class="muted-inline">Authenticated owner workbench. Candidate identity stays only in this active view.</p>
+			  <div class="snapshot-controls eebus-login">
+			    <input class="search timeline-filter" data-role="eebus-owner-username" autocomplete="username" placeholder="Owner username" />
+			    <input class="search timeline-filter" data-role="eebus-owner-password" type="password" autocomplete="current-password" placeholder="Owner credential" />
+			    <button class="button" data-role="eebus-login" type="button">Authenticate</button>
+			    <button class="button" data-role="eebus-refresh-status" type="button">Refresh status</button>
+			  </div>
+			  <div class="bus-banner bus-state-unavailable" data-role="eebus-status">Owner authentication required.</div>
+			  <div class="snapshot-controls">
+			    <button class="button" data-role="eebus-window-open" type="button">Open pairing window</button>
+			    <button class="button" data-role="eebus-window-close" type="button">Close pairing window</button>
+			    <button class="button" data-role="eebus-candidate-cancel" type="button">Cancel candidate</button>
+			  </div>
+			  <div class="snapshot-controls">
+			    <select class="select" data-role="eebus-partner-view" aria-label="eeBUS partner view">
+			      <option value="trusted">Trusted</option><option value="connected">Connected</option><option value="discovered">Discovered</option><option value="candidate">Candidate</option>
+			    </select>
+			    <button class="button" data-role="eebus-refresh-partners" type="button">Refresh partners</button>
+			  </div>
+			  <div data-role="eebus-partners"><div class="muted-inline">No partner view loaded.</div></div>
+			  <div class="eebus-candidate-panel">
+			    <h3>OOB candidate</h3>
+			    <pre data-role="eebus-candidate"></pre>
+			    <input class="search timeline-filter" data-role="eebus-confirm-ski" autocomplete="off" placeholder="Retype the complete 40-character SKI" />
+			    <button class="button" data-role="eebus-candidate-confirm" type="button">Confirm exact SKI</button>
+			  </div>
+			  <h3>Lazy SPINE tree</h3>
+			  <div data-role="eebus-spine-tree" class="eebus-spine-tree"><div class="muted-inline">Choose Browse SPINE on a trusted or connected partner.</div></div>
+			</section>
             <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>
           </main>

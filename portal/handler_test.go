@@ -290,6 +290,33 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestIssue809BootstrapAdvertisesOnlyConfiguredEEBusAdminBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name, path string
+		enabled    bool
+	}{
+		{name: "disabled"},
+		{name: "enabled", path: "/admin/eebus/v1", enabled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := NewHandler(Options{EEBusAdminPath: test.path})
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			var payload struct {
+				Capabilities map[string]bool   `json:"capabilities"`
+				Endpoints    map[string]string `json:"endpoints"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil {
+				t.Fatalf("bootstrap status=%d body=%s", response.Code, response.Body.String())
+			}
+			if payload.Capabilities["eebus_admin"] != test.enabled || payload.Endpoints["eebus_admin"] != test.path {
+				t.Fatalf("bootstrap eeBUS capability/path=%v/%q", payload.Capabilities["eebus_admin"], payload.Endpoints["eebus_admin"])
+			}
+		})
+	}
+}
+
 func TestBusObservabilityEndpointUnavailable(t *testing.T) {
 	h := NewHandler(Options{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/bus/observability", nil)

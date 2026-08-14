@@ -98,6 +98,26 @@ func DefaultEEBusConfig() EEBusConfig {
 	}
 }
 
+// EEBusAdminConfig carries only composition metadata for the separately
+// authenticated post-M9 owner boundary. Credential bytes are read from the
+// named protected files by cmd/gateway and never enter Config, argv, or the
+// environment.
+type EEBusAdminConfig struct {
+	Enabled         bool
+	OwnerUsername   string
+	OwnerSecretPath string
+	HASecretPath    string
+	OwnerOrigin     string
+	SessionTTL      time.Duration
+}
+
+func DefaultEEBusAdminConfig() EEBusAdminConfig {
+	return EEBusAdminConfig{
+		OwnerUsername: "owner",
+		SessionTTL:    15 * time.Minute,
+	}
+}
+
 type WatchObserver interface {
 	Observe(key WatchKey) WatchObservation
 }
@@ -125,6 +145,7 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
+	EEBusAdminConfig         EEBusAdminConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool
@@ -265,6 +286,7 @@ func DefaultConfig() Config {
 			DialTimeout:  5 * time.Second,
 		},
 		EEBusConfig:            DefaultEEBusConfig(),
+		EEBusAdminConfig:       DefaultEEBusAdminConfig(),
 		EvidenceRecorderConfig: DefaultEvidenceRecorderConfig(),
 		BusConfig:              protocol.DefaultBusConfig(),
 		Providers:              vaillantproviders.Default(),

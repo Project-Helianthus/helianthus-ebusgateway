@@ -26,6 +26,8 @@ if [ -n "${unformatted}" ]; then
 fi
 
 if command -v npm >/dev/null 2>&1; then
+  echo "==> portal node tests"
+  node --test portal/web/test/*.test.mjs
   echo "==> portal assets"
   ./scripts/check_portal_assets.sh
 else

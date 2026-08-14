@@ -205,6 +205,22 @@ func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	}
 }
 
+func TestIssue809DefaultConfigDisablesEEBusAdminBoundary(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.EEBusAdminConfig.Enabled {
+		t.Fatal("eeBUS admin boundary is enabled by default")
+	}
+	if cfg.EEBusAdminConfig.OwnerUsername != "owner" {
+		t.Fatalf("OwnerUsername=%q, want owner", cfg.EEBusAdminConfig.OwnerUsername)
+	}
+	if cfg.EEBusAdminConfig.OwnerSecretPath != "" || cfg.EEBusAdminConfig.HASecretPath != "" || cfg.EEBusAdminConfig.OwnerOrigin != "" {
+		t.Fatalf("default eeBUS admin config contains deployment bindings: %#v", cfg.EEBusAdminConfig)
+	}
+	if cfg.EEBusAdminConfig.SessionTTL != 15*time.Minute {
+		t.Fatalf("SessionTTL=%s, want 15m", cfg.EEBusAdminConfig.SessionTTL)
+	}
+}
+
 func TestApplyDefaults_SetsPortalPath(t *testing.T) {
 	cfg := applyDefaults(Config{})
 	if cfg.PortalPath != "/portal" {

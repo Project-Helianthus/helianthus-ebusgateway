@@ -233,11 +233,10 @@ func TestIssue743ConsumerDependencyClosureDoesNotDirectlyImportRawEEBusRuntime(t
 	}
 }
 
-func TestIssue743GraphQLSemanticAndGeneratedPortalSurfacesContainNoRawEEBusFields(t *testing.T) {
+func TestIssue809GraphQLSemanticAndUnprotectedPortalTypesContainNoRawEEBusFields(t *testing.T) {
 	root := filepath.Clean("../..")
 	paths := []string{
 		filepath.Join(root, "graphql"),
-		filepath.Join(root, "portal"),
 		filepath.Join(root, "ui"),
 	}
 	for _, surface := range paths {
@@ -275,6 +274,35 @@ func TestIssue743GraphQLSemanticAndGeneratedPortalSurfacesContainNoRawEEBusField
 			} {
 				if strings.Contains(string(content), forbidden) {
 					t.Errorf("%s exposes raw eeBUS surface token %q", path, forbidden)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The post-M9 Portal owner workbench is the one authorized raw consumer.
+	// Its JavaScript calls only the authenticated admin boundary; raw eeBUS
+	// fields still may not become Portal Go DTOs, GraphQL, UI, or semantic
+	// registry types. Candidate non-persistence is exercised by the Portal
+	// node tests rather than by banning the field names needed to render it.
+	for _, portalRoot := range []string{filepath.Join(root, "portal")} {
+		err := filepath.WalkDir(portalRoot, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, forbidden := range []string{`json:"remote_ski`, `json:"ship_id`, `json:"entity_address`, `json:"feature_address`, `json:"context_address`} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("%s exposes raw eeBUS Portal Go type %q", path, forbidden)
 				}
 			}
 			return nil

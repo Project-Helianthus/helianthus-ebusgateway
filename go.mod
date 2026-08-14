@@ -7,7 +7,7 @@ require (
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260813222631-92a35b3ec2eb
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.31
 	github.com/Project-Helianthus/helianthus-modbus v0.0.0-20260810083147-eab30aed9eb6
-	github.com/Project-Helianthus/helianthus-modbusreg v0.0.0-20260810220548-7b95df29e73f
+	github.com/Project-Helianthus/helianthus-modbusreg v0.1.0
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4

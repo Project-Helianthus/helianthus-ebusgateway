@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +16,8 @@ import (
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
-func TestSunSpecProducerDiscoversBoundedStandardChainAndPublishesExactObservation(t *testing.T) {
-	words := sunSpecWords(1, 65, 101, 50, 102, 50, 103, 50, 0xffff, 0)
+func TestSunSpecProducerQualifiesExactObservedFroniusChainThroughRegistry(t *testing.T) {
+	words := observedFroniusFloatWords()
 	listener, requests := serveSunSpecChain(t, words)
 	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
 	if err != nil {
@@ -35,29 +37,34 @@ func TestSunSpecProducerDiscoversBoundedStandardChainAndPublishesExactObservatio
 	if err != nil {
 		t.Fatalf("Qualify(standard chain): %v", err)
 	}
-	if result.Outcome != SunSpecQualificationSupported || result.ObservationCount != 1 {
-		t.Fatalf("qualification result = %#v; want one supported observation", result)
+	if result.Outcome != SunSpecQualificationGO || result.ObservationCount != 1 || result.SampleID == "" {
+		t.Fatalf("qualification result = %#v; want one GO observation", result)
 	}
-	if got := result.Chain.Models(); !reflect.DeepEqual(sunSpecModelIDs(got), []uint16{1, 101, 102, 103}) {
-		t.Fatalf("published SunSpec models = %v; want [1 101 102 103]", sunSpecModelIDs(got))
+	if result.CapabilityID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID ||
+		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+		result.FlavorID != modbusreg.SunSpecFroniusObservedFlavorID ||
+		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonMatched {
+		t.Fatalf("registry decisions = %#v; want exact capability and flavor match", result)
+	}
+	if got := sunSpecWireKeys(result.Chain.Occurrences()); !reflect.DeepEqual(got, []modbusreg.SunSpecWireKey{
+		{ModelID: 1, ModelLength: 65}, {ModelID: 113, ModelLength: 60},
+		{ModelID: 120, ModelLength: 26}, {ModelID: 121, ModelLength: 30},
+		{ModelID: 122, ModelLength: 44}, {ModelID: 160, ModelLength: 88},
+		{ModelID: 124, ModelLength: 24},
+	}) {
+		t.Fatalf("published SunSpec chain = %v; want exact observed Fronius chain", got)
 	}
 	assertBoundedFC03Discovery(t, requests(), 1)
 
-	record, ok := adapter.ProfileObservation("sunspec.phase1", result.SampleID)
-	if !ok {
-		t.Fatalf("registry-owned observation sunspec.phase1/%q was not retained", result.SampleID)
+	views := result.Chain.SourceViews()
+	if len(views) == 0 {
+		t.Fatal("registry-selected chain lost its source views")
 	}
-	spec := record.Observation.Spec()
-	if spec.SampleID != result.SampleID || spec.PollGenerationID != 41 ||
-		spec.Endpoint != "tcp://"+listener.Addr().String() || spec.UnitID != 1 ||
-		len(spec.Dependencies) != 1 {
-		t.Fatalf("retained observation identity changed: %#v", spec)
-	}
-	view := spec.Dependencies[0].View.Record()
+	view := views[0].Record()
 	if view.LogicalOffset != 40000 || view.LogicalWordCount == 0 ||
 		view.PollGeneration != 41 || view.TransportGeneration == 0 ||
 		view.ConnectionID == 0 || view.WireResponseID == 0 {
-		t.Fatalf("retained source view lost exact sample identity: %#v", view)
+		t.Fatalf("chain source view lost exact sample identity: %#v", view)
 	}
 	for index := 0; index < reflect.TypeOf(producer).NumMethod(); index++ {
 		name := reflect.TypeOf(producer).Method(index).Name
@@ -67,12 +74,8 @@ func TestSunSpecProducerDiscoversBoundedStandardChainAndPublishesExactObservatio
 	}
 }
 
-func TestSunSpecProducerFailsClosedForObservedFloatProfileWithoutRetention(t *testing.T) {
-	// Exact live-observed Fronius chain: deferred float-family models must not
-	// become a partial or guessed phase-one observation.
-	listener, _ := serveSunSpecChain(t, sunSpecWords(
-		1, 65, 113, 60, 120, 26, 121, 30, 122, 44, 160, 88, 124, 24, 0xffff, 0,
-	))
+func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, admittedFloatChainWords())
 	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -89,9 +92,11 @@ func TestSunSpecProducerFailsClosedForObservedFloatProfileWithoutRetention(t *te
 	if err != nil {
 		t.Fatalf("Qualify(live float chain): %v", err)
 	}
-	if result.Outcome != SunSpecQualificationUnsupportedProfile || result.UnsupportedProfile == "" ||
+	if result.Outcome != SunSpecQualificationNoGo ||
+		result.CapabilityReason != modbusreg.SunSpecCapabilityReasonAdmitted ||
+		result.FlavorReason != modbusreg.SunSpecFroniusFlavorReasonChainMismatch ||
 		result.ObservationCount != 0 || result.SampleID != "" {
-		t.Fatalf("float chain result = %#v; want typed fail-closed unsupported profile", result)
+		t.Fatalf("flavor-mismatch result = %#v; want closed NO_GO without observation", result)
 	}
 }
 
@@ -115,8 +120,37 @@ func TestSunSpecProducerRejectsMixedTransportGenerationWithoutPublishing(t *test
 	if err != nil {
 		t.Fatalf("QualifyMixedGenerationForTest: %v", err)
 	}
-	if result.Outcome != SunSpecQualificationIncoherentCapture || result.ObservationCount != 0 || result.SampleID != "" {
-		t.Fatalf("mixed generation result = %#v; want incoherent capture without publication", result)
+	if result.Outcome != SunSpecQualificationStop || result.ObservationCount != 0 || result.SampleID != "" {
+		t.Fatalf("mixed generation result = %#v; want STOP without publication", result)
+	}
+}
+
+func TestSunSpecProducerSourceDelegatesSemanticSelectionToModbusreg(t *testing.T) {
+	source, err := os.ReadFile("sunspec_producer.go")
+	if err != nil {
+		t.Fatalf("ReadFile(sunspec_producer.go): %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"NewStandardSunSpecDecoderRegistry",
+		"EvaluateThreePhaseMonitoring",
+		"EvaluateFroniusObservedFlavor",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("producer does not delegate through %s", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"sunspec.phase1",
+		"deferredSunSpecModelInRaw",
+		"id >= 111",
+		"id >= 120",
+		"id >= 200",
+		"id >= 700",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("producer retains gateway-owned SunSpec classification %q", forbidden)
+		}
 	}
 }
 
@@ -196,8 +230,8 @@ func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, uni
 		}
 		total += request.WordCount
 	}
-	if total > modbusreg.MaxSunSpecPhaseOneChainWords {
-		t.Fatalf("discovery read budget = %d; want <= %d words", total, modbusreg.MaxSunSpecPhaseOneChainWords)
+	if total > 1024 {
+		t.Fatalf("discovery read budget = %d; want <= 1024 words", total)
 	}
 }
 
@@ -212,10 +246,80 @@ func sunSpecWords(headers ...uint16) []uint16 {
 	return words
 }
 
-func sunSpecModelIDs(models []modbusreg.SunSpecPhaseOneModel) []uint16 {
-	ids := make([]uint16, len(models))
-	for index, model := range models {
-		ids[index] = model.ID()
+func observedFroniusFloatWords() []uint16 {
+	return sunSpecFixtureWords(
+		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
+		sunSpecFixtureModel{113, 60, floatInverterPayload()},
+		sunSpecFixtureModel{120, 26, make([]uint16, 26)},
+		sunSpecFixtureModel{121, 30, make([]uint16, 30)},
+		sunSpecFixtureModel{122, 44, make([]uint16, 44)},
+		sunSpecFixtureModel{160, 88, mpptPayload(4)},
+		sunSpecFixtureModel{124, 24, make([]uint16, 24)},
+	)
+}
+
+func admittedFloatChainWords() []uint16 {
+	return sunSpecFixtureWords(
+		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
+		sunSpecFixtureModel{113, 60, floatInverterPayload()},
+	)
+}
+
+type sunSpecFixtureModel struct {
+	id, length uint16
+	payload    []uint16
+}
+
+func sunSpecFixtureWords(models ...sunSpecFixtureModel) []uint16 {
+	words := []uint16{0x5375, 0x6e53}
+	for _, model := range models {
+		words = append(words, model.id, model.length)
+		words = append(words, model.payload...)
 	}
-	return ids
+	return append(words, 0xffff, 0)
+}
+
+func commonPayload(manufacturer, model, firmware string) []uint16 {
+	payload := make([]uint16, 65)
+	putSunSpecString(payload[0:16], manufacturer)
+	putSunSpecString(payload[16:32], model)
+	putSunSpecString(payload[40:48], firmware)
+	putSunSpecString(payload[48:64], "synthetic")
+	return payload
+}
+
+func floatInverterPayload() []uint16 {
+	payload := make([]uint16, 60)
+	// Model 113's status point is word 48 including the two-word header.
+	payload[46] = 4
+	return payload
+}
+
+func mpptPayload(modules uint16) []uint16 {
+	payload := make([]uint16, 88)
+	// Model 160's N point is word 8 including the two-word header.
+	payload[6] = modules
+	return payload
+}
+
+func putSunSpecString(words []uint16, value string) {
+	data := []byte(value)
+	for index := range words {
+		var high, low byte
+		if 2*index < len(data) {
+			high = data[2*index]
+		}
+		if 2*index+1 < len(data) {
+			low = data[2*index+1]
+		}
+		words[index] = uint16(high)<<8 | uint16(low)
+	}
+}
+
+func sunSpecWireKeys(occurrences []modbusreg.SunSpecOccurrence) []modbusreg.SunSpecWireKey {
+	keys := make([]modbusreg.SunSpecWireKey, len(occurrences))
+	for index, occurrence := range occurrences {
+		keys[index] = occurrence.WireKey
+	}
+	return keys
 }

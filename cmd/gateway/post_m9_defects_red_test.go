@@ -657,6 +657,12 @@ func TestFM5StartupIdentityClassification_UsesCompleteFunctionalModuleIdentityTu
 			firmwarePayload: []byte{0xFF, 0xFF, 0xFF},
 			hardwarePayload: []byte{0xFF},
 		},
+		{
+			name:             "connected slot without identity",
+			connectedPayload: []byte{0x01},
+			firmwarePayload:  []byte{0xFF, 0xFF, 0xFF},
+			hardwarePayload:  []byte{0xFF, 0xFF},
+		},
 	}
 
 	for _, test := range tests {
@@ -783,17 +789,17 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		provider.SetCylinders([]graphql.CylinderStatus{{Index: 0, TemperatureC: &temperature}})
 		return provider
 	}
-	assertRetained := func(t *testing.T, provider *graphql.LiveSemanticProvider) {
+	assertRetainedMode := func(t *testing.T, provider *graphql.LiveSemanticProvider, wantMode graphql.Fm5SemanticMode) {
 		t.Helper()
 		got := provider.FM5Interpretation()
-		if got.Mode != graphql.Fm5SemanticModeInterpreted || got.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
-			t.Errorf("incomplete current identity verdict = %#v; want retained INTERPRETED/INCOHERENT_ACQUISITION", got)
+		if got.Mode != wantMode || got.DegradedReason != graphql.Fm5SemanticDegradedReasonIncoherentAcquisition {
+			t.Errorf("incomplete current identity verdict = %#v; want retained %s/INCOHERENT_ACQUISITION", got, wantMode)
 		}
 		if got.EvidenceRevision == "" || got.EvidenceRevision == previous.EvidenceRevision {
 			t.Errorf("incomplete current identity revision = %q; want advancement from %q", got.EvidenceRevision, previous.EvidenceRevision)
 		}
-		if gotMode := provider.FM5SemanticMode(); gotMode != graphql.Fm5SemanticModeInterpreted {
-			t.Errorf("incomplete current identity legacy scalar = %s; want retained INTERPRETED", gotMode)
+		if gotMode := provider.FM5SemanticMode(); gotMode != wantMode {
+			t.Errorf("incomplete current identity legacy scalar = %s; want retained %s", gotMode, wantMode)
 		}
 		if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collector {
 			t.Errorf("incomplete current identity solar = %#v; want retained collector temperature", solar)
@@ -801,6 +807,10 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		if cylinders := provider.Cylinders(); len(cylinders) != 1 || cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != temperature {
 			t.Errorf("incomplete current identity cylinders = %#v; want retained temperature", cylinders)
 		}
+	}
+	assertRetained := func(t *testing.T, provider *graphql.LiveSemanticProvider) {
+		t.Helper()
+		assertRetainedMode(t, provider, graphql.Fm5SemanticModeInterpreted)
 	}
 
 	t.Run("same-call firmware identity then detail timeout", func(t *testing.T) {
@@ -877,6 +887,51 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 
 		poller.refreshRadioDevices(context.Background())
 		assertRetained(t, provider)
+	})
+
+	t.Run("full scan connected slot without identity", func(t *testing.T) {
+		for _, wantMode := range []graphql.Fm5SemanticMode{
+			graphql.Fm5SemanticModeInterpreted,
+			graphql.Fm5SemanticModeAbsent,
+		} {
+			t.Run(string(wantMode), func(t *testing.T) {
+				provider := newProvider()
+				poller := newPoller(provider)
+				prior := previous
+				prior.Mode = wantMode
+				provider.SetFM5Interpretation(prior)
+				poller.fm5Mode = wantMode
+				poller.fm5Interpretation = prior
+				poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+					if len(frame.Data) != 6 {
+						return nil, errors.New("invalid B524 selector")
+					}
+					group := frame.Data[2]
+					instance := frame.Data[3]
+					addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+					if group == remoteFunctionalModules.group {
+						switch addr {
+						case device_slot_connected:
+							value := byte(0x00)
+							if instance == 0x04 {
+								value = 0x01
+							}
+							return testB524ResponseForSelectorPayload(frame.Data, value), nil
+						case device_slot_class_address:
+							return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+						case device_slot_firmware:
+							return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+						case device_slot_hardware_identifier:
+							return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+						}
+					}
+					return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+				}
+
+				poller.refreshRadioDevices(context.Background())
+				assertRetainedMode(t, provider, wantMode)
+			})
+		}
 	})
 
 	t.Run("cached hardware identity then later detail timeout", func(t *testing.T) {

@@ -11,6 +11,7 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
   const source = await readFile(sourcePath, "utf8");
   class FakeHTMLElement {}
   const storageWrites = [];
+  let uuidSequence = 0;
   const sandbox = {
     console: { error() {}, warn() {}, log() {} },
     document: {
@@ -27,7 +28,7 @@ async function issue809Shell(fetchImpl, elements = new Map()) {
     },
     fetch: fetchImpl,
     btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-    crypto: { randomUUID: () => "80900000-0000-4000-8000-000000000001" },
+    crypto: { randomUUID: () => `80900000-0000-4000-8000-${String(++uuidSequence).padStart(12, "0")}` },
     AbortController,
     URLSearchParams,
     TextDecoder,
@@ -128,6 +129,30 @@ test("selection requires independently entered OOB SKI and never copies discover
   await shell.selectEEBusObservation("observation-1");
   assert.equal(JSON.parse(calls[0].init.body).expected_ski, "c".repeat(40));
   assert.equal(selectSKI.value, "", "OOB input must be cleared after use");
+});
+
+test("lost mutation response retains the exact idempotency binding and selection until terminal replay", async () => {
+  const calls = [];
+  let attempt = 0;
+  const { shell } = await issue809Shell(async (url, init = {}) => {
+    calls.push({ url, init });
+    if (++attempt === 1) throw new Error("response lost after effect");
+    return response({ state_revision: 13, data: { outcome: "connecting", replayed: true } });
+  });
+  shell._eebusCSRFToken = "csrf";
+  shell._eebusStateRevision = 12;
+  shell._eebusSelection = { id: "selection-1" };
+
+  await assert.rejects(shell.connectEEBusSelection(), /response lost/);
+  assert.equal(shell._eebusSelection?.id, "selection-1", "ambiguous network failure must retain selection authority");
+  await shell.connectEEBusSelection();
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, calls[1].url);
+  assert.equal(calls[0].init.body, calls[1].init.body);
+  assert.equal(calls[0].init.headers["Idempotency-Key"], calls[1].init.headers["Idempotency-Key"]);
+  assert.equal(shell._eebusSelection, undefined, "terminal replay consumes selection authority");
+  assert.equal(shell._eebusPendingMutation, undefined, "terminal replay retires active-memory idempotency state");
 });
 
 test("SPINE browser loads root and expands only opaque server-issued node identifiers", async () => {

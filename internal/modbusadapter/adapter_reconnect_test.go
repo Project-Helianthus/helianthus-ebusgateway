@@ -2,6 +2,7 @@ package modbusadapter
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -72,5 +73,62 @@ func TestAdapterReconnectRetiresOldGenerationBeforeFreshDialAndNeverRetriesStale
 	}
 	if snapshot := adapter.Snapshot(); snapshot.Resources.QueuedRequests != 0 {
 		t.Fatalf("stale queued work survived reconnect: %+v", snapshot.Resources)
+	}
+}
+
+func TestAdapterReconnectAfterSocketLossRetiresFailedGenerationAndHonorsBackoff(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan struct{}, 2)
+	go func() {
+		for range 2 {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- struct{}{}
+			go func() {
+				defer func() { _ = connection.Close() }()
+				// The first FC03 reaches a real peer, then loses its socket before
+				// any response. The endpoint must own recovery classification.
+				request := make([]byte, 12)
+				_, _ = io.ReadFull(connection, request)
+			}()
+		}
+	}()
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	old := adapter.connection
+	request, err := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, 40000, 1)
+	if err != nil {
+		t.Fatalf("NewReadRegistersRequest: %v", err)
+	}
+	if _, err := adapter.ExecuteRead(context.Background(), ReadPlan{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", PollGeneration: 62, DeadlineIdentity: 72, Timeout: time.Second, Reads: []modbus.TCPLogicalRead{{LogicalViewID: 82, Request: request}}}); err == nil {
+		t.Fatal("ExecuteRead after peer socket loss unexpectedly succeeded")
+	}
+	if snapshot := adapter.Snapshot(); !snapshot.ReconnectRequired {
+		t.Fatalf("socket-loss endpoint state = %#v; want reconnect required", snapshot)
+	}
+	if err := adapter.Reconnect(context.Background()); err != nil {
+		t.Fatalf("Reconnect after socket loss: %v", err)
+	}
+	for range 2 {
+		select {
+		case <-accepted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for original and recovered socket")
+		}
+	}
+	if adapter.connection.Generation() == old.Generation() {
+		t.Fatalf("reconnect reused failed transport generation %d", old.Generation())
+	}
+	if snapshot := adapter.Snapshot(); snapshot.Resources.QueuedRequests != 0 || snapshot.Resources.RetainedRetries != 0 {
+		t.Fatalf("failed generation retained stale request: %#v", snapshot.Resources)
 	}
 }

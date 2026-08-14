@@ -53,6 +53,9 @@ func TestSunSpecProducerDiscoversBoundedStandardChainAndPublishesExactObservatio
 		len(spec.Dependencies) != 1 {
 		t.Fatalf("retained observation identity changed: %#v", spec)
 	}
+	if spec.SourceTime.State != modbusreg.SourceTimeUnavailableState || spec.LocalReceiptTime.IsZero() {
+		t.Fatalf("retained observation time facts = source=%#v receipt=%v; want unavailable source time and local receipt", spec.SourceTime, spec.LocalReceiptTime)
+	}
 	view := spec.Dependencies[0].View.Record()
 	if view.LogicalOffset != 40000 || view.LogicalWordCount == 0 ||
 		view.PollGeneration != 41 || view.TransportGeneration == 0 ||
@@ -63,6 +66,48 @@ func TestSunSpecProducerDiscoversBoundedStandardChainAndPublishesExactObservatio
 		name := reflect.TypeOf(producer).Method(index).Name
 		if name == "Write" || name == "Set" || name == "Control" {
 			t.Fatalf("SunSpec producer exposes forbidden write operation %q", name)
+		}
+	}
+}
+
+func TestSunSpecProducerReservesTerminatorInsideReadBudget(t *testing.T) {
+	// The payload reaches the bound only when its following two-word header is
+	// incorrectly excluded from the dynamic acquisition budget.
+	words := sunSpecWords(1, 508, 0xffff, 0)
+	listener, requests := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	if _, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 44, DeadlineIdentity: 94}); err != nil {
+		t.Fatalf("Qualify(boundary chain): %v", err)
+	}
+	assertBoundedFC03Discovery(t, requests(), 1)
+}
+
+func TestDeferredSunSpecModelRequiresCompleteTerminatedChain(t *testing.T) {
+	// A float-family header alone is not sufficient evidence of a structurally
+	// complete unsupported profile.
+	if deferredSunSpecModelInRaw([]uint16{0x5375, 0x6e53, 113, 1, 0}) {
+		t.Fatal("truncated deferred chain was classified as unsupported profile")
+	}
+}
+
+func TestSunSpecProducerRejectsInvalidModbusUnitID(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, sunSpecWords(0xffff, 0))
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	for _, unitID := range []byte{0, 248} {
+		if producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: unitID, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second}); err == nil || producer != nil {
+			t.Fatalf("NewSunSpecProducer(unit %d) = %#v, %v; want rejection", unitID, producer, err)
 		}
 	}
 }

@@ -202,7 +202,6 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 	capability := producer.registry.EvaluateThreePhaseMonitoring(snapshot)
 	result := SunSpecQualificationResult{
 		CapabilityID: capability.ProfileID(), CapabilityReason: capability.Reason(),
-		Chain: snapshot,
 	}
 	if !capability.Admitted() {
 		if capability.Reason() == modbusreg.SunSpecCapabilityReasonInvalidChain {
@@ -225,6 +224,7 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		result.Outcome = SunSpecQualificationGO
 		result.ObservationCount = 1
 		result.SampleID = fmt.Sprintf("sunspec-%d-%d", identity.PollGeneration, identity.DeadlineIdentity)
+		result.Chain = snapshot
 		return result
 	}
 	switch selection.Reason() {

@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -521,6 +523,149 @@ func TestFM5Acquisition_EmptyEvidenceGenerationInterleavingRetainsPriorClassific
 	}
 	if poller.solarCylinders[0] == nil || poller.solarCylinders[0].TemperatureC == nil || *poller.solarCylinders[0].TemperatureC != temperature {
 		t.Errorf("empty-evidence interleaving cylinders = %#v; want retained coherent value", poller.solarCylinders)
+	}
+}
+
+func TestFM5IdentityClassification_RequiresCompleteFunctionalModuleNamespaceScan(t *testing.T) {
+	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	newPoller := func(provider *graphql.LiveSemanticProvider) *vaillantSemanticPoller {
+		return &vaillantSemanticPoller{
+			scheduler:               ebusgateway.NewSemanticReadScheduler(),
+			reg:                     registry.NewDeviceRegistry(nil),
+			provider:                provider,
+			source:                  0x7F,
+			controller:              0x15,
+			requestTimeout:          50 * time.Millisecond,
+			system:                  &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+			radioDevices:            make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+			solarCylinders:          make(map[byte]*vaillantCylinderSnapshot),
+			fm5EvidenceTTL:          5 * time.Minute,
+			deviceSlotCache:         make(map[deviceSlotKey]bool),
+			deviceSlotDiscoveryDone: false,
+			nowFn:                   func() time.Time { return now },
+		}
+	}
+	assertUnavailable := func(t *testing.T, got graphql.Fm5Interpretation) {
+		t.Helper()
+		if got.Mode != "" || got.DegradedReason != "" || got.EvidenceRevision != "" {
+			t.Fatalf("partial FM5 namespace verdict = %#v; want unavailable zero tuple", got)
+		}
+	}
+	partialResponder := func(cancel context.CancelFunc) func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+		return func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			if frame.Data[2] == remoteFunctionalModules.group {
+				cancel()
+				return nil, errors.New("functional-module namespace timeout")
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+	}
+
+	t.Run("startup non-FM5 success does not classify absence", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider)
+		ctx, cancel := context.WithCancel(context.Background())
+		poller.sendFrameFn = partialResponder(cancel)
+		poller.refreshRadioDevicesStartup(ctx)
+		poller.refreshFM5Semantic(context.Background())
+		assertUnavailable(t, provider.FM5Interpretation())
+	})
+
+	t.Run("steady non-FM5 success does not classify absence", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider)
+		ctx, cancel := context.WithCancel(context.Background())
+		poller.sendFrameFn = partialResponder(cancel)
+		poller.refreshRadioDevices(ctx)
+		assertUnavailable(t, provider.FM5Interpretation())
+	})
+
+	t.Run("complete negative functional-module scan permits absence", func(t *testing.T) {
+		provider := graphql.NewLiveSemanticProvider()
+		poller := newPoller(provider)
+		poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			if len(frame.Data) != 6 {
+				return nil, errors.New("invalid B524 selector")
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+		}
+		poller.refreshRadioDevicesStartup(context.Background())
+		poller.refreshFM5Semantic(context.Background())
+		got := provider.FM5Interpretation()
+		if got.Mode != graphql.Fm5SemanticModeAbsent || got.DegradedReason != "" || got.EvidenceRevision == "" {
+			t.Fatalf("complete negative FM5 namespace verdict = %#v; want healthy ABSENT with revision", got)
+		}
+	})
+}
+
+func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	classAddress := uint8(circuitManagingDeviceVR71Address)
+	collector := 61.5
+	temperature := 47.25
+	previous := graphql.Fm5Interpretation{
+		Mode:             graphql.Fm5SemanticModeInterpreted,
+		EvidenceRevision: "fm5-g7-a41",
+	}
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetFM5Interpretation(previous)
+	provider.SetSolar(&graphql.SolarStatus{CollectorTemperatureC: &collector})
+	provider.SetCylinders([]graphql.CylinderStatus{{Index: 0, TemperatureC: &temperature}})
+	reg := registry.NewDeviceRegistry(nil)
+	reg.Register(registry.DeviceInfo{
+		Address:      circuitManagingDeviceVR71Address,
+		Manufacturer: "Vaillant",
+		DeviceID:     circuitManagingDeviceVR71ID,
+	})
+	poller := &vaillantSemanticPoller{
+		scheduler:             ebusgateway.NewSemanticReadScheduler(),
+		reg:                   reg,
+		provider:              provider,
+		source:                0x7F,
+		controller:            0x15,
+		requestTimeout:        50 * time.Millisecond,
+		system:                &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices:          map[radioDeviceKey]*vaillantRadioDeviceSnapshot{{Group: remoteFunctionalModules.group}: {DeviceClassAddress: &classAddress}},
+		deviceSlotCache:       make(map[deviceSlotKey]bool),
+		fm5Mode:               graphql.Fm5SemanticModeInterpreted,
+		fm5Interpretation:     previous,
+		fm5EvidenceRevision:   41,
+		fm5EvidenceGeneration: 7,
+		fm5IdentityObservedAt: now,
+		fm5EvidenceTTL:        5 * time.Minute,
+		solar:                 &vaillantSolarSnapshot{CollectorTemperatureC: &collector},
+		solarCylinders:        map[byte]*vaillantCylinderSnapshot{0: {Instance: 0, TemperatureC: &temperature}},
+		nowFn:                 func() time.Time { return now },
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+	}
+
+	poller.refreshRadioDevices(context.Background())
+
+	got := provider.FM5Interpretation()
+	if got.Mode != graphql.Fm5SemanticModeAbsent || got.DegradedReason != "" {
+		t.Errorf("complete negative scan verdict = %#v; want healthy ABSENT despite retained registry entry", got)
+	}
+	if got.EvidenceRevision == "" || got.EvidenceRevision == previous.EvidenceRevision {
+		t.Errorf("complete negative scan revision = %q; want advancement from %q", got.EvidenceRevision, previous.EvidenceRevision)
+	}
+	if gotMode := provider.FM5SemanticMode(); gotMode != graphql.Fm5SemanticModeAbsent {
+		t.Errorf("complete negative scan legacy scalar = %s; want ABSENT", gotMode)
+	}
+	if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC != nil {
+		t.Errorf("complete negative scan solar = %#v; want cleared structural plane", solar)
+	}
+	if cylinders := provider.Cylinders(); len(cylinders) != 0 {
+		t.Errorf("complete negative scan cylinders = %#v; want cleared structural plane", cylinders)
 	}
 }
 

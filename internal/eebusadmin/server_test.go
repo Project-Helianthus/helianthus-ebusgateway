@@ -373,6 +373,69 @@ func TestIssue809OwnerSelectThenConnectUsesOnlyServerHeldCapabilities(t *testing
 	}
 }
 
+func TestIssue809ExactHTTPMutationReplaySurvivesCapabilityInvalidation(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 61
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 9}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	handler := newIssue809Server(t, admin)
+	cookie, csrf := issue809OwnerSession(t, handler)
+	partners := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
+	partners.AddCookie(cookie)
+	partnersResponse := httptest.NewRecorder()
+	handler.ServeHTTP(partnersResponse, partners)
+	var partnersEnvelope struct {
+		Data struct {
+			Partners []struct {
+				ObservationID string `json:"observation_id"`
+			} `json:"partners"`
+		} `json:"data"`
+	}
+	if partnersResponse.Code != http.StatusOK || json.Unmarshal(partnersResponse.Body.Bytes(), &partnersEnvelope) != nil || len(partnersEnvelope.Data.Partners) != 1 {
+		t.Fatalf("discovered status=%d body=%s", partnersResponse.Code, partnersResponse.Body.String())
+	}
+	target := "/admin/eebus/v1/observations/" + partnersEnvelope.Data.Partners[0].ObservationID + ":select"
+	body := `{"state_revision":61,"expected_ski":"` + ski + `"}`
+	request := func(expectedSKI string) *http.Request {
+		value := issue809OwnerMutation(t, http.MethodPost, target, cookie, csrf, "select-replay-1", body)
+		if expectedSKI != ski {
+			value = issue809OwnerMutation(t, http.MethodPost, target, cookie, csrf, "select-replay-1", `{"state_revision":61,"expected_ski":"`+expectedSKI+`"}`)
+		}
+		return value
+	}
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request(ski))
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request(ski))
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("exact replay status first/second=%d/%d bodies=%s / %s", first.Code, second.Code, first.Body.String(), second.Body.String())
+	}
+	var firstEnvelope, secondEnvelope struct {
+		StateRevision uint64 `json:"state_revision"`
+		Data          struct {
+			SelectionID string `json:"selection_id"`
+			Replayed    bool   `json:"replayed"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(first.Body.Bytes(), &firstEnvelope) != nil || json.Unmarshal(second.Body.Bytes(), &secondEnvelope) != nil ||
+		firstEnvelope.StateRevision != 62 || secondEnvelope.StateRevision != 62 || firstEnvelope.Data.SelectionID == "" ||
+		firstEnvelope.Data.SelectionID != secondEnvelope.Data.SelectionID || !secondEnvelope.Data.Replayed {
+		t.Fatalf("exact replay envelopes first=%#v second=%#v", firstEnvelope, secondEnvelope)
+	}
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, request(strings.Repeat("b", 40)))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("changed binding replay status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	assertIssue809ErrorEnvelope(t, conflict.Body.String(), "idempotency_conflict")
+	admin.mu.Lock()
+	defer admin.mu.Unlock()
+	if len(admin.selectCalls) != 1 {
+		t.Fatalf("HTTP replay executed select %d times, want exactly one", len(admin.selectCalls))
+	}
+}
+
 func TestIssue809CandidateIdentityIsOwnerOnlyNoStoreAndCurrentSessionBound(t *testing.T) {
 	const ski = "fedcba9876543210fedcba9876543210fedcba98"
 	snapshot := testAdminSnapshot()

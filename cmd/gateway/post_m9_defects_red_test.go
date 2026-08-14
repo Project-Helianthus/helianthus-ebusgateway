@@ -458,6 +458,7 @@ func TestRefreshFM5Semantic_AbsenceRequiresFreshCompletedNegativeIdentityAcquisi
 	provider = graphql.NewLiveSemanticProvider()
 	poller = newPoller(provider)
 	poller.startupRadioDevicesProbed = true
+	poller.fm5IdentityScanComplete = true
 	poller.fm5IdentityObservedAt = now
 	poller.refreshFM5Semantic(context.Background())
 	if got := provider.FM5Interpretation(); got.Mode != graphql.Fm5SemanticModeAbsent || got.DegradedReason != "" || got.EvidenceRevision == "" {

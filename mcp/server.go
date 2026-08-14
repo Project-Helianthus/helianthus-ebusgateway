@@ -350,18 +350,6 @@ func (value Fm5Interpretation) validate() error {
 	}
 }
 
-func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
-	if mode == "" {
-		mode = Fm5SemanticModeAbsent
-	}
-	verdict := Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
-	if mode == Fm5SemanticModeGPIOOnly {
-		reason := Fm5SemanticDegradedReason("CONFIGURATION_NOT_INTERPRETABLE")
-		verdict.DegradedReason = &reason
-	}
-	return verdict
-}
-
 type FM5InterpretationProvider interface {
 	FM5Interpretation() Fm5Interpretation
 }
@@ -3074,7 +3062,7 @@ func (s *Server) snapshotFM5Interpretation(snapshot *snapshotState) Fm5Interpret
 			return provider.FM5Interpretation()
 		}
 	}
-	return legacyFM5Interpretation(s.snapshotFM5Mode(nil))
+	return Fm5Interpretation{}
 }
 
 func (s *Server) snapshotSolar(snapshot *snapshotState) *SolarStatus {

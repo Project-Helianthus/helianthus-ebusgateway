@@ -5125,7 +5125,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 						}
 						return verdict, nil
 					}
-					return legacyFM5Interpretation(provider.FM5SemanticMode()), nil
+					return nil, nil
 				},
 			},
 			"fm5_semantic_mode": &graphqlgo.Field{

@@ -2410,22 +2410,16 @@ func portalFM5Interpretation(provider graphql.SemanticProvider) graphql.Fm5Inter
 	if provider == nil {
 		return graphql.Fm5Interpretation{}
 	}
-	if typed, ok := provider.(graphql.FM5InterpretationProvider); ok {
-		verdict := typed.FM5Interpretation()
-		if verdict == (graphql.Fm5Interpretation{}) {
-			return verdict
-		}
-		if verdict.Validate() == nil {
-			return verdict
-		}
+	typed, ok := provider.(graphql.FM5InterpretationProvider)
+	if !ok {
+		return graphql.Fm5Interpretation{}
 	}
-	mode := provider.FM5SemanticMode()
-	if mode == "" {
-		mode = graphql.Fm5SemanticModeAbsent
+	verdict := typed.FM5Interpretation()
+	if verdict == (graphql.Fm5Interpretation{}) {
+		return verdict
 	}
-	verdict := graphql.Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
-	if mode == graphql.Fm5SemanticModeGPIOOnly {
-		verdict.DegradedReason = graphql.Fm5SemanticDegradedReasonConfigurationNotInterpretable
+	if verdict.Validate() != nil {
+		return graphql.Fm5Interpretation{}
 	}
 	return verdict
 }

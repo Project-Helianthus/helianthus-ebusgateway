@@ -9151,12 +9151,16 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
+		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
 		if err != nil {
 			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", probeAddr, err)
 			return
 		}
 		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", probeAddr)
+		if probeAddr == circuitManagingDeviceVR71Address {
+			p.enqueueTask(semanticTaskRefreshSystem, semanticTaskPriorityMedium, p.refreshSystem)
+			p.enqueueTask(semanticTaskRefreshRadioDevices, semanticTaskPriorityMedium, p.refreshRadioDevices)
+		}
 	}
 	if scheduler == nil {
 		// No scheduler wired (unit tests, etc.) — run inline.

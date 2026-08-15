@@ -1442,6 +1442,128 @@ func TestFM5Startup_UnseededLowSlotPositiveDoesNotLosePrimingBudget(t *testing.T
 	}
 }
 
+func TestEnqueueAddressIdentityProbe_LateFM5SuccessTriggersBoundedSemanticReacquisition(t *testing.T) {
+	originalScanDirected := registryScanDirectedFn
+	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
+
+	now := time.Date(2026, 8, 15, 20, 30, 0, 0, time.UTC)
+	provider := graphql.NewLiveSemanticProvider()
+	taskScheduler := newSemanticTaskScheduler()
+	poller := &vaillantSemanticPoller{
+		scheduler:                ebusgateway.NewSemanticReadScheduler(),
+		tasks:                    taskScheduler,
+		reg:                      registry.NewDeviceRegistry(nil),
+		bus:                      &protocol.Bus{},
+		provider:                 provider,
+		source:                   0x7F,
+		controller:               0x15,
+		requestTimeout:           50 * time.Millisecond,
+		system:                   &vaillantSystemSnapshot{Controller: 0x15},
+		radioDevices:             make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:           make(map[byte]*vaillantCylinderSnapshot),
+		fm5EvidenceTTL:           5 * time.Minute,
+		deviceSlotRediscoveryTTL: 30 * time.Minute,
+		deviceSlotCache:          make(map[deviceSlotKey]bool),
+		nowFn:                    func() time.Time { return now },
+	}
+
+	scanSeamCalled := false
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, source byte, targets []byte) ([]registry.DeviceEntry, error) {
+		scanSeamCalled = true
+		if source != poller.source || len(targets) != 1 || targets[0] != circuitManagingDeviceVR71Address {
+			return nil, errors.New("unexpected directed identity target")
+		}
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		instance := frame.Data[3]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == localRegulator.group && addr == system_module_configuration_vr71 {
+			return testB524ResponseForSelectorPayload(frame.Data, 0x02, 0x00), nil
+		}
+		if group == remoteFunctionalModules.group {
+			switch addr {
+			case device_slot_connected:
+				connected := byte(0x00)
+				if instance == 0x01 {
+					connected = 0x01
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, connected), nil
+			case device_slot_class_address:
+				classAddress := byte(0xFF)
+				if instance == 0x01 {
+					classAddress = circuitManagingDeviceVR71Address
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, classAddress), nil
+			case device_slot_firmware:
+				firmware := []byte{0xFF, 0xFF, 0xFF}
+				if instance == 0x01 {
+					firmware = []byte{0x01, 0x00, 0x00}
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, firmware...), nil
+			case device_slot_hardware_identifier:
+				hardware := []byte{0xFF, 0xFF}
+				if instance == 0x01 {
+					hardware = []byte{0x71, 0x00}
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, hardware...), nil
+			}
+		}
+		if group == localSolar.group {
+			switch addr {
+			case solar_collector_temp:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(61.5)...), nil
+			case solar_enabled, solar_pump_active:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+		}
+		if group == localCylinders.group && addr == cylinder_temperature {
+			return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(47.25)...), nil
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+	}
+
+	poller.EnqueueAddressIdentityProbe(circuitManagingDeviceVR71Address)
+	probeTask := taskScheduler.nextTask(context.Background())
+	if probeTask == nil {
+		t.Fatal("late identity probe was not scheduled")
+	}
+	canceledProbeCtx, cancelProbe := context.WithCancel(context.Background())
+	cancelProbe()
+	probeTask.run(canceledProbeCtx)
+	taskScheduler.taskDone(probeTask)
+
+	scheduled := make([]semanticTaskKey, 0, 2)
+	for len(scheduled) < 2 {
+		taskScheduler.mu.Lock()
+		pending := len(taskScheduler.queue)
+		taskScheduler.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		task := taskScheduler.nextTask(context.Background())
+		scheduled = append(scheduled, task.key)
+		task.run(context.Background())
+		taskScheduler.taskDone(task)
+	}
+	verdict := provider.FM5Interpretation()
+	if !scanSeamCalled || len(scheduled) != 2 ||
+		scheduled[0] != semanticTaskRefreshSystem || scheduled[1] != semanticTaskRefreshRadioDevices ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("late FM5 recovery seam_called=%t scheduled=%v verdict=%#v; want directed success then [refresh_system refresh_radio_devices] and healthy INTERPRETED without ticker", scanSeamCalled, scheduled, verdict)
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

@@ -16,6 +16,43 @@ import (
 
 const maxModbusEndpointFileBytes = 512
 
+const (
+	redactedModbusEndpoint        = "[REDACTED_MODBUS_ENDPOINT]"
+	redactedAdapterDirectEndpoint = "[REDACTED_ADAPTER_DIRECT_ENDPOINT]"
+	redactedNetworkEndpoint       = "[REDACTED_NETWORK_ENDPOINT]"
+)
+
+type endpointOwner uint8
+
+const (
+	endpointOwnerUnknown endpointOwner = iota
+	endpointOwnerModbus
+	endpointOwnerAdapterDirect
+)
+
+type endpointOwnedError struct {
+	owner endpointOwner
+	err   error
+}
+
+func (err *endpointOwnedError) Error() string { return err.err.Error() }
+func (err *endpointOwnedError) Unwrap() error { return err.err }
+
+func withEndpointOwner(owner endpointOwner, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &endpointOwnedError{owner: owner, err: err}
+}
+
+func endpointOwnerOf(err error) endpointOwner {
+	var owned *endpointOwnedError
+	if errors.As(err, &owned) {
+		return owned.owner
+	}
+	return endpointOwnerUnknown
+}
+
 type gatewayFlagInputs struct {
 	modbusEndpointFile string
 }
@@ -74,40 +111,67 @@ func redactFileSourcedModbusError(err error, endpoint string) error {
 	if err == nil || endpoint == "" {
 		return err
 	}
-	values := []string{endpoint}
+	values := make(map[string]string)
+	addEndpointRedaction(values, endpoint, redactedModbusEndpoint)
 	if parsed, parseErr := url.Parse(endpoint); parseErr == nil {
-		values = append(values, parsed.Host, parsed.Hostname())
+		addEndpointRedaction(values, parsed.Host, redactedModbusEndpoint)
+		addEndpointRedaction(values, parsed.Hostname(), redactedModbusEndpoint)
 	}
-	values = append(values, modbusErrorNetworkAddresses(err, 0)...)
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	collectEndpointRedactions(err, endpointOwnerUnknown, values, 0)
+	ordered := make([]string, 0, len(values))
+	for value := range values {
+		ordered = append(ordered, value)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
 	message := err.Error()
-	for _, value := range values {
-		if value != "" {
-			message = strings.ReplaceAll(message, value, "[REDACTED_MODBUS_ENDPOINT]")
-		}
+	for _, value := range ordered {
+		message = strings.ReplaceAll(message, value, values[value])
 	}
 	return errors.New(message)
 }
 
-func modbusErrorNetworkAddresses(err error, depth int) []string {
-	if err == nil || depth > 32 {
-		return nil
+func addEndpointRedaction(values map[string]string, value, marker string) {
+	if value == "" {
+		return
 	}
-	values := make([]string, 0, 2)
+	if current, exists := values[value]; exists && current != marker {
+		values[value] = redactedNetworkEndpoint
+		return
+	}
+	values[value] = marker
+}
+
+func markerForEndpointOwner(owner endpointOwner) string {
+	switch owner {
+	case endpointOwnerModbus:
+		return redactedModbusEndpoint
+	case endpointOwnerAdapterDirect:
+		return redactedAdapterDirectEndpoint
+	default:
+		return redactedNetworkEndpoint
+	}
+}
+
+func collectEndpointRedactions(err error, owner endpointOwner, values map[string]string, depth int) {
+	if err == nil || depth > 32 {
+		return
+	}
+	if owned, ok := err.(*endpointOwnedError); ok {
+		owner = owned.owner
+	}
 	if networkError, ok := err.(*net.OpError); ok && networkError.Addr != nil {
-		values = append(values, networkError.Addr.String())
+		addEndpointRedaction(values, networkError.Addr.String(), markerForEndpointOwner(owner))
 	}
 	if dnsError, ok := err.(*net.DNSError); ok && dnsError.Name != "" {
-		values = append(values, dnsError.Name)
+		addEndpointRedaction(values, dnsError.Name, markerForEndpointOwner(owner))
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, child := range joined.Unwrap() {
-			values = append(values, modbusErrorNetworkAddresses(child, depth+1)...)
+			collectEndpointRedactions(child, owner, values, depth+1)
 		}
-		return values
+		return
 	}
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-		values = append(values, modbusErrorNetworkAddresses(wrapped.Unwrap(), depth+1)...)
+		collectEndpointRedactions(wrapped.Unwrap(), owner, values, depth+1)
 	}
-	return values
 }

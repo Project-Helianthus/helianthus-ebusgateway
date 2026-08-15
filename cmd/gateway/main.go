@@ -196,7 +196,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		newModbusEndpointFn,
 	)
 	if err != nil {
-		return fmt.Errorf("modbus TCP sidecar: %w", err)
+		return withEndpointOwner(endpointOwnerModbus, fmt.Errorf("modbus TCP sidecar: %w", err))
 	}
 	if modbusAdapter != nil {
 		defer func() {
@@ -271,7 +271,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	// and passive transports before gateway construction.
 	adapterMuxCloser, adapterClassifier, err := wireAdapterDirect(ctx, &cfg)
 	if err != nil {
-		return fmt.Errorf("adapter-direct: %w", err)
+		return withEndpointOwner(endpointOwnerAdapterDirect, fmt.Errorf("adapter-direct: %w", err))
 	}
 	if adapterMuxCloser != nil {
 		defer func() {

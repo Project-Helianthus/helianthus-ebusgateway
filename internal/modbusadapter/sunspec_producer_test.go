@@ -3,6 +3,7 @@ package modbusadapter
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -123,6 +124,73 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 		t.Fatalf("Model 123 decoder key = %#v, %v; want exact standard registry key", decoderKey, ok)
 	}
 	assertBoundedFC03Discovery(t, requests(), 1)
+
+	// A terminal GO is not publishable until its registry-owned capture is
+	// retained under the exact capability/sample identity.
+	retained, encoded, ok := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID)
+	if !ok {
+		t.Fatalf("GO sample %q is unavailable from retained profile observations", result.SampleID)
+	}
+	if retained.SampleID() != result.SampleID || len(encoded) == 0 {
+		t.Fatalf("retained sample = %q encoded=%d; want %q with deterministic evidence", retained.SampleID(), len(encoded), result.SampleID)
+	}
+	replay, err := retained.Replay()
+	if err != nil {
+		t.Fatalf("retained Replay: %v", err)
+	}
+	if views := replay.SourceViews(); len(views) == 0 || views[0].Record().PollGeneration != 44 || views[0].Record().DeadlineIdentity != 94 {
+		t.Fatalf("retained replay lost exact ordered poll identity: %#v", views)
+	}
+	occurrences := replay.Occurrences()
+	if len(occurrences) != 8 || occurrences[5].WireKey != (modbusreg.SunSpecWireKey{ModelID: 123, ModelLength: 24}) {
+		t.Fatalf("retained replay lost Model 123 chain evidence: %#v", occurrences)
+	}
+}
+
+func TestSunSpecProducerStopsWhenQualificationRetentionCapacityIsExhausted(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	// The bounded retention owner must fail closed before GO when it cannot
+	// reserve one more exact qualification record.
+	for index := 0; index < maxRetainedProfileObservations; index++ {
+		adapter.profiles[fmt.Sprintf("occupied-%d", index)] = ProfileObservationRecord{}
+	}
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{
+		UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	result, err := producer.Qualify(context.Background(), SunSpecPollIdentity{
+		PollGeneration: 45, DeadlineIdentity: 95,
+	})
+	if err != nil {
+		t.Fatalf("Qualify: %v", err)
+	}
+	if result.Outcome != SunSpecQualificationStop || result.SampleID != "" || len(result.Chain.RawWords()) != 0 {
+		t.Fatalf("capacity-exhausted qualification outcome=%q sample=%q raw_words=%d; want terminal STOP without partial evidence", result.Outcome, result.SampleID, len(result.Chain.RawWords()))
+	}
+}
+
+func TestSunSpecQualificationRetentionRejectsUnserializableObservationWithoutStoringIt(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	if err := adapter.RecordSunSpecQualificationObservation(modbusreg.SunSpecQualificationObservation{}); err == nil {
+		t.Fatal("unserializable qualification observation was retained")
+	}
+	if _, _, ok := adapter.SunSpecQualificationObservation("sunspec.inverter.three_phase.monitoring@1.0.0", "sunspec-45-95"); ok {
+		t.Fatal("failed qualification serialization left a partial retained record")
+	}
 }
 
 func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *testing.T) {

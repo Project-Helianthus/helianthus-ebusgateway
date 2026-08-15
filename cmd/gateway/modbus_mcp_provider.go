@@ -16,6 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 type gatewayModbusMCPProvider struct {
@@ -30,6 +31,7 @@ type gatewayModbusMCPProvider struct {
 type modbusMCPAdapter interface {
 	ExecuteRead(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
+	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
 }
 
 func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Provider {
@@ -114,9 +116,17 @@ func (provider *gatewayModbusMCPProvider) admitRawRead() bool {
 
 func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, profileID, sampleID string) (mcp.ModbusProfileObservationResult, error) {
 	record, ok := provider.adapter.ProfileObservation(profileID, sampleID)
+	if ok {
+		return profileObservationResult(record)
+	}
+	qualification, encoded, ok := provider.adapter.SunSpecQualificationObservation(profileID, sampleID)
 	if !ok {
 		return mcp.ModbusProfileObservationResult{}, errors.New("profile observation not found")
 	}
+	return sunSpecQualificationObservationResult(qualification, encoded)
+}
+
+func profileObservationResult(record modbusadapter.ProfileObservationRecord) (mcp.ModbusProfileObservationResult, error) {
 	spec := record.Observation.Spec()
 	encoded, err := json.Marshal(record.Observation)
 	if err != nil {
@@ -157,6 +167,42 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 		DetectionEvidence:  append([]string{}, record.DetectionEvidence...),
 		ActivationEvidence: append([]string{}, record.ActivationEvidence...),
 		ObservationJSONB64: base64.StdEncoding.EncodeToString(sanitizedObservation),
+		Replay:             views,
+	}, nil
+}
+
+func sunSpecQualificationObservationResult(observation modbusreg.SunSpecQualificationObservation, encoded []byte) (mcp.ModbusProfileObservationResult, error) {
+	if len(encoded) == 0 {
+		return mcp.ModbusProfileObservationResult{}, errors.New("SunSpec qualification observation is not serializable")
+	}
+	var envelope any
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		return mcp.ModbusProfileObservationResult{}, fmt.Errorf("decode SunSpec qualification observation envelope: %w", err)
+	}
+	redactModbusEndpoints(envelope)
+	sanitized, err := json.Marshal(envelope)
+	if err != nil {
+		return mcp.ModbusProfileObservationResult{}, fmt.Errorf("encode sanitized SunSpec qualification observation: %w", err)
+	}
+	replay, err := observation.Replay()
+	if err != nil {
+		return mcp.ModbusProfileObservationResult{}, fmt.Errorf("replay SunSpec qualification observation: %w", err)
+	}
+	views := make([]mcp.ModbusReplayView, 0, len(replay.SourceViews()))
+	for _, source := range replay.SourceViews() {
+		view := source.Record()
+		views = append(views, mcp.ModbusReplayView{
+			LogicalViewID: view.LogicalViewID, WireResponseID: view.WireResponseID,
+			Offset: view.LogicalOffset, Words: append([]uint16(nil), view.Words...),
+		})
+	}
+	identity := observation.SampleIdentity()
+	return mcp.ModbusProfileObservationResult{
+		ProfileID:          observation.Capability().ProfileID(),
+		SampleID:           observation.SampleID(),
+		PollGenerationID:   identity.PollGeneration(),
+		SourceValidity:     "terminal_verified",
+		ObservationJSONB64: base64.StdEncoding.EncodeToString(sanitized),
 		Replay:             views,
 	}, nil
 }

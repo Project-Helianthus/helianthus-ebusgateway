@@ -1795,21 +1795,23 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	discovered := p.registryRadioDeviceSeeds()
 	fullScanGroups := startupRadioFullScanGroups(discovered)
 	fm5NamespaceComplete := fullScanGroups[remoteFunctionalModules.group]
+	fm5PositiveObserved := false
 	verified := make(map[radioDeviceKey]bool)
 	readAny := false
-	probeSlot := func(grp b524GroupDef, instance byte) {
+	probeSlot := func(grp b524GroupDef, instance byte) bool {
 		connectedRaw, ok := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_connected)
 		if !ok || len(connectedRaw) == 0 {
 			if grp.group == remoteFunctionalModules.group {
 				fm5NamespaceComplete = false
 			}
-			return
+			return false
 		}
 		readAny = true
 		connected := connectedRaw[0] == 1
 		var classAddress *uint8
 		var firmware *string
 		var hardware *uint16
+		completePositiveFM5 := false
 		if grp.group == remoteFunctionalModules.group {
 			classRaw, classOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 			firmwareRaw, firmwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_firmware)
@@ -1827,6 +1829,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			classAddress = tuple.classAddress
 			firmware = tuple.firmware
 			hardware = tuple.hardware
+			completePositiveFM5 = tuple.complete && hasRemoteIdentityEvidence(classAddress, firmware, hardware)
 		} else {
 			classAddress = p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 		}
@@ -1839,7 +1842,7 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 		}
 		if !include {
 			delete(discovered, key)
-			return
+			return false
 		}
 		discovered[key] = &vaillantRadioDeviceSnapshot{
 			Group:              grp.group,
@@ -1851,17 +1854,30 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			FirmwareVersion:    cloneStringPtr(firmware),
 			HardwareIdentifier: cloneUint16Ptr(hardware),
 		}
+		return completePositiveFM5
 	}
 
 	for _, grp := range remoteDeviceGroups {
 		for instance := byte(0x00); instance <= semanticStartupSlotFastMaxInstance; instance++ {
-			probeSlot(grp, instance)
+			if probeSlot(grp, instance) {
+				fm5PositiveObserved = true
+			}
 		}
 	}
 	for _, grp := range remoteDeviceGroups {
 		if fullScanGroups[grp.group] {
+			if grp.group == remoteFunctionalModules.group && fm5PositiveObserved {
+				fm5NamespaceComplete = false
+				continue
+			}
 			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
-				probeSlot(grp, instance)
+				if probeSlot(grp, instance) && grp.group == remoteFunctionalModules.group {
+					fm5PositiveObserved = true
+					if instance < semanticStartupSlotFullMaxInstance {
+						fm5NamespaceComplete = false
+					}
+					break
+				}
 			}
 		}
 	}

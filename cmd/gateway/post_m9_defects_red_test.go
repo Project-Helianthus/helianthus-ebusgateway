@@ -1755,6 +1755,79 @@ func TestEnqueueAddressIdentityProbe_SaturatedQueueCoalescesGuaranteedOrderedFM5
 	}
 }
 
+func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncriticalSystem(t *testing.T) {
+	originalScanDirected := registryScanDirectedFn
+	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
+
+	taskScheduler := newSemanticTaskScheduler()
+	poller, provider := newFM5DeadlineRecoveryTestPoller(taskScheduler)
+	scanSeamCalled := false
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		scanSeamCalled = true
+		if len(targets) != 1 || targets[0] != circuitManagingDeviceVR71Address {
+			return nil, errors.New("unexpected directed identity target")
+		}
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+
+	taskCtx, cancelTask := context.WithCancel(context.Background())
+	defer cancelTask()
+	readOrder := make([]string, 0, 2)
+	blockedNoncriticalSystem := false
+	gateRecorded := false
+	radioRecorded := false
+	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == localRegulator.group && addr == system_module_configuration_vr71 {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if !gateRecorded {
+				readOrder = append(readOrder, "gate")
+				gateRecorded = true
+			}
+			return fm5InstanceOneSemanticTestResponse(frame)
+		}
+		if group == localRegulator.group && !radioRecorded {
+			blockedNoncriticalSystem = true
+			cancelTask()
+			return nil, context.DeadlineExceeded
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if (group == remoteRegulators.group || group == remoteThermostats.group || group == remoteFunctionalModules.group) && !radioRecorded {
+			readOrder = append(readOrder, "radio")
+			radioRecorded = true
+		}
+		return fm5InstanceOneSemanticTestResponse(frame)
+	}
+
+	poller.EnqueueAddressIdentityProbe(circuitManagingDeviceVR71Address)
+	probeTask := taskScheduler.nextTask(context.Background())
+	if probeTask == nil {
+		t.Fatal("late identity probe task was not scheduled")
+	}
+	probeTask.run(taskCtx)
+	taskScheduler.taskDone(probeTask)
+
+	verdict := provider.FM5Interpretation()
+	ordered := len(readOrder) == 2 && readOrder[0] == "gate" && readOrder[1] == "radio"
+	if !scanSeamCalled || blockedNoncriticalSystem || !ordered ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("deadline-aware late recovery seam_called=%t blocked_noncritical=%t read_order=%v verdict=%#v; want targeted gate then radio and healthy INTERPRETED without ordinary ticker", scanSeamCalled, blockedNoncriticalSystem, readOrder, verdict)
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

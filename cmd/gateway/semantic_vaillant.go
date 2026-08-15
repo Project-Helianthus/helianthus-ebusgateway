@@ -5381,11 +5381,13 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 	// Runs at startup and every deviceSlotRediscoveryTTL (30min default).
 	discoveryObserved := false
 	fm5NamespaceComplete := false
+	phaseOneActiveSlots := make(map[deviceSlotKey]bool)
 	phaseOneFM5Snapshots := make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
 	if needsDiscovery {
 		activeSlots, observedAny, complete, snapshots := p.discoverDeviceSlotsWithFM5Completeness(ctx)
 		discoveryObserved = observedAny
 		fm5NamespaceComplete = complete
+		phaseOneActiveSlots = activeSlots
 		phaseOneFM5Snapshots = snapshots
 		if observedAny {
 			p.mu.Lock()
@@ -5476,6 +5478,14 @@ func (p *vaillantSemanticPoller) refreshRadioDevices(ctx context.Context) {
 
 		connectedRaw := p.readB524U8(ctx, opcode, group, instance, device_slot_connected)
 		if connectedRaw == nil {
+			if phaseOneActiveSlots[key] {
+				p.mu.Lock()
+				previous := cloneRadioSnapshot(p.radioDevices[radioDeviceKey{Group: group, Instance: instance}])
+				p.mu.Unlock()
+				if previous != nil {
+					discovered[radioDeviceKey{Group: group, Instance: instance}] = previous
+				}
+			}
 			continue
 		}
 		readAny = true

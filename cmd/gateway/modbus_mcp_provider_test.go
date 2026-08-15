@@ -10,6 +10,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 type countingModbusMCPAdapter struct{ reads int }
@@ -21,6 +22,10 @@ func (adapter *countingModbusMCPAdapter) ExecuteRead(context.Context, modbusadap
 
 func (*countingModbusMCPAdapter) ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool) {
 	return modbusadapter.ProfileObservationRecord{}, false
+}
+
+func (*countingModbusMCPAdapter) SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool) {
+	return modbusreg.SunSpecQualificationObservation{}, nil, false
 }
 
 func TestNewGatewayModbusMCPProviderDisabledIsInert(t *testing.T) {

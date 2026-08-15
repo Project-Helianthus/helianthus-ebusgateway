@@ -2,6 +2,7 @@ package modbusadapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -58,14 +59,15 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce    sync.Once
-	closeErr     error
-	executeMu    sync.Mutex
-	connectionMu sync.RWMutex
-	closed       bool
-	lastRequest  modbus.TCPRequestHandle
-	profileMu    sync.RWMutex
-	profiles     map[string]ProfileObservationRecord
+	closeOnce      sync.Once
+	closeErr       error
+	executeMu      sync.Mutex
+	connectionMu   sync.RWMutex
+	closed         bool
+	lastRequest    modbus.TCPRequestHandle
+	profileMu      sync.RWMutex
+	profiles       map[string]ProfileObservationRecord
+	qualifications map[string]sunSpecQualificationRecord
 }
 
 const maxRetainedProfileObservations = 32
@@ -76,6 +78,11 @@ type ProfileObservationRecord struct {
 	Observation        modbusreg.Observation
 	DetectionEvidence  []string
 	ActivationEvidence []string
+}
+
+type sunSpecQualificationRecord struct {
+	observation modbusreg.SunSpecQualificationObservation
+	encoded     []byte
 }
 
 // Start constructs and connects one endpoint. Disabled configuration is inert.
@@ -121,12 +128,13 @@ func Start(
 		)
 	}
 	return &Adapter{
-		endpoint:   endpoint,
-		connection: handle,
-		source:     config.Endpoint.RuntimeAcquisitionSource,
-		config:     config,
-		dial:       dial,
-		profiles:   make(map[string]ProfileObservationRecord),
+		endpoint:       endpoint,
+		connection:     handle,
+		source:         config.Endpoint.RuntimeAcquisitionSource,
+		config:         config,
+		dial:           dial,
+		profiles:       make(map[string]ProfileObservationRecord),
+		qualifications: make(map[string]sunSpecQualificationRecord),
 	}, nil
 }
 
@@ -310,12 +318,37 @@ func (adapter *Adapter) RecordProfileObservation(record ProfileObservationRecord
 	key := spec.ProfileID + "\x00" + spec.SampleID
 	adapter.profileMu.Lock()
 	defer adapter.profileMu.Unlock()
-	if _, exists := adapter.profiles[key]; !exists && len(adapter.profiles) >= maxRetainedProfileObservations {
+	if _, exists := adapter.profiles[key]; !exists && len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
 	record.DetectionEvidence = append([]string(nil), record.DetectionEvidence...)
 	record.ActivationEvidence = append([]string(nil), record.ActivationEvidence...)
 	adapter.profiles[key] = record
+	return nil
+}
+
+// RecordSunSpecQualificationObservation first proves deterministic
+// serialization, then retains one immutable terminal registry observation.
+// The shared bound covers legacy profile observations as well.
+func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbusreg.SunSpecQualificationObservation) error {
+	if adapter == nil {
+		return errors.New("modbus TCP adapter unavailable")
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return fmt.Errorf("serialize SunSpec qualification observation: %w", err)
+	}
+	capability, sampleID := observation.Capability().ProfileID(), observation.SampleID()
+	if capability == "" || sampleID == "" {
+		return errors.New("SunSpec qualification observation identity is incomplete")
+	}
+	key := capability + "\x00" + sampleID
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
+	if _, exists := adapter.qualifications[key]; !exists && len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
+		return errors.New("profile observation retention limit reached")
+	}
+	adapter.qualifications[key] = sunSpecQualificationRecord{observation: observation, encoded: append([]byte(nil), encoded...)}
 	return nil
 }
 
@@ -333,6 +366,21 @@ func (adapter *Adapter) ProfileObservation(profileID, sampleID string) (ProfileO
 	record.DetectionEvidence = append([]string(nil), record.DetectionEvidence...)
 	record.ActivationEvidence = append([]string(nil), record.ActivationEvidence...)
 	return record, true
+}
+
+// SunSpecQualificationObservation returns a detached immutable terminal
+// qualification and the serialization proven before it was retained.
+func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID string) (modbusreg.SunSpecQualificationObservation, []byte, bool) {
+	if adapter == nil {
+		return modbusreg.SunSpecQualificationObservation{}, nil, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	record, ok := adapter.qualifications[profileID+"\x00"+sampleID]
+	if !ok {
+		return modbusreg.SunSpecQualificationObservation{}, nil, false
+	}
+	return record.observation, append([]byte(nil), record.encoded...), true
 }
 
 // Cancel delegates cancellation to the endpoint owner.

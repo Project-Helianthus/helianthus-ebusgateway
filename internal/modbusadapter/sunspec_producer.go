@@ -220,10 +220,19 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}
+		observation, err := modbusreg.NewSunSpecQualificationObservation(producer.registry, snapshot)
+		if err != nil {
+			result.Outcome = SunSpecQualificationStop
+			return result
+		}
+		if err := producer.adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+			result.Outcome = SunSpecQualificationStop
+			return result
+		}
 		result.FlavorID, result.FlavorReason = flavor.FlavorID(), flavor.Reason()
 		result.Outcome = SunSpecQualificationGO
 		result.ObservationCount = 1
-		result.SampleID = fmt.Sprintf("sunspec-%d-%d", identity.PollGeneration, identity.DeadlineIdentity)
+		result.SampleID = observation.SampleID()
 		result.Chain = snapshot
 		return result
 	}

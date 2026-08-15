@@ -127,12 +127,23 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 
 	// A terminal GO is not publishable until its registry-owned capture is
 	// retained under the exact capability/sample identity.
-	retained, ok := adapter.ProfileObservation(result.CapabilityID, result.SampleID)
+	retained, encoded, ok := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID)
 	if !ok {
 		t.Fatalf("GO sample %q is unavailable from retained profile observations", result.SampleID)
 	}
-	if retained.Observation.SampleID() != result.SampleID {
-		t.Fatalf("retained sample = %q; want %q", retained.Observation.SampleID(), result.SampleID)
+	if retained.SampleID() != result.SampleID || len(encoded) == 0 {
+		t.Fatalf("retained sample = %q encoded=%d; want %q with deterministic evidence", retained.SampleID(), len(encoded), result.SampleID)
+	}
+	replay, err := retained.Replay()
+	if err != nil {
+		t.Fatalf("retained Replay: %v", err)
+	}
+	if views := replay.SourceViews(); len(views) == 0 || views[0].Record().PollGeneration != 44 || views[0].Record().DeadlineIdentity != 94 {
+		t.Fatalf("retained replay lost exact ordered poll identity: %#v", views)
+	}
+	occurrences := replay.Occurrences()
+	if len(occurrences) != 8 || occurrences[5].WireKey != (modbusreg.SunSpecWireKey{ModelID: 123, ModelLength: 24}) {
+		t.Fatalf("retained replay lost Model 123 chain evidence: %#v", occurrences)
 	}
 }
 
@@ -163,6 +174,22 @@ func TestSunSpecProducerStopsWhenQualificationRetentionCapacityIsExhausted(t *te
 	}
 	if result.Outcome != SunSpecQualificationStop || result.SampleID != "" || len(result.Chain.RawWords()) != 0 {
 		t.Fatalf("capacity-exhausted qualification outcome=%q sample=%q raw_words=%d; want terminal STOP without partial evidence", result.Outcome, result.SampleID, len(result.Chain.RawWords()))
+	}
+}
+
+func TestSunSpecQualificationRetentionRejectsUnserializableObservationWithoutStoringIt(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	if err := adapter.RecordSunSpecQualificationObservation(modbusreg.SunSpecQualificationObservation{}); err == nil {
+		t.Fatal("unserializable qualification observation was retained")
+	}
+	if _, _, ok := adapter.SunSpecQualificationObservation("sunspec.inverter.three_phase.monitoring@1.0.0", "sunspec-45-95"); ok {
+		t.Fatal("failed qualification serialization left a partial retained record")
 	}
 }
 

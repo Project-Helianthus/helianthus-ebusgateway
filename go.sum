@@ -12,6 +12,8 @@ github.com/Project-Helianthus/helianthus-modbus v0.0.0-20260810083147-eab30aed9e
 github.com/Project-Helianthus/helianthus-modbus v0.0.0-20260810083147-eab30aed9eb6/go.mod h1:Nr8SW7fE3SIjnp+rj8PCOtwk8JZ9wqafu1ZCgq3Zz+Q=
 github.com/Project-Helianthus/helianthus-modbusreg v0.2.0 h1:V8kWhn7dEzjpcaaQultjAble5wGlU5lloK9b6i7HOkc=
 github.com/Project-Helianthus/helianthus-modbusreg v0.2.0/go.mod h1:b1DlK4MkW72E+j+ejZqXHbMBiMUexU/+QWIT10zZVjU=
+github.com/Project-Helianthus/helianthus-modbusreg v0.2.1 h1:IuWNO1FpYwTC/3b/Gf6G8DTlUwVb20kjjWlGQ7eFTDc=
+github.com/Project-Helianthus/helianthus-modbusreg v0.2.1/go.mod h1:b1DlK4MkW72E+j+ejZqXHbMBiMUexU/+QWIT10zZVjU=
 github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.15 h1:FhdTAcv/kckjVhao5ovAQmLRvTG0EEPZT8lmdwHuymY=
 github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.15/go.mod h1:qPqQTDqmPjyOJCr0JMNjhSC1XW1k3h5P/EZqRGy80Vs=
 github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 h1:pV1GQmlPJyy22YGK/Amf5FMu1C3IzL3qxIxGmGUUTEo=

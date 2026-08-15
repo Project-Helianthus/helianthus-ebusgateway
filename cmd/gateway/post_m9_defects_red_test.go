@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1975,6 +1976,55 @@ func TestFM5Startup_HighSlotPositivePreemptsUnrelatedRadioTails(t *testing.T) {
 	if unrelatedTailEntered || realSnapshot == nil || realSnapshot.DeviceClassAddress == nil || *realSnapshot.DeviceClassAddress != circuitManagingDeviceVR71Address ||
 		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
 		t.Fatalf("high-slot startup unrelated_tail=%t snapshot=%#v verdict=%#v; want FM tail first, real slot 3 VR71, and healthy INTERPRETED", unrelatedTailEntered, realSnapshot, verdict)
+	}
+}
+
+func TestFM5Startup_FastPositiveRetainsDeferredHighSlotRegistrySeed(t *testing.T) {
+	poller, provider := newFM5DeadlineRecoveryTestPoller(nil)
+	config := uint16(2)
+	poller.system.ModuleConfigurationVR71 = &config
+	seedAddresses := []byte{0x15, 0x16, 0x17, 0x18}
+	for instance, address := range seedAddresses {
+		poller.reg.Register(registry.DeviceInfo{
+			Address:      address,
+			Manufacturer: "Vaillant",
+			DeviceID:     fmt.Sprintf("BASV%d", instance),
+		})
+	}
+	highKey := radioDeviceKey{Group: remoteRegulators.group, Instance: 0x03}
+	seededHigh := poller.registryRadioDeviceSeeds()[highKey]
+	if seededHigh == nil || seededHigh.DeviceClassAddress == nil || *seededHigh.DeviceClassAddress != seedAddresses[3] {
+		t.Fatalf("high-slot registry seed fixture = %#v; want regulator instance 3 at 0x%02X", seededHigh, seedAddresses[3])
+	}
+
+	unrelatedTailEntered := false
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[3] > semanticStartupSlotFastMaxInstance &&
+			(frame.Data[2] == remoteRegulators.group || frame.Data[2] == remoteThermostats.group) {
+			unrelatedTailEntered = true
+		}
+		return fm5SemanticTestResponseForClasses(frame, map[byte]byte{0x01: circuitManagingDeviceVR71Address})
+	}
+
+	poller.refreshRadioDevicesStartup(context.Background())
+	poller.refreshFM5SemanticStartup(context.Background())
+
+	poller.mu.Lock()
+	highSnapshot := cloneRadioSnapshot(poller.radioDevices[highKey])
+	poller.mu.Unlock()
+	publishedHighSeed := false
+	for _, device := range provider.RadioDevices() {
+		if device.Group == int(highKey.Group) && device.Instance == int(highKey.Instance) &&
+			device.DeviceClassAddress != nil && *device.DeviceClassAddress == int(seedAddresses[3]) {
+			publishedHighSeed = true
+			break
+		}
+	}
+	verdict := provider.FM5Interpretation()
+	if unrelatedTailEntered || highSnapshot == nil || highSnapshot.SlotMode != "registry" ||
+		highSnapshot.DeviceClassAddress == nil || *highSnapshot.DeviceClassAddress != seedAddresses[3] || !publishedHighSeed ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted {
+		t.Fatalf("fast-positive deferred seed tail_entered=%t snapshot=%#v published=%t verdict=%#v; want no non-FM tail I/O and retained high-slot registry seed until deferred scan", unrelatedTailEntered, highSnapshot, publishedHighSeed, verdict)
 	}
 }
 

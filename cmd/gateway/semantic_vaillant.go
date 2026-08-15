@@ -1898,6 +1898,9 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	if readAny {
 		for key, snapshot := range discovered {
 			if snapshot != nil && snapshot.SlotMode == "registry" && !verified[key] {
+				if fm5PositiveObserved && key.Group != remoteFunctionalModules.group {
+					continue
+				}
 				delete(discovered, key)
 			}
 		}

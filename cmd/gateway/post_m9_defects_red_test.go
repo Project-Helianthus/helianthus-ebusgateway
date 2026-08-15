@@ -1901,6 +1901,128 @@ func TestEnqueueAddressIdentityProbe_FreshEmptySlotCacheForcesBoundedFM5Discover
 	}
 }
 
+func fm5SemanticTestResponseForClasses(frame protocol.Frame, classes map[byte]byte) (*protocol.Frame, error) {
+	if len(frame.Data) != 6 {
+		return nil, errors.New("invalid B524 selector")
+	}
+	group := frame.Data[2]
+	instance := frame.Data[3]
+	addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+	if group == localRegulator.group && addr == system_module_configuration_vr71 {
+		return testB524ResponseForSelectorPayload(frame.Data, 0x02, 0x00), nil
+	}
+	if group == remoteFunctionalModules.group {
+		classAddress, populated := classes[instance]
+		switch addr {
+		case device_slot_connected:
+			if populated {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+		case device_slot_class_address:
+			if populated {
+				return testB524ResponseForSelectorPayload(frame.Data, classAddress), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+		case device_slot_firmware:
+			if populated {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01, 0x00, 0x00), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+		case device_slot_hardware_identifier:
+			if populated {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x71, 0x00), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+		}
+	}
+	if group == localSolar.group && (addr == solar_enabled || addr == solar_pump_active) {
+		return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+	}
+	if group == localSolar.group || group == localCylinders.group {
+		return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(47.25)...), nil
+	}
+	return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+}
+
+func TestFM5Startup_HighSlotPositivePreemptsUnrelatedRadioTails(t *testing.T) {
+	poller, provider := newFM5DeadlineRecoveryTestPoller(nil)
+	config := uint16(2)
+	poller.system.ModuleConfigurationVR71 = &config
+	classes := map[byte]byte{0x03: circuitManagingDeviceVR71Address}
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	defer cancelStartup()
+	unrelatedTailEntered := false
+	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 && frame.Data[3] > semanticStartupSlotFastMaxInstance &&
+			(frame.Data[2] == remoteRegulators.group || frame.Data[2] == remoteThermostats.group) {
+			unrelatedTailEntered = true
+			cancelStartup()
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return fm5SemanticTestResponseForClasses(frame, classes)
+	}
+
+	poller.refreshRadioDevicesStartup(startupCtx)
+	poller.refreshFM5SemanticStartup(startupCtx)
+
+	poller.mu.Lock()
+	realSnapshot := poller.radioDevices[radioDeviceKey{Group: remoteFunctionalModules.group, Instance: 0x03}]
+	poller.mu.Unlock()
+	verdict := provider.FM5Interpretation()
+	if unrelatedTailEntered || realSnapshot == nil || realSnapshot.DeviceClassAddress == nil || *realSnapshot.DeviceClassAddress != circuitManagingDeviceVR71Address ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("high-slot startup unrelated_tail=%t snapshot=%#v verdict=%#v; want FM tail first, real slot 3 VR71, and healthy INTERPRETED", unrelatedTailEntered, realSnapshot, verdict)
+	}
+}
+
+func TestEnqueueAddressIdentityProbe_GenericFunctionalModuleDoesNotPreemptLaterVR71(t *testing.T) {
+	originalScanDirected := registryScanDirectedFn
+	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
+
+	taskScheduler := newSemanticTaskScheduler()
+	poller, provider := newFM5DeadlineRecoveryTestPoller(taskScheduler)
+	classes := map[byte]byte{
+		0x00: 0x2A,
+		0x04: circuitManagingDeviceVR71Address,
+	}
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		return fm5SemanticTestResponseForClasses(frame, classes)
+	}
+
+	poller.EnqueueAddressIdentityProbe(circuitManagingDeviceVR71Address)
+	probeTask := taskScheduler.nextTask(context.Background())
+	if probeTask == nil {
+		t.Fatal("late identity probe task was not scheduled")
+	}
+	probeTask.run(context.Background())
+	taskScheduler.taskDone(probeTask)
+
+	genericKey := deviceSlotKey{Group: remoteFunctionalModules.group, Instance: 0x00}
+	realKey := deviceSlotKey{Group: remoteFunctionalModules.group, Instance: 0x04}
+	poller.mu.Lock()
+	genericCached := poller.deviceSlotCache[genericKey]
+	realCached := poller.deviceSlotCache[realKey]
+	genericSnapshot := poller.radioDevices[radioDeviceKey(genericKey)]
+	realSnapshot := poller.radioDevices[radioDeviceKey(realKey)]
+	poller.mu.Unlock()
+	verdict := provider.FM5Interpretation()
+	if genericCached || genericSnapshot != nil || !realCached || realSnapshot == nil || realSnapshot.DeviceClassAddress == nil || *realSnapshot.DeviceClassAddress != circuitManagingDeviceVR71Address ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("generic-before-VR71 generic_cached=%t generic_snapshot=%#v real_cached=%t real_snapshot=%#v verdict=%#v; want generic ignored, later slot 4 VR71 merged, and healthy INTERPRETED", genericCached, genericSnapshot, realCached, realSnapshot, verdict)
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

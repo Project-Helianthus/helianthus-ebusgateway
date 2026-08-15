@@ -1756,7 +1756,7 @@ func TestEnqueueAddressIdentityProbe_SaturatedQueueCoalescesGuaranteedOrderedFM5
 	}
 }
 
-func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncriticalSystem(t *testing.T) {
+func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsStartupSubsetBeforeOtherSystem(t *testing.T) {
 	originalScanDirected := registryScanDirectedFn
 	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
 
@@ -1779,7 +1779,7 @@ func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncr
 	taskCtx, cancelTask := context.WithCancel(context.Background())
 	defer cancelTask()
 	readOrder := make([]string, 0, 2)
-	blockedNoncriticalSystem := false
+	blockedOutsideStartupSubset := false
 	gateRecorded := false
 	radioRecorded := false
 	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
@@ -1798,9 +1798,9 @@ func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncr
 			}
 			return fm5InstanceOneSemanticTestResponse(frame)
 		}
-		targetedSystemRead := addr == system_scheme || addr == system_water_pressure
-		if group == localRegulator.group && !targetedSystemRead && !radioRecorded {
-			blockedNoncriticalSystem = true
+		startupSubsetRead := addr == system_scheme || addr == system_water_pressure
+		if group == localRegulator.group && !startupSubsetRead && !radioRecorded {
+			blockedOutsideStartupSubset = true
 			cancelTask()
 			return nil, context.DeadlineExceeded
 		}
@@ -1824,9 +1824,9 @@ func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncr
 
 	verdict := provider.FM5Interpretation()
 	ordered := len(readOrder) == 2 && readOrder[0] == "gate" && readOrder[1] == "radio"
-	if !scanSeamCalled || blockedNoncriticalSystem || !ordered ||
+	if !scanSeamCalled || blockedOutsideStartupSubset || !ordered ||
 		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
-		t.Fatalf("deadline-aware late recovery seam_called=%t blocked_noncritical=%t read_order=%v verdict=%#v; want targeted gate then radio and healthy INTERPRETED without ordinary ticker", scanSeamCalled, blockedNoncriticalSystem, readOrder, verdict)
+		t.Fatalf("deadline-aware late recovery seam_called=%t blocked_outside_startup_subset=%t read_order=%v verdict=%#v; want startup subset gate path then radio and healthy INTERPRETED without ordinary ticker", scanSeamCalled, blockedOutsideStartupSubset, readOrder, verdict)
 	}
 }
 
@@ -2200,6 +2200,68 @@ func TestEnqueueAddressIdentityProbe_MaxSlotVR71ConvergesWithinBoundedRecoveryBu
 		retainedRegulator == nil || !publishedRegulator || verdict.Mode != graphql.Fm5SemanticModeInterpreted ||
 		verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
 		t.Fatalf("max-slot late recovery seam=%t reads=%d exhausted=%t cached=%t fm5=%#v retained_non_fm=%#v published_non_fm=%t verdict=%#v; want one bounded directed recovery to publish slot 0x0A INTERPRETED without losing non-FM state", scanSeamCalled, selectorReads, budgetExhausted, fm5Cached, fm5Snapshot, retainedRegulator, publishedRegulator, verdict)
+	}
+}
+
+func TestEnqueueAddressIdentityProbe_MaxSlotVR71RecoveryReadsOnlyConfigurationGate(t *testing.T) {
+	originalScanDirected := registryScanDirectedFn
+	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
+
+	taskScheduler := newSemanticTaskScheduler()
+	poller, provider := newFM5DeadlineRecoveryTestPoller(taskScheduler)
+	scanSeamCalled := false
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		scanSeamCalled = true
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+
+	recoveryCtx, cancelRecovery := context.WithCancel(context.Background())
+	defer cancelRecovery()
+	systemSelectors := make([]uint16, 0, 1)
+	selectorReads := 0
+	budgetExhausted := false
+	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+		if group == localRegulator.group {
+			systemSelectors = append(systemSelectors, addr)
+			if addr != system_module_configuration_vr71 {
+				cancelRecovery()
+				return nil, errors.New("late FM5 recovery attempted non-gate system selector")
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return fm5HighSlotBudgetedResponse(ctx, frame, &selectorReads, &budgetExhausted, cancelRecovery)
+	}
+
+	poller.EnqueueAddressIdentityProbe(circuitManagingDeviceVR71Address)
+	probeTask := taskScheduler.nextTask(context.Background())
+	if probeTask == nil {
+		t.Fatal("late identity probe task was not scheduled")
+	}
+	probeTask.run(recoveryCtx)
+	taskScheduler.taskDone(probeTask)
+
+	fm5Key := radioDeviceKey{Group: remoteFunctionalModules.group, Instance: semanticStartupSlotFullMaxInstance}
+	poller.mu.Lock()
+	fm5Snapshot := cloneRadioSnapshot(poller.radioDevices[fm5Key])
+	poller.mu.Unlock()
+	verdict := provider.FM5Interpretation()
+	onlyGateRead := len(systemSelectors) == 1 && systemSelectors[0] == system_module_configuration_vr71
+	if !scanSeamCalled || !onlyGateRead || budgetExhausted || selectorReads > fm5HighSlotSelectorBudget ||
+		fm5Snapshot == nil || fm5Snapshot.DeviceClassAddress == nil || *fm5Snapshot.DeviceClassAddress != circuitManagingDeviceVR71Address ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("gate-only max-slot recovery seam=%t system_selectors=%#v reads=%d exhausted=%t fm5=%#v verdict=%#v; want only module_configuration_vr71 before bounded slot 0x0A INTERPRETED recovery", scanSeamCalled, systemSelectors, selectorReads, budgetExhausted, fm5Snapshot, verdict)
 	}
 }
 

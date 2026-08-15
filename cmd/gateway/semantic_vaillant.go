@@ -190,6 +190,7 @@ const (
 	semanticStartupSlotFastMaxInstance = byte(0x02)
 	semanticStartupSlotFullMaxInstance = byte(0x0A)
 	semanticStartupCriticalDHWAttempts = 3
+	semanticIdentityRecoveryTimeout    = 35 * time.Second
 	semanticCircuitFullScanInterval    = 30 * time.Minute
 	semanticCircuitPartialScanInterval = 5 * time.Minute
 )
@@ -1864,19 +1865,20 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			}
 		}
 	}
-	for _, grp := range remoteDeviceGroups {
-		if fullScanGroups[grp.group] {
-			if grp.group == remoteFunctionalModules.group && fm5PositiveObserved {
-				fm5NamespaceComplete = false
+	if fm5PositiveObserved {
+		fm5NamespaceComplete = false
+	} else {
+	tailScan:
+		for _, grp := range remoteDeviceGroups {
+			if !fullScanGroups[grp.group] {
 				continue
 			}
 			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
 				if probeSlot(grp, instance) && grp.group == remoteFunctionalModules.group {
-					fm5PositiveObserved = true
 					if instance < semanticStartupSlotFullMaxInstance {
 						fm5NamespaceComplete = false
 					}
-					break
+					break tailScan
 				}
 			}
 		}
@@ -9158,8 +9160,10 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 		}
 		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", probeAddr)
 		if probeAddr == circuitManagingDeviceVR71Address {
-			p.enqueueTask(semanticTaskRefreshSystem, semanticTaskPriorityMedium, p.refreshSystem)
-			p.enqueueTask(semanticTaskRefreshRadioDevices, semanticTaskPriorityMedium, p.refreshRadioDevices)
+			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, semanticIdentityRecoveryTimeout)
+			defer recoveryCancel()
+			p.refreshSystem(recoveryCtx)
+			p.refreshRadioDevices(recoveryCtx)
 		}
 	}
 	if scheduler == nil {

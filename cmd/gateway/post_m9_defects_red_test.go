@@ -1557,10 +1557,9 @@ func TestEnqueueAddressIdentityProbe_LateFM5SuccessTriggersBoundedSemanticReacqu
 		taskScheduler.taskDone(task)
 	}
 	verdict := provider.FM5Interpretation()
-	if !scanSeamCalled || len(scheduled) != 2 ||
-		scheduled[0] != semanticTaskRefreshSystem || scheduled[1] != semanticTaskRefreshRadioDevices ||
+	if !scanSeamCalled || len(scheduled) != 0 ||
 		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
-		t.Fatalf("late FM5 recovery seam_called=%t scheduled=%v verdict=%#v; want directed success then [refresh_system refresh_radio_devices] and healthy INTERPRETED without ticker", scanSeamCalled, scheduled, verdict)
+		t.Fatalf("late FM5 recovery seam_called=%t scheduled=%v verdict=%#v; want directed success with inline bounded recovery, no extra queued tasks, and healthy INTERPRETED without ticker", scanSeamCalled, scheduled, verdict)
 	}
 }
 

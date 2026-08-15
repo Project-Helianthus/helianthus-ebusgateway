@@ -5291,13 +5291,25 @@ func (p *vaillantSemanticPoller) discoverDeviceSlotsWithFM5Completeness(ctx cont
 }
 
 func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshot(ctx context.Context, instance byte) (*vaillantRadioDeviceSnapshot, bool, bool) {
-	connectedRaw, connectedOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_connected)
+	return p.readFunctionalModuleIdentitySnapshotWith(ctx, instance, p.readB524Value)
+}
+
+func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshotStartup(ctx context.Context, instance byte) (*vaillantRadioDeviceSnapshot, bool, bool) {
+	return p.readFunctionalModuleIdentitySnapshotWith(ctx, instance, p.readB524Startup)
+}
+
+func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshotWith(
+	ctx context.Context,
+	instance byte,
+	read func(context.Context, byte, byte, byte, uint16) ([]byte, bool),
+) (*vaillantRadioDeviceSnapshot, bool, bool) {
+	connectedRaw, connectedOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_connected)
 	if !connectedOK || len(connectedRaw) == 0 {
 		return nil, false, false
 	}
-	classRaw, classOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
-	firmwareRaw, firmwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_firmware)
-	hardwareRaw, hardwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_hardware_identifier)
+	classRaw, classOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
+	firmwareRaw, firmwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_firmware)
+	hardwareRaw, hardwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_hardware_identifier)
 	tuple := decodeFunctionalModuleIdentityTuple(
 		connectedRaw, connectedOK,
 		classRaw, classOK,
@@ -5321,6 +5333,61 @@ func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshot(ctx contex
 		FirmwareVersion:    cloneStringPtr(tuple.firmware),
 		HardwareIdentifier: cloneUint16Ptr(tuple.hardware),
 	}, true, tuple.complete
+}
+
+func (p *vaillantSemanticPoller) refreshFM5AfterLateIdentity(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	probe := func(instance byte) (*vaillantRadioDeviceSnapshot, bool) {
+		snapshot, observed, complete := p.readFunctionalModuleIdentitySnapshotStartup(ctx, instance)
+		if !observed || !complete || snapshot == nil || !hasFM5EvidenceFromRadioSnapshots([]*vaillantRadioDeviceSnapshot{snapshot}) {
+			return nil, false
+		}
+		return snapshot, true
+	}
+
+	var (
+		instance byte
+		snapshot *vaillantRadioDeviceSnapshot
+		found    bool
+	)
+	for instance = 0; instance <= semanticStartupSlotFastMaxInstance; instance++ {
+		if snapshot, found = probe(instance); found {
+			break
+		}
+	}
+	if !found {
+		for instance = semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
+			if snapshot, found = probe(instance); found {
+				break
+			}
+		}
+	}
+	if !found {
+		return
+	}
+
+	deviceKey := deviceSlotKey{Group: remoteFunctionalModules.group, Instance: instance}
+	radioKey := radioDeviceKey{Group: remoteFunctionalModules.group, Instance: instance}
+	p.mu.Lock()
+	if p.deviceSlotCache == nil {
+		p.deviceSlotCache = make(map[deviceSlotKey]bool)
+	}
+	if p.radioDevices == nil {
+		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	}
+	p.deviceSlotCache[deviceKey] = true
+	p.radioDevices[radioKey] = snapshot
+	p.fm5EvidenceGeneration++
+	p.fm5IdentityScanComplete = false
+	p.fm5IdentityIncoherent = false
+	p.fm5RegistryEvidenceIgnored = false
+	p.fm5IdentityObservedAt = p.now()
+	p.mu.Unlock()
+
+	p.publishRadioDevices(semanticSnapshotSourceLive)
+	p.refreshFM5Semantic(ctx)
 }
 
 type functionalModuleIdentityTuple struct {
@@ -9163,7 +9230,7 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, semanticIdentityRecoveryTimeout)
 			defer recoveryCancel()
 			p.refreshSystemStartup(recoveryCtx)
-			p.refreshRadioDevices(recoveryCtx)
+			p.refreshFM5AfterLateIdentity(recoveryCtx)
 		}
 	}
 	if scheduler == nil {

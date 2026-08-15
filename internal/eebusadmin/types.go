@@ -11,30 +11,18 @@ const ContractV1 = "helianthus.eebus.operator-admin.v1"
 
 type Principal string
 
-const (
-	PrincipalPortalOwner   Principal = "portal_owner"
-	PrincipalHAIntegration Principal = "ha_integration"
-)
-
-type AuthConfig struct {
-	OwnerUsername string
-	OwnerSecret   []byte
-	HASecret      []byte
-	OwnerOrigin   string
-	SessionTTL    time.Duration
-	Now           func() time.Time
-	Random        io.Reader
-}
+const PrincipalHostOperator Principal = "host_operator"
 
 type Config struct {
-	Admin eebusruntime.AdminV1
-	Raw   RawSnapshotProvider
-	Auth  AuthConfig
-	Audit func(AuditEvent)
+	Admin  eebusruntime.AdminV1
+	Raw    RawSnapshotProvider
+	Audit  func(AuditEvent)
+	Now    func() time.Time
+	Random io.Reader
 }
 
 // AuditEvent deliberately has no representation for operational identities,
-// endpoints, credentials, request bodies, or transport/store internals.
+// endpoints, request bodies, or transport/store internals.
 type AuditEvent struct {
 	Action              string    `json:"action"`
 	Principal           Principal `json:"principal"`
@@ -53,16 +41,9 @@ type errorData struct {
 type ownerEnvelope struct {
 	Contract      string     `json:"contract"`
 	RequestID     string     `json:"request_id,omitempty"`
-	StateRevision uint64     `json:"state_revision,omitempty"`
+	StateRevision uint64     `json:"state_revision"`
 	Data          any        `json:"data"`
 	Error         *errorData `json:"error"`
-}
-
-type haEnvelope struct {
-	Contract           string     `json:"contract"`
-	ProjectionRevision uint64     `json:"projection_revision,omitempty"`
-	Data               any        `json:"data"`
-	Error              *errorData `json:"error"`
 }
 
 type ownerStatus struct {
@@ -77,15 +58,6 @@ type ownerStatus struct {
 	DiscoveredCount uint16    `json:"discovered_count"`
 	CandidateCount  uint16    `json:"candidate_count"`
 	DegradedCode    string    `json:"degraded_code,omitempty"`
-}
-
-type haStatus struct {
-	Listener        string `json:"listener"`
-	Discovery       string `json:"discovery"`
-	TrustedCount    uint16 `json:"trusted_count"`
-	ConnectedCount  uint16 `json:"connected_count"`
-	DiscoveredCount uint16 `json:"discovered_count"`
-	DegradedCode    string `json:"degraded_code,omitempty"`
 }
 
 type partnersData struct {

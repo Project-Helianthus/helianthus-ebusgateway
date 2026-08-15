@@ -246,7 +246,7 @@ func (server *server) finishHTTPMutation(destination http.ResponseWriter, captur
 		status = http.StatusOK
 	}
 	body := append([]byte(nil), capture.body.Bytes()...)
-	if capture.locked && capture.invoked && len(body) != 0 {
+	if capture.locked && capture.invoked && status >= http.StatusOK && status < http.StatusMultipleChoices && len(body) != 0 {
 		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, action: capture.action, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
 	}
 	if capture.locked {
@@ -267,8 +267,9 @@ func markHTTPMutationInvoked(w http.ResponseWriter) {
 }
 
 func writeHTTPMutationReplay(w http.ResponseWriter, replay httpMutationReplay) {
+	body := bytes.Replace(replay.body, []byte(`"replayed":false`), []byte(`"replayed":true`), 1)
 	w.WriteHeader(replay.status)
-	_, _ = w.Write(replay.body)
+	_, _ = w.Write(body)
 }
 
 func auditAction(method, requestPath string) string {

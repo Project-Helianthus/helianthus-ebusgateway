@@ -1788,6 +1788,35 @@ func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
 	}
 }
 
+func (p *vaillantSemanticPoller) refreshFM5ConfigurationForLateIdentity(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	snapshot := &vaillantSystemSnapshot{Controller: controller}
+	configurationAcquired := false
+	if raw, ok := p.readB524Uint16Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_module_configuration_vr71); ok && raw != nil {
+		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
+		configurationAcquired = true
+	}
+
+	p.mu.Lock()
+	source := semanticSnapshotSourceCache
+	p.updateFM5ConfigurationAcquisitionLocked(configurationAcquired)
+	if configurationAcquired {
+		p.updateSystemSnapshotLocked(mergeSystemSnapshotNonDestructive(p.system, snapshot))
+		source = semanticSnapshotSourceLive
+	}
+	hasSnapshot := p.system != nil
+	p.mu.Unlock()
+	if hasSnapshot {
+		p.publishSystem(source)
+	}
+}
+
 func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context) {
 	if p == nil {
 		return
@@ -9305,7 +9334,7 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 		if probeAddr == circuitManagingDeviceVR71Address {
 			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, semanticIdentityRecoveryTimeout)
 			defer recoveryCancel()
-			p.refreshSystemStartup(recoveryCtx)
+			p.refreshFM5ConfigurationForLateIdentity(recoveryCtx)
 			p.refreshFM5AfterLateIdentity(recoveryCtx)
 		}
 	}

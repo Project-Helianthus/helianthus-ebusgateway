@@ -120,7 +120,7 @@ func msp06TestServer(t *testing.T, provider EEBusV1Provider) (*Server, *msp06Clo
 	err = server.registerEEBusV1Provider(provider, eebusV1RegistrationOptions{
 		now: clock.Now, entropy: &msp06EntropyReader{},
 		pseudonymKey: bytes.Repeat([]byte{0x5a}, sha256.Size),
-		liveTimeout:  100 * time.Millisecond,
+		liveTimeout:  5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -393,6 +393,7 @@ func TestMSP06ProviderTimeoutIsNormalized(t *testing.T) {
 		return msp06Snapshot(t, "late"), nil
 	})
 	server, _ := msp06TestServer(t, blocking)
+	server.eebusV1.liveTimeout = 100 * time.Millisecond
 	result := msp06Call(t, server.Handler(), msp06TopologyGetTool, map[string]any{})
 	msp06AssertError(t, result, msp06TopologyGetTool, "topology", "timeout")
 }

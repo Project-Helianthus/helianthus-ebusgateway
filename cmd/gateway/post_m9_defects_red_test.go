@@ -1341,6 +1341,107 @@ func TestFM5PositiveIdentityDoesNotRequireNegativeNamespaceCompleteness(t *testi
 	})
 }
 
+func TestFM5Startup_UnseededLowSlotPositiveDoesNotLosePrimingBudget(t *testing.T) {
+	now := time.Date(2026, 8, 15, 20, 0, 0, 0, time.UTC)
+	config := uint16(2)
+	const (
+		collectorTemperature = 61.5
+		cylinderTemperature  = 47.25
+	)
+	provider := graphql.NewLiveSemanticProvider()
+	poller := &vaillantSemanticPoller{
+		scheduler:       ebusgateway.NewSemanticReadScheduler(),
+		reg:             registry.NewDeviceRegistry(nil),
+		provider:        provider,
+		source:          0x7F,
+		controller:      0x15,
+		requestTimeout:  50 * time.Millisecond,
+		system:          &vaillantSystemSnapshot{Controller: 0x15, ModuleConfigurationVR71: &config},
+		radioDevices:    make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:  make(map[byte]*vaillantCylinderSnapshot),
+		fm5EvidenceTTL:  5 * time.Minute,
+		deviceSlotCache: make(map[deviceSlotKey]bool),
+		nowFn:           func() time.Time { return now },
+	}
+
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	defer cancelStartup()
+	tailEntered := false
+	blockedFamilyReads := 0
+	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) != 6 {
+			return nil, errors.New("invalid B524 selector")
+		}
+		group := frame.Data[2]
+		instance := frame.Data[3]
+		addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+
+		if group == remoteFunctionalModules.group && instance >= semanticStartupSlotFastMaxInstance+1 {
+			tailEntered = true
+			cancelStartup()
+		}
+		if (group == localSolar.group || group == localCylinders.group) && ctx.Err() != nil {
+			blockedFamilyReads++
+			return nil, ctx.Err()
+		}
+
+		if group == remoteFunctionalModules.group {
+			switch addr {
+			case device_slot_connected:
+				connected := byte(0x00)
+				if instance == 0x01 {
+					connected = 0x01
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, connected), nil
+			case device_slot_class_address:
+				classAddress := byte(0xFF)
+				if instance == 0x01 {
+					classAddress = circuitManagingDeviceVR71Address
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, classAddress), nil
+			case device_slot_firmware:
+				firmware := []byte{0xFF, 0xFF, 0xFF}
+				if instance == 0x01 {
+					firmware = []byte{0x01, 0x00, 0x00}
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, firmware...), nil
+			case device_slot_hardware_identifier:
+				hardware := []byte{0xFF, 0xFF}
+				if instance == 0x01 {
+					hardware = []byte{0x71, 0x00}
+				}
+				return testB524ResponseForSelectorPayload(frame.Data, hardware...), nil
+			}
+		}
+		if group == localSolar.group {
+			switch addr {
+			case solar_collector_temp:
+				return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(collectorTemperature)...), nil
+			case solar_enabled, solar_pump_active:
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+		}
+		if group == localCylinders.group && addr == cylinder_temperature {
+			return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(cylinderTemperature)...), nil
+		}
+		return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+	}
+
+	poller.refreshRadioDevicesStartup(startupCtx)
+	poller.refreshFM5SemanticStartup(startupCtx)
+
+	got := provider.FM5Interpretation()
+	if got.Mode != graphql.Fm5SemanticModeInterpreted || got.DegradedReason != "" || got.EvidenceRevision == "" {
+		t.Fatalf("unseeded low-slot startup verdict = %#v; want healthy INTERPRETED with revision (tail_entered=%t blocked_family_reads=%d)", got, tailEntered, blockedFamilyReads)
+	}
+	if solar := provider.Solar(); solar == nil || solar.CollectorTemperatureC == nil || *solar.CollectorTemperatureC != collectorTemperature {
+		t.Fatalf("unseeded low-slot startup solar = %#v; want collector temperature %v", solar, collectorTemperature)
+	}
+	if cylinders := provider.Cylinders(); len(cylinders) == 0 || cylinders[0].TemperatureC == nil || *cylinders[0].TemperatureC != cylinderTemperature {
+		t.Fatalf("unseeded low-slot startup cylinders = %#v; want temperature %v", cylinders, cylinderTemperature)
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

@@ -3,6 +3,7 @@ package modbusadapter
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -123,6 +124,46 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 		t.Fatalf("Model 123 decoder key = %#v, %v; want exact standard registry key", decoderKey, ok)
 	}
 	assertBoundedFC03Discovery(t, requests(), 1)
+
+	// A terminal GO is not publishable until its registry-owned capture is
+	// retained under the exact capability/sample identity.
+	retained, ok := adapter.ProfileObservation(result.CapabilityID, result.SampleID)
+	if !ok {
+		t.Fatalf("GO sample %q is unavailable from retained profile observations", result.SampleID)
+	}
+	if retained.Observation.SampleID() != result.SampleID {
+		t.Fatalf("retained sample = %q; want %q", retained.Observation.SampleID(), result.SampleID)
+	}
+}
+
+func TestSunSpecProducerStopsWhenQualificationRetentionCapacityIsExhausted(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	// The bounded retention owner must fail closed before GO when it cannot
+	// reserve one more exact qualification record.
+	for index := 0; index < maxRetainedProfileObservations; index++ {
+		adapter.profiles[fmt.Sprintf("occupied-%d", index)] = ProfileObservationRecord{}
+	}
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{
+		UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	result, err := producer.Qualify(context.Background(), SunSpecPollIdentity{
+		PollGeneration: 45, DeadlineIdentity: 95,
+	})
+	if err != nil {
+		t.Fatalf("Qualify: %v", err)
+	}
+	if result.Outcome != SunSpecQualificationStop || result.SampleID != "" || len(result.Chain.RawWords()) != 0 {
+		t.Fatalf("capacity-exhausted qualification outcome=%q sample=%q raw_words=%d; want terminal STOP without partial evidence", result.Outcome, result.SampleID, len(result.Chain.RawWords()))
+	}
 }
 
 func TestSunSpecProducerReturnsNoGoForAdmittedCapabilityWithFlavorMismatch(t *testing.T) {

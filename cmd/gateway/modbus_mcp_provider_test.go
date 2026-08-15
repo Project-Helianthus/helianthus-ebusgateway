@@ -86,3 +86,11 @@ func TestGatewayModbusMCPProviderRejectsBurstBeforeWireIO(t *testing.T) {
 		t.Fatalf("wire reads after refill = %d", adapter.reads)
 	}
 }
+
+func TestGatewayModbusMCPProviderReportsUnavailableForUnretainedQualificationSample(t *testing.T) {
+	provider := &gatewayModbusMCPProvider{adapter: &countingModbusMCPAdapter{}}
+	_, err := provider.ProfileObservation(context.Background(), "sunspec.inverter.three_phase.monitoring@1.0.0", "sunspec-44-94")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unretained qualification MCP error = %v; want unavailable", err)
+	}
+}

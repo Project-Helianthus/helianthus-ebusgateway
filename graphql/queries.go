@@ -5112,17 +5112,20 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 				},
 			},
 			"fm5Interpretation": &graphqlgo.Field{
-				Type: graphqlgo.NewNonNull(types.fm5Interpretation),
+				Type: types.fm5Interpretation,
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					provider := builder.semanticProvider()
 					if typed, ok := provider.(FM5InterpretationProvider); ok {
 						verdict := typed.FM5Interpretation()
+						if verdict == (Fm5Interpretation{}) {
+							return nil, nil
+						}
 						if err := verdict.Validate(); err != nil {
 							return nil, err
 						}
 						return verdict, nil
 					}
-					return legacyFM5Interpretation(provider.FM5SemanticMode()), nil
+					return nil, nil
 				},
 			},
 			"fm5_semantic_mode": &graphqlgo.Field{

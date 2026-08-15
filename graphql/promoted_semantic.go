@@ -132,7 +132,7 @@ func (p promotedSemanticProvider) FM5Interpretation() Fm5Interpretation {
 	if provider, ok := p.base.(FM5InterpretationProvider); ok {
 		return provider.FM5Interpretation()
 	}
-	return legacyFM5Interpretation(p.base.FM5SemanticMode())
+	return Fm5Interpretation{}
 }
 func (p promotedSemanticProvider) Solar() *SolarStatus         { return p.base.Solar() }
 func (p promotedSemanticProvider) Cylinders() []CylinderStatus { return p.base.Cylinders() }

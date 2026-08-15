@@ -706,8 +706,10 @@ func TestSemanticSnapshotEndpoint_PromotedFieldsArePublicAndNilSafe(t *testing.T
 	}
 }
 
-func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
-	h := NewHandler(Options{})
+func TestSemanticSnapshotEndpoint_UnavailableFM5FieldsAreOmitted(t *testing.T) {
+	h := NewHandler(Options{
+		ListSemantic: func() SemanticSnapshot { return SemanticSnapshot{} },
+	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/semantic/snapshot", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -721,6 +723,15 @@ func TestSemanticSnapshotEndpoint_DefaultWhenMissingProvider(t *testing.T) {
 	zones := payload["zones"].([]any)
 	if len(zones) != 0 {
 		t.Fatalf("zones=%d; want 0", len(zones))
+	}
+	for _, field := range []string{
+		"fm5_semantic_mode",
+		"fm5_semantic_degraded_reason",
+		"fm5_semantic_evidence_revision",
+	} {
+		if value, ok := payload[field]; ok {
+			t.Fatalf("unavailable FM5 field %q published as %#v; want omitted", field, value)
+		}
 	}
 }
 
@@ -806,8 +817,12 @@ func TestSemanticSnapshotEndpoint_ExtensionFamilies(t *testing.T) {
 	if payload["fm5_semantic_mode"] != "INTERPRETED" {
 		t.Fatalf("fm5_semantic_mode=%v; want INTERPRETED", payload["fm5_semantic_mode"])
 	}
-	if payload["fm5_semantic_degraded_reason"] != nil {
-		t.Fatalf("fm5_semantic_degraded_reason=%v; want null", payload["fm5_semantic_degraded_reason"])
+	reason, reasonPresent := payload["fm5_semantic_degraded_reason"]
+	if !reasonPresent {
+		t.Fatal("fm5_semantic_degraded_reason omitted for available healthy verdict; want explicit null")
+	}
+	if reason != nil {
+		t.Fatalf("fm5_semantic_degraded_reason=%v; want null", reason)
 	}
 	if payload["fm5_semantic_evidence_revision"] != "fm5-acq-7" {
 		t.Fatalf("fm5_semantic_evidence_revision=%v; want fm5-acq-7", payload["fm5_semantic_evidence_revision"])

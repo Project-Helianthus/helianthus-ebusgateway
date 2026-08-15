@@ -101,7 +101,6 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 		phase:            SemanticStartupPhaseBootInit,
 		startupUpdatedAt: time.Now().UTC(),
 		fm5Mode:          Fm5SemanticModeAbsent,
-		fm5Verdict:       Fm5Interpretation{Mode: Fm5SemanticModeAbsent, EvidenceRevision: "initial"},
 		energyMerge:      newEnergyMergeStore(),
 	}
 }
@@ -259,18 +258,11 @@ func (provider *LiveSemanticProvider) FM5SemanticMode() Fm5SemanticMode {
 
 func (provider *LiveSemanticProvider) FM5Interpretation() Fm5Interpretation {
 	if provider == nil {
-		return Fm5Interpretation{Mode: Fm5SemanticModeAbsent, EvidenceRevision: "initial"}
+		return Fm5Interpretation{}
 	}
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
-	verdict := provider.fm5Verdict
-	if verdict.Mode == "" {
-		verdict.Mode = Fm5SemanticModeAbsent
-	}
-	if strings.TrimSpace(verdict.EvidenceRevision) == "" {
-		verdict.EvidenceRevision = "legacy"
-	}
-	return verdict
+	return provider.fm5Verdict
 }
 
 func (provider *LiveSemanticProvider) Solar() *SolarStatus {

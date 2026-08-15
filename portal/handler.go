@@ -105,12 +105,34 @@ type SemanticSnapshot struct {
 	Circuits            []SemanticCircuit     `json:"circuits,omitempty"`
 	RadioDevices        []SemanticRadioDevice `json:"radio_devices,omitempty"`
 	FM5Mode             string                `json:"fm5_semantic_mode,omitempty"`
-	FM5DegradedReason   *string               `json:"fm5_semantic_degraded_reason"`
+	FM5DegradedReason   *string               `json:"fm5_semantic_degraded_reason,omitempty"`
 	FM5EvidenceRevision string                `json:"fm5_semantic_evidence_revision,omitempty"`
 	Solar               *SemanticSolarStatus  `json:"solar,omitempty"`
 	Cylinders           []SemanticCylinder    `json:"cylinders,omitempty"`
 	AdapterInfo         *SemanticAdapterInfo  `json:"adapter_info,omitempty"`
 	CapturedUTC         string                `json:"captured_utc"`
+}
+
+func (snapshot SemanticSnapshot) MarshalJSON() ([]byte, error) {
+	type semanticSnapshotJSON SemanticSnapshot
+	if snapshot.FM5Mode == "" {
+		unavailable := snapshot
+		unavailable.FM5DegradedReason = nil
+		unavailable.FM5EvidenceRevision = ""
+		return json.Marshal(semanticSnapshotJSON(unavailable))
+	}
+	reason := snapshot.FM5DegradedReason
+	return json.Marshal(struct {
+		semanticSnapshotJSON
+		FM5Mode             string   `json:"fm5_semantic_mode"`
+		FM5DegradedReason   **string `json:"fm5_semantic_degraded_reason"`
+		FM5EvidenceRevision string   `json:"fm5_semantic_evidence_revision"`
+	}{
+		semanticSnapshotJSON: semanticSnapshotJSON(snapshot),
+		FM5Mode:              snapshot.FM5Mode,
+		FM5DegradedReason:    &reason,
+		FM5EvidenceRevision:  snapshot.FM5EvidenceRevision,
+	})
 }
 
 type SemanticAdapterInfo struct {

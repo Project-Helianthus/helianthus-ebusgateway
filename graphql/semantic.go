@@ -160,12 +160,12 @@ func (value Fm5Interpretation) Validate() error {
 	}
 	switch value.Mode {
 	case Fm5SemanticModeInterpreted, Fm5SemanticModeAbsent:
-		if value.DegradedReason != "" {
-			return errors.New("fm5 degraded reason is forbidden outside GPIO_ONLY")
+		if value.DegradedReason != "" && !validFm5TransientDegradedReason(value.DegradedReason) {
+			return errors.New("fm5 retained structural mode requires a transient degraded reason")
 		}
 	case Fm5SemanticModeGPIOOnly:
-		if !validFm5SemanticDegradedReason(value.DegradedReason) {
-			return errors.New("fm5 GPIO_ONLY requires one closed degraded reason")
+		if value.DegradedReason != Fm5SemanticDegradedReasonConfigurationNotInterpretable {
+			return errors.New("fm5 GPIO_ONLY requires CONFIGURATION_NOT_INTERPRETABLE")
 		}
 	default:
 		return errors.New("invalid fm5 semantic mode")
@@ -188,13 +188,18 @@ func validFm5SemanticDegradedReason(reason Fm5SemanticDegradedReason) bool {
 	}
 }
 
+func validFm5TransientDegradedReason(reason Fm5SemanticDegradedReason) bool {
+	return validFm5SemanticDegradedReason(reason) &&
+		reason != Fm5SemanticDegradedReasonConfigurationNotInterpretable
+}
+
 func legacyFM5Interpretation(mode Fm5SemanticMode) Fm5Interpretation {
 	if mode == "" {
 		mode = Fm5SemanticModeAbsent
 	}
 	verdict := Fm5Interpretation{Mode: mode, EvidenceRevision: "legacy"}
 	if mode == Fm5SemanticModeGPIOOnly {
-		verdict.DegradedReason = Fm5SemanticDegradedReasonIncoherentAcquisition
+		verdict.DegradedReason = Fm5SemanticDegradedReasonConfigurationNotInterpretable
 	}
 	return verdict
 }

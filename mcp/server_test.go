@@ -1386,17 +1386,25 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("fm5 interpretation payload is atomic", func(t *testing.T) {
-		for index, reason := range []Fm5SemanticDegradedReason{"EVIDENCE_STALE", "INCOHERENT_ACQUISITION"} {
-			t.Run(string(reason), func(t *testing.T) {
+		tests := []struct {
+			mode   Fm5SemanticMode
+			reason Fm5SemanticDegradedReason
+		}{
+			{Fm5SemanticModeInterpreted, "EVIDENCE_STALE"},
+			{Fm5SemanticModeAbsent, "INCOHERENT_ACQUISITION"},
+			{Fm5SemanticModeGPIOOnly, "CONFIGURATION_NOT_INTERPRETABLE"},
+		}
+		for index, test := range tests {
+			t.Run(string(test.mode)+"/"+string(test.reason), func(t *testing.T) {
 				verdictServer, err := NewServer(reg, &testInvoker{})
 				if err != nil {
 					t.Fatalf("NewServer error = %v", err)
 				}
 				verdictServer.SetSemanticProvider(testFM5InterpretationProvider{
-					testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly},
+					testSemanticProvider: testSemanticProvider{fm5Mode: test.mode},
 					verdict: Fm5Interpretation{
-						Mode:             Fm5SemanticModeGPIOOnly,
-						DegradedReason:   &reason,
+						Mode:             test.mode,
+						DegradedReason:   &test.reason,
 						EvidenceRevision: "fm5-g7-a17",
 					},
 				})
@@ -1412,11 +1420,11 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 				if !ok {
 					t.Fatalf("fm5 interpretation data type = %T; want map", envelope["data"])
 				}
-				if got := data["mode"]; got != string(Fm5SemanticModeGPIOOnly) {
-					t.Fatalf("fm5 interpretation mode = %v; want %s", got, Fm5SemanticModeGPIOOnly)
+				if got := data["mode"]; got != string(test.mode) {
+					t.Fatalf("fm5 interpretation mode = %v; want %s", got, test.mode)
 				}
-				if got := data["degraded_reason"]; got != string(reason) {
-					t.Fatalf("fm5 interpretation degraded_reason = %v; want %s", got, reason)
+				if got := data["degraded_reason"]; got != string(test.reason) {
+					t.Fatalf("fm5 interpretation degraded_reason = %v; want %s", got, test.reason)
 				}
 				if got := data["evidence_revision"]; got != "fm5-g7-a17" {
 					t.Fatalf("fm5 interpretation evidence_revision = %v; want fm5-g7-a17", got)
@@ -1425,22 +1433,73 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		}
 	})
 
-	t.Run("fm5 interpretation rejects unexplained GPIO only", func(t *testing.T) {
+	t.Run("fm5 interpretation is null before first coherent classification", func(t *testing.T) {
+		unavailableServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		unavailableServer.SetSemanticProvider(testFM5InterpretationProvider{
+			testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeAbsent},
+		})
+
+		res := doRPC(t, unavailableServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      24,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+		})
+		envelope := envelopeFromResult(t, res)
+		if envelope["data"] != nil || envelope["error"] != nil {
+			t.Fatalf("unavailable FM5 envelope = %#v; want data=null error=null", envelope)
+		}
+	})
+
+	t.Run("fm5 interpretation is null for legacy scalar only provider", func(t *testing.T) {
+		legacyServer, err := NewServer(reg, &testInvoker{})
+		if err != nil {
+			t.Fatalf("NewServer error = %v", err)
+		}
+		legacyServer.SetSemanticProvider(testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly})
+
+		modeEnvelope := envelopeFromResult(t, doRPC(t, legacyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      25,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_mode.get","arguments":{}}`),
+		}))
+		if got := modeEnvelope["data"]; got != string(Fm5SemanticModeGPIOOnly) {
+			t.Fatalf("legacy fm5 mode = %#v; want stable GPIO_ONLY", got)
+		}
+
+		interpretationEnvelope := envelopeFromResult(t, doRPC(t, legacyServer.Handler(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      26,
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
+		}))
+		if interpretationEnvelope["data"] != nil || interpretationEnvelope["error"] != nil {
+			t.Fatalf("legacy-only FM5 envelope = %#v; want data=null error=null", interpretationEnvelope)
+		}
+	})
+
+	t.Run("fm5 interpretation rejects transient GPIO only", func(t *testing.T) {
 		invalidServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		reason := Fm5SemanticDegradedReason("EVIDENCE_STALE")
 		invalidServer.SetSemanticProvider(testFM5InterpretationProvider{
 			testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly},
 			verdict: Fm5Interpretation{
 				Mode:             Fm5SemanticModeGPIOOnly,
+				DegradedReason:   &reason,
 				EvidenceRevision: "fm5-acq-invalid",
 			},
 		})
 
 		res := doRPC(t, invalidServer.Handler(), rpcRequest{
 			JSONRPC: "2.0",
-			ID:      24,
+			ID:      27,
 			Method:  "tools/call",
 			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.fm5_interpretation.get","arguments":{}}`),
 		})

@@ -5,7 +5,7 @@ go 1.22.0
 require (
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260521144203-f9919f4b1007
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260813222631-92a35b3ec2eb
-	github.com/Project-Helianthus/helianthus-eebusreg v0.1.31
+	github.com/Project-Helianthus/helianthus-eebusreg v0.1.32
 	github.com/Project-Helianthus/helianthus-modbus v0.0.0-20260810083147-eab30aed9eb6
 	github.com/Project-Helianthus/helianthus-modbusreg v0.2.0
 	github.com/grandcat/zeroconf v1.0.0

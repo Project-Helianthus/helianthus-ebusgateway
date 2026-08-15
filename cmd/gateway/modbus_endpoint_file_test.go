@@ -197,3 +197,56 @@ func TestRedactFileSourcedModbusErrorRemovesWrappedDNSName(t *testing.T) {
 		t.Fatalf("redacted error leaks DNS name: %v", redacted)
 	}
 }
+
+func TestRedactFileSourcedModbusErrorPreservesEndpointOwnership(t *testing.T) {
+	modbusEndpoint := "tcp://modbus.internal:502"
+	modbusAddress := &net.TCPAddr{IP: net.ParseIP("192.0.2.40"), Port: 502}
+	adapterAddress := &net.TCPAddr{IP: net.ParseIP("192.0.2.41"), Port: 9999}
+	err := errors.Join(
+		withEndpointOwner(endpointOwnerModbus, fmt.Errorf("modbus TCP sidecar: %w", &net.OpError{
+			Op: "dial", Net: "tcp", Addr: modbusAddress, Err: errors.New("connection refused"),
+		})),
+		withEndpointOwner(endpointOwnerAdapterDirect, fmt.Errorf("adapter-direct: %w", &net.OpError{
+			Op: "dial", Net: "tcp", Addr: adapterAddress, Err: errors.New("no route to host"),
+		})),
+	)
+
+	redacted := redactFileSourcedModbusError(err, modbusEndpoint)
+	if redacted == nil {
+		t.Fatal("redacted error is nil")
+	}
+	for _, secret := range []string{
+		modbusEndpoint,
+		"modbus.internal",
+		modbusAddress.String(),
+		adapterAddress.String(),
+	} {
+		if strings.Contains(redacted.Error(), secret) {
+			t.Fatalf("redacted startup error contains %q: %v", secret, redacted)
+		}
+	}
+	if !strings.Contains(redacted.Error(), "[REDACTED_MODBUS_ENDPOINT]") {
+		t.Fatalf("redacted startup error has no Modbus marker: %v", redacted)
+	}
+	if !strings.Contains(redacted.Error(), "[REDACTED_ADAPTER_DIRECT_ENDPOINT]") {
+		t.Fatalf("redacted startup error has no adapter-direct marker: %v", redacted)
+	}
+}
+
+func TestRedactFileSourcedModbusErrorUsesNeutralMarkerForUnownedNetworkError(t *testing.T) {
+	address := &net.TCPAddr{IP: net.ParseIP("192.0.2.42"), Port: 4712}
+	err := fmt.Errorf("unclassified sidecar: %w", &net.OpError{
+		Op: "dial", Net: "tcp", Addr: address, Err: errors.New("connection refused"),
+	})
+
+	redacted := redactFileSourcedModbusError(err, "tcp://modbus.internal:502")
+	if strings.Contains(redacted.Error(), address.String()) {
+		t.Fatalf("redacted startup error leaks network address: %v", redacted)
+	}
+	if !strings.Contains(redacted.Error(), "[REDACTED_NETWORK_ENDPOINT]") {
+		t.Fatalf("redacted startup error has no neutral marker: %v", redacted)
+	}
+	if strings.Contains(redacted.Error(), "[REDACTED_MODBUS_ENDPOINT]") {
+		t.Fatalf("unowned network error was mislabeled as Modbus: %v", redacted)
+	}
+}

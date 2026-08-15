@@ -89,3 +89,40 @@ func TestRunClosesModbusSidecarOnceAndJoinsLaterEEBusFailure(t *testing.T) {
 		t.Fatalf("Modbus endpoint close calls = %d; want 1", endpoint.closeCalls)
 	}
 }
+
+func TestRunMarksAdapterDirectStartupFailureForOwnedRedaction(t *testing.T) {
+	originalDial := dialModbusEndpointFn
+	originalFactory := newModbusEndpointFn
+	t.Cleanup(func() {
+		dialModbusEndpointFn = originalDial
+		newModbusEndpointFn = originalFactory
+	})
+
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	endpoint := &modbusRunLifecycleEndpoint{}
+	dialModbusEndpointFn = func(context.Context, string, string) (net.Conn, error) {
+		return client, nil
+	}
+	newModbusEndpointFn = func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return endpoint, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{
+		Enabled:     true,
+		Endpoint:    "tcp://127.0.0.1:1502",
+		DialTimeout: time.Second,
+	}
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = ""
+
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("run accepted adapter-direct without an address")
+	}
+	if got := endpointOwnerOf(err); got != endpointOwnerAdapterDirect {
+		t.Fatalf("startup error owner = %v; want adapter-direct; error=%v", got, err)
+	}
+}

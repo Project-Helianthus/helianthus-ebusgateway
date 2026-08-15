@@ -19,6 +19,7 @@ type adminV1Stub struct {
 	snapshots     map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
 	snapshotCalls int
 	openCalls     []eebusruntime.OpenPairingWindowRequestV1
+	openRevision  uint64
 	selectCalls   []eebusruntime.SelectRequestV1
 	connectCalls  []eebusruntime.ConnectRequestV1
 	confirmCalls  []eebusruntime.ConfirmRequestV1
@@ -42,6 +43,9 @@ func (stub *adminV1Stub) OpenPairingWindow(_ context.Context, request eebusrunti
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.openCalls = append(stub.openCalls, request)
+	if stub.openRevision != 0 && request.ExpectedStateRevision != stub.openRevision {
+		return eebusruntime.AdminMutationResultV1{}, &eebusruntime.AdminErrorV1{Code: eebusruntime.AdminErrorCodeV1StateConflict}
+	}
 	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "pairing_window_opened"}, nil
 }
 
@@ -290,21 +294,93 @@ func TestIssue817ClosedMutationMatrixNeedsOnlyRevisionIdempotencyAndTypedArgumen
 	}
 }
 
-func TestIssue817HTTPReplayRemainsBoundedAndExactWithoutASession(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+func TestIssue817SuccessfulLostResponseReplaysLogicalResultAndOpaqueHandle(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 51
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.51:4712", ObservationRevision: 9}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
 	handler := newIssue817Server(t, admin, nil, nil)
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	observationID := issue817FirstOpaqueID(t, list, "observation_id")
+	route := "/admin/eebus/v1/observations/" + observationID + ":select"
+	body := `{"state_revision":51,"expected_ski":"` + ski + `"}`
+
 	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, issue817Mutation(http.MethodPost, "/admin/eebus/v1/pairing-window:open", "replay-817", `{"duration_seconds":60,"state_revision":7}`))
+	handler.ServeHTTP(first, issue817Mutation(http.MethodPost, route, "lost-response-817", body))
 	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, issue817Mutation(http.MethodPost, "/admin/eebus/v1/pairing-window:open", "replay-817", `{"duration_seconds":60,"state_revision":7}`))
+	handler.ServeHTTP(second, issue817Mutation(http.MethodPost, route, "lost-response-817", body))
 	conflict := httptest.NewRecorder()
-	handler.ServeHTTP(conflict, issue817Mutation(http.MethodPost, "/admin/eebus/v1/pairing-window:open", "replay-817", `{"duration_seconds":120,"state_revision":7}`))
-	if first.Code != http.StatusOK || second.Code != http.StatusOK || first.Body.String() != second.Body.String() || conflict.Code != http.StatusConflict {
+	handler.ServeHTTP(conflict, issue817Mutation(http.MethodPost, route, "lost-response-817", `{"state_revision":51,"expected_ski":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+
+	firstResult := issue817MutationResult(t, first)
+	secondResult := issue817MutationResult(t, second)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK || conflict.Code != http.StatusConflict {
 		t.Fatalf("replay statuses/bodies=%d/%d/%d\n%s\n%s\n%s", first.Code, second.Code, conflict.Code, first.Body.String(), second.Body.String(), conflict.Body.String())
 	}
-	if len(admin.openCalls) != 1 {
-		t.Fatalf("replayed mutation invoked runtime %d times", len(admin.openCalls))
+	if firstResult.Replayed || !secondResult.Replayed || firstResult.StateRevision != secondResult.StateRevision || firstResult.Outcome != secondResult.Outcome || firstResult.SelectionID == "" || firstResult.SelectionID != secondResult.SelectionID {
+		t.Fatalf("lost-response replay changed logical result or handle: first=%#v second=%#v", firstResult, secondResult)
 	}
+	assertIssue817ErrorEnvelope(t, conflict.Body.String(), "idempotency_conflict")
+	if len(admin.selectCalls) != 1 {
+		t.Fatalf("lost-response retry invoked runtime %d times", len(admin.selectCalls))
+	}
+}
+
+func TestIssue817UnseenStaleRevisionDoesNotReserveHTTPReplayKey(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot(), openRevision: 8}
+	handler := newIssue817Server(t, admin, nil, nil)
+	const route = "/admin/eebus/v1/pairing-window:open"
+	const key = "stale-then-current-817"
+
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":7}`))
+	assertIssue817ErrorEnvelope(t, stale.Body.String(), "state_conflict")
+	current := httptest.NewRecorder()
+	handler.ServeHTTP(current, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":8}`))
+	retry := httptest.NewRecorder()
+	handler.ServeHTTP(retry, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":8}`))
+
+	currentResult := issue817MutationResult(t, current)
+	retryResult := issue817MutationResult(t, retry)
+	if stale.Code != http.StatusConflict || current.Code != http.StatusOK || retry.Code != http.StatusOK {
+		t.Fatalf("stale/current/retry statuses=%d/%d/%d\n%s\n%s\n%s", stale.Code, current.Code, retry.Code, stale.Body.String(), current.Body.String(), retry.Body.String())
+	}
+	if currentResult.Replayed || !retryResult.Replayed || currentResult.StateRevision != 9 || retryResult.StateRevision != currentResult.StateRevision || retryResult.Outcome != currentResult.Outcome {
+		t.Fatalf("current terminal result was not replayed exactly: current=%#v retry=%#v", currentResult, retryResult)
+	}
+	if len(admin.openCalls) != 2 {
+		t.Fatalf("stale/current/retry invoked runtime %d times, want 2", len(admin.openCalls))
+	}
+}
+
+type issue817MutationResultEnvelope struct {
+	StateRevision uint64 `json:"state_revision"`
+	Data          struct {
+		Outcome     string `json:"outcome"`
+		Replayed    bool   `json:"replayed"`
+		SelectionID string `json:"selection_id"`
+	} `json:"data"`
+}
+
+func issue817MutationResult(t *testing.T, response *httptest.ResponseRecorder) struct {
+	StateRevision uint64
+	Outcome       string
+	Replayed      bool
+	SelectionID   string
+} {
+	t.Helper()
+	var envelope issue817MutationResultEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode mutation result: %v body=%s", err, response.Body.String())
+	}
+	return struct {
+		StateRevision uint64
+		Outcome       string
+		Replayed      bool
+		SelectionID   string
+	}{envelope.StateRevision, envelope.Data.Outcome, envelope.Data.Replayed, envelope.Data.SelectionID}
 }
 
 func TestIssue817AuditUsesOneOperatorClassificationAndExcludesRequestSecrets(t *testing.T) {

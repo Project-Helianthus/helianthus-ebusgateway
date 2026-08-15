@@ -1830,16 +1830,21 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			classAddress = tuple.classAddress
 			firmware = tuple.firmware
 			hardware = tuple.hardware
-			completePositiveFM5 = tuple.complete && hasRemoteIdentityEvidence(classAddress, firmware, hardware)
+			completePositiveFM5 = completeVR71IdentityTuple(tuple)
 		} else {
 			classAddress = p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 		}
 		key := radioDeviceKey{Group: grp.group, Instance: instance}
 		verified[key] = true
 		include, slotMode := startupRadioDeviceInclude(grp.group, connected, classAddress)
+		if grp.group == remoteFunctionalModules.group && classAddress != nil && *classAddress != circuitManagingDeviceVR71Address {
+			include = false
+		}
 		if grp.group == remoteFunctionalModules.group && !include && hasRemoteIdentityEvidence(classAddress, firmware, hardware) {
-			include = true
-			slotMode = "inventory"
+			if classAddress == nil || *classAddress == circuitManagingDeviceVR71Address {
+				include = true
+				slotMode = "inventory"
+			}
 		}
 		if !include {
 			delete(discovered, key)
@@ -1868,18 +1873,25 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	if fm5PositiveObserved {
 		fm5NamespaceComplete = false
 	} else {
-	tailScan:
-		for _, grp := range remoteDeviceGroups {
-			if !fullScanGroups[grp.group] {
-				continue
-			}
+		if fullScanGroups[remoteFunctionalModules.group] {
 			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
-				if probeSlot(grp, instance) && grp.group == remoteFunctionalModules.group {
+				if probeSlot(remoteFunctionalModules, instance) {
+					fm5PositiveObserved = true
 					if instance < semanticStartupSlotFullMaxInstance {
 						fm5NamespaceComplete = false
 					}
-					break tailScan
+					break
 				}
+			}
+		}
+	}
+	if !fm5PositiveObserved {
+		for _, grp := range remoteDeviceGroups {
+			if grp.group == remoteFunctionalModules.group || !fullScanGroups[grp.group] {
+				continue
+			}
+			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
+				probeSlot(grp, instance)
 			}
 		}
 	}
@@ -5316,6 +5328,9 @@ func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshotWith(
 		firmwareRaw, firmwareOK,
 		hardwareRaw, hardwareOK,
 	)
+	if tuple.classAddress != nil && *tuple.classAddress != circuitManagingDeviceVR71Address {
+		return nil, true, tuple.complete
+	}
 	if !tuple.connected && !hasRemoteIdentityEvidence(tuple.classAddress, tuple.firmware, tuple.hardware) {
 		return nil, true, tuple.complete
 	}
@@ -5341,7 +5356,7 @@ func (p *vaillantSemanticPoller) refreshFM5AfterLateIdentity(ctx context.Context
 	}
 	probe := func(instance byte) (*vaillantRadioDeviceSnapshot, bool) {
 		snapshot, observed, complete := p.readFunctionalModuleIdentitySnapshotStartup(ctx, instance)
-		if !observed || !complete || snapshot == nil || !hasFM5EvidenceFromRadioSnapshots([]*vaillantRadioDeviceSnapshot{snapshot}) {
+		if !observed || !complete || snapshot == nil || snapshot.DeviceClassAddress == nil || *snapshot.DeviceClassAddress != circuitManagingDeviceVR71Address {
 			return nil, false
 		}
 		return snapshot, true
@@ -5396,6 +5411,10 @@ type functionalModuleIdentityTuple struct {
 	firmware     *string
 	hardware     *uint16
 	complete     bool
+}
+
+func completeVR71IdentityTuple(tuple functionalModuleIdentityTuple) bool {
+	return tuple.complete && tuple.classAddress != nil && *tuple.classAddress == circuitManagingDeviceVR71Address
 }
 
 func decodeFunctionalModuleIdentityTuple(

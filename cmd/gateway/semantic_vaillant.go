@@ -9162,7 +9162,7 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 		if probeAddr == circuitManagingDeviceVR71Address {
 			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, semanticIdentityRecoveryTimeout)
 			defer recoveryCancel()
-			p.refreshSystem(recoveryCtx)
+			p.refreshSystemStartup(recoveryCtx)
 			p.refreshRadioDevices(recoveryCtx)
 		}
 	}

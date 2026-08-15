@@ -1797,7 +1797,8 @@ func TestEnqueueAddressIdentityProbe_LateFM5RecoveryReadsTargetedGateBeforeNoncr
 			}
 			return fm5InstanceOneSemanticTestResponse(frame)
 		}
-		if group == localRegulator.group && !radioRecorded {
+		targetedSystemRead := addr == system_scheme || addr == system_water_pressure
+		if group == localRegulator.group && !targetedSystemRead && !radioRecorded {
 			blockedNoncriticalSystem = true
 			cancelTask()
 			return nil, context.DeadlineExceeded

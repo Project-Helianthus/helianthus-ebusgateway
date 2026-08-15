@@ -1,7 +1,6 @@
 package eebusadmin
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,18 +35,17 @@ type issue809SpinePage struct {
 	NextCursor string `json:"next_cursor"`
 }
 
-func TestIssue809LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
+func TestIssue817LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 	raw := &issue809RawSnapshotStub{snapshot: issue809VR940Snapshot(t)}
 	ski := raw.snapshot.Devices[0].SKI
 	adminSnapshot := testAdminSnapshot()
 	adminSnapshot.StateRevision = 41
 	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: ski, TrustState: "durably_trusted"}}
 	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
-	handler := newIssue809SpineServer(t, admin, raw)
-	cookie, _ := issue809OwnerSession(t, handler)
-	partnerID := issue809TrustedPartnerID(t, handler, cookie)
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue817TrustedPartnerID(t, handler)
 
-	root := issue809GetSpinePage(t, handler, cookie, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root")
+	root := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root")
 	if root.SnapshotID == "" || root.SnapshotHash != raw.snapshot.Meta.DataHash || root.ParentNodeID != nil || len(root.Nodes) != 1 || root.Nodes[0].Kind != "device" {
 		t.Fatalf("root page=%#v", root)
 	}
@@ -55,7 +53,7 @@ func TestIssue809LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 		t.Fatalf("device payload lost canonical fields: %s", root.Nodes[0].Payload)
 	}
 
-	deviceChildren := issue809AllChildren(t, handler, cookie, partnerID, root.SnapshotID, root.Nodes[0].NodeID)
+	deviceChildren := issue817AllChildren(t, handler, partnerID, root.SnapshotID, root.Nodes[0].NodeID)
 	entityPages := deviceChildren[:0]
 	opaqueCount := 0
 	for _, child := range deviceChildren {
@@ -74,13 +72,13 @@ func TestIssue809LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 	featureCount := 0
 	useCaseCount := 0
 	for _, entity := range entityPages {
-		features := issue809AllChildren(t, handler, cookie, partnerID, root.SnapshotID, entity.NodeID)
+		features := issue817AllChildren(t, handler, partnerID, root.SnapshotID, entity.NodeID)
 		for _, feature := range features {
 			if feature.Kind != "feature" {
 				t.Fatalf("entity child kind=%q", feature.Kind)
 			}
 			featureCount++
-			claims := issue809AllChildren(t, handler, cookie, partnerID, root.SnapshotID, feature.NodeID)
+			claims := issue817AllChildren(t, handler, partnerID, root.SnapshotID, feature.NodeID)
 			for _, claim := range claims {
 				if claim.Kind != "use_case_claim" {
 					t.Fatalf("feature child kind=%q", claim.Kind)
@@ -97,33 +95,27 @@ func TestIssue809LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 	}
 }
 
-func TestIssue809SPINEIsOwnerOnlyAndRejectsUnknownQueryBeforeRawCapture(t *testing.T) {
+func TestIssue817SPINEUsesTheSameOperatorScopeAndRejectsUnknownQueryBeforeRawCapture(t *testing.T) {
 	raw := &issue809RawSnapshotStub{snapshot: issue809VR940Snapshot(t)}
 	adminSnapshot := testAdminSnapshot()
 	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: raw.snapshot.Devices[0].SKI, TrustState: "durably_trusted"}}
 	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
-	handler := newIssue809SpineServer(t, admin, raw)
-
-	ha := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/not-authority/spine?request=root", nil)
-	ha.Header.Set("Authorization", "Bearer "+testHASecret)
-	haResponse := httptest.NewRecorder()
-	handler.ServeHTTP(haResponse, ha)
-	if haResponse.Code != http.StatusForbidden || raw.calls != 0 {
-		t.Fatalf("HA SPINE status/raw calls=%d/%d body=%s", haResponse.Code, raw.calls, haResponse.Body.String())
-	}
-
-	cookie, _ := issue809OwnerSession(t, handler)
-	partnerID := issue809TrustedPartnerID(t, handler, cookie)
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue817TrustedPartnerID(t, handler)
 	bad := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root&cursor=extra", nil)
-	bad.AddCookie(cookie)
+	issue817AddIrrelevantAuthMaterial(bad)
 	badResponse := httptest.NewRecorder()
 	handler.ServeHTTP(badResponse, bad)
 	if badResponse.Code != http.StatusBadRequest || raw.calls != 0 {
 		t.Fatalf("bad query status/raw calls=%d/%d body=%s", badResponse.Code, raw.calls, badResponse.Body.String())
 	}
+	root := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root")
+	if root.SnapshotID == "" || raw.calls != 1 {
+		t.Fatalf("shared-scope SPINE root=%#v raw calls=%d", root, raw.calls)
+	}
 }
 
-func TestIssue809SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners(t *testing.T) {
+func TestIssue817SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners(t *testing.T) {
 	snapshot := issue809VR940Snapshot(t)
 	other := snapshot.Devices[0]
 	other.SKI = "4444444444444444444444444444444444444444"
@@ -139,11 +131,9 @@ func TestIssue809SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners
 	adminSnapshot := testAdminSnapshot()
 	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: snapshot.Devices[0].SKI, TrustState: "durably_trusted"}}
 	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
-	handler := newIssue809SpineServer(t, admin, raw)
-	cookie, _ := issue809OwnerSession(t, handler)
-	partnerID := issue809TrustedPartnerID(t, handler, cookie)
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue817TrustedPartnerID(t, handler)
 	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
-	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
@@ -151,21 +141,9 @@ func TestIssue809SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners
 	}
 }
 
-func newIssue809SpineServer(t *testing.T, admin eebusruntime.AdminV1, raw RawSnapshotProvider) http.Handler {
-	t.Helper()
-	config := issue809AuthConfig()
-	config.Random = rand.Reader
-	handler, err := NewServer(Config{Admin: admin, Raw: raw, Auth: config})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return handler
-}
-
-func issue809TrustedPartnerID(t *testing.T, handler http.Handler, cookie *http.Cookie) string {
+func issue817TrustedPartnerID(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil)
-	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {
@@ -181,10 +159,9 @@ func issue809TrustedPartnerID(t *testing.T, handler http.Handler, cookie *http.C
 	return envelope.Data.Partners[0].PartnerID
 }
 
-func issue809GetSpinePage(t *testing.T, handler http.Handler, cookie *http.Cookie, target string) issue809SpinePage {
+func issue817GetSpinePage(t *testing.T, handler http.Handler, target string) issue809SpinePage {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, target, nil)
-	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {
@@ -201,7 +178,7 @@ func issue809GetSpinePage(t *testing.T, handler http.Handler, cookie *http.Cooki
 	return envelope.Data
 }
 
-func issue809AllChildren(t *testing.T, handler http.Handler, cookie *http.Cookie, partnerID, snapshotID, parentID string) []struct {
+func issue817AllChildren(t *testing.T, handler http.Handler, partnerID, snapshotID, parentID string) []struct {
 	NodeID       string          `json:"node_id"`
 	ParentNodeID *string         `json:"parent_node_id"`
 	Kind         string          `json:"kind"`
@@ -210,7 +187,7 @@ func issue809AllChildren(t *testing.T, handler http.Handler, cookie *http.Cookie
 } {
 	t.Helper()
 	target := "/admin/eebus/v1/partners/" + partnerID + "/spine?request=children&snapshot_id=" + snapshotID + "&parent_node_id=" + parentID
-	page := issue809GetSpinePage(t, handler, cookie, target)
+	page := issue817GetSpinePage(t, handler, target)
 	result := append([]struct {
 		NodeID       string          `json:"node_id"`
 		ParentNodeID *string         `json:"parent_node_id"`
@@ -220,7 +197,7 @@ func issue809AllChildren(t *testing.T, handler http.Handler, cookie *http.Cookie
 	}(nil), page.Nodes...)
 	for page.NextCursor != "" {
 		target = "/admin/eebus/v1/partners/" + partnerID + "/spine?request=continue&snapshot_id=" + snapshotID + "&parent_node_id=" + parentID + "&cursor=" + page.NextCursor
-		page = issue809GetSpinePage(t, handler, cookie, target)
+		page = issue817GetSpinePage(t, handler, target)
 		result = append(result, page.Nodes...)
 	}
 	return result

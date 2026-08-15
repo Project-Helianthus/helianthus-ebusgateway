@@ -5,56 +5,15 @@ import (
 	"errors"
 	"net/netip"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
-func TestIssue809BrokenCredentialsDegradeOnlyAdminBoundary(t *testing.T) {
-	originalResolver := resolveEEBusInterfaceAddressesFn
-	originalFactory := newEEBusOperatorRuntimeFn
-	originalRuntimeFactory := newEEBusRuntimeFn
-	t.Cleanup(func() {
-		resolveEEBusInterfaceAddressesFn = originalResolver
-		newEEBusOperatorRuntimeFn = originalFactory
-		newEEBusRuntimeFn = originalRuntimeFactory
-	})
-
-	runtime := &msp05bRuntime{}
-	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
-		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
-	}
-	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
-		t.Fatal("broken credentials must not start the operator runtime")
-		return nil, nil, errors.New("unreachable")
-	}
-	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
-		return runtime, nil
-	}
-
-	cfg := ebusgateway.DefaultConfig()
-	cfg.EEBusConfig = msp05bEnabledConfig()
-	cfg.EEBusAdminConfig.Enabled = true
-	cfg.EEBusAdminConfig.OwnerOrigin = "http://gateway.test:8080"
-	cfg.EEBusAdminConfig.OwnerSecretPath = t.TempDir() + "/missing-owner"
-	cfg.EEBusAdminConfig.HASecretPath = t.TempDir() + "/missing-ha"
-	adapter, admin, _, available, err := startEEBusAdminAwareRuntime(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("fallback runtime: %v", err)
-	}
-	if adapter == nil || admin != nil || available {
-		t.Fatalf("fallback adapter/admin/available=%v/%v/%v", adapter, admin, available)
-	}
-	if runtime.startCalls != 1 {
-		t.Fatalf("ordinary runtime start=%d, want 1", runtime.startCalls)
-	}
-	_ = adapter.Shutdown()
-}
-
-func TestIssue809BrokenAdminCapabilityFallsBackToOrdinaryRuntime(t *testing.T) {
+func TestIssue817EEBusAutomaticallyStartsTheOperatorRuntime(t *testing.T) {
 	originalResolver := resolveEEBusInterfaceAddressesFn
 	originalOperatorFactory := newEEBusOperatorRuntimeFn
 	originalRuntimeFactory := newEEBusRuntimeFn
@@ -63,41 +22,68 @@ func TestIssue809BrokenAdminCapabilityFallsBackToOrdinaryRuntime(t *testing.T) {
 		newEEBusOperatorRuntimeFn = originalOperatorFactory
 		newEEBusRuntimeFn = originalRuntimeFactory
 	})
+
+	runtime := &msp05bRuntime{}
+	admin := issue809AdminStub{}
+	operatorCalls := 0
+	ordinaryCalls := 0
 	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
 	}
 	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
-		return nil, nil, errors.New("private factory detail")
+		operatorCalls++
+		return runtime, admin, nil
 	}
-	runtime := &msp05bRuntime{}
-	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) { return runtime, nil }
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		ordinaryCalls++
+		return &msp05bRuntime{}, nil
+	}
 
-	directory := t.TempDir()
-	ownerPath := directory + "/owner"
-	haPath := directory + "/ha"
-	if err := os.WriteFile(ownerPath, []byte(strings.Repeat("o", 32)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(haPath, []byte(strings.Repeat("h", 32)), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := ebusgateway.DefaultConfig()
 	cfg.EEBusConfig = msp05bEnabledConfig()
-	cfg.EEBusAdminConfig.Enabled = true
-	cfg.EEBusAdminConfig.OwnerUsername = "owner"
-	cfg.EEBusAdminConfig.OwnerOrigin = "http://gateway.test:8080"
-	cfg.EEBusAdminConfig.OwnerSecretPath = ownerPath
-	cfg.EEBusAdminConfig.HASecretPath = haPath
-	cfg.EEBusAdminConfig.SessionTTL = 15 * time.Minute
-
-	adapter, admin, _, available, err := startEEBusAdminAwareRuntime(context.Background(), cfg)
-	if err != nil || adapter == nil || admin != nil || available || runtime.startCalls != 1 {
-		t.Fatalf("fallback err=%v adapter=%v admin=%v available=%v starts=%d", err, adapter, admin, available, runtime.startCalls)
+	adapter, gotAdmin, available, err := issue817StartAdminAwareRuntime(t, context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("start eeBUS operator runtime: %v", err)
+	}
+	if adapter == nil || gotAdmin == nil || !available || operatorCalls != 1 || ordinaryCalls != 0 || runtime.startCalls != 1 {
+		t.Fatalf("adapter/admin/available/operator/ordinary/starts=%v/%v/%v/%d/%d/%d, want automatic operator runtime", adapter, gotAdmin, available, operatorCalls, ordinaryCalls, runtime.startCalls)
 	}
 	_ = adapter.Shutdown()
 }
 
-func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *testing.T) {
+func TestIssue817OperatorBoundaryFailureKeepsPublicEEBusRuntimeRunning(t *testing.T) {
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalOperatorFactory := newEEBusOperatorRuntimeFn
+	originalRuntimeFactory := newEEBusRuntimeFn
+	t.Cleanup(func() {
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		newEEBusOperatorRuntimeFn = originalOperatorFactory
+		newEEBusRuntimeFn = originalRuntimeFactory
+	})
+
+	operatorCalls := 0
+	publicRuntime := &msp05bRuntime{}
+	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil
+	}
+	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+		operatorCalls++
+		return nil, nil, errors.New("operator capability unavailable")
+	}
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return publicRuntime, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.EEBusConfig = msp05bEnabledConfig()
+	adapter, admin, available, err := issue817StartAdminAwareRuntime(t, context.Background(), cfg)
+	if err != nil || adapter == nil || admin != nil || available || operatorCalls != 1 || publicRuntime.startCalls != 1 {
+		t.Fatalf("fallback err=%v adapter=%v admin=%v available=%v operator=%d public starts=%d", err, adapter, admin, available, operatorCalls, publicRuntime.startCalls)
+	}
+	_ = adapter.Shutdown()
+}
+
+func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.T) {
 	content, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
@@ -106,14 +92,25 @@ func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := eebusadmin.NewUnavailableHandler()`,
-		`Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig`,
-		`Audit: func(event eebusadmin.AuditEvent)`,
-		`EEBusAdminPath: func() string`,
+		`Admin: eebusAdmin`,
+		`Raw: eebusAdapter`,
 	} {
 		if !strings.Contains(source, required) {
-			t.Errorf("main.go missing eeBUS admin wiring %q", required)
+			t.Errorf("main.go missing eeBUS operator wiring %q", required)
 		}
 	}
+	for _, forbidden := range []string{
+		"eebusAdminAuthConfig",
+		"Auth: eebusAdminAuthConfig",
+		"PrincipalPortalOwner",
+		"PrincipalHAIntegration",
+		"principal=%s",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("main.go retains split auth/principal wiring %q", forbidden)
+		}
+	}
+
 	portalSource, err := os.ReadFile("../../portal/handler.go")
 	if err != nil {
 		t.Fatal(err)
@@ -123,4 +120,31 @@ func TestIssue809GatewayMountsAdminDirectlyAndPortalGetsOnlyEndpointMetadata(t *
 			t.Errorf("Portal Go boundary directly owns private eeBUS runtime token %q", forbidden)
 		}
 	}
+}
+
+func issue817StartAdminAwareRuntime(t *testing.T, ctx context.Context, cfg ebusgateway.Config) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+	t.Helper()
+	results := reflect.ValueOf(startEEBusAdminAwareRuntime).Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(cfg)})
+	if len(results) != 4 && len(results) != 5 {
+		t.Fatalf("startEEBusAdminAwareRuntime returns %d values, want adapter/admin/available/error", len(results))
+	}
+	var adapter *eebusRuntimeAdapter
+	if !results[0].IsNil() {
+		adapter = results[0].Interface().(*eebusRuntimeAdapter)
+	}
+	var admin eebusruntime.AdminV1
+	if !results[1].IsNil() {
+		admin = results[1].Interface().(eebusruntime.AdminV1)
+	}
+	availableIndex := 2
+	errorIndex := 3
+	if len(results) == 5 {
+		availableIndex = 3
+		errorIndex = 4
+	}
+	var err error
+	if !results[errorIndex].IsNil() {
+		err = results[errorIndex].Interface().(error)
+	}
+	return adapter, admin, results[availableIndex].Bool(), err
 }

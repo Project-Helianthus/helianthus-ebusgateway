@@ -313,6 +313,77 @@ func TestIssue809GraphQLSemanticAndUnprotectedPortalTypesContainNoRawEEBusFields
 	}
 }
 
+func TestIssue817EEBusSpecificAuthenticationAndSplitConsumerPolicyAreAbsent(t *testing.T) {
+	checks := map[string][]string{
+		"../../internal/eebusadmin/auth.go": {
+			"type authentication struct", "authenticate(", "validateCSRF", "ownerSessionCookie",
+			"OwnerSecret", "HASecret", "Authorization", "SetCookie", "X-CSRF-Token",
+		},
+		"../../internal/eebusadmin/types.go": {
+			"type AuthConfig struct", "Auth  AuthConfig", "PrincipalPortalOwner", "PrincipalHAIntegration",
+			"projection_revision", "haEnvelope", "haStatus",
+		},
+		"../../internal/eebusadmin/server.go": {
+			"newAuthentication", "server.auth", "validateCSRF", "PrincipalPortalOwner", "PrincipalHAIntegration",
+			"sanitizeHAPartner", "acceptHAProjection", "haPseudonym", "projectionRevision",
+		},
+		"../../portal/web/src/app.js": {
+			"loginEEBusAdmin", "_eebusCSRFToken", "X-CSRF-Token", "Owner username", "Owner credential", ">Authenticate<",
+		},
+	}
+	for path, forbiddenTokens := range checks {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) && strings.HasSuffix(path, "/auth.go") {
+				continue
+			}
+			t.Fatal(err)
+		}
+		for _, forbidden := range forbiddenTokens {
+			if strings.Contains(string(content), forbidden) {
+				t.Errorf("%s retains eeBUS-specific auth or split-consumer token %q", path, forbidden)
+			}
+		}
+	}
+}
+
+func TestIssue817OpaqueOperatorStateRemainsBoundedAndPrivate(t *testing.T) {
+	serverContent, err := os.ReadFile("../../internal/eebusadmin/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverSource := string(serverContent)
+	for _, required := range []string{
+		"maxHTTPMutationReplays = 128",
+		"maxCapabilities",
+		"= 512",
+		"kindCount >= 128",
+		"2 * time.Minute",
+	} {
+		if !strings.Contains(serverSource, required) {
+			t.Errorf("server.go no longer proves bounded replay/capability lifetime %q", required)
+		}
+	}
+	spineContent, err := os.ReadFile("../../internal/eebusadmin/spine.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(spineContent), "spineSnapshotMaxLife = 2 * time.Minute") {
+		t.Error("SPINE snapshot lifetime is not bounded to two minutes")
+	}
+	for _, path := range []string{"../../internal/eebusadmin/server.go", "../../internal/eebusadmin/spine.go", "../../portal/handler.go"} {
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		for _, forbidden := range []string{"operator-mcp.sock", "StateRoot", "trust-store", "private_key", "private-key", "PEM"} {
+			if strings.Contains(string(content), forbidden) {
+				t.Errorf("%s reaches forbidden store/socket/secret token %q", path, forbidden)
+			}
+		}
+	}
+}
+
 func issue743ProductionGoFiles(t *testing.T, root string) []string {
 	t.Helper()
 	var paths []string

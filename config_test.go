@@ -1,6 +1,8 @@
 package ebusgateway
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -205,19 +207,20 @@ func TestDefaultConfig_SetsPortalPath(t *testing.T) {
 	}
 }
 
-func TestIssue809DefaultConfigDisablesEEBusAdminBoundary(t *testing.T) {
-	cfg := DefaultConfig()
-	if cfg.EEBusAdminConfig.Enabled {
-		t.Fatal("eeBUS admin boundary is enabled by default")
+func TestIssue817ConfigHasNoEEBusSpecificAdminOrCredentialSurface(t *testing.T) {
+	content, err := os.ReadFile("config.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.EEBusAdminConfig.OwnerUsername != "owner" {
-		t.Fatalf("OwnerUsername=%q, want owner", cfg.EEBusAdminConfig.OwnerUsername)
-	}
-	if cfg.EEBusAdminConfig.OwnerSecretPath != "" || cfg.EEBusAdminConfig.HASecretPath != "" || cfg.EEBusAdminConfig.OwnerOrigin != "" {
-		t.Fatalf("default eeBUS admin config contains deployment bindings: %#v", cfg.EEBusAdminConfig)
-	}
-	if cfg.EEBusAdminConfig.SessionTTL != 15*time.Minute {
-		t.Fatalf("SessionTTL=%s, want 15m", cfg.EEBusAdminConfig.SessionTTL)
+	source := string(content)
+	for _, forbidden := range []string{
+		"type EEBusAdminConfig struct",
+		"DefaultEEBusAdminConfig",
+		"EEBusAdminConfig",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("config.go retains eeBUS-specific auth/config symbol %q", forbidden)
+		}
 	}
 }
 

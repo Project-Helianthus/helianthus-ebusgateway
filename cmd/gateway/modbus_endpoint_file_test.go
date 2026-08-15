@@ -171,10 +171,10 @@ func TestRedactFileSourcedModbusErrorRemovesResolvedNetworkAddresses(t *testing.
 				Addr: address,
 				Err:  errors.New("connection refused"),
 			}
-			wrapped := fmt.Errorf(
+			wrapped := withEndpointOwner(endpointOwnerModbus, fmt.Errorf(
 				"modbus startup: %w",
 				errors.Join(errors.New("sidecar failed"), dialError),
-			)
+			))
 
 			redacted := redactFileSourcedModbusError(wrapped, endpoint)
 			if strings.Contains(redacted.Error(), address.String()) ||
@@ -191,7 +191,10 @@ func TestRedactFileSourcedModbusErrorRemovesResolvedNetworkAddresses(t *testing.
 func TestRedactFileSourcedModbusErrorRemovesWrappedDNSName(t *testing.T) {
 	endpoint := "tcp://configured.invalid:502"
 	dnsError := &net.DNSError{Name: "canonical.internal", Err: "no such host"}
-	redacted := redactFileSourcedModbusError(fmt.Errorf("resolve: %w", dnsError), endpoint)
+	redacted := redactFileSourcedModbusError(
+		withEndpointOwner(endpointOwnerModbus, fmt.Errorf("resolve: %w", dnsError)),
+		endpoint,
+	)
 	if strings.Contains(redacted.Error(), "configured.invalid") ||
 		strings.Contains(redacted.Error(), "canonical.internal") {
 		t.Fatalf("redacted error leaks DNS name: %v", redacted)

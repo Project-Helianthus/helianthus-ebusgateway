@@ -26,7 +26,7 @@ type spineSnapshot struct {
 	id        string
 	hash      string
 	revision  uint64
-	sessionID string
+	scopeID   string
 	partnerID string
 	expiresAt time.Time
 	nodes     map[string]spineNode
@@ -71,22 +71,22 @@ type spinePageNode struct {
 	Payload      json.RawMessage `json:"payload"`
 }
 
-func (server *server) spinePage(w http.ResponseWriter, request *http.Request, session ownerSession) {
+func (server *server) spinePage(w http.ResponseWriter, request *http.Request) {
 	partnerID, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/partners/", "/spine")
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	shape, ok := parseSpineQuery(request)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	if shape.request == "root" {
-		server.spineRoot(w, session, partnerID)
+		server.spineRoot(w, partnerID)
 		return
 	}
-	server.spineExistingPage(w, session, partnerID, shape)
+	server.spineExistingPage(w, partnerID, shape)
 }
 
 type spineQuery struct {
@@ -116,55 +116,55 @@ func parseSpineQuery(request *http.Request) (spineQuery, bool) {
 	}
 }
 
-func (server *server) spineRoot(w http.ResponseWriter, session ownerSession, partnerID string) {
-	partner, ok := server.resolveCurrentCapability(partnerID, session.id, capabilityPartner)
+func (server *server) spineRoot(w http.ResponseWriter, partnerID string) {
+	partner, ok := server.resolveCurrentCapability(partnerID, capabilityPartner)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
+		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
 	if server.raw == nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	raw, err := server.raw.Snapshot()
 	if err != nil || raw.Validate() != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
-	snapshot, err := server.buildSpineSnapshot(raw.Clone(), session, partnerID, partner.ski, partner.revision)
+	snapshot, err := server.buildSpineSnapshot(raw.Clone(), partnerID, partner.ski, partner.revision)
 	if err != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.spineMu.Lock()
 	server.pruneSpineSnapshotsLocked()
 	if len(server.spineSnapshots) >= maxSpineSnapshots {
 		server.spineMu.Unlock()
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.spineSnapshots[snapshot.id] = snapshot
 	page, err := server.spinePageLocked(snapshot, "", 0)
 	server.spineMu.Unlock()
 	if err != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.revision, Data: page})
 }
 
-func (server *server) spineExistingPage(w http.ResponseWriter, session ownerSession, partnerID string, shape spineQuery) {
+func (server *server) spineExistingPage(w http.ResponseWriter, partnerID string, shape spineQuery) {
 	server.spineMu.Lock()
 	server.pruneSpineSnapshotsLocked()
 	snapshot, ok := server.spineSnapshots[shape.snapshotID]
-	if !ok || snapshot.sessionID != session.id || snapshot.partnerID != partnerID || !server.auth.now().Before(snapshot.expiresAt) {
+	if !ok || snapshot.scopeID != server.scopeID || snapshot.partnerID != partnerID || !server.now().Before(snapshot.expiresAt) {
 		server.spineMu.Unlock()
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
+		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
 	if _, ok := snapshot.nodes[shape.parentID]; !ok {
 		server.spineMu.Unlock()
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
+		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
 	offset := 0
@@ -172,7 +172,7 @@ func (server *server) spineExistingPage(w http.ResponseWriter, session ownerSess
 		cursor, exists := snapshot.cursors[shape.cursor]
 		if !exists || cursor.parentID != shape.parentID {
 			server.spineMu.Unlock()
-			server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
+			server.writeError(w, http.StatusConflict, "snapshot_expired")
 			return
 		}
 		delete(snapshot.cursors, shape.cursor)
@@ -181,22 +181,19 @@ func (server *server) spineExistingPage(w http.ResponseWriter, session ownerSess
 	page, err := server.spinePageLocked(snapshot, shape.parentID, offset)
 	server.spineMu.Unlock()
 	if err != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.writeJSON(w, http.StatusOK, spinePageEnvelope{Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.revision, Data: page})
 }
 
-func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, session ownerSession, partnerID, ski string, revision uint64) (*spineSnapshot, error) {
-	id, err := randomToken(server.auth.random)
+func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, partnerID, ski string, revision uint64) (*spineSnapshot, error) {
+	id, err := randomToken(server.random)
 	if err != nil {
 		return nil, err
 	}
-	expiresAt := server.auth.now().Add(spineSnapshotMaxLife)
-	if session.expiresAt.Before(expiresAt) {
-		expiresAt = session.expiresAt
-	}
-	result := &spineSnapshot{id: id, hash: raw.Meta.DataHash, revision: revision, sessionID: session.id, partnerID: partnerID, expiresAt: expiresAt, nodes: make(map[string]spineNode), children: make(map[string][]string), cursors: make(map[string]spineCursor)}
+	expiresAt := server.now().Add(spineSnapshotMaxLife)
+	result := &spineSnapshot{id: id, hash: raw.Meta.DataHash, revision: revision, scopeID: server.scopeID, partnerID: partnerID, expiresAt: expiresAt, nodes: make(map[string]spineNode), children: make(map[string][]string), cursors: make(map[string]spineCursor)}
 	deviceIDs := make(map[string]string)
 	entityIDs := make(map[string]string)
 	featureIDs := make(map[string]string)
@@ -300,7 +297,7 @@ func belongsToSpinePartner(contextAddress string, deviceIDs map[string]string) b
 }
 
 func (server *server) newSpineNode(parentID, kind, sortKey string, payload any) (spineNode, error) {
-	id, err := randomToken(server.auth.random)
+	id, err := randomToken(server.random)
 	if err != nil {
 		return spineNode{}, err
 	}
@@ -343,7 +340,7 @@ func (server *server) spinePageLocked(snapshot *spineSnapshot, parentID string, 
 		if len(snapshot.cursors) >= maxSpineCursors {
 			return spinePage{}, errors.New("cursor capacity exhausted")
 		}
-		cursor, err := randomToken(server.auth.random)
+		cursor, err := randomToken(server.random)
 		if err != nil {
 			return spinePage{}, err
 		}
@@ -354,7 +351,7 @@ func (server *server) spinePageLocked(snapshot *spineSnapshot, parentID string, 
 }
 
 func (server *server) pruneSpineSnapshotsLocked() {
-	now := server.auth.now()
+	now := server.now()
 	for id, snapshot := range server.spineSnapshots {
 		if !now.Before(snapshot.expiresAt) {
 			delete(server.spineSnapshots, id)

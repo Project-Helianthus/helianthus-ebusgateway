@@ -2,9 +2,7 @@ package eebusadmin
 
 import (
 	"bytes"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,14 +23,12 @@ const maxRequestBodyBytes = 4096
 const maxHTTPMutationReplays = 128
 
 type server struct {
-	admin eebusruntime.AdminV1
-	raw   RawSnapshotProvider
-	auth  *authentication
-	audit func(AuditEvent)
-
-	projectionMu       sync.Mutex
-	projectionRevision uint64
-	projectionHashes   map[string][32]byte
+	admin   eebusruntime.AdminV1
+	raw     RawSnapshotProvider
+	audit   func(AuditEvent)
+	now     func() time.Time
+	random  io.Reader
+	scopeID string
 
 	capabilityMu       sync.Mutex
 	capabilityRevision uint64
@@ -58,7 +54,7 @@ const (
 
 type capabilityRecord struct {
 	kind        capabilityKind
-	sessionID   string
+	scopeID     string
 	revision    uint64
 	expiresAt   time.Time
 	ski         string
@@ -107,16 +103,22 @@ func NewServer(config Config) (http.Handler, error) {
 	if config.Admin == nil {
 		return nil, errors.New("admin capability is required")
 	}
-	auth, err := newAuthentication(config.Auth)
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	if config.Random == nil {
+		config.Random = rand.Reader
+	}
+	scopeID, err := randomToken(config.Random)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("operator scope unavailable")
 	}
 	return &server{
-		admin: config.Admin, raw: config.Raw, auth: auth, audit: config.Audit,
+		admin: config.Admin, raw: config.Raw, audit: config.Audit,
+		now: config.Now, random: config.Random, scopeID: scopeID,
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
-		projectionHashes: make(map[string][32]byte),
-		spineSnapshots:   make(map[string]*spineSnapshot),
-		mutationReplays:  make(map[string]httpMutationReplay),
+		spineSnapshots:  make(map[string]*spineSnapshot),
+		mutationReplays: make(map[string]httpMutationReplay),
 	}, nil
 }
 
@@ -127,30 +129,9 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	identity, authFailure := server.auth.authenticate(w, request)
-	if authFailure != "" {
-		status := http.StatusUnauthorized
-		if authFailure == "forbidden" {
-			status = http.StatusForbidden
-		}
-		server.writeError(w, identity.principal, status, authFailure)
-		return
-	}
-	if identity.principal == PrincipalPortalOwner && !server.auth.validateCSRF(request, identity.session) {
-		if isHTTPMutation(request) {
-			server.emitPreCaptureMutationRejection(auditAction(request.Method, request.URL.Path), identity.principal, "csrf_rejected")
-		}
-		server.writeError(w, identity.principal, http.StatusForbidden, "csrf_rejected")
-		return
-	}
-	if identity.principal == PrincipalHAIntegration && isHTTPMutation(request) {
-		server.emitPreCaptureMutationRejection(auditAction(request.Method, request.URL.Path), identity.principal, "forbidden")
-		server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-		return
-	}
 	destination := w
-	if identity.principal == PrincipalPortalOwner && request.Method != http.MethodGet && request.Method != http.MethodHead {
-		capture, handled := server.beginHTTPMutation(w, request, identity.session)
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		capture, handled := server.beginHTTPMutation(w, request)
 		if capture != nil {
 			w = capture
 			if handled {
@@ -166,75 +147,39 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/admin/eebus/v1/status":
-		server.status(w, request, identity.principal)
+		server.status(w, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/admin/eebus/v1/pairing-window:open":
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
 		server.openPairingWindow(w, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/admin/eebus/v1/pairing-window:close":
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
 		server.closePairingWindow(w, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/admin/eebus/v1/partners":
-		server.partners(w, request, identity)
+		server.partners(w, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/partners/") && strings.HasSuffix(request.URL.Path, "/spine"):
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.spinePage(w, request, identity.session)
+		server.spinePage(w, request)
 	case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/observations/") && strings.HasSuffix(request.URL.Path, ":select"):
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.selectObservation(w, request, identity.session)
+		server.selectObservation(w, request)
 	case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/selections/") && strings.HasSuffix(request.URL.Path, ":connect"):
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.connectSelection(w, request, identity.session)
+		server.connectSelection(w, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/admin/eebus/v1/candidate:confirm":
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.confirmCandidate(w, request, identity.session)
+		server.confirmCandidate(w, request)
 	case request.Method == http.MethodPost && request.URL.Path == "/admin/eebus/v1/candidate:cancel":
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.cancelCandidate(w, request, identity.session)
+		server.cancelCandidate(w, request)
 	case request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/partners/") && strings.HasSuffix(request.URL.Path, ":retry"):
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.mutateTrustedPartner(w, request, identity.session, true)
+		server.mutateTrustedPartner(w, request, true)
 	case request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/partners/") && strings.HasSuffix(request.URL.Path, "/trust"):
-		if identity.principal != PrincipalPortalOwner {
-			server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
-			return
-		}
-		server.mutateTrustedPartner(w, request, identity.session, false)
+		server.mutateTrustedPartner(w, request, false)
 	default:
-		server.writeError(w, identity.principal, http.StatusNotFound, "invalid_request")
+		server.writeError(w, http.StatusNotFound, "invalid_request")
 	}
 }
 
-func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Request, session ownerSession) (*mutationResponseCapture, bool) {
+func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Request) (*mutationResponseCapture, bool) {
 	capture := &mutationResponseCapture{
 		header: make(http.Header), action: auditAction(request.Method, request.URL.Path),
 		idempotencyOutcome: "rejected",
 	}
 	if request.URL.RawQuery != "" {
-		server.writeError(capture, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(capture, http.StatusBadRequest, "invalid_request")
 		return capture, true
 	}
 	idempotencyKey := request.Header.Get("Idempotency-Key")
@@ -261,10 +206,10 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 		return capture, false
 	}
 	binding := request.Method + "\x00" + request.URL.Path + "\x00" + string(canonical)
-	cacheKey := session.id + "\x00" + idempotencyKey
+	cacheKey := server.scopeID + "\x00" + idempotencyKey
 
 	server.mutationMu.Lock()
-	now := server.auth.now()
+	now := server.now()
 	for key, replay := range server.mutationReplays {
 		if !now.Before(replay.expiresAt) {
 			delete(server.mutationReplays, key)
@@ -274,7 +219,7 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 		server.mutationMu.Unlock()
 		if replay.binding != binding {
 			capture.idempotencyOutcome = "conflict"
-			server.writeError(capture, PrincipalPortalOwner, http.StatusConflict, "idempotency_conflict")
+			server.writeError(capture, http.StatusConflict, "idempotency_conflict")
 			return capture, true
 		}
 		capture.idempotencyOutcome = "replayed"
@@ -283,13 +228,10 @@ func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Req
 	}
 	if len(server.mutationReplays) >= maxHTTPMutationReplays {
 		server.mutationMu.Unlock()
-		server.writeError(capture, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(capture, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return capture, true
 	}
 	expiresAt := now.Add(2 * time.Minute)
-	if session.expiresAt.Before(expiresAt) {
-		expiresAt = session.expiresAt
-	}
 	capture.locked = true
 	capture.idempotencyOutcome = "executed"
 	capture.cacheKey = cacheKey
@@ -304,7 +246,7 @@ func (server *server) finishHTTPMutation(destination http.ResponseWriter, captur
 		status = http.StatusOK
 	}
 	body := append([]byte(nil), capture.body.Bytes()...)
-	if capture.locked && capture.invoked && len(body) != 0 {
+	if capture.locked && capture.invoked && status >= http.StatusOK && status < http.StatusMultipleChoices && len(body) != 0 {
 		server.mutationReplays[capture.cacheKey] = httpMutationReplay{binding: capture.binding, action: capture.action, status: status, body: append([]byte(nil), body...), expiresAt: capture.expiresAt}
 	}
 	if capture.locked {
@@ -375,38 +317,14 @@ func (server *server) emitMutationAudit(action string, status int, body []byte, 
 		reason = sanitizedAuditReason(envelope.Data.Outcome)
 		resulting = "changed"
 	}
-	prior := "authenticated"
+	prior := "host_operator"
 	if invoked {
 		prior = "precondition_accepted"
 	}
 	event := AuditEvent{
-		Action: action, Principal: PrincipalPortalOwner, RequestID: envelope.RequestID,
+		Action: action, Principal: PrincipalHostOperator, RequestID: envelope.RequestID,
 		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: prior,
-		ResultingStateClass: resulting, Timestamp: server.auth.now(), Reason: reason,
-	}
-	func() {
-		defer func() { _ = recover() }()
-		server.audit(event)
-	}()
-}
-
-func isHTTPMutation(request *http.Request) bool {
-	return request.Method != http.MethodGet && request.Method != http.MethodHead
-}
-
-func (server *server) emitPreCaptureMutationRejection(action string, principal Principal, reason string) {
-	if server.audit == nil {
-		return
-	}
-	event := AuditEvent{
-		Action:              action,
-		Principal:           principal,
-		RequestID:           server.requestID(),
-		IdempotencyOutcome:  "rejected",
-		PriorStateClass:     "authenticated",
-		ResultingStateClass: "rejected",
-		Timestamp:           server.auth.now(),
-		Reason:              sanitizedAuditReason(reason),
+		ResultingStateClass: resulting, Timestamp: server.now(), Reason: reason,
 	}
 	func() {
 		defer func() { _ = recover() }()
@@ -426,39 +344,26 @@ func sanitizedAuditReason(value string) string {
 	return value
 }
 
-func (server *server) partners(w http.ResponseWriter, request *http.Request, identity authenticatedRequest) {
+func (server *server) partners(w http.ResponseWriter, request *http.Request) {
 	values := request.URL.Query()
 	if len(values) != 1 || len(values["view"]) != 1 {
-		server.writeError(w, identity.principal, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	view := eebusruntime.AdminViewV1(values.Get("view"))
 	if view != eebusruntime.AdminViewV1Trusted && view != eebusruntime.AdminViewV1Connected &&
 		view != eebusruntime.AdminViewV1Discovered && view != eebusruntime.AdminViewV1Candidate {
-		server.writeError(w, identity.principal, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	if identity.principal == PrincipalHAIntegration && view == eebusruntime.AdminViewV1Candidate {
-		server.writeError(w, identity.principal, http.StatusForbidden, "forbidden")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	snapshot, failure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: view})
 	if failure != nil {
-		server.writeAdminFailure(w, identity.principal, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
-	rows, err := server.projectPartners(identity, view, snapshot)
+	rows, err := server.projectPartners(view, snapshot)
 	if err != nil {
-		server.writeError(w, identity.principal, http.StatusServiceUnavailable, "admin_boundary_unavailable")
-		return
-	}
-	if identity.principal == PrincipalHAIntegration {
-		revision, projectionErr := server.acceptHAPartnerProjection(view, rows)
-		if projectionErr != nil {
-			server.writeError(w, identity.principal, http.StatusServiceUnavailable, "admin_boundary_unavailable")
-			return
-		}
-		server.writeJSON(w, http.StatusOK, haEnvelope{Contract: ContractV1, ProjectionRevision: revision, Data: partnersData{Partners: rows}})
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.writeJSON(w, http.StatusOK, ownerEnvelope{
@@ -467,55 +372,38 @@ func (server *server) partners(w http.ResponseWriter, request *http.Request, ide
 	})
 }
 
-func (server *server) projectPartners(identity authenticatedRequest, view eebusruntime.AdminViewV1, snapshot eebusruntime.AdminSnapshotV1) ([]partnerRow, error) {
+func (server *server) projectPartners(view eebusruntime.AdminViewV1, snapshot eebusruntime.AdminSnapshotV1) ([]partnerRow, error) {
 	rows := make([]partnerRow, 0)
-	if identity.principal == PrincipalPortalOwner {
-		server.resetCapabilities(snapshot.StateRevision)
-	}
+	server.resetCapabilities(snapshot.StateRevision)
 	switch view {
 	case eebusruntime.AdminViewV1Trusted:
 		for _, partner := range snapshot.Trusted {
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, RemoteSHIPID: partner.SHIPID, TrustState: partner.TrustState, LastSeen: partner.LastSeen}
-			if identity.principal == PrincipalPortalOwner {
-				id, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner, trustAction: true}, "partner|"+partner.SKI)
-				if err != nil {
-					return nil, err
-				}
-				row.PartnerID = id
-			} else {
-				row = sanitizeHAPartner(row, server.haPseudonym(partner.SKI))
+			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner, trustAction: true}, "partner|"+partner.SKI)
+			if err != nil {
+				return nil, err
 			}
+			row.PartnerID = id
 			rows = append(rows, row)
 		}
 	case eebusruntime.AdminViewV1Connected:
 		for _, partner := range snapshot.Connected {
-			if identity.principal == PrincipalHAIntegration && partner.TrustState != "trusted" && partner.TrustState != "durably_trusted" {
-				continue
-			}
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, RemoteSHIPID: partner.SHIPID, Endpoint: partner.Endpoint, TrustState: partner.TrustState, ConnectionState: partner.ConnectionState, LastSeen: partner.LastSeen}
-			if identity.principal == PrincipalPortalOwner {
-				id, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI}, "connected|"+partner.SKI)
-				if err != nil {
-					return nil, err
-				}
-				row.PartnerID = id
-			} else {
-				row = sanitizeHAPartner(row, server.haPseudonym(partner.SKI))
+			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI}, "connected|"+partner.SKI)
+			if err != nil {
+				return nil, err
 			}
+			row.PartnerID = id
 			rows = append(rows, row)
 		}
 	case eebusruntime.AdminViewV1Discovered:
 		for _, partner := range snapshot.Discovered {
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, Brand: partner.Brand, DeviceType: partner.Type, Model: partner.Model, Endpoint: partner.Endpoint, LastSeen: partner.LastSeen, ObservationRevision: partner.ObservationRevision}
-			if identity.principal == PrincipalPortalOwner {
-				id, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityObservation, revision: snapshot.StateRevision, ski: partner.SKI, observation: partner.Observation}, "observation|"+partner.SKI+"|"+partner.Endpoint+"|"+strconv.FormatUint(partner.ObservationRevision, 10))
-				if err != nil {
-					return nil, err
-				}
-				row.ObservationID = id
-			} else {
-				row = sanitizeHAPartner(row, server.haPseudonym(partner.SKI))
+			id, err := server.issueCapability(capabilityRecord{kind: capabilityObservation, revision: snapshot.StateRevision, ski: partner.SKI, observation: partner.Observation}, "observation|"+partner.SKI+"|"+partner.Endpoint+"|"+strconv.FormatUint(partner.ObservationRevision, 10))
+			if err != nil {
+				return nil, err
 			}
+			row.ObservationID = id
 			rows = append(rows, row)
 		}
 	case eebusruntime.AdminViewV1Candidate:
@@ -523,7 +411,7 @@ func (server *server) projectPartners(identity authenticatedRequest, view eebusr
 			return nil, errors.New("multiple current candidates")
 		}
 		for _, candidate := range snapshot.Candidates {
-			_, err := server.issueCapability(identity.session.id, capabilityRecord{kind: capabilityCandidate, revision: snapshot.StateRevision, ski: candidate.SKI, candidate: candidate.Candidate}, "candidate|current")
+			_, err := server.issueCapability(capabilityRecord{kind: capabilityCandidate, revision: snapshot.StateRevision, ski: candidate.SKI, candidate: candidate.Candidate}, "candidate|current")
 			if err != nil {
 				return nil, err
 			}
@@ -533,14 +421,10 @@ func (server *server) projectPartners(identity authenticatedRequest, view eebusr
 	return rows, nil
 }
 
-func sanitizeHAPartner(row partnerRow, id string) partnerRow {
-	return partnerRow{PartnerID: id, View: row.View, Brand: row.Brand, DeviceType: row.DeviceType, Model: row.Model, TrustState: row.TrustState, ConnectionState: row.ConnectionState, LastSeen: row.LastSeen}
-}
-
-func (server *server) selectObservation(w http.ResponseWriter, request *http.Request, session ownerSession) {
+func (server *server) selectObservation(w http.ResponseWriter, request *http.Request) {
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/observations/", ":select")
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	var body skiMutationBody
@@ -548,34 +432,34 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 		return
 	}
 	if !validSKI(body.ExpectedSKI) || body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	record, ok := server.resolveCapability(id, session.id, capabilityObservation, body.StateRevision)
+	record, ok := server.resolveCapability(id, capabilityObservation, body.StateRevision)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "observation_stale")
+		server.writeError(w, http.StatusConflict, "observation_stale")
 		return
 	}
 	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Select(request.Context(), eebusruntime.SelectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Observation: record.observation, ExpectedSKI: body.ExpectedSKI})
 	if failure != nil {
 		server.invalidateCapabilities()
-		server.writeAdminFailure(w, PrincipalPortalOwner, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
-	selectionID, err := server.issueCapability(session.id, capabilityRecord{kind: capabilitySelection, revision: result.StateRevision, ski: record.ski, selection: result.Selection}, "selection|current")
+	selectionID, err := server.issueCapability(capabilityRecord{kind: capabilitySelection, revision: result.StateRevision, ski: record.ski, selection: result.Selection}, "selection|current")
 	if err != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	server.writeMutationResult(w, result.AdminMutationResultV1, map[string]any{"selection_id": selectionID})
 }
 
-func (server *server) connectSelection(w http.ResponseWriter, request *http.Request, session ownerSession) {
+func (server *server) connectSelection(w http.ResponseWriter, request *http.Request) {
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/selections/", ":connect")
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	var body revisionMutationBody
@@ -583,12 +467,12 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	if body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	record, ok := server.resolveCapability(id, session.id, capabilitySelection, body.StateRevision)
+	record, ok := server.resolveCapability(id, capabilitySelection, body.StateRevision)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "observation_stale")
+		server.writeError(w, http.StatusConflict, "observation_stale")
 		return
 	}
 	server.deleteCapability(id)
@@ -596,32 +480,32 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Selection: record.selection})
 	if failure != nil {
 		server.invalidateCapabilities()
-		server.writeAdminFailure(w, PrincipalPortalOwner, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
 	server.writeMutationResult(w, result, nil)
 }
 
-func (server *server) confirmCandidate(w http.ResponseWriter, request *http.Request, session ownerSession) {
+func (server *server) confirmCandidate(w http.ResponseWriter, request *http.Request) {
 	var body skiMutationBody
 	if !server.decodeMutation(w, request, &body) {
 		return
 	}
 	if !validSKI(body.ExpectedSKI) || body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	record, ok := server.resolveTargetCapability(session.id, "candidate|current", capabilityCandidate, body.StateRevision)
+	record, ok := server.resolveTargetCapability("candidate|current", capabilityCandidate, body.StateRevision)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "candidate_expired")
+		server.writeError(w, http.StatusConflict, "candidate_expired")
 		return
 	}
 	markHTTPMutationInvoked(w)
 	result, failure := server.admin.Confirm(request.Context(), eebusruntime.ConfirmRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Candidate: record.candidate, ExpectedSKI: body.ExpectedSKI})
 	if failure != nil {
 		server.invalidateCapabilities()
-		server.writeAdminFailure(w, PrincipalPortalOwner, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
@@ -634,7 +518,7 @@ func (server *server) closePairingWindow(w http.ResponseWriter, request *http.Re
 		return
 	}
 	if body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	markHTTPMutationInvoked(w)
@@ -642,18 +526,18 @@ func (server *server) closePairingWindow(w http.ResponseWriter, request *http.Re
 	server.finishMutation(w, result, failure)
 }
 
-func (server *server) cancelCandidate(w http.ResponseWriter, request *http.Request, session ownerSession) {
+func (server *server) cancelCandidate(w http.ResponseWriter, request *http.Request) {
 	var body revisionMutationBody
 	if !server.decodeMutation(w, request, &body) {
 		return
 	}
 	if body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	record, ok := server.resolveTargetCapability(session.id, "candidate|current", capabilityCandidate, body.StateRevision)
+	record, ok := server.resolveTargetCapability("candidate|current", capabilityCandidate, body.StateRevision)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "candidate_expired")
+		server.writeError(w, http.StatusConflict, "candidate_expired")
 		return
 	}
 	markHTTPMutationInvoked(w)
@@ -661,14 +545,14 @@ func (server *server) cancelCandidate(w http.ResponseWriter, request *http.Reque
 	server.finishMutation(w, result, failure)
 }
 
-func (server *server) mutateTrustedPartner(w http.ResponseWriter, request *http.Request, session ownerSession, retry bool) {
+func (server *server) mutateTrustedPartner(w http.ResponseWriter, request *http.Request, retry bool) {
 	suffix := "/trust"
 	if retry {
 		suffix = ":retry"
 	}
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/partners/", suffix)
 	if !ok {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	var body revisionMutationBody
@@ -676,12 +560,12 @@ func (server *server) mutateTrustedPartner(w http.ResponseWriter, request *http.
 		return
 	}
 	if body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	record, ok := server.resolveCapability(id, session.id, capabilityPartner, body.StateRevision)
+	record, ok := server.resolveCapability(id, capabilityPartner, body.StateRevision)
 	if !ok || !record.trustAction {
-		server.writeError(w, PrincipalPortalOwner, http.StatusConflict, "snapshot_expired")
+		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
 	precondition := mutationPrecondition(request, body.StateRevision)
@@ -703,7 +587,7 @@ func mutationPrecondition(request *http.Request, revision uint64) eebusruntime.M
 func (server *server) finishMutation(w http.ResponseWriter, result eebusruntime.AdminMutationResultV1, failure *eebusruntime.AdminErrorV1) {
 	if failure != nil {
 		server.invalidateCapabilities()
-		server.writeAdminFailure(w, PrincipalPortalOwner, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
@@ -720,7 +604,7 @@ type skiMutationBody struct {
 
 func (server *server) decodeMutation(w http.ResponseWriter, request *http.Request, target any) bool {
 	if !strictJSONContentType(request.Header.Get("Content-Type")) || !validIdempotencyKey(request.Header.Get("Idempotency-Key")) || decodeStrictJSON(request.Body, target) != nil {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return false
 	}
 	return true
@@ -761,16 +645,16 @@ func (server *server) invalidateCapabilities() {
 	clear(server.capabilityByTarget)
 }
 
-func (server *server) issueCapability(sessionID string, record capabilityRecord, target string) (string, error) {
+func (server *server) issueCapability(record capabilityRecord, target string) (string, error) {
 	server.capabilityMu.Lock()
 	defer server.capabilityMu.Unlock()
-	now := server.auth.now()
+	now := server.now()
 	for id, current := range server.capabilities {
 		if !now.Before(current.expiresAt) {
 			delete(server.capabilities, id)
 		}
 	}
-	key := sessionID + "|" + string(record.kind) + "|" + target
+	key := server.scopeID + "|" + string(record.kind) + "|" + target
 	if id := server.capabilityByTarget[key]; id != "" {
 		if current, ok := server.capabilities[id]; ok && now.Before(current.expiresAt) {
 			return id, nil
@@ -788,36 +672,36 @@ func (server *server) issueCapability(sessionID string, record capabilityRecord,
 	if kindCount >= 128 {
 		return "", errors.New("capability kind capacity exhausted")
 	}
-	id, err := randomToken(server.auth.random)
+	id, err := randomToken(server.random)
 	if err != nil {
 		return "", err
 	}
-	record.sessionID = sessionID
+	record.scopeID = server.scopeID
 	record.expiresAt = now.Add(2 * time.Minute)
 	server.capabilities[id] = record
 	server.capabilityByTarget[key] = id
 	return id, nil
 }
 
-func (server *server) resolveCapability(id, sessionID string, kind capabilityKind, revision uint64) (capabilityRecord, bool) {
+func (server *server) resolveCapability(id string, kind capabilityKind, revision uint64) (capabilityRecord, bool) {
 	server.capabilityMu.Lock()
 	defer server.capabilityMu.Unlock()
 	record, ok := server.capabilities[id]
-	return record, ok && record.sessionID == sessionID && record.kind == kind && record.revision == revision && server.capabilityRevision == revision && server.auth.now().Before(record.expiresAt)
+	return record, ok && record.scopeID == server.scopeID && record.kind == kind && record.revision == revision && server.capabilityRevision == revision && server.now().Before(record.expiresAt)
 }
 
-func (server *server) resolveCurrentCapability(id, sessionID string, kind capabilityKind) (capabilityRecord, bool) {
+func (server *server) resolveCurrentCapability(id string, kind capabilityKind) (capabilityRecord, bool) {
 	server.capabilityMu.Lock()
 	defer server.capabilityMu.Unlock()
 	record, ok := server.capabilities[id]
-	return record, ok && record.sessionID == sessionID && record.kind == kind && record.revision == server.capabilityRevision && server.auth.now().Before(record.expiresAt)
+	return record, ok && record.scopeID == server.scopeID && record.kind == kind && record.revision == server.capabilityRevision && server.now().Before(record.expiresAt)
 }
 
-func (server *server) resolveTargetCapability(sessionID, target string, kind capabilityKind, revision uint64) (capabilityRecord, bool) {
+func (server *server) resolveTargetCapability(target string, kind capabilityKind, revision uint64) (capabilityRecord, bool) {
 	server.capabilityMu.Lock()
-	id := server.capabilityByTarget[sessionID+"|"+string(kind)+"|"+target]
+	id := server.capabilityByTarget[server.scopeID+"|"+string(kind)+"|"+target]
 	server.capabilityMu.Unlock()
-	return server.resolveCapability(id, sessionID, kind, revision)
+	return server.resolveCapability(id, kind, revision)
 }
 
 func (server *server) deleteCapability(id string) {
@@ -826,59 +710,10 @@ func (server *server) deleteCapability(id string) {
 	delete(server.capabilities, id)
 }
 
-func (server *server) haPseudonym(ski string) string {
-	digest := hmac.New(sha256.New, server.auth.haSecret)
-	_, _ = digest.Write([]byte("partner\x00" + ski))
-	return "ha-" + hex.EncodeToString(digest.Sum(nil)[:16])
-}
-
-func (server *server) acceptHAPartnerProjection(view eebusruntime.AdminViewV1, rows []partnerRow) (uint64, error) {
-	encoded, err := json.Marshal(struct {
-		View     string       `json:"view"`
-		Partners []partnerRow `json:"partners"`
-	}{string(view), rows})
-	if err != nil {
-		return 0, err
-	}
-	hash := sha256.Sum256(encoded)
-	return server.acceptHAProjectionHash("partners:"+string(view), hash)
-}
-
-func (server *server) status(w http.ResponseWriter, request *http.Request, principal Principal) {
+func (server *server) status(w http.ResponseWriter, request *http.Request) {
 	snapshot, failure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Trusted})
 	if failure != nil {
-		server.writeAdminFailure(w, principal, failure)
-		return
-	}
-	if principal == PrincipalHAIntegration {
-		connected, connectedFailure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Connected})
-		if connectedFailure != nil {
-			server.writeAdminFailure(w, principal, connectedFailure)
-			return
-		}
-		data := projectHAStatus(snapshot, connected)
-		if connected.StateRevision != snapshot.StateRevision {
-			nextTrusted, nextFailure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Trusted})
-			if nextFailure != nil {
-				server.writeAdminFailure(w, principal, nextFailure)
-				return
-			}
-			nextConnected, nextConnectedFailure := server.admin.Snapshot(request.Context(), eebusruntime.AdminSnapshotRequestV1{View: eebusruntime.AdminViewV1Connected})
-			if nextConnectedFailure != nil {
-				server.writeAdminFailure(w, principal, nextConnectedFailure)
-				return
-			}
-			if next := projectHAStatus(nextTrusted, nextConnected); next != data {
-				server.writeError(w, principal, http.StatusConflict, "state_conflict")
-				return
-			}
-		}
-		revision, err := server.acceptHAProjection(data)
-		if err != nil {
-			server.writeError(w, principal, http.StatusServiceUnavailable, "admin_boundary_unavailable")
-			return
-		}
-		server.writeJSON(w, http.StatusOK, haEnvelope{Contract: ContractV1, ProjectionRevision: revision, Data: data})
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	data := ownerStatus{
@@ -893,20 +728,6 @@ func (server *server) status(w http.ResponseWriter, request *http.Request, princ
 	})
 }
 
-func projectHAStatus(trusted, connected eebusruntime.AdminSnapshotV1) haStatus {
-	trustedConnected := uint16(0)
-	for _, partner := range connected.Connected {
-		if partner.TrustState == "trusted" || partner.TrustState == "durably_trusted" {
-			trustedConnected++
-		}
-	}
-	return haStatus{
-		Listener: trusted.Listener, Discovery: trusted.Discovery,
-		TrustedCount: trusted.TrustedCount, ConnectedCount: trustedConnected,
-		DiscoveredCount: trusted.DiscoveredCount, DegradedCode: haDegradedCode(trusted.DegradedCode),
-	}
-}
-
 type openPairingWindowBody struct {
 	DurationSeconds uint64 `json:"duration_seconds"`
 	StateRevision   uint64 `json:"state_revision"`
@@ -914,17 +735,17 @@ type openPairingWindowBody struct {
 
 func (server *server) openPairingWindow(w http.ResponseWriter, request *http.Request) {
 	if !strictJSONContentType(request.Header.Get("Content-Type")) {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	idempotencyKey := request.Header.Get("Idempotency-Key")
 	if !validIdempotencyKey(idempotencyKey) {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	var body openPairingWindowBody
 	if err := decodeStrictJSON(request.Body, &body); err != nil || body.DurationSeconds == 0 || body.DurationSeconds > 300 || body.StateRevision == 0 {
-		server.writeError(w, PrincipalPortalOwner, http.StatusBadRequest, "invalid_request")
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	markHTTPMutationInvoked(w)
@@ -936,7 +757,7 @@ func (server *server) openPairingWindow(w http.ResponseWriter, request *http.Req
 	})
 	if failure != nil {
 		server.invalidateCapabilities()
-		server.writeAdminFailure(w, PrincipalPortalOwner, failure)
+		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
@@ -946,34 +767,9 @@ func (server *server) openPairingWindow(w http.ResponseWriter, request *http.Req
 	})
 }
 
-func (server *server) acceptHAProjection(data haStatus) (uint64, error) {
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return 0, err
-	}
-	hash := sha256.Sum256(encoded)
-	return server.acceptHAProjectionHash("status", hash)
-}
-
-func (server *server) acceptHAProjectionHash(key string, hash [32]byte) (uint64, error) {
-	server.projectionMu.Lock()
-	defer server.projectionMu.Unlock()
-	previous, known := server.projectionHashes[key]
-	if server.projectionRevision == 0 {
-		server.projectionRevision = 1
-	} else if known && previous != hash {
-		if server.projectionRevision == ^uint64(0) {
-			return 0, errors.New("projection revision exhausted")
-		}
-		server.projectionRevision++
-	}
-	server.projectionHashes[key] = hash
-	return server.projectionRevision, nil
-}
-
-func (server *server) writeAdminFailure(w http.ResponseWriter, principal Principal, failure *eebusruntime.AdminErrorV1) {
+func (server *server) writeAdminFailure(w http.ResponseWriter, failure *eebusruntime.AdminErrorV1) {
 	code := sanitizedAdminErrorCode(failure)
-	server.writeError(w, principal, adminFailureStatus(code), code)
+	server.writeError(w, adminFailureStatus(code), code)
 }
 
 func sanitizedAdminErrorCode(failure *eebusruntime.AdminErrorV1) string {
@@ -982,9 +778,6 @@ func sanitizedAdminErrorCode(failure *eebusruntime.AdminErrorV1) string {
 	}
 	switch failure.Code {
 	case eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable,
-		eebusruntime.AdminErrorCodeV1Unauthenticated,
-		eebusruntime.AdminErrorCodeV1Forbidden,
-		eebusruntime.AdminErrorCodeV1CSRFRejected,
 		eebusruntime.AdminErrorCodeV1InvalidRequest,
 		eebusruntime.AdminErrorCodeV1StateConflict,
 		eebusruntime.AdminErrorCodeV1SnapshotExpired,
@@ -1012,10 +805,6 @@ func sanitizedAdminErrorCode(failure *eebusruntime.AdminErrorV1) string {
 
 func adminFailureStatus(code string) int {
 	switch code {
-	case "unauthenticated":
-		return http.StatusUnauthorized
-	case "forbidden", "csrf_rejected":
-		return http.StatusForbidden
 	case "invalid_request", "identity_mismatch":
 		return http.StatusBadRequest
 	case "state_conflict", "snapshot_expired", "idempotency_conflict", "observation_stale", "pairing_closed", "association_incomplete", "candidate_expired", "candidate_busy", "backoff_active":
@@ -1027,11 +816,7 @@ func adminFailureStatus(code string) int {
 	}
 }
 
-func (server *server) writeError(w http.ResponseWriter, principal Principal, status int, code string) {
-	if principal == PrincipalHAIntegration {
-		server.writeJSON(w, status, haEnvelope{Contract: ContractV1, Error: &errorData{Code: code}})
-		return
-	}
+func (server *server) writeError(w http.ResponseWriter, status int, code string) {
 	server.writeJSON(w, status, ownerEnvelope{Contract: ContractV1, RequestID: server.requestID(), Error: &errorData{Code: code}})
 }
 
@@ -1042,7 +827,7 @@ func (server *server) writeJSON(w http.ResponseWriter, status int, value any) {
 
 func (server *server) requestID() string {
 	buffer := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, buffer); err != nil {
+	if _, err := io.ReadFull(server.random, buffer); err != nil {
 		return "request-unavailable"
 	}
 	return hex.EncodeToString(buffer)
@@ -1068,15 +853,6 @@ func decodeStrictJSON(source io.Reader, target any) error {
 		return errors.New("request body has trailing data")
 	}
 	return nil
-}
-
-func haDegradedCode(code eebusruntime.AdminErrorCodeV1) string {
-	switch code {
-	case eebusruntime.AdminErrorCodeV1ListenerUnavailable, eebusruntime.AdminErrorCodeV1DiscoveryUnavailable:
-		return string(code)
-	default:
-		return ""
-	}
 }
 
 func validIdempotencyKey(value string) bool {

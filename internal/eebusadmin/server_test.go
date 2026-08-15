@@ -2,7 +2,6 @@ package eebusadmin
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,18 +13,13 @@ import (
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
-const (
-	testOwnerOrigin = "http://gateway.test:8080"
-	testOwnerSecret = "owner-secret-value"
-	testHASecret    = "ha-secret-value"
-)
-
 type adminV1Stub struct {
 	mu            sync.Mutex
 	snapshot      eebusruntime.AdminSnapshotV1
 	snapshots     map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
 	snapshotCalls int
-	openCalls     int
+	openCalls     []eebusruntime.OpenPairingWindowRequestV1
+	openRevision  uint64
 	selectCalls   []eebusruntime.SelectRequestV1
 	connectCalls  []eebusruntime.ConnectRequestV1
 	confirmCalls  []eebusruntime.ConfirmRequestV1
@@ -45,14 +39,14 @@ func (stub *adminV1Stub) Snapshot(_ context.Context, request eebusruntime.AdminS
 	return stub.snapshot, nil
 }
 
-func (stub *adminV1Stub) OpenPairingWindow(context.Context, eebusruntime.OpenPairingWindowRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+func (stub *adminV1Stub) OpenPairingWindow(_ context.Context, request eebusruntime.OpenPairingWindowRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	stub.openCalls++
-	return eebusruntime.AdminMutationResultV1{
-		StateRevision: stub.snapshot.StateRevision + 1,
-		Outcome:       eebusruntime.AdminOutcomeV1("pairing_window_opened"),
-	}, nil
+	stub.openCalls = append(stub.openCalls, request)
+	if stub.openRevision != 0 && request.ExpectedStateRevision != stub.openRevision {
+		return eebusruntime.AdminMutationResultV1{}, &eebusruntime.AdminErrorV1{Code: eebusruntime.AdminErrorCodeV1StateConflict}
+	}
+	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "pairing_window_opened"}, nil
 }
 
 func (stub *adminV1Stub) ClosePairingWindow(_ context.Context, request eebusruntime.ClosePairingWindowRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
@@ -68,7 +62,7 @@ func (stub *adminV1Stub) Select(_ context.Context, request eebusruntime.SelectRe
 	stub.selectCalls = append(stub.selectCalls, request)
 	return eebusruntime.AdminSelectionResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{
 		StateRevision: request.ExpectedStateRevision + 1,
-		Outcome:       eebusruntime.AdminOutcomeV1("selected"),
+		Outcome:       "selected",
 	}}, nil
 }
 
@@ -76,21 +70,21 @@ func (stub *adminV1Stub) Connect(_ context.Context, request eebusruntime.Connect
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.connectCalls = append(stub.connectCalls, request)
-	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: eebusruntime.AdminOutcomeV1("connecting")}, nil
+	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connecting"}, nil
 }
 
 func (stub *adminV1Stub) Confirm(_ context.Context, request eebusruntime.ConfirmRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.confirmCalls = append(stub.confirmCalls, request)
-	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: eebusruntime.AdminOutcomeV1("confirmed")}, nil
+	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "confirmed"}, nil
 }
 
 func (stub *adminV1Stub) Cancel(_ context.Context, request eebusruntime.CancelRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.cancelCalls = append(stub.cancelCalls, request)
-	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: eebusruntime.AdminOutcomeV1("cancelled")}, nil
+	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "cancelled"}, nil
 }
 
 func (stub *adminV1Stub) RetryTrusted(_ context.Context, request eebusruntime.RetryTrustedRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
@@ -107,407 +101,105 @@ func (stub *adminV1Stub) Untrust(_ context.Context, request eebusruntime.Untrust
 	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "untrusted"}, nil
 }
 
-func TestIssue809AdminBoundaryFailsClosedBeforeRuntimeContact(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	handler := newIssue809Server(t, admin)
-
+func TestIssue817UnavailableBoundaryStaysMountedAndSanitized(t *testing.T) {
+	handler := NewUnavailableHandler()
 	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
+	request.Header.Set("Authorization", "Bearer must-not-be-reflected")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d, want %d", response.Code, http.StatusUnauthorized)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	assertIssue809ErrorEnvelope(t, response.Body.String(), "unauthenticated")
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if admin.snapshotCalls != 0 || admin.openCalls != 0 {
-		t.Fatalf("runtime calls snapshot/open=%d/%d, want 0/0", admin.snapshotCalls, admin.openCalls)
+	assertIssue817ErrorEnvelope(t, response.Body.String(), "admin_boundary_unavailable")
+	if strings.Contains(response.Body.String(), "must-not-be-reflected") {
+		t.Fatalf("unavailable boundary reflected request material: %s", response.Body.String())
 	}
 }
 
-func TestIssue809UnavailableBoundaryIsAlwaysMountedAndReturnsNoOperationalData(t *testing.T) {
-	handler := NewUnavailableHandler()
-	for _, test := range []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{method: http.MethodGet, path: "/admin/eebus/v1/status"},
-		{method: http.MethodPost, path: "/admin/eebus/v1/pairing-window:open", body: `{"duration_seconds":60,"state_revision":7}`},
-	} {
-		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-		request.Header.Set("Authorization", "Bearer must-not-be-reflected")
+func TestIssue817CredentialFreeReadsUseOneStateRevisionEnvelope(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 21
+	snapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: ski, SHIPID: "ship-1", TrustState: "durably_trusted"}}
+	snapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: ski, SHIPID: "ship-1", ConnectionState: "connected"}}
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Identifier: "ship-1", Endpoint: "192.0.2.10:4712", ObservationRevision: 3}}
+	snapshot.Candidates = []eebusruntime.CandidateV1{{SKI: ski, State: "tls_bound", ExpiresAt: snapshot.CapturedAt.Add(time.Minute)}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{
+		eebusruntime.AdminViewV1Trusted: snapshot, eebusruntime.AdminViewV1Connected: snapshot,
+		eebusruntime.AdminViewV1Discovered: snapshot, eebusruntime.AdminViewV1Candidate: snapshot,
+	}}
+	handler := newIssue817Server(t, admin, nil, nil)
+
+	paths := []string{"/admin/eebus/v1/status"}
+	for _, view := range []string{"trusted", "connected", "discovered", "candidate"} {
+		paths = append(paths, "/admin/eebus/v1/partners?view="+view)
+	}
+	for index, target := range paths {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		if index%2 == 1 {
+			issue817AddIrrelevantAuthMaterial(request)
+		}
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusServiceUnavailable {
-			t.Fatalf("%s %s status=%d body=%s", test.method, test.path, response.Code, response.Body.String())
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", target, response.Code, response.Body.String())
 		}
-		assertIssue809ErrorEnvelope(t, response.Body.String(), "admin_boundary_unavailable")
-		if strings.Contains(response.Body.String(), "must-not-be-reflected") {
-			t.Fatalf("unavailable boundary reflected authentication material: %s", response.Body.String())
+		assertIssue817OperatorEnvelope(t, response, 21)
+		assertIssue817NoAuthResponseHeaders(t, response)
+		if strings.Contains(response.Body.String(), "projection_revision") {
+			t.Fatalf("GET %s returned a split HA projection envelope: %s", target, response.Body.String())
 		}
 	}
 }
 
-func TestIssue809OwnerSessionRequiresCSRFAndStrictSameOrigin(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	handler := newIssue809Server(t, admin)
-
-	statusRequest := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
-	statusRequest.SetBasicAuth("owner", testOwnerSecret)
-	statusResponse := httptest.NewRecorder()
-	handler.ServeHTTP(statusResponse, statusRequest)
-	if statusResponse.Code != http.StatusOK {
-		t.Fatalf("owner status=%d body=%s", statusResponse.Code, statusResponse.Body.String())
-	}
-	cookies := statusResponse.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Fatalf("owner session cookies=%#v, want one HttpOnly SameSite=Strict cookie", cookies)
-	}
-	csrf := statusResponse.Header().Get("X-CSRF-Token")
-	if csrf == "" {
-		t.Fatal("owner status omitted session-bound CSRF token")
-	}
-
-	for _, test := range []struct {
-		name    string
-		origin  string
-		referer string
-		csrf    string
-	}{
-		{name: "missing csrf", origin: testOwnerOrigin, referer: testOwnerOrigin + "/portal/eebus"},
-		{name: "wrong origin", origin: "http://attacker.invalid", referer: testOwnerOrigin + "/portal/eebus", csrf: csrf},
-		{name: "wrong referer", origin: testOwnerOrigin, referer: "http://attacker.invalid/", csrf: csrf},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", strings.NewReader(`{"duration_seconds":60,"state_revision":7}`))
-			request.AddCookie(cookies[0])
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Idempotency-Key", "open-window-1")
-			request.Header.Set("Origin", test.origin)
-			request.Header.Set("Referer", test.referer)
-			request.Header.Set("X-CSRF-Token", test.csrf)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code != http.StatusForbidden {
-				t.Fatalf("status=%d body=%s, want 403", response.Code, response.Body.String())
-			}
-			assertIssue809ErrorEnvelope(t, response.Body.String(), "csrf_rejected")
+func TestIssue817CapabilityCapacityFailsClosedWithoutPartialRows(t *testing.T) {
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 22
+	for index := 0; index < 129; index++ {
+		snapshot.Discovered = append(snapshot.Discovered, eebusruntime.DiscoveredPartnerV1{
+			SKI:                 strings.Repeat(string(rune('a'+index%6)), 40),
+			Endpoint:            "192.0.2.10:4712",
+			ObservationRevision: uint64(index + 1),
+			Identifier:          string(rune('A' + index)),
 		})
 	}
-
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if admin.openCalls != 0 {
-		t.Fatalf("rejected requests reached runtime %d times", admin.openCalls)
-	}
-}
-
-func TestIssue809HAProfileIsCandidateFreeAndMutationDenied(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	handler := newIssue809Server(t, admin)
-
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
-	request.Header.Set("Authorization", "Bearer "+testHASecret)
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	handler := newIssue817Server(t, admin, nil, nil)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("HA status=%d body=%s", response.Code, response.Body.String())
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("capacity status=%d body=%s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, forbidden := range []string{"state_revision", "request_id", "candidate", "pairing_window", "register"} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("HA status leaks %q: %s", forbidden, body)
-		}
-	}
-	if !strings.Contains(body, `"projection_revision":1`) {
-		t.Fatalf("HA status missing independent projection revision: %s", body)
-	}
-
-	mutation := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", strings.NewReader(`{"duration_seconds":60,"state_revision":7}`))
-	mutation.Header.Set("Authorization", "Bearer "+testHASecret)
-	mutation.Header.Set("Content-Type", "application/json")
-	mutation.Header.Set("Idempotency-Key", "ha-must-not-mutate")
-	mutationResponse := httptest.NewRecorder()
-	handler.ServeHTTP(mutationResponse, mutation)
-	if mutationResponse.Code != http.StatusForbidden {
-		t.Fatalf("HA mutation status=%d body=%s, want 403", mutationResponse.Code, mutationResponse.Body.String())
-	}
-	assertIssue809ErrorEnvelope(t, mutationResponse.Body.String(), "forbidden")
-
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if admin.openCalls != 0 {
-		t.Fatalf("HA mutation reached runtime %d times", admin.openCalls)
+	assertIssue817ErrorEnvelope(t, response.Body.String(), "admin_boundary_unavailable")
+	if strings.Contains(response.Body.String(), "partners") {
+		t.Fatalf("capacity failure emitted partial rows: %s", response.Body.String())
 	}
 }
 
-func TestIssue809HAProjectionIsByteIdenticalAcrossCandidateOnlyLifecycle(t *testing.T) {
-	base := testAdminSnapshot()
-	base.Window = "closed"
-	base.Register = "false"
-	base.CandidateCount = 0
-	admin := &adminV1Stub{snapshot: base}
-	handler := newIssue809Server(t, admin)
-	request := func() *http.Request {
-		value := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
-		value.Header.Set("Authorization", "Bearer "+testHASecret)
-		return value
-	}
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, request())
-
-	admin.mu.Lock()
-	admin.snapshot.Window = "transient_trusted"
-	admin.snapshot.Register = "true"
-	admin.snapshot.CandidateCount = 1
-	admin.snapshot.Candidates = []eebusruntime.CandidateV1{{SKI: strings.Repeat("a", 40), State: "tls_bound", AssociationComplete: true}}
-	admin.snapshot.DegradedCode = eebusruntime.AdminErrorCodeV1PersistenceFailure
-	admin.mu.Unlock()
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, request())
-	if first.Code != http.StatusOK || second.Code != http.StatusOK || first.Body.String() != second.Body.String() {
-		t.Fatalf("candidate-only HA projection changed:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
-	}
-}
-
-func TestIssue809HAStatusIgnoresCandidateOnlyOwnerRevisionChurn(t *testing.T) {
-	trusted := testAdminSnapshot()
-	connected := trusted
-	connected.StateRevision++
-	admin := &adminV1Stub{snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{
-		eebusruntime.AdminViewV1Trusted: trusted, eebusruntime.AdminViewV1Connected: connected,
-	}}
-	handler := newIssue809Server(t, admin)
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
-	request.Header.Set("Authorization", "Bearer "+testHASecret)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("candidate-only revision churn HA status=%d body=%s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "state_conflict") || strings.Contains(response.Body.String(), "state_revision") {
-		t.Fatalf("candidate-only owner revision became an HA side channel: %s", response.Body.String())
-	}
-}
-
-func TestIssue809MutationEmitsSanitizedAuditOutcome(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	var events []AuditEvent
-	handler, err := NewServer(Config{
-		Admin: admin,
-		Audit: func(event AuditEvent) { events = append(events, event) },
-		Auth: AuthConfig{
-			OwnerUsername: "owner", OwnerSecret: []byte(testOwnerSecret), HASecret: []byte(testHASecret),
-			OwnerOrigin: testOwnerOrigin, SessionTTL: 15 * time.Minute,
-			Now: func() time.Time { return time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC) }, Random: rand.Reader,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, csrf := issue809OwnerSession(t, handler)
-	request := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":60,"state_revision":7}`)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("mutation status=%d body=%s", response.Code, response.Body.String())
-	}
-	replay := httptest.NewRecorder()
-	handler.ServeHTTP(replay, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":60,"state_revision":7}`))
-	conflict := httptest.NewRecorder()
-	handler.ServeHTTP(conflict, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-open-1", `{"duration_seconds":120,"state_revision":7}`))
-	rejected := httptest.NewRecorder()
-	handler.ServeHTTP(rejected, issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, csrf, "audit-invalid-1", `{"duration_seconds":0,"state_revision":7}`))
-	if replay.Code != http.StatusOK || conflict.Code != http.StatusConflict || rejected.Code != http.StatusBadRequest {
-		t.Fatalf("terminal statuses replay/conflict/rejected=%d/%d/%d", replay.Code, conflict.Code, rejected.Code)
-	}
-	if len(events) != 4 {
-		t.Fatalf("audit events=%d, want executed/replayed/conflict/rejected", len(events))
-	}
-	encoded, err := json.Marshal(events)
-	if err != nil {
-		t.Fatal(err)
-	}
-	audit := string(encoded)
-	for _, required := range []string{"open_pairing_window", "portal_owner", "executed", "replayed", "conflict", "rejected", "precondition_accepted", "changed"} {
-		if !strings.Contains(audit, required) {
-			t.Errorf("audit missing %q: %s", required, audit)
-		}
-	}
-	for _, forbidden := range []string{"audit-open-1", testOwnerSecret, testHASecret, "expected_ski", "endpoint", "token", "key"} {
-		if strings.Contains(strings.ToLower(audit), strings.ToLower(forbidden)) {
-			t.Errorf("audit leaks %q: %s", forbidden, audit)
-		}
-	}
-	for _, recorder := range []*httptest.ResponseRecorder{conflict, rejected} {
-		var envelope ownerEnvelope
-		if json.Unmarshal(recorder.Body.Bytes(), &envelope) != nil || envelope.RequestID == "" {
-			t.Fatalf("owner terminal error lacks audit request_id: %s", recorder.Body.String())
-		}
-	}
-}
-
-func TestIssue809AuthenticatedPreCaptureMutationRejectionsEmitOneSanitizedAudit(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	var events []AuditEvent
-	handler, err := NewServer(Config{
-		Admin: admin,
-		Audit: func(event AuditEvent) { events = append(events, event) },
-		Auth: AuthConfig{
-			OwnerUsername: "owner", OwnerSecret: []byte(testOwnerSecret), HASecret: []byte(testHASecret),
-			OwnerOrigin: testOwnerOrigin, SessionTTL: 15 * time.Minute,
-			Now: func() time.Time { return time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC) }, Random: rand.Reader,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookie, _ := issue809OwnerSession(t, handler)
-	csrfRejected := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:open", cookie, "wrong-csrf", "sensitive-idempotency-key", `{"duration_seconds":60,"state_revision":7}`)
-	csrfResponse := httptest.NewRecorder()
-	handler.ServeHTTP(csrfResponse, csrfRejected)
-	if csrfResponse.Code != http.StatusForbidden {
-		t.Fatalf("CSRF rejection status=%d body=%s", csrfResponse.Code, csrfResponse.Body.String())
-	}
-
-	haRejected := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", strings.NewReader(`{"duration_seconds":60,"state_revision":7}`))
-	haRejected.Header.Set("Authorization", "Bearer "+testHASecret)
-	haRejected.Header.Set("Content-Type", "application/json")
-	haRejected.Header.Set("Idempotency-Key", "sensitive-idempotency-key")
-	haResponse := httptest.NewRecorder()
-	handler.ServeHTTP(haResponse, haRejected)
-	if haResponse.Code != http.StatusForbidden {
-		t.Fatalf("HA rejection status=%d body=%s", haResponse.Code, haResponse.Body.String())
-	}
-
-	unauthenticated := httptest.NewRequest(http.MethodPost, "/admin/eebus/v1/pairing-window:open", nil)
-	unauthenticatedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(unauthenticatedResponse, unauthenticated)
-	if unauthenticatedResponse.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status=%d body=%s", unauthenticatedResponse.Code, unauthenticatedResponse.Body.String())
-	}
-	if len(events) != 2 {
-		t.Fatalf("audit events=%d, want one for each authenticated pre-capture rejection", len(events))
-	}
-	for _, event := range events {
-		if event.Action != "open_pairing_window" || event.IdempotencyOutcome != "rejected" || event.PriorStateClass != "authenticated" || event.ResultingStateClass != "rejected" || event.RequestID == "" {
-			t.Fatalf("unexpected rejection audit event: %#v", event)
-		}
-	}
-	if events[0].Principal != PrincipalPortalOwner || events[0].Reason != "csrf_rejected" {
-		t.Fatalf("owner CSRF audit=%#v", events[0])
-	}
-	if events[1].Principal != PrincipalHAIntegration || events[1].Reason != "forbidden" {
-		t.Fatalf("HA forbidden audit=%#v", events[1])
-	}
-	encoded, err := json.Marshal(events)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"sensitive-idempotency-key", testOwnerSecret, testHASecret, "endpoint", "expected_ski", "token", "key"} {
-		if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
-			t.Fatalf("audit leaks %q: %s", forbidden, encoded)
-		}
-	}
-}
-
-func TestIssue809UnknownRuntimeErrorIsNotReflected(t *testing.T) {
-	handler, err := NewServer(Config{Admin: &adminV1Stub{snapshot: testAdminSnapshot()}, Auth: issue809AuthConfig()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := httptest.NewRecorder()
-	handler.(*server).writeAdminFailure(response, PrincipalPortalOwner, &eebusruntime.AdminErrorV1{Code: "private/internal/path"})
-	if response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("unknown error status=%d body=%s", response.Code, response.Body.String())
-	}
-	assertIssue809ErrorEnvelope(t, response.Body.String(), "unknown_state")
-	if strings.Contains(response.Body.String(), "private") {
-		t.Fatalf("unknown runtime error reflected: %s", response.Body.String())
-	}
-}
-
-func TestIssue809MutationRejectsOversizedTrailingWhitespaceBeforeRuntime(t *testing.T) {
-	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
-	handler := newIssue809Server(t, admin)
-	cookie, csrf := issue809OwnerSession(t, handler)
-	body := `{"state_revision":7}` + strings.Repeat(" ", maxRequestBodyBytes)
-	request := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/pairing-window:close", cookie, csrf, "oversized", body)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("oversized status=%d body=%s", response.Code, response.Body.String())
-	}
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if len(admin.closeCalls) != 0 {
-		t.Fatalf("oversized request reached runtime %d times", len(admin.closeCalls))
-	}
-}
-
-func TestIssue809OwnerSelectThenConnectUsesOnlyServerHeldCapabilities(t *testing.T) {
+func TestIssue817SelectionAndConnectShareProcessLocalScopeAcrossRequests(t *testing.T) {
 	const ski = "0123456789abcdef0123456789abcdef01234567"
 	snapshot := testAdminSnapshot()
 	snapshot.StateRevision = 11
-	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{
-		SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4,
-		LastSeen: snapshot.CapturedAt, Brand: "Vaillant", Type: "gateway", Model: "VR940",
-	}}
-	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{
-		eebusruntime.AdminViewV1Discovered: snapshot,
-	}}
-	handler := newIssue809Server(t, admin)
-	cookie, csrf := issue809OwnerSession(t, handler)
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	handler := newIssue817Server(t, admin, nil, nil)
 
-	partners := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
-	partners.AddCookie(cookie)
-	partnersResponse := httptest.NewRecorder()
-	handler.ServeHTTP(partnersResponse, partners)
-	if partnersResponse.Code != http.StatusOK {
-		t.Fatalf("partners status=%d body=%s", partnersResponse.Code, partnersResponse.Body.String())
-	}
-	if partnersResponse.Header().Get("Cache-Control") != "private, no-store" {
-		t.Fatalf("partners Cache-Control=%q", partnersResponse.Header().Get("Cache-Control"))
-	}
-	var envelope struct {
-		StateRevision uint64 `json:"state_revision"`
-		Data          struct {
-			Partners []struct {
-				ObservationID string `json:"observation_id"`
-				RemoteSKI     string `json:"remote_ski"`
-			} `json:"partners"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(partnersResponse.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.StateRevision != 11 || len(envelope.Data.Partners) != 1 || envelope.Data.Partners[0].ObservationID == "" || envelope.Data.Partners[0].RemoteSKI != ski {
-		t.Fatalf("discovered envelope=%#v", envelope)
-	}
-	observationID := envelope.Data.Partners[0].ObservationID
+	list := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	observationID := issue817FirstOpaqueID(t, listResponse, "observation_id")
 
-	selectRequest := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", cookie, csrf, "select-1", `{"state_revision":11,"expected_ski":"`+ski+`"}`)
+	selectRequest := issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-817", `{"state_revision":11,"expected_ski":"`+ski+`"}`)
+	issue817AddIrrelevantAuthMaterial(selectRequest)
 	selectResponse := httptest.NewRecorder()
 	handler.ServeHTTP(selectResponse, selectRequest)
 	if selectResponse.Code != http.StatusOK {
 		t.Fatalf("select status=%d body=%s", selectResponse.Code, selectResponse.Body.String())
 	}
-	var selectionEnvelope struct {
-		StateRevision uint64 `json:"state_revision"`
-		Data          struct {
-			SelectionID string `json:"selection_id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(selectResponse.Body.Bytes(), &selectionEnvelope); err != nil {
-		t.Fatal(err)
-	}
-	if selectionEnvelope.StateRevision != 12 || selectionEnvelope.Data.SelectionID == "" {
-		t.Fatalf("selection envelope=%#v", selectionEnvelope)
-	}
+	selectionID := issue817DataString(t, selectResponse, "selection_id")
 
-	connectRequest := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/selections/"+selectionEnvelope.Data.SelectionID+":connect", cookie, csrf, "connect-1", `{"state_revision":12}`)
+	connectRequest := issue817Mutation(http.MethodPost, "/admin/eebus/v1/selections/"+selectionID+":connect", "connect-817", `{"state_revision":12}`)
+	connectRequest.Header.Set("Authorization", "Basic another-client-value")
 	connectResponse := httptest.NewRecorder()
 	handler.ServeHTTP(connectResponse, connectRequest)
 	if connectResponse.Code != http.StatusOK {
@@ -516,321 +208,298 @@ func TestIssue809OwnerSelectThenConnectUsesOnlyServerHeldCapabilities(t *testing
 	admin.mu.Lock()
 	defer admin.mu.Unlock()
 	if len(admin.selectCalls) != 1 || len(admin.connectCalls) != 1 || admin.selectCalls[0].ExpectedSKI != ski {
-		t.Fatalf("select/connect calls=%d/%d", len(admin.selectCalls), len(admin.connectCalls))
+		t.Fatalf("select/connect calls=%#v/%#v", admin.selectCalls, admin.connectCalls)
 	}
 }
 
-func TestIssue809ExactHTTPMutationReplaySurvivesCapabilityInvalidation(t *testing.T) {
+func TestIssue817ClosedMutationMatrixNeedsOnlyRevisionIdempotencyAndTypedArguments(t *testing.T) {
 	const ski = "0123456789abcdef0123456789abcdef01234567"
-	snapshot := testAdminSnapshot()
-	snapshot.StateRevision = 61
-	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 9}}
-	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
-	handler := newIssue809Server(t, admin)
-	cookie, csrf := issue809OwnerSession(t, handler)
-	partners := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
-	partners.AddCookie(cookie)
-	partnersResponse := httptest.NewRecorder()
-	handler.ServeHTTP(partnersResponse, partners)
-	var partnersEnvelope struct {
-		Data struct {
-			Partners []struct {
-				ObservationID string `json:"observation_id"`
-			} `json:"partners"`
-		} `json:"data"`
-	}
-	if partnersResponse.Code != http.StatusOK || json.Unmarshal(partnersResponse.Body.Bytes(), &partnersEnvelope) != nil || len(partnersEnvelope.Data.Partners) != 1 {
-		t.Fatalf("discovered status=%d body=%s", partnersResponse.Code, partnersResponse.Body.String())
-	}
-	target := "/admin/eebus/v1/observations/" + partnersEnvelope.Data.Partners[0].ObservationID + ":select"
-	body := `{"state_revision":61,"expected_ski":"` + ski + `"}`
-	request := func(expectedSKI string) *http.Request {
-		value := issue809OwnerMutation(t, http.MethodPost, target, cookie, csrf, "select-replay-1", body)
-		if expectedSKI != ski {
-			value = issue809OwnerMutation(t, http.MethodPost, target, cookie, csrf, "select-replay-1", `{"state_revision":61,"expected_ski":"`+expectedSKI+`"}`)
+
+	t.Run("open and close", func(t *testing.T) {
+		admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+		handler := newIssue817Server(t, admin, nil, nil)
+		for _, mutation := range []struct{ path, key, body string }{
+			{"/admin/eebus/v1/pairing-window:open", "open-817", `{"duration_seconds":60,"state_revision":7}`},
+			{"/admin/eebus/v1/pairing-window:close", "close-817", `{"state_revision":7}`},
+		} {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, issue817Mutation(http.MethodPost, mutation.path, mutation.key, mutation.body))
+			if response.Code != http.StatusOK {
+				t.Fatalf("POST %s status=%d body=%s", mutation.path, response.Code, response.Body.String())
+			}
+			assertIssue817NoAuthResponseHeaders(t, response)
 		}
-		return value
-	}
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, request(ski))
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, request(ski))
-	if first.Code != http.StatusOK || second.Code != http.StatusOK {
-		t.Fatalf("exact replay status first/second=%d/%d bodies=%s / %s", first.Code, second.Code, first.Body.String(), second.Body.String())
-	}
-	var firstEnvelope, secondEnvelope struct {
-		StateRevision uint64 `json:"state_revision"`
-		Data          struct {
-			SelectionID string `json:"selection_id"`
-			Replayed    bool   `json:"replayed"`
-		} `json:"data"`
-	}
-	if json.Unmarshal(first.Body.Bytes(), &firstEnvelope) != nil || json.Unmarshal(second.Body.Bytes(), &secondEnvelope) != nil ||
-		firstEnvelope.StateRevision != 62 || secondEnvelope.StateRevision != 62 || firstEnvelope.Data.SelectionID == "" ||
-		firstEnvelope.Data.SelectionID != secondEnvelope.Data.SelectionID || !secondEnvelope.Data.Replayed {
-		t.Fatalf("exact replay envelopes first=%#v second=%#v", firstEnvelope, secondEnvelope)
-	}
-	conflict := httptest.NewRecorder()
-	handler.ServeHTTP(conflict, request(strings.Repeat("b", 40)))
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("changed binding replay status=%d body=%s", conflict.Code, conflict.Body.String())
-	}
-	assertIssue809ErrorEnvelope(t, conflict.Body.String(), "idempotency_conflict")
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if len(admin.selectCalls) != 1 {
-		t.Fatalf("HTTP replay executed select %d times, want exactly one", len(admin.selectCalls))
-	}
-}
+		if len(admin.openCalls) != 1 || len(admin.closeCalls) != 1 {
+			t.Fatalf("open/close calls=%d/%d", len(admin.openCalls), len(admin.closeCalls))
+		}
+	})
 
-func TestIssue809CandidateIdentityIsOwnerOnlyNoStoreAndCurrentSessionBound(t *testing.T) {
-	const ski = "fedcba9876543210fedcba9876543210fedcba98"
-	snapshot := testAdminSnapshot()
-	snapshot.StateRevision = 21
-	snapshot.Candidates = []eebusruntime.CandidateV1{{SKI: ski, State: "tls_bound", ExpiresAt: snapshot.CapturedAt.Add(time.Minute), AssociationComplete: true}}
-	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{
-		eebusruntime.AdminViewV1Candidate: snapshot,
-	}}
-	handler := newIssue809Server(t, admin)
-	cookie, csrf := issue809OwnerSession(t, handler)
-
-	candidate := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil)
-	candidate.AddCookie(cookie)
-	candidateResponse := httptest.NewRecorder()
-	handler.ServeHTTP(candidateResponse, candidate)
-	if candidateResponse.Code != http.StatusOK || candidateResponse.Header().Get("Cache-Control") != "private, no-store" {
-		t.Fatalf("candidate status/cache=%d/%q body=%s", candidateResponse.Code, candidateResponse.Header().Get("Cache-Control"), candidateResponse.Body.String())
-	}
-	if !strings.Contains(candidateResponse.Body.String(), ski) || strings.Contains(candidateResponse.Body.String(), "candidate_ref") {
-		t.Fatalf("candidate response disclosure shape=%s", candidateResponse.Body.String())
-	}
-
-	confirm := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/candidate:confirm", cookie, csrf, "confirm-1", `{"state_revision":21,"expected_ski":"`+ski+`"}`)
-	confirmResponse := httptest.NewRecorder()
-	handler.ServeHTTP(confirmResponse, confirm)
-	if confirmResponse.Code != http.StatusOK {
-		t.Fatalf("confirm status=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
-	}
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if len(admin.confirmCalls) != 1 || admin.confirmCalls[0].ExpectedSKI != ski {
-		t.Fatalf("confirm calls=%#v", admin.confirmCalls)
-	}
-}
-
-func TestIssue809OwnerLifecycleMutationsUseOnlyCurrentServerHeldCapabilities(t *testing.T) {
-	const ski = "0123456789abcdef0123456789abcdef01234567"
-	for _, mutation := range []struct {
-		method, target, key string
+	for _, test := range []struct {
+		name, route, key, body string
+		confirm                bool
 	}{
-		{http.MethodPost, ":retry", "retry-1"},
-		{http.MethodDelete, "/trust", "untrust-1"},
+		{"confirm", "/admin/eebus/v1/candidate:confirm", "confirm-817", `{"state_revision":31,"expected_ski":"` + ski + `"}`, true},
+		{"cancel", "/admin/eebus/v1/candidate:cancel", "cancel-817", `{"state_revision":31}`, false},
 	} {
-		t.Run(mutation.key, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			snapshot := testAdminSnapshot()
 			snapshot.StateRevision = 31
-			snapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: ski, SHIPID: "remote-service", TrustState: "durably_trusted", LastSeen: snapshot.CapturedAt}}
-			admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: snapshot}}
-			handler := newIssue809Server(t, admin)
-			cookie, csrf := issue809OwnerSession(t, handler)
-			trusted := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil)
-			trusted.AddCookie(cookie)
-			trustedResponse := httptest.NewRecorder()
-			handler.ServeHTTP(trustedResponse, trusted)
-			var envelope struct {
-				Data struct {
-					Partners []struct {
-						PartnerID string `json:"partner_id"`
-					} `json:"partners"`
-				} `json:"data"`
-			}
-			if trustedResponse.Code != http.StatusOK || json.Unmarshal(trustedResponse.Body.Bytes(), &envelope) != nil || len(envelope.Data.Partners) != 1 || envelope.Data.Partners[0].PartnerID == "" {
-				t.Fatalf("trusted status=%d body=%s", trustedResponse.Code, trustedResponse.Body.String())
-			}
-			target := "/admin/eebus/v1/partners/" + envelope.Data.Partners[0].PartnerID + mutation.target
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, issue809OwnerMutation(t, mutation.method, target, cookie, csrf, mutation.key, `{"state_revision":31}`))
-			if response.Code != http.StatusOK {
-				t.Fatalf("%s %s status=%d body=%s", mutation.method, target, response.Code, response.Body.String())
-			}
-			admin.mu.Lock()
-			defer admin.mu.Unlock()
-			if mutation.key == "retry-1" && len(admin.retryCalls) != 1 {
-				t.Fatalf("retry calls=%d", len(admin.retryCalls))
-			}
-			if mutation.key == "untrust-1" && len(admin.untrustCalls) != 1 {
-				t.Fatalf("untrust calls=%d", len(admin.untrustCalls))
-			}
-		})
-	}
-
-	for _, mutation := range []struct {
-		target, key string
-	}{
-		{"/admin/eebus/v1/candidate:cancel", "cancel-1"},
-		{"/admin/eebus/v1/pairing-window:close", "close-1"},
-	} {
-		t.Run(mutation.key, func(t *testing.T) {
-			snapshot := testAdminSnapshot()
-			snapshot.StateRevision = 31
-			snapshot.Candidates = []eebusruntime.CandidateV1{{SKI: ski, State: "tls_bound", ExpiresAt: snapshot.CapturedAt.Add(time.Minute), AssociationComplete: true}}
+			snapshot.Candidates = []eebusruntime.CandidateV1{{SKI: ski, State: "tls_bound", ExpiresAt: snapshot.CapturedAt.Add(time.Minute)}}
 			admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Candidate: snapshot}}
-			handler := newIssue809Server(t, admin)
-			cookie, csrf := issue809OwnerSession(t, handler)
-			if mutation.key == "cancel-1" {
-				candidate := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil)
-				candidate.AddCookie(cookie)
-				candidateResponse := httptest.NewRecorder()
-				handler.ServeHTTP(candidateResponse, candidate)
-				if candidateResponse.Code != http.StatusOK {
-					t.Fatalf("candidate status=%d body=%s", candidateResponse.Code, candidateResponse.Body.String())
-				}
+			handler := newIssue817Server(t, admin, nil, nil)
+			candidate := httptest.NewRecorder()
+			handler.ServeHTTP(candidate, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil))
+			if candidate.Code != http.StatusOK || !strings.Contains(candidate.Body.String(), ski) {
+				t.Fatalf("candidate status=%d body=%s", candidate.Code, candidate.Body.String())
 			}
 			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, issue809OwnerMutation(t, http.MethodPost, mutation.target, cookie, csrf, mutation.key, `{"state_revision":31}`))
+			handler.ServeHTTP(response, issue817Mutation(http.MethodPost, test.route, test.key, test.body))
 			if response.Code != http.StatusOK {
-				t.Fatalf("POST %s status=%d body=%s", mutation.target, response.Code, response.Body.String())
+				t.Fatalf("%s status=%d body=%s", test.name, response.Code, response.Body.String())
 			}
-			admin.mu.Lock()
-			defer admin.mu.Unlock()
-			if mutation.key == "cancel-1" && len(admin.cancelCalls) != 1 {
-				t.Fatalf("cancel calls=%d", len(admin.cancelCalls))
+			if test.confirm && (len(admin.confirmCalls) != 1 || admin.confirmCalls[0].ExpectedSKI != ski) {
+				t.Fatalf("confirm calls=%#v", admin.confirmCalls)
 			}
-			if mutation.key == "close-1" && len(admin.closeCalls) != 1 {
-				t.Fatalf("close calls=%d", len(admin.closeCalls))
+			if !test.confirm && len(admin.cancelCalls) != 1 {
+				t.Fatalf("cancel calls=%#v", admin.cancelCalls)
+			}
+		})
+	}
+
+	for _, test := range []struct{ name, method, suffix, key string }{
+		{"retry", http.MethodPost, ":retry", "retry-817"},
+		{"untrust", http.MethodDelete, "/trust", "untrust-817"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := testAdminSnapshot()
+			snapshot.StateRevision = 41
+			snapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: ski, TrustState: "durably_trusted"}}
+			admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: snapshot}}
+			handler := newIssue817Server(t, admin, nil, nil)
+			trusted := httptest.NewRecorder()
+			handler.ServeHTTP(trusted, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil))
+			partnerID := issue817FirstOpaqueID(t, trusted, "partner_id")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, issue817Mutation(test.method, "/admin/eebus/v1/partners/"+partnerID+test.suffix, test.key, `{"state_revision":41}`))
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s status=%d body=%s", test.name, response.Code, response.Body.String())
+			}
+			if test.name == "retry" && len(admin.retryCalls) != 1 {
+				t.Fatalf("retry calls=%#v", admin.retryCalls)
+			}
+			if test.name == "untrust" && len(admin.untrustCalls) != 1 {
+				t.Fatalf("untrust calls=%#v", admin.untrustCalls)
 			}
 		})
 	}
 }
 
-func TestIssue809ConnectedBrowseCapabilityCannotAuthorizeTrustMutation(t *testing.T) {
+func TestIssue817SuccessfulLostResponseReplaysLogicalResultAndOpaqueHandle(t *testing.T) {
 	const ski = "0123456789abcdef0123456789abcdef01234567"
 	snapshot := testAdminSnapshot()
 	snapshot.StateRevision = 51
-	snapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: ski, TrustState: "durably_trusted", ConnectionState: "connected", Endpoint: "192.0.2.20:4712"}}
-	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: snapshot}}
-	handler := newIssue809Server(t, admin)
-	cookie, csrf := issue809OwnerSession(t, handler)
-	connected := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=connected", nil)
-	connected.AddCookie(cookie)
-	connectedResponse := httptest.NewRecorder()
-	handler.ServeHTTP(connectedResponse, connected)
-	var envelope struct {
-		Data struct {
-			Partners []struct {
-				PartnerID string `json:"partner_id"`
-			} `json:"partners"`
-		} `json:"data"`
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.51:4712", ObservationRevision: 9}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	handler := newIssue817Server(t, admin, nil, nil)
+	list := httptest.NewRecorder()
+	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	observationID := issue817FirstOpaqueID(t, list, "observation_id")
+	route := "/admin/eebus/v1/observations/" + observationID + ":select"
+	body := `{"state_revision":51,"expected_ski":"` + ski + `"}`
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, issue817Mutation(http.MethodPost, route, "lost-response-817", body))
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, issue817Mutation(http.MethodPost, route, "lost-response-817", body))
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, issue817Mutation(http.MethodPost, route, "lost-response-817", `{"state_revision":51,"expected_ski":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+
+	firstResult := issue817MutationResult(t, first)
+	secondResult := issue817MutationResult(t, second)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK || conflict.Code != http.StatusConflict {
+		t.Fatalf("replay statuses/bodies=%d/%d/%d\n%s\n%s\n%s", first.Code, second.Code, conflict.Code, first.Body.String(), second.Body.String(), conflict.Body.String())
 	}
-	if connectedResponse.Code != http.StatusOK || json.Unmarshal(connectedResponse.Body.Bytes(), &envelope) != nil || len(envelope.Data.Partners) != 1 {
-		t.Fatalf("connected status=%d body=%s", connectedResponse.Code, connectedResponse.Body.String())
+	if firstResult.Replayed || !secondResult.Replayed || firstResult.StateRevision != secondResult.StateRevision || firstResult.Outcome != secondResult.Outcome || firstResult.SelectionID == "" || firstResult.SelectionID != secondResult.SelectionID {
+		t.Fatalf("lost-response replay changed logical result or handle: first=%#v second=%#v", firstResult, secondResult)
 	}
-	mutation := issue809OwnerMutation(t, http.MethodPost, "/admin/eebus/v1/partners/"+envelope.Data.Partners[0].PartnerID+":retry", cookie, csrf, "connected-cannot-retry", `{"state_revision":51}`)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, mutation)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("connected capability retry status=%d body=%s", response.Code, response.Body.String())
-	}
-	admin.mu.Lock()
-	defer admin.mu.Unlock()
-	if len(admin.retryCalls) != 0 {
-		t.Fatalf("connected browse capability reached retry runtime %d times", len(admin.retryCalls))
+	assertIssue817ErrorEnvelope(t, conflict.Body.String(), "idempotency_conflict")
+	if len(admin.selectCalls) != 1 {
+		t.Fatalf("lost-response retry invoked runtime %d times", len(admin.selectCalls))
 	}
 }
 
-func TestIssue809MultipleCurrentCandidatesFailClosedWithoutPartialRows(t *testing.T) {
-	snapshot := testAdminSnapshot()
-	snapshot.Candidates = []eebusruntime.CandidateV1{
-		{SKI: strings.Repeat("a", 40), State: "tls_bound"},
-		{SKI: strings.Repeat("b", 40), State: "tls_bound"},
+func TestIssue817UnseenStaleRevisionDoesNotReserveHTTPReplayKey(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot(), openRevision: 8}
+	handler := newIssue817Server(t, admin, nil, nil)
+	const route = "/admin/eebus/v1/pairing-window:open"
+	const key = "stale-then-current-817"
+
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":7}`))
+	assertIssue817ErrorEnvelope(t, stale.Body.String(), "state_conflict")
+	current := httptest.NewRecorder()
+	handler.ServeHTTP(current, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":8}`))
+	retry := httptest.NewRecorder()
+	handler.ServeHTTP(retry, issue817Mutation(http.MethodPost, route, key, `{"duration_seconds":60,"state_revision":8}`))
+
+	currentResult := issue817MutationResult(t, current)
+	retryResult := issue817MutationResult(t, retry)
+	if stale.Code != http.StatusConflict || current.Code != http.StatusOK || retry.Code != http.StatusOK {
+		t.Fatalf("stale/current/retry statuses=%d/%d/%d\n%s\n%s\n%s", stale.Code, current.Code, retry.Code, stale.Body.String(), current.Body.String(), retry.Body.String())
 	}
-	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Candidate: snapshot}}
-	handler := newIssue809Server(t, admin)
-	cookie, _ := issue809OwnerSession(t, handler)
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil)
-	request.AddCookie(cookie)
+	if currentResult.Replayed || !retryResult.Replayed || currentResult.StateRevision != 9 || retryResult.StateRevision != currentResult.StateRevision || retryResult.Outcome != currentResult.Outcome {
+		t.Fatalf("current terminal result was not replayed exactly: current=%#v retry=%#v", currentResult, retryResult)
+	}
+	if len(admin.openCalls) != 2 {
+		t.Fatalf("stale/current/retry invoked runtime %d times, want 2", len(admin.openCalls))
+	}
+}
+
+type issue817MutationResultEnvelope struct {
+	StateRevision uint64 `json:"state_revision"`
+	Data          struct {
+		Outcome     string `json:"outcome"`
+		Replayed    bool   `json:"replayed"`
+		SelectionID string `json:"selection_id"`
+	} `json:"data"`
+}
+
+func issue817MutationResult(t *testing.T, response *httptest.ResponseRecorder) struct {
+	StateRevision uint64
+	Outcome       string
+	Replayed      bool
+	SelectionID   string
+} {
+	t.Helper()
+	var envelope issue817MutationResultEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode mutation result: %v body=%s", err, response.Body.String())
+	}
+	return struct {
+		StateRevision uint64
+		Outcome       string
+		Replayed      bool
+		SelectionID   string
+	}{envelope.StateRevision, envelope.Data.Outcome, envelope.Data.Replayed, envelope.Data.SelectionID}
+}
+
+func TestIssue817AuditUsesOneOperatorClassificationAndExcludesRequestSecrets(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+	var events []AuditEvent
+	handler := newIssue817Server(t, admin, nil, func(event AuditEvent) { events = append(events, event) })
+	request := issue817Mutation(http.MethodPost, "/admin/eebus/v1/pairing-window:open", "audit-key-817", `{"duration_seconds":60,"state_revision":7}`)
+	issue817AddIrrelevantAuthMaterial(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), strings.Repeat("a", 40)) || strings.Contains(response.Body.String(), strings.Repeat("b", 40)) {
-		t.Fatalf("multiple-candidate response status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || len(events) != 1 {
+		t.Fatalf("audit mutation status/events=%d/%d body=%s", response.Code, len(events), response.Body.String())
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := string(encoded)
+	for _, forbidden := range []string{"portal_owner", "ha_integration", "audit-key-817", "irrelevant-secret", "csrf", "cookie"} {
+		if strings.Contains(strings.ToLower(audit), strings.ToLower(forbidden)) {
+			t.Fatalf("audit retains split identity or request secret %q: %s", forbidden, audit)
+		}
 	}
 }
 
-func newIssue809Server(t *testing.T, admin eebusruntime.AdminV1) http.Handler {
+func newIssue817Server(t *testing.T, admin eebusruntime.AdminV1, raw RawSnapshotProvider, audit func(AuditEvent)) http.Handler {
 	t.Helper()
-	handler, err := NewServer(Config{
-		Admin: admin,
-		Auth: AuthConfig{
-			OwnerUsername: "owner",
-			OwnerSecret:   []byte(testOwnerSecret),
-			HASecret:      []byte(testHASecret),
-			OwnerOrigin:   testOwnerOrigin,
-			SessionTTL:    15 * time.Minute,
-			Now:           func() time.Time { return time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC) },
-			Random:        rand.Reader,
-		},
-	})
+	handler, err := NewServer(Config{Admin: admin, Raw: raw, Audit: audit})
 	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+		t.Fatalf("credential-free NewServer: %v", err)
 	}
 	return handler
 }
 
-func issue809OwnerSession(t *testing.T, handler http.Handler) (*http.Cookie, string) {
-	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
-	request.SetBasicAuth("owner", testOwnerSecret)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || len(response.Result().Cookies()) != 1 || response.Header().Get("X-CSRF-Token") == "" {
-		t.Fatalf("owner session status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
-	}
-	return response.Result().Cookies()[0], response.Header().Get("X-CSRF-Token")
-}
-
-func issue809OwnerMutation(t *testing.T, method, path string, cookie *http.Cookie, csrf, idempotencyKey, body string) *http.Request {
-	t.Helper()
+func issue817Mutation(method, path, idempotencyKey, body string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
-	request.AddCookie(cookie)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", idempotencyKey)
-	request.Header.Set("Origin", testOwnerOrigin)
-	request.Header.Set("Referer", testOwnerOrigin+"/portal/eebus")
-	request.Header.Set("X-CSRF-Token", csrf)
 	return request
+}
+
+func issue817AddIrrelevantAuthMaterial(request *http.Request) {
+	request.Header.Set("Authorization", "Bearer irrelevant-secret")
+	request.Header.Set("Origin", "https://irrelevant.invalid")
+	request.Header.Set("Referer", "https://irrelevant.invalid/portal")
+	request.Header.Set("X-CSRF-Token", "irrelevant-csrf")
+	request.AddCookie(&http.Cookie{Name: "irrelevant", Value: "irrelevant-cookie"})
+}
+
+func assertIssue817NoAuthResponseHeaders(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	if response.Header().Get("Set-Cookie") != "" || response.Header().Get("X-CSRF-Token") != "" {
+		t.Fatalf("eeBUS operator response emitted auth/session headers: %v", response.Header())
+	}
+}
+
+func assertIssue817OperatorEnvelope(t *testing.T, response *httptest.ResponseRecorder, revision uint64) {
+	t.Helper()
+	var envelope map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v body=%s", err, response.Body.String())
+	}
+	if envelope["contract"] != ContractV1 || envelope["state_revision"] != float64(revision) || envelope["request_id"] == "" || envelope["error"] != nil {
+		t.Fatalf("operator envelope=%#v", envelope)
+	}
+}
+
+func issue817FirstOpaqueID(t *testing.T, response *httptest.ResponseRecorder, field string) string {
+	t.Helper()
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Partners []map[string]any `json:"partners"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope.Data.Partners) != 1 {
+		t.Fatalf("decode partners: %v body=%s", err, response.Body.String())
+	}
+	value, _ := envelope.Data.Partners[0][field].(string)
+	if value == "" {
+		t.Fatalf("partner row lacks %s: %s", field, response.Body.String())
+	}
+	return value
+}
+
+func issue817DataString(t *testing.T, response *httptest.ResponseRecorder, field string) string {
+	t.Helper()
+	var envelope struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	value, _ := envelope.Data[field].(string)
+	if value == "" {
+		t.Fatalf("response lacks data.%s: %s", field, response.Body.String())
+	}
+	return value
 }
 
 func testAdminSnapshot() eebusruntime.AdminSnapshotV1 {
 	return eebusruntime.AdminSnapshotV1{
-		StateRevision:   7,
-		CapturedAt:      time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC),
-		Status:          "ready",
-		Window:          "open",
-		WindowDeadline:  time.Date(2026, 8, 14, 8, 5, 0, 0, time.UTC),
-		Register:        "true",
-		Listener:        "ready",
-		Discovery:       "ready",
-		TrustedCount:    1,
-		ConnectedCount:  1,
-		DiscoveredCount: 1,
-		CandidateCount:  1,
+		StateRevision: 7, CapturedAt: time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC),
+		Status: "ready", Window: "open", WindowDeadline: time.Date(2026, 8, 14, 8, 5, 0, 0, time.UTC),
+		Register: "true", Listener: "ready", Discovery: "ready",
+		TrustedCount: 1, ConnectedCount: 1, DiscoveredCount: 1, CandidateCount: 1,
 	}
 }
 
-func assertIssue809ErrorEnvelope(t *testing.T, body string, code string) {
+func assertIssue817ErrorEnvelope(t *testing.T, body, code string) {
 	t.Helper()
 	var envelope map[string]any
 	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
 		t.Fatalf("decode error envelope: %v body=%q", err, body)
 	}
-	if envelope["contract"] != "helianthus.eebus.operator-admin.v1" {
-		t.Fatalf("contract=%v", envelope["contract"])
-	}
 	errorObject, ok := envelope["error"].(map[string]any)
-	if !ok || errorObject["code"] != code {
-		t.Fatalf("error=%#v, want code %q", envelope["error"], code)
-	}
-	if data, exists := envelope["data"]; exists && data != nil {
-		t.Fatalf("error response contains data: %#v", data)
+	if envelope["contract"] != ContractV1 || !ok || errorObject["code"] != code {
+		t.Fatalf("error envelope=%#v, want %q", envelope, code)
 	}
 }

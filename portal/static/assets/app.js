@@ -2255,13 +2255,6 @@ class PortalShell extends HTMLElement {
       const element = this.querySelector(`[data-role="${role}"]`);
       if (element) element.addEventListener("click", action);
     };
-    onClick("eebus-login", () => {
-      const username = this.querySelector('[data-role="eebus-owner-username"]');
-      const password = this.querySelector('[data-role="eebus-owner-password"]');
-      const value = password?.value || "";
-      if (password) password.value = "";
-      void this.loginEEBusAdmin(username?.value || "", value).catch((error) => this.showEEBusError(error));
-    });
     onClick("eebus-refresh-status", () => void this.refreshEEBusStatus().catch((error) => this.showEEBusError(error)));
 	 onClick("eebus-retry-pending", () => void this.refreshAndRetryPendingEEBusMutation().catch((error) => this.showEEBusError(error)));
     onClick("eebus-refresh-partners", () => {
@@ -2322,7 +2315,7 @@ class PortalShell extends HTMLElement {
 	}
     const method = options.method || "GET";
     const headers = { Accept: "application/json", ...(options.headers || {}) };
-    const init = { method, credentials: "same-origin", headers };
+    const init = { method, headers };
     if (options.serializedBody !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = options.serializedBody;
@@ -2331,17 +2324,9 @@ class PortalShell extends HTMLElement {
       init.body = JSON.stringify(options.body);
     }
     if (method !== "GET" && method !== "HEAD") {
-      if (!this._eebusCSRFToken) {
-		const error = new Error("owner session is not authenticated");
-		error.eebusTerminal = true;
-		throw error;
-	  }
-      headers["X-CSRF-Token"] = this._eebusCSRFToken;
       headers["Idempotency-Key"] = options.idempotencyKey || crypto.randomUUID();
     }
     const response = await fetch(`${this._eebusAdminPath}${path}`, init);
-    const csrf = response.headers?.get?.("X-CSRF-Token");
-    if (csrf) this._eebusCSRFToken = csrf;
     const payload = await response.json();
     this.clearEEBusCandidate();
     if (!response.ok || payload?.error) {
@@ -2352,19 +2337,6 @@ class PortalShell extends HTMLElement {
     if (Number.isSafeInteger(payload?.state_revision) && payload.state_revision > 0) {
       this._eebusStateRevision = payload.state_revision;
     }
-    return payload;
-  }
-
-  async loginEEBusAdmin(username, password) {
-    if (!username || !password) throw new Error("owner credentials are required");
-    let authorization;
-    try {
-      authorization = `Basic ${btoa(`${username}:${password}`)}`;
-    } finally {
-      password = "";
-    }
-    const payload = await this.eebusAdminFetch("/status", { headers: { Authorization: authorization } });
-    this.applyEEBusStatus(payload);
     return payload;
   }
 
@@ -2943,14 +2915,11 @@ class PortalShell extends HTMLElement {
             </section>
 			<section id="section-eebus" class="registry-preview">
 			  <h2>eeBUS SHIP / SPINE</h2>
-			  <p class="muted-inline">Authenticated owner workbench. Candidate identity stays only in this active view.</p>
-			  <div class="snapshot-controls eebus-login">
-			    <input class="search timeline-filter" data-role="eebus-owner-username" autocomplete="username" placeholder="Owner username" />
-			    <input class="search timeline-filter" data-role="eebus-owner-password" type="password" autocomplete="current-password" placeholder="Owner credential" />
-			    <button class="button" data-role="eebus-login" type="button">Authenticate</button>
+			  <p class="muted-inline">Host operator workbench. Candidate identity stays only in this active view.</p>
+			  <div class="snapshot-controls">
 			    <button class="button" data-role="eebus-refresh-status" type="button">Refresh status</button>
 			  </div>
-			  <div class="bus-banner bus-state-unavailable" data-role="eebus-status">Owner authentication required.</div>
+			  <div class="bus-banner bus-state-unavailable" data-role="eebus-status">Loading eeBUS operator status.</div>
 			  <div class="snapshot-controls">
 			    <button class="button" data-role="eebus-window-open" type="button">Open pairing window</button>
 			    <button class="button" data-role="eebus-window-close" type="button">Close pairing window</button>

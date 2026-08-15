@@ -424,7 +424,6 @@ body {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-.eebus-login,
 .eebus-partner .snapshot-controls {
   align-items: center;
 }

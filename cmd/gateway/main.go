@@ -211,7 +211,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 	}
 
-	eebusAdapter, eebusAdmin, eebusAdminAuthConfig, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
+	eebusAdapter, eebusAdmin, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("eeBUS sidecar: %w", err)
 	}
@@ -224,16 +224,15 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	}
 	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
 	if eebusAdminAvailable {
-		var authErr error
-		availableHandler, authErr := eebusadmin.NewServer(eebusadmin.Config{
-			Admin: eebusAdmin, Raw: eebusAdapter, Auth: eebusAdminAuthConfig,
+		availableHandler, boundaryErr := eebusadmin.NewServer(eebusadmin.Config{
+			Admin: eebusAdmin, Raw: eebusAdapter,
 			Audit: func(event eebusadmin.AuditEvent) {
-				log.Printf("eebus_admin_audit action=%s principal=%s request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
-					event.Action, event.Principal, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
+				log.Printf("eebus_admin_audit action=%s scope=host_operator request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
+					event.Action, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
 					event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
 			},
 		})
-		if authErr != nil {
+		if boundaryErr != nil {
 			log.Printf("eeBUS admin boundary unavailable reason=http_boundary")
 			eebusAdminAvailable = false
 		} else {
@@ -1359,7 +1358,6 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
-	bindEEBusAdminFlags(fs, cfg)
 	fs.BoolVar(
 		&cfg.EvidenceOneShotEnabled,
 		"synchronized-evidence-one-shot-enabled",

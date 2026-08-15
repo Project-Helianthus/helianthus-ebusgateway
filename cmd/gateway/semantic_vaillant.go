@@ -190,6 +190,7 @@ const (
 	semanticStartupSlotFastMaxInstance = byte(0x02)
 	semanticStartupSlotFullMaxInstance = byte(0x0A)
 	semanticStartupCriticalDHWAttempts = 3
+	semanticIdentityRecoveryTimeout    = 35 * time.Second
 	semanticCircuitFullScanInterval    = 30 * time.Minute
 	semanticCircuitPartialScanInterval = 5 * time.Minute
 )
@@ -1787,6 +1788,35 @@ func (p *vaillantSemanticPoller) refreshSystemStartup(ctx context.Context) {
 	}
 }
 
+func (p *vaillantSemanticPoller) refreshFM5ConfigurationForLateIdentity(ctx context.Context) {
+	if p == nil {
+		return
+	}
+
+	p.mu.Lock()
+	controller := p.controller
+	p.mu.Unlock()
+	snapshot := &vaillantSystemSnapshot{Controller: controller}
+	configurationAcquired := false
+	if raw, ok := p.readB524Uint16Startup(ctx, localRegulator.opcode, localRegulator.group, regulatorInstance, system_module_configuration_vr71); ok && raw != nil {
+		snapshot.ModuleConfigurationVR71 = cloneUint16Ptr(raw)
+		configurationAcquired = true
+	}
+
+	p.mu.Lock()
+	source := semanticSnapshotSourceCache
+	p.updateFM5ConfigurationAcquisitionLocked(configurationAcquired)
+	if configurationAcquired {
+		p.updateSystemSnapshotLocked(mergeSystemSnapshotNonDestructive(p.system, snapshot))
+		source = semanticSnapshotSourceLive
+	}
+	hasSnapshot := p.system != nil
+	p.mu.Unlock()
+	if hasSnapshot {
+		p.publishSystem(source)
+	}
+}
+
 func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context) {
 	if p == nil {
 		return
@@ -1794,49 +1824,20 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 
 	discovered := p.registryRadioDeviceSeeds()
 	fullScanGroups := startupRadioFullScanGroups(discovered)
-	fm5NamespaceComplete := fullScanGroups[remoteFunctionalModules.group]
+	fm5PositiveObserved := false
 	verified := make(map[radioDeviceKey]bool)
 	readAny := false
 	probeSlot := func(grp b524GroupDef, instance byte) {
 		connectedRaw, ok := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_connected)
 		if !ok || len(connectedRaw) == 0 {
-			if grp.group == remoteFunctionalModules.group {
-				fm5NamespaceComplete = false
-			}
 			return
 		}
 		readAny = true
 		connected := connectedRaw[0] == 1
-		var classAddress *uint8
-		var firmware *string
-		var hardware *uint16
-		if grp.group == remoteFunctionalModules.group {
-			classRaw, classOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
-			firmwareRaw, firmwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_firmware)
-			hardwareRaw, hardwareOK := p.readB524Startup(ctx, grp.opcode, grp.group, instance, device_slot_hardware_identifier)
-			tuple := decodeFunctionalModuleIdentityTuple(
-				connectedRaw, true,
-				classRaw, classOK,
-				firmwareRaw, firmwareOK,
-				hardwareRaw, hardwareOK,
-			)
-			if !tuple.complete {
-				fm5NamespaceComplete = false
-			}
-			connected = tuple.connected
-			classAddress = tuple.classAddress
-			firmware = tuple.firmware
-			hardware = tuple.hardware
-		} else {
-			classAddress = p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
-		}
+		classAddress := p.readB524U8Startup(ctx, grp.opcode, grp.group, instance, device_slot_class_address)
 		key := radioDeviceKey{Group: grp.group, Instance: instance}
 		verified[key] = true
 		include, slotMode := startupRadioDeviceInclude(grp.group, connected, classAddress)
-		if grp.group == remoteFunctionalModules.group && !include && hasRemoteIdentityEvidence(classAddress, firmware, hardware) {
-			include = true
-			slotMode = "inventory"
-		}
 		if !include {
 			delete(discovered, key)
 			return
@@ -1848,18 +1849,41 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 			DeviceConnected:    &connected,
 			DeviceClassAddress: cloneUint8Ptr(classAddress),
 			DeviceModel:        decodeRadioDeviceModel(classAddress),
-			FirmwareVersion:    cloneStringPtr(firmware),
-			HardwareIdentifier: cloneUint16Ptr(hardware),
 		}
 	}
 
 	for _, grp := range remoteDeviceGroups {
+		if grp.group == remoteFunctionalModules.group {
+			continue
+		}
 		for instance := byte(0x00); instance <= semanticStartupSlotFastMaxInstance; instance++ {
 			probeSlot(grp, instance)
 		}
 	}
-	for _, grp := range remoteDeviceGroups {
-		if fullScanGroups[grp.group] {
+	fm5LastInstance := semanticStartupSlotFastMaxInstance
+	if fullScanGroups[remoteFunctionalModules.group] {
+		fm5LastInstance = semanticStartupSlotFullMaxInstance
+	}
+	fm5Scan := p.scanFunctionalModuleIdentityBudgetAwareWith(ctx, 0x00, fm5LastInstance, p.readB524Startup)
+	if fm5Scan.observedAny {
+		readAny = true
+	}
+	for instance := byte(0x00); instance <= fm5LastInstance; instance++ {
+		key := radioDeviceKey{Group: remoteFunctionalModules.group, Instance: instance}
+		verified[key] = true
+		if snapshot := fm5Scan.snapshots[instance]; snapshot != nil {
+			discovered[key] = snapshot
+		} else {
+			delete(discovered, key)
+		}
+	}
+	fm5PositiveObserved = fm5Scan.positiveSnapshot != nil
+	fm5NamespaceComplete := fullScanGroups[remoteFunctionalModules.group] && fm5Scan.namespaceComplete
+	if !fm5PositiveObserved {
+		for _, grp := range remoteDeviceGroups {
+			if grp.group == remoteFunctionalModules.group || !fullScanGroups[grp.group] {
+				continue
+			}
 			for instance := semanticStartupSlotFastMaxInstance + 1; instance <= semanticStartupSlotFullMaxInstance; instance++ {
 				probeSlot(grp, instance)
 			}
@@ -1868,6 +1892,9 @@ func (p *vaillantSemanticPoller) refreshRadioDevicesStartup(ctx context.Context)
 	if readAny {
 		for key, snapshot := range discovered {
 			if snapshot != nil && snapshot.SlotMode == "registry" && !verified[key] {
+				if fm5PositiveObserved && key.Group != remoteFunctionalModules.group {
+					continue
+				}
 				delete(discovered, key)
 			}
 		}
@@ -5273,21 +5300,147 @@ func (p *vaillantSemanticPoller) discoverDeviceSlotsWithFM5Completeness(ctx cont
 }
 
 func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshot(ctx context.Context, instance byte) (*vaillantRadioDeviceSnapshot, bool, bool) {
-	connectedRaw, connectedOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_connected)
+	return p.readFunctionalModuleIdentitySnapshotWith(ctx, instance, p.readB524Value)
+}
+
+type functionalModuleIdentityReadFunc func(context.Context, byte, byte, byte, uint16) ([]byte, bool)
+
+type functionalModuleIdentityProbe struct {
+	instance     byte
+	connectedRaw []byte
+	connectedOK  bool
+	classRaw     []byte
+	classOK      bool
+	completed    bool
+}
+
+type functionalModuleIdentityScanResult struct {
+	snapshots         map[byte]*vaillantRadioDeviceSnapshot
+	observedAny       bool
+	namespaceComplete bool
+	positiveInstance  byte
+	positiveSnapshot  *vaillantRadioDeviceSnapshot
+}
+
+func (p *vaillantSemanticPoller) scanFunctionalModuleIdentityBudgetAwareWith(
+	ctx context.Context,
+	firstInstance byte,
+	lastInstance byte,
+	read functionalModuleIdentityReadFunc,
+) functionalModuleIdentityScanResult {
+	result := functionalModuleIdentityScanResult{
+		snapshots:         make(map[byte]*vaillantRadioDeviceSnapshot),
+		namespaceComplete: true,
+	}
+	if lastInstance < firstInstance {
+		result.namespaceComplete = false
+		return result
+	}
+	probes := make([]functionalModuleIdentityProbe, 0, int(lastInstance-firstInstance)+1)
+	preflight := func(first byte, last byte) {
+		for instance := first; instance <= last; instance++ {
+			connectedRaw, connectedOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_connected)
+			classRaw, classOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
+			if connectedOK && len(connectedRaw) > 0 {
+				result.observedAny = true
+			}
+			probes = append(probes, functionalModuleIdentityProbe{
+				instance:     instance,
+				connectedRaw: connectedRaw,
+				connectedOK:  connectedOK,
+				classRaw:     classRaw,
+				classOK:      classOK,
+			})
+		}
+	}
+
+	completeProbe := func(probe *functionalModuleIdentityProbe) functionalModuleIdentityTuple {
+		firmwareRaw, firmwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, probe.instance, device_slot_firmware)
+		hardwareRaw, hardwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, probe.instance, device_slot_hardware_identifier)
+		probe.completed = true
+		tuple := decodeFunctionalModuleIdentityTuple(
+			probe.connectedRaw, probe.connectedOK,
+			probe.classRaw, probe.classOK,
+			firmwareRaw, firmwareOK,
+			hardwareRaw, hardwareOK,
+		)
+		if !tuple.complete {
+			result.namespaceComplete = false
+		}
+		if snapshot := functionalModuleIdentitySnapshot(probe.instance, tuple); snapshot != nil {
+			result.snapshots[probe.instance] = snapshot
+		}
+		return tuple
+	}
+
+	completeCandidates := func(firstProbe int) bool {
+		for i := firstProbe; i < len(probes); i++ {
+			probe := &probes[i]
+			if !probe.classOK || len(probe.classRaw) == 0 || probe.classRaw[0] != circuitManagingDeviceVR71Address {
+				continue
+			}
+			tuple := completeProbe(probe)
+			if completeVR71IdentityTuple(tuple) {
+				result.namespaceComplete = false
+				result.positiveInstance = probe.instance
+				result.positiveSnapshot = result.snapshots[probe.instance]
+				return true
+			}
+		}
+		return false
+	}
+
+	fastLast := lastInstance
+	if fastLast > semanticStartupSlotFastMaxInstance {
+		fastLast = semanticStartupSlotFastMaxInstance
+	}
+	preflight(firstInstance, fastLast)
+	if completeCandidates(0) {
+		return result
+	}
+	if fastLast < lastInstance {
+		firstTailProbe := len(probes)
+		preflight(fastLast+1, lastInstance)
+		if completeCandidates(firstTailProbe) {
+			return result
+		}
+	}
+
+	for i := range probes {
+		if !probes[i].completed {
+			completeProbe(&probes[i])
+		}
+	}
+	return result
+}
+
+func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshotWith(
+	ctx context.Context,
+	instance byte,
+	read functionalModuleIdentityReadFunc,
+) (*vaillantRadioDeviceSnapshot, bool, bool) {
+	connectedRaw, connectedOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_connected)
 	if !connectedOK || len(connectedRaw) == 0 {
 		return nil, false, false
 	}
-	classRaw, classOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
-	firmwareRaw, firmwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_firmware)
-	hardwareRaw, hardwareOK := p.readB524Value(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_hardware_identifier)
+	classRaw, classOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_class_address)
+	firmwareRaw, firmwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_firmware)
+	hardwareRaw, hardwareOK := read(ctx, vaillantB524OpcodeRead, remoteFunctionalModules.group, instance, device_slot_hardware_identifier)
 	tuple := decodeFunctionalModuleIdentityTuple(
 		connectedRaw, connectedOK,
 		classRaw, classOK,
 		firmwareRaw, firmwareOK,
 		hardwareRaw, hardwareOK,
 	)
+	return functionalModuleIdentitySnapshot(instance, tuple), true, tuple.complete
+}
+
+func functionalModuleIdentitySnapshot(instance byte, tuple functionalModuleIdentityTuple) *vaillantRadioDeviceSnapshot {
+	if tuple.classAddress != nil && *tuple.classAddress != circuitManagingDeviceVR71Address {
+		return nil
+	}
 	if !tuple.connected && !hasRemoteIdentityEvidence(tuple.classAddress, tuple.firmware, tuple.hardware) {
-		return nil, true, tuple.complete
+		return nil
 	}
 	slotMode := "active"
 	if !tuple.connected {
@@ -5302,7 +5455,40 @@ func (p *vaillantSemanticPoller) readFunctionalModuleIdentitySnapshot(ctx contex
 		DeviceModel:        decodeRadioDeviceModel(tuple.classAddress),
 		FirmwareVersion:    cloneStringPtr(tuple.firmware),
 		HardwareIdentifier: cloneUint16Ptr(tuple.hardware),
-	}, true, tuple.complete
+	}
+}
+
+func (p *vaillantSemanticPoller) refreshFM5AfterLateIdentity(ctx context.Context) {
+	if p == nil {
+		return
+	}
+	scan := p.scanFunctionalModuleIdentityBudgetAwareWith(ctx, 0x00, semanticStartupSlotFullMaxInstance, p.readB524Startup)
+	if scan.positiveSnapshot == nil {
+		return
+	}
+	instance := scan.positiveInstance
+	snapshot := scan.positiveSnapshot
+
+	deviceKey := deviceSlotKey{Group: remoteFunctionalModules.group, Instance: instance}
+	radioKey := radioDeviceKey{Group: remoteFunctionalModules.group, Instance: instance}
+	p.mu.Lock()
+	if p.deviceSlotCache == nil {
+		p.deviceSlotCache = make(map[deviceSlotKey]bool)
+	}
+	if p.radioDevices == nil {
+		p.radioDevices = make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot)
+	}
+	p.deviceSlotCache[deviceKey] = true
+	p.radioDevices[radioKey] = snapshot
+	p.fm5EvidenceGeneration++
+	p.fm5IdentityScanComplete = false
+	p.fm5IdentityIncoherent = false
+	p.fm5RegistryEvidenceIgnored = false
+	p.fm5IdentityObservedAt = p.now()
+	p.mu.Unlock()
+
+	p.publishRadioDevices(semanticSnapshotSourceLive)
+	p.refreshFM5Semantic(ctx)
 }
 
 type functionalModuleIdentityTuple struct {
@@ -5311,6 +5497,10 @@ type functionalModuleIdentityTuple struct {
 	firmware     *string
 	hardware     *uint16
 	complete     bool
+}
+
+func completeVR71IdentityTuple(tuple functionalModuleIdentityTuple) bool {
+	return tuple.complete && tuple.classAddress != nil && *tuple.classAddress == circuitManagingDeviceVR71Address
 }
 
 func decodeFunctionalModuleIdentityTuple(
@@ -9135,12 +9325,18 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		_, err := registry.ScanDirected(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
+		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
 		if err != nil {
 			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", probeAddr, err)
 			return
 		}
 		log.Printf("semantic_address_identity_probe address=0x%02X status=ok", probeAddr)
+		if probeAddr == circuitManagingDeviceVR71Address {
+			recoveryCtx, recoveryCancel := context.WithTimeout(ctx, semanticIdentityRecoveryTimeout)
+			defer recoveryCancel()
+			p.refreshFM5ConfigurationForLateIdentity(recoveryCtx)
+			p.refreshFM5AfterLateIdentity(recoveryCtx)
+		}
 	}
 	if scheduler == nil {
 		// No scheduler wired (unit tests, etc.) — run inline.

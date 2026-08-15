@@ -1564,6 +1564,198 @@ func TestEnqueueAddressIdentityProbe_LateFM5SuccessTriggersBoundedSemanticReacqu
 	}
 }
 
+func newFM5DeadlineRecoveryTestPoller(tasks *semanticTaskScheduler) (*vaillantSemanticPoller, *graphql.LiveSemanticProvider) {
+	now := time.Date(2026, 8, 15, 21, 0, 0, 0, time.UTC)
+	provider := graphql.NewLiveSemanticProvider()
+	return &vaillantSemanticPoller{
+		scheduler:                ebusgateway.NewSemanticReadScheduler(),
+		tasks:                    tasks,
+		reg:                      registry.NewDeviceRegistry(nil),
+		bus:                      &protocol.Bus{},
+		provider:                 provider,
+		source:                   0x7F,
+		controller:               0x15,
+		requestTimeout:           50 * time.Millisecond,
+		system:                   &vaillantSystemSnapshot{Controller: 0x15},
+		radioDevices:             make(map[radioDeviceKey]*vaillantRadioDeviceSnapshot),
+		solarCylinders:           make(map[byte]*vaillantCylinderSnapshot),
+		fm5EvidenceTTL:           5 * time.Minute,
+		deviceSlotRediscoveryTTL: 30 * time.Minute,
+		deviceSlotCache:          make(map[deviceSlotKey]bool),
+		nowFn:                    func() time.Time { return now },
+	}, provider
+}
+
+func fm5InstanceOneSemanticTestResponse(frame protocol.Frame) (*protocol.Frame, error) {
+	if len(frame.Data) != 6 {
+		return nil, errors.New("invalid B524 selector")
+	}
+	group := frame.Data[2]
+	instance := frame.Data[3]
+	addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+	if group == localRegulator.group && addr == system_module_configuration_vr71 {
+		return testB524ResponseForSelectorPayload(frame.Data, 0x02, 0x00), nil
+	}
+	if group == remoteFunctionalModules.group {
+		switch addr {
+		case device_slot_connected:
+			if instance == 0x01 {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+		case device_slot_class_address:
+			if instance == 0x01 {
+				return testB524ResponseForSelectorPayload(frame.Data, circuitManagingDeviceVR71Address), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF), nil
+		case device_slot_firmware:
+			if instance == 0x01 {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x01, 0x00, 0x00), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF, 0xFF), nil
+		case device_slot_hardware_identifier:
+			if instance == 0x01 {
+				return testB524ResponseForSelectorPayload(frame.Data, 0x71, 0x00), nil
+			}
+			return testB524ResponseForSelectorPayload(frame.Data, 0xFF, 0xFF), nil
+		}
+	}
+	if group == localSolar.group && (addr == solar_enabled || addr == solar_pump_active) {
+		return testB524ResponseForSelectorPayload(frame.Data, 0x01), nil
+	}
+	if group == localSolar.group || group == localCylinders.group {
+		return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(47.25)...), nil
+	}
+	return testB524ResponseForSelectorPayload(frame.Data, 0x00, 0x00, 0x00, 0x00), nil
+}
+
+func TestFM5Startup_PositiveFastSlotClassifiesBeforeUnrelatedRadioTailDeadline(t *testing.T) {
+	poller, provider := newFM5DeadlineRecoveryTestPoller(nil)
+	config := uint16(2)
+	poller.system.ModuleConfigurationVR71 = &config
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	defer cancelStartup()
+	tailEntered := false
+	poller.sendFrameFn = func(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 &&
+			(frame.Data[2] == remoteRegulators.group || frame.Data[2] == remoteThermostats.group) &&
+			frame.Data[3] > semanticStartupSlotFastMaxInstance {
+			tailEntered = true
+			cancelStartup()
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return fm5InstanceOneSemanticTestResponse(frame)
+	}
+
+	poller.refreshRadioDevicesStartup(startupCtx)
+	poller.refreshFM5SemanticStartup(startupCtx)
+
+	verdict := provider.FM5Interpretation()
+	if verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("deadline-aware startup verdict=%#v tail_entered=%t; want healthy INTERPRETED before unrelated regulator/thermostat tail", verdict, tailEntered)
+	}
+}
+
+func TestEnqueueAddressIdentityProbe_SaturatedQueueCoalescesGuaranteedOrderedFM5Recovery(t *testing.T) {
+	originalScanDirected := registryScanDirectedFn
+	t.Cleanup(func() { registryScanDirectedFn = originalScanDirected })
+
+	taskScheduler := newSemanticTaskScheduler()
+	taskScheduler.maxDepth = 4
+	poller, provider := newFM5DeadlineRecoveryTestPoller(taskScheduler)
+	scanSeamCalled := false
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, reg *registry.DeviceRegistry, _ byte, targets []byte) ([]registry.DeviceEntry, error) {
+		scanSeamCalled = true
+		if len(targets) != 1 || targets[0] != circuitManagingDeviceVR71Address {
+			return nil, errors.New("unexpected directed identity target")
+		}
+		entry := reg.Register(registry.DeviceInfo{
+			Address:      circuitManagingDeviceVR71Address,
+			Manufacturer: "Vaillant",
+			DeviceID:     circuitManagingDeviceVR71ID,
+		})
+		return []registry.DeviceEntry{entry}, nil
+	}
+
+	readOrder := make([]string, 0, 2)
+	systemRecorded := false
+	radioRecorded := false
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if len(frame.Data) == 6 {
+			group := frame.Data[2]
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			if group == localRegulator.group && addr == system_module_configuration_vr71 && !systemRecorded {
+				readOrder = append(readOrder, "system")
+				systemRecorded = true
+			} else if (group == remoteRegulators.group || group == remoteThermostats.group || group == remoteFunctionalModules.group) && !radioRecorded {
+				readOrder = append(readOrder, "radio")
+				radioRecorded = true
+			}
+		}
+		return fm5InstanceOneSemanticTestResponse(frame)
+	}
+
+	if err := taskScheduler.submitCoalesced(semanticTaskRefreshRadioDevices, semanticTaskPriorityLow, func(ctx context.Context) {
+		poller.refreshRadioDevices(ctx)
+	}); err != nil {
+		t.Fatalf("queue older radio task: %v", err)
+	}
+	poller.EnqueueAddressIdentityProbe(circuitManagingDeviceVR71Address)
+	for _, key := range []semanticTaskKey{"fm5-p2-fill-1", "fm5-p2-fill-2"} {
+		if err := taskScheduler.submitCoalesced(key, semanticTaskPriorityLow, func(context.Context) {}); err != nil {
+			t.Fatalf("fill queue before probe: %v", err)
+		}
+	}
+
+	var probeTask *semanticTask
+	taskScheduler.mu.Lock()
+	for i, task := range taskScheduler.queue {
+		if task.key == "" {
+			probeTask = task
+			taskScheduler.queue = append(taskScheduler.queue[:i], taskScheduler.queue[i+1:]...)
+			break
+		}
+	}
+	taskScheduler.mu.Unlock()
+	if probeTask == nil {
+		t.Fatal("late identity probe task missing from saturated queue fixture")
+	}
+	if err := taskScheduler.submitCoalesced("fm5-p2-fill-3", semanticTaskPriorityLow, func(context.Context) {}); err != nil {
+		t.Fatalf("refill queue while identity probe runs: %v", err)
+	}
+	probeTask.run(context.Background())
+	taskScheduler.taskDone(probeTask)
+
+	recoveryTasks := 0
+	taskScheduler.mu.Lock()
+	for _, task := range taskScheduler.queue {
+		if task.key == semanticTaskRefreshSystem || task.key == semanticTaskRefreshRadioDevices {
+			recoveryTasks++
+		}
+	}
+	taskScheduler.mu.Unlock()
+	for {
+		taskScheduler.mu.Lock()
+		pending := len(taskScheduler.queue)
+		taskScheduler.mu.Unlock()
+		if pending == 0 {
+			break
+		}
+		task := taskScheduler.nextTask(context.Background())
+		task.run(context.Background())
+		taskScheduler.taskDone(task)
+	}
+
+	verdict := provider.FM5Interpretation()
+	ordered := len(readOrder) >= 2 && readOrder[0] == "system" && readOrder[1] == "radio"
+	if !scanSeamCalled || recoveryTasks != 1 || !ordered ||
+		verdict.Mode != graphql.Fm5SemanticModeInterpreted || verdict.DegradedReason != "" || verdict.EvidenceRevision == "" {
+		t.Fatalf("saturated late recovery seam_called=%t recovery_tasks=%d read_order=%v verdict=%#v; want one guaranteed coalesced system-then-radio recovery and healthy INTERPRETED", scanSeamCalled, recoveryTasks, readOrder, verdict)
+	}
+}
+
 func TestRefreshRadioDevices_CompleteNegativeFM5ScanSupersedesRetainedRegistryIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 15, 15, 0, 0, 0, time.UTC)
 	config := uint16(2)

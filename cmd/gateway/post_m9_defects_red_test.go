@@ -1022,6 +1022,41 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 	t.Run("complete FM negative survives non-FM detail timeout", func(t *testing.T) {
 		provider := newProvider()
 		poller := newPoller(provider)
+		connected := true
+		classAddress := uint8(0x15)
+		roomTemperature := 21.375
+		roomHumidity := 48.0
+		roomMapping := uint16(1)
+		poller.radioDevices = map[radioDeviceKey]*vaillantRadioDeviceSnapshot{
+			{Group: remoteRegulators.group, Instance: 0x01}: {
+				Group:              remoteRegulators.group,
+				Instance:           0x01,
+				SlotMode:           "active",
+				DeviceConnected:    &connected,
+				DeviceClassAddress: &classAddress,
+				DeviceModel:        "retained regulator",
+				RoomTemperatureC:   &roomTemperature,
+				RoomHumidityPct:    &roomHumidity,
+			},
+		}
+		poller.zones = map[byte]*vaillantZoneSnapshot{
+			0x00: {
+				Instance: 0x00,
+				Present:  true,
+				Name:     "Living",
+				ConfigurationRoomTemperatureZoneMappingRaw: &roomMapping,
+			},
+		}
+		poller.publishRadioDevices(semanticSnapshotSourceLive)
+		poller.publishZones(semanticSnapshotSourceLive)
+		retainedRadioDevices := provider.RadioDevices()
+		if len(retainedRadioDevices) != 1 {
+			t.Fatalf("retained radio fixture = %#v; want one regulator", retainedRadioDevices)
+		}
+		retainedZones := provider.Zones()
+		if len(retainedZones) != 1 || retainedZones[0].State.CurrentTempC == nil || *retainedZones[0].State.CurrentTempC != roomTemperature || retainedZones[0].State.CurrentHumidityPct == nil || *retainedZones[0].State.CurrentHumidityPct != roomHumidity {
+			t.Fatalf("retained zone fixture = %#v; want regulator temperature/humidity fallback", retainedZones)
+		}
 		regulatorConnectedReads := 0
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1071,6 +1106,15 @@ func TestRefreshRadioDevices_IncompleteCurrentFM5IdentityTupleRetainsPriorClassi
 		}
 		if cylinders := provider.Cylinders(); len(cylinders) != 0 {
 			t.Errorf("complete negative with non-FM detail timeout cylinders = %#v; want cleared structural plane", cylinders)
+		}
+
+		poller.publishZones(semanticSnapshotSourceLive)
+		if radioDevices := provider.RadioDevices(); !radioDevicesEqual(radioDevices, retainedRadioDevices) {
+			t.Errorf("complete negative with non-FM detail timeout radio devices = %#v; want retained %#v", radioDevices, retainedRadioDevices)
+		}
+		zones := provider.Zones()
+		if len(zones) != 1 || zones[0].State.CurrentTempC == nil || *zones[0].State.CurrentTempC != roomTemperature || zones[0].State.CurrentHumidityPct == nil || *zones[0].State.CurrentHumidityPct != roomHumidity {
+			t.Errorf("complete negative with non-FM detail timeout zone fallback = %#v; want retained regulator temperature/humidity", zones)
 		}
 	})
 }

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +90,53 @@ func TestRunClosesModbusSidecarOnceAndJoinsLaterEEBusFailure(t *testing.T) {
 	}
 	if endpoint.closeCalls != 1 {
 		t.Fatalf("Modbus endpoint close calls = %d; want 1", endpoint.closeCalls)
+	}
+}
+
+func TestRunKeepsModbusStartupFailureProtocolLocal(t *testing.T) {
+	originalDial := dialModbusEndpointFn
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalLogWriter := log.Writer()
+	originalLogFlags := log.Flags()
+	t.Cleanup(func() {
+		dialModbusEndpointFn = originalDial
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		log.SetOutput(originalLogWriter)
+		log.SetFlags(originalLogFlags)
+	})
+
+	endpoint := "tcp://192.0.2.44:1502"
+	dialErr := errors.New("dial " + endpoint + ": unavailable")
+	dialModbusEndpointFn = func(context.Context, string, string) (net.Conn, error) {
+		return nil, dialErr
+	}
+	laterErr := errors.New("eebus interface resolution failed")
+	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
+		return nil, laterErr
+	}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{
+		Enabled:     true,
+		Endpoint:    endpoint,
+		DialTimeout: time.Second,
+	}
+	cfg.EEBusConfig = msp05bEnabledConfig()
+
+	err := run(context.Background(), cfg)
+	if !errors.Is(err, laterErr) {
+		t.Fatalf("run error = %v; want later eeBUS error", err)
+	}
+	if errors.Is(err, dialErr) {
+		t.Fatalf("run error retained protocol-local Modbus startup failure: %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "Modbus TCP unavailable; continuing without Modbus") {
+		t.Fatalf("gateway log = %q; want protocol-local unavailability diagnostic", got)
+	} else if strings.Contains(got, endpoint) || strings.Contains(got, "192.0.2.44") {
+		t.Fatalf("gateway log disclosed Modbus endpoint: %q", got)
 	}
 }
 

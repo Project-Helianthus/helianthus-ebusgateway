@@ -196,7 +196,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		newModbusEndpointFn,
 	)
 	if err != nil {
-		return withEndpointOwner(endpointOwnerModbus, fmt.Errorf("modbus TCP sidecar: %w", err))
+		log.Printf("Modbus TCP unavailable; continuing without Modbus")
+		modbusAdapter = nil
 	}
 	if modbusAdapter != nil {
 		defer func() {

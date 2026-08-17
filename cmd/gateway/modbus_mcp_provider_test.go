@@ -14,6 +14,7 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -68,6 +69,10 @@ func (*countingModbusMCPAdapter) ProfileObservation(string, string) (modbusadapt
 
 func (*countingModbusMCPAdapter) SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool) {
 	return modbusreg.SunSpecQualificationObservation{}, nil, false
+}
+
+func (*countingModbusMCPAdapter) CanonicalPVSnapshot(string, string) (pv.Snapshot, time.Time, bool) {
+	return pv.Snapshot{}, time.Time{}, false
 }
 
 func TestNewGatewayModbusMCPProviderDisabledIsInert(t *testing.T) {

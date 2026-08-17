@@ -240,9 +240,10 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mode := "LIVE"
 			timestamp := "2026-08-13T10:00:02Z"
-			if name == "modbus_v1_profile_observation" {
+			switch name {
+			case "modbus_v1_profile_observation":
 				mode = "RETAINED_SOURCE_OBSERVATION"
-			} else if name == "modbus_v1_canonical_pv" {
+			case "modbus_v1_canonical_pv":
 				mode = "RETAINED_CANONICAL_OBSERVATION"
 				timestamp = "2026-08-17T15:00:00Z"
 			}

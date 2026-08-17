@@ -58,10 +58,13 @@ func TestModbusV1ProviderErrorIsStaticAndEndpointFree(t *testing.T) {
 		envelopeError["message"] != "modbus provider unavailable" {
 		t.Fatalf("provider error envelope = %#v", envelopeError)
 	}
-	encoded := result.raw
+	message, ok := envelopeError["message"].(string)
+	if !ok {
+		t.Fatalf("provider error message = %#v", envelopeError["message"])
+	}
 	for _, forbidden := range []string{leaked, "192.0.2.10", "192.0.2.20", "49152", "502"} {
-		if strings.Contains(encoded, forbidden) {
-			t.Fatalf("provider error leaked %q: %s", forbidden, encoded)
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("provider error leaked %q: %s", forbidden, message)
 		}
 	}
 }

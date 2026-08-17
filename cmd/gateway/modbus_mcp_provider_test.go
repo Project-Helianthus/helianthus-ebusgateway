@@ -37,6 +37,18 @@ func (adapter *countingModbusMCPAdapter) ExecuteRead(_ context.Context, plan mod
 	return modbus.TCPReadBatch{}, errors.New("fixture transport unavailable")
 }
 
+func (adapter *countingModbusMCPAdapter) ExecuteReadWithReconnect(ctx context.Context, plan modbusadapter.ReadPlan) (modbus.TCPReadBatch, error) {
+	batch, err := adapter.ExecuteRead(ctx, plan)
+	if err == nil || !adapter.reconnectRequired {
+		return batch, err
+	}
+	if reconnectErr := adapter.Reconnect(ctx); reconnectErr != nil {
+		return modbus.TCPReadBatch{}, reconnectErr
+	}
+	adapter.reconnectRequired = false
+	return adapter.ExecuteRead(ctx, plan)
+}
+
 func (adapter *countingModbusMCPAdapter) Snapshot() modbus.TCPEndpointSnapshot {
 	return modbus.TCPEndpointSnapshot{ReconnectRequired: adapter.reconnectRequired}
 }

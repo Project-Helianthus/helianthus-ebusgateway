@@ -29,9 +29,7 @@ type gatewayModbusMCPProvider struct {
 }
 
 type modbusMCPAdapter interface {
-	ExecuteRead(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
-	Snapshot() modbus.TCPEndpointSnapshot
-	Reconnect(context.Context) error
+	ExecuteReadWithReconnect(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
 	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
 }
@@ -69,13 +67,7 @@ func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request m
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, plan.Timeout)
 	defer cancel()
-	batch, err := provider.adapter.ExecuteRead(operationCtx, plan)
-	if err != nil && provider.adapter.Snapshot().ReconnectRequired {
-		if reconnectErr := provider.adapter.Reconnect(operationCtx); reconnectErr != nil {
-			return mcp.ModbusRawReadResult{}, reconnectErr
-		}
-		batch, err = provider.adapter.ExecuteRead(operationCtx, plan)
-	}
+	batch, err := provider.adapter.ExecuteReadWithReconnect(operationCtx, plan)
 	if err != nil {
 		return mcp.ModbusRawReadResult{}, err
 	}

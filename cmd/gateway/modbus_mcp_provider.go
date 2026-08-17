@@ -15,6 +15,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -32,6 +33,7 @@ type modbusMCPAdapter interface {
 	ExecuteReadWithReconnect(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
 	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
+	CanonicalPVSnapshot(string, string) (pv.Snapshot, time.Time, bool)
 }
 
 func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Provider {
@@ -127,6 +129,17 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 		return mcp.ModbusProfileObservationResult{}, errors.New("profile observation not found")
 	}
 	return sunSpecQualificationObservationResult(qualification, encoded)
+}
+
+func (provider *gatewayModbusMCPProvider) CanonicalPV(_ context.Context, profileID, sampleID string) (mcp.ModbusCanonicalPVResult, error) {
+	if provider == nil || provider.adapter == nil || profileID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+		return mcp.ModbusCanonicalPVResult{}, errors.New("canonical PV observation unavailable")
+	}
+	snapshot, producedAt, ok := provider.adapter.CanonicalPVSnapshot(profileID, sampleID)
+	if !ok {
+		return mcp.ModbusCanonicalPVResult{}, errors.New("canonical PV observation unavailable")
+	}
+	return mcp.ModbusCanonicalPVResult{Snapshot: snapshot, ProducedAt: producedAt.Format(time.RFC3339Nano)}, nil
 }
 
 func profileObservationResult(record modbusadapter.ProfileObservationRecord) (mcp.ModbusProfileObservationResult, error) {

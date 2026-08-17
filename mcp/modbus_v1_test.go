@@ -9,12 +9,21 @@ import (
 	"strings"
 	"testing"
 
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 type modbusV1FixtureProvider struct {
 	rawRequest ModbusRawReadRequest
 	rawErr     error
+}
+
+func (*modbusV1FixtureProvider) CanonicalPV(context.Context, string, string) (ModbusCanonicalPVResult, error) {
+	return ModbusCanonicalPVResult{ProducedAt: "2026-08-17T15:00:00Z", Snapshot: pv.Snapshot{
+		ContractID: pv.ContractV1, AssetRef: "pv-asset-fixture", Generation: 1,
+		SourceTimeState: pv.SourceTimeUnavailable,
+		Capability:      pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilityNotSatisfied},
+	}}, nil
 }
 
 func (provider *modbusV1FixtureProvider) RawRead(_ context.Context, request ModbusRawReadRequest) (ModbusRawReadResult, error) {
@@ -95,7 +104,7 @@ func TestModbusV1RegistrationAndBoundedRead(t *testing.T) {
 	provider := &modbusV1FixtureProvider{}
 	RegisterModbusV1Tools(server, provider)
 
-	for _, name := range []string{ModbusV1RawReadTool, ModbusV1ProfileObservationGetTool} {
+	for _, name := range []string{ModbusV1RawReadTool, ModbusV1ProfileObservationGetTool, ModbusV1CanonicalPVGetTool} {
 		if !server.hasToolNamed(name) {
 			t.Fatalf("tools/list missing %q", name)
 		}
@@ -112,6 +121,69 @@ func TestModbusV1RegistrationAndBoundedRead(t *testing.T) {
 	data := msp06Map(t, result.envelope["data"], "data")
 	if data["endpoint_ref"] != "sha256:endpoint" || data["endpoint"] != nil {
 		t.Fatalf("endpoint redaction failed: %+v", data)
+	}
+}
+
+func TestModbusV1CanonicalPVUsesClosedSemanticPayload(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &modbusV1FixtureProvider{})
+	result := msp06Call(t, server.Handler(), ModbusV1CanonicalPVGetTool, map[string]any{
+		"profile_id": "sunspec.inverter.three_phase.monitoring@1.0.0", "sample_id": "sunspec-71-81",
+	})
+	if result.isError {
+		t.Fatalf("canonical PV failed: %s", result.raw)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	meta := msp06Map(t, result.envelope["meta"], "meta")
+	if data["contract_id"] != pv.ContractV1 || data["asset_ref"] != "pv-asset-fixture" || data["produced_at"] != "2026-08-17T15:00:00Z" ||
+		meta["data_timestamp"] != data["produced_at"] || data["ContractID"] != nil {
+		t.Fatalf("canonical data = %#v", data)
+	}
+	for _, forbidden := range []string{"endpoint", "raw_words", "wire_bytes"} {
+		if strings.Contains(result.raw, forbidden) {
+			t.Fatalf("semantic payload leaked %q: %s", forbidden, result.raw)
+		}
+	}
+}
+
+func TestCanonicalPVDataCanonicalizesSetAndProjectionOrder(t *testing.T) {
+	forward := modbusV1CanonicalPVFixture()
+	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}
+	eventKey := pv.NewFactKey(pv.FactEventFlags, dimensions)
+	forward.Facts[eventKey] = pv.Fact{
+		ID: pv.FactEventFlags, Dimensions: dimensions,
+		Value: pv.BitfieldFactValue("INTERNAL_FAULT", "COMMUNICATION_FAULT"), Unit: pv.UnitOne,
+		Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh,
+		Temporal:  pv.Temporal{Receipt: 100, FreshUntil: 60_000_000_100, RetainUntil: 600_000_000_100, Policy: pv.PolicyStatusV1},
+		OriginRef: forward.Source.SourceObservationRef,
+	}
+	secondRef := pv.Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	forward.RequestedOutputs = append(forward.RequestedOutputs, pv.RequestedOutput{
+		SourceRef: forward.Source.SourceObservationRef, RequestedOutputRef: secondRef,
+	})
+	forward.ProjectionReport = append(forward.ProjectionReport, pv.Projection{
+		SourceRef: forward.Source.SourceObservationRef, RequestedOutputRef: secondRef,
+		FactID: pv.FactEventFlags, Dimensions: &dimensions, Outcome: pv.ProjectionMapped,
+	})
+
+	reversed := forward
+	reversed.Facts = make(map[pv.FactKey]pv.Fact, len(forward.Facts))
+	for key, fact := range forward.Facts {
+		reversed.Facts[key] = fact
+	}
+	reversed.RequestedOutputs = []pv.RequestedOutput{forward.RequestedOutputs[1], forward.RequestedOutputs[0]}
+	reversed.ProjectionReport = []pv.Projection{forward.ProjectionReport[1], forward.ProjectionReport[0]}
+	event := reversed.Facts[eventKey]
+	event.Value.Symbols = []string{"COMMUNICATION_FAULT", "INTERNAL_FAULT"}
+	reversed.Facts[eventKey] = event
+
+	forwardJSON := mustJSON(canonicalPVData(forward, "2026-08-17T15:00:00Z"))
+	reversedJSON := mustJSON(canonicalPVData(reversed, "2026-08-17T15:00:00Z"))
+	if forwardJSON != reversedJSON {
+		t.Fatalf("equivalent canonical PV snapshots serialized differently:\nforward=%s\nreverse=%s", forwardJSON, reversedJSON)
 	}
 }
 
@@ -178,7 +250,7 @@ func TestModbusV1NilProviderIsInert(t *testing.T) {
 		t.Fatal(err)
 	}
 	RegisterModbusV1Tools(server, nil)
-	if server.hasToolNamed(ModbusV1RawReadTool) || server.hasToolNamed(ModbusV1ProfileObservationGetTool) {
+	if server.hasToolNamed(ModbusV1RawReadTool) || server.hasToolNamed(ModbusV1ProfileObservationGetTool) || server.hasToolNamed(ModbusV1CanonicalPVGetTool) {
 		t.Fatal("nil provider exposed Modbus tools")
 	}
 }
@@ -200,14 +272,20 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 			ObservationJSONB64: "eyJlbmRwb2ludCI6InNoYTI1NjplbmRwb2ludCIsIm5vcm1hbGl6YXRpb25fdmVyc2lvbiI6IjEuMC4wIn0=",
 			Replay:             []ModbusReplayView{{LogicalViewID: 92, WireResponseID: 91, Offset: 40000, Words: []uint16{0x5375, 0x6e53}}},
 		},
+		"modbus_v1_canonical_pv": canonicalPVData(modbusV1CanonicalPVFixture(), "2026-08-17T15:00:00Z"),
 	}
 	for name, data := range fixtures {
 		t.Run(name, func(t *testing.T) {
 			mode := "LIVE"
-			if name == "modbus_v1_profile_observation" {
+			timestamp := "2026-08-13T10:00:02Z"
+			switch name {
+			case "modbus_v1_profile_observation":
 				mode = "RETAINED_SOURCE_OBSERVATION"
+			case "modbus_v1_canonical_pv":
+				mode = "RETAINED_CANONICAL_OBSERVATION"
+				timestamp = "2026-08-17T15:00:00Z"
 			}
-			envelope := newModbusV1Envelope(data, nil, true, mode, "2026-08-13T10:00:02Z")
+			envelope := newModbusV1Envelope(data, nil, true, mode, timestamp)
 			got := mustJSON(envelope)
 			path := filepath.Join("testdata", name+".golden.json")
 			want, err := os.ReadFile(path)
@@ -222,5 +300,32 @@ func TestModbusV1GoldenEnvelopes(t *testing.T) {
 				t.Fatal("data_hash changed for identical data")
 			}
 		})
+	}
+}
+
+func modbusV1CanonicalPVFixture() pv.Snapshot {
+	registryRef := pv.Digest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	observationRef := pv.Digest("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	requestedRef := pv.Digest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}
+	provenance := pv.Provenance{
+		SourceIdentity:    pv.SourceIdentity{Protocol: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring@1.0.0", ProfileVersion: "1.0.0", Validity: pv.SourceTerminalVerified},
+		SourceRegistryRef: registryRef, SourceObservationRef: observationRef,
+		SourceShadowRef: pv.Digest("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+		EvidenceRef:     pv.Digest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+	}
+	key := pv.NewFactKey(pv.FactACActivePower, dimensions)
+	return pv.Snapshot{
+		ContractID: pv.ContractV1, AssetRef: "pv-asset-fixture", Generation: 1, Evaluated: 100,
+		Source: provenance, Origins: map[pv.Digest]pv.Provenance{observationRef: provenance},
+		Facts: map[pv.FactKey]pv.Fact{key: {
+			ID: pv.FactACActivePower, Dimensions: dimensions, Value: pv.DecimalFactValue(pv.MustDecimal("7310", 0)), Unit: pv.UnitWatt,
+			Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh,
+			Temporal: pv.Temporal{Receipt: 100, FreshUntil: 30_000_000_100, RetainUntil: 300_000_000_100, Policy: pv.PolicyTelemetryFastV1}, OriginRef: observationRef,
+		}},
+		SourceTimeState:  pv.SourceTimeUnavailable,
+		Capability:       pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilityNotSatisfied},
+		RequestedOutputs: []pv.RequestedOutput{{SourceRef: observationRef, RequestedOutputRef: requestedRef}},
+		ProjectionReport: []pv.Projection{{SourceRef: observationRef, RequestedOutputRef: requestedRef, FactID: pv.FactACActivePower, Dimensions: &dimensions, Outcome: pv.ProjectionMapped}},
 	}
 }

@@ -1,6 +1,7 @@
 package modbusadapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -68,6 +70,8 @@ type Adapter struct {
 	profileMu      sync.RWMutex
 	profiles       map[string]ProfileObservationRecord
 	qualifications map[string]sunSpecQualificationRecord
+	canonicalPV    *CanonicalPVMapper
+	started        time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -83,6 +87,8 @@ type ProfileObservationRecord struct {
 type sunSpecQualificationRecord struct {
 	observation modbusreg.SunSpecQualificationObservation
 	encoded     []byte
+	canonical   pv.Snapshot
+	producedAt  time.Time
 }
 
 // Start constructs and connects one endpoint. Disabled configuration is inert.
@@ -97,6 +103,10 @@ func Start(
 	}
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
+	}
+	canonicalMapper, err := NewCanonicalPVMapper()
+	if err != nil {
+		return nil, fmt.Errorf("construct canonical PV mapper: %w", err)
 	}
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {
@@ -135,6 +145,8 @@ func Start(
 		dial:           dial,
 		profiles:       make(map[string]ProfileObservationRecord),
 		qualifications: make(map[string]sunSpecQualificationRecord),
+		canonicalPV:    canonicalMapper,
+		started:        time.Now(),
 	}, nil
 }
 
@@ -383,11 +395,79 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	key := capability + "\x00" + sampleID
 	adapter.profileMu.Lock()
 	defer adapter.profileMu.Unlock()
-	if _, exists := adapter.qualifications[key]; !exists && len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
+	if existing, exists := adapter.qualifications[key]; exists {
+		if !bytes.Equal(existing.encoded, encoded) {
+			return errors.New("SunSpec qualification observation identity collision")
+		}
+		return nil
+	}
+	if len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
-	adapter.qualifications[key] = sunSpecQualificationRecord{observation: observation, encoded: append([]byte(nil), encoded...)}
+	evaluated := time.Since(adapter.started)
+	if evaluated < 0 || adapter.canonicalPV == nil {
+		return errors.New("canonical PV mapper unavailable")
+	}
+	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
+	if err != nil {
+		return fmt.Errorf("map canonical PV observation: %w", err)
+	}
+	adapter.qualifications[key] = sunSpecQualificationRecord{
+		observation: observation, encoded: append([]byte(nil), encoded...), canonical: cloneCanonicalPVSnapshot(canonical), producedAt: time.Now().UTC(),
+	}
 	return nil
+}
+
+func (adapter *Adapter) CanonicalPVSnapshot(profileID, sampleID string) (pv.Snapshot, time.Time, bool) {
+	if adapter == nil {
+		return pv.Snapshot{}, time.Time{}, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	record, ok := adapter.qualifications[profileID+"\x00"+sampleID]
+	if !ok {
+		return pv.Snapshot{}, time.Time{}, false
+	}
+	return cloneCanonicalPVSnapshot(record.canonical), record.producedAt, true
+}
+
+func cloneCanonicalPVSnapshot(source pv.Snapshot) pv.Snapshot {
+	clone := source
+	clone.Facts = make(map[pv.FactKey]pv.Fact, len(source.Facts))
+	for key, fact := range source.Facts {
+		if fact.Value.Decimal != nil {
+			value := *fact.Value.Decimal
+			fact.Value.Decimal = &value
+		}
+		fact.Value.Symbols = append([]string(nil), fact.Value.Symbols...)
+		if fact.Continuity != nil {
+			continuity := *fact.Continuity
+			if continuity.Delta != nil {
+				value := *continuity.Delta
+				continuity.Delta = &value
+			}
+			if continuity.Modulus != nil {
+				value := *continuity.Modulus
+				continuity.Modulus = &value
+			}
+			fact.Continuity = &continuity
+		}
+		clone.Facts[key] = fact
+	}
+	clone.Origins = make(map[pv.Digest]pv.Provenance, len(source.Origins))
+	for key, value := range source.Origins {
+		clone.Origins[key] = value
+	}
+	clone.RequestedOutputs = append([]pv.RequestedOutput(nil), source.RequestedOutputs...)
+	clone.ProjectionReport = make([]pv.Projection, len(source.ProjectionReport))
+	for index, projection := range source.ProjectionReport {
+		if projection.Dimensions != nil {
+			dimensions := *projection.Dimensions
+			projection.Dimensions = &dimensions
+		}
+		clone.ProjectionReport[index] = projection
+	}
+	return clone
 }
 
 // ProfileObservation returns one immutable retained sample by exact identity.

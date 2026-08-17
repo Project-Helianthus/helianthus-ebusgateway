@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 )
 
 const (
 	ModbusV1RawReadTool               = "modbus.v1.raw.read"
 	ModbusV1ProfileObservationGetTool = "modbus.v1.profile.observation.get"
+	ModbusV1CanonicalPVGetTool        = "modbus.v1.semantic.pv.get"
 	modbusV1MaxReadWords              = 125
 	modbusV1MaxIdentityBytes          = 128
 	ModbusV1MaxRawReadsPerWindow      = 4
@@ -71,6 +75,12 @@ type ModbusProfileObservationResult struct {
 type ModbusV1Provider interface {
 	RawRead(context.Context, ModbusRawReadRequest) (ModbusRawReadResult, error)
 	ProfileObservation(context.Context, string, string) (ModbusProfileObservationResult, error)
+	CanonicalPV(context.Context, string, string) (ModbusCanonicalPVResult, error)
+}
+
+type ModbusCanonicalPVResult struct {
+	Snapshot   pv.Snapshot
+	ProducedAt string
 }
 
 var modbusV1Providers = struct {
@@ -104,6 +114,19 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		Tool{
 			Name:        ModbusV1ProfileObservationGetTool,
 			Description: "Get one retained profile observation with detector, activation, and exact replay evidence.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"profile_id": map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+					"sample_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+				},
+				"required":             []string{"profile_id", "sample_id"},
+				"additionalProperties": false,
+			},
+		},
+		Tool{
+			Name:        ModbusV1CanonicalPVGetTool,
+			Description: "Get one retained qualified SunSpec observation projected into canonical PV V1.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -148,6 +171,19 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 				dataTimestamp = result.LocalReceiptTime
 			}
 		}
+	case ModbusV1CanonicalPVGetTool:
+		consistencyMode = "RETAINED_CANONICAL_OBSERVATION"
+		var profileID, sampleID string
+		profileID, sampleID, err = parseModbusProfileRequest(args)
+		if err == nil {
+			providerCalled = true
+			var result ModbusCanonicalPVResult
+			result, err = provider.CanonicalPV(ctx, profileID, sampleID)
+			if err == nil {
+				dataTimestamp = result.ProducedAt
+				data = canonicalPVData(result.Snapshot, result.ProducedAt)
+			}
+		}
 	default:
 		return nil, false
 	}
@@ -157,6 +193,140 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 	return callToolResultText(mustJSON(newModbusV1Envelope(
 		data, err, providerCalled, consistencyMode, dataTimestamp,
 	)), err != nil), true
+}
+
+func canonicalPVData(snapshot pv.Snapshot, producedAt string) map[string]any {
+	factKeys := make([]string, 0, len(snapshot.Facts))
+	for key := range snapshot.Facts {
+		factKeys = append(factKeys, string(key))
+	}
+	sort.Strings(factKeys)
+	facts := make([]any, 0, len(factKeys))
+	for _, key := range factKeys {
+		fact := snapshot.Facts[pv.FactKey(key)]
+		item := map[string]any{
+			"fact_id": string(fact.ID), "origin_ref": string(fact.OriginRef), "dimensions": pvDimensions(fact.Dimensions),
+			"value": pvValue(fact.Value), "unit": string(fact.Unit), "quality": string(fact.Quality),
+			"availability": string(fact.Availability), "freshness": string(fact.Freshness),
+			"temporal": map[string]any{"receipt_monotonic_ns": fact.Temporal.Receipt, "fresh_until_monotonic_ns": fact.Temporal.FreshUntil, "retain_until_monotonic_ns": fact.Temporal.RetainUntil, "freshness_policy": string(fact.Temporal.Policy)},
+		}
+		if fact.Continuity != nil {
+			item["continuity"] = pvContinuity(*fact.Continuity)
+		}
+		facts = append(facts, item)
+	}
+	originKeys := make([]string, 0, len(snapshot.Origins))
+	for key := range snapshot.Origins {
+		originKeys = append(originKeys, string(key))
+	}
+	sort.Strings(originKeys)
+	origins := make([]any, 0, len(originKeys))
+	for _, key := range originKeys {
+		origins = append(origins, pvProvenance(snapshot.Origins[pv.Digest(key)]))
+	}
+	requestedOutputs := append([]pv.RequestedOutput(nil), snapshot.RequestedOutputs...)
+	sort.Slice(requestedOutputs, func(i, j int) bool {
+		if requestedOutputs[i].SourceRef == requestedOutputs[j].SourceRef {
+			return requestedOutputs[i].RequestedOutputRef < requestedOutputs[j].RequestedOutputRef
+		}
+		return requestedOutputs[i].SourceRef < requestedOutputs[j].SourceRef
+	})
+	requested := make([]any, len(requestedOutputs))
+	for index, output := range requestedOutputs {
+		requested[index] = map[string]any{"source_ref": string(output.SourceRef), "requested_output_ref": string(output.RequestedOutputRef)}
+	}
+	projectionReport := append([]pv.Projection(nil), snapshot.ProjectionReport...)
+	sort.Slice(projectionReport, func(i, j int) bool { return pvProjectionLess(projectionReport[i], projectionReport[j]) })
+	projections := make([]any, len(projectionReport))
+	for index, projection := range projectionReport {
+		row := map[string]any{
+			"source_ref": string(projection.SourceRef), "requested_output_ref": string(projection.RequestedOutputRef),
+			"fact_id": nil, "dimensions": nil, "outcome": string(projection.Outcome),
+		}
+		if projection.Dimensions != nil {
+			row["fact_id"], row["dimensions"] = string(projection.FactID), pvDimensions(*projection.Dimensions)
+		}
+		projections[index] = row
+	}
+	return map[string]any{
+		"contract_id": snapshot.ContractID, "asset_ref": snapshot.AssetRef, "generation": snapshot.Generation,
+		"produced_at": producedAt, "evaluated_monotonic_ns": snapshot.Evaluated, "facts": facts, "source_time_state": string(snapshot.SourceTimeState),
+		"source_provenance": pvProvenance(snapshot.Source), "origins": origins,
+		"capabilities":      []any{map[string]any{"id": snapshot.Capability.ID, "outcome": string(snapshot.Capability.Outcome)}},
+		"requested_outputs": requested, "projection_report": projections,
+	}
+}
+
+func pvProjectionLess(left, right pv.Projection) bool {
+	if left.SourceRef != right.SourceRef {
+		return left.SourceRef < right.SourceRef
+	}
+	if left.RequestedOutputRef != right.RequestedOutputRef {
+		return left.RequestedOutputRef < right.RequestedOutputRef
+	}
+	if left.FactID != right.FactID {
+		return left.FactID < right.FactID
+	}
+	if value := pvDimensionSortKey(left.Dimensions); value != pvDimensionSortKey(right.Dimensions) {
+		return value < pvDimensionSortKey(right.Dimensions)
+	}
+	return left.Outcome < right.Outcome
+}
+
+func pvDimensionSortKey(dimensions *pv.Dimensions) string {
+	if dimensions == nil {
+		return ""
+	}
+	return string(dimensions.Scope) + "\x00" + string(dimensions.Phase) + "\x00" + string(dimensions.PhasePair) + "\x00" + dimensions.InputID + "\x00" + dimensions.SensorID
+}
+
+func pvDimensions(dimensions pv.Dimensions) map[string]any {
+	switch {
+	case dimensions.Scope != "":
+		return map[string]any{"scope": string(dimensions.Scope)}
+	case dimensions.Phase != "":
+		return map[string]any{"phase": string(dimensions.Phase)}
+	case dimensions.PhasePair != "":
+		return map[string]any{"phase_pair": string(dimensions.PhasePair)}
+	case dimensions.InputID != "":
+		return map[string]any{"input_id": dimensions.InputID}
+	default:
+		return map[string]any{"sensor_id": dimensions.SensorID}
+	}
+}
+
+func pvValue(value pv.FactValue) map[string]any {
+	if value.Decimal != nil {
+		return map[string]any{"kind": "decimal", "coefficient": value.Decimal.Coefficient, "scale": value.Decimal.Scale}
+	}
+	if value.Kind == pv.ValueKindEnum {
+		return map[string]any{"kind": "enum", "symbol": value.Symbol}
+	}
+	symbols := append([]string(nil), value.Symbols...)
+	sort.Strings(symbols)
+	return map[string]any{"kind": "bitfield", "symbols": symbols}
+}
+
+func pvContinuity(value pv.Continuity) map[string]any {
+	result := map[string]any{"state": string(value.State), "delta": nil, "modulus": nil, "evidence_ref": nil}
+	if value.Delta != nil {
+		result["delta"] = map[string]any{"kind": "decimal", "coefficient": value.Delta.Coefficient, "scale": value.Delta.Scale}
+	}
+	if value.Modulus != nil {
+		result["modulus"] = map[string]any{"kind": "decimal", "coefficient": value.Modulus.Coefficient, "scale": value.Modulus.Scale}
+	}
+	if value.EvidenceRef != "" {
+		result["evidence_ref"] = string(value.EvidenceRef)
+	}
+	return result
+}
+
+func pvProvenance(value pv.Provenance) map[string]any {
+	return map[string]any{
+		"source_protocol": value.Protocol, "source_profile_id": value.ProfileID, "source_profile_version": value.ProfileVersion,
+		"source_validity": value.Validity, "source_registry_ref": string(value.SourceRegistryRef),
+		"source_observation_ref": string(value.SourceObservationRef), "source_shadow_ref": string(value.SourceShadowRef), "evidence_ref": string(value.EvidenceRef),
+	}
 }
 
 func parseModbusRawReadRequest(args map[string]any) (ModbusRawReadRequest, error) {

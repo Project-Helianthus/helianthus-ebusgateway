@@ -149,6 +149,44 @@ func TestModbusV1CanonicalPVUsesClosedSemanticPayload(t *testing.T) {
 	}
 }
 
+func TestCanonicalPVDataCanonicalizesSetAndProjectionOrder(t *testing.T) {
+	forward := modbusV1CanonicalPVFixture()
+	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}
+	eventKey := pv.NewFactKey(pv.FactEventFlags, dimensions)
+	forward.Facts[eventKey] = pv.Fact{
+		ID: pv.FactEventFlags, Dimensions: dimensions,
+		Value: pv.BitfieldFactValue("INTERNAL_FAULT", "COMMUNICATION_FAULT"), Unit: pv.UnitOne,
+		Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh,
+		Temporal:  pv.Temporal{Receipt: 100, FreshUntil: 60_000_000_100, RetainUntil: 600_000_000_100, Policy: pv.PolicyStatusV1},
+		OriginRef: forward.Source.SourceObservationRef,
+	}
+	secondRef := pv.Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	forward.RequestedOutputs = append(forward.RequestedOutputs, pv.RequestedOutput{
+		SourceRef: forward.Source.SourceObservationRef, RequestedOutputRef: secondRef,
+	})
+	forward.ProjectionReport = append(forward.ProjectionReport, pv.Projection{
+		SourceRef: forward.Source.SourceObservationRef, RequestedOutputRef: secondRef,
+		FactID: pv.FactEventFlags, Dimensions: &dimensions, Outcome: pv.ProjectionMapped,
+	})
+
+	reversed := forward
+	reversed.Facts = make(map[pv.FactKey]pv.Fact, len(forward.Facts))
+	for key, fact := range forward.Facts {
+		reversed.Facts[key] = fact
+	}
+	reversed.RequestedOutputs = []pv.RequestedOutput{forward.RequestedOutputs[1], forward.RequestedOutputs[0]}
+	reversed.ProjectionReport = []pv.Projection{forward.ProjectionReport[1], forward.ProjectionReport[0]}
+	event := reversed.Facts[eventKey]
+	event.Value.Symbols = []string{"COMMUNICATION_FAULT", "INTERNAL_FAULT"}
+	reversed.Facts[eventKey] = event
+
+	forwardJSON := mustJSON(canonicalPVData(forward, "2026-08-17T15:00:00Z"))
+	reversedJSON := mustJSON(canonicalPVData(reversed, "2026-08-17T15:00:00Z"))
+	if forwardJSON != reversedJSON {
+		t.Fatalf("equivalent canonical PV snapshots serialized differently:\nforward=%s\nreverse=%s", forwardJSON, reversedJSON)
+	}
+}
+
 func TestModbusV1ReadRejectsWritesUnboundedRangesAndUnknownArguments(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
 	if err != nil {

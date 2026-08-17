@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,31 @@ import (
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
-type countingModbusMCPAdapter struct{ reads int }
+type countingModbusMCPAdapter struct {
+	reads             int
+	reconnects        int
+	reconnectRequired bool
+	reconnectErr      error
+	readErrors        []error
+	plans             []modbusadapter.ReadPlan
+}
 
-func (adapter *countingModbusMCPAdapter) ExecuteRead(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error) {
+func (adapter *countingModbusMCPAdapter) ExecuteRead(_ context.Context, plan modbusadapter.ReadPlan) (modbus.TCPReadBatch, error) {
 	adapter.reads++
+	adapter.plans = append(adapter.plans, plan)
+	if len(adapter.readErrors) >= adapter.reads {
+		return modbus.TCPReadBatch{}, adapter.readErrors[adapter.reads-1]
+	}
 	return modbus.TCPReadBatch{}, errors.New("fixture transport unavailable")
+}
+
+func (adapter *countingModbusMCPAdapter) Snapshot() modbus.TCPEndpointSnapshot {
+	return modbus.TCPEndpointSnapshot{ReconnectRequired: adapter.reconnectRequired}
+}
+
+func (adapter *countingModbusMCPAdapter) Reconnect(context.Context) error {
+	adapter.reconnects++
+	return adapter.reconnectErr
 }
 
 func (*countingModbusMCPAdapter) ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool) {
@@ -89,6 +110,44 @@ func TestGatewayModbusMCPProviderRejectsBurstBeforeWireIO(t *testing.T) {
 	_, _ = provider.RawRead(context.Background(), request)
 	if adapter.reads != mcp.ModbusV1MaxRawReadsPerWindow+1 {
 		t.Fatalf("wire reads after refill = %d", adapter.reads)
+	}
+}
+
+func TestGatewayModbusMCPProviderReconnectsAndRetriesOnceInsideOneQuotaAdmission(t *testing.T) {
+	firstErr := errors.New("fixture retryable transport failure")
+	secondErr := errors.New("fixture retry remained unavailable")
+	adapter := &countingModbusMCPAdapter{
+		reconnectRequired: true,
+		readErrors:        []error{firstErr, secondErr},
+	}
+	provider := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	request := mcp.ModbusRawReadRequest{UnitID: 7, Function: 3, Offset: 40000, Quantity: 2}
+
+	_, err := provider.RawRead(context.Background(), request)
+	if !errors.Is(err, secondErr) {
+		t.Fatalf("RawRead error = %v; want retry error", err)
+	}
+	if adapter.reads != 2 || adapter.reconnects != 1 {
+		t.Fatalf("physical attempts/reconnects = %d/%d; want 2/1", adapter.reads, adapter.reconnects)
+	}
+	if provider.rateN != 1 {
+		t.Fatalf("quota admissions = %d; want 1", provider.rateN)
+	}
+	if len(adapter.plans) != 2 || !reflect.DeepEqual(adapter.plans[0], adapter.plans[1]) {
+		t.Fatalf("retry changed immutable admitted plan: %#v", adapter.plans)
+	}
+}
+
+func TestGatewayModbusMCPProviderDoesNotReconnectWithoutOwnerAuthorization(t *testing.T) {
+	adapter := &countingModbusMCPAdapter{
+		readErrors: []error{errors.New("permanent provider failure")},
+	}
+	provider := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	request := mcp.ModbusRawReadRequest{UnitID: 7, Function: 3, Offset: 40000, Quantity: 1}
+
+	_, _ = provider.RawRead(context.Background(), request)
+	if adapter.reads != 1 || adapter.reconnects != 0 {
+		t.Fatalf("physical attempts/reconnects = %d/%d; want 1/0", adapter.reads, adapter.reconnects)
 	}
 }
 

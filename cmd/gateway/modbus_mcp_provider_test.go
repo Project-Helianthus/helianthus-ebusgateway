@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"io"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -19,6 +23,7 @@ type countingModbusMCPAdapter struct {
 	reconnects        int
 	reconnectRequired bool
 	reconnectErr      error
+	reconnectWait     bool
 	readErrors        []error
 	plans             []modbusadapter.ReadPlan
 }
@@ -36,8 +41,12 @@ func (adapter *countingModbusMCPAdapter) Snapshot() modbus.TCPEndpointSnapshot {
 	return modbus.TCPEndpointSnapshot{ReconnectRequired: adapter.reconnectRequired}
 }
 
-func (adapter *countingModbusMCPAdapter) Reconnect(context.Context) error {
+func (adapter *countingModbusMCPAdapter) Reconnect(ctx context.Context) error {
 	adapter.reconnects++
+	if adapter.reconnectWait {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return adapter.reconnectErr
 }
 
@@ -148,6 +157,131 @@ func TestGatewayModbusMCPProviderDoesNotReconnectWithoutOwnerAuthorization(t *te
 	_, _ = provider.RawRead(context.Background(), request)
 	if adapter.reads != 1 || adapter.reconnects != 0 {
 		t.Fatalf("physical attempts/reconnects = %d/%d; want 1/0", adapter.reads, adapter.reconnects)
+	}
+}
+
+func TestGatewayModbusMCPProviderStopsWhenReconnectFails(t *testing.T) {
+	firstErr := errors.New("fixture retryable transport failure")
+	reconnectErr := errors.New("fixture reconnect failure")
+	adapter := &countingModbusMCPAdapter{
+		reconnectRequired: true,
+		reconnectErr:      reconnectErr,
+		readErrors:        []error{firstErr},
+	}
+	provider := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	request := mcp.ModbusRawReadRequest{UnitID: 7, Function: 3, Offset: 40000, Quantity: 1}
+
+	_, err := provider.RawRead(context.Background(), request)
+	if !errors.Is(err, reconnectErr) {
+		t.Fatalf("RawRead error = %v; want reconnect error", err)
+	}
+	if adapter.reads != 1 || adapter.reconnects != 1 {
+		t.Fatalf("physical attempts/reconnects = %d/%d; want 1/1", adapter.reads, adapter.reconnects)
+	}
+}
+
+func TestGatewayModbusMCPProviderReconnectHonorsShorterCallerDeadline(t *testing.T) {
+	adapter := &countingModbusMCPAdapter{
+		reconnectRequired: true,
+		reconnectWait:     true,
+		readErrors:        []error{errors.New("fixture retryable transport failure")},
+	}
+	provider := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := provider.RawRead(ctx, mcp.ModbusRawReadRequest{
+		UnitID: 7, Function: 3, Offset: 40000, Quantity: 1,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RawRead error = %v; want caller deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded reconnect took %s", elapsed)
+	}
+	if adapter.reads != 1 || adapter.reconnects != 1 {
+		t.Fatalf("physical attempts/reconnects = %d/%d; want 1/1", adapter.reads, adapter.reconnects)
+	}
+}
+
+func TestGatewayModbusMCPProviderReturnsOnlyRecoveredConnectionData(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	peerDone := make(chan error, 1)
+	requests := make(chan [12]byte, 2)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				peerDone <- acceptErr
+				return
+			}
+			var request [12]byte
+			_, readErr := io.ReadFull(connection, request[:])
+			if readErr != nil {
+				_ = connection.Close()
+				peerDone <- readErr
+				return
+			}
+			requests <- request
+			if attempt == 0 {
+				_ = connection.Close()
+				continue
+			}
+			response := make([]byte, 11)
+			copy(response[0:4], request[0:4])
+			binary.BigEndian.PutUint16(response[4:6], 5)
+			response[6], response[7], response[8] = request[6], request[7], 2
+			binary.BigEndian.PutUint16(response[9:11], 0x1234)
+			_, writeErr := connection.Write(response)
+			_ = connection.Close()
+			peerDone <- writeErr
+			return
+		}
+	}()
+
+	config, err := mapModbusRuntimeConfig(ebusgateway.ModbusTCPConfig{
+		Enabled: true, Endpoint: "tcp://" + listener.Addr().String(), DialTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("map Modbus config: %v", err)
+	}
+	config.Endpoint.Backoff.Floor = time.Millisecond
+	config.Endpoint.Backoff.Ceiling = time.Millisecond
+	config.Endpoint.Backoff.MaxAttempts = 1
+	adapter, err := modbusadapter.Start(
+		context.Background(), config,
+		(&net.Dialer{}).DialContext,
+		func(config modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+			return modbus.NewTCPEndpoint(config)
+		},
+	)
+	if err != nil {
+		t.Fatalf("start Modbus adapter: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	provider := newGatewayModbusMCPProvider(adapter).(*gatewayModbusMCPProvider)
+	result, err := provider.RawRead(context.Background(), mcp.ModbusRawReadRequest{
+		UnitID: 1, Function: 3, Offset: 40000, Quantity: 1,
+	})
+	if err != nil {
+		t.Fatalf("RawRead after recoverable socket loss: %v", err)
+	}
+	if !reflect.DeepEqual(result.Words, []uint16{0x1234}) || result.TransportGeneration < 2 || result.ConnectionID < 2 {
+		t.Fatalf("recovered result = %#v", result)
+	}
+	if provider.rateN != 1 {
+		t.Fatalf("quota admissions = %d; want 1", provider.rateN)
+	}
+	first, second := <-requests, <-requests
+	if !reflect.DeepEqual(first[6:], second[6:]) {
+		t.Fatalf("retry changed immutable Modbus PDU: first=%x second=%x", first[6:], second[6:])
+	}
+	if err := <-peerDone; err != nil {
+		t.Fatalf("fake peer: %v", err)
 	}
 }
 

@@ -224,12 +224,21 @@ func canonicalPVData(snapshot pv.Snapshot, producedAt string) map[string]any {
 	for _, key := range originKeys {
 		origins = append(origins, pvProvenance(snapshot.Origins[pv.Digest(key)]))
 	}
-	requested := make([]any, len(snapshot.RequestedOutputs))
-	for index, output := range snapshot.RequestedOutputs {
+	requestedOutputs := append([]pv.RequestedOutput(nil), snapshot.RequestedOutputs...)
+	sort.Slice(requestedOutputs, func(i, j int) bool {
+		if requestedOutputs[i].SourceRef == requestedOutputs[j].SourceRef {
+			return requestedOutputs[i].RequestedOutputRef < requestedOutputs[j].RequestedOutputRef
+		}
+		return requestedOutputs[i].SourceRef < requestedOutputs[j].SourceRef
+	})
+	requested := make([]any, len(requestedOutputs))
+	for index, output := range requestedOutputs {
 		requested[index] = map[string]any{"source_ref": string(output.SourceRef), "requested_output_ref": string(output.RequestedOutputRef)}
 	}
-	projections := make([]any, len(snapshot.ProjectionReport))
-	for index, projection := range snapshot.ProjectionReport {
+	projectionReport := append([]pv.Projection(nil), snapshot.ProjectionReport...)
+	sort.Slice(projectionReport, func(i, j int) bool { return pvProjectionLess(projectionReport[i], projectionReport[j]) })
+	projections := make([]any, len(projectionReport))
+	for index, projection := range projectionReport {
 		row := map[string]any{
 			"source_ref": string(projection.SourceRef), "requested_output_ref": string(projection.RequestedOutputRef),
 			"fact_id": nil, "dimensions": nil, "outcome": string(projection.Outcome),
@@ -246,6 +255,29 @@ func canonicalPVData(snapshot pv.Snapshot, producedAt string) map[string]any {
 		"capabilities":      []any{map[string]any{"id": snapshot.Capability.ID, "outcome": string(snapshot.Capability.Outcome)}},
 		"requested_outputs": requested, "projection_report": projections,
 	}
+}
+
+func pvProjectionLess(left, right pv.Projection) bool {
+	if left.SourceRef != right.SourceRef {
+		return left.SourceRef < right.SourceRef
+	}
+	if left.RequestedOutputRef != right.RequestedOutputRef {
+		return left.RequestedOutputRef < right.RequestedOutputRef
+	}
+	if left.FactID != right.FactID {
+		return left.FactID < right.FactID
+	}
+	if value := pvDimensionSortKey(left.Dimensions); value != pvDimensionSortKey(right.Dimensions) {
+		return value < pvDimensionSortKey(right.Dimensions)
+	}
+	return left.Outcome < right.Outcome
+}
+
+func pvDimensionSortKey(dimensions *pv.Dimensions) string {
+	if dimensions == nil {
+		return ""
+	}
+	return string(dimensions.Scope) + "\x00" + string(dimensions.Phase) + "\x00" + string(dimensions.PhasePair) + "\x00" + dimensions.InputID + "\x00" + dimensions.SensorID
 }
 
 func pvDimensions(dimensions pv.Dimensions) map[string]any {
@@ -270,7 +302,9 @@ func pvValue(value pv.FactValue) map[string]any {
 	if value.Kind == pv.ValueKindEnum {
 		return map[string]any{"kind": "enum", "symbol": value.Symbol}
 	}
-	return map[string]any{"kind": "bitfield", "symbols": append([]string(nil), value.Symbols...)}
+	symbols := append([]string(nil), value.Symbols...)
+	sort.Strings(symbols)
+	return map[string]any{"kind": "bitfield", "symbols": symbols}
 }
 
 func pvContinuity(value pv.Continuity) map[string]any {

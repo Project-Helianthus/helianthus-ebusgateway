@@ -9,12 +9,21 @@ import (
 	"strings"
 	"testing"
 
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
 type modbusV1FixtureProvider struct {
 	rawRequest ModbusRawReadRequest
 	rawErr     error
+}
+
+func (*modbusV1FixtureProvider) CanonicalPV(context.Context, string, string) (pv.Snapshot, error) {
+	return pv.Snapshot{
+		ContractID: pv.ContractV1, AssetRef: "pv-asset-fixture", Generation: 1,
+		SourceTimeState: pv.SourceTimeUnavailable,
+		Capability:      pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilityNotSatisfied},
+	}, nil
 }
 
 func (provider *modbusV1FixtureProvider) RawRead(_ context.Context, request ModbusRawReadRequest) (ModbusRawReadResult, error) {
@@ -95,7 +104,7 @@ func TestModbusV1RegistrationAndBoundedRead(t *testing.T) {
 	provider := &modbusV1FixtureProvider{}
 	RegisterModbusV1Tools(server, provider)
 
-	for _, name := range []string{ModbusV1RawReadTool, ModbusV1ProfileObservationGetTool} {
+	for _, name := range []string{ModbusV1RawReadTool, ModbusV1ProfileObservationGetTool, ModbusV1CanonicalPVGetTool} {
 		if !server.hasToolNamed(name) {
 			t.Fatalf("tools/list missing %q", name)
 		}
@@ -112,6 +121,29 @@ func TestModbusV1RegistrationAndBoundedRead(t *testing.T) {
 	data := msp06Map(t, result.envelope["data"], "data")
 	if data["endpoint_ref"] != "sha256:endpoint" || data["endpoint"] != nil {
 		t.Fatalf("endpoint redaction failed: %+v", data)
+	}
+}
+
+func TestModbusV1CanonicalPVUsesClosedSemanticPayload(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &modbusV1FixtureProvider{})
+	result := msp06Call(t, server.Handler(), ModbusV1CanonicalPVGetTool, map[string]any{
+		"profile_id": "sunspec.inverter.three_phase.monitoring@1.0.0", "sample_id": "sunspec-71-81",
+	})
+	if result.isError {
+		t.Fatalf("canonical PV failed: %s", result.raw)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	if data["contract_id"] != pv.ContractV1 || data["asset_ref"] != "pv-asset-fixture" || data["ContractID"] != nil {
+		t.Fatalf("canonical data = %#v", data)
+	}
+	for _, forbidden := range []string{"endpoint", "raw_words", "wire_bytes"} {
+		if strings.Contains(result.raw, forbidden) {
+			t.Fatalf("semantic payload leaked %q: %s", forbidden, result.raw)
+		}
 	}
 }
 

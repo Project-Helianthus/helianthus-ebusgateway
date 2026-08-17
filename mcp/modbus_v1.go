@@ -234,17 +234,20 @@ func newModbusV1Envelope(
 	var envelopeError any
 	if err != nil {
 		code := "INVALID_ARGUMENT"
+		message := err.Error()
 		retriable := false
 		if providerCalled {
 			code = "UNAVAILABLE"
+			message = "modbus provider unavailable"
 			retriable = true
 		}
 		if errors.Is(err, ErrModbusV1ResourceExhausted) {
 			code = "RESOURCE_EXHAUSTED"
+			message = "modbus raw read quota exhausted"
 		}
 		envelopeError = map[string]any{
 			"code":         code,
-			"message":      err.Error(),
+			"message":      message,
 			"retriable":    retriable,
 			"source_layer": "modbus",
 		}

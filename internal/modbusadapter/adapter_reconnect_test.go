@@ -2,8 +2,10 @@ package modbusadapter
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,5 +142,104 @@ func TestAdapterReconnectAfterSocketLossRetiresFailedGenerationAndHonorsBackoff(
 	}
 	if dispatch, ok := adapter.Dispatch(); ok && dispatch.RequestID() == stale.RequestID() {
 		t.Fatalf("stale failed request %d was retried on recovered generation", stale.RequestID())
+	}
+}
+
+func TestAdapterExecuteReadWithReconnectSerializesConcurrentRecovery(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	peerDone := make(chan error, 1)
+	go func() {
+		first, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			peerDone <- acceptErr
+			return
+		}
+		request := make([]byte, 12)
+		_, readErr := io.ReadFull(first, request)
+		_ = first.Close()
+		if readErr != nil {
+			peerDone <- readErr
+			return
+		}
+		second, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			peerDone <- acceptErr
+			return
+		}
+		defer func() { _ = second.Close() }()
+		for index := 0; index < 2; index++ {
+			if _, readErr = io.ReadFull(second, request); readErr != nil {
+				peerDone <- readErr
+				return
+			}
+			response := make([]byte, 11)
+			copy(response[0:4], request[0:4])
+			binary.BigEndian.PutUint16(response[4:6], 5)
+			response[6], response[7], response[8] = request[6], request[7], 2
+			binary.BigEndian.PutUint16(response[9:11], uint16(0x1200+index))
+			if _, writeErr := second.Write(response); writeErr != nil {
+				peerDone <- writeErr
+				return
+			}
+		}
+		peerDone <- nil
+	}()
+
+	adapter, err := Start(
+		context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()),
+		realDialer, realFactory,
+	)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	request, err := modbus.NewReadRegistersRequest(modbus.FunctionReadHoldingRegisters, 40000, 1)
+	if err != nil {
+		t.Fatalf("NewReadRegistersRequest: %v", err)
+	}
+	type result struct {
+		batch modbus.TCPReadBatch
+		err   error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var callers sync.WaitGroup
+	for caller := range 2 {
+		callers.Add(1)
+		go func(caller int) {
+			defer callers.Done()
+			<-start
+			batch, callErr := adapter.ExecuteReadWithReconnect(context.Background(), ReadPlan{
+				UnitID: 1, AuthorizationScope: "mcp:modbus.raw.read",
+				PollGeneration: uint64(caller + 1), DeadlineIdentity: uint64(caller + 1),
+				Timeout: time.Second,
+				Reads:   []modbus.TCPLogicalRead{{LogicalViewID: uint64(caller + 1), Request: request}},
+			})
+			results <- result{batch: batch, err: callErr}
+		}(caller)
+	}
+	close(start)
+	callers.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("ExecuteReadWithReconnect: %v", result.err)
+		}
+		if len(result.batch.Views) != 1 || result.batch.Views[0].Provenance().Wire.TransportGeneration < 2 {
+			t.Fatalf("recovered batch = %#v", result.batch)
+		}
+	}
+	if err := <-peerDone; err != nil {
+		t.Fatalf("peer: %v", err)
+	}
+	if generation := adapter.connection.Generation(); generation != 2 {
+		t.Fatalf("connection generation = %d; want exactly one reconnect to generation 2", generation)
+	}
+	if snapshot := adapter.Snapshot(); snapshot.ReconnectRequired || !snapshot.Healthy {
+		t.Fatalf("post-recovery snapshot = %#v", snapshot)
 	}
 }

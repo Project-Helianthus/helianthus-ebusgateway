@@ -29,7 +29,7 @@ type gatewayModbusMCPProvider struct {
 }
 
 type modbusMCPAdapter interface {
-	ExecuteRead(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
+	ExecuteReadWithReconnect(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
 	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
 }
@@ -54,7 +54,7 @@ func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request m
 		return mcp.ModbusRawReadResult{}, err
 	}
 	id := provider.nextID.Add(1)
-	batch, err := provider.adapter.ExecuteRead(ctx, modbusadapter.ReadPlan{
+	plan := modbusadapter.ReadPlan{
 		UnitID:             request.UnitID,
 		AuthorizationScope: "mcp:modbus.raw.read",
 		PollGeneration:     id,
@@ -64,7 +64,10 @@ func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request m
 			LogicalViewID: id,
 			Request:       read,
 		}},
-	})
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, plan.Timeout)
+	defer cancel()
+	batch, err := provider.adapter.ExecuteReadWithReconnect(operationCtx, plan)
 	if err != nil {
 		return mcp.ModbusRawReadResult{}, err
 	}

@@ -240,46 +240,57 @@ func (adapter *Adapter) Reconnect(ctx context.Context) error {
 	if adapter == nil || adapter.endpoint == nil || ctx == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
-	reconnector, ok := adapter.endpoint.(reconnectEndpoint)
-	if !ok {
-		return errors.New("modbus TCP endpoint does not support reconnect")
-	}
 	adapter.executeMu.Lock()
 	defer adapter.executeMu.Unlock()
+	_, err := adapter.reconnectLocked(ctx, false)
+	return err
+}
+
+// reconnectLocked checks owner recovery state and replaces the connection while
+// executeMu is held. requireOwnerAuthorization makes the check and replacement
+// one atomic adapter operation for caller-triggered recovery.
+func (adapter *Adapter) reconnectLocked(ctx context.Context, requireOwnerAuthorization bool) (bool, error) {
+	reconnector, ok := adapter.endpoint.(reconnectEndpoint)
+	if !ok {
+		return false, errors.New("modbus TCP endpoint does not support reconnect")
+	}
 	adapter.connectionMu.Lock()
 	defer adapter.connectionMu.Unlock()
 	if adapter.closed {
-		return errors.New("modbus TCP adapter is closed")
+		return false, errors.New("modbus TCP adapter is closed")
 	}
 	oldConnection, request := adapter.connection, adapter.lastRequest
 	beforeRetirement := adapter.endpoint.Snapshot()
+	if requireOwnerAuthorization && !beforeRetirement.ReconnectRequired {
+		return false, nil
+	}
 	if err := reconnector.CloseConnection(oldConnection); err != nil && !beforeRetirement.ReconnectRequired {
-		return fmt.Errorf("retire Modbus TCP connection: %w", err)
+		return false, fmt.Errorf("retire Modbus TCP connection: %w", err)
 	}
 	adapter.lastRequest = modbus.TCPRequestHandle{}
 	// A failed socket may already have retired its handle. Only the endpoint's
 	// public state authorizes consuming request-bound reconnect backoff.
 	if request.RequestID() != 0 && beforeRetirement.ReconnectRequired {
 		if err := reconnector.WaitReconnect(ctx, request, contextDelayWaiter{}); err != nil {
-			return fmt.Errorf("wait endpoint reconnect backoff: %w", err)
+			return false, fmt.Errorf("wait endpoint reconnect backoff: %w", err)
 		}
 	}
 	address, err := dialAddress(adapter.config.Endpoint.Endpoint)
 	if err != nil {
-		return err
+		return false, err
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, adapter.config.DialTimeout)
 	defer cancel()
 	connection, err := adapter.dial(dialCtx, "tcp", address)
 	if err != nil {
-		return fmt.Errorf("redial Modbus TCP endpoint: %w", err)
+		return false, fmt.Errorf("redial Modbus TCP endpoint: %w", err)
 	}
 	handle, err := adapter.endpoint.OpenConnection(connection)
 	if err != nil {
-		return errors.Join(fmt.Errorf("reopen Modbus TCP endpoint: %w", err), connection.Close())
+		return false, errors.Join(fmt.Errorf("reopen Modbus TCP endpoint: %w", err), connection.Close())
 	}
 	adapter.connection = handle
-	return nil
+	return true, nil
 }
 
 // ExecuteRead serializes one bounded request through the endpoint owner. It
@@ -290,6 +301,33 @@ func (adapter *Adapter) ExecuteRead(ctx context.Context, plan ReadPlan) (modbus.
 	}
 	adapter.executeMu.Lock()
 	defer adapter.executeMu.Unlock()
+	return adapter.executeReadLocked(ctx, plan)
+}
+
+// ExecuteReadWithReconnect owns one bounded read operation across a retryable
+// transport failure. The owner check, connection replacement, and single retry
+// remain serialized with every other adapter execution.
+func (adapter *Adapter) ExecuteReadWithReconnect(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
+	if adapter == nil || adapter.endpoint == nil {
+		return modbus.TCPReadBatch{}, errors.New("modbus TCP adapter unavailable")
+	}
+	adapter.executeMu.Lock()
+	defer adapter.executeMu.Unlock()
+	batch, err := adapter.executeReadLocked(ctx, plan)
+	if err == nil {
+		return batch, nil
+	}
+	reconnected, reconnectErr := adapter.reconnectLocked(ctx, true)
+	if reconnectErr != nil {
+		return modbus.TCPReadBatch{}, reconnectErr
+	}
+	if !reconnected {
+		return modbus.TCPReadBatch{}, err
+	}
+	return adapter.executeReadLocked(ctx, plan)
+}
+
+func (adapter *Adapter) executeReadLocked(ctx context.Context, plan ReadPlan) (modbus.TCPReadBatch, error) {
 	handle, err := adapter.EnqueueRead(plan)
 	if err != nil {
 		return modbus.TCPReadBatch{}, err

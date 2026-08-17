@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,10 +14,14 @@ import (
 
 type modbusV1FixtureProvider struct {
 	rawRequest ModbusRawReadRequest
+	rawErr     error
 }
 
 func (provider *modbusV1FixtureProvider) RawRead(_ context.Context, request ModbusRawReadRequest) (ModbusRawReadResult, error) {
 	provider.rawRequest = request
+	if provider.rawErr != nil {
+		return ModbusRawReadResult{}, provider.rawErr
+	}
 	return ModbusRawReadResult{
 		EndpointRef:         "sha256:endpoint",
 		UnitID:              request.UnitID,
@@ -32,6 +37,36 @@ func (provider *modbusV1FixtureProvider) RawRead(_ context.Context, request Modb
 		PollGenerationID:    96,
 		DeadlineIdentity:    97,
 	}, nil
+}
+
+func TestModbusV1ProviderErrorIsStaticAndEndpointFree(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaked := "read tcp 192.0.2.10:49152->192.0.2.20:502: connection reset"
+	RegisterModbusV1Tools(server, &modbusV1FixtureProvider{rawErr: errors.New(leaked)})
+
+	result := msp06Call(t, server.Handler(), ModbusV1RawReadTool, map[string]any{
+		"unit_id": 1, "function": 3, "offset": 40000, "quantity": 1,
+	})
+	if !result.isError {
+		t.Fatal("provider failure returned success")
+	}
+	envelopeError := msp06Map(t, result.envelope["error"], "error")
+	if envelopeError["code"] != "UNAVAILABLE" || envelopeError["retriable"] != true ||
+		envelopeError["message"] != "modbus provider unavailable" {
+		t.Fatalf("provider error envelope = %#v", envelopeError)
+	}
+	message, ok := envelopeError["message"].(string)
+	if !ok {
+		t.Fatalf("provider error message = %#v", envelopeError["message"])
+	}
+	for _, forbidden := range []string{leaked, "192.0.2.10", "192.0.2.20", "49152", "502"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("provider error leaked %q: %s", forbidden, message)
+		}
+	}
 }
 
 func (*modbusV1FixtureProvider) ProfileObservation(_ context.Context, profileID, sampleID string) (ModbusProfileObservationResult, error) {

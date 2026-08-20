@@ -40,10 +40,10 @@ func TestIssue817LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 	ski := raw.snapshot.Devices[0].SKI
 	adminSnapshot := testAdminSnapshot()
 	adminSnapshot.StateRevision = 41
-	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: ski, TrustState: "durably_trusted"}}
-	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
+	adminSnapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: ski, ConnectionState: "connected"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
 	handler := newIssue817Server(t, admin, raw, nil)
-	partnerID := issue817TrustedPartnerID(t, handler)
+	partnerID := issue844PartnerID(t, handler, "connected")
 
 	root := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root")
 	if root.SnapshotID == "" || root.SnapshotHash != raw.snapshot.Meta.DataHash || root.ParentNodeID != nil || len(root.Nodes) != 1 || root.Nodes[0].Kind != "device" {
@@ -98,10 +98,10 @@ func TestIssue817LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 func TestIssue817SPINEUsesTheSameOperatorScopeAndRejectsUnknownQueryBeforeRawCapture(t *testing.T) {
 	raw := &issue809RawSnapshotStub{snapshot: issue809VR940Snapshot(t)}
 	adminSnapshot := testAdminSnapshot()
-	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: raw.snapshot.Devices[0].SKI, TrustState: "durably_trusted"}}
-	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
+	adminSnapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: raw.snapshot.Devices[0].SKI, ConnectionState: "connected"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
 	handler := newIssue817Server(t, admin, raw, nil)
-	partnerID := issue817TrustedPartnerID(t, handler)
+	partnerID := issue844PartnerID(t, handler, "connected")
 	bad := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root&cursor=extra", nil)
 	issue817AddIrrelevantAuthMaterial(bad)
 	badResponse := httptest.NewRecorder()
@@ -129,10 +129,10 @@ func TestIssue817SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners
 	}
 	raw := &issue809RawSnapshotStub{snapshot: snapshot}
 	adminSnapshot := testAdminSnapshot()
-	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: snapshot.Devices[0].SKI, TrustState: "durably_trusted"}}
-	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
+	adminSnapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: snapshot.Devices[0].SKI, ConnectionState: "connected"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
 	handler := newIssue817Server(t, admin, raw, nil)
-	partnerID := issue817TrustedPartnerID(t, handler)
+	partnerID := issue844PartnerID(t, handler, "connected")
 	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -141,9 +141,60 @@ func TestIssue817SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners
 	}
 }
 
+func TestIssue844TrustedOfflineSPINEIsDisconnectedBeforeRawCapture(t *testing.T) {
+	raw := &issue809RawSnapshotStub{snapshot: issue809VR940Snapshot(t)}
+	adminSnapshot := testAdminSnapshot()
+	adminSnapshot.Trusted = []eebusruntime.TrustedPartnerV1{{SKI: raw.snapshot.Devices[0].SKI, TrustState: "durably_trusted"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: adminSnapshot}}
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue844PartnerID(t, handler, "trusted")
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	assertIssue817ErrorEnvelope(t, response.Body.String(), "disconnected")
+	if response.Code != http.StatusConflict || raw.calls != 0 {
+		t.Fatalf("trusted-offline status/raw=%d/%d body=%s", response.Code, raw.calls, response.Body.String())
+	}
+}
+
+func TestIssue844ConnectedWithoutTopologyHasScopedAvailabilityError(t *testing.T) {
+	snapshot := issue809VR940Snapshot(t)
+	ski := snapshot.Devices[0].SKI
+	snapshot.Devices = nil
+	snapshot.Entities = nil
+	snapshot.Features = nil
+	snapshot.UseCases = nil
+	snapshot.Opaque = nil
+	snapshot.Meta.DataHash = ""
+	var err error
+	snapshot, err = eebusruntime.NewSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatalf("build empty raw snapshot: %v", err)
+	}
+	raw := &issue809RawSnapshotStub{snapshot: snapshot}
+	adminSnapshot := testAdminSnapshot()
+	adminSnapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: ski, ConnectionState: "connected"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue844PartnerID(t, handler, "connected")
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	assertIssue817ErrorEnvelope(t, response.Body.String(), "spine_topology_unavailable")
+	if response.Code != http.StatusServiceUnavailable || raw.calls != 1 {
+		t.Fatalf("connected-empty status/raw=%d/%d body=%s", response.Code, raw.calls, response.Body.String())
+	}
+}
+
 func issue817TrustedPartnerID(t *testing.T, handler http.Handler) string {
+	return issue844PartnerID(t, handler, "trusted")
+}
+
+func issue844PartnerID(t *testing.T, handler http.Handler, view string) string {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil)
+	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view="+view, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {
@@ -154,7 +205,7 @@ func issue817TrustedPartnerID(t *testing.T, handler http.Handler) string {
 		} `json:"data"`
 	}
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &envelope) != nil || len(envelope.Data.Partners) != 1 || envelope.Data.Partners[0].PartnerID == "" {
-		t.Fatalf("trusted status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("%s status=%d body=%s", view, response.Code, response.Body.String())
 	}
 	return envelope.Data.Partners[0].PartnerID
 }

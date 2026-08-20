@@ -2313,10 +2313,13 @@ class PortalShell extends HTMLElement {
     };
     onClick("eebus-refresh-status", () => void this.refreshEEBusStatus().catch((error) => this.showEEBusError(error)));
 	 onClick("eebus-retry-pending", () => void this.refreshAndRetryPendingEEBusMutation().catch((error) => this.showEEBusError(error)));
-    onClick("eebus-refresh-partners", () => {
-      const view = this.querySelector('[data-role="eebus-partner-view"]')?.value || "trusted";
-      void this.refreshEEBusPartners(view).catch((error) => this.showEEBusError(error));
+    onClick("eebus-refresh-discovered", () => void this.refreshEEBusPartners("discovered").catch((error) => this.showEEBusError(error, "pairing")));
+    onClick("eebus-refresh-candidate", () => void this.refreshEEBusPartners("candidate").catch((error) => this.showEEBusError(error, "pairing")));
+    onClick("eebus-refresh-ship", () => {
+      const view = this.querySelector('[data-role="eebus-ship-view"]')?.value || "trusted";
+      void this.refreshEEBusPartners(view).catch((error) => this.showEEBusError(error, "ship"));
     });
+    onClick("eebus-refresh-spine-peers", () => void this.refreshEEBusSPINEPeers().catch((error) => this.showEEBusError(error, "spine")));
     onClick("eebus-window-open", () => void this.openEEBusPairingWindow().catch((error) => this.showEEBusError(error)));
     onClick("eebus-window-close", () => void this.closeEEBusPairingWindow().catch((error) => this.showEEBusError(error)));
     onClick("eebus-candidate-cancel", () => void this.cancelEEBusCandidate().catch((error) => this.showEEBusError(error)));
@@ -2324,8 +2327,15 @@ class PortalShell extends HTMLElement {
       const value = this.querySelector('[data-role="eebus-confirm-ski"]')?.value || "";
       void this.confirmEEBusCandidate(value).catch((error) => this.showEEBusError(error));
     });
-    const partners = this.querySelector('[data-role="eebus-partners"]');
-    if (partners) {
+    this.querySelectorAll("[data-eebus-workspace-target]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const workspace = button.getAttribute("data-eebus-workspace-target") || "";
+        this.switchEEBusWorkspace(workspace);
+        if (workspace === "ship") void this.refreshEEBusPartners("trusted").catch((error) => this.showEEBusError(error, "ship"));
+        if (workspace === "spine") void this.refreshEEBusSPINEPeers().catch((error) => this.showEEBusError(error, "spine"));
+      });
+    });
+    for (const partners of this.querySelectorAll('[data-role="eebus-pairing-partners"], [data-role="eebus-ship-partners"], [data-role="eebus-spine-peers"]')) {
       partners.addEventListener("click", (event) => {
         const button = event.target?.closest?.("[data-eebus-action]");
         if (!button) return;
@@ -2337,7 +2347,10 @@ class PortalShell extends HTMLElement {
           retry: () => this.retryEEBusPartner(id),
 		  "arm-untrust": () => this.armEEBusUntrust(id),
 		  untrust: () => this.untrustEEBusPartner(id),
-          spine: () => this.loadEEBusSPINERoot(id),
+          spine: async () => {
+            this.switchEEBusWorkspace("spine");
+            return this.loadEEBusSPINERoot(id);
+          },
         };
         if (operations[action]) void operations[action]().catch((error) => this.showEEBusError(error));
       });
@@ -2361,6 +2374,30 @@ class PortalShell extends HTMLElement {
     if (typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", this._eebusVisibilityHandler);
     }
+    this.switchEEBusWorkspace("pairing");
+  }
+
+  switchEEBusWorkspace(workspace) {
+    if (!new Set(["pairing", "ship", "spine"]).has(workspace)) return;
+    const previous = this._eebusWorkspace || "pairing";
+    if (previous !== workspace) {
+      if (previous === "pairing") {
+        this.clearEEBusCandidate();
+        this._eebusSelection = undefined;
+      } else if (previous === "ship") {
+        this._eebusUntrustArmedID = undefined;
+      } else if (previous === "spine") {
+        this.clearEEBusSPINETree();
+      }
+      if (this._eebusPendingMutation?.workspace === previous) this.clearEEBusPendingMutation();
+    }
+    this._eebusWorkspace = workspace;
+    this.querySelectorAll("[data-eebus-workspace]").forEach((panel) => {
+      panel.hidden = panel.dataset?.eebusWorkspace !== workspace;
+    });
+    this.querySelectorAll("[data-eebus-workspace-target]").forEach((button) => {
+      button.setAttribute("aria-current", button.dataset?.eebusWorkspaceTarget === workspace ? "page" : "false");
+    });
   }
 
   async eebusAdminFetch(path, options = {}) {
@@ -2426,12 +2463,25 @@ class PortalShell extends HTMLElement {
 		this._eebusCandidateTimer = setTimeout(() => this.clearEEBusCandidate(), delay);
 	  }
     }
-    this.renderEEBusPartners(rows, view);
+	this.renderEEBusPartners(rows, view);
+	return payload;
+  }
+
+  async refreshEEBusSPINEPeers() {
+    this.clearEEBusSPINETree();
+    const payload = await this.eebusAdminFetch("/partners?view=connected");
+    const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
+    this.renderEEBusSPINEPeers(rows);
     return payload;
   }
 
+  eebusPartnerContainer(view) {
+    const role = view === "trusted" || view === "connected" ? "eebus-ship-partners" : "eebus-pairing-partners";
+    return this.querySelector(`[data-role="${role}"]`) || this.querySelector('[data-role="eebus-partners"]');
+  }
+
   renderEEBusPartners(rows, view) {
-    const container = this.querySelector('[data-role="eebus-partners"]');
+	const container = this.eebusPartnerContainer(view);
     if (!container) return;
     const rendered = rows.map((row) => {
       const safe = escapeHtml(JSON.stringify(row, null, 2));
@@ -2444,13 +2494,25 @@ class PortalShell extends HTMLElement {
 		  ? `<button class="button" data-eebus-action="untrust" data-eebus-id="${id}">Confirm untrust</button>`
 		  : `<button class="button" data-eebus-action="arm-untrust" data-eebus-id="${id}">Arm untrust</button>`;
 	  }
-      if ((view === "trusted" || view === "connected") && row.partner_id) actions += `<button class="button" data-eebus-action="spine" data-eebus-id="${id}">Browse SPINE</button>`;
-      return `<article class="eebus-partner"><pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
+      if (view === "connected" && row.partner_id) actions += `<button class="button" data-eebus-action="spine" data-eebus-id="${id}">Open in SPINE</button>`;
+      const state = view === "trusted" ? '<p class="eebus-partner-state">Disconnected — Reconnect required</p>' : "";
+      return `<article class="eebus-partner">${state}<pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
     }).join("");
     const connect = this._eebusSelection
       ? `<button class="button" data-eebus-action="connect">Connect selected partner</button>`
       : "";
     container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
+  }
+
+  renderEEBusSPINEPeers(rows) {
+    const container = this.querySelector('[data-role="eebus-spine-peers"]');
+    if (!container) return;
+    const rendered = rows.map((row) => {
+      const safe = escapeHtml(JSON.stringify(row, null, 2));
+      const id = escapeHtml(row.partner_id || "");
+      return `<article class="eebus-partner"><p class="eebus-partner-state">Live SHIP session</p><pre>${safe}</pre><button class="button" data-eebus-action="spine" data-eebus-id="${id}">Load SPINE snapshot</button></article>`;
+    }).join("");
+    container.innerHTML = rendered || '<div class="muted-inline">No live SHIP session. Open SHIP to reconnect.</div>';
   }
 
   async eebusMutation(path, body, method = "POST") {
@@ -2465,6 +2527,7 @@ class PortalShell extends HTMLElement {
 		method,
 		path,
 		body: serializedBody,
+		workspace: this._eebusWorkspace || "pairing",
 		idempotencyKey: crypto.randomUUID(),
 		expiresAt: Date.now() + 2 * 60 * 1000,
 	  };
@@ -2615,7 +2678,7 @@ class PortalShell extends HTMLElement {
 	const input = this.querySelector?.('[data-role="eebus-confirm-ski"]');
 	if (input) input.value = "";
 	if (this._eebusPartnerView === "candidate") {
-	  const partners = this.querySelector?.('[data-role="eebus-partners"]');
+	  const partners = this.eebusPartnerContainer?.("candidate");
 	  if (partners) partners.innerHTML = '<div class="muted-inline">Candidate view cleared.</div>';
 	}
   }
@@ -2640,9 +2703,16 @@ class PortalShell extends HTMLElement {
 	if (retry) retry.disabled = !this._eebusPendingMutation;
   }
 
-  showEEBusError(error) {
-    const status = this.querySelector('[data-role="eebus-status"]');
-    if (status) status.textContent = `eeBUS: ${error?.message || "unknown error"}`;
+  showEEBusError(error, workspace = this._eebusWorkspace || "pairing") {
+    const code = error?.message || "unknown error";
+    const messages = {
+      disconnected: "No live SHIP session. Open SHIP and use Retry to reconnect.",
+      spine_topology_unavailable: "The live SHIP session has no SPINE topology yet. Reload the connected sessions.",
+      snapshot_expired: "The SPINE snapshot expired. Load a new snapshot.",
+    };
+    const role = code === "admin_boundary_unavailable" ? "eebus-status" : `eebus-${workspace}-status`;
+    const status = this.querySelector(`[data-role="${role}"]`) || this.querySelector('[data-role="eebus-status"]');
+    if (status) status.textContent = messages[code] || `eeBUS: ${code}`;
   }
 
   async loadEEBusSPINERoot(partnerID) {
@@ -2984,35 +3054,75 @@ class PortalShell extends HTMLElement {
                 <div class="muted-inline">Loading Vaillant B503 capability...</div>
               </div>
             </section>
-			<section id="section-eebus" class="registry-preview">
-			  <h2>eeBUS SHIP / SPINE</h2>
-			  <p class="muted-inline">Host operator workbench. Candidate identity stays only in this active view.</p>
-			  <div class="snapshot-controls">
-			    <button class="button" data-role="eebus-refresh-status" type="button">Refresh status</button>
+			<section id="section-eebus" class="registry-preview eebus-workbench">
+			  <div class="eebus-heading-row">
+			    <div>
+			      <h2>eeBUS</h2>
+			      <p class="muted-inline">Host operator workbench. Pairing authority and raw protocol data stay only in this active view.</p>
+			    </div>
+			    <button class="button" data-role="eebus-refresh-status" type="button">Refresh health</button>
 			  </div>
-			  <div class="bus-banner bus-state-unavailable" data-role="eebus-status">Loading eeBUS operator status.</div>
-			  <div class="snapshot-controls">
-			    <button class="button" data-role="eebus-window-open" type="button">Open pairing window</button>
-			    <button class="button" data-role="eebus-window-close" type="button">Close pairing window</button>
-			    <button class="button" data-role="eebus-candidate-cancel" type="button">Cancel candidate</button>
-			    <button class="button" data-role="eebus-retry-pending" type="button" disabled>Retry pending action</button>
-			  </div>
-			  <div class="snapshot-controls">
-			    <select class="select" data-role="eebus-partner-view" aria-label="eeBUS partner view">
-			      <option value="trusted">Trusted</option><option value="connected">Connected</option><option value="discovered">Discovered</option><option value="candidate">Candidate</option>
-			    </select>
-			    <button class="button" data-role="eebus-refresh-partners" type="button">Refresh partners</button>
-			  </div>
-			  <input class="search timeline-filter" data-role="eebus-select-ski" autocomplete="off" placeholder="Enter the independent OOB 40-character SKI before Select" />
-			  <div data-role="eebus-partners"><div class="muted-inline">No partner view loaded.</div></div>
-			  <div class="eebus-candidate-panel">
-			    <h3>OOB candidate</h3>
-			    <pre data-role="eebus-candidate"></pre>
-			    <input class="search timeline-filter" data-role="eebus-confirm-ski" autocomplete="off" placeholder="Retype the complete 40-character SKI" />
-			    <button class="button" data-role="eebus-candidate-confirm" type="button">Confirm exact SKI</button>
-			  </div>
-			  <h3>Lazy SPINE tree</h3>
-			  <div data-role="eebus-spine-tree" class="eebus-spine-tree"><div class="muted-inline">Choose Browse SPINE on a trusted or connected partner.</div></div>
+			  <div class="bus-banner bus-state-unavailable eebus-health-strip" data-role="eebus-status" role="status" aria-live="polite" aria-atomic="true">Loading eeBUS operator health.</div>
+			  <nav class="eebus-workspace-nav" data-role="eebus-workspace-nav" aria-label="eeBUS workspaces">
+			    <button class="button" data-eebus-workspace-target="pairing" type="button" aria-current="page"><strong>Pairing</strong><span>Discover and establish trust</span></button>
+			    <button class="button" data-eebus-workspace-target="ship" type="button" aria-current="false"><strong>SHIP</strong><span>Trust and live sessions</span></button>
+			    <button class="button" data-eebus-workspace-target="spine" type="button" aria-current="false"><strong>SPINE</strong><span>Read-only topology</span></button>
+			  </nav>
+
+			  <section class="eebus-workspace" data-eebus-workspace="pairing" aria-labelledby="eebus-pairing-heading">
+			    <div class="eebus-workspace-heading">
+			      <div><h3 id="eebus-pairing-heading">Pair a device</h3><p class="muted-inline">Open discovery, verify the independent OOB SKI, connect, then confirm the TLS-bound candidate.</p></div>
+			      <div class="snapshot-controls">
+			        <button class="button" data-role="eebus-window-open" type="button">Open pairing window</button>
+			        <button class="button" data-role="eebus-window-close" type="button">Close pairing window</button>
+			      </div>
+			    </div>
+			    <div class="eebus-workspace-status muted-inline" data-role="eebus-pairing-status" role="status" aria-live="polite" aria-atomic="true">Pairing controls are ready.</div>
+			    <div class="snapshot-controls">
+			      <button class="button" data-role="eebus-refresh-discovered" type="button">Refresh discovered services</button>
+			      <button class="button" data-role="eebus-refresh-candidate" type="button">Refresh candidate</button>
+			      <button class="button" data-role="eebus-retry-pending" type="button" disabled>Retry pending action</button>
+			    </div>
+			    <label class="eebus-field" for="eebus-select-ski">Independent OOB SKI <span>40 lowercase hexadecimal characters</span></label>
+			    <input id="eebus-select-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-select-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Enter the SKI before Select" />
+			    <div data-role="eebus-pairing-partners"><div class="muted-inline">No discovered service loaded.</div></div>
+			    <div class="eebus-candidate-panel">
+			      <h4>TLS-bound candidate</h4>
+			      <pre data-role="eebus-candidate"></pre>
+			      <label class="eebus-field" for="eebus-confirm-ski">Confirm complete candidate SKI <span>Must exactly match the independent value</span></label>
+			      <input id="eebus-confirm-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-confirm-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Retype the complete SKI" />
+			      <div class="snapshot-controls">
+			        <button class="button" data-role="eebus-candidate-confirm" type="button">Confirm exact SKI</button>
+			        <button class="button" data-role="eebus-candidate-cancel" type="button">Cancel candidate</button>
+			      </div>
+			    </div>
+			  </section>
+
+			  <section class="eebus-workspace" data-eebus-workspace="ship" aria-labelledby="eebus-ship-heading" hidden>
+			    <div class="eebus-workspace-heading">
+			      <div><h3 id="eebus-ship-heading">SHIP associations and sessions</h3><p class="muted-inline">Trusted associations persist independently from live sessions. Retry is always an explicit operator action.</p></div>
+			      <div class="snapshot-controls">
+			        <select class="select" data-role="eebus-ship-view" aria-label="SHIP partner view">
+			          <option value="trusted">Trusted associations</option>
+			          <option value="connected">Live sessions</option>
+			        </select>
+			        <button class="button" data-role="eebus-refresh-ship" type="button">Refresh SHIP</button>
+			      </div>
+			    </div>
+			    <div class="eebus-workspace-status muted-inline" data-role="eebus-ship-status" role="status" aria-live="polite" aria-atomic="true">Choose Trusted associations or Live sessions.</div>
+			    <div data-role="eebus-ship-partners"><div class="muted-inline">No SHIP view loaded.</div></div>
+			  </section>
+
+			  <section class="eebus-workspace" data-eebus-workspace="spine" aria-labelledby="eebus-spine-heading" hidden>
+			    <div class="eebus-workspace-heading">
+			      <div><h3 id="eebus-spine-heading">SPINE topology browser</h3><p class="muted-inline">Read-only snapshots from a current connected SHIP session. Browsing never reconnects or mutates trust.</p></div>
+			      <button class="button" data-role="eebus-refresh-spine-peers" type="button">Refresh connected sessions</button>
+			    </div>
+			    <div class="eebus-workspace-status muted-inline" data-role="eebus-spine-status" role="status" aria-live="polite" aria-atomic="true">No live SHIP session selected.</div>
+			    <div data-role="eebus-spine-peers"><div class="muted-inline">No live SHIP session. Open SHIP to reconnect.</div></div>
+			    <h4>Lazy topology snapshot</h4>
+			    <div data-role="eebus-spine-tree" class="eebus-spine-tree"><div class="muted-inline">Select a connected peer to load a read-only SPINE snapshot.</div></div>
+			  </section>
 			</section>
             <div class="meta" data-role="stream-status">Stream idle</div>
             <div class="meta" data-role="meta">Waiting for bootstrap...</div>

@@ -22,6 +22,8 @@ type RawSnapshotProvider interface {
 	Snapshot() (eebusruntime.SnapshotV1, error)
 }
 
+var errSpineTopologyUnavailable = errors.New("partner has no raw device inventory")
+
 type spineSnapshot struct {
 	id        string
 	hash      string
@@ -122,6 +124,10 @@ func (server *server) spineRoot(w http.ResponseWriter, partnerID string) {
 		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
+	if partner.view != eebusruntime.AdminViewV1Connected {
+		server.writeError(w, http.StatusConflict, "disconnected")
+		return
+	}
 	if server.raw == nil {
 		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
@@ -133,6 +139,10 @@ func (server *server) spineRoot(w http.ResponseWriter, partnerID string) {
 	}
 	snapshot, err := server.buildSpineSnapshot(raw.Clone(), partnerID, partner.ski, partner.revision)
 	if err != nil {
+		if errors.Is(err, errSpineTopologyUnavailable) {
+			server.writeError(w, http.StatusServiceUnavailable, "spine_topology_unavailable")
+			return
+		}
 		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
@@ -209,7 +219,7 @@ func (server *server) buildSpineSnapshot(raw eebusruntime.SnapshotV1, partnerID,
 		deviceIDs[device.Address] = node.ID
 	}
 	if len(deviceIDs) == 0 {
-		return nil, errors.New("partner has no raw device inventory")
+		return nil, errSpineTopologyUnavailable
 	}
 	for _, entity := range raw.Entities {
 		parentID, exists := deviceIDs[entity.DeviceAddress]

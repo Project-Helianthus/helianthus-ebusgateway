@@ -427,6 +427,102 @@ body {
   align-items: center;
 }
 
+.eebus-heading-row,
+.eebus-workspace-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.eebus-heading-row h2,
+.eebus-workspace-heading h3,
+.eebus-workspace h4 {
+  margin-top: 0;
+}
+
+.eebus-health-strip {
+  margin: 0.85rem 0;
+  min-height: 2.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.eebus-workspace-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 1rem 0;
+}
+
+.eebus-workspace-nav .button {
+  min-height: 4rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.15rem;
+  text-align: left;
+}
+
+.eebus-workspace-nav .button span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.eebus-workspace-nav .button[aria-current="page"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+
+.eebus-workspace {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+}
+
+.eebus-workspace[hidden] {
+  display: none;
+}
+
+.eebus-workspace-status {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  padding: 0.55rem 0.7rem;
+  margin: 0.65rem 0;
+  border-left: 3px solid var(--border);
+}
+
+.eebus-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.8rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.eebus-field span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.eebus-ski-input {
+  width: 100%;
+  min-height: 2.75rem;
+  margin-top: 0.35rem;
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+}
+
+.eebus-partner-state {
+  margin-top: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .eebus-partner,
 .eebus-spine-node,
 .eebus-candidate-panel {
@@ -472,6 +568,24 @@ body {
 
   .content {
     grid-template-columns: 1fr;
+  }
+
+  .eebus-heading-row,
+  .eebus-workspace-heading {
+    flex-direction: column;
+  }
+
+  .eebus-workspace-nav {
+    grid-template-columns: 1fr;
+  }
+
+  .eebus-workspace .snapshot-controls {
+    align-items: stretch;
+  }
+
+  .eebus-workspace .snapshot-controls > * {
+    width: 100%;
+    min-height: 2.75rem;
   }
 
 }

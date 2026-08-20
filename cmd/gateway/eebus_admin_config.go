@@ -59,7 +59,13 @@ type eebusStartupFailure struct {
 }
 
 func (failure *eebusStartupFailure) Error() string { return failure.err.Error() }
-func (failure *eebusStartupFailure) Unwrap() error { return failure.err }
+
+// Unwrap replaces, rather than extends, the gateway's existing public error
+// layer. That keeps previously sanitized cause-chain depth stable.
+func (failure *eebusStartupFailure) Unwrap() error { return errors.Unwrap(failure.err) }
+func (failure *eebusStartupFailure) Is(target error) bool {
+	return errors.Is(failure.err, target)
+}
 
 func markEEBusStartupFailure(reason eebusadmin.EEBusDegradedReason, err error) error {
 	if err == nil {

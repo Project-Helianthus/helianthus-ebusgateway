@@ -136,6 +136,32 @@ func (config PortalPVConfig) Validate() error {
 	return nil
 }
 
+// ValidatePortalPV enforces that the Portal semantic BFF can only target the
+// configured dedicated M2M listener and one of its admitted assets.
+func (cfg Config) ValidatePortalPV() error {
+	if err := cfg.PortalPV.Validate(); err != nil {
+		return err
+	}
+	if !cfg.PortalPV.SemanticEnabled {
+		return nil
+	}
+	if cfg.M2MGraphQL.Disabled() {
+		return errors.New("portal PV semantic BFF requires the dedicated M2M listener")
+	}
+	if err := cfg.M2MGraphQL.Validate(); err != nil {
+		return errors.New("portal PV semantic BFF requires a valid dedicated M2M listener")
+	}
+	if cfg.PortalPV.M2MServerName != cfg.M2MGraphQL.ServerName {
+		return errors.New("portal PV semantic BFF server identity does not match the dedicated M2M listener")
+	}
+	for _, asset := range cfg.M2MGraphQL.AllowedAssets {
+		if asset == cfg.PortalPV.AssetRef {
+			return nil
+		}
+	}
+	return errors.New("portal PV semantic BFF asset is not admitted by the dedicated M2M listener")
+}
+
 func (config M2MGraphQLConfig) Disabled() bool {
 	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
 		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&

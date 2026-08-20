@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -42,6 +44,12 @@ func NewClient(config ClientConfig) (*Client, error) {
 		if strings.TrimSpace(value) == "" {
 			return nil, errors.New("M2M GraphQL client configuration is incomplete")
 		}
+	}
+	parsedURL, err := url.Parse(config.URL)
+	if err != nil || !parsedURL.IsAbs() || parsedURL.Scheme != "https" || parsedURL.Host == "" ||
+		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || parsedURL.Opaque != "" ||
+		parsedURL.ForceQuery || parsedURL.Path != route || parsedURL.RawPath != "" {
+		return nil, errors.New("M2M GraphQL client URL is invalid")
 	}
 	certificate, err := tls.LoadX509KeyPair(config.ClientCertFile, config.ClientKeyFile)
 	if err != nil {
@@ -80,8 +88,12 @@ func (client *Client) Current(ctx context.Context) (Response, error) {
 		return Response{}, errors.New("M2M GraphQL request failed")
 	}
 	defer func() { _ = response.Body.Close() }()
+	mediaType, _, contentTypeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode != http.StatusOK || contentTypeErr != nil || mediaType != "application/json" {
+		return Response{}, errors.New("M2M GraphQL response is invalid")
+	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(encoded) > maxResponseBytes {
+	if err != nil || len(encoded) > maxResponseBytes || !json.Valid(encoded) {
 		return Response{}, errors.New("M2M GraphQL response is invalid")
 	}
 	return Response{Status: response.StatusCode, ContentType: response.Header.Get("Content-Type"), Body: encoded}, nil

@@ -1,22 +1,26 @@
 package portal
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"path"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
@@ -85,17 +89,28 @@ type ForwardedResponse struct {
 }
 
 type RawModbusAuditEvent struct {
-	Outcome string
-	At      time.Time
+	RequestID   string    `json:"request_id"`
+	Surface     string    `json:"surface"`
+	Tool        string    `json:"tool"`
+	UnitID      *uint64   `json:"unit_id,omitempty"`
+	Function    *uint64   `json:"function,omitempty"`
+	Offset      *uint64   `json:"offset,omitempty"`
+	Quantity    *uint64   `json:"quantity,omitempty"`
+	Outcome     string    `json:"outcome"`
+	ErrorCode   string    `json:"error_code"`
+	DurationMS  int64     `json:"duration_ms"`
+	EndpointRef string    `json:"endpoint_ref,omitempty"`
+	At          time.Time `json:"at"`
 }
 
 type handler struct {
-	opts      Options
-	files     http.Handler
-	timeline  *timelineBuffer
-	snapshots *snapshotStore
-	sessions  *sessionStore
-	explorer  *explorerStore
+	opts          Options
+	files         http.Handler
+	timeline      *timelineBuffer
+	snapshots     *snapshotStore
+	sessions      *sessionStore
+	explorer      *explorerStore
+	rawRequestSeq atomic.Uint64
 }
 
 type RegistryDevice struct {
@@ -1090,44 +1105,111 @@ func (h *handler) handleRawModbusRead(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	started := time.Now()
+	event := RawModbusAuditEvent{
+		RequestID: fmt.Sprintf("raw-%016x", h.rawRequestSeq.Add(1)), Surface: "portal",
+		Tool: mcp.ModbusV1RawReadTool, Outcome: "rejected", ErrorCode: "INVALID_ARGUMENT", At: started.UTC(),
+	}
+	defer func() {
+		event.DurationMS = time.Since(started).Milliseconds()
+		h.auditRawModbus(event)
+	}()
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, (4<<10)+1))
-	if err != nil || len(body) > 4<<10 {
-		h.auditRawModbus("rejected")
-		http.Error(w, "invalid request", http.StatusBadRequest)
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
 		return
 	}
-	var args map[string]any
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	if err := decoder.Decode(&args); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		h.auditRawModbus("rejected")
-		http.Error(w, "invalid request", http.StatusBadRequest)
+	body, err := io.ReadAll(io.LimitReader(r.Body, (4<<10)+1))
+	if err != nil || len(body) > 4<<10 {
+		writeJSON(w, http.StatusBadRequest, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
+		return
+	}
+	args, err := decodeClosedRawModbusJSON(body)
+	event.UnitID = auditInteger(args, "unit_id")
+	event.Function = auditInteger(args, "function")
+	event.Offset = auditInteger(args, "offset")
+	event.Quantity = auditInteger(args, "quantity")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
 		return
 	}
 	envelope := mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, args)
-	outcome := "admitted"
+	event.Outcome = "admitted"
+	event.ErrorCode = ""
 	status := http.StatusOK
 	if errorValue, ok := envelope["error"].(map[string]any); ok {
 		switch errorValue["code"] {
 		case "INVALID_ARGUMENT":
-			outcome, status = "rejected", http.StatusBadRequest
+			event.Outcome, event.ErrorCode, status = "rejected", "INVALID_ARGUMENT", http.StatusBadRequest
 		case "RESOURCE_EXHAUSTED":
-			outcome, status = "exhausted", http.StatusTooManyRequests
+			event.Outcome, event.ErrorCode, status = "exhausted", "RESOURCE_EXHAUSTED", http.StatusTooManyRequests
 		default:
-			outcome, status = "failed", http.StatusBadGateway
+			event.Outcome, event.ErrorCode, status = "failed", "PROVIDER_FAILURE", http.StatusBadGateway
 		}
+	} else if data, ok := envelope["data"].(mcp.ModbusRawReadResult); ok && safeEndpointRef(data.EndpointRef) {
+		event.EndpointRef = data.EndpointRef
 	}
-	h.auditRawModbus(outcome)
 	writeJSON(w, status, envelope)
 }
 
-func (h *handler) auditRawModbus(outcome string) {
+func decodeClosedRawModbusJSON(body []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, errors.New("raw Modbus request must be a JSON object")
+	}
+	args := make(map[string]any, 4)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return args, errors.New("raw Modbus request is invalid")
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return args, errors.New("raw Modbus request has an invalid key")
+		}
+		if _, duplicate := args[key]; duplicate {
+			return args, errors.New("raw Modbus request contains a duplicate key")
+		}
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return args, errors.New("raw Modbus request has an invalid value")
+		}
+		args[key] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return args, errors.New("raw Modbus request object is incomplete")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return args, errors.New("raw Modbus request contains trailing data")
+	}
+	return args, nil
+}
+
+func auditInteger(args map[string]any, key string) *uint64 {
+	number, ok := args[key].(float64)
+	if !ok || number < 0 || number > 65535 || number != float64(uint64(number)) {
+		return nil
+	}
+	value := uint64(number)
+	return &value
+}
+
+func safeEndpointRef(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) > 128 || len(value) == len("sha256:") {
+		return false
+	}
+	return !strings.ContainsAny(value, " \t\r\n/\\@")
+}
+
+func (h *handler) auditRawModbus(event RawModbusAuditEvent) {
 	if h.opts.RawModbusAudit != nil {
-		h.opts.RawModbusAudit(RawModbusAuditEvent{Outcome: outcome, At: time.Now().UTC()})
+		h.opts.RawModbusAudit(event)
 	}
 }
 

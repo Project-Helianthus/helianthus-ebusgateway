@@ -54,6 +54,7 @@ const (
 
 type capabilityRecord struct {
 	kind        capabilityKind
+	view        eebusruntime.AdminViewV1
 	scopeID     string
 	revision    uint64
 	expiresAt   time.Time
@@ -379,7 +380,7 @@ func (server *server) projectPartners(view eebusruntime.AdminViewV1, snapshot ee
 	case eebusruntime.AdminViewV1Trusted:
 		for _, partner := range snapshot.Trusted {
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, RemoteSHIPID: partner.SHIPID, TrustState: partner.TrustState, LastSeen: partner.LastSeen}
-			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner, trustAction: true}, "partner|"+partner.SKI)
+			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, view: view, revision: snapshot.StateRevision, ski: partner.SKI, partner: partner.Partner, trustAction: true}, "partner|"+partner.SKI)
 			if err != nil {
 				return nil, err
 			}
@@ -389,7 +390,7 @@ func (server *server) projectPartners(view eebusruntime.AdminViewV1, snapshot ee
 	case eebusruntime.AdminViewV1Connected:
 		for _, partner := range snapshot.Connected {
 			row := partnerRow{View: string(view), RemoteSKI: partner.SKI, RemoteSHIPID: partner.SHIPID, Endpoint: partner.Endpoint, TrustState: partner.TrustState, ConnectionState: partner.ConnectionState, LastSeen: partner.LastSeen}
-			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, revision: snapshot.StateRevision, ski: partner.SKI}, "connected|"+partner.SKI)
+			id, err := server.issueCapability(capabilityRecord{kind: capabilityPartner, view: view, revision: snapshot.StateRevision, ski: partner.SKI}, "connected|"+partner.SKI)
 			if err != nil {
 				return nil, err
 			}

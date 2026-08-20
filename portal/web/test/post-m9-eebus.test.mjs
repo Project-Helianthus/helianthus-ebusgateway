@@ -219,3 +219,71 @@ test("candidate and raw SPINE remain active-memory only and clear on visibility 
   assert.equal(input.value, "");
   assert.doesNotMatch(tree.innerHTML, /EnergyManagementSystem/);
 });
+
+test("eeBUS renders three separate Pairing SHIP and SPINE workspaces", async () => {
+  const { source } = await issue817Shell(async () => response({ state_revision: 1, data: {} }));
+  assert.match(source, /data-role="eebus-workspace-nav"/);
+  for (const workspace of ["pairing", "ship", "spine"]) {
+    assert.match(source, new RegExp(`data-eebus-workspace="${workspace}"`));
+    assert.match(source, new RegExp(`data-eebus-workspace-target="${workspace}"`));
+  }
+  const spinePanel = source.match(/data-eebus-workspace="spine"[\s\S]*?<\/section>/)?.[0] || "";
+  for (const forbidden of ["eebus-window-open", "eebus-candidate-confirm", "data-eebus-action=\\\"retry\\\"", "data-eebus-action=\\\"untrust\\\""]) {
+    assert.equal(spinePanel.includes(forbidden), false, `SPINE retains mutation control ${forbidden}`);
+  }
+});
+
+test("trusted offline rows show reconnect required and never expose Browse SPINE", async () => {
+  const shipPartners = { innerHTML: "" };
+  const { shell } = await issue817Shell(async () => response({ state_revision: 4, data: {}, error: null }), new Map([
+    ['[data-role="eebus-ship-partners"]', shipPartners],
+  ]));
+  shell.renderEEBusPartners([{ partner_id: "trusted-1", view: "trusted", trust_state: "trusted" }], "trusted");
+  assert.match(shipPartners.innerHTML, /Reconnect required/);
+  assert.match(shipPartners.innerHTML, /data-eebus-action="retry"/);
+  assert.doesNotMatch(shipPartners.innerHTML, /data-eebus-action="spine"/);
+});
+
+test("SPINE peer refresh requests only the connected view and Browse stays GET-only", async () => {
+  const calls = [];
+  const spinePeers = { innerHTML: "" };
+  const tree = { innerHTML: "" };
+  const { shell } = await issue817Shell(async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    if (String(url).includes("partners?view=connected")) {
+      return response({ state_revision: 5, data: { partners: [{ partner_id: "live-1", view: "connected", connection_state: "connected" }] }, error: null });
+    }
+    return response({ state_revision: 5, data: { snapshot_id: "snapshot-1", snapshot_hash: `sha256:${"a".repeat(64)}`, parent_node_id: null, nodes: [] }, error: null });
+  }, new Map([
+    ['[data-role="eebus-spine-peers"]', spinePeers],
+    ['[data-role="eebus-spine-tree"]', tree],
+  ]));
+
+  await shell.refreshEEBusSPINEPeers();
+  assert.match(spinePeers.innerHTML, /data-eebus-action="spine"/);
+  await shell.loadEEBusSPINERoot("live-1");
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].url, /partners\?view=connected$/);
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].init.method, "GET");
+  assert.match(calls[1].url, /\/partners\/live-1\/spine\?request=root$/);
+});
+
+test("workspace navigation clears only the departing workspace volatile authority", async () => {
+  const panels = ["pairing", "ship", "spine"].map((name) => ({ dataset: { eebusWorkspace: name }, hidden: false }));
+  const buttons = ["pairing", "ship", "spine"].map((name) => ({ dataset: { eebusWorkspaceTarget: name }, setAttribute() {} }));
+  const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {}, error: null }));
+  shell.querySelectorAll = (selector) => selector.includes("workspace-target") ? buttons : panels;
+  shell.clearEEBusCandidate = () => { shell._candidateCleared = true; };
+  shell.clearEEBusSPINETree = () => { shell._spineCleared = true; };
+  shell._eebusWorkspace = "pairing";
+  shell._eebusSelection = { id: "selection-1" };
+  shell._eebusUntrustArmedID = "partner-1";
+  shell.switchEEBusWorkspace("ship");
+  assert.equal(shell._candidateCleared, true);
+  assert.equal(shell._eebusSelection, undefined);
+  shell.switchEEBusWorkspace("spine");
+  assert.equal(shell._eebusUntrustArmedID, undefined);
+  shell.switchEEBusWorkspace("pairing");
+  assert.equal(shell._spineCleared, true);
+});

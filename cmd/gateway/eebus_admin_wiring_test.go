@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"reflect"
@@ -90,7 +92,11 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(content)
+	configContent, err := os.ReadFile("eebus_admin_config.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(content) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := eebusadmin.NewUnavailableHandler()`,
@@ -213,6 +219,11 @@ func TestIssue846LifecycleUsesBoundedBackoffAndRecoversOneRuntimeAdminPair(t *te
 		t.Fatalf("initial lifecycle = %#v; want one degraded attempt in backoff", initial)
 	}
 	initialRevision := initial.Revision
+	unavailableResponse := httptest.NewRecorder()
+	lifecycle.ServeHTTP(unavailableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/unknown", nil))
+	if unavailableResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initial Admin handler status = %d; want closed unavailable", unavailableResponse.Code)
+	}
 	if delay := <-waiter.durations; delay <= 0 {
 		t.Fatalf("first restart delay = %s; want nonzero backoff", delay)
 	}
@@ -232,6 +243,11 @@ func TestIssue846LifecycleUsesBoundedBackoffAndRecoversOneRuntimeAdminPair(t *te
 	}
 	if waiter.maxActive.Load() != 1 {
 		t.Fatalf("maximum concurrent restart waits = %d; want one outstanding timer", waiter.maxActive.Load())
+	}
+	availableResponse := httptest.NewRecorder()
+	lifecycle.ServeHTTP(availableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/unknown", nil))
+	if availableResponse.Code != http.StatusNotFound {
+		t.Fatalf("recovered Admin handler status = %d; want live typed handler", availableResponse.Code)
 	}
 }
 

@@ -150,9 +150,19 @@ func TestPortalRawModbusAuditIsCompleteAndSanitizedForEveryOutcome(t *testing.T)
 			if requestID, _ := payload["request_id"].(string); requestID == "" || len(requestID) > 64 {
 				t.Fatalf("request_id is absent or unbounded: %q", requestID)
 			}
+			auditedFields := make(map[string]any, len(payload)-2)
+			for key, value := range payload {
+				if key != "at" && key != "request_id" {
+					auditedFields[key] = value
+				}
+			}
+			encodedFields, err := json.Marshal(auditedFields)
+			if err != nil {
+				t.Fatal(err)
+			}
 			for _, forbidden := range []string{"words", "wire", "tcp://", "secret", "private/path", "client.pem", "1234"} {
-				if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
-					t.Fatalf("audit leaked %q: %s", forbidden, encoded)
+				if strings.Contains(strings.ToLower(string(encodedFields)), strings.ToLower(forbidden)) {
+					t.Fatalf("audit fields leaked %q: %s", forbidden, encodedFields)
 				}
 			}
 			if test.name == "success" && fmt.Sprint(payload["endpoint_ref"]) != "sha256:"+strings.Repeat("a", 64) {

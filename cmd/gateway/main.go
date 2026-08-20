@@ -226,36 +226,22 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
-	eebusAdapter, eebusAdmin, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
+	eebusAdapter, _, eebusLifecycle, _, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
 		log.Printf("eeBUS runtime unavailable; continuing without eeBUS reason=startup")
-		eebusAdapter = nil
-		eebusAdmin = nil
-		eebusAdminAvailable = false
 	}
-	if eebusAdapter != nil {
+	if eebusLifecycle != nil {
 		defer func() {
-			if err := eebusAdapter.Shutdown(); err != nil {
+			if err := eebusLifecycle.Shutdown(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
 			}
 		}()
 	}
 	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
-	if eebusAdminAvailable {
-		availableHandler, boundaryErr := eebusadmin.NewServer(eebusadmin.Config{
-			Admin: eebusAdmin, Raw: eebusAdapter,
-			Audit: func(event eebusadmin.AuditEvent) {
-				log.Printf("eebus_admin_audit action=%s scope=host_operator request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
-					event.Action, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
-					event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
-			},
-		})
-		if boundaryErr != nil {
-			log.Printf("eeBUS admin boundary unavailable reason=http_boundary")
-			eebusAdminAvailable = false
-		} else {
-			eebusAdminHandler = availableHandler
-		}
+	eebusAdminAvailable := false
+	if eebusLifecycle != nil && eebusLifecycle.Configured() {
+		eebusAdminHandler = eebusLifecycle
+		eebusAdminAvailable = true
 	}
 	if evidenceRuntime != nil {
 		var captureEEBus eebusEvidenceCapture

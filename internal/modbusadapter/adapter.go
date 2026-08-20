@@ -451,7 +451,18 @@ func (adapter *Adapter) CanonicalPVSnapshotByAsset(assetRef string) (pv.Snapshot
 		}
 	}
 	if match != nil {
-		return cloneCanonicalPVSnapshot(match.canonical), match.producedAt, true
+		if adapter.canonicalPV == nil {
+			return cloneCanonicalPVSnapshot(match.canonical), match.producedAt, true
+		}
+		evaluated := time.Since(adapter.started)
+		if evaluated < 0 {
+			return pv.Snapshot{}, time.Time{}, false
+		}
+		current, err := adapter.canonicalPV.Snapshot(match.canonical.AssetRef, pv.MonotonicNanos(evaluated.Nanoseconds()))
+		if err != nil {
+			return pv.Snapshot{}, time.Time{}, false
+		}
+		return cloneCanonicalPVSnapshot(current), match.producedAt, true
 	}
 	return pv.Snapshot{}, time.Time{}, false
 }

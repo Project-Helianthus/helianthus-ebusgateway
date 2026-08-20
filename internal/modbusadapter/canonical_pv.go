@@ -89,6 +89,13 @@ func (mapper *CanonicalPVMapper) Map(
 	return mapper.registry.Apply(update)
 }
 
+func (mapper *CanonicalPVMapper) Snapshot(assetRef string, evaluated pv.MonotonicNanos) (pv.Snapshot, error) {
+	if mapper == nil || mapper.registry == nil || assetRef == "" || evaluated < 0 {
+		return pv.Snapshot{}, errors.New("canonical PV snapshot input is incomplete")
+	}
+	return mapper.registry.Snapshot(assetRef, evaluated)
+}
+
 func (mapper *CanonicalPVMapper) assetRef(observation modbusreg.SunSpecQualificationObservation) (string, error) {
 	var identity []string
 	for _, occurrence := range observation.Occurrences() {

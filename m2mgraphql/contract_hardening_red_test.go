@@ -1,0 +1,208 @@
+package m2mgraphql
+
+import (
+	"bytes"
+	"context"
+	_ "embed"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
+)
+
+//go:embed testdata/public-graphql-m2m-v1.query.graphql
+var canonicalM2MQuery string
+
+func TestM2MCurrentSnapshot_RequiresTheOneCanonicalQueryForEveryValidRequest(t *testing.T) {
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct{ name, query, code string }{
+		{"canonical", canonicalM2MQuery, ""},
+		{"reduced", strings.Replace(canonicalM2MQuery, " contractId canonicalContractId assetRef generation producedAt", " contractId", 1), "QUERY_REJECTED"},
+		{"modified", strings.Replace(canonicalM2MQuery, "M2MCurrentSnapshot", "M2MCurrentSnapshotModified", 1), "QUERY_REJECTED"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(m2mCanonicalRequest(test.query, "pv-asset-golden")))
+			request = request.WithContext(WithMTLSPrincipal(request.Context(), "principal-canonical"))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if test.code != "" {
+				assertM2MError(t, response, test.code)
+				return
+			}
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+				t.Fatalf("body=%s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestM2MCurrentSnapshot_FullWireGoldenAndMCPParity(t *testing.T) {
+	snapshot := m2mGoldenSnapshot()
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", bytes.NewBufferString(m2mCanonicalRequest(canonicalM2MQuery, snapshot.AssetRef)))
+	request = request.WithContext(WithMTLSPrincipal(request.Context(), "principal-golden"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var envelope struct {
+		Data struct {
+			Snapshot map[string]any `json:"m2mCurrentSnapshot"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	got := envelope.Data.Snapshot
+	assertM2MGoldenWire(t, got)
+
+	// Both ingress projections must be lossless views of the same immutable snapshot.
+	mcp, err := MCPCurrentSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("MCPCurrentSnapshot: %v", err)
+	}
+	graphqlWire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpWire, err := json.Marshal(mcp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(graphqlWire, mcpWire) {
+		t.Fatalf("MCP/GraphQL parity mismatch\ngraphql=%s\nmcp=%s", graphqlWire, mcpWire)
+	}
+}
+
+func m2mCanonicalRequest(query, assetRef string) string {
+	b, err := json.Marshal(map[string]any{"operationName": "M2MCurrentSnapshot", "query": query, "variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_M2M_V1", "assetRef": assetRef}}})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func assertM2MGoldenWire(t *testing.T, got map[string]any) {
+	t.Helper()
+	for key, want := range map[string]any{
+		"contractId": "PUBLIC_GRAPHQL_M2M_V1", "canonicalContractId": "helianthus.canonical-pv/v1", "assetRef": "pv-asset-golden",
+		"generation": "71", "evaluatedMonotonicNs": "990", "sourceTimeState": "UNAVAILABLE",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s=%#v want %#v", key, got[key], want)
+		}
+	}
+	if producedAt, ok := got["producedAt"].(string); !ok || producedAt == "" {
+		t.Fatalf("producedAt=%#v; want preserved publication time", got["producedAt"])
+	}
+	if _, leaked := got["sourceShadowRef"]; leaked {
+		t.Fatal("public sourceShadowRef leaked")
+	}
+	for _, key := range []string{"facts", "capabilities", "provenance", "requestedOutputs", "projectionReport"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("missing %s", key)
+		}
+	}
+	facts, ok := got["facts"].([]any)
+	if !ok || len(facts) != 5 {
+		t.Fatalf("facts=%#v", got["facts"])
+	}
+	var dimensions, values, continuities = map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, raw := range facts {
+		fact := raw.(map[string]any)
+		for k := range fact["dimension"].(map[string]any) {
+			dimensions[k] = true
+		}
+		value := fact["value"].(map[string]any)
+		if _, ok := value["coefficient"]; ok {
+			values["decimal"] = true
+		}
+		if _, ok := value["symbol"]; ok {
+			values["enum"] = true
+		}
+		if _, ok := value["symbols"]; ok {
+			values["bitfield"] = true
+		}
+		if c, ok := fact["continuity"].(map[string]any); ok {
+			continuities[c["__typename"].(string)] = true
+		}
+	}
+	for _, key := range []string{"scope", "phase", "phasePair", "inputId", "sensorId"} {
+		if !dimensions[key] {
+			t.Fatalf("dimension union missing %s: %#v", key, dimensions)
+		}
+	}
+	for _, key := range []string{"decimal", "enum", "bitfield"} {
+		if !values[key] {
+			t.Fatalf("value union missing %s: %#v", key, values)
+		}
+	}
+	for _, key := range []string{"M2MBaselineContinuity", "M2MContiguousContinuity", "M2MRolloverContinuity", "M2MResetContinuity", "M2MDiscontinuityContinuity"} {
+		if !continuities[key] {
+			t.Fatalf("continuity union missing %s: %#v", key, continuities)
+		}
+	}
+	provenance := got["provenance"].([]any)
+	if len(provenance) != 2 {
+		t.Fatalf("provenance=%#v", provenance)
+	}
+	for _, raw := range provenance {
+		row := raw.(map[string]any)
+		for _, key := range []string{"originRef", "sourceProtocol", "sourceProfileId", "sourceProfileVersion", "sourceValidity", "sourceRegistryRef", "sourceObservationRef", "evidenceRef"} {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("provenance missing %s: %#v", key, row)
+			}
+		}
+		if _, leaked := row["sourceShadowRef"]; leaked {
+			t.Fatal("provenance leaked sourceShadowRef")
+		}
+	}
+	reports := got["projectionReport"].([]any)
+	kinds := map[string]bool{}
+	for _, raw := range reports {
+		kinds[raw.(map[string]any)["__typename"].(string)] = true
+	}
+	for _, key := range []string{"M2MMappedProjectionReportEntry", "M2MWithheldProjectionReportEntry", "M2MUnrepresentableProjectionReportEntry"} {
+		if !kinds[key] {
+			t.Fatalf("projection outcome missing %s", key)
+		}
+	}
+}
+
+func m2mGoldenSnapshot() pv.Snapshot {
+	originA := pv.Digest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	originB := pv.Digest("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	provenance := func(ref pv.Digest) pv.Provenance {
+		return pv.Provenance{SourceIdentity: pv.SourceIdentity{Protocol: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring@1.0.0", ProfileVersion: "1.0.0", Validity: pv.SourceTerminalVerified}, SourceRegistryRef: pv.Digest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), SourceObservationRef: ref, SourceShadowRef: pv.Digest("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), EvidenceRef: pv.Digest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")}
+	}
+	d := func(coefficient string) *pv.Decimal { value := pv.MustDecimal(coefficient, 0); return &value }
+	fact := func(id pv.FactID, dimensions pv.Dimensions, value pv.FactValue, continuity *pv.Continuity) pv.Fact {
+		return pv.Fact{ID: id, Dimensions: dimensions, Value: value, Unit: pv.UnitOne, Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh, Temporal: pv.Temporal{Receipt: 100, FreshUntil: 200, RetainUntil: 300, Policy: pv.PolicyTelemetryFastV1}, OriginRef: originA, Continuity: continuity}
+	}
+	facts := map[pv.FactKey]pv.Fact{}
+	add := func(f pv.Fact) { facts[pv.NewFactKey(f.ID, f.Dimensions)] = f }
+	add(fact(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal}, pv.DecimalFactValue(*d("7310")), &pv.Continuity{State: pv.ContinuityBaseline}))
+	add(fact(pv.FactACCurrent, pv.Dimensions{Phase: pv.PhaseL1}, pv.EnumFactValue("OPERATING"), &pv.Continuity{State: pv.ContinuityContiguous, Delta: d("1")}))
+	add(fact(pv.FactACVoltageLineToLine, pv.Dimensions{PhasePair: pv.PhasePairL1L2}, pv.BitfieldFactValue("A", "B"), &pv.Continuity{State: pv.ContinuityRollover, Delta: d("2"), Modulus: d("10"), EvidenceRef: originA}))
+	add(fact(pv.FactDCVoltage, pv.Dimensions{InputID: "input-1"}, pv.DecimalFactValue(*d("3")), &pv.Continuity{State: pv.ContinuityReset, EvidenceRef: originA}))
+	add(fact(pv.FactTemperature, pv.Dimensions{SensorID: "cabinet"}, pv.DecimalFactValue(*d("4")), &pv.Continuity{State: pv.ContinuityDiscontinuity, EvidenceRef: originB}))
+	return pv.Snapshot{ContractID: pv.ContractV1, AssetRef: "pv-asset-golden", Generation: 71, Evaluated: 990, SourceTimeState: pv.SourceTimeUnavailable, Source: provenance(originA), Origins: map[pv.Digest]pv.Provenance{originA: provenance(originA), originB: provenance(originB)}, Capability: pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilitySatisfied}, Facts: facts, RequestedOutputs: []pv.RequestedOutput{{SourceRef: originA, RequestedOutputRef: originA}, {SourceRef: originB, RequestedOutputRef: originB}, {SourceRef: originA, RequestedOutputRef: originB}}, ProjectionReport: []pv.Projection{{SourceRef: originA, RequestedOutputRef: originA, FactID: pv.FactACActivePower, Dimensions: &pv.Dimensions{Scope: pv.ScopeTotal}, Outcome: pv.ProjectionMapped}, {SourceRef: originA, RequestedOutputRef: originB, Outcome: pv.ProjectionWithheld}, {SourceRef: originB, RequestedOutputRef: originA, Outcome: pv.ProjectionUnrepresentable}}}
+}

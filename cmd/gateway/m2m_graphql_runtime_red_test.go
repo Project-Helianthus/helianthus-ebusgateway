@@ -1,7 +1,21 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"math/big"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 )
@@ -18,14 +32,122 @@ func TestM2MGraphQLRuntime_IsDisabledByDefaultAndSeparateFromGenericHTTP(t *test
 }
 
 func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
-	runtime, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{ListenAddr: "127.0.0.1:0", ClientCAFile: "testdata/client-ca.pem", ServerCertFile: "testdata/server.pem", ServerKeyFile: "testdata/server-key.pem", AllowedAssets: []string{"pv-asset-fixture"}}}, nil)
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-fixture"}, DeniedPrincipalFingerprints: []string{certs.deniedFingerprint},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil)
 	if err != nil {
 		t.Fatalf("newM2MGraphQLRuntime: %v", err)
 	}
 	if runtime == nil || !runtime.RequiresVerifiedClientCertificate() {
 		t.Fatalf("runtime=%#v; want dedicated verified-mTLS listener", runtime)
 	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "wrong.m2m.gateway.test", certs.goodClient, false)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", tls.Certificate{}, false)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.untrustedClient, false)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.deniedClient, false)
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("close dedicated M2M listener: %v", err)
+	}
+	if _, err := net.DialTimeout("tcp", runtime.Addr(), 100*time.Millisecond); err == nil {
+		t.Fatal("closed dedicated M2M listener still accepts TCP")
+	}
+}
+
+func TestM2MGraphQLRuntime_IncompleteEnabledConfigFailsClosed(t *testing.T) {
+	_, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{ListenAddr: "127.0.0.1:0", AllowedAssets: []string{"pv-asset-fixture"}}}, nil)
+	if err == nil {
+		t.Fatal("incomplete enabled M2M configuration started a listener")
+	}
+}
+
+type m2mTLSCertificates struct {
+	pool                                      *x509.CertPool
+	caFile, serverCertFile, serverKeyFile     string
+	goodClient, untrustedClient, deniedClient tls.Certificate
+	deniedFingerprint                         string
+}
+
+func newM2MTLSCertificates(t *testing.T) m2mTLSCertificates {
+	t.Helper()
+	dir := t.TempDir()
+	caKey, ca := newM2MCertificateAuthority(t)
+	server := newM2MLeafCertificate(t, ca, caKey, "m2m.gateway.test", false)
+	good := newM2MLeafCertificate(t, ca, caKey, "principal-good", true)
+	denied := newM2MLeafCertificate(t, ca, caKey, "principal-denied", true)
+	otherKey, otherCA := newM2MCertificateAuthority(t)
+	untrusted := newM2MLeafCertificate(t, otherCA, otherKey, "principal-untrusted", true)
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	return m2mTLSCertificates{pool: pool, caFile: writeM2MPEM(t, dir, "client-ca.pem", "CERTIFICATE", ca.Raw), serverCertFile: writeM2MPEM(t, dir, "server.pem", "CERTIFICATE", server.Certificate[0]), serverKeyFile: writeM2MPEM(t, dir, "server-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(server.PrivateKey.(*rsa.PrivateKey))), goodClient: good, untrustedClient: untrusted, deniedClient: denied, deniedFingerprint: m2mCertificateFingerprint(denied.Certificate[0])}
+}
+
+func newM2MCertificateAuthority(t *testing.T) (*rsa.PrivateKey, *x509.Certificate) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "m2m test CA"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, cert
+}
+
+func newM2MLeafCertificate(t *testing.T, ca *x509.Certificate, caKey crypto.Signer, name string, client bool) tls.Certificate {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: name}, DNSNames: []string{name}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment}
+	if client {
+		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	} else {
+		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+func writeM2MPEM(t *testing.T, dir, name, kind string, der []byte) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+func m2mCertificateFingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
+}
+func assertM2MTLSDial(t *testing.T, addr string, roots *x509.CertPool, name string, certificate tls.Certificate, want bool) {
+	t.Helper()
+	config := &tls.Config{RootCAs: roots, ServerName: name, MinVersion: tls.VersionTLS13}
+	if len(certificate.Certificate) != 0 {
+		config.Certificates = []tls.Certificate{certificate}
+	}
+	connection, err := tls.Dial("tcp", addr, config)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if (err == nil) != want {
+		t.Fatalf("TLS dial serverName=%q certificate=%t err=%v want success=%t", name, len(certificate.Certificate) != 0, err, want)
 	}
 }

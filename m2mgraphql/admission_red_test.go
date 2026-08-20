@@ -3,8 +3,10 @@ package m2mgraphql
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,6 +45,8 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 		{"json-depth", strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65), "REQUEST_INVALID"},
 		{"duplicate-json-key", `{"operationName":"M2MCurrentSnapshot","operationName":"M2MCurrentSnapshot"}`, "REQUEST_INVALID"},
 		{"alias", `{"operationName":"M2MCurrentSnapshot","query":"query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { alias: m2mCurrentSnapshot(request: $request) { assetRef } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_M2M_V1","assetRef":"pv-asset-fixture"}}}`, "QUERY_REJECTED"},
+		{"query-depth-before-shape", m2mRequestWithQuery(strings.Repeat("{", 9) + "m2mCurrentSnapshot" + strings.Repeat("}", 9)), "REQUEST_LIMIT_EXCEEDED"},
+		{"selected-fields-before-shape", m2mRequestWithQuery("query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { m2mCurrentSnapshot(request: $request) { " + strings.Repeat("assetRef ", 257) + "} }"), "REQUEST_LIMIT_EXCEEDED"},
 		{"raw-body-limit", strings.Repeat("x", 16*1024+1), "REQUEST_LIMIT_EXCEEDED"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -68,6 +72,40 @@ func TestM2MAdmission_ReturnsSourceUnavailableOnlyAfterAssetExistence(t *testing
 	assertM2MErrorForRequest(t, handler, "principal-a", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture"), "SOURCE_UNAVAILABLE")
 }
 
+func TestM2MAdmission_RejectsMissingOrEmptyMTLSPrincipalBeforeSnapshotLookup(t *testing.T) {
+	lookups := 0
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, principal := range []string{"", "\t"} {
+		req := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture")))
+		if principal != "" {
+			req = req.WithContext(WithMTLSPrincipal(req.Context(), principal))
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		assertM2MError(t, response, "REQUEST_INVALID")
+	}
+	if lookups != 0 {
+		t.Fatalf("unauthenticated requests invoked SnapshotByAsset %d times", lookups)
+	}
+}
+
+func TestM2MAdmission_RejectsResponsesOverOneMiBBeforeWritingPartialData(t *testing.T) {
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mOversizedSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertM2MErrorForRequest(t, handler, "principal-response-limit", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture"), "REQUEST_LIMIT_EXCEEDED")
+}
+
 func TestM2MAdmission_IsolatedByMTLSPrincipalAndDoesNotConsumeRejectedRateTokens(t *testing.T) {
 	clock := int64(10_000)
 	handler, err := NewHandler(Config{SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mFixtureSnapshot(), true }, AssetExists: func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}}, MonotonicMilliseconds: func() int64 { return clock }})
@@ -87,6 +125,23 @@ func TestM2MAdmission_IsolatedByMTLSPrincipalAndDoesNotConsumeRejectedRateTokens
 
 func m2mRequest(contractID, assetRef string) string {
 	return `{"operationName":"M2MCurrentSnapshot","query":"query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { m2mCurrentSnapshot(request: $request) { assetRef } }","variables":{"request":{"contractId":"` + contractID + `","assetRef":"` + assetRef + `"}}}`
+}
+
+func m2mRequestWithQuery(query string) string {
+	return `{"operationName":"M2MCurrentSnapshot","query":` + strconv.Quote(query) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_M2M_V1","assetRef":"pv-asset-fixture"}}}`
+}
+
+func m2mOversizedSnapshot() pv.Snapshot {
+	snapshot := m2mFixtureSnapshot()
+	snapshot.Origins = make(map[pv.Digest]pv.Provenance, 256)
+	for index := 0; index < 256; index++ {
+		ref := pv.Digest("sha256:" + fmt.Sprintf("%064x", index+1))
+		provenance := snapshot.Source
+		provenance.SourceObservationRef = ref
+		provenance.ProfileID = strings.Repeat("p", 5_000)
+		snapshot.Origins[ref] = provenance
+	}
+	return snapshot
 }
 
 func assertM2MSuccess(t *testing.T, handler http.Handler, principal string) {

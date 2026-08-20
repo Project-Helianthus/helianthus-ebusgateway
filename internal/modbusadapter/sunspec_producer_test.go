@@ -203,8 +203,11 @@ func TestSunSpecProducerRefreshPublishesCurrentWithoutConsumingQualificationRete
 	}
 	for index := uint64(0); index < maxRetainedProfileObservations+1; index++ {
 		result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 700 + index, DeadlineIdentity: 800 + index})
-		if err != nil || result.Outcome != SunSpecQualificationGO || result.ObservationCount != 0 || result.SampleID != "" {
-			t.Fatalf("refresh %d=%#v err=%v; want GO without retained sample", index, result, err)
+		if err != nil || result.Outcome != SunSpecQualificationGO || result.ObservationCount != 0 || result.SampleID == "" {
+			t.Fatalf("refresh %d=%#v err=%v; want GO with unretained current-sample identity", index, result, err)
+		}
+		if _, _, retained := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID); retained {
+			t.Fatalf("refresh %d sample %q consumed immutable evidence retention", index, result.SampleID)
 		}
 	}
 	if len(adapter.qualifications) != 1 || len(adapter.profiles) != 0 {

@@ -441,6 +441,8 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 	if err != nil {
 		return fmt.Errorf("serialize current SunSpec observation: %w", err)
 	}
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
 	evaluated := time.Since(adapter.started)
 	if evaluated < 0 || adapter.canonicalPV == nil {
 		return errors.New("canonical PV mapper unavailable")
@@ -449,8 +451,6 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 	if err != nil {
 		return fmt.Errorf("map current canonical PV observation: %w", err)
 	}
-	adapter.profileMu.Lock()
-	defer adapter.profileMu.Unlock()
 	if adapter.currentPV == nil {
 		adapter.currentPV = make(map[string]canonicalPVCurrentRecord)
 	}

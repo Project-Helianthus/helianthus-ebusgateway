@@ -242,9 +242,9 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 		}
 		result.FlavorID, result.FlavorReason = flavor.FlavorID(), flavor.Reason()
 		result.Outcome = SunSpecQualificationGO
+		result.SampleID = observation.SampleID()
 		if retainEvidence {
 			result.ObservationCount = 1
-			result.SampleID = observation.SampleID()
 		}
 		result.Chain = snapshot
 		return result

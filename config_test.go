@@ -51,6 +51,38 @@ func TestConfigCrossValidatesPortalPVAgainstDedicatedM2MListener(t *testing.T) {
 	}
 }
 
+func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {
+	base := Config{
+		M2MGraphQL: M2MGraphQLConfig{
+			ListenAddr: "0.0.0.0:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+			ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-allowed"},
+		},
+		PortalPV: PortalPVConfig{
+			SemanticEnabled: true, M2MURL: "https://127.0.0.1:8443/graphql/m2m/v1", M2MServerName: "m2m.gateway.test",
+			M2MCAFile: "ca.pem", M2MClientCert: "client.pem", M2MClientKey: "client-key.pem", AssetRef: "pv-allowed",
+		},
+	}
+	if err := base.ValidatePortalPV(); err != nil {
+		t.Fatalf("loopback URL for wildcard listener rejected: %v", err)
+	}
+	ipv6 := base
+	ipv6.M2MGraphQL.ListenAddr = "[::]:8443"
+	ipv6.PortalPV.M2MURL = "https://[::1]:8443/graphql/m2m/v1"
+	if err := ipv6.ValidatePortalPV(); err != nil {
+		t.Fatalf("IPv6 loopback URL for wildcard listener rejected: %v", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.PortalPV.M2MURL = "https://192.0.2.10:8443/graphql/m2m/v1" },
+		func(cfg *Config) { cfg.PortalPV.M2MURL = "https://127.0.0.1:9443/graphql/m2m/v1" },
+	} {
+		candidate := base
+		mutate(&candidate)
+		if err := candidate.ValidatePortalPV(); err == nil {
+			t.Fatalf("unpinned Portal PV URL accepted: %s", candidate.PortalPV.M2MURL)
+		}
+	}
+}
+
 func TestDefaultConfig_DisablesDumpUploadPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.DumpUploadPath != "" {

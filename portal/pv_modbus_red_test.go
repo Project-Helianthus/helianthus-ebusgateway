@@ -119,7 +119,7 @@ func TestPortalRawModbusAuditIsCompleteAndSanitizedForEveryOutcome(t *testing.T)
 		name, body, outcome, errorCode string
 		provider                       *portalRawReadProvider
 	}{
-		{name: "success", body: `{"unit_id":7,"function":4,"offset":12,"quantity":2}`, outcome: "admitted", provider: &portalRawReadProvider{result: mcp.ModbusRawReadResult{EndpointRef: "sha256:safe"}}},
+		{name: "success", body: `{"unit_id":7,"function":4,"offset":12,"quantity":2}`, outcome: "admitted", provider: &portalRawReadProvider{result: mcp.ModbusRawReadResult{EndpointRef: "sha256:" + strings.Repeat("a", 64)}}},
 		{name: "rejected", body: `{"unit_id":7,"function":6,"offset":12,"quantity":2}`, outcome: "rejected", errorCode: "INVALID_ARGUMENT", provider: &portalRawReadProvider{}},
 		{name: "exhausted", body: `{"unit_id":7,"function":4,"offset":12,"quantity":2}`, outcome: "exhausted", errorCode: "RESOURCE_EXHAUSTED", provider: &portalRawReadProvider{rawErr: mcp.ErrModbusV1ResourceExhausted}},
 		{name: "failed", body: `{"unit_id":7,"function":4,"offset":12,"quantity":2}`, outcome: "failed", errorCode: "PROVIDER_FAILURE", provider: &portalRawReadProvider{rawErr: errors.New("tcp://operator:secret@example.test:502 private/path client.pem 1234")}},
@@ -155,10 +155,29 @@ func TestPortalRawModbusAuditIsCompleteAndSanitizedForEveryOutcome(t *testing.T)
 					t.Fatalf("audit leaked %q: %s", forbidden, encoded)
 				}
 			}
-			if test.name == "success" && fmt.Sprint(payload["endpoint_ref"]) != "sha256:safe" {
+			if test.name == "success" && fmt.Sprint(payload["endpoint_ref"]) != "sha256:"+strings.Repeat("a", 64) {
 				t.Fatalf("safe endpoint_ref missing: %s", encoded)
 			}
 		})
+	}
+}
+
+func TestSafeEndpointRefRequiresExactLowercaseSHA256Contract(t *testing.T) {
+	valid := "sha256:" + strings.Repeat("a", 64)
+	if !safeEndpointRef(valid) {
+		t.Fatalf("valid endpoint ref rejected: %q", valid)
+	}
+	for _, value := range []string{
+		"sha256:safe",
+		"sha256:" + strings.Repeat("A", 64),
+		"sha256:" + strings.Repeat("a", 63),
+		"sha256:" + strings.Repeat("a", 65),
+		"sha256:" + strings.Repeat("a", 63) + "/",
+		"sha256:" + strings.Repeat("a", 64) + "@evil",
+	} {
+		if safeEndpointRef(value) {
+			t.Fatalf("unsafe endpoint ref accepted: %q", value)
+		}
 	}
 }
 

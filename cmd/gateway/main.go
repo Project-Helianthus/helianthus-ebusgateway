@@ -228,7 +228,10 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	eebusAdapter, eebusAdmin, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("eeBUS sidecar: %w", err)
+		log.Printf("eeBUS runtime unavailable; continuing without eeBUS reason=startup")
+		eebusAdapter = nil
+		eebusAdmin = nil
+		eebusAdminAvailable = false
 	}
 	if eebusAdapter != nil {
 		defer func() {

@@ -35,17 +35,24 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 
 	blocked := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", bytes.NewBufferString(m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture")))
 	blocked = blocked.WithContext(WithMTLSPrincipal(blocked.Context(), "principal-a"))
-	go handler.ServeHTTP(httptest.NewRecorder(), blocked)
+	blockedDone := make(chan struct{})
+	go func() {
+		defer close(blockedDone)
+		handler.ServeHTTP(httptest.NewRecorder(), blocked)
+	}()
 	<-entered
+	assertM2MErrorForRequest(t, handler, "principal-a", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture"), "REQUEST_LIMIT_EXCEEDED")
+	close(release)
+	<-blockedDone
+
 	for _, test := range []struct{ name, body, code string }{
-		{"same-principal-overlap", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-fixture"), "REQUEST_LIMIT_EXCEEDED"},
 		{"contract-before-asset", m2mRequest("OTHER", "not-allowed"), "CONTRACT_INCOMPATIBLE"},
 		{"allowlist-before-existence", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "not-allowed"), "ASSET_FORBIDDEN"},
 		{"unknown-allowed-asset", m2mRequest("PUBLIC_GRAPHQL_M2M_V1", "pv-asset-missing"), "ASSET_NOT_FOUND"},
 		{"json-depth", strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65), "REQUEST_INVALID"},
 		{"duplicate-json-key", `{"operationName":"M2MCurrentSnapshot","operationName":"M2MCurrentSnapshot"}`, "REQUEST_INVALID"},
 		{"alias", `{"operationName":"M2MCurrentSnapshot","query":"query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { alias: m2mCurrentSnapshot(request: $request) { assetRef } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_M2M_V1","assetRef":"pv-asset-fixture"}}}`, "QUERY_REJECTED"},
-		{"query-depth-before-shape", m2mRequestWithQuery(strings.Repeat("{", 9) + "m2mCurrentSnapshot" + strings.Repeat("}", 9)), "REQUEST_LIMIT_EXCEEDED"},
+		{"query-depth-before-shape", m2mRequestWithQuery(m2mSchemaValidDepthQuery()), "REQUEST_LIMIT_EXCEEDED"},
 		{"selected-fields-before-shape", m2mRequestWithQuery("query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { m2mCurrentSnapshot(request: $request) { " + strings.Repeat("assetRef ", 257) + "} }"), "REQUEST_LIMIT_EXCEEDED"},
 		{"raw-body-limit", strings.Repeat("x", 16*1024+1), "REQUEST_LIMIT_EXCEEDED"},
 	} {
@@ -57,7 +64,6 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 			assertM2MError(t, response, test.code)
 		})
 	}
-	close(release)
 }
 
 func TestM2MAdmission_ReturnsSourceUnavailableOnlyAfterAssetExistence(t *testing.T) {
@@ -124,7 +130,20 @@ func TestM2MAdmission_IsolatedByMTLSPrincipalAndDoesNotConsumeRejectedRateTokens
 }
 
 func m2mRequest(contractID, assetRef string) string {
-	return `{"operationName":"M2MCurrentSnapshot","query":"query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { m2mCurrentSnapshot(request: $request) { assetRef } }","variables":{"request":{"contractId":"` + contractID + `","assetRef":"` + assetRef + `"}}}`
+	request := m2mCanonicalRequest(canonicalM2MQuery, assetRef)
+	if contractID == "PUBLIC_GRAPHQL_M2M_V1" {
+		return request
+	}
+	return strings.Replace(request, `"contractId":"PUBLIC_GRAPHQL_M2M_V1"`, `"contractId":"`+contractID+`"`, 1)
+}
+
+func m2mSchemaValidDepthQuery() string {
+	nested := "coefficient"
+	for range 9 {
+		nested = "... on M2MDecimalValue { " + nested + " }"
+	}
+	return "query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { " +
+		"m2mCurrentSnapshot(request: $request) { facts { value { " + nested + " } } } }"
 }
 
 func m2mRequestWithQuery(query string) string {

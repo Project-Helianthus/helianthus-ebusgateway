@@ -39,7 +39,7 @@ func TestM2MCurrentSnapshot_OnlyAcceptsTheDedicatedFixedContract(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, contract.Route, bytes.NewBufferString(`{"operationName":"M2MCurrentSnapshot","query":"query M2MCurrentSnapshot($request: M2MCurrentSnapshotRequest!) { m2mCurrentSnapshot(request: $request) { contractId canonicalContractId assetRef facts { factId value { ... on M2MDecimalValue { coefficient scale } } } } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_M2M_V1","assetRef":"pv-asset-fixture"}}}`))
+	request := httptest.NewRequest(http.MethodPost, contract.Route, bytes.NewBufferString(m2mCanonicalRequest(canonicalM2MQuery, "pv-asset-fixture")))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(WithMTLSPrincipal(request.Context(), "fixture-principal"))
 	response := httptest.NewRecorder()
@@ -96,9 +96,10 @@ func TestM2MCurrentSnapshot_HasNoGenericFallbackRawOrSubscriptionSurface(t *test
 func m2mFixtureSnapshot() pv.Snapshot {
 	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}
 	origin := pv.Digest("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	requestedRef := pv.Digest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
 	provenance := pv.Provenance{SourceIdentity: pv.SourceIdentity{Protocol: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring@1.0.0", ProfileVersion: "1.0.0", Validity: pv.SourceTerminalVerified}, SourceRegistryRef: pv.Digest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), SourceObservationRef: origin, SourceShadowRef: pv.Digest("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), EvidenceRef: pv.Digest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")}
 	key := pv.NewFactKey(pv.FactACActivePower, dimensions)
-	return pv.Snapshot{ContractID: pv.ContractV1, AssetRef: "pv-asset-fixture", Generation: 1, Evaluated: 100, SourceTimeState: pv.SourceTimeUnavailable, Source: provenance, Origins: map[pv.Digest]pv.Provenance{origin: provenance}, Capability: pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilitySatisfied}, Facts: map[pv.FactKey]pv.Fact{key: {ID: pv.FactACActivePower, Dimensions: dimensions, Value: pv.DecimalFactValue(pv.MustDecimal("7310", 0)), Unit: pv.UnitWatt, Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh, Temporal: pv.Temporal{Receipt: 100, FreshUntil: 200, RetainUntil: 300, Policy: pv.PolicyTelemetryFastV1}, OriginRef: origin}}}
+	return pv.Snapshot{ContractID: pv.ContractV1, AssetRef: "pv-asset-fixture", Generation: 1, Evaluated: 100, SourceTimeState: pv.SourceTimeUnavailable, Source: provenance, Origins: map[pv.Digest]pv.Provenance{origin: provenance}, Capability: pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilityNotSatisfied}, Facts: map[pv.FactKey]pv.Fact{key: {ID: pv.FactACActivePower, Dimensions: dimensions, Value: pv.DecimalFactValue(pv.MustDecimal("7310", 0)), Unit: pv.UnitWatt, Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh, Temporal: pv.Temporal{Receipt: 100, FreshUntil: 200, RetainUntil: 300, Policy: pv.PolicyTelemetryFastV1}, OriginRef: origin}}, RequestedOutputs: []pv.RequestedOutput{{SourceRef: origin, RequestedOutputRef: requestedRef}}, ProjectionReport: []pv.Projection{{SourceRef: origin, RequestedOutputRef: requestedRef, FactID: pv.FactACActivePower, Dimensions: &dimensions, Outcome: pv.ProjectionMapped}}}
 }
 
 func assertM2MError(t *testing.T, response *httptest.ResponseRecorder, code string) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,6 +93,58 @@ func TestM2MCurrentSnapshot_FullWireGoldenAndMCPParity(t *testing.T) {
 	}
 }
 
+func TestM2MCurrentSnapshot_ProjectsEachCanonicalContinuityVariant(t *testing.T) {
+	variants := []struct {
+		continuity pv.Continuity
+		typename   string
+	}{
+		{pv.Continuity{State: pv.ContinuityBaseline}, "M2MBaselineContinuity"},
+		{pv.Continuity{State: pv.ContinuityContiguous, Delta: m2mDecimal("1")}, "M2MContiguousContinuity"},
+		{pv.Continuity{State: pv.ContinuityRollover, Delta: m2mDecimal("2"), Modulus: m2mDecimal("100"), EvidenceRef: m2mDigest(30)}, "M2MRolloverContinuity"},
+		{pv.Continuity{State: pv.ContinuityReset, EvidenceRef: m2mDigest(31)}, "M2MResetContinuity"},
+		{pv.Continuity{State: pv.ContinuityDiscontinuity}, "M2MDiscontinuityContinuity"},
+	}
+	for _, variant := range variants {
+		t.Run(variant.typename, func(t *testing.T) {
+			snapshot := m2mGoldenSnapshot()
+			key := pv.NewFactKey(pv.FactEnergyActiveExportTotal, pv.Dimensions{Scope: pv.ScopeTotal})
+			fact := snapshot.Facts[key]
+			continuity := variant.continuity
+			fact.Continuity = &continuity
+			snapshot.Facts[key] = fact
+			handler, err := NewHandler(Config{
+				SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
+				AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(m2mCanonicalRequest(canonicalM2MQuery, snapshot.AssetRef)))
+			request = request.WithContext(WithMTLSPrincipal(request.Context(), "principal-continuity"))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			var envelope struct {
+				Data struct {
+					Snapshot struct {
+						Facts []struct {
+							FactID     string         `json:"factId"`
+							Continuity map[string]any `json:"continuity"`
+						} `json:"facts"`
+					} `json:"m2mCurrentSnapshot"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range envelope.Data.Snapshot.Facts {
+				if item.FactID == string(pv.FactEnergyActiveExportTotal) && item.Continuity["__typename"] != variant.typename {
+					t.Fatalf("continuity=%#v want %s", item.Continuity, variant.typename)
+				}
+			}
+		})
+	}
+}
+
 func m2mCanonicalRequest(query, assetRef string) string {
 	b, err := json.Marshal(map[string]any{"operationName": "M2MCurrentSnapshot", "query": query, "variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_M2M_V1", "assetRef": assetRef}}})
 	if err != nil {
@@ -122,7 +175,7 @@ func assertM2MGoldenWire(t *testing.T, got map[string]any) {
 		}
 	}
 	facts, ok := got["facts"].([]any)
-	if !ok || len(facts) != 5 {
+	if !ok || len(facts) != 7 {
 		t.Fatalf("facts=%#v", got["facts"])
 	}
 	var dimensions, values, continuities = map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -155,10 +208,8 @@ func assertM2MGoldenWire(t *testing.T, got map[string]any) {
 			t.Fatalf("value union missing %s: %#v", key, values)
 		}
 	}
-	for _, key := range []string{"M2MBaselineContinuity", "M2MContiguousContinuity", "M2MRolloverContinuity", "M2MResetContinuity", "M2MDiscontinuityContinuity"} {
-		if !continuities[key] {
-			t.Fatalf("continuity union missing %s: %#v", key, continuities)
-		}
+	if !continuities["M2MBaselineContinuity"] || len(continuities) != 1 {
+		t.Fatalf("golden continuity=%#v; want canonical baseline only", continuities)
 	}
 	provenance := got["provenance"].([]any)
 	if len(provenance) != 2 {
@@ -188,21 +239,49 @@ func assertM2MGoldenWire(t *testing.T, got map[string]any) {
 }
 
 func m2mGoldenSnapshot() pv.Snapshot {
-	originA := pv.Digest("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	originB := pv.Digest("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	originA := m2mDigest(1)
+	originB := m2mDigest(2)
 	provenance := func(ref pv.Digest) pv.Provenance {
-		return pv.Provenance{SourceIdentity: pv.SourceIdentity{Protocol: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring@1.0.0", ProfileVersion: "1.0.0", Validity: pv.SourceTerminalVerified}, SourceRegistryRef: pv.Digest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"), SourceObservationRef: ref, SourceShadowRef: pv.Digest("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"), EvidenceRef: pv.Digest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")}
+		return pv.Provenance{SourceIdentity: pv.SourceIdentity{Protocol: "sunspec_modbus", ProfileID: "sunspec.inverter.three_phase.monitoring@1.0.0", ProfileVersion: "1.0.0", Validity: pv.SourceTerminalVerified}, SourceRegistryRef: m2mDigest(3), SourceObservationRef: ref, SourceShadowRef: m2mDigest(4), EvidenceRef: m2mDigest(5)}
 	}
-	d := func(coefficient string) *pv.Decimal { value := pv.MustDecimal(coefficient, 0); return &value }
-	fact := func(id pv.FactID, dimensions pv.Dimensions, value pv.FactValue, continuity *pv.Continuity) pv.Fact {
-		return pv.Fact{ID: id, Dimensions: dimensions, Value: value, Unit: pv.UnitOne, Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh, Temporal: pv.Temporal{Receipt: 100, FreshUntil: 200, RetainUntil: 300, Policy: pv.PolicyTelemetryFastV1}, OriginRef: originA, Continuity: continuity}
+	fact := func(id pv.FactID, dimensions pv.Dimensions, value pv.FactValue, unit pv.Unit, policy pv.PolicyID, continuity *pv.Continuity) pv.Fact {
+		return pv.Fact{ID: id, Dimensions: dimensions, Value: value, Unit: unit, Quality: pv.QualityGood, Availability: pv.AvailabilityAvailable, Freshness: pv.FreshnessFresh, Temporal: pv.Temporal{Receipt: 100, FreshUntil: 200, RetainUntil: 300, Policy: policy}, OriginRef: originA, Continuity: continuity}
 	}
 	facts := map[pv.FactKey]pv.Fact{}
 	add := func(f pv.Fact) { facts[pv.NewFactKey(f.ID, f.Dimensions)] = f }
-	add(fact(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal}, pv.DecimalFactValue(*d("7310")), &pv.Continuity{State: pv.ContinuityBaseline}))
-	add(fact(pv.FactACCurrent, pv.Dimensions{Phase: pv.PhaseL1}, pv.EnumFactValue("OPERATING"), &pv.Continuity{State: pv.ContinuityContiguous, Delta: d("1")}))
-	add(fact(pv.FactACVoltageLineToLine, pv.Dimensions{PhasePair: pv.PhasePairL1L2}, pv.BitfieldFactValue("A", "B"), &pv.Continuity{State: pv.ContinuityRollover, Delta: d("2"), Modulus: d("10"), EvidenceRef: originA}))
-	add(fact(pv.FactDCVoltage, pv.Dimensions{InputID: "input-1"}, pv.DecimalFactValue(*d("3")), &pv.Continuity{State: pv.ContinuityReset, EvidenceRef: originA}))
-	add(fact(pv.FactTemperature, pv.Dimensions{SensorID: "cabinet"}, pv.DecimalFactValue(*d("4")), &pv.Continuity{State: pv.ContinuityDiscontinuity, EvidenceRef: originB}))
-	return pv.Snapshot{ContractID: pv.ContractV1, AssetRef: "pv-asset-golden", Generation: 71, Evaluated: 990, SourceTimeState: pv.SourceTimeUnavailable, Source: provenance(originA), Origins: map[pv.Digest]pv.Provenance{originA: provenance(originA), originB: provenance(originB)}, Capability: pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilitySatisfied}, Facts: facts, RequestedOutputs: []pv.RequestedOutput{{SourceRef: originA, RequestedOutputRef: originA}, {SourceRef: originB, RequestedOutputRef: originB}, {SourceRef: originA, RequestedOutputRef: originB}}, ProjectionReport: []pv.Projection{{SourceRef: originA, RequestedOutputRef: originA, FactID: pv.FactACActivePower, Dimensions: &pv.Dimensions{Scope: pv.ScopeTotal}, Outcome: pv.ProjectionMapped}, {SourceRef: originA, RequestedOutputRef: originB, Outcome: pv.ProjectionWithheld}, {SourceRef: originB, RequestedOutputRef: originA, Outcome: pv.ProjectionUnrepresentable}}}
+	baseline := pv.Continuity{State: pv.ContinuityBaseline}
+	add(fact(pv.FactEnergyActiveExportTotal, pv.Dimensions{Scope: pv.ScopeTotal}, pv.DecimalFactValue(*m2mDecimal("7310")), pv.UnitWattHour, pv.PolicyAccumulatorV1, &baseline))
+	add(fact(pv.FactACCurrent, pv.Dimensions{Phase: pv.PhaseL1}, pv.DecimalFactValue(*m2mDecimal("11")), pv.UnitAmpere, pv.PolicyTelemetryFastV1, nil))
+	add(fact(pv.FactACVoltageLineToLine, pv.Dimensions{PhasePair: pv.PhasePairL1L2}, pv.DecimalFactValue(*m2mDecimal("400")), pv.UnitVolt, pv.PolicyTelemetryFastV1, nil))
+	add(fact(pv.FactDCVoltage, pv.Dimensions{InputID: "input-1"}, pv.DecimalFactValue(*m2mDecimal("600")), pv.UnitVolt, pv.PolicyTelemetryFastV1, nil))
+	add(fact(pv.FactTemperature, pv.Dimensions{SensorID: "cabinet"}, pv.DecimalFactValue(*m2mDecimal("42")), pv.UnitCelsius, pv.PolicyTelemetryFastV1, nil))
+	add(fact(pv.FactOperatingState, pv.Dimensions{Scope: pv.ScopeTotal}, pv.EnumFactValue(pv.OperatingStateOperating), pv.UnitOne, pv.PolicyStatusV1, nil))
+	add(fact(pv.FactEventFlags, pv.Dimensions{Scope: pv.ScopeTotal}, pv.BitfieldFactValue("COMMUNICATION_FAULT"), pv.UnitOne, pv.PolicyStatusV1, nil))
+
+	requested := make([]pv.RequestedOutput, 0, len(facts)+2)
+	report := make([]pv.Projection, 0, len(facts)+2)
+	index := 10
+	for _, value := range facts {
+		ref := m2mDigest(index)
+		index++
+		requested = append(requested, pv.RequestedOutput{SourceRef: originA, RequestedOutputRef: ref})
+		dimensions := value.Dimensions
+		report = append(report, pv.Projection{SourceRef: originA, RequestedOutputRef: ref, FactID: value.ID, Dimensions: &dimensions, Outcome: pv.ProjectionMapped})
+	}
+	for _, outcome := range []pv.ProjectionOutcome{pv.ProjectionWithheld, pv.ProjectionUnrepresentable} {
+		ref := m2mDigest(index)
+		index++
+		requested = append(requested, pv.RequestedOutput{SourceRef: originA, RequestedOutputRef: ref})
+		report = append(report, pv.Projection{SourceRef: originA, RequestedOutputRef: ref, Outcome: outcome})
+	}
+	return pv.Snapshot{ContractID: pv.ContractV1, AssetRef: "pv-asset-golden", Generation: 71, Evaluated: 990, SourceTimeState: pv.SourceTimeUnavailable, Source: provenance(originA), Origins: map[pv.Digest]pv.Provenance{originA: provenance(originA), originB: provenance(originB)}, Capability: pv.Capability{ID: pv.CapabilityThreePhaseTelemetryV1, Outcome: pv.CapabilityNotSatisfied}, Facts: facts, RequestedOutputs: requested, ProjectionReport: report}
+}
+
+func m2mDecimal(coefficient string) *pv.Decimal {
+	value := pv.MustDecimal(coefficient, 0)
+	return &value
+}
+
+func m2mDigest(index int) pv.Digest {
+	return pv.Digest(fmt.Sprintf("sha256:%064x", index))
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -25,9 +26,46 @@ type m2mGraphQLRuntime struct {
 }
 
 const (
-	m2mHTTPHeaderTimeout = 5 * time.Second
-	m2mHTTPBodyTimeout   = 10 * time.Second
+	m2mHTTPHeaderTimeout    = 5 * time.Second
+	m2mHTTPBodyTimeout      = 10 * time.Second
+	m2mMaxPreTLSConnections = 16
 )
+
+type boundedM2MListener struct {
+	net.Listener
+	slots chan struct{}
+}
+
+type boundedM2MConnection struct {
+	net.Conn
+	release func()
+	once    sync.Once
+}
+
+func newBoundedM2MListener(listener net.Listener, capacity int) *boundedM2MListener {
+	return &boundedM2MListener{Listener: listener, slots: make(chan struct{}, capacity)}
+}
+
+func (listener *boundedM2MListener) Accept() (net.Conn, error) {
+	for {
+		connection, err := listener.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case listener.slots <- struct{}{}:
+			return &boundedM2MConnection{Conn: connection, release: func() { <-listener.slots }}, nil
+		default:
+			_ = connection.Close()
+		}
+	}
+}
+
+func (connection *boundedM2MConnection) Close() error {
+	err := connection.Conn.Close()
+	connection.once.Do(connection.release)
+	return err
+}
 
 func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
@@ -44,9 +82,16 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	for _, asset := range config.M2MGraphQL.AllowedAssets {
 		allowed[asset] = struct{}{}
 	}
+	known := make(map[string]struct{}, len(config.M2MGraphQL.KnownAssets))
+	for _, asset := range config.M2MGraphQL.KnownAssets {
+		known[asset] = struct{}{}
+	}
 	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
 		AllowedAssets: allowed,
 		AssetExists: func(asset string) bool {
+			if _, ok := known[asset]; ok {
+				return true
+			}
 			if adapter == nil {
 				return false
 			}
@@ -63,10 +108,11 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	if err != nil {
 		return nil, errors.New("M2M GraphQL handler configuration is invalid")
 	}
-	listener, err := net.Listen("tcp", config.M2MGraphQL.ListenAddr)
+	rawListener, err := net.Listen("tcp", config.M2MGraphQL.ListenAddr)
 	if err != nil {
 		return nil, errors.New("M2M GraphQL listener could not start")
 	}
+	listener := newBoundedM2MListener(rawListener, m2mMaxPreTLSConnections)
 	runtime := &m2mGraphQLRuntime{listener: listener}
 	runtime.server = &http.Server{TLSConfig: tlsConfig, ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {

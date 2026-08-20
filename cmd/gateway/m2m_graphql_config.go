@@ -29,6 +29,11 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		sort.Strings(cfg.M2MGraphQL.AllowedAssets)
 		return nil
 	})
+	fs.Func("m2m-graphql-known-assets", "comma-separated assets known independently of retained snapshots", func(value string) error {
+		cfg.M2MGraphQL.KnownAssets = normalizeEEBusList(value, false)
+		sort.Strings(cfg.M2MGraphQL.KnownAssets)
+		return nil
+	})
 	fs.Func("m2m-graphql-denied-principals", "comma-separated SHA-256 client certificate fingerprints", func(value string) error {
 		cfg.M2MGraphQL.DeniedPrincipalFingerprints = normalizeEEBusList(value, true)
 		sort.Strings(cfg.M2MGraphQL.DeniedPrincipalFingerprints)

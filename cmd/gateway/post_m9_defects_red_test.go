@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -2507,6 +2509,44 @@ func TestGatewayBuildInfo_ExplicitNonRevisionBuildIDHasClosedEvidenceForm(t *tes
 	}
 	if got, want := info.OneShotEvidenceIdentity().OperationVersion, "build:ci-build-42"; got != want {
 		t.Fatalf("OperationVersion = %q; want %q", got, want)
+	}
+}
+
+func TestIssue846RuntimeStateUsesTheProcessReleaseAuthority(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.RuntimeStatePath = t.TempDir() + "/runtime-state.json"
+	info, err := newGatewayBuildInfo("0.6.56", "0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, state := initRuntimeStateManager(context.Background(), cfg, info)
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = mgr.Stop(stopCtx)
+	})
+	if state.Meta.GatewayBuild != gatewayBuildString(info) {
+		t.Fatalf("gateway build = %q; want %q", state.Meta.GatewayBuild, gatewayBuildString(info))
+	}
+	if state.Meta.AddonVersion != info.ReleaseVersion {
+		t.Fatalf("add-on version = %q; want process release %q", state.Meta.AddonVersion, info.ReleaseVersion)
+	}
+	content, err := os.ReadFile(cfg.RuntimeStatePath)
+	if err != nil {
+		t.Fatalf("startup metadata is not durable before init returns: %v", err)
+	}
+	var persisted struct {
+		Meta struct {
+			InstanceGUID string `json:"instance_guid"`
+			GatewayBuild string `json:"gateway_build"`
+			AddonVersion string `json:"addon_version"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(content, &persisted); err != nil {
+		t.Fatalf("decode persisted runtime state: %v", err)
+	}
+	if persisted.Meta.InstanceGUID != "" || persisted.Meta.GatewayBuild != gatewayBuildString(info) || persisted.Meta.AddonVersion != info.ReleaseVersion {
+		t.Fatalf("persisted startup metadata = %#v; want empty identity and exact process build", persisted.Meta)
 	}
 }
 

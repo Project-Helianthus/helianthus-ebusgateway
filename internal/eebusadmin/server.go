@@ -23,12 +23,13 @@ const maxRequestBodyBytes = 4096
 const maxHTTPMutationReplays = 128
 
 type server struct {
-	admin   eebusruntime.AdminV1
-	raw     RawSnapshotProvider
-	audit   func(AuditEvent)
-	now     func() time.Time
-	random  io.Reader
-	scopeID string
+	admin     eebusruntime.AdminV1
+	raw       RawSnapshotProvider
+	audit     func(AuditEvent)
+	now       func() time.Time
+	random    io.Reader
+	readiness ReadinessProvider
+	scopeID   string
 
 	capabilityMu       sync.Mutex
 	capabilityRevision uint64
@@ -110,13 +111,18 @@ func NewServer(config Config) (http.Handler, error) {
 	if config.Random == nil {
 		config.Random = rand.Reader
 	}
+	if config.Readiness == nil {
+		config.Readiness = func() ReadinessV1 {
+			return ReadinessV1{ProcessReadiness: ProcessReadinessReady, EEBusReadiness: EEBusReadinessReady}
+		}
+	}
 	scopeID, err := randomToken(config.Random)
 	if err != nil {
 		return nil, errors.New("operator scope unavailable")
 	}
 	return &server{
 		admin: config.Admin, raw: config.Raw, audit: config.Audit,
-		now: config.Now, random: config.Random, scopeID: scopeID,
+		now: config.Now, random: config.Random, readiness: config.Readiness, scopeID: scopeID,
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
 		spineSnapshots:  make(map[string]*spineSnapshot),
 		mutationReplays: make(map[string]httpMutationReplay),
@@ -718,7 +724,8 @@ func (server *server) status(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	data := ownerStatus{
-		Status: snapshot.Status, Window: snapshot.Window, WindowDeadline: snapshot.WindowDeadline,
+		Readiness: normalizeReadiness(server.readiness()),
+		Status:    snapshot.Status, Window: snapshot.Window, WindowDeadline: snapshot.WindowDeadline,
 		Register: snapshot.Register, Listener: snapshot.Listener, Discovery: snapshot.Discovery,
 		TrustedCount: snapshot.TrustedCount, ConnectedCount: snapshot.ConnectedCount,
 		DiscoveredCount: snapshot.DiscoveredCount, CandidateCount: snapshot.CandidateCount,
@@ -727,6 +734,33 @@ func (server *server) status(w http.ResponseWriter, request *http.Request) {
 	server.writeJSON(w, http.StatusOK, ownerEnvelope{
 		Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.StateRevision, Data: data,
 	})
+}
+
+func normalizeReadiness(value ReadinessV1) ReadinessV1 {
+	switch value.ProcessReadiness {
+	case ProcessReadinessReady, ProcessReadinessNotReady:
+	default:
+		value.ProcessReadiness = ProcessReadinessNotReady
+	}
+	switch value.EEBusReadiness {
+	case EEBusReadinessDisabled, EEBusReadinessStarting, EEBusReadinessReady:
+		value.EEBusDegradedReason = ""
+	case EEBusReadinessDegraded:
+		switch value.EEBusDegradedReason {
+		case EEBusDegradedReasonConfigurationInvalid,
+			EEBusDegradedReasonLocalIdentityUnavailable,
+			EEBusDegradedReasonListenerUnavailable,
+			EEBusDegradedReasonRuntimeFactoryUnavailable,
+			EEBusDegradedReasonAdminBoundaryUnavailable,
+			EEBusDegradedReasonUnknownStartupFailure:
+		default:
+			value.EEBusDegradedReason = EEBusDegradedReasonUnknownStartupFailure
+		}
+	default:
+		value.EEBusReadiness = EEBusReadinessDegraded
+		value.EEBusDegradedReason = EEBusDegradedReasonUnknownStartupFailure
+	}
+	return value
 }
 
 type openPairingWindowBody struct {

@@ -52,14 +52,16 @@ func (endpoint *modbusRunLifecycleEndpoint) Close() error {
 	return endpoint.closeErr
 }
 
-func TestRunClosesModbusSidecarOnceAndJoinsLaterEEBusFailure(t *testing.T) {
+func TestRunKeepsEEBusFailureNonfatalAndClosesModbusSidecarOnce(t *testing.T) {
 	originalDial := dialModbusEndpointFn
 	originalFactory := newModbusEndpointFn
 	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalWire := wireObserveFirstObserversFn
 	t.Cleanup(func() {
 		dialModbusEndpointFn = originalDial
 		newModbusEndpointFn = originalFactory
 		resolveEEBusInterfaceAddressesFn = originalResolver
+		wireObserveFirstObserversFn = originalWire
 	})
 
 	client, peer := net.Pipe()
@@ -71,22 +73,25 @@ func TestRunClosesModbusSidecarOnceAndJoinsLaterEEBusFailure(t *testing.T) {
 	newModbusEndpointFn = func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
 		return endpoint, nil
 	}
-	laterErr := errors.New("eebus interface resolution failed")
+	eebusErr := errors.New("eebus interface resolution failed")
 	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
-		return nil, laterErr
+		return nil, eebusErr
+	}
+	laterErr := errors.New("later gateway startup failed")
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, laterErr
 	}
 
-	cfg := ebusgateway.DefaultConfig()
+	cfg := msp05bGatewayRunConfig(t)
 	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{
 		Enabled:     true,
 		Endpoint:    "tcp://127.0.0.1:1502",
 		DialTimeout: time.Second,
 	}
-	cfg.EEBusConfig = msp05bEnabledConfig()
 
 	err := run(context.Background(), cfg)
-	if !errors.Is(err, laterErr) || !errors.Is(err, endpoint.closeErr) {
-		t.Fatalf("run error = %v; want later eeBUS and Modbus shutdown causes", err)
+	if !errors.Is(err, laterErr) || !errors.Is(err, endpoint.closeErr) || errors.Is(err, eebusErr) {
+		t.Fatalf("run error = %v; want later gateway and Modbus shutdown causes without fatal eeBUS startup", err)
 	}
 	if endpoint.closeCalls != 1 {
 		t.Fatalf("Modbus endpoint close calls = %d; want 1", endpoint.closeCalls)
@@ -96,11 +101,13 @@ func TestRunClosesModbusSidecarOnceAndJoinsLaterEEBusFailure(t *testing.T) {
 func TestRunKeepsModbusStartupFailureProtocolLocal(t *testing.T) {
 	originalDial := dialModbusEndpointFn
 	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalWire := wireObserveFirstObserversFn
 	originalLogWriter := log.Writer()
 	originalLogFlags := log.Flags()
 	t.Cleanup(func() {
 		dialModbusEndpointFn = originalDial
 		resolveEEBusInterfaceAddressesFn = originalResolver
+		wireObserveFirstObserversFn = originalWire
 		log.SetOutput(originalLogWriter)
 		log.SetFlags(originalLogFlags)
 	})
@@ -110,28 +117,31 @@ func TestRunKeepsModbusStartupFailureProtocolLocal(t *testing.T) {
 	dialModbusEndpointFn = func(context.Context, string, string) (net.Conn, error) {
 		return nil, dialErr
 	}
-	laterErr := errors.New("eebus interface resolution failed")
+	eebusErr := errors.New("eebus interface resolution failed")
 	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
-		return nil, laterErr
+		return nil, eebusErr
+	}
+	laterErr := errors.New("later gateway startup failed")
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, laterErr
 	}
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	log.SetFlags(0)
 
-	cfg := ebusgateway.DefaultConfig()
+	cfg := msp05bGatewayRunConfig(t)
 	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{
 		Enabled:     true,
 		Endpoint:    endpoint,
 		DialTimeout: time.Second,
 	}
-	cfg.EEBusConfig = msp05bEnabledConfig()
 
 	err := run(context.Background(), cfg)
 	if !errors.Is(err, laterErr) {
-		t.Fatalf("run error = %v; want later eeBUS error", err)
+		t.Fatalf("run error = %v; want later gateway error after isolated protocol failures", err)
 	}
-	if errors.Is(err, dialErr) {
-		t.Fatalf("run error retained protocol-local Modbus startup failure: %v", err)
+	if errors.Is(err, dialErr) || errors.Is(err, eebusErr) {
+		t.Fatalf("run error retained protocol-local startup failure: %v", err)
 	}
 	if got := logs.String(); !strings.Contains(got, "Modbus TCP unavailable; continuing without Modbus") {
 		t.Fatalf("gateway log = %q; want protocol-local unavailability diagnostic", got)

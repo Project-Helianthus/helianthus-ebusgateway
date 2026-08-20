@@ -226,33 +226,20 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}()
 	}
 
-	eebusAdapter, eebusAdmin, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
+	eebusAdapter, _, eebusLifecycle, _, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("eeBUS sidecar: %w", err)
+		log.Printf("eeBUS runtime unavailable; continuing without eeBUS reason=startup")
 	}
-	if eebusAdapter != nil {
+	if eebusLifecycle != nil {
 		defer func() {
-			if err := eebusAdapter.Shutdown(); err != nil {
+			if err := eebusLifecycle.Shutdown(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
 			}
 		}()
 	}
 	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
-	if eebusAdminAvailable {
-		availableHandler, boundaryErr := eebusadmin.NewServer(eebusadmin.Config{
-			Admin: eebusAdmin, Raw: eebusAdapter,
-			Audit: func(event eebusadmin.AuditEvent) {
-				log.Printf("eebus_admin_audit action=%s scope=host_operator request_id=%s idempotency=%s prior=%s resulting=%s reason=%s timestamp=%s",
-					event.Action, event.RequestID, event.IdempotencyOutcome, event.PriorStateClass,
-					event.ResultingStateClass, event.Reason, event.Timestamp.UTC().Format(time.RFC3339Nano))
-			},
-		})
-		if boundaryErr != nil {
-			log.Printf("eeBUS admin boundary unavailable reason=http_boundary")
-			eebusAdminAvailable = false
-		} else {
-			eebusAdminHandler = availableHandler
-		}
+	if eebusLifecycle != nil {
+		eebusAdminHandler = eebusLifecycle
 	}
 	if evidenceRuntime != nil {
 		var captureEEBus eebusEvidenceCapture
@@ -1138,7 +1125,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, eebusAdminAvailable, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, eebusLifecycle, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -1978,7 +1965,7 @@ func startHTTPServer(
 	busObservability *ebusgateway.BusObservabilityStore,
 	shadowCache *ebusgateway.ShadowCache,
 	eebusAdminHandler http.Handler,
-	eebusAdminAvailable bool,
+	eebusLifecycle *eebusRuntimeLifecycle,
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2019,6 +2006,9 @@ func startHTTPServer(
 	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
+		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
 	}
 	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
@@ -2199,12 +2189,10 @@ func startHTTPServer(
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
 			MCPPath:          cfg.MCPPath,
-			EEBusAdminPath: func() string {
-				if eebusAdminAvailable {
-					return "/admin/eebus/v1"
-				}
-				return ""
-			}(),
+			EEBusAdminPath:   "/admin/eebus/v1",
+			Readiness: func() portal.RuntimeReadiness {
+				return projectGatewayReadiness(cfg, eebusLifecycle.LifecycleSnapshot())
+			},
 			GatewayVersion:    buildInfo.ReleaseVersion,
 			BuildID:           buildInfo.BuildID,
 			SemanticPVEnabled: cfg.PortalPV.SemanticEnabled,
@@ -3045,7 +3033,7 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 	mgr := runtimestate.New(runtimestate.Options{
 		Path:         cfg.RuntimeStatePath,
 		GatewayBuild: gatewayBuildString(buildInfo),
-		AddonVersion: "", // populated by add-on via future flag if needed
+		AddonVersion: buildInfo.ReleaseVersion,
 	})
 	state, err := mgr.Load(ctx)
 	if err != nil {
@@ -3062,6 +3050,8 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 		if perr := mgr.EagerPersistInstanceGUID(ctx, cfg.InstanceGUID, source); perr != nil {
 			log.Printf("runtime_state: eager-persist instance_guid failed (continuing): %v", perr)
 		}
+	} else if perr := mgr.Flush(ctx); perr != nil {
+		log.Printf("runtime_state: startup metadata persist failed (continuing): %v", perr)
 	}
 
 	if serr := mgr.Start(ctx); serr != nil {
@@ -3069,6 +3059,21 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 	}
 
 	return mgr, state
+}
+
+func projectGatewayReadiness(cfg ebusgateway.Config, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
+	eebusReadiness := eebusReadinessForLifecycle(snapshot)
+	proxyReadiness := "DISABLED"
+	if cfg.ProxyListenAddr != "" {
+		proxyReadiness = "READY"
+	}
+	return portal.RuntimeReadiness{
+		ProcessReadiness:    string(eebusReadiness.ProcessReadiness),
+		HTTPReadiness:       "READY",
+		ProxyReadiness:      proxyReadiness,
+		EEBusReadiness:      string(eebusReadiness.EEBusReadiness),
+		EEBusDegradedReason: string(eebusReadiness.EEBusDegradedReason),
+	}
 }
 
 // identitySourceFromCfg maps the CLI -instance-guid-source flag value to the

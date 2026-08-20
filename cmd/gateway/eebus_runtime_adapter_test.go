@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -370,6 +371,109 @@ func TestMSP05BRunCleanCancellationReturnsSidecarShutdownError(t *testing.T) {
 	}
 	if runtime.startCalls != 1 || runtime.stopCalls != 1 {
 		t.Fatalf("calls start=%d shutdown=%d; want exactly one each", runtime.startCalls, runtime.stopCalls)
+	}
+}
+
+func TestIssue846RunKeepsGatewayAvailableWhenEEBusStartupFails(t *testing.T) {
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalOperatorFactory := newEEBusOperatorRuntimeFn
+	originalRuntimeFactory := newEEBusRuntimeFn
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		newEEBusOperatorRuntimeFn = originalOperatorFactory
+		newEEBusRuntimeFn = originalRuntimeFactory
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+
+	installMSP05BRunDependencies(&msp05bRuntime{})
+	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+		return nil, nil, errors.New("operator listener unavailable")
+	}
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return nil, errors.New("public listener unavailable")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	httpStarted := false
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		httpStarted = true
+		cancel()
+		return nil, nil, nil
+	}
+
+	err := run(ctx, msp05bGatewayRunConfig(t))
+	if err != nil {
+		t.Fatalf("run returned fatal eeBUS startup error: %v", err)
+	}
+	if !httpStarted {
+		t.Fatal("HTTP gateway did not start after isolated eeBUS failure")
+	}
+}
+
+type issue846BlockingRuntime struct {
+	msp05bRuntime
+	snapshotEntered chan struct{}
+	snapshotRelease chan struct{}
+	shutdownCalled  chan struct{}
+	enterOnce       sync.Once
+	shutdownOnce    sync.Once
+}
+
+func (runtime *issue846BlockingRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
+	runtime.enterOnce.Do(func() { close(runtime.snapshotEntered) })
+	<-runtime.snapshotRelease
+	return eebusruntime.SnapshotV1{}, nil
+}
+
+func (runtime *issue846BlockingRuntime) Shutdown() error {
+	runtime.shutdownOnce.Do(func() { close(runtime.shutdownCalled) })
+	return runtime.msp05bRuntime.Shutdown()
+}
+
+func TestIssue846RuntimeSlotWaitsForInFlightReadersBeforeSwapAndShutdown(t *testing.T) {
+	oldRuntime := &issue846BlockingRuntime{
+		snapshotEntered: make(chan struct{}),
+		snapshotRelease: make(chan struct{}),
+		shutdownCalled:  make(chan struct{}),
+	}
+	nextRuntime := &msp05bRuntime{}
+	slot := newEEBusRuntimeSlot(oldRuntime)
+	adapter := &eebusRuntimeAdapter{runtime: slot}
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = adapter.Snapshot()
+	}()
+	<-oldRuntime.snapshotEntered
+
+	swapDone := make(chan bool, 1)
+	go func() { swapDone <- slot.Replace(nextRuntime) }()
+	select {
+	case <-oldRuntime.shutdownCalled:
+		t.Fatal("old runtime shut down while a snapshot read was still in flight")
+	default:
+	}
+
+	close(oldRuntime.snapshotRelease)
+	<-readDone
+	if replaced := <-swapDone; !replaced {
+		t.Fatal("runtime slot rejected a live replacement")
+	}
+	select {
+	case <-oldRuntime.shutdownCalled:
+	default:
+		t.Fatal("old runtime was not shut down after the safe swap")
+	}
+	if oldRuntime.stopCalls != 1 {
+		t.Fatalf("old runtime shutdown calls = %d; want one", oldRuntime.stopCalls)
 	}
 }
 

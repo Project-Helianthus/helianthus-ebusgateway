@@ -82,6 +82,15 @@ type Options struct {
 	SemanticPV         func(context.Context) (ForwardedResponse, error)
 	ModbusProvider     mcp.ModbusV1Provider
 	RawModbusAudit     func(RawModbusAuditEvent)
+	Readiness          func() RuntimeReadiness
+}
+
+type RuntimeReadiness struct {
+	ProcessReadiness    string `json:"process_readiness"`
+	HTTPReadiness       string `json:"http_readiness"`
+	ProxyReadiness      string `json:"proxy_readiness"`
+	EEBusReadiness      string `json:"eebus_readiness"`
+	EEBusDegradedReason string `json:"eebus_degraded_reason,omitempty"`
 }
 
 type ForwardedResponse struct {
@@ -578,6 +587,18 @@ func NewHandler(opts Options) http.Handler {
 	if opts.BuildID == "" {
 		opts.BuildID = "unknown"
 	}
+	if opts.Readiness == nil {
+		eebusReadiness := "DISABLED"
+		if opts.EEBusAdminPath != "" {
+			eebusReadiness = "READY"
+		}
+		opts.Readiness = func() RuntimeReadiness {
+			return RuntimeReadiness{
+				ProcessReadiness: "READY", HTTPReadiness: "READY", ProxyReadiness: "DISABLED",
+				EEBusReadiness: eebusReadiness,
+			}
+		}
+	}
 	h := &handler{
 		opts:      opts,
 		files:     http.FileServer(http.FS(staticFS)),
@@ -963,9 +984,15 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			"gateway_version": h.opts.GatewayVersion,
 			"build_id":        h.opts.BuildID,
 			"time_utc":        time.Now().UTC().Format(time.RFC3339),
+			"readiness":       h.opts.Readiness(),
 		})
 	case "bootstrap":
 		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
+		eebusAdminAvailable := h.opts.Readiness().EEBusReadiness == "READY"
+		eebusAdminPath := ""
+		if eebusAdminAvailable {
+			eebusAdminPath = h.opts.EEBusAdminPath
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"capabilities": map[string]bool{
 				"registry":          h.opts.ListRegistry != nil,
@@ -990,7 +1017,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				// of section-l7-catalog, otherwise the bootstrap fetch
 				// surfaces a broken section. Codex P2 on PR #507.
 				"ebus_standard":   h.opts.EbusStandardServer != nil,
-				"eebus_admin":     h.opts.EEBusAdminPath != "",
+				"eebus_admin":     eebusAdminAvailable,
 				"semantic_pv":     h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
 				"modbus_raw_read": h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
@@ -999,7 +1026,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshot":              h.opts.SnapshotPath,
 				"subscriptions":         h.opts.SubscriptionPath,
 				"mcp":                   h.opts.MCPPath,
-				"eebus_admin":           h.opts.EEBusAdminPath,
+				"eebus_admin":           eebusAdminPath,
 				"bus_observability":     "/portal/api/v1/bus/observability",
 				"search":                "/portal/api/v1/search",
 				"stream":                "/portal/api/v1/stream",

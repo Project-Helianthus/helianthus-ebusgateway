@@ -347,6 +347,26 @@ func (m *Manager) State() *State {
 	return cloneState(m.state)
 }
 
+// Flush makes one bounded synchronous persistence attempt when state is dirty.
+// It does not retry and returns before the periodic persister is started by the
+// caller, closing the crash window for startup metadata changes.
+func (m *Manager) Flush(ctx context.Context) error {
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
+	m.mu.Lock()
+	dirty := m.dirty && m.state != nil
+	m.mu.Unlock()
+	if !dirty {
+		return nil
+	}
+	return m.persistFlush()
+}
+
 // UpdateSelf replaces ebus.self with the given Self and marks state dirty.
 // Used after a successful SourceAddressSelection per AD14.
 //
@@ -485,8 +505,17 @@ func (m *Manager) EvictKnownBusMember(addr byte) {
 func (m *Manager) replaceState(s *State) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if s == nil {
+		s = &State{SchemaVersion: SchemaVersion}
+	}
+	metadataChanged := s.Meta.GatewayBuild != m.opts.GatewayBuild || s.Meta.AddonVersion != m.opts.AddonVersion
+	s.Meta.GatewayBuild = m.opts.GatewayBuild
+	s.Meta.AddonVersion = m.opts.AddonVersion
 	m.state = s
-	m.dirty = false
+	m.dirty = metadataChanged
+	if metadataChanged {
+		m.writeGen++
+	}
 }
 
 func cloneState(s *State) *State {

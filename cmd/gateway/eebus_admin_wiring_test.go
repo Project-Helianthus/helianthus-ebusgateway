@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -88,7 +93,11 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(content)
+	configContent, err := os.ReadFile("eebus_admin_config.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(content) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := eebusadmin.NewUnavailableHandler()`,
@@ -147,4 +156,220 @@ func issue817StartAdminAwareRuntime(t *testing.T, ctx context.Context, cfg ebusg
 		err = results[errorIndex].Interface().(error)
 	}
 	return adapter, admin, results[availableIndex].Bool(), err
+}
+
+type issue846RestartWaiter struct {
+	durations chan time.Duration
+	releases  chan struct{}
+	active    atomic.Int32
+	maxActive atomic.Int32
+}
+
+func newIssue846RestartWaiter() *issue846RestartWaiter {
+	return &issue846RestartWaiter{
+		durations: make(chan time.Duration, 8),
+		releases:  make(chan struct{}, 8),
+	}
+}
+
+func (waiter *issue846RestartWaiter) Wait(ctx context.Context, delay time.Duration) bool {
+	active := waiter.active.Add(1)
+	defer waiter.active.Add(-1)
+	for {
+		maximum := waiter.maxActive.Load()
+		if active <= maximum || waiter.maxActive.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	waiter.durations <- delay
+	select {
+	case <-ctx.Done():
+		return false
+	case <-waiter.releases:
+		return true
+	}
+}
+
+func TestIssue846LifecycleUsesBoundedBackoffAndRecoversOneRuntimeAdminPair(t *testing.T) {
+	waiter := newIssue846RestartWaiter()
+	firstRuntime := &msp05bRuntime{}
+	recoveredRuntime := &msp05bRuntime{}
+	var attempts atomic.Int32
+
+	lifecycle, initialErr := newEEBusRuntimeLifecycle(context.Background(), true, eebusRuntimeLifecycleOptions{
+		policy: eebusRestartPolicy{MaxAttempts: 3, Backoff: time.Minute},
+		wait:   waiter.Wait,
+		start: func(context.Context) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+			switch attempts.Add(1) {
+			case 1:
+				return &eebusRuntimeAdapter{runtime: firstRuntime}, nil, false, nil
+			case 2:
+				return nil, nil, false, errors.New("listener still unavailable")
+			default:
+				return &eebusRuntimeAdapter{runtime: recoveredRuntime}, issue809AdminStub{}, true, nil
+			}
+		},
+	})
+	if initialErr != nil {
+		t.Fatalf("partial initial runtime = %v; want contained degraded result", initialErr)
+	}
+	t.Cleanup(func() { _ = lifecycle.Shutdown() })
+
+	initial := lifecycle.LifecycleSnapshot()
+	if initial.State != eebusLifecycleBackoff || initial.Attempts != 1 || initial.AdminAvailable || initial.Revision == 0 {
+		t.Fatalf("initial lifecycle = %#v; want one degraded attempt in backoff", initial)
+	}
+	initialRevision := initial.Revision
+	unavailableResponse := httptest.NewRecorder()
+	lifecycle.ServeHTTP(unavailableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/unknown", nil))
+	if unavailableResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("initial Admin handler status = %d; want closed unavailable", unavailableResponse.Code)
+	}
+	if delay := <-waiter.durations; delay <= 0 {
+		t.Fatalf("first restart delay = %s; want nonzero backoff", delay)
+	}
+	waiter.releases <- struct{}{}
+	if delay := <-waiter.durations; delay <= 0 {
+		t.Fatalf("second restart delay = %s; want nonzero backoff", delay)
+	}
+	waiter.releases <- struct{}{}
+
+	issue846WaitForLifecycleState(t, lifecycle, eebusLifecycleRunning)
+	recovered := lifecycle.LifecycleSnapshot()
+	if recovered.Attempts != 3 || !recovered.AdminAvailable || recovered.Revision <= initialRevision || recovered.TimerOutstanding {
+		t.Fatalf("recovered lifecycle = %#v; want one available replacement after three attempts", recovered)
+	}
+	if firstRuntime.stopCalls != 1 {
+		t.Fatalf("replaced partial runtime shutdown calls = %d; want one", firstRuntime.stopCalls)
+	}
+	if waiter.maxActive.Load() != 1 {
+		t.Fatalf("maximum concurrent restart waits = %d; want one outstanding timer", waiter.maxActive.Load())
+	}
+	availableResponse := httptest.NewRecorder()
+	lifecycle.ServeHTTP(availableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/unknown", nil))
+	if availableResponse.Code != http.StatusNotFound {
+		t.Fatalf("recovered Admin handler status = %d; want live typed handler", availableResponse.Code)
+	}
+}
+
+func TestIssue846LifecycleStopsAfterFiniteAttempts(t *testing.T) {
+	waiter := newIssue846RestartWaiter()
+	var attempts atomic.Int32
+	lifecycle, _ := newEEBusRuntimeLifecycle(context.Background(), true, eebusRuntimeLifecycleOptions{
+		policy: eebusRestartPolicy{MaxAttempts: 3, Backoff: time.Second},
+		wait:   waiter.Wait,
+		start: func(context.Context) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+			attempts.Add(1)
+			return nil, nil, false, errors.New("startup unavailable")
+		},
+	})
+	t.Cleanup(func() { _ = lifecycle.Shutdown() })
+
+	for range 2 {
+		if delay := <-waiter.durations; delay <= 0 {
+			t.Fatalf("restart delay = %s; want nonzero", delay)
+		}
+		waiter.releases <- struct{}{}
+	}
+	issue846WaitForLifecycleState(t, lifecycle, eebusLifecycleDegraded)
+	snapshot := lifecycle.LifecycleSnapshot()
+	if snapshot.Attempts != 3 || snapshot.TimerOutstanding || attempts.Load() != 3 {
+		t.Fatalf("exhausted lifecycle = %#v calls=%d; want finite three-attempt window", snapshot, attempts.Load())
+	}
+	select {
+	case delay := <-waiter.durations:
+		t.Fatalf("unexpected fourth restart timer with delay %s", delay)
+	default:
+	}
+}
+
+func TestIssue846LifecycleCancellationStopsOutstandingTimerAndRuntime(t *testing.T) {
+	waiter := newIssue846RestartWaiter()
+	runtime := &msp05bRuntime{}
+	var attempts atomic.Int32
+	lifecycle, _ := newEEBusRuntimeLifecycle(context.Background(), true, eebusRuntimeLifecycleOptions{
+		policy: eebusRestartPolicy{MaxAttempts: 3, Backoff: time.Second},
+		wait:   waiter.Wait,
+		start: func(context.Context) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+			attempts.Add(1)
+			return &eebusRuntimeAdapter{runtime: runtime}, nil, false, nil
+		},
+	})
+	<-waiter.durations
+	if err := lifecycle.Shutdown(); err != nil {
+		t.Fatalf("lifecycle shutdown: %v", err)
+	}
+	snapshot := lifecycle.LifecycleSnapshot()
+	if snapshot.State != eebusLifecycleStopped || snapshot.TimerOutstanding || attempts.Load() != 1 {
+		t.Fatalf("cancelled lifecycle = %#v calls=%d; want stopped before retry", snapshot, attempts.Load())
+	}
+	if runtime.stopCalls != 1 {
+		t.Fatalf("active runtime shutdown calls = %d; want one", runtime.stopCalls)
+	}
+}
+
+func issue846WaitForLifecycleState(t *testing.T, lifecycle *eebusRuntimeLifecycle, want eebusLifecycleState) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if lifecycle.LifecycleSnapshot().State == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("lifecycle state = %s; want %s", lifecycle.LifecycleSnapshot().State, want)
+}
+
+func TestIssue846GatewayReadinessProjectsLifecycleAndConditionalProxy(t *testing.T) {
+	tests := []struct {
+		name        string
+		proxyListen string
+		lifecycle   eebusRuntimeLifecycleSnapshot
+		wantProxy   string
+		wantEEBus   string
+		wantReason  eebusadmin.EEBusDegradedReason
+	}{
+		{name: "disabled", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDisabled}, wantProxy: "DISABLED", wantEEBus: "DISABLED"},
+		{name: "starting with conditional proxy", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting}, wantProxy: "READY", wantEEBus: "STARTING"},
+		{name: "initial failure backoff", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleBackoff, DegradedReason: eebusadmin.EEBusDegradedReasonListenerUnavailable}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "recovered", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning}, wantProxy: "READY", wantEEBus: "READY"},
+		{name: "unknown failure", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDegraded, DegradedReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.ProxyListenAddr = test.proxyListen
+			got := projectGatewayReadiness(cfg, test.lifecycle)
+			if got.ProcessReadiness != "READY" || got.HTTPReadiness != "READY" || got.ProxyReadiness != test.wantProxy || got.EEBusReadiness != test.wantEEBus || got.EEBusDegradedReason != string(test.wantReason) {
+				t.Fatalf("readiness=%#v; want process/http READY proxy=%s eeBUS=%s reason=%s", got, test.wantProxy, test.wantEEBus, test.wantReason)
+			}
+			if test.wantEEBus != "DEGRADED" && got.EEBusDegradedReason != "" {
+				t.Fatalf("non-degraded readiness leaked reason: %#v", got)
+			}
+		})
+	}
+}
+
+func TestIssue846StartupFailureReasonsUseClosedCanonicalMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		got  eebusadmin.EEBusDegradedReason
+		want eebusadmin.EEBusDegradedReason
+	}{
+		{name: "configuration", got: classifyEEBusConfigFailure(errors.New("enabled eeBUS configuration requires a state root")), want: eebusadmin.EEBusDegradedReasonConfigurationInvalid},
+		{name: "interface resolution", got: classifyEEBusConfigFailure(errors.New("resolve eeBUS interface addresses: unavailable")), want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "local identity", got: classifyEEBusFactoryFailure(errors.New("load local identity certificate")), want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
+		{name: "listener", got: classifyEEBusFactoryFailure(errors.New("listener bind failed")), want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "runtime factory", got: classifyEEBusFactoryFailure(errors.New("backend construction failed")), want: eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable},
+		{name: "admin boundary", got: eebusStartupFailureReason(markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable, errors.New("incomplete capability pair"))), want: eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable},
+		{name: "unknown", got: eebusStartupFailureReason(errors.New("future startup failure")), want: eebusadmin.EEBusDegradedReasonUnknownStartupFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.got != test.want {
+				t.Fatalf("reason=%s; want %s", test.got, test.want)
+			}
+		})
+	}
 }

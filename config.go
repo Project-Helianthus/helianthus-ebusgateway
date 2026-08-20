@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -153,6 +154,24 @@ func (cfg Config) ValidatePortalPV() error {
 	}
 	if cfg.PortalPV.M2MServerName != cfg.M2MGraphQL.ServerName {
 		return errors.New("portal PV semantic BFF server identity does not match the dedicated M2M listener")
+	}
+	parsedURL, err := url.Parse(cfg.PortalPV.M2MURL)
+	if err != nil || !parsedURL.IsAbs() || parsedURL.Scheme != "https" || parsedURL.Host == "" ||
+		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || parsedURL.Opaque != "" ||
+		parsedURL.ForceQuery || parsedURL.Path != "/graphql/m2m/v1" || parsedURL.RawPath != "" {
+		return errors.New("portal PV semantic BFF URL is invalid")
+	}
+	hostname := parsedURL.Hostname()
+	loopback := strings.EqualFold(hostname, "localhost")
+	if address := net.ParseIP(hostname); address != nil {
+		loopback = address.IsLoopback()
+	}
+	if !loopback {
+		return errors.New("portal PV semantic BFF URL must use a loopback host")
+	}
+	_, listenerPort, err := net.SplitHostPort(cfg.M2MGraphQL.ListenAddr)
+	if err != nil || listenerPort == "" || parsedURL.Port() == "" || parsedURL.Port() != listenerPort {
+		return errors.New("portal PV semantic BFF URL port does not match the dedicated M2M listener")
 	}
 	for _, asset := range cfg.M2MGraphQL.AllowedAssets {
 		if asset == cfg.PortalPV.AssetRef {

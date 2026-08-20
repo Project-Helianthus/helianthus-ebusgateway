@@ -16,6 +16,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,7 @@ var (
 	portalAssetETagByTarget = loadAssetETags()
 	portalStreamEventsTotal = expvar.NewMap("portal_stream_events_total")
 	portalStreamDropped     = expvar.NewMap("portal_stream_dropped_total")
+	endpointRefPattern      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 type Options struct {
@@ -1201,10 +1203,7 @@ func auditInteger(args map[string]any, key string) *uint64 {
 }
 
 func safeEndpointRef(value string) bool {
-	if !strings.HasPrefix(value, "sha256:") || len(value) > 128 || len(value) == len("sha256:") {
-		return false
-	}
-	return !strings.ContainsAny(value, " \t\r\n/\\@")
+	return endpointRefPattern.MatchString(value)
 }
 
 func (h *handler) auditRawModbus(event RawModbusAuditEvent) {

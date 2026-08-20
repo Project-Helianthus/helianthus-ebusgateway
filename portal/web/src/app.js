@@ -416,12 +416,17 @@ class PortalShell extends HTMLElement {
     const func = Number(this.querySelector('[data-role="modbus-function"]')?.value);
     const offset = Number(this.querySelector('[data-role="modbus-offset"]')?.value);
     const quantity = Number(this.querySelector('[data-role="modbus-quantity"]')?.value);
-    if (!output || !this._capabilityRawModbus || !Number.isInteger(unit) || unit < 1 || unit > 247 || ![3, 4].includes(func) || !Number.isInteger(offset) || offset < 0 || offset > 65535 || !Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
+    if (!output || !this._capabilityRawModbus || !Number.isInteger(unit) || unit < 1 || unit > 247 || ![3, 4].includes(func) || !Number.isInteger(offset) || offset < 0 || offset > 65535 || !Number.isInteger(quantity) || quantity < 1 || quantity > 125 || offset + quantity > 65536) {
       if (output) output.textContent = "Invalid raw read bounds";
       return;
     }
-    const response = await fetch("api/v1/explorer/modbus/raw-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unit_id: unit, function: func, offset, quantity }) });
-    output.textContent = JSON.stringify(await response.json(), null, 2);
+    try {
+      const response = await fetch("api/v1/explorer/modbus/raw-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unit_id: unit, function: func, offset, quantity }) });
+      if (!response.ok) throw new Error("raw read failed");
+      output.textContent = JSON.stringify(await response.json(), null, 2);
+    } catch {
+      output.textContent = "Raw read unavailable";
+    }
   }
 
   async refreshPV() {
@@ -432,6 +437,20 @@ class PortalShell extends HTMLElement {
       output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2) : `PV unavailable (${response.status})`;
     } catch {
       output.textContent = "PV unavailable";
+    }
+  }
+
+  applyPVModbusCapabilityState(capabilities) {
+    const cap = capabilities || {};
+    this._capabilitySemanticPV = Boolean(cap.semantic_pv);
+    this._capabilityRawModbus = Boolean(cap.modbus_raw_read);
+    const pvPanel = this.querySelector('[data-role="pv-panel"]');
+    const rawPanel = this.querySelector('[data-role="modbus-raw-panel"]');
+    if (pvPanel) pvPanel.hidden = !this._capabilitySemanticPV;
+    if (rawPanel) rawPanel.hidden = !this._capabilityRawModbus;
+    if (!this._capabilitySemanticPV && this.pvInterval) {
+      clearInterval(this.pvInterval);
+      this.pvInterval = undefined;
     }
   }
 
@@ -670,8 +689,7 @@ class PortalShell extends HTMLElement {
 	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
 	    : "";
       this.applyCapabilityState(capabilities);
-      this._capabilityRawModbus = Boolean(capabilities.modbus_raw_read);
-      this._capabilitySemanticPV = Boolean(capabilities.semantic_pv);
+	  this.applyPVModbusCapabilityState(capabilities);
       if (this._capabilitySemanticPV) {
         await this.refreshPV();
         if (this.pvInterval) clearInterval(this.pvInterval);
@@ -844,10 +862,10 @@ class PortalShell extends HTMLElement {
   applyCapabilityState(capabilities) {
     const cap = capabilities || {};
     this.setNavState("registry", cap.registry);
-    this.setNavState("semantic", cap.semantic);
+    this.setNavState("semantic", cap.semantic || cap.semantic_pv);
     this.setNavState("bus", cap.bus_observability);
     this.setNavState("projection", cap.projection);
-    this.setNavState("explorer", cap.explorer);
+    this.setNavState("explorer", cap.explorer || cap.modbus_raw_read);
     this.setNavState("adapter", cap.semantic);
     this.setNavState("timeline", cap.timeline || cap.provenance);
     this.setNavState("snapshots", cap.snapshots || cap.snapshot_diff);
@@ -2712,8 +2730,10 @@ class PortalShell extends HTMLElement {
               <ul data-role="semantic-list">
                 <li>Loading semantic snapshot...</li>
               </ul>
-              <h3>PV Current</h3>
-              <pre class="pv-output" data-role="pv-current">PV unavailable</pre>
+              <div data-role="pv-panel" hidden>
+                <h3>PV Current</h3>
+                <pre class="pv-output" data-role="pv-current">PV unavailable</pre>
+              </div>
             </section>
             <section id="section-bus" class="registry-preview">
               <h2>Bus Observability</h2>
@@ -2814,15 +2834,17 @@ class PortalShell extends HTMLElement {
                   <span class="muted-inline" data-role="explorer-quick-result"></span>
                 </div>
               </div>
-              <h3>Raw Modbus</h3>
-              <div class="explorer-row">
-                <label class="explorer-label">Unit <input class="search explorer-input" data-role="modbus-unit" value="1" inputmode="numeric" /></label>
-                <label class="explorer-label">Function <select class="select" data-role="modbus-function"><option value="3">FC03</option><option value="4">FC04</option></select></label>
-                <label class="explorer-label">Offset <input class="search explorer-input" data-role="modbus-offset" value="0" inputmode="numeric" /></label>
-                <label class="explorer-label">Quantity <input class="search explorer-input" data-role="modbus-quantity" value="1" inputmode="numeric" /></label>
-                <button class="button" data-role="modbus-raw-read" type="button">Read</button>
+              <div data-role="modbus-raw-panel" hidden>
+                <h3>Raw Modbus</h3>
+                <div class="explorer-row">
+                  <label class="explorer-label">Unit <input class="search explorer-input" data-role="modbus-unit" value="1" inputmode="numeric" /></label>
+                  <label class="explorer-label">Function <select class="select" data-role="modbus-function"><option value="3">FC03</option><option value="4">FC04</option></select></label>
+                  <label class="explorer-label">Offset <input class="search explorer-input" data-role="modbus-offset" value="0" inputmode="numeric" /></label>
+                  <label class="explorer-label">Quantity <input class="search explorer-input" data-role="modbus-quantity" value="1" inputmode="numeric" /></label>
+                  <button class="button" data-role="modbus-raw-read" type="button">Read</button>
+                </div>
+                <pre class="pv-output" data-role="modbus-raw-output">Raw diagnostics unavailable</pre>
               </div>
-              <pre class="pv-output" data-role="modbus-raw-output">Raw diagnostics unavailable</pre>
             </section>
             <section id="section-adapter" class="registry-preview">
               <h2>Adapter Hardware Info</h2>

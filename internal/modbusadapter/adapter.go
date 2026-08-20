@@ -440,10 +440,18 @@ func (adapter *Adapter) CanonicalPVSnapshotByAsset(assetRef string) (pv.Snapshot
 	}
 	adapter.profileMu.RLock()
 	defer adapter.profileMu.RUnlock()
+	var match *sunSpecQualificationRecord
 	for _, record := range adapter.qualifications {
 		if record.canonical.AssetRef == assetRef {
-			return cloneCanonicalPVSnapshot(record.canonical), record.producedAt, true
+			if match != nil {
+				return pv.Snapshot{}, time.Time{}, false
+			}
+			copy := record
+			match = &copy
 		}
+	}
+	if match != nil {
+		return cloneCanonicalPVSnapshot(match.canonical), match.producedAt, true
 	}
 	return pv.Snapshot{}, time.Time{}, false
 }

@@ -1370,6 +1370,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	bindEEBusFlags(fs, cfg)
+	bindM2MGraphQLFlags(fs, cfg)
 	fs.BoolVar(
 		&cfg.EvidenceOneShotEnabled,
 		"synchronized-evidence-one-shot-enabled",

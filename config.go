@@ -2,6 +2,8 @@ package ebusgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -117,13 +119,19 @@ func (config M2MGraphQLConfig) Validate() error {
 		strings.TrimSpace(config.ServerKeyFile) == "" || len(config.AllowedAssets) == 0 {
 		return errors.New("M2M GraphQL configuration is incomplete")
 	}
+	assets := make(map[string]struct{}, len(config.AllowedAssets))
 	for _, asset := range config.AllowedAssets {
 		if strings.TrimSpace(asset) == "" {
 			return errors.New("M2M GraphQL configuration contains an empty allowed asset")
 		}
+		if _, duplicate := assets[asset]; duplicate {
+			return errors.New("M2M GraphQL configuration contains a duplicate allowed asset")
+		}
+		assets[asset] = struct{}{}
 	}
 	for _, fingerprint := range config.DeniedPrincipalFingerprints {
-		if len(fingerprint) != 64 {
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil || len(decoded) != sha256.Size {
 			return errors.New("M2M GraphQL configuration contains an invalid denied principal fingerprint")
 		}
 	}

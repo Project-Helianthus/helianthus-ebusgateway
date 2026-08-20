@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 )
@@ -22,6 +23,15 @@ type contractFixtureShape struct {
 	OperationName       string `json:"operationName"`
 }
 
+var m2mTestProducedAt = time.Date(2026, 8, 17, 13, 46, 0, 0, time.UTC)
+
+func m2mSnapshotAt(provider func(context.Context, string) (pv.Snapshot, bool)) func(context.Context, string) (pv.Snapshot, time.Time, bool) {
+	return func(ctx context.Context, asset string) (pv.Snapshot, time.Time, bool) {
+		snapshot, ok := provider(ctx, asset)
+		return snapshot, m2mTestProducedAt, ok
+	}
+}
+
 func TestM2MCurrentSnapshot_OnlyAcceptsTheDedicatedFixedContract(t *testing.T) {
 	var contract contractFixtureShape
 	if err := json.Unmarshal(contractFixture, &contract); err != nil {
@@ -29,9 +39,9 @@ func TestM2MCurrentSnapshot_OnlyAcceptsTheDedicatedFixedContract(t *testing.T) {
 	}
 
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) {
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) {
 			return m2mFixtureSnapshot(), true
-		},
+		}),
 		AssetExists:   func(string) bool { return true },
 		AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
 	})
@@ -73,7 +83,10 @@ func TestM2MCurrentSnapshot_OnlyAcceptsTheDedicatedFixedContract(t *testing.T) {
 }
 
 func TestM2MCurrentSnapshot_HasNoGenericFallbackRawOrSubscriptionSurface(t *testing.T) {
-	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{}})
+	handler, err := NewHandler(Config{
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return pv.Snapshot{}, false }),
+		AssetExists:       func(string) bool { return false }, AllowedAssets: map[string]struct{}{},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +107,7 @@ func TestM2MCurrentSnapshot_HasNoGenericFallbackRawOrSubscriptionSurface(t *test
 
 func TestM2MCurrentSnapshot_RequiresAuthoritativePublicationTimeProvider(t *testing.T) {
 	_, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mFixtureSnapshot(), true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+		AssetExists: func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
 	})
 	if err == nil {
 		t.Fatal("handler accepted snapshot provider without authoritative publication time")

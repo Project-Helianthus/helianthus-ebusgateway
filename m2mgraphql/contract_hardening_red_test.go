@@ -19,8 +19,8 @@ var canonicalM2MQuery string
 
 func TestM2MCurrentSnapshot_RequiresTheOneCanonicalQueryForEveryValidRequest(t *testing.T) {
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -49,8 +49,8 @@ func TestM2MCurrentSnapshot_RequiresTheOneCanonicalQueryForEveryValidRequest(t *
 
 func TestM2MCurrentSnapshot_AcceptsCanonicalASTIndependentOfFormatting(t *testing.T) {
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +68,8 @@ func TestM2MCurrentSnapshot_AcceptsCanonicalASTIndependentOfFormatting(t *testin
 func TestM2MCurrentSnapshot_FullWireGoldenAndMCPParity(t *testing.T) {
 	snapshot := m2mGoldenSnapshot()
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestM2MCurrentSnapshot_FullWireGoldenAndMCPParity(t *testing.T) {
 	assertM2MGoldenWire(t, got)
 
 	// Both ingress projections must be lossless views of the same immutable snapshot.
-	mcp, err := MCPCurrentSnapshot(snapshot)
+	mcp, err := MCPCurrentSnapshot(snapshot, m2mTestProducedAt)
 	if err != nil {
 		t.Fatalf("MCPCurrentSnapshot: %v", err)
 	}
@@ -131,8 +131,8 @@ func TestM2MCurrentSnapshot_ProjectsEachCanonicalContinuityVariant(t *testing.T)
 			fact.Continuity = &continuity
 			snapshot.Facts[key] = fact
 			handler, err := NewHandler(Config{
-				SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
-				AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+				SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true }),
+				AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -179,8 +179,8 @@ func TestM2MCurrentSnapshot_EmitsExactClosedWireShapes(t *testing.T) {
 		}
 	}
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -239,8 +239,8 @@ func TestM2MCurrentSnapshot_FailsClosedOnInvalidCanonicalSnapshot(t *testing.T) 
 	invalid.ID = pv.FactACActivePower
 	snapshot.Facts[key] = invalid
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
 	})
 	if err != nil {
 		t.Fatal(err)

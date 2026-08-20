@@ -24,6 +24,11 @@ type m2mGraphQLRuntime struct {
 	server   *http.Server
 }
 
+const (
+	m2mHTTPHeaderTimeout = 5 * time.Second
+	m2mHTTPBodyTimeout   = 10 * time.Second
+)
+
 func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
@@ -63,38 +68,15 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 		return nil, errors.New("M2M GraphQL listener could not start")
 	}
 	runtime := &m2mGraphQLRuntime{listener: listener}
-	runtime.server = &http.Server{Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	runtime.server = &http.Server{TLSConfig: tlsConfig, ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))
 	})}
-	go func() { _ = runtime.server.Serve(m2mTLSListener{Listener: listener, config: tlsConfig}) }()
+	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
-}
-
-// m2mTLSListener completes the handshake before handing a connection to the
-// HTTP server. Besides avoiding unauthenticated work in net/http, this makes a
-// missing or denied client certificate fail at TLS dial time.
-type m2mTLSListener struct {
-	net.Listener
-	config *tls.Config
-}
-
-func (listener m2mTLSListener) Accept() (net.Conn, error) {
-	for {
-		connection, err := listener.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		tlsConnection := tls.Server(connection, listener.config)
-		if err := tlsConnection.Handshake(); err != nil {
-			_ = connection.Close()
-			continue
-		}
-		return tlsConnection, nil
-	}
 }
 
 func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
@@ -102,6 +84,11 @@ func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil || leaf.VerifyHostname(config.ServerName) != nil {
+		return nil, errors.New("server certificate identity mismatch")
+	}
+	certificate.Leaf = leaf
 	caPEM, err := os.ReadFile(config.ClientCAFile)
 	if err != nil {
 		return nil, err

@@ -18,14 +18,14 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) {
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) {
 			select {
 			case entered <- struct{}{}:
 			default:
 			}
 			<-release
 			return m2mFixtureSnapshot(), true
-		},
+		}),
 		AssetExists:           func(assetRef string) bool { return assetRef != "pv-asset-missing" },
 		AllowedAssets:         map[string]struct{}{"pv-asset-fixture": {}, "pv-asset-missing": {}},
 		MonotonicMilliseconds: func() int64 { return 1_000 },
@@ -69,9 +69,9 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 
 func TestM2MAdmission_ReturnsSourceUnavailableOnlyAfterAssetExistence(t *testing.T) {
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return pv.Snapshot{}, false },
-		AssetExists:     func(string) bool { return true },
-		AllowedAssets:   map[string]struct{}{"pv-asset-fixture": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return pv.Snapshot{}, false }),
+		AssetExists:       func(string) bool { return true },
+		AllowedAssets:     map[string]struct{}{"pv-asset-fixture": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,8 +82,8 @@ func TestM2MAdmission_ReturnsSourceUnavailableOnlyAfterAssetExistence(t *testing
 func TestM2MAdmission_RejectsMissingOrEmptyMTLSPrincipalBeforeSnapshotLookup(t *testing.T) {
 	lookups := 0
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -105,9 +105,9 @@ func TestM2MAdmission_RejectsMissingOrEmptyMTLSPrincipalBeforeSnapshotLookup(t *
 func TestM2MAdmission_RejectsOpenJSONEnvelopesBeforeSemanticAdmission(t *testing.T) {
 	lookups := 0
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true },
-		AssetExists:     func(string) bool { lookups++; return true },
-		AllowedAssets:   map[string]struct{}{"pv-asset-fixture": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true }),
+		AssetExists:       func(string) bool { lookups++; return true },
+		AllowedAssets:     map[string]struct{}{"pv-asset-fixture": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,8 +127,8 @@ func TestM2MAdmission_RejectsOpenJSONEnvelopesBeforeSemanticAdmission(t *testing
 
 func TestM2MAdmission_RejectsResponsesOverOneMiBBeforeWritingPartialData(t *testing.T) {
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mOversizedSnapshot(), true },
-		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+		SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return m2mOversizedSnapshot(), true }),
+		AssetExists:       func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestM2MAdmission_RejectsResponsesOverOneMiBBeforeWritingPartialData(t *test
 
 func TestM2MAdmission_IsolatedByMTLSPrincipalAndDoesNotConsumeRejectedRateTokens(t *testing.T) {
 	clock := int64(10_000)
-	handler, err := NewHandler(Config{SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mFixtureSnapshot(), true }, AssetExists: func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}}, MonotonicMilliseconds: func() int64 { return clock }})
+	handler, err := NewHandler(Config{SnapshotByAssetAt: m2mSnapshotAt(func(context.Context, string) (pv.Snapshot, bool) { return m2mFixtureSnapshot(), true }), AssetExists: func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}}, MonotonicMilliseconds: func() int64 { return clock }})
 	if err != nil {
 		t.Fatal(err)
 	}

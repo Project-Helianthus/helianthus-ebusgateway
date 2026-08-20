@@ -87,14 +87,20 @@ func NewSunSpecProducer(adapter *Adapter, config SunSpecProducerConfig) (*SunSpe
 }
 
 func (producer *SunSpecProducer) Qualify(ctx context.Context, identity SunSpecPollIdentity) (SunSpecQualificationResult, error) {
-	return producer.qualify(ctx, identity, false)
+	return producer.qualify(ctx, identity, false, true)
+}
+
+// Refresh acquires and publishes a newer canonical state without consuming the
+// immutable qualification-observation retention budget.
+func (producer *SunSpecProducer) Refresh(ctx context.Context, identity SunSpecPollIdentity) (SunSpecQualificationResult, error) {
+	return producer.qualify(ctx, identity, false, false)
 }
 
 func (producer *SunSpecProducer) qualifyMixedGenerationForTest(ctx context.Context, identity SunSpecPollIdentity) (SunSpecQualificationResult, error) {
-	return producer.qualify(ctx, identity, true)
+	return producer.qualify(ctx, identity, true, true)
 }
 
-func (producer *SunSpecProducer) qualify(ctx context.Context, identity SunSpecPollIdentity, mixGeneration bool) (SunSpecQualificationResult, error) {
+func (producer *SunSpecProducer) qualify(ctx context.Context, identity SunSpecPollIdentity, mixGeneration, retainEvidence bool) (SunSpecQualificationResult, error) {
 	if producer == nil || ctx == nil || identity.PollGeneration == 0 || identity.DeadlineIdentity == 0 {
 		return SunSpecQualificationResult{}, errors.New("SunSpec qualification request is incomplete")
 	}
@@ -112,7 +118,7 @@ func (producer *SunSpecProducer) qualify(ctx context.Context, identity SunSpecPo
 			CapabilityReason: modbusreg.SunSpecCapabilityReasonInvalidChain,
 		}, nil
 	}
-	return producer.classify(identity, snapshot), nil
+	return producer.classify(identity, snapshot, retainEvidence), nil
 }
 
 func (producer *SunSpecProducer) acquire(ctx context.Context, identity SunSpecPollIdentity, mixGeneration bool) (modbusreg.SunSpecChainSnapshot, bool, error) {
@@ -198,7 +204,7 @@ func (source sunSpecSourceView) snapshot() (modbusreg.LogicalViewSnapshot, error
 	})
 }
 
-func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot modbusreg.SunSpecChainSnapshot) SunSpecQualificationResult {
+func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot modbusreg.SunSpecChainSnapshot, retainEvidence bool) SunSpecQualificationResult {
 	capability := producer.registry.EvaluateThreePhaseMonitoring(snapshot)
 	result := SunSpecQualificationResult{
 		CapabilityID: capability.ProfileID(), CapabilityReason: capability.Reason(),
@@ -225,14 +231,21 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}
-		if err := producer.adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+		if retainEvidence {
+			if err := producer.adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+				result.Outcome = SunSpecQualificationStop
+				return result
+			}
+		} else if err := producer.adapter.PublishSunSpecCurrent(observation); err != nil {
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}
 		result.FlavorID, result.FlavorReason = flavor.FlavorID(), flavor.Reason()
 		result.Outcome = SunSpecQualificationGO
-		result.ObservationCount = 1
 		result.SampleID = observation.SampleID()
+		if retainEvidence {
+			result.ObservationCount = 1
+		}
 		result.Chain = snapshot
 		return result
 	}

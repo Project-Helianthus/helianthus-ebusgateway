@@ -143,6 +143,54 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestIssue846HealthReadinessAndBootstrapTrackCurrentEEBusAvailability(t *testing.T) {
+	readiness := RuntimeReadiness{
+		ProcessReadiness:    "READY",
+		HTTPReadiness:       "READY",
+		ProxyReadiness:      "DISABLED",
+		EEBusReadiness:      "DEGRADED",
+		EEBusDegradedReason: "ADMIN_BOUNDARY_UNAVAILABLE",
+	}
+	handler := NewHandler(Options{
+		EEBusAdminPath: "/admin/eebus/v1",
+		Readiness:      func() RuntimeReadiness { return readiness },
+	})
+
+	health := httptest.NewRecorder()
+	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/api/v1/health", nil))
+	var healthPayload struct {
+		Status    string           `json:"status"`
+		Readiness RuntimeReadiness `json:"readiness"`
+	}
+	if health.Code != http.StatusOK || json.Unmarshal(health.Body.Bytes(), &healthPayload) != nil {
+		t.Fatalf("health status=%d body=%s", health.Code, health.Body.String())
+	}
+	if healthPayload.Status != "ok" || healthPayload.Readiness != readiness {
+		t.Fatalf("health readiness=%#v status=%q; want independent degraded eeBUS", healthPayload.Readiness, healthPayload.Status)
+	}
+
+	assertBootstrap := func(wantAvailable bool, wantPath string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+		var payload struct {
+			Capabilities map[string]bool   `json:"capabilities"`
+			Endpoints    map[string]string `json:"endpoints"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil {
+			t.Fatalf("bootstrap status=%d body=%s", response.Code, response.Body.String())
+		}
+		if payload.Capabilities["eebus_admin"] != wantAvailable || payload.Endpoints["eebus_admin"] != wantPath {
+			t.Fatalf("bootstrap eeBUS capability/path=%v/%q; want %v/%q", payload.Capabilities["eebus_admin"], payload.Endpoints["eebus_admin"], wantAvailable, wantPath)
+		}
+	}
+
+	assertBootstrap(false, "")
+	readiness.EEBusReadiness = "READY"
+	readiness.EEBusDegradedReason = ""
+	assertBootstrap(true, "/admin/eebus/v1")
+}
+
 func TestBootstrapEndpoint(t *testing.T) {
 	h := NewHandler(Options{
 		GraphQLPath:      "/graphql",

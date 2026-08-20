@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -2528,6 +2530,23 @@ func TestIssue846RuntimeStateUsesTheProcessReleaseAuthority(t *testing.T) {
 	}
 	if state.Meta.AddonVersion != info.ReleaseVersion {
 		t.Fatalf("add-on version = %q; want process release %q", state.Meta.AddonVersion, info.ReleaseVersion)
+	}
+	content, err := os.ReadFile(cfg.RuntimeStatePath)
+	if err != nil {
+		t.Fatalf("startup metadata is not durable before init returns: %v", err)
+	}
+	var persisted struct {
+		Meta struct {
+			InstanceGUID string `json:"instance_guid"`
+			GatewayBuild string `json:"gateway_build"`
+			AddonVersion string `json:"addon_version"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(content, &persisted); err != nil {
+		t.Fatalf("decode persisted runtime state: %v", err)
+	}
+	if persisted.Meta.InstanceGUID != "" || persisted.Meta.GatewayBuild != gatewayBuildString(info) || persisted.Meta.AddonVersion != info.ReleaseVersion {
+		t.Fatalf("persisted startup metadata = %#v; want empty identity and exact process build", persisted.Meta)
 	}
 }
 

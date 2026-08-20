@@ -14,6 +14,8 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -317,4 +319,36 @@ func issue846WaitForLifecycleState(t *testing.T, lifecycle *eebusRuntimeLifecycl
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("lifecycle state = %s; want %s", lifecycle.LifecycleSnapshot().State, want)
+}
+
+func TestIssue846GatewayReadinessProjectsLifecycleAndConditionalProxy(t *testing.T) {
+	tests := []struct {
+		name        string
+		proxyListen string
+		lifecycle   eebusRuntimeLifecycleSnapshot
+		wantProxy   string
+		wantEEBus   string
+		wantReason  eebusadmin.EEBusDegradedReason
+	}{
+		{name: "disabled", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDisabled}, wantProxy: "DISABLED", wantEEBus: "DISABLED"},
+		{name: "starting with conditional proxy", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting}, wantProxy: "READY", wantEEBus: "STARTING"},
+		{name: "initial failure backoff", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleBackoff, DegradedReason: eebusadmin.EEBusDegradedReasonListenerUnavailable}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "recovered", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning}, wantProxy: "READY", wantEEBus: "READY"},
+		{name: "unknown failure", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDegraded, DegradedReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.ProxyListenAddr = test.proxyListen
+			got := projectGatewayReadiness(cfg, test.lifecycle)
+			if got.ProcessReadiness != "READY" || got.HTTPReadiness != "READY" || got.ProxyReadiness != test.wantProxy || got.EEBusReadiness != test.wantEEBus || got.EEBusDegradedReason != string(test.wantReason) {
+				t.Fatalf("readiness=%#v; want process/http READY proxy=%s eeBUS=%s reason=%s", got, test.wantProxy, test.wantEEBus, test.wantReason)
+			}
+			if test.wantEEBus != "DEGRADED" && got.EEBusDegradedReason != "" {
+				t.Fatalf("non-degraded readiness leaked reason: %#v", got)
+			}
+			var _ portal.RuntimeReadiness = got
+		})
+	}
 }

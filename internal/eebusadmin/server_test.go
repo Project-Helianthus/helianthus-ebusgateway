@@ -116,6 +116,48 @@ func TestIssue817UnavailableBoundaryStaysMountedAndSanitized(t *testing.T) {
 	}
 }
 
+func TestIssue846StatusExposesCanonicalReadinessWhenAvailableOrUnavailable(t *testing.T) {
+	degraded := ReadinessV1{
+		ProcessReadiness:    ProcessReadinessReady,
+		EEBusReadiness:      EEBusReadinessDegraded,
+		EEBusDegradedReason: EEBusDegradedReasonAdminBoundaryUnavailable,
+	}
+
+	unavailable := NewUnavailableHandlerWithReadiness(func() ReadinessV1 { return degraded })
+	unavailableResponse := httptest.NewRecorder()
+	unavailable.ServeHTTP(unavailableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+	assertIssue846Readiness(t, unavailableResponse, http.StatusServiceUnavailable, degraded)
+
+	ready := ReadinessV1{ProcessReadiness: ProcessReadinessReady, EEBusReadiness: EEBusReadinessReady}
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 31
+	available, err := NewServer(Config{
+		Admin:     &adminV1Stub{snapshot: snapshot},
+		Readiness: func() ReadinessV1 { return ready },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	availableResponse := httptest.NewRecorder()
+	available.ServeHTTP(availableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+	assertIssue846Readiness(t, availableResponse, http.StatusOK, ready)
+}
+
+func assertIssue846Readiness(t *testing.T, response *httptest.ResponseRecorder, wantStatus int, want ReadinessV1) {
+	t.Helper()
+	var envelope struct {
+		Data struct {
+			Readiness ReadinessV1 `json:"readiness"`
+		} `json:"data"`
+	}
+	if response.Code != wantStatus || json.Unmarshal(response.Body.Bytes(), &envelope) != nil {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if envelope.Data.Readiness != want {
+		t.Fatalf("readiness=%#v; want %#v; body=%s", envelope.Data.Readiness, want, response.Body.String())
+	}
+}
+
 func TestIssue817CredentialFreeReadsUseOneStateRevisionEnvelope(t *testing.T) {
 	const ski = "0123456789abcdef0123456789abcdef01234567"
 	snapshot := testAdminSnapshot()

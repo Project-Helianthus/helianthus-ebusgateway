@@ -17,6 +17,7 @@ type sunSpecLiveSmokeFakeDriver struct {
 	pollCalls      []sunSpecLiveSmokeAttempt
 	reconnectCalls int
 	pollFn         func(context.Context, sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error)
+	reconnectFn    func(context.Context) error
 }
 
 func (driver *sunSpecLiveSmokeFakeDriver) Poll(ctx context.Context, attempt sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
@@ -32,8 +33,11 @@ func (driver *sunSpecLiveSmokeFakeDriver) Poll(ctx context.Context, attempt sunS
 	return result, result.Err
 }
 
-func (driver *sunSpecLiveSmokeFakeDriver) Reconnect(context.Context) error {
+func (driver *sunSpecLiveSmokeFakeDriver) Reconnect(ctx context.Context) error {
 	driver.reconnectCalls++
+	if driver.reconnectFn != nil {
+		return driver.reconnectFn(ctx)
+	}
 	return nil
 }
 
@@ -212,6 +216,99 @@ func TestSunSpecLiveSmokeWorkerCloseCancelsAndJoinsPollBeforeReturning(t *testin
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Close did not join exited Poll")
+	}
+}
+
+func TestSunSpecLiveSmokeWorkerRunsSerialCyclesAfterCompletionAndContinuesAfterError(t *testing.T) {
+	firstPollStarted := make(chan struct{})
+	allowFirstPoll := make(chan struct{})
+	secondPollStarted := make(chan struct{})
+	delayStarted := make(chan time.Duration, 2)
+	allowNextCycle := make(chan struct{})
+	driver := &sunSpecLiveSmokeFakeDriver{}
+	driver.pollFn = func(_ context.Context, _ sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+		switch len(driver.pollCalls) {
+		case 1:
+			close(firstPollStarted)
+			<-allowFirstPoll
+			return sunSpecLiveSmokePollResult{Err: errors.New("first cycle failed")}, errors.New("first cycle failed")
+		case 2:
+			close(secondPollStarted)
+			return sunSpecLiveSmokePollResult{}, nil
+		default:
+			return sunSpecLiveSmokePollResult{}, errors.New("unexpected extra cycle")
+		}
+	}
+	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{goSunSpecQualification()}}
+	worker := newSunSpecLiveSmokeWorkerWithWait(context.Background(), time.Second, 15*time.Second, driver, qualifier, func(string, ...any) {}, func(ctx context.Context, delay time.Duration) error {
+		delayStarted <- delay
+		select {
+		case <-allowNextCycle:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	worker.Start()
+	select {
+	case <-firstPollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first immediate cycle did not start")
+	}
+	select {
+	case <-delayStarted:
+		t.Fatal("worker scheduled another cycle before the first finished")
+	default:
+	}
+	close(allowFirstPoll)
+	select {
+	case delay := <-delayStarted:
+		if delay != 15*time.Second {
+			t.Fatalf("post-cycle delay = %s; want 15s", delay)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not schedule next cycle after failed cycle completed")
+	}
+	// Allow the first post-cycle waiter to return once so the second cycle may begin.
+	close(allowNextCycle)
+	select {
+	case <-secondPollStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not continue after failed cycle")
+	}
+	if err := worker.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestRunSunSpecLiveSmokeSharesOneDeadlineAcrossReconnectAndRetry(t *testing.T) {
+	const cycleTimeout = 40 * time.Millisecond
+	var retryRemaining time.Duration
+	driver := &sunSpecLiveSmokeFakeDriver{
+		polls: []sunSpecLiveSmokePollResult{{Snapshot: sunSpecLiveSmokeSnapshot{ReconnectRequired: true}, Err: errors.New("reconnect")}},
+		reconnectFn: func(ctx context.Context) error {
+			select {
+			case <-time.After(25 * time.Millisecond):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	driver.pollFn = func(ctx context.Context, _ sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
+		if len(driver.pollCalls) == 1 {
+			return driver.polls[0], driver.polls[0].Err
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return sunSpecLiveSmokePollResult{}, errors.New("retry lacks shared deadline")
+		}
+		retryRemaining = time.Until(deadline)
+		return sunSpecLiveSmokePollResult{}, nil
+	}
+	result := runSunSpecLiveSmoke(context.Background(), cycleTimeout, driver, &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{goSunSpecQualification()}}, func(string, ...any) {})
+	if result.Decision != sunSpecLiveSmokeDecisionGO || retryRemaining <= 0 || retryRemaining >= cycleTimeout-10*time.Millisecond {
+		t.Fatalf("result=%#v retry remaining=%s; want retry inside original deadline", result, retryRemaining)
 	}
 }
 

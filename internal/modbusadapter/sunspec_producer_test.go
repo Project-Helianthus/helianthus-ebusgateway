@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -175,6 +176,101 @@ func TestSunSpecProducerStopsWhenQualificationRetentionCapacityIsExhausted(t *te
 	if result.Outcome != SunSpecQualificationStop || result.SampleID != "" || len(result.Chain.RawWords()) != 0 {
 		t.Fatalf("capacity-exhausted qualification outcome=%q sample=%q raw_words=%d; want terminal STOP without partial evidence", result.Outcome, result.SampleID, len(result.Chain.RawWords()))
 	}
+}
+
+func TestSunSpecProducerRefreshPublishesCurrentWithoutConsumingQualificationRetention(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:continuous", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 501, DeadlineIdentity: 601})
+	if err != nil || initial.Outcome != SunSpecQualificationGO {
+		t.Fatalf("initial qualification=%#v err=%v", initial, err)
+	}
+	evidence, encoded, ok := adapter.SunSpecQualificationObservation(initial.CapabilityID, initial.SampleID)
+	if !ok {
+		t.Fatal("initial immutable qualification was not retained")
+	}
+	before, beforeAt, ok := adapter.CanonicalPVSnapshotByAsset(mustCanonicalPVAsset(t, adapter, initial))
+	if !ok {
+		t.Fatal("initial current canonical slot was not published")
+	}
+	for index := uint64(0); index < maxRetainedProfileObservations+1; index++ {
+		result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 700 + index, DeadlineIdentity: 800 + index})
+		if err != nil || result.Outcome != SunSpecQualificationGO || result.ObservationCount != 0 || result.SampleID != "" {
+			t.Fatalf("refresh %d=%#v err=%v; want GO without retained sample", index, result, err)
+		}
+	}
+	if len(adapter.qualifications) != 1 || len(adapter.profiles) != 0 {
+		t.Fatalf("retained evidence qualifications=%d profiles=%d; want initial qualification only", len(adapter.qualifications), len(adapter.profiles))
+	}
+	after, afterAt, ok := adapter.CanonicalPVSnapshotByAsset(before.AssetRef)
+	if !ok || after.Generation <= before.Generation || !afterAt.After(beforeAt) {
+		t.Fatalf("current snapshot generation/time = %d/%s; want later than %d/%s", after.Generation, afterAt, before.Generation, beforeAt)
+	}
+	mutated := after.Facts[pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal})]
+	mutated.Value.Decimal.Coefficient = "999"
+	after.Facts[pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal})] = mutated
+	detached, _, ok := adapter.CanonicalPVSnapshotByAsset(before.AssetRef)
+	if !ok || detached.Facts[pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal})].Value.Decimal.Coefficient == "999" {
+		t.Fatal("current canonical slot was not detached")
+	}
+	retained, retainedEncoded, ok := adapter.SunSpecQualificationObservation(initial.CapabilityID, initial.SampleID)
+	if !ok || retained.SampleID() != evidence.SampleID() || !reflect.DeepEqual(retainedEncoded, encoded) {
+		t.Fatal("refresh rewrote immutable qualification evidence")
+	}
+}
+
+func TestSunSpecProducerRefreshFailurePreservesPriorCurrentAndNaturalFreshnessAging(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:failure-preservation", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 901, DeadlineIdentity: 902})
+	if err != nil || initial.Outcome != SunSpecQualificationGO {
+		t.Fatalf("initial qualification=%#v err=%v", initial, err)
+	}
+	assetRef := mustCanonicalPVAsset(t, adapter, initial)
+	before, beforeAt, ok := adapter.CanonicalPVSnapshotByAsset(assetRef)
+	if !ok {
+		t.Fatal("initial current canonical slot was not published")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 903, DeadlineIdentity: 904}); err == nil {
+		t.Fatal("refresh through closed adapter succeeded")
+	}
+	adapter.started = adapter.started.Add(-31 * time.Second)
+	after, afterAt, ok := adapter.CanonicalPVSnapshotByAsset(assetRef)
+	if !ok || !afterAt.Equal(beforeAt) || after.Generation != before.Generation {
+		t.Fatalf("failed refresh changed current publication: %#v %s", after, afterAt)
+	}
+	key := pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal})
+	if fact := after.Facts[key]; fact.Freshness != pv.FreshnessStale || fact.Availability != pv.AvailabilityAvailable {
+		t.Fatalf("failed refresh did not age naturally: %s/%s", fact.Freshness, fact.Availability)
+	}
+}
+
+func mustCanonicalPVAsset(t *testing.T, adapter *Adapter, result SunSpecQualificationResult) string {
+	t.Helper()
+	snapshot, _, ok := adapter.CanonicalPVSnapshot(result.CapabilityID, result.SampleID)
+	if !ok || snapshot.AssetRef == "" {
+		t.Fatalf("missing exact canonical qualification snapshot: %#v", result)
+	}
+	return snapshot.AssetRef
 }
 
 func TestSunSpecQualificationRetentionRejectsUnserializableObservationWithoutStoringIt(t *testing.T) {

@@ -373,6 +373,49 @@ func TestMSP05BRunCleanCancellationReturnsSidecarShutdownError(t *testing.T) {
 	}
 }
 
+func TestIssue846RunKeepsGatewayAvailableWhenEEBusStartupFails(t *testing.T) {
+	originalResolver := resolveEEBusInterfaceAddressesFn
+	originalOperatorFactory := newEEBusOperatorRuntimeFn
+	originalRuntimeFactory := newEEBusRuntimeFn
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		resolveEEBusInterfaceAddressesFn = originalResolver
+		newEEBusOperatorRuntimeFn = originalOperatorFactory
+		newEEBusRuntimeFn = originalRuntimeFactory
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+
+	installMSP05BRunDependencies(&msp05bRuntime{})
+	newEEBusOperatorRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+		return nil, nil, errors.New("operator listener unavailable")
+	}
+	newEEBusRuntimeFn = func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return nil, errors.New("public listener unavailable")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	httpStarted := false
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		httpStarted = true
+		cancel()
+		return nil, nil, nil
+	}
+
+	err := run(ctx, msp05bGatewayRunConfig(t))
+	if err != nil {
+		t.Fatalf("run returned fatal eeBUS startup error: %v", err)
+	}
+	if !httpStarted {
+		t.Fatal("HTTP gateway did not start after isolated eeBUS failure")
+	}
+}
+
 func installMSP05BRunDependencies(runtime eebusruntime.Runtime) {
 	resolveEEBusInterfaceAddressesFn = func(string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("192.0.2.42")}, nil

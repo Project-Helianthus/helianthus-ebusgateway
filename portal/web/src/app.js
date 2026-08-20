@@ -256,6 +256,10 @@ class PortalShell extends HTMLElement {
       clearInterval(this.busObservabilityInterval);
       this.busObservabilityInterval = undefined;
     }
+    if (this.pvInterval) {
+      clearInterval(this.pvInterval);
+      this.pvInterval = undefined;
+    }
     if (this._explorerPollTimer) {
       clearInterval(this._explorerPollTimer);
       this._explorerPollTimer = undefined;
@@ -418,6 +422,17 @@ class PortalShell extends HTMLElement {
     }
     const response = await fetch("api/v1/explorer/modbus/raw-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unit_id: unit, function: func, offset, quantity }) });
     output.textContent = JSON.stringify(await response.json(), null, 2);
+  }
+
+  async refreshPV() {
+    const output = this.querySelector('[data-role="pv-current"]');
+    if (!output || !this._capabilitySemanticPV) return;
+    try {
+      const response = await fetch("api/v1/semantic/pv/current");
+      output.textContent = response.ok ? JSON.stringify(await response.json(), null, 2) : `PV unavailable (${response.status})`;
+    } catch {
+      output.textContent = "PV unavailable";
+    }
   }
 
   // bindL7CatalogEvents wires the L7 Standard Catalog section (M5_PORTAL)
@@ -656,6 +671,12 @@ class PortalShell extends HTMLElement {
 	    : "";
       this.applyCapabilityState(capabilities);
       this._capabilityRawModbus = Boolean(capabilities.modbus_raw_read);
+      this._capabilitySemanticPV = Boolean(capabilities.semantic_pv);
+      if (this._capabilitySemanticPV) {
+        await this.refreshPV();
+        if (this.pvInterval) clearInterval(this.pvInterval);
+        this.pvInterval = setInterval(() => this.refreshPV(), 5000);
+      }
       const firstEnabled = this.querySelector("[data-nav-target]:not([disabled])");
       if (firstEnabled) {
         this.activateSection(firstEnabled.getAttribute("data-nav-target"));
@@ -2691,6 +2712,8 @@ class PortalShell extends HTMLElement {
               <ul data-role="semantic-list">
                 <li>Loading semantic snapshot...</li>
               </ul>
+              <h3>PV Current</h3>
+              <pre class="pv-output" data-role="pv-current">PV unavailable</pre>
             </section>
             <section id="section-bus" class="registry-preview">
               <h2>Bus Observability</h2>

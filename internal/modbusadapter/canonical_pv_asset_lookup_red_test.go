@@ -31,6 +31,18 @@ func TestCanonicalPVSnapshotByAsset_IsReadOnlyAndReturnsDetachedRetainedSnapshot
 	}
 }
 
+func TestCanonicalPVSnapshotByAsset_FailsClosedWhenAssetIdentityIsAmbiguous(t *testing.T) {
+	one := m2mAssetSnapshot("pv-asset-duplicate", "11")
+	two := m2mAssetSnapshot("pv-asset-duplicate", "22")
+	adapter := &Adapter{qualifications: map[string]sunSpecQualificationRecord{
+		"first":  {canonical: one, producedAt: time.Unix(100, 0).UTC()},
+		"second": {canonical: two, producedAt: time.Unix(200, 0).UTC()},
+	}}
+	if snapshot, _, ok := adapter.CanonicalPVSnapshotByAsset("pv-asset-duplicate"); ok {
+		t.Fatalf("ambiguous asset returned nondeterministic snapshot: %#v", snapshot)
+	}
+}
+
 func m2mAssetSnapshot(asset string, coefficient string) pv.Snapshot {
 	d := pv.MustDecimal(coefficient, 0)
 	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}

@@ -47,6 +47,24 @@ func TestM2MCurrentSnapshot_RequiresTheOneCanonicalQueryForEveryValidRequest(t *
 	}
 }
 
+func TestM2MCurrentSnapshot_AcceptsCanonicalASTIndependentOfFormatting(t *testing.T) {
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(m2mCanonicalRequest(strings.Join(strings.Fields(canonicalM2MQuery), " "), "pv-asset-golden")))
+	request = request.WithContext(WithMTLSPrincipal(request.Context(), "principal-canonical-ast"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+		t.Fatalf("canonical AST with alternate whitespace was rejected: %s", response.Body.String())
+	}
+}
+
 func TestM2MCurrentSnapshot_FullWireGoldenAndMCPParity(t *testing.T) {
 	snapshot := m2mGoldenSnapshot()
 	handler, err := NewHandler(Config{
@@ -142,6 +160,56 @@ func TestM2MCurrentSnapshot_ProjectsEachCanonicalContinuityVariant(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestM2MCurrentSnapshot_EmitsExactClosedWireShapes(t *testing.T) {
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(m2mCanonicalRequest(canonicalM2MQuery, "pv-asset-golden")))
+	request = request.WithContext(WithMTLSPrincipal(request.Context(), "principal-wire-shape"))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	var envelope struct {
+		Data struct {
+			Snapshot struct {
+				Facts []map[string]any `json:"facts"`
+			} `json:"m2mCurrentSnapshot"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range envelope.Data.Snapshot.Facts {
+		dimension := fact["dimension"].(map[string]any)
+		value := fact["value"].(map[string]any)
+		if _, exists := dimension["__typename"]; exists {
+			t.Fatalf("dimension exposed unselected __typename: %#v", dimension)
+		}
+		if _, exists := value["__typename"]; exists {
+			t.Fatalf("value exposed unselected __typename: %#v", value)
+		}
+		if scale, exists := value["scale"]; exists {
+			if _, ok := scale.(float64); !ok {
+				t.Fatalf("decimal scale is not a GraphQL Int: %#v", scale)
+			}
+		}
+		continuity, exists := fact["continuity"]
+		if !exists {
+			t.Fatalf("selected continuity field was omitted: %#v", fact)
+		}
+		if fact["factId"] == string(pv.FactEnergyActiveExportTotal) {
+			row := continuity.(map[string]any)
+			if row["baseline"] != "BASELINE" {
+				t.Fatalf("baseline marker=%#v want BASELINE", row["baseline"])
+			}
+		}
 	}
 }
 

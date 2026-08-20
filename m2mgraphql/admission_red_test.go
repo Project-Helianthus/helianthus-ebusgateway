@@ -101,6 +101,29 @@ func TestM2MAdmission_RejectsMissingOrEmptyMTLSPrincipalBeforeSnapshotLookup(t *
 	}
 }
 
+func TestM2MAdmission_RejectsOpenJSONEnvelopesBeforeSemanticAdmission(t *testing.T) {
+	lookups := 0
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { lookups++; return m2mFixtureSnapshot(), true },
+		AssetExists:     func(string) bool { lookups++; return true },
+		AllowedAssets:   map[string]struct{}{"pv-asset-fixture": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := m2mRequest("OTHER", "pv-asset-fixture")
+	for _, body := range []string{
+		strings.Replace(base, `"operationName":`, `"extra":true,"operationName":`, 1),
+		strings.Replace(base, `"request":{`, `"extra":true,"request":{`, 1),
+		strings.Replace(base, `"assetRef":`, `"extra":true,"assetRef":`, 1),
+	} {
+		assertM2MErrorForRequest(t, handler, "principal-closed-envelope", body, "REQUEST_INVALID")
+	}
+	if lookups != 0 {
+		t.Fatalf("invalid request envelopes reached semantic admission %d times", lookups)
+	}
+}
+
 func TestM2MAdmission_RejectsResponsesOverOneMiBBeforeWritingPartialData(t *testing.T) {
 	handler, err := NewHandler(Config{
 		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mOversizedSnapshot(), true },

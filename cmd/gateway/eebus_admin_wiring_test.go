@@ -15,7 +15,6 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
 
@@ -348,7 +347,6 @@ func TestIssue846GatewayReadinessProjectsLifecycleAndConditionalProxy(t *testing
 			if test.wantEEBus != "DEGRADED" && got.EEBusDegradedReason != "" {
 				t.Fatalf("non-degraded readiness leaked reason: %#v", got)
 			}
-			var _ portal.RuntimeReadiness = got
 		})
 	}
 }

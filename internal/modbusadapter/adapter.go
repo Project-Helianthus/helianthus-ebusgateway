@@ -70,6 +70,7 @@ type Adapter struct {
 	profileMu      sync.RWMutex
 	profiles       map[string]ProfileObservationRecord
 	qualifications map[string]sunSpecQualificationRecord
+	currentPV      map[string]canonicalPVCurrentRecord
 	canonicalPV    *CanonicalPVMapper
 	started        time.Time
 }
@@ -89,6 +90,13 @@ type sunSpecQualificationRecord struct {
 	encoded     []byte
 	canonical   pv.Snapshot
 	producedAt  time.Time
+}
+
+// canonicalPVCurrentRecord is the replaceable semantic publication for one
+// asset. It is deliberately independent from retained qualification evidence.
+type canonicalPVCurrentRecord struct {
+	canonical  pv.Snapshot
+	producedAt time.Time
 }
 
 // Start constructs and connects one endpoint. Disabled configuration is inert.
@@ -145,6 +153,7 @@ func Start(
 		dial:           dial,
 		profiles:       make(map[string]ProfileObservationRecord),
 		qualifications: make(map[string]sunSpecQualificationRecord),
+		currentPV:      make(map[string]canonicalPVCurrentRecord),
 		canonicalPV:    canonicalMapper,
 		started:        time.Now(),
 	}, nil
@@ -412,8 +421,41 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	if err != nil {
 		return fmt.Errorf("map canonical PV observation: %w", err)
 	}
+	producedAt := time.Now().UTC()
 	adapter.qualifications[key] = sunSpecQualificationRecord{
-		observation: observation, encoded: append([]byte(nil), encoded...), canonical: cloneCanonicalPVSnapshot(canonical), producedAt: time.Now().UTC(),
+		observation: observation, encoded: append([]byte(nil), encoded...), canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
+	}
+	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
+		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
+	}
+	return nil
+}
+
+// PublishSunSpecCurrent replaces only the semantic current slot for an asset.
+// It neither retains nor mutates terminal qualification evidence.
+func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQualificationObservation) error {
+	if adapter == nil {
+		return errors.New("modbus TCP adapter unavailable")
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return fmt.Errorf("serialize current SunSpec observation: %w", err)
+	}
+	evaluated := time.Since(adapter.started)
+	if evaluated < 0 || adapter.canonicalPV == nil {
+		return errors.New("canonical PV mapper unavailable")
+	}
+	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
+	if err != nil {
+		return fmt.Errorf("map current canonical PV observation: %w", err)
+	}
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
+	if adapter.currentPV == nil {
+		adapter.currentPV = make(map[string]canonicalPVCurrentRecord)
+	}
+	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
+		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: time.Now().UTC(),
 	}
 	return nil
 }
@@ -451,18 +493,22 @@ func (adapter *Adapter) CanonicalPVSnapshotByAsset(assetRef string) (pv.Snapshot
 		}
 	}
 	if match != nil {
-		if adapter.canonicalPV == nil {
+		current, currentOK := adapter.currentPV[assetRef]
+		if !currentOK {
 			return cloneCanonicalPVSnapshot(match.canonical), match.producedAt, true
+		}
+		if adapter.canonicalPV == nil {
+			return cloneCanonicalPVSnapshot(current.canonical), current.producedAt, true
 		}
 		evaluated := time.Since(adapter.started)
 		if evaluated < 0 {
 			return pv.Snapshot{}, time.Time{}, false
 		}
-		current, err := adapter.canonicalPV.Snapshot(match.canonical.AssetRef, pv.MonotonicNanos(evaluated.Nanoseconds()))
+		snapshot, err := adapter.canonicalPV.Snapshot(assetRef, pv.MonotonicNanos(evaluated.Nanoseconds()))
 		if err != nil {
 			return pv.Snapshot{}, time.Time{}, false
 		}
-		return cloneCanonicalPVSnapshot(current), match.producedAt, true
+		return cloneCanonicalPVSnapshot(snapshot), current.producedAt, true
 	}
 	return pv.Snapshot{}, time.Time{}, false
 }

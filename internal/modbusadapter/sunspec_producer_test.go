@@ -264,6 +264,34 @@ func TestSunSpecProducerRefreshFailurePreservesPriorCurrentAndNaturalFreshnessAg
 	}
 }
 
+func TestSunSpecProducerRefreshPublicationFailurePreservesPriorCurrentSlot(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:publication-preservation", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1001, DeadlineIdentity: 1002})
+	if err != nil || initial.Outcome != SunSpecQualificationGO {
+		t.Fatalf("initial qualification=%#v err=%v", initial, err)
+	}
+	assetRef := mustCanonicalPVAsset(t, adapter, initial)
+	before := adapter.currentPV[assetRef]
+	adapter.canonicalPV = nil
+	result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 1003, DeadlineIdentity: 1004})
+	if err != nil || result.Outcome != SunSpecQualificationStop {
+		t.Fatalf("publication failure result=%#v err=%v; want STOP without transport failure", result, err)
+	}
+	after := adapter.currentPV[assetRef]
+	if after.producedAt != before.producedAt || after.canonical.Generation != before.canonical.Generation {
+		t.Fatalf("publication failure changed current slot: before=%#v after=%#v", before, after)
+	}
+}
+
 func mustCanonicalPVAsset(t *testing.T, adapter *Adapter, result SunSpecQualificationResult) string {
 	t.Helper()
 	snapshot, _, ok := adapter.CanonicalPVSnapshot(result.CapabilityID, result.SampleID)

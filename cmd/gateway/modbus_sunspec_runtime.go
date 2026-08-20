@@ -15,7 +15,8 @@ const (
 	sunSpecLiveSmokeUnitID             = byte(1)
 	sunSpecLiveSmokeAuthorizationScope = "smoke:fronius-readonly"
 	sunSpecLiveSmokeReadTimeout        = 2 * time.Second
-	sunSpecLiveSmokeAttemptTimeout     = 30 * time.Second
+	sunSpecLiveSmokeAttemptTimeout     = 10 * time.Second
+	sunSpecLiveSmokeCycleInterval      = 15 * time.Second
 	sunSpecLiveSmokeCurrentFlavor      = modbusreg.SunSpecFroniusObservedFlavorV11ID
 )
 
@@ -72,14 +73,31 @@ type sunSpecLiveSmokeQualifier interface {
 }
 
 type modbusSunSpecLiveSmokeDriver struct {
-	adapter  *modbusadapter.Adapter
-	producer *modbusadapter.SunSpecProducer
+	adapter   *modbusadapter.Adapter
+	producer  *modbusadapter.SunSpecProducer
+	mu        sync.Mutex
+	qualified bool
 }
 
 func (driver *modbusSunSpecLiveSmokeDriver) Poll(ctx context.Context, attempt sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
-	qualification, err := driver.producer.Qualify(ctx, modbusadapter.SunSpecPollIdentity{
+	driver.mu.Lock()
+	initial := !driver.qualified
+	driver.mu.Unlock()
+	identity := modbusadapter.SunSpecPollIdentity{
 		PollGeneration: attempt.PollID, DeadlineIdentity: attempt.DeadlineID,
-	})
+	}
+	var qualification modbusadapter.SunSpecQualificationResult
+	var err error
+	if initial {
+		qualification, err = driver.producer.Qualify(ctx, identity)
+		if err == nil && qualification.Outcome == modbusadapter.SunSpecQualificationGO {
+			driver.mu.Lock()
+			driver.qualified = true
+			driver.mu.Unlock()
+		}
+	} else {
+		qualification, err = driver.producer.Refresh(ctx, identity)
+	}
 	result := sunSpecLiveSmokePollResult{
 		Snapshot: driver.adapter.Snapshot(), Qualification: qualification, Err: err,
 	}
@@ -137,37 +155,41 @@ func runSunSpecLiveSmoke(
 		return result
 	}
 
+	cycleCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+	defer cancel()
 	for attemptIndex := 0; attemptIndex < 2; attemptIndex++ {
 		attempt := sunSpecLiveSmokeAttempt{
-			PollID: nextSunSpecLiveSmokeIdentity(), DeadlineID: nextSunSpecLiveSmokeIdentity(), Deadline: attemptTimeout,
+			PollID: nextSunSpecLiveSmokeIdentity(), DeadlineID: nextSunSpecLiveSmokeIdentity(), Deadline: time.Until(deadlineOrNow(cycleCtx)),
 		}
-		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		poll, err := driver.Poll(attemptCtx, attempt)
+		poll, err := driver.Poll(cycleCtx, attempt)
 		if err == nil {
 			err = poll.Err
 		}
 		result.Attempts++
 		if err == nil {
-			qualification := qualifier.Qualify(attemptCtx, attempt, poll)
-			cancel()
+			qualification := qualifier.Qualify(cycleCtx, attempt, poll)
 			result.Recovered = attemptIndex == 1
 			return mapSunSpecLiveSmokeQualification(qualification, result)
 		}
-		cancel()
-
 		if attemptIndex != 0 || !poll.Snapshot.ReconnectRequired {
 			result.Category = "poll_error"
 			return result
 		}
-		reconnectCtx, reconnectCancel := context.WithTimeout(ctx, attemptTimeout)
-		reconnectErr := driver.Reconnect(reconnectCtx)
-		reconnectCancel()
+		reconnectErr := driver.Reconnect(cycleCtx)
 		if reconnectErr != nil {
 			result.Category = "reconnect_error"
 			return result
 		}
 	}
 	return result
+}
+
+func deadlineOrNow(ctx context.Context) time.Time {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return time.Now()
+	}
+	return deadline
 }
 
 func mapSunSpecLiveSmokeQualification(qualification sunSpecLiveSmokeQualification, base sunSpecLiveSmokeResult) sunSpecLiveSmokeResult {
@@ -214,6 +236,8 @@ type sunSpecLiveSmokeWorker struct {
 	closeOnce sync.Once
 }
 
+type sunSpecLiveSmokeWait func(context.Context, time.Duration) error
+
 func newSunSpecLiveSmokeWorker(
 	parent context.Context,
 	attemptTimeout time.Duration,
@@ -221,13 +245,40 @@ func newSunSpecLiveSmokeWorker(
 	qualifier sunSpecLiveSmokeQualifier,
 	logf func(string, ...any),
 ) *sunSpecLiveSmokeWorker {
+	return newSunSpecLiveSmokeWorkerWithWait(parent, attemptTimeout, sunSpecLiveSmokeCycleInterval, driver, qualifier, logf, waitSunSpecLiveSmokeCycle)
+}
+
+func newSunSpecLiveSmokeWorkerWithWait(
+	parent context.Context,
+	attemptTimeout, cycleInterval time.Duration,
+	driver sunSpecLiveSmokeDriver,
+	qualifier sunSpecLiveSmokeQualifier,
+	logf func(string, ...any),
+	wait sunSpecLiveSmokeWait,
+) *sunSpecLiveSmokeWorker {
 	ctx, cancel := context.WithCancel(parent)
 	worker := &sunSpecLiveSmokeWorker{cancel: cancel, done: make(chan struct{})}
 	worker.run = func() {
 		defer close(worker.done)
-		_ = runSunSpecLiveSmoke(ctx, attemptTimeout, driver, qualifier, logf)
+		for {
+			_ = runSunSpecLiveSmoke(ctx, attemptTimeout, driver, qualifier, logf)
+			if wait(ctx, cycleInterval) != nil {
+				return
+			}
+		}
 	}
 	return worker
+}
+
+func waitSunSpecLiveSmokeCycle(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (worker *sunSpecLiveSmokeWorker) Start() {

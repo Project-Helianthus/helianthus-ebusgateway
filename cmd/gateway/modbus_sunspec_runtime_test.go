@@ -225,6 +225,7 @@ func TestSunSpecLiveSmokeWorkerRunsSerialCyclesAfterCompletionAndContinuesAfterE
 	secondPollStarted := make(chan struct{})
 	delayStarted := make(chan time.Duration, 2)
 	allowNextCycle := make(chan struct{})
+	waitCalls := 0
 	driver := &sunSpecLiveSmokeFakeDriver{}
 	driver.pollFn = func(_ context.Context, _ sunSpecLiveSmokeAttempt) (sunSpecLiveSmokePollResult, error) {
 		switch len(driver.pollCalls) {
@@ -241,7 +242,12 @@ func TestSunSpecLiveSmokeWorkerRunsSerialCyclesAfterCompletionAndContinuesAfterE
 	}
 	qualifier := &sunSpecLiveSmokeFakeQualifier{qualifications: []sunSpecLiveSmokeQualification{goSunSpecQualification()}}
 	worker := newSunSpecLiveSmokeWorkerWithWait(context.Background(), time.Second, 15*time.Second, driver, qualifier, func(string, ...any) {}, func(ctx context.Context, delay time.Duration) error {
+		waitCalls++
 		delayStarted <- delay
+		if waitCalls > 1 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
 		select {
 		case <-allowNextCycle:
 			return nil
@@ -275,6 +281,10 @@ func TestSunSpecLiveSmokeWorkerRunsSerialCyclesAfterCompletionAndContinuesAfterE
 	case <-secondPollStarted:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not continue after failed cycle")
+	}
+	if len(driver.pollCalls) < 2 || driver.pollCalls[0].PollID == 0 || driver.pollCalls[0].DeadlineID == 0 ||
+		driver.pollCalls[0].PollID == driver.pollCalls[1].PollID || driver.pollCalls[0].DeadlineID == driver.pollCalls[1].DeadlineID {
+		t.Fatalf("successive cycle identities = %#v", driver.pollCalls)
 	}
 	if err := worker.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

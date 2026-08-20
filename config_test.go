@@ -22,6 +22,35 @@ func TestConfigDeclaresIndependentDisabledPortalPVCapabilities(t *testing.T) {
 	}
 }
 
+func TestConfigCrossValidatesPortalPVAgainstDedicatedM2MListener(t *testing.T) {
+	type portalPVValidator interface{ ValidatePortalPV() error }
+	validM2M := M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-allowed"},
+	}
+	portal := PortalPVConfig{
+		SemanticEnabled: true, M2MURL: "https://127.0.0.1:8443/graphql/m2m/v1", M2MServerName: "m2m.gateway.test",
+		M2MCAFile: "ca.pem", M2MClientCert: "client.pem", M2MClientKey: "client-key.pem", AssetRef: "pv-allowed",
+	}
+	for _, cfg := range []*Config{
+		{PortalPV: portal},
+		{M2MGraphQL: validM2M, PortalPV: func() PortalPVConfig { value := portal; value.AssetRef = "pv-forbidden"; return value }()},
+	} {
+		validator, ok := any(cfg).(portalPVValidator)
+		if !ok {
+			t.Fatal("Config does not provide cross-configuration Portal PV validation")
+		}
+		if err := validator.ValidatePortalPV(); err == nil {
+			t.Fatalf("cross-configuration mismatch accepted: %+v", cfg)
+		}
+	}
+	valid := &Config{M2MGraphQL: validM2M, PortalPV: portal}
+	validator, ok := any(valid).(portalPVValidator)
+	if !ok || validator.ValidatePortalPV() != nil {
+		t.Fatalf("valid cross-configuration rejected: %+v", valid)
+	}
+}
+
 func TestDefaultConfig_DisablesDumpUploadPath(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.DumpUploadPath != "" {

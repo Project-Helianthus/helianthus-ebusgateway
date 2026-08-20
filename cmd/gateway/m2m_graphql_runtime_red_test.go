@@ -36,6 +36,19 @@ func TestM2MGraphQLRuntime_IsDisabledByDefaultAndSeparateFromGenericHTTP(t *test
 	}
 }
 
+func TestPortalRawModbusMainAuditLogListsOnlySanitizedFields(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{"request_id=%s", "surface=%s", "tool=%s", "unit_id=%", "function=%", "offset=%", "quantity=%", "outcome=%s", "error_code=%s", "duration_ms=%", "endpoint_ref=%s"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("main audit log lacks %q", required)
+		}
+	}
+}
+
 func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{

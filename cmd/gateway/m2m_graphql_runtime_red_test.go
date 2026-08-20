@@ -72,6 +72,27 @@ func TestM2MGraphQLRuntime_IncompleteEnabledConfigFailsClosed(t *testing.T) {
 	}
 }
 
+func TestM2MGraphQLRuntime_StalledHandshakeDoesNotBlockOtherPrincipals(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-fixture"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	stalled, err := net.Dial("tcp", runtime.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stalled.Close() })
+	time.Sleep(50 * time.Millisecond)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)
+}
+
 func TestM2MGraphQLRuntime_RejectsServerCertificateForDifferentConfiguredIdentity(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	_, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
@@ -185,7 +206,8 @@ func assertM2MTLSDial(t *testing.T, addr string, roots *x509.CertPool, name stri
 	if len(certificate.Certificate) != 0 {
 		config.Certificates = []tls.Certificate{certificate}
 	}
-	connection, err := tls.Dial("tcp", addr, config)
+	dialer := &net.Dialer{Timeout: time.Second}
+	connection, err := tls.DialWithDialer(dialer, "tcp", addr, config)
 	// TLS 1.3 allows the client to finish locally before it observes the
 	// server's fatal client-certificate alert. Force one application read so
 	// this assertion observes the peer's final authentication outcome.

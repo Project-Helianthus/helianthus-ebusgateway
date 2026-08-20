@@ -92,6 +92,16 @@ func TestM2MCurrentSnapshot_HasNoGenericFallbackRawOrSubscriptionSurface(t *test
 	}
 }
 
+func TestM2MCurrentSnapshot_RequiresAuthoritativePublicationTimeProvider(t *testing.T) {
+	_, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mFixtureSnapshot(), true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}},
+	})
+	if err == nil {
+		t.Fatal("handler accepted snapshot provider without authoritative publication time")
+	}
+}
+
 func m2mFixtureSnapshot() pv.Snapshot {
 	dimensions := pv.Dimensions{Scope: pv.ScopeTotal}
 	origin := pv.Digest("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")

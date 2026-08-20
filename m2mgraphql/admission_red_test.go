@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 )
@@ -152,6 +153,22 @@ func TestM2MAdmission_IsolatedByMTLSPrincipalAndDoesNotConsumeRejectedRateTokens
 	assertM2MSuccess(t, handler, "principal-a")
 }
 
+func TestM2MAdmission_TokenBucketPreservesPartialRefillIntervals(t *testing.T) {
+	clock := int64(0)
+	handler, err := NewHandler(Config{SnapshotByAssetAt: func(context.Context, string) (pv.Snapshot, time.Time, bool) {
+		return m2mFixtureSnapshot(), time.Unix(100, 0).UTC(), true
+	}, AssetExists: func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-fixture": {}}, MonotonicMilliseconds: func() int64 { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertM2MSuccess(t, handler, "principal-partial-refill")
+	assertM2MSuccess(t, handler, "principal-partial-refill")
+	clock = 1_500
+	assertM2MSuccess(t, handler, "principal-partial-refill")
+	clock = 2_000
+	assertM2MSuccess(t, handler, "principal-partial-refill")
+}
+
 func m2mRequest(contractID, assetRef string) string {
 	request := m2mCanonicalRequest(canonicalM2MQuery, assetRef)
 	if contractID == "PUBLIC_GRAPHQL_M2M_V1" {
@@ -176,7 +193,8 @@ func m2mRequestWithQuery(query string) string {
 func m2mOversizedSnapshot() pv.Snapshot {
 	snapshot := m2mFixtureSnapshot()
 	snapshot.Origins = make(map[pv.Digest]pv.Provenance, 256)
-	for index := 0; index < 256; index++ {
+	snapshot.Origins[snapshot.Source.SourceObservationRef] = snapshot.Source
+	for index := 0; index < 255; index++ {
 		ref := pv.Digest("sha256:" + fmt.Sprintf("%064x", index+1))
 		provenance := snapshot.Source
 		provenance.SourceObservationRef = ref

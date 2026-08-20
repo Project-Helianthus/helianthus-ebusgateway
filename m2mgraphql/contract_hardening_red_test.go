@@ -164,8 +164,22 @@ func TestM2MCurrentSnapshot_ProjectsEachCanonicalContinuityVariant(t *testing.T)
 }
 
 func TestM2MCurrentSnapshot_EmitsExactClosedWireShapes(t *testing.T) {
+	snapshot := m2mGoldenSnapshot()
+	currentOrigin := m2mDigest(2)
+	snapshot.Source = snapshot.Origins[currentOrigin]
+	for index := range snapshot.ProjectionReport {
+		if snapshot.ProjectionReport[index].Outcome == pv.ProjectionMapped {
+			continue
+		}
+		snapshot.ProjectionReport[index].SourceRef = currentOrigin
+		for requestedIndex := range snapshot.RequestedOutputs {
+			if snapshot.RequestedOutputs[requestedIndex].RequestedOutputRef == snapshot.ProjectionReport[index].RequestedOutputRef {
+				snapshot.RequestedOutputs[requestedIndex].SourceRef = currentOrigin
+			}
+		}
+	}
 	handler, err := NewHandler(Config{
-		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return m2mGoldenSnapshot(), true },
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
 		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{"pv-asset-golden": {}},
 	})
 	if err != nil {

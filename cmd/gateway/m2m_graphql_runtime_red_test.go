@@ -47,6 +47,9 @@ func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
 	if runtime == nil || !runtime.RequiresVerifiedClientCertificate() {
 		t.Fatalf("runtime=%#v; want dedicated verified-mTLS listener", runtime)
 	}
+	if runtime.server.ReadHeaderTimeout <= 0 || runtime.server.ReadTimeout <= 0 || runtime.server.WriteTimeout <= 0 || runtime.server.IdleTimeout <= 0 || m2mTLSHandshakeTimeout <= 0 {
+		t.Fatalf("M2M listener has unbounded network deadlines: %#v", runtime.server)
+	}
 	t.Cleanup(func() { _ = runtime.Close() })
 
 	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)

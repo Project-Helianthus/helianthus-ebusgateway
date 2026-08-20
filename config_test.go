@@ -2,10 +2,25 @@ package ebusgateway
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestConfigDeclaresIndependentDisabledPortalPVCapabilities(t *testing.T) {
+	field, ok := reflect.TypeOf(Config{}).FieldByName("PortalPV")
+	if !ok {
+		t.Fatal("Config has no PortalPV capability configuration")
+	}
+	value := reflect.New(field.Type).Elem()
+	for _, name := range []string{"SemanticEnabled", "RawReadEnabled"} {
+		capability := value.FieldByName(name)
+		if !capability.IsValid() || capability.Kind() != reflect.Bool || capability.Bool() {
+			t.Fatalf("PortalPV.%s must exist and default disabled", name)
+		}
+	}
+}
 
 func TestDefaultConfig_DisablesDumpUploadPath(t *testing.T) {
 	cfg := DefaultConfig()

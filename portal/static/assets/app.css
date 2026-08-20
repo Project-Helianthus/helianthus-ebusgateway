@@ -455,6 +455,17 @@ body {
   color: var(--warn);
 }
 
+.pv-output {
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-family: "IBM Plex Mono", "Fira Code", monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 900px) {
   .topbar {
     grid-template-columns: 1fr;

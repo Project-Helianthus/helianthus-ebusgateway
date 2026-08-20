@@ -170,6 +170,9 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	}
 
 	applyTransportSourcePolicy(&cfg)
+	if err := cfg.ValidatePortalPV(); err != nil {
+		return fmt.Errorf("validate Portal PV configuration: %w", err)
+	}
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
 		return fmt.Errorf("validate synchronized evidence config: %w", err)
 	}
@@ -1993,6 +1996,13 @@ func startHTTPServer(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := cfg.ValidatePortalPV(); err != nil {
+		return nil, nil, fmt.Errorf("validate Portal PV configuration: %w", err)
+	}
+	portalPVClient, err := newPortalPVClient(cfg.PortalPV)
+	if err != nil {
+		return nil, nil, fmt.Errorf("portal PV configuration: %w", err)
+	}
 
 	queryHandler, err := graphql.NewInvokeHandler(builder, gateway.Registry, gateway.Router)
 	if err != nil {
@@ -2195,8 +2205,18 @@ func startHTTPServer(
 				}
 				return ""
 			}(),
-			GatewayVersion: buildInfo.ReleaseVersion,
-			BuildID:        buildInfo.BuildID,
+			GatewayVersion:    buildInfo.ReleaseVersion,
+			BuildID:           buildInfo.BuildID,
+			SemanticPVEnabled: cfg.PortalPV.SemanticEnabled,
+			RawModbusEnabled:  cfg.PortalPV.RawReadEnabled,
+			SemanticPV:        portalPVClient,
+			ModbusProvider:    modbusProvider,
+			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
+				log.Printf("portal_modbus_raw_audit request_id=%s surface=%s tool=%s unit_id=%s function=%s offset=%s quantity=%s outcome=%s error_code=%s duration_ms=%d endpoint_ref=%s timestamp=%s",
+					event.RequestID, event.Surface, event.Tool, auditNumber(event.UnitID), auditNumber(event.Function),
+					auditNumber(event.Offset), auditNumber(event.Quantity), event.Outcome, event.ErrorCode,
+					event.DurationMS, event.EndpointRef, event.At.Format(time.RFC3339Nano))
+			},
 			ListRegistry: func() []portal.RegistryDevice {
 				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))
@@ -2415,6 +2435,13 @@ func startHTTPServer(
 	}()
 
 	return server, advertiser, nil
+}
+
+func auditNumber(value *uint64) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.FormatUint(*value, 10)
 }
 
 func portalFM5Interpretation(provider graphql.SemanticProvider) graphql.Fm5Interpretation {

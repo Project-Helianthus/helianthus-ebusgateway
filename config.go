@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -105,6 +106,81 @@ type M2MGraphQLConfig struct {
 	DeniedPrincipalFingerprints []string
 }
 
+// PortalPVConfig independently enables the Portal PV BFF and raw Modbus
+// diagnostics. Both capabilities are disabled by default.
+type PortalPVConfig struct {
+	SemanticEnabled bool
+	RawReadEnabled  bool
+	M2MURL          string
+	M2MServerName   string
+	M2MCAFile       string
+	M2MClientCert   string
+	M2MClientKey    string
+	AssetRef        string
+}
+
+func (config PortalPVConfig) Validate() error {
+	fields := []string{config.M2MURL, config.M2MServerName, config.M2MCAFile, config.M2MClientCert, config.M2MClientKey, config.AssetRef}
+	if !config.SemanticEnabled {
+		for _, field := range fields {
+			if strings.TrimSpace(field) != "" {
+				return errors.New("disabled Portal PV semantic configuration contains active fields")
+			}
+		}
+		return nil
+	}
+	for _, field := range fields {
+		if strings.TrimSpace(field) == "" {
+			return errors.New("enabled Portal PV semantic configuration is incomplete")
+		}
+	}
+	return nil
+}
+
+// ValidatePortalPV enforces that the Portal semantic BFF can only target the
+// configured dedicated M2M listener and one of its admitted assets.
+func (cfg Config) ValidatePortalPV() error {
+	if err := cfg.PortalPV.Validate(); err != nil {
+		return err
+	}
+	if !cfg.PortalPV.SemanticEnabled {
+		return nil
+	}
+	if cfg.M2MGraphQL.Disabled() {
+		return errors.New("portal PV semantic BFF requires the dedicated M2M listener")
+	}
+	if err := cfg.M2MGraphQL.Validate(); err != nil {
+		return errors.New("portal PV semantic BFF requires a valid dedicated M2M listener")
+	}
+	if cfg.PortalPV.M2MServerName != cfg.M2MGraphQL.ServerName {
+		return errors.New("portal PV semantic BFF server identity does not match the dedicated M2M listener")
+	}
+	parsedURL, err := url.Parse(cfg.PortalPV.M2MURL)
+	if err != nil || !parsedURL.IsAbs() || parsedURL.Scheme != "https" || parsedURL.Host == "" ||
+		parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || parsedURL.Opaque != "" ||
+		parsedURL.ForceQuery || parsedURL.Path != "/graphql/m2m/v1" || parsedURL.RawPath != "" {
+		return errors.New("portal PV semantic BFF URL is invalid")
+	}
+	hostname := parsedURL.Hostname()
+	loopback := strings.EqualFold(hostname, "localhost")
+	if address := net.ParseIP(hostname); address != nil {
+		loopback = address.IsLoopback()
+	}
+	if !loopback {
+		return errors.New("portal PV semantic BFF URL must use a loopback host")
+	}
+	_, listenerPort, err := net.SplitHostPort(cfg.M2MGraphQL.ListenAddr)
+	if err != nil || listenerPort == "" || parsedURL.Port() == "" || parsedURL.Port() != listenerPort {
+		return errors.New("portal PV semantic BFF URL port does not match the dedicated M2M listener")
+	}
+	for _, asset := range cfg.M2MGraphQL.AllowedAssets {
+		if asset == cfg.PortalPV.AssetRef {
+			return nil
+		}
+	}
+	return errors.New("portal PV semantic BFF asset is not admitted by the dedicated M2M listener")
+}
+
 func (config M2MGraphQLConfig) Disabled() bool {
 	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
 		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
@@ -186,6 +262,7 @@ type Config struct {
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
+	PortalPV                 PortalPVConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

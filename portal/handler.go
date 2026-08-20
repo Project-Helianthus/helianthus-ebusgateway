@@ -1,21 +1,30 @@
 package portal
 
 import (
+	"bytes"
 	"cmp"
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"expvar"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
 //go:embed static/*
@@ -45,6 +54,7 @@ var (
 	portalAssetETagByTarget = loadAssetETags()
 	portalStreamEventsTotal = expvar.NewMap("portal_stream_events_total")
 	portalStreamDropped     = expvar.NewMap("portal_stream_dropped_total")
+	endpointRefPattern      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 type Options struct {
@@ -67,15 +77,42 @@ type Options struct {
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
 	// capability in /api/v1/bootstrap.
 	EbusStandardServer PortalEbusStandardServer
+	SemanticPVEnabled  bool
+	RawModbusEnabled   bool
+	SemanticPV         func(context.Context) (ForwardedResponse, error)
+	ModbusProvider     mcp.ModbusV1Provider
+	RawModbusAudit     func(RawModbusAuditEvent)
+}
+
+type ForwardedResponse struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+type RawModbusAuditEvent struct {
+	RequestID   string    `json:"request_id"`
+	Surface     string    `json:"surface"`
+	Tool        string    `json:"tool"`
+	UnitID      *uint64   `json:"unit_id,omitempty"`
+	Function    *uint64   `json:"function,omitempty"`
+	Offset      *uint64   `json:"offset,omitempty"`
+	Quantity    *uint64   `json:"quantity,omitempty"`
+	Outcome     string    `json:"outcome"`
+	ErrorCode   string    `json:"error_code"`
+	DurationMS  int64     `json:"duration_ms"`
+	EndpointRef string    `json:"endpoint_ref,omitempty"`
+	At          time.Time `json:"at"`
 }
 
 type handler struct {
-	opts      Options
-	files     http.Handler
-	timeline  *timelineBuffer
-	snapshots *snapshotStore
-	sessions  *sessionStore
-	explorer  *explorerStore
+	opts          Options
+	files         http.Handler
+	timeline      *timelineBuffer
+	snapshots     *snapshotStore
+	sessions      *sessionStore
+	explorer      *explorerStore
+	rawRequestSeq atomic.Uint64
 }
 
 type RegistryDevice struct {
@@ -893,6 +930,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 
 	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
 	trimmed := strings.Trim(path, "/")
+	if trimmed == "semantic/pv/current" {
+		h.handleSemanticPV(w, r)
+		return
+	}
+	if trimmed == "explorer/modbus/raw-read" {
+		h.handleRawModbusRead(w, r)
+		return
+	}
 	if h.explorer != nil && h.routeExplorer(w, r, trimmed) {
 		return
 	}
@@ -944,8 +989,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				// must then disable the nav button and skip auto-activation
 				// of section-l7-catalog, otherwise the bootstrap fetch
 				// surfaces a broken section. Codex P2 on PR #507.
-				"ebus_standard": h.opts.EbusStandardServer != nil,
-				"eebus_admin":   h.opts.EEBusAdminPath != "",
+				"ebus_standard":   h.opts.EbusStandardServer != nil,
+				"eebus_admin":     h.opts.EEBusAdminPath != "",
+				"semantic_pv":     h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
+				"modbus_raw_read": h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
@@ -975,6 +1022,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"explorer_read_b524":    "/portal/api/v1/explorer/read/b524",
 				"explorer_read_b509":    "/portal/api/v1/explorer/read/b509",
 				"explorer_read_scanid":  "/portal/api/v1/explorer/read/scanid",
+				"semantic_pv_current":   "/portal/api/v1/semantic/pv/current",
+				"modbus_raw_read":       "/portal/api/v1/explorer/modbus/raw-read",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -1025,6 +1074,144 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	}
 }
 
+func (h *handler) handleSemanticPV(w http.ResponseWriter, r *http.Request) {
+	if !h.opts.SemanticPVEnabled || h.opts.SemanticPV == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	response, err := h.opts.SemanticPV(r.Context())
+	if err != nil {
+		http.Error(w, "semantic PV unavailable", http.StatusBadGateway)
+		return
+	}
+	if response.ContentType != "" {
+		w.Header().Set("Content-Type", response.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(response.Status)
+	_, _ = w.Write(response.Body)
+}
+
+func (h *handler) handleRawModbusRead(w http.ResponseWriter, r *http.Request) {
+	if !h.opts.RawModbusEnabled || h.opts.ModbusProvider == nil {
+		http.NotFound(w, r)
+		return
+	}
+	started := time.Now()
+	event := RawModbusAuditEvent{
+		RequestID: fmt.Sprintf("raw-%016x", h.rawRequestSeq.Add(1)), Surface: "portal",
+		Tool: mcp.ModbusV1RawReadTool, Outcome: "rejected", ErrorCode: "INVALID_ARGUMENT", At: started.UTC(),
+	}
+	defer func() {
+		event.DurationMS = time.Since(started).Milliseconds()
+		h.auditRawModbus(event)
+	}()
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeJSON(w, http.StatusUnsupportedMediaType, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, (4<<10)+1))
+	if err != nil || len(body) > 4<<10 {
+		writeJSON(w, http.StatusBadRequest, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
+		return
+	}
+	args, err := decodeClosedRawModbusJSON(body)
+	event.UnitID = auditInteger(args, "unit_id")
+	event.Function = auditInteger(args, "function")
+	event.Offset = auditInteger(args, "offset")
+	event.Quantity = auditInteger(args, "quantity")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, nil))
+		return
+	}
+	envelope := mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, args)
+	event.Outcome = "admitted"
+	event.ErrorCode = ""
+	status := http.StatusOK
+	if errorValue, ok := envelope["error"].(map[string]any); ok {
+		switch errorValue["code"] {
+		case "INVALID_ARGUMENT":
+			event.Outcome, event.ErrorCode, status = "rejected", "INVALID_ARGUMENT", http.StatusBadRequest
+		case "RESOURCE_EXHAUSTED":
+			event.Outcome, event.ErrorCode, status = "exhausted", "RESOURCE_EXHAUSTED", http.StatusTooManyRequests
+		default:
+			event.Outcome, event.ErrorCode, status = "failed", "PROVIDER_FAILURE", http.StatusBadGateway
+		}
+	} else if data, ok := envelope["data"].(mcp.ModbusRawReadResult); ok && safeEndpointRef(data.EndpointRef) {
+		event.EndpointRef = data.EndpointRef
+	}
+	writeJSON(w, status, envelope)
+}
+
+func decodeClosedRawModbusJSON(body []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, errors.New("raw Modbus request must be a JSON object")
+	}
+	args := make(map[string]any, 4)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return args, errors.New("raw Modbus request is invalid")
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return args, errors.New("raw Modbus request has an invalid key")
+		}
+		if _, duplicate := args[key]; duplicate {
+			return args, errors.New("raw Modbus request contains a duplicate key")
+		}
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return args, errors.New("raw Modbus request has an invalid value")
+		}
+		args[key] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return args, errors.New("raw Modbus request object is incomplete")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return args, errors.New("raw Modbus request contains trailing data")
+	}
+	return args, nil
+}
+
+func auditInteger(args map[string]any, key string) *uint64 {
+	number, ok := args[key].(float64)
+	if !ok || number < 0 || number > 65535 || number != float64(uint64(number)) {
+		return nil
+	}
+	value := uint64(number)
+	return &value
+}
+
+func safeEndpointRef(value string) bool {
+	return endpointRefPattern.MatchString(value)
+}
+
+func (h *handler) auditRawModbus(event RawModbusAuditEvent) {
+	if h.opts.RawModbusAudit != nil {
+		h.opts.RawModbusAudit(event)
+	}
+}
+
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -1064,6 +1251,10 @@ func classifyRoute(path string) string {
 		return "api.registry.devices"
 	case strings.HasPrefix(path, "/api/v1/semantic/snapshot"):
 		return "api.semantic.snapshot"
+	case strings.HasPrefix(path, "/api/v1/semantic/pv/current"):
+		return "api.semantic.pv.current"
+	case strings.HasPrefix(path, "/api/v1/explorer/modbus/raw-read"):
+		return "api.explorer.modbus.raw_read"
 	case strings.HasPrefix(path, "/api/v1/bus/observability"):
 		return "api.bus.observability"
 	case strings.HasPrefix(path, "/api/v1/projection/devices"):

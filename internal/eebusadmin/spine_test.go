@@ -188,10 +188,6 @@ func TestIssue844ConnectedWithoutTopologyHasScopedAvailabilityError(t *testing.T
 	}
 }
 
-func issue817TrustedPartnerID(t *testing.T, handler http.Handler) string {
-	return issue844PartnerID(t, handler, "trusted")
-}
-
 func issue844PartnerID(t *testing.T, handler http.Handler, view string) string {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view="+view, nil)

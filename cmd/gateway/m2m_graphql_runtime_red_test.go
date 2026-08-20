@@ -164,7 +164,11 @@ func TestM2MGraphQLRuntime_KnownAssetWithoutSnapshotReturnsSourceUnavailable(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	t.Cleanup(func() {
+		if err := response.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 	var envelope struct {
 		Errors []struct {
 			Extensions struct {

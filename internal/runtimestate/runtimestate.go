@@ -485,8 +485,17 @@ func (m *Manager) EvictKnownBusMember(addr byte) {
 func (m *Manager) replaceState(s *State) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if s == nil {
+		s = &State{SchemaVersion: SchemaVersion}
+	}
+	metadataChanged := s.Meta.GatewayBuild != m.opts.GatewayBuild || s.Meta.AddonVersion != m.opts.AddonVersion
+	s.Meta.GatewayBuild = m.opts.GatewayBuild
+	s.Meta.AddonVersion = m.opts.AddonVersion
 	m.state = s
-	m.dirty = false
+	m.dirty = metadataChanged
+	if metadataChanged {
+		m.writeGen++
+	}
 }
 
 func cloneState(s *State) *State {

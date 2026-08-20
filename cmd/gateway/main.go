@@ -2023,6 +2023,9 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
+		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
+	}
 	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
 			return nil, nil, fmt.Errorf("register eeBUS MCP provider: %w", err)
@@ -3048,7 +3051,7 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 	mgr := runtimestate.New(runtimestate.Options{
 		Path:         cfg.RuntimeStatePath,
 		GatewayBuild: gatewayBuildString(buildInfo),
-		AddonVersion: "", // populated by add-on via future flag if needed
+		AddonVersion: buildInfo.ReleaseVersion,
 	})
 	state, err := mgr.Load(ctx)
 	if err != nil {

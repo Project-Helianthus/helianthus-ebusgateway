@@ -506,6 +506,7 @@ type Server struct {
 	eebusV1CommandRouter        EEBusV1CommandRouter
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
 	leafPromotionCapture        LeafPromotionCapture
+	serverVersion               string
 
 	tools []Tool
 
@@ -789,6 +790,7 @@ func NewServer(reg Registry, invoker Invoker) (*Server, error) {
 		semantic:       staticSemanticProvider{},
 		idempotency:    make(map[string]idempotencyEntry),
 		snapshots:      make(map[string]snapshotState),
+		serverVersion:  "0.0.0",
 	}
 	server.tools = []Tool{
 		{
@@ -1246,6 +1248,20 @@ func (s *Server) SetStatusProvider(provider StatusProvider) {
 	s.statusProvider = provider
 }
 
+// SetServerVersion binds the immutable process release authority exposed by
+// MCP initialize. Callers configure it once during server construction.
+func (s *Server) SetServerVersion(version string) error {
+	if s == nil {
+		return errors.New("mcp server is nil")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" || len(version) > 64 || strings.ContainsAny(version, "\r\n\x00") {
+		return errors.New("mcp server version is invalid")
+	}
+	s.serverVersion = version
+	return nil
+}
+
 func (s *Server) SetBusObservabilityProvider(provider BusObservabilityProvider) {
 	if s == nil || provider == nil {
 		return
@@ -1397,7 +1413,7 @@ func (s *Server) handleInitialize(params json.RawMessage) (any, *rpcError) {
 		},
 		"serverInfo": map[string]any{
 			"name":    "helianthus-ebusgateway",
-			"version": "0.0.0",
+			"version": s.serverVersion,
 		},
 		"sessionId": sessionID,
 	}, nil

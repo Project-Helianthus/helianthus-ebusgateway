@@ -1993,6 +1993,10 @@ func startHTTPServer(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	portalPVClient, err := newPortalPVClient(cfg.PortalPV)
+	if err != nil {
+		return nil, nil, fmt.Errorf("portal PV configuration: %w", err)
+	}
 
 	queryHandler, err := graphql.NewInvokeHandler(builder, gateway.Registry, gateway.Router)
 	if err != nil {
@@ -2195,8 +2199,15 @@ func startHTTPServer(
 				}
 				return ""
 			}(),
-			GatewayVersion: buildInfo.ReleaseVersion,
-			BuildID:        buildInfo.BuildID,
+			GatewayVersion:    buildInfo.ReleaseVersion,
+			BuildID:           buildInfo.BuildID,
+			SemanticPVEnabled: cfg.PortalPV.SemanticEnabled,
+			RawModbusEnabled:  cfg.PortalPV.RawReadEnabled,
+			SemanticPV:        portalPVClient,
+			ModbusProvider:    modbusProvider,
+			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
+				log.Printf("portal_modbus_raw_audit outcome=%s timestamp=%s", event.Outcome, event.At.Format(time.RFC3339Nano))
+			},
 			ListRegistry: func() []portal.RegistryDevice {
 				schemaSnapshot := builder.FreshSchema()
 				schemaByAddr := make(map[byte]graphql.Device, len(schemaSnapshot.Devices))

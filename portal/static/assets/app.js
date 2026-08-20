@@ -400,9 +400,25 @@ class PortalShell extends HTMLElement {
       });
     });
     this.bindExplorerEvents();
+    const rawRead = this.querySelector('[data-role="modbus-raw-read"]');
+    if (rawRead) rawRead.addEventListener("click", () => this.readRawModbus());
     this.bindL7CatalogEvents();
     this.bindVaillantB503Events();
 	this.bindEEBusAdminEvents();
+  }
+
+  async readRawModbus() {
+    const output = this.querySelector('[data-role="modbus-raw-output"]');
+    const unit = Number(this.querySelector('[data-role="modbus-unit"]')?.value);
+    const func = Number(this.querySelector('[data-role="modbus-function"]')?.value);
+    const offset = Number(this.querySelector('[data-role="modbus-offset"]')?.value);
+    const quantity = Number(this.querySelector('[data-role="modbus-quantity"]')?.value);
+    if (!output || !this._capabilityRawModbus || !Number.isInteger(unit) || unit < 1 || unit > 247 || ![3, 4].includes(func) || !Number.isInteger(offset) || offset < 0 || offset > 65535 || !Number.isInteger(quantity) || quantity < 1 || quantity > 125) {
+      if (output) output.textContent = "Invalid raw read bounds";
+      return;
+    }
+    const response = await fetch("api/v1/explorer/modbus/raw-read", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unit_id: unit, function: func, offset, quantity }) });
+    output.textContent = JSON.stringify(await response.json(), null, 2);
   }
 
   // bindL7CatalogEvents wires the L7 Standard Catalog section (M5_PORTAL)
@@ -640,6 +656,7 @@ class PortalShell extends HTMLElement {
 	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
 	    : "";
       this.applyCapabilityState(capabilities);
+      this._capabilityRawModbus = Boolean(capabilities.modbus_raw_read);
       const firstEnabled = this.querySelector("[data-nav-target]:not([disabled])");
       if (firstEnabled) {
         this.activateSection(firstEnabled.getAttribute("data-nav-target"));
@@ -2775,6 +2792,15 @@ class PortalShell extends HTMLElement {
                   <span class="muted-inline" data-role="explorer-quick-result"></span>
                 </div>
               </div>
+              <h3>Raw Modbus</h3>
+              <div class="explorer-row">
+                <label class="explorer-label">Unit <input class="search explorer-input" data-role="modbus-unit" value="1" inputmode="numeric" /></label>
+                <label class="explorer-label">Function <select class="select" data-role="modbus-function"><option value="3">FC03</option><option value="4">FC04</option></select></label>
+                <label class="explorer-label">Offset <input class="search explorer-input" data-role="modbus-offset" value="0" inputmode="numeric" /></label>
+                <label class="explorer-label">Quantity <input class="search explorer-input" data-role="modbus-quantity" value="1" inputmode="numeric" /></label>
+                <button class="button" data-role="modbus-raw-read" type="button">Read</button>
+              </div>
+              <pre class="pv-output" data-role="modbus-raw-output">Raw diagnostics unavailable</pre>
             </section>
             <section id="section-adapter" class="registry-preview">
               <h2>Adapter Hardware Info</h2>

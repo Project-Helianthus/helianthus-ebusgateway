@@ -39,4 +39,12 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		sort.Strings(cfg.M2MGraphQL.DeniedPrincipalFingerprints)
 		return nil
 	})
+	fs.BoolVar(&cfg.PortalPV.SemanticEnabled, "portal-pv-semantic-enabled", cfg.PortalPV.SemanticEnabled, "enable Portal PV semantic BFF")
+	fs.BoolVar(&cfg.PortalPV.RawReadEnabled, "portal-modbus-raw-read-enabled", cfg.PortalPV.RawReadEnabled, "enable Portal raw Modbus diagnostics")
+	fs.StringVar(&cfg.PortalPV.M2MURL, "portal-pv-m2m-url", cfg.PortalPV.M2MURL, "dedicated M2M GraphQL URL for Portal PV")
+	fs.StringVar(&cfg.PortalPV.M2MServerName, "portal-pv-m2m-server-name", cfg.PortalPV.M2MServerName, "dedicated M2M GraphQL certificate identity for Portal PV")
+	fs.StringVar(&cfg.PortalPV.M2MCAFile, "portal-pv-m2m-ca", cfg.PortalPV.M2MCAFile, "M2M GraphQL CA file for Portal PV")
+	fs.StringVar(&cfg.PortalPV.M2MClientCert, "portal-pv-m2m-client-cert", cfg.PortalPV.M2MClientCert, "M2M GraphQL client certificate for Portal PV")
+	fs.StringVar(&cfg.PortalPV.M2MClientKey, "portal-pv-m2m-client-key", cfg.PortalPV.M2MClientKey, "M2M GraphQL client private key for Portal PV")
+	fs.StringVar(&cfg.PortalPV.AssetRef, "portal-pv-asset-ref", cfg.PortalPV.AssetRef, "fixed canonical PV asset reference for Portal PV")
 }

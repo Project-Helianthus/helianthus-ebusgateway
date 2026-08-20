@@ -150,16 +150,13 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 	var data any
 	var err error
 	providerCalled := false
-	consistencyMode := "LIVE"
+	var consistencyMode string
 	dataTimestamp := time.Now().UTC().Format(time.RFC3339Nano)
 	switch name {
 	case ModbusV1RawReadTool:
-		var request ModbusRawReadRequest
-		request, err = parseModbusRawReadRequest(args)
-		if err == nil {
-			providerCalled = true
-			data, err = provider.RawRead(ctx, request)
-		}
+		envelope := modbusV1RawReadCall(ctx, provider, args)
+		_, failed := envelope["error"].(map[string]any)
+		return callToolResultText(mustJSON(envelope), failed), true
 	case ModbusV1ProfileObservationGetTool:
 		consistencyMode = "RETAINED_SOURCE_OBSERVATION"
 		var profileID, sampleID string
@@ -193,6 +190,31 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 	return callToolResultText(mustJSON(newModbusV1Envelope(
 		data, err, providerCalled, consistencyMode, dataTimestamp,
 	)), err != nil), true
+}
+
+// InvokeModbusV1RawRead is the single closed raw-read invocation core used by
+// both the MCP tool and the Portal BFF. It owns parsing, provider invocation,
+// quota propagation, and the stable MCP envelope.
+func InvokeModbusV1RawRead(ctx context.Context, provider ModbusV1Provider, args map[string]any) map[string]any {
+	return modbusV1RawReadCall(ctx, provider, args)
+}
+
+func modbusV1RawReadCall(ctx context.Context, provider ModbusV1Provider, args map[string]any) map[string]any {
+	dataTimestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	request, err := parseModbusRawReadRequest(args)
+	providerCalled := false
+	var data any
+	if err == nil && provider != nil {
+		providerCalled = true
+		data, err = provider.RawRead(ctx, request)
+	}
+	if provider == nil {
+		err = errors.New("modbus provider unavailable")
+	}
+	if err != nil {
+		data = nil
+	}
+	return newModbusV1Envelope(data, err, providerCalled, "LIVE", dataTimestamp)
 }
 
 func canonicalPVData(snapshot pv.Snapshot, producedAt string) map[string]any {

@@ -2,11 +2,13 @@ package portal
 
 import (
 	"cmp"
+	"context"
 	"embed"
 	"encoding/json"
 	"expvar"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -16,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
 //go:embed static/*
@@ -67,6 +71,22 @@ type Options struct {
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
 	// capability in /api/v1/bootstrap.
 	EbusStandardServer PortalEbusStandardServer
+	SemanticPVEnabled  bool
+	RawModbusEnabled   bool
+	SemanticPV         func(context.Context) (ForwardedResponse, error)
+	ModbusProvider     mcp.ModbusV1Provider
+	RawModbusAudit     func(RawModbusAuditEvent)
+}
+
+type ForwardedResponse struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+type RawModbusAuditEvent struct {
+	Outcome string
+	At      time.Time
 }
 
 type handler struct {
@@ -893,6 +913,14 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 
 	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
 	trimmed := strings.Trim(path, "/")
+	if trimmed == "semantic/pv/current" {
+		h.handleSemanticPV(w, r)
+		return
+	}
+	if trimmed == "explorer/modbus/raw-read" {
+		h.handleRawModbusRead(w, r)
+		return
+	}
 	if h.explorer != nil && h.routeExplorer(w, r, trimmed) {
 		return
 	}
@@ -944,8 +972,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				// must then disable the nav button and skip auto-activation
 				// of section-l7-catalog, otherwise the bootstrap fetch
 				// surfaces a broken section. Codex P2 on PR #507.
-				"ebus_standard": h.opts.EbusStandardServer != nil,
-				"eebus_admin":   h.opts.EEBusAdminPath != "",
+				"ebus_standard":   h.opts.EbusStandardServer != nil,
+				"eebus_admin":     h.opts.EEBusAdminPath != "",
+				"semantic_pv":     h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
+				"modbus_raw_read": h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
@@ -975,6 +1005,8 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"explorer_read_b524":    "/portal/api/v1/explorer/read/b524",
 				"explorer_read_b509":    "/portal/api/v1/explorer/read/b509",
 				"explorer_read_scanid":  "/portal/api/v1/explorer/read/scanid",
+				"semantic_pv_current":   "/portal/api/v1/semantic/pv/current",
+				"modbus_raw_read":       "/portal/api/v1/explorer/modbus/raw-read",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,
@@ -1025,6 +1057,80 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 	}
 }
 
+func (h *handler) handleSemanticPV(w http.ResponseWriter, r *http.Request) {
+	if !h.opts.SemanticPVEnabled || h.opts.SemanticPV == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	response, err := h.opts.SemanticPV(r.Context())
+	if err != nil {
+		http.Error(w, "semantic PV unavailable", http.StatusBadGateway)
+		return
+	}
+	if response.ContentType != "" {
+		w.Header().Set("Content-Type", response.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(response.Status)
+	_, _ = w.Write(response.Body)
+}
+
+func (h *handler) handleRawModbusRead(w http.ResponseWriter, r *http.Request) {
+	if !h.opts.RawModbusEnabled || h.opts.ModbusProvider == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, (4<<10)+1))
+	if err != nil || len(body) > 4<<10 {
+		h.auditRawModbus("rejected")
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	var args map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	if err := decoder.Decode(&args); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		h.auditRawModbus("rejected")
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	envelope := mcp.InvokeModbusV1RawRead(r.Context(), h.opts.ModbusProvider, args)
+	outcome := "admitted"
+	status := http.StatusOK
+	if errorValue, ok := envelope["error"].(map[string]any); ok {
+		switch errorValue["code"] {
+		case "INVALID_ARGUMENT":
+			outcome, status = "rejected", http.StatusBadRequest
+		case "RESOURCE_EXHAUSTED":
+			outcome, status = "exhausted", http.StatusTooManyRequests
+		default:
+			outcome, status = "failed", http.StatusBadGateway
+		}
+	}
+	h.auditRawModbus(outcome)
+	writeJSON(w, status, envelope)
+}
+
+func (h *handler) auditRawModbus(outcome string) {
+	if h.opts.RawModbusAudit != nil {
+		h.opts.RawModbusAudit(RawModbusAuditEvent{Outcome: outcome, At: time.Now().UTC()})
+	}
+}
+
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -1064,6 +1170,10 @@ func classifyRoute(path string) string {
 		return "api.registry.devices"
 	case strings.HasPrefix(path, "/api/v1/semantic/snapshot"):
 		return "api.semantic.snapshot"
+	case strings.HasPrefix(path, "/api/v1/semantic/pv/current"):
+		return "api.semantic.pv.current"
+	case strings.HasPrefix(path, "/api/v1/explorer/modbus/raw-read"):
+		return "api.explorer.modbus.raw_read"
 	case strings.HasPrefix(path, "/api/v1/bus/observability"):
 		return "api.bus.observability"
 	case strings.HasPrefix(path, "/api/v1/projection/devices"):

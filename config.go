@@ -105,6 +105,37 @@ type M2MGraphQLConfig struct {
 	DeniedPrincipalFingerprints []string
 }
 
+// PortalPVConfig independently enables the Portal PV BFF and raw Modbus
+// diagnostics. Both capabilities are disabled by default.
+type PortalPVConfig struct {
+	SemanticEnabled bool
+	RawReadEnabled  bool
+	M2MURL          string
+	M2MServerName   string
+	M2MCAFile       string
+	M2MClientCert   string
+	M2MClientKey    string
+	AssetRef        string
+}
+
+func (config PortalPVConfig) Validate() error {
+	fields := []string{config.M2MURL, config.M2MServerName, config.M2MCAFile, config.M2MClientCert, config.M2MClientKey, config.AssetRef}
+	if !config.SemanticEnabled {
+		for _, field := range fields {
+			if strings.TrimSpace(field) != "" {
+				return errors.New("disabled Portal PV semantic configuration contains active fields")
+			}
+		}
+		return nil
+	}
+	for _, field := range fields {
+		if strings.TrimSpace(field) == "" {
+			return errors.New("enabled Portal PV semantic configuration is incomplete")
+		}
+	}
+	return nil
+}
+
 func (config M2MGraphQLConfig) Disabled() bool {
 	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
 		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
@@ -186,6 +217,7 @@ type Config struct {
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
+	PortalPV                 PortalPVConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

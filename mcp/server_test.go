@@ -381,6 +381,9 @@ func TestServer_InitializeAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	if err := server.SetServerVersion("0.6.56"); err != nil {
+		t.Fatalf("SetServerVersion error = %v", err)
+	}
 
 	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: json.RawMessage(`{}`)})
 	if res.Error != nil {
@@ -395,6 +398,10 @@ func TestServer_InitializeAndTools(t *testing.T) {
 	}
 	if resultMap["sessionId"] == "" {
 		t.Fatalf("missing sessionId in initialize result")
+	}
+	serverInfo, ok := resultMap["serverInfo"].(map[string]any)
+	if !ok || serverInfo["version"] != "0.6.56" {
+		t.Fatalf("serverInfo = %#v; want process release version", resultMap["serverInfo"])
 	}
 
 	res = doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 2, Method: "tools/list", Params: nil})

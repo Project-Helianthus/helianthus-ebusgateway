@@ -2510,6 +2510,27 @@ func TestGatewayBuildInfo_ExplicitNonRevisionBuildIDHasClosedEvidenceForm(t *tes
 	}
 }
 
+func TestIssue846RuntimeStateUsesTheProcessReleaseAuthority(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.RuntimeStatePath = t.TempDir() + "/runtime-state.json"
+	info, err := newGatewayBuildInfo("0.6.56", "0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, state := initRuntimeStateManager(context.Background(), cfg, info)
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = mgr.Stop(stopCtx)
+	})
+	if state.Meta.GatewayBuild != gatewayBuildString(info) {
+		t.Fatalf("gateway build = %q; want %q", state.Meta.GatewayBuild, gatewayBuildString(info))
+	}
+	if state.Meta.AddonVersion != info.ReleaseVersion {
+		t.Fatalf("add-on version = %q; want process release %q", state.Meta.AddonVersion, info.ReleaseVersion)
+	}
+}
+
 type legacyOnlySemanticProvider struct {
 	graphql.SemanticProvider
 }

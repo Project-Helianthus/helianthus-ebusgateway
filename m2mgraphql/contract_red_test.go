@@ -77,19 +77,18 @@ func TestM2MCurrentSnapshot_HasNoGenericFallbackRawOrSubscriptionSurface(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, request := range []*http.Request{
-		httptest.NewRequest(http.MethodGet, "/graphql/m2m/v1", nil),
-		httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewBufferString(`{"query":"{ m2mCurrentSnapshot { assetRef } }"}`)),
-		httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", bytes.NewBufferString(`{"query":"subscription M2MCurrentSnapshot { m2mCurrentSnapshot { assetRef } }"}`)),
+	for _, test := range []struct {
+		request *http.Request
+		code    string
+	}{
+		{httptest.NewRequest(http.MethodGet, "/graphql/m2m/v1", nil), "REQUEST_INVALID"},
+		{httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewBufferString(`{"query":"{ m2mCurrentSnapshot { assetRef } }"}`)), "QUERY_REJECTED"},
+		{httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", bytes.NewBufferString(`{"query":"subscription M2MCurrentSnapshot { m2mCurrentSnapshot { assetRef } }"}`)), "REQUEST_INVALID"},
 	} {
-		request = request.WithContext(WithMTLSPrincipal(request.Context(), "fixture-principal"))
+		request := test.request.WithContext(WithMTLSPrincipal(test.request.Context(), "fixture-principal"))
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		code := "QUERY_REJECTED"
-		if request.Method == http.MethodGet {
-			code = "REQUEST_INVALID"
-		}
-		assertM2MError(t, response, code)
+		assertM2MError(t, response, test.code)
 	}
 }
 

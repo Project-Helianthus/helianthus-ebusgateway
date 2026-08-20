@@ -179,7 +179,9 @@ func TestM2MCurrentSnapshot_EmitsExactClosedWireShapes(t *testing.T) {
 	var envelope struct {
 		Data struct {
 			Snapshot struct {
-				Facts []map[string]any `json:"facts"`
+				CurrentSourceOriginRef string           `json:"currentSourceOriginRef"`
+				Facts                  []map[string]any `json:"facts"`
+				Provenance             []map[string]any `json:"provenance"`
 			} `json:"m2mCurrentSnapshot"`
 		} `json:"data"`
 	}
@@ -211,6 +213,25 @@ func TestM2MCurrentSnapshot_EmitsExactClosedWireShapes(t *testing.T) {
 			}
 		}
 	}
+	if len(envelope.Data.Snapshot.Provenance) == 0 || envelope.Data.Snapshot.Provenance[0]["originRef"] != envelope.Data.Snapshot.CurrentSourceOriginRef {
+		t.Fatalf("current provenance is not first: current=%s provenance=%#v", envelope.Data.Snapshot.CurrentSourceOriginRef, envelope.Data.Snapshot.Provenance)
+	}
+}
+
+func TestM2MCurrentSnapshot_FailsClosedOnInvalidCanonicalSnapshot(t *testing.T) {
+	snapshot := m2mGoldenSnapshot()
+	key := pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Phase: pv.PhaseL1})
+	invalid := snapshot.Facts[pv.NewFactKey(pv.FactACCurrent, pv.Dimensions{Phase: pv.PhaseL1})]
+	invalid.ID = pv.FactACActivePower
+	snapshot.Facts[key] = invalid
+	handler, err := NewHandler(Config{
+		SnapshotByAsset: func(context.Context, string) (pv.Snapshot, bool) { return snapshot, true },
+		AssetExists:     func(string) bool { return true }, AllowedAssets: map[string]struct{}{snapshot.AssetRef: {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertM2MErrorForRequest(t, handler, "principal-invalid-snapshot", m2mCanonicalRequest(canonicalM2MQuery, snapshot.AssetRef), "SOURCE_UNAVAILABLE")
 }
 
 func m2mCanonicalRequest(query, assetRef string) string {

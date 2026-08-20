@@ -244,3 +244,19 @@ func TestM2MGraphQLConfig_RejectsIncompleteActiveConfiguration(t *testing.T) {
 		t.Fatal("incomplete M2M GraphQL config was accepted")
 	}
 }
+
+func TestM2MGraphQLConfig_RejectsMalformedOrDuplicateAuthority(t *testing.T) {
+	base := M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-one"},
+	}
+	malformed := base
+	malformed.DeniedPrincipalFingerprints = []string{strings.Repeat("z", 64)}
+	duplicate := base
+	duplicate.AllowedAssets = []string{"pv-one", "pv-one"}
+	for _, config := range []M2MGraphQLConfig{malformed, duplicate} {
+		if err := config.Validate(); err == nil {
+			t.Fatalf("invalid M2M GraphQL authority accepted: %+v", config)
+		}
+	}
+}

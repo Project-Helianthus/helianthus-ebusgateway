@@ -10,10 +10,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"flag"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +66,43 @@ func TestM2MGraphQLRuntime_IncompleteEnabledConfigFailsClosed(t *testing.T) {
 	_, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{ListenAddr: "127.0.0.1:0", AllowedAssets: []string{"pv-asset-fixture"}}}, nil)
 	if err == nil {
 		t.Fatal("incomplete enabled M2M configuration started a listener")
+	}
+}
+
+func TestM2MGraphQLRuntime_RejectsServerCertificateForDifferentConfiguredIdentity(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	_, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "other.gateway.test",
+		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-fixture"},
+	}}, nil)
+	if err == nil {
+		t.Fatal("server certificate identity mismatch was accepted")
+	}
+}
+
+func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	fs := flag.NewFlagSet("m2m-graphql", flag.ContinueOnError)
+	bindFlags(fs, &cfg)
+	err := fs.Parse([]string{
+		"-m2m-graphql-listen=127.0.0.1:8443",
+		"-m2m-graphql-server-name=m2m.gateway.test",
+		"-m2m-graphql-client-ca=/run/secrets/client-ca.pem",
+		"-m2m-graphql-server-cert=/run/secrets/server.pem",
+		"-m2m-graphql-server-key=/run/secrets/server-key.pem",
+		"-m2m-graphql-allowed-assets=pv-b,pv-a",
+		"-m2m-graphql-denied-principals=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	})
+	if err != nil {
+		t.Fatalf("parse M2M GraphQL flags: %v", err)
+	}
+	got := cfg.M2MGraphQL
+	if got.ListenAddr != "127.0.0.1:8443" || got.ServerName != "m2m.gateway.test" ||
+		got.ClientCAFile != "/run/secrets/client-ca.pem" || got.ServerCertFile != "/run/secrets/server.pem" ||
+		got.ServerKeyFile != "/run/secrets/server-key.pem" || len(got.AllowedAssets) != 2 || got.AllowedAssets[0] != "pv-a" ||
+		len(got.DeniedPrincipalFingerprints) != 1 || got.DeniedPrincipalFingerprints[0] != strings.Repeat("a", 64) {
+		t.Fatalf("M2M GraphQL flag config=%+v", got)
 	}
 }
 

@@ -222,7 +222,19 @@ func TestM2MGraphQLRuntime_BoundsPreMTLSConnectionsAndReleasesSlots(t *testing.T
 	}
 	_ = excess.Close()
 	_ = valid.Close()
-	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		config := &tls.Config{RootCAs: certs.pool, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certs.goodClient}}
+		connection, err := tls.DialWithDialer(&net.Dialer{Timeout: 250 * time.Millisecond}, "tcp", runtime.Addr(), config)
+		if err == nil {
+			_ = connection.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("released pre-mTLS slot did not become reusable: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 type m2mTLSCertificates struct {

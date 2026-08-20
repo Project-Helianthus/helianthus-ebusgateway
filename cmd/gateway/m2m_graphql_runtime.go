@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -114,7 +116,7 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	}
 	listener := newBoundedM2MListener(rawListener, m2mMaxPreTLSConnections)
 	runtime := &m2mGraphQLRuntime{listener: listener}
-	runtime.server = &http.Server{TLSConfig: tlsConfig, ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
 			response.WriteHeader(http.StatusUnauthorized)
 			return

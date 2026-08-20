@@ -26,7 +26,7 @@ func TestM2MAdmission_EnforcesPrecedenceAndWireBounds(t *testing.T) {
 			return m2mFixtureSnapshot(), true
 		},
 		AssetExists:           func(assetRef string) bool { return assetRef != "pv-asset-missing" },
-		AllowedAssets:         map[string]struct{}{"pv-asset-fixture": {}},
+		AllowedAssets:         map[string]struct{}{"pv-asset-fixture": {}, "pv-asset-missing": {}},
 		MonotonicMilliseconds: func() int64 { return 1_000 },
 	})
 	if err != nil {

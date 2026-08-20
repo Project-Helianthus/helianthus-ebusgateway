@@ -431,6 +431,23 @@ func (adapter *Adapter) CanonicalPVSnapshot(profileID, sampleID string) (pv.Snap
 	return cloneCanonicalPVSnapshot(record.canonical), record.producedAt, true
 }
 
+// CanonicalPVSnapshotByAsset returns the retained canonical snapshot selected
+// by its public asset reference. It deliberately exposes no source transport
+// or qualification identity and always returns a detached value.
+func (adapter *Adapter) CanonicalPVSnapshotByAsset(assetRef string) (pv.Snapshot, time.Time, bool) {
+	if adapter == nil || assetRef == "" {
+		return pv.Snapshot{}, time.Time{}, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	for _, record := range adapter.qualifications {
+		if record.canonical.AssetRef == assetRef {
+			return cloneCanonicalPVSnapshot(record.canonical), record.producedAt, true
+		}
+	}
+	return pv.Snapshot{}, time.Time{}, false
+}
+
 func cloneCanonicalPVSnapshot(source pv.Snapshot) pv.Snapshot {
 	clone := source
 	clone.Facts = make(map[pv.FactKey]pv.Fact, len(source.Facts))

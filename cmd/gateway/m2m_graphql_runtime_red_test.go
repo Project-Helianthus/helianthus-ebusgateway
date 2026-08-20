@@ -144,6 +144,13 @@ func assertM2MTLSDial(t *testing.T, addr string, roots *x509.CertPool, name stri
 		config.Certificates = []tls.Certificate{certificate}
 	}
 	connection, err := tls.Dial("tcp", addr, config)
+	// TLS 1.3 allows the client to finish locally before it observes the
+	// server's fatal client-certificate alert. Force one application read so
+	// this assertion observes the peer's final authentication outcome.
+	if err == nil && !want {
+		_ = connection.SetDeadline(time.Now().Add(250 * time.Millisecond))
+		_, err = connection.Read(make([]byte, 1))
+	}
 	if connection != nil {
 		_ = connection.Close()
 	}

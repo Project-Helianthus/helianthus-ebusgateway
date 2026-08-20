@@ -211,6 +211,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			defer func() { _ = sunSpecWorker.Close() }()
 		}
 	}
+	m2mRuntime, err := newM2MGraphQLRuntime(cfg, modbusAdapter)
+	if err != nil {
+		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
+	}
+	if m2mRuntime != nil {
+		defer func() {
+			if err := m2mRuntime.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown M2M GraphQL sidecar: %w", err))
+			}
+		}()
+	}
 
 	eebusAdapter, eebusAdmin, eebusAdminAvailable, err := startEEBusAdminAwareRuntime(ctx, cfg)
 	if err != nil {

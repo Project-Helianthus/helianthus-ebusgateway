@@ -89,6 +89,47 @@ type EEBusConfig struct {
 	PairingWindowMode  EEBusPairingWindowMode
 }
 
+// M2MGraphQLConfig configures the dedicated public canonical-PV listener.
+// An all-zero value is disabled. Any partially populated value is rejected by
+// the command runtime rather than being silently enabled.
+type M2MGraphQLConfig struct {
+	ListenAddr                  string
+	ServerName                  string
+	ClientCAFile                string
+	ServerCertFile              string
+	ServerKeyFile               string
+	AllowedAssets               []string
+	DeniedPrincipalFingerprints []string
+}
+
+func (config M2MGraphQLConfig) Disabled() bool {
+	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
+		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
+		len(config.DeniedPrincipalFingerprints) == 0
+}
+
+func (config M2MGraphQLConfig) Validate() error {
+	if config.Disabled() {
+		return nil
+	}
+	if strings.TrimSpace(config.ListenAddr) == "" || strings.TrimSpace(config.ServerName) == "" ||
+		strings.TrimSpace(config.ClientCAFile) == "" || strings.TrimSpace(config.ServerCertFile) == "" ||
+		strings.TrimSpace(config.ServerKeyFile) == "" || len(config.AllowedAssets) == 0 {
+		return errors.New("M2M GraphQL configuration is incomplete")
+	}
+	for _, asset := range config.AllowedAssets {
+		if strings.TrimSpace(asset) == "" {
+			return errors.New("M2M GraphQL configuration contains an empty allowed asset")
+		}
+	}
+	for _, fingerprint := range config.DeniedPrincipalFingerprints {
+		if len(fingerprint) != 64 {
+			return errors.New("M2M GraphQL configuration contains an invalid denied principal fingerprint")
+		}
+	}
+	return nil
+}
+
 func DefaultEEBusConfig() EEBusConfig {
 	return EEBusConfig{
 		Interfaces:         []string{},
@@ -125,6 +166,7 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
+	M2MGraphQL               M2MGraphQLConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

@@ -78,3 +78,52 @@ func TestCanonicalPVMapperProjectsQualifiedFroniusObservation(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalPVSnapshotByAssetReevaluatesLifecycleAtRequestTime(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:canonical-pv-lifecycle", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualified, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 72, DeadlineIdentity: 82})
+	if err != nil || qualified.Outcome != SunSpecQualificationGO {
+		t.Fatalf("qualification=%#v err=%v", qualified, err)
+	}
+	initial, producedAt, ok := adapter.CanonicalPVSnapshot(qualified.CapabilityID, qualified.SampleID)
+	if !ok {
+		t.Fatal("canonical PV snapshot was not retained")
+	}
+	key := pv.NewFactKey(pv.FactACActivePower, pv.Dimensions{Scope: pv.ScopeTotal})
+	if fact := initial.Facts[key]; fact.Freshness != pv.FreshnessFresh || fact.Availability != pv.AvailabilityAvailable {
+		t.Fatalf("initial active power lifecycle=%s/%s", fact.Freshness, fact.Availability)
+	}
+
+	adapter.started = adapter.started.Add(-30 * time.Second)
+	stale, staleProducedAt, ok := adapter.CanonicalPVSnapshotByAsset(initial.AssetRef)
+	if !ok || !staleProducedAt.Equal(producedAt) {
+		t.Fatal("stale lifecycle lookup lost the retained observation")
+	}
+	if fact := stale.Facts[key]; fact.Freshness != pv.FreshnessStale || fact.Availability != pv.AvailabilityAvailable {
+		t.Fatalf("stale active power lifecycle=%s/%s", fact.Freshness, fact.Availability)
+	}
+	if stale.Source != initial.Source || len(stale.ProjectionReport) != len(initial.ProjectionReport) || len(stale.RequestedOutputs) != len(initial.RequestedOutputs) {
+		t.Fatal("stale lifecycle evaluation changed provenance or projection accounting")
+	}
+
+	adapter.started = adapter.started.Add(-270 * time.Second)
+	expired, expiredProducedAt, ok := adapter.CanonicalPVSnapshotByAsset(initial.AssetRef)
+	if !ok || !expiredProducedAt.Equal(producedAt) {
+		t.Fatal("expired lifecycle lookup lost the retained observation")
+	}
+	if fact := expired.Facts[key]; fact.Freshness != pv.FreshnessExpired || fact.Availability != pv.AvailabilityUnavailable {
+		t.Fatalf("expired active power lifecycle=%s/%s", fact.Freshness, fact.Availability)
+	}
+	if expired.Source != initial.Source || len(expired.ProjectionReport) != len(initial.ProjectionReport) || len(expired.RequestedOutputs) != len(initial.RequestedOutputs) {
+		t.Fatal("expired lifecycle evaluation changed provenance or projection accounting")
+	}
+}

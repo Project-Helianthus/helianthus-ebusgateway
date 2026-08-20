@@ -2,6 +2,8 @@ package ebusgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -89,6 +91,64 @@ type EEBusConfig struct {
 	PairingWindowMode  EEBusPairingWindowMode
 }
 
+// M2MGraphQLConfig configures the dedicated public canonical-PV listener.
+// An all-zero value is disabled. Any partially populated value is rejected by
+// the command runtime rather than being silently enabled.
+type M2MGraphQLConfig struct {
+	ListenAddr                  string
+	ServerName                  string
+	ClientCAFile                string
+	ServerCertFile              string
+	ServerKeyFile               string
+	AllowedAssets               []string
+	KnownAssets                 []string
+	DeniedPrincipalFingerprints []string
+}
+
+func (config M2MGraphQLConfig) Disabled() bool {
+	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
+		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
+		len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0
+}
+
+func (config M2MGraphQLConfig) Validate() error {
+	if config.Disabled() {
+		return nil
+	}
+	if strings.TrimSpace(config.ListenAddr) == "" || strings.TrimSpace(config.ServerName) == "" ||
+		strings.TrimSpace(config.ClientCAFile) == "" || strings.TrimSpace(config.ServerCertFile) == "" ||
+		strings.TrimSpace(config.ServerKeyFile) == "" || len(config.AllowedAssets) == 0 {
+		return errors.New("M2M GraphQL configuration is incomplete")
+	}
+	assets := make(map[string]struct{}, len(config.AllowedAssets))
+	for _, asset := range config.AllowedAssets {
+		if strings.TrimSpace(asset) == "" {
+			return errors.New("M2M GraphQL configuration contains an empty allowed asset")
+		}
+		if _, duplicate := assets[asset]; duplicate {
+			return errors.New("M2M GraphQL configuration contains a duplicate allowed asset")
+		}
+		assets[asset] = struct{}{}
+	}
+	known := make(map[string]struct{}, len(config.KnownAssets))
+	for _, asset := range config.KnownAssets {
+		if _, allowed := assets[asset]; !allowed {
+			return errors.New("M2M GraphQL configuration contains a known asset outside the allowlist")
+		}
+		if _, duplicate := known[asset]; duplicate {
+			return errors.New("M2M GraphQL configuration contains a duplicate known asset")
+		}
+		known[asset] = struct{}{}
+	}
+	for _, fingerprint := range config.DeniedPrincipalFingerprints {
+		decoded, err := hex.DecodeString(fingerprint)
+		if err != nil || len(decoded) != sha256.Size {
+			return errors.New("M2M GraphQL configuration contains an invalid denied principal fingerprint")
+		}
+	}
+	return nil
+}
+
 func DefaultEEBusConfig() EEBusConfig {
 	return EEBusConfig{
 		Interfaces:         []string{},
@@ -125,6 +185,7 @@ type Config struct {
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)
 	TransportConfig          TransportConfig
 	EEBusConfig              EEBusConfig
+	M2MGraphQL               M2MGraphQLConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

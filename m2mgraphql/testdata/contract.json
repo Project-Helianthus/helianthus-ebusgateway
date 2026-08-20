@@ -1,0 +1,27 @@
+{
+  "contractId": "PUBLIC_GRAPHQL_M2M_V1",
+  "canonicalContractId": "helianthus.canonical-pv/v1",
+  "route": "/graphql/m2m/v1",
+  "operationName": "M2MCurrentSnapshot",
+  "limits": {
+    "requestBytes": 16384,
+    "responseBytes": 1048576,
+    "jsonDepth": 64,
+    "queryDepth": 8,
+    "selectedFields": 256,
+    "facts": 256,
+    "projectionRows": 512,
+    "concurrencyPerPrincipal": 1,
+    "ratePerSecond": 1,
+    "rateBurst": 2
+  },
+  "errorCodes": [
+    "CONTRACT_INCOMPATIBLE",
+    "ASSET_FORBIDDEN",
+    "ASSET_NOT_FOUND",
+    "SOURCE_UNAVAILABLE",
+    "REQUEST_INVALID",
+    "QUERY_REJECTED",
+    "REQUEST_LIMIT_EXCEEDED"
+  ]
+}

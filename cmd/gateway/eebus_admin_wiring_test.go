@@ -352,3 +352,26 @@ func TestIssue846GatewayReadinessProjectsLifecycleAndConditionalProxy(t *testing
 		})
 	}
 }
+
+func TestIssue846StartupFailureReasonsUseClosedCanonicalMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		got  eebusadmin.EEBusDegradedReason
+		want eebusadmin.EEBusDegradedReason
+	}{
+		{name: "configuration", got: classifyEEBusConfigFailure(errors.New("enabled eeBUS configuration requires a state root")), want: eebusadmin.EEBusDegradedReasonConfigurationInvalid},
+		{name: "interface resolution", got: classifyEEBusConfigFailure(errors.New("resolve eeBUS interface addresses: unavailable")), want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "local identity", got: classifyEEBusFactoryFailure(errors.New("load local identity certificate")), want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
+		{name: "listener", got: classifyEEBusFactoryFailure(errors.New("listener bind failed")), want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "runtime factory", got: classifyEEBusFactoryFailure(errors.New("backend construction failed")), want: eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable},
+		{name: "admin boundary", got: eebusStartupFailureReason(markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable, errors.New("incomplete capability pair"))), want: eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable},
+		{name: "unknown", got: eebusStartupFailureReason(errors.New("future startup failure")), want: eebusadmin.EEBusDegradedReasonUnknownStartupFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.got != test.want {
+				t.Fatalf("reason=%s; want %s", test.got, test.want)
+			}
+		})
+	}
+}

@@ -13,12 +13,48 @@ type Principal string
 
 const PrincipalHostOperator Principal = "host_operator"
 
+type ProcessReadiness string
+
+const (
+	ProcessReadinessReady    ProcessReadiness = "READY"
+	ProcessReadinessNotReady ProcessReadiness = "NOT_READY"
+)
+
+type EEBusReadiness string
+
+const (
+	EEBusReadinessDisabled EEBusReadiness = "DISABLED"
+	EEBusReadinessStarting EEBusReadiness = "STARTING"
+	EEBusReadinessReady    EEBusReadiness = "READY"
+	EEBusReadinessDegraded EEBusReadiness = "DEGRADED"
+)
+
+type EEBusDegradedReason string
+
+const (
+	EEBusDegradedReasonConfigurationInvalid      EEBusDegradedReason = "CONFIGURATION_INVALID"
+	EEBusDegradedReasonLocalIdentityUnavailable  EEBusDegradedReason = "LOCAL_IDENTITY_UNAVAILABLE"
+	EEBusDegradedReasonListenerUnavailable       EEBusDegradedReason = "LISTENER_UNAVAILABLE"
+	EEBusDegradedReasonRuntimeFactoryUnavailable EEBusDegradedReason = "RUNTIME_FACTORY_UNAVAILABLE"
+	EEBusDegradedReasonAdminBoundaryUnavailable  EEBusDegradedReason = "ADMIN_BOUNDARY_UNAVAILABLE"
+	EEBusDegradedReasonUnknownStartupFailure     EEBusDegradedReason = "UNKNOWN_STARTUP_FAILURE"
+)
+
+type ReadinessV1 struct {
+	ProcessReadiness    ProcessReadiness    `json:"process_readiness"`
+	EEBusReadiness      EEBusReadiness      `json:"eebus_readiness"`
+	EEBusDegradedReason EEBusDegradedReason `json:"eebus_degraded_reason,omitempty"`
+}
+
+type ReadinessProvider func() ReadinessV1
+
 type Config struct {
-	Admin  eebusruntime.AdminV1
-	Raw    RawSnapshotProvider
-	Audit  func(AuditEvent)
-	Now    func() time.Time
-	Random io.Reader
+	Admin     eebusruntime.AdminV1
+	Raw       RawSnapshotProvider
+	Audit     func(AuditEvent)
+	Now       func() time.Time
+	Random    io.Reader
+	Readiness ReadinessProvider
 }
 
 // AuditEvent deliberately has no representation for operational identities,
@@ -47,17 +83,18 @@ type ownerEnvelope struct {
 }
 
 type ownerStatus struct {
-	Status          string    `json:"status"`
-	Window          string    `json:"pairing_window"`
-	WindowDeadline  time.Time `json:"pairing_window_deadline,omitempty"`
-	Register        string    `json:"register"`
-	Listener        string    `json:"listener"`
-	Discovery       string    `json:"discovery"`
-	TrustedCount    uint16    `json:"trusted_count"`
-	ConnectedCount  uint16    `json:"connected_count"`
-	DiscoveredCount uint16    `json:"discovered_count"`
-	CandidateCount  uint16    `json:"candidate_count"`
-	DegradedCode    string    `json:"degraded_code,omitempty"`
+	Readiness       ReadinessV1 `json:"readiness"`
+	Status          string      `json:"status"`
+	Window          string      `json:"pairing_window"`
+	WindowDeadline  time.Time   `json:"pairing_window_deadline,omitempty"`
+	Register        string      `json:"register"`
+	Listener        string      `json:"listener"`
+	Discovery       string      `json:"discovery"`
+	TrustedCount    uint16      `json:"trusted_count"`
+	ConnectedCount  uint16      `json:"connected_count"`
+	DiscoveredCount uint16      `json:"discovered_count"`
+	CandidateCount  uint16      `json:"candidate_count"`
+	DegradedCode    string      `json:"degraded_code,omitempty"`
 }
 
 type partnersData struct {

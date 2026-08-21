@@ -3487,7 +3487,15 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // rather than calling m.arb.requestStart directly, so both branches
 // of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
-	if m.connectionLossDelegated.Load() {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	releaseManagedGate := func() {
+		if managedGateHeld {
+			m.endManagedConnectionUse(true)
+			managedGateHeld = false
+		}
+	}
+	defer releaseManagedGate()
+	if !admitted || m.closing.Load() {
 		ch := make(chan startResult, 1)
 		ch <- startResult{granted: false, initiator: initiator, err: errNotConnected}
 		return ch
@@ -3579,6 +3587,10 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	idle := m.lastWireActivity.IsZero() ||
 		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
 	m.stateMu.Unlock()
+	// Release before the idle kick: tryGrantAndStart takes its own managed
+	// read admission. Keeping this R lock while a loss writer is queued would
+	// make the nested RLock self-deadlock under RWMutex writer preference.
+	releaseManagedGate()
 	if idle {
 		m.tryGrantAndStart()
 	}

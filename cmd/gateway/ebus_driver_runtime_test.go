@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,22 @@ type issue851ReadSignalingRaw struct {
 	readStarted chan struct{}
 	readOnce    sync.Once
 }
+
+type issue851CancelBeforeByteRaw struct {
+	cancel context.CancelFunc
+	value  byte
+}
+
+func (raw issue851CancelBeforeByteRaw) ReadByte() (byte, error) {
+	// Make generation withdrawal and the old byte ready in the same pump
+	// turn. A select-only fence can leak the byte; post-receive cancellation
+	// dominance must discard it deterministically.
+	raw.cancel()
+	return raw.value, nil
+}
+
+func (issue851CancelBeforeByteRaw) Write(data []byte) (int, error) { return len(data), nil }
+func (issue851CancelBeforeByteRaw) Close() error                   { return nil }
 
 func (raw *issue851ReadSignalingRaw) ReadByte() (byte, error) {
 	raw.readOnce.Do(func() { close(raw.readStarted) })
@@ -319,6 +336,40 @@ func TestIssue851EbusdActiveReadRetiresWithTransportLevelClose(t *testing.T) {
 				t.Fatal("transport-level close did not wake ebusd-tcp reader")
 			}
 		})
+	}
+}
+
+func TestIssue851CanceledGenerationDominatesConcurrentlyReadyOldByte(t *testing.T) {
+	for iteration := 0; iteration < 200; iteration++ {
+		generationCtx, cancelGeneration := context.WithCancel(context.Background())
+		closing := &atomic.Bool{}
+		endpoint := newManagedEBusEndpoint(
+			generationCtx,
+			issue851CancelBeforeByteRaw{cancel: cancelGeneration, value: 0x5a},
+			closing,
+		)
+		resultCh := make(chan issue851ReadResult, 1)
+		go func() {
+			value, _, err := endpoint.nextByte()
+			resultCh <- issue851ReadResult{value: value, err: err}
+		}()
+
+		select {
+		case result := <-resultCh:
+			if result.err == nil || result.value == 0x5a {
+				t.Fatalf("iteration %d returned retired-generation byte: %#v", iteration, result)
+			}
+			if !errors.Is(result.err, ebuserrors.ErrTransportClosed) {
+				t.Fatalf("iteration %d error = %v, want transport closed", iteration, result.err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d canceled read did not return", iteration)
+		}
+		select {
+		case <-endpoint.pumpDone:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d read pump did not retire", iteration)
+		}
 	}
 }
 
@@ -830,21 +881,29 @@ func TestIssue851AdminClassifierResolvesCurrentGenerationWithoutMetricsScrape(t 
 	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
 	stable := &ebusStableClassifier{invoker: directEBusSlotInvoker{runtime: runtime}}
 	v8AdminEventsCurrentClassifier.Store(nil)
-	v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{classifierFn: stable.V8Classifier})
+	v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{withClassifier: stable.WithV8Classifier})
+	currentClassifier := func() *v8classifier.Classifier {
+		var current *v8classifier.Classifier
+		withCurrentV8AdminClassifier(func(classifier *v8classifier.Classifier) { current = classifier })
+		return current
+	}
 	if _, err := runtime.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if got := currentV8AdminClassifier(); got != first {
+	if got := currentClassifier(); got != first {
 		t.Fatalf("generation 1 admin classifier = %p, want %p", got, first)
 	}
 	if _, err := runtime.Replace(context.Background()); err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
-	if got := currentV8AdminClassifier(); got != second {
+	if got := currentClassifier(); got != second {
 		t.Fatalf("generation 2 admin classifier = %p, want %p", got, second)
 	}
 	if err := runtime.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
+	}
+	if got := currentClassifier(); got != nil {
+		t.Fatalf("stopped admin classifier = %p, want nil", got)
 	}
 }
 

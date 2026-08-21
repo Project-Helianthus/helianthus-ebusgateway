@@ -755,16 +755,20 @@ func (classifier *ebusStableClassifier) ActiveTxnSnapshot() (snapshot adaptermux
 	return snapshot
 }
 
-func (classifier *ebusStableClassifier) V8Classifier() (result *v8classifier.Classifier) {
+func (classifier *ebusStableClassifier) WithV8Classifier(callback func(*v8classifier.Classifier)) {
+	if callback == nil {
+		return
+	}
 	classifier.withClassifier(func(current activeTxnClassifier) {
 		provider, ok := current.(interface {
 			V8Classifier() *v8classifier.Classifier
 		})
 		if ok {
-			result = provider.V8Classifier()
+			if v8 := provider.V8Classifier(); v8 != nil {
+				callback(v8)
+			}
 		}
 	})
-	return result
 }
 
 type managedEBusReadResult struct {
@@ -909,6 +913,15 @@ func (endpoint *managedEBusEndpoint) pump() {
 				continue
 			}
 			event, err := readManagedEBusEvent(endpoint.raw)
+			// Generation withdrawal dominates a final raw result. These explicit
+			// checks avoid relying on select ordering when cancellation and the
+			// old connection's last byte become ready together.
+			if endpoint.ctx.Err() != nil {
+				return
+			}
+			if request.ctx.Err() != nil {
+				continue
+			}
 			select {
 			case request.result <- managedEBusReadResult{event: event, err: err}:
 			case <-request.ctx.Done():
@@ -1005,14 +1018,30 @@ func (endpoint *managedEBusEndpoint) readContext(ctx context.Context) managedEBu
 		return managedEBusReadResult{err: ctx.Err()}
 	case endpoint.requests <- request:
 	}
+	if canceled, ok := endpoint.cancellationResult(ctx); ok {
+		return canceled
+	}
 	select {
 	case <-endpoint.ctx.Done():
 		return managedEBusReadResult{err: ebuserrors.ErrTransportClosed}
 	case <-ctx.Done():
 		return managedEBusReadResult{err: ctx.Err()}
 	case result := <-request.result:
+		if canceled, ok := endpoint.cancellationResult(ctx); ok {
+			return canceled
+		}
 		return result
 	}
+}
+
+func (endpoint *managedEBusEndpoint) cancellationResult(ctx context.Context) (managedEBusReadResult, bool) {
+	if endpoint.ctx.Err() != nil {
+		return managedEBusReadResult{err: ebuserrors.ErrTransportClosed}, true
+	}
+	if ctx.Err() != nil {
+		return managedEBusReadResult{err: ctx.Err()}, true
+	}
+	return managedEBusReadResult{}, false
 }
 
 func (generation *managedEBusGeneration) Write(payload []byte) (int, error) {

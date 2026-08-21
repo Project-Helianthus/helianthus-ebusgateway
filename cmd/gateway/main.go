@@ -98,25 +98,29 @@ var (
 // non-nil after a successful ebusgateway.New(), and the wiring site
 // guards on it.
 type v8RolloutExpvarSource struct {
-	bus          *protocol.Bus
-	classifierFn func() *v8classifier.Classifier
+	bus               *protocol.Bus
+	shadowDropCountFn func() uint64
 }
 
 type v8AdminClassifierProvider struct {
-	classifierFn func() *v8classifier.Classifier
+	withClassifier func(func(*v8classifier.Classifier))
 }
 
-func currentV8AdminClassifier() *v8classifier.Classifier {
+func withCurrentV8AdminClassifier(callback func(*v8classifier.Classifier)) {
+	if callback == nil {
+		return
+	}
 	// Direct pointer is retained as a test/backward-compatible injection seam.
 	// Production clears it and installs the generation-aware provider below.
 	if classifier := v8AdminEventsCurrentClassifier.Load(); classifier != nil {
-		return classifier
+		callback(classifier)
+		return
 	}
 	provider := v8AdminEventsCurrentProvider.Load()
-	if provider == nil || provider.classifierFn == nil {
-		return nil
+	if provider == nil || provider.withClassifier == nil {
+		return
 	}
-	return provider.classifierFn()
+	provider.withClassifier(callback)
 }
 
 type runtimeWatchObserver struct {
@@ -323,7 +327,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	// Warn if --proxy-listen is set but adapter-direct transport was not
 	// activated (the proxy endpoint requires the adapter multiplexer).
-	if cfg.ProxyListenAddr != "" && cfg.Transport == nil {
+	if cfg.ProxyListenAddr != "" && !adapterDirectProxyEnabled(cfg.TransportConfig) {
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
@@ -434,20 +438,26 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	// internal/adaptermux/v8classifier/classifier.go:848).
 	if busObservability != nil && gateway.Bus != nil {
 		bus := gateway.Bus
-		classifierFn := func() *v8classifier.Classifier { return nil }
+		withClassifier := func(func(*v8classifier.Classifier)) {}
 		if provider, ok := adapterClassifier.(interface {
-			V8Classifier() *v8classifier.Classifier
+			WithV8Classifier(func(*v8classifier.Classifier))
 		}); ok {
-			classifierFn = provider.V8Classifier
+			withClassifier = provider.WithV8Classifier
+		}
+		shadowDropCountFn := func() uint64 {
+			var total uint64
+			withClassifier(func(classifier *v8classifier.Classifier) {
+				total = classifier.ShadowWouldHaveDroppedTotal()
+			})
+			return total
 		}
 		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
-			classifier := classifierFn()
 			return ebusgateway.V8RolloutSnapshot{
 				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
 				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
 				PayloadAaAutoSynRecovered:      bus.PayloadAaAutoSynRecovered(),
 				PayloadAaAutoSynDrainExhausted: bus.PayloadAaAutoSynDrainExhausted(),
-				V8ShadowWouldHaveDroppedTotal:  classifier.ShadowWouldHaveDroppedTotal(),
+				V8ShadowWouldHaveDroppedTotal:  shadowDropCountFn(),
 			}
 		})
 
@@ -468,20 +478,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		// immediately starts reading the new bus — no surface
 		// inconsistency between /metrics and /debug/vars.
 		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
-			bus:          bus,
-			classifierFn: classifierFn,
+			bus:               bus,
+			shadowDropCountFn: shadowDropCountFn,
 		})
-		// F-NEW-26: pin the current classifier for the
-		// /debug/v8/admin-events HTTP handler too. Same atomic-
-		// pointer pattern as v8RolloutExpvarCurrent — handler
-		// registered ONCE per process at startHTTPServer,
-		// dereferences this pointer at request time. classifier
-		// may be nil (non-adapter-direct transports); the
-		// handler's nil-check returns an empty event list in
-		// that case so the surface stays available across
-		// transports for tooling that probes it unconditionally.
+		// F-NEW-26: install the current-generation classifier callback for
+		// /debug/v8/admin-events. Production operations execute inside stable
+		// driver admission, so a classifier pointer cannot escape across
+		// replacement. A missing classifier (non-adapter-direct transport)
+		// leaves the response empty while preserving the HTTP contract.
 		v8AdminEventsCurrentClassifier.Store(nil)
-		v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{classifierFn: classifierFn})
+		v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{withClassifier: withClassifier})
 		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
 				expvar.Func(func() any {
@@ -514,14 +520,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
 				expvar.Func(func() any {
 					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						// classifier may be nil on non-adapter-direct
-						// transports — the method has nil-receiver
-						// handling and returns 0.
-						classifier := src.classifierFn
-						if classifier == nil {
+						// Non-adapter-direct transports install no counter callback.
+						if src.shadowDropCountFn == nil {
 							return uint64(0)
 						}
-						return classifier().ShadowWouldHaveDroppedTotal()
+						return src.shadowDropCountFn()
 					}
 					return uint64(0)
 				}))
@@ -1830,6 +1833,10 @@ func adapterDirectMuxProtocol(protocol ebusgateway.TransportProtocol) string {
 	return "enh"
 }
 
+func adapterDirectProxyEnabled(config ebusgateway.TransportConfig) bool {
+	return ebusgateway.EBusDriverTransportProtocol(config) == ebusgateway.TransportAdapterDirect
+}
+
 // v8AdminEventsResponse is the JSON envelope returned by
 // /debug/v8/admin-events. Stable wire format — operator tooling
 // (dashboards, classifier-tuning workflows) parse this.
@@ -1928,8 +1935,7 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 		Events: []v8AdminEventJSON{},
 	}
 
-	classifier := currentV8AdminClassifier()
-	if classifier != nil {
+	withCurrentV8AdminClassifier(func(classifier *v8classifier.Classifier) {
 		var events []v8classifier.ClassifierAdminEvent
 		var dropped uint64
 		if peekOnly {
@@ -1955,7 +1961,7 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	}
+	})
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if peekOnly {

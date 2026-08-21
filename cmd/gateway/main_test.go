@@ -1492,6 +1492,27 @@ func TestWireAdapterDirect_ENSScheme_SelectsENS(t *testing.T) {
 	}
 }
 
+func TestAdapterDirectProxyAvailabilityUsesCanonicalEndpointProtocol(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  ebusgateway.TransportConfig
+		enabled bool
+	}{
+		{name: "explicit adapter direct", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Address: "adapter.local:9999"}, enabled: true},
+		{name: "adapter direct URI", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter-direct://adapter.local:9999"}, enabled: true},
+		{name: "adapter direct ENS URI", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter-direct-ens://adapter.local:9999"}, enabled: true},
+		{name: "ordinary ENH", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter.local:9999"}},
+		{name: "TCP plain", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportTCPPlain, Address: "adapter.local:9999"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := adapterDirectProxyEnabled(test.config); got != test.enabled {
+				t.Fatalf("adapterDirectProxyEnabled(%#v) = %v, want %v", test.config, got, test.enabled)
+			}
+		})
+	}
+}
+
 func TestWireAdapterDirect_ProxyListener_ReturnedAsCloser(t *testing.T) {
 	// Issue 3: when ProxyListenAddr is set, the returned closer should
 	// be non-nil (the proxy listener's Close). We cannot fully test

@@ -322,6 +322,83 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 		}
 	})
 
+	t.Run("queued start is drained before BACKOFF and kick does not deadlock", func(t *testing.T) {
+		upstream := newManagedFenceTransport()
+		callback := make(chan struct{})
+		mux, cancel := newMux(t, upstream, func() { close(callback) })
+		defer cancel()
+
+		// Hold stateMu so requestStartForSession acquires the managed R fence
+		// and pauses immediately before the queue insertion.
+		mux.stateMu.Lock()
+		requestReturned := make(chan (<-chan startResult), 1)
+		go func() { requestReturned <- mux.requestStartForSession(51, 0x33) }()
+		deadline := time.Now().Add(time.Second)
+		for {
+			if !mux.connectionUseMu.TryLock() {
+				break // the START admission owns R
+			}
+			mux.connectionUseMu.Unlock()
+			if time.Now().After(deadline) {
+				mux.stateMu.Unlock()
+				t.Fatal("START admission did not acquire managed read fence")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		reconnectDone := make(chan error, 1)
+		go func() {
+			delegated, err := mux.reconnect()
+			if !delegated && err == nil {
+				err = errors.New("reconnect did not delegate")
+			}
+			reconnectDone <- err
+		}()
+		select {
+		case <-upstream.closed:
+		case <-time.After(time.Second):
+			mux.stateMu.Unlock()
+			t.Fatal("managed loss did not detach/close upstream")
+		}
+
+		// The request now inserts while still holding R. The queued loss writer
+		// must acquire W next, fail that request, and publish BACKOFF before the
+		// post-enqueue idle kick can acquire a fresh R admission.
+		mux.stateMu.Unlock()
+		select {
+		case <-callback:
+		case <-time.After(time.Second):
+			t.Fatal("BACKOFF did not publish after draining queued START")
+		}
+		if err := <-reconnectDone; err != nil {
+			t.Fatalf("reconnect() error = %v", err)
+		}
+		var resultCh <-chan startResult
+		select {
+		case resultCh = <-requestReturned:
+		case <-time.After(time.Second):
+			t.Fatal("requestStartForSession deadlocked in nested managed admission")
+		}
+		select {
+		case result := <-resultCh:
+			if result.err == nil {
+				t.Fatal("pre-fence START survived managed BACKOFF")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("pre-fence START remained unresolved after failAllPending")
+		}
+		mux.stateMu.Lock()
+		pendingStart := mux.pendingStart
+		mux.stateMu.Unlock()
+		mux.arb.mu.Lock()
+		pendingGateway := mux.arb.pendingGateway
+		pendingExternal := len(mux.arb.pendingExternal)
+		mux.arb.mu.Unlock()
+		if pendingStart != nil || pendingGateway != nil || pendingExternal != 0 {
+			t.Fatalf("pending START residue after BACKOFF: active=%v gateway=%v external=%d", pendingStart != nil, pendingGateway != nil, pendingExternal)
+		}
+	})
+
 	t.Run("in-flight AddSession completes before BACKOFF and later admission rejects", func(t *testing.T) {
 		upstream := newManagedFenceTransport()
 		addID := make(chan uint64, 1)

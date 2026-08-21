@@ -323,6 +323,14 @@ func (manager *Manager) start(ctx context.Context, id string, async bool) error 
 		driver.opMu.Unlock()
 		return nil
 	}
+	// Repeating desired RUNNING intent is also idempotent while the current
+	// generation is DEGRADED. Degradation deliberately withdraws a capability
+	// subset; only an explicit recovery/replacement operation may restore it.
+	if driver.desired == DesiredRunning && driver.observed == ObservedDegraded {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return nil
+	}
 	if driver.desired == DesiredRunning && driver.observed == ObservedStarting {
 		driver.mu.Unlock()
 		driver.opMu.Unlock()

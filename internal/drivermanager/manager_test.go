@@ -438,6 +438,50 @@ func TestManagerRejectsStaleGenerationHealthCallbackAfterReplace(t *testing.T) {
 	}
 }
 
+func TestManagerSameDesiredStartPreservesDegradedGenerationByteForByte(t *testing.T) {
+	runtime := &scriptedRuntime{}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityDiscovery, CapabilityRead, CapabilityWrite},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("initial Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if accepted := manager.ReportDegraded(
+		"ebus.primary",
+		running.Generation,
+		[]Capability{CapabilityRead},
+		Reason{Code: ReasonCapabilityDegraded},
+	); !accepted {
+		t.Fatal("ReportDegraded() rejected current generation")
+	}
+	before := requireObservedState(t, manager, "ebus.primary", ObservedDegraded, time.Second)
+	startsBefore, stopsBefore := runtime.calls()
+
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("same-desired Start() error = %v", err)
+	}
+	after, ok := manager.Snapshot("ebus.primary")
+	if !ok {
+		t.Fatal("Snapshot() missing driver")
+	}
+	startsAfter, stopsAfter := runtime.calls()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("same-desired Start changed degraded snapshot\nbefore: %#v\nafter:  %#v", before, after)
+	}
+	if startsAfter != startsBefore || stopsAfter != stopsBefore {
+		t.Fatalf("same-desired Start runtime calls = start %d->%d stop %d->%d", startsBefore, startsAfter, stopsBefore, stopsAfter)
+	}
+}
+
 func TestManagerSafetyQuarantineMirrorsRuntimeAndBlocksRecovery(t *testing.T) {
 	runtime := &scriptedRuntime{stopResults: []error{ErrSafetyQuarantined}}
 	manager, err := New(Config{Drivers: []DriverConfig{{

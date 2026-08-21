@@ -549,7 +549,7 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		}
 		server.emitMutationAuditWithReason("connect_selection", status, capture.body.Bytes(), capture.disposition, capture.invoked, capture.auditReason)
 		if recovered != nil {
-			panic(recovered)
+			panic(http.ErrAbortHandler)
 		}
 	}()
 	w = capture
@@ -654,7 +654,7 @@ func (server *server) callConnectReserved(ctx context.Context, key string, reser
 				expiresAt: server.now().Add(2 * time.Minute),
 			}
 			server.finishConnectReservation(key, reservation, &tombstone, "")
-			panic(recovered)
+			panic(http.ErrAbortHandler)
 		}
 	}()
 	return server.admin.Connect(ctx, request)

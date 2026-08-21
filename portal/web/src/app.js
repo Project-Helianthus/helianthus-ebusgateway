@@ -2496,8 +2496,8 @@ class PortalShell extends HTMLElement {
       const state = view === "trusted" ? '<p class="eebus-partner-state">Disconnected — Reconnect required</p>' : "";
       return `<article class="eebus-partner">${state}<pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
     }).join("");
-    const connect = this._eebusSelection
-      ? `<div class="snapshot-controls"><button class="button" data-eebus-action="connect">Connect selected partner</button>${this._eebusPINRequested ? `<input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="8–16 ASCII hexadecimal PIN" aria-label="eeBUS pairing PIN" />` : ""}</div>`
+	const connect = this._eebusSelection
+	  ? `<div class="snapshot-controls"><button class="button" data-eebus-action="connect">Connect selected partner</button><input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="Optional 8–16 ASCII hexadecimal PIN" aria-label="Optional eeBUS pairing PIN" /></div>`
       : "";
     container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
   }
@@ -2667,7 +2667,6 @@ class PortalShell extends HTMLElement {
 	  pin_protocol_error: "The PIN exchange ended with a protocol error. Re-enter it after selecting the partner again.",
 	};
 	const outcome = action.outcome || "";
-	if (Object.hasOwn(messages, outcome)) this._eebusPINRequested = outcome === "pin_required" || outcome === "pin_optional";
 	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
 	if (status) status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
 	if (action.state === "terminal") {

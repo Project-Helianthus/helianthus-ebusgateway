@@ -46,8 +46,9 @@ type server struct {
 	mutationMu      sync.Mutex
 	mutationReplays map[string]httpMutationReplay
 
-	connectMu      sync.Mutex
-	connectReplays map[string]connectReplay
+	connectMu       sync.Mutex
+	connectReplays  map[string]connectReplay
+	connectInFlight map[string]*connectInFlight
 	// connectReservationHook is test-only synchronization around the
 	// process-local idempotency reservation boundary.
 	connectReservationHook func()
@@ -92,6 +93,13 @@ type connectReplay struct {
 	result    connectResultData
 	revision  uint64
 	expiresAt time.Time
+}
+
+type connectInFlight struct {
+	binding [32]byte
+	done    chan struct{}
+	replay  *connectReplay
+	failure eebusruntime.AdminErrorCodeV1
 }
 
 type mutationResponseCapture struct {
@@ -149,7 +157,7 @@ func NewServer(config Config) (http.Handler, error) {
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
 		spineSnapshots:  make(map[string]*spineSnapshot),
 		mutationReplays: make(map[string]httpMutationReplay),
-		connectReplays:  make(map[string]connectReplay), pinBindingKey: pinBindingKey,
+		connectReplays:  make(map[string]connectReplay), connectInFlight: make(map[string]*connectInFlight), pinBindingKey: pinBindingKey,
 	}, nil
 }
 
@@ -513,32 +521,57 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	binding := server.connectBinding(id, body.StateRevision, pin)
-	if replay, found, conflict := server.lookupConnectReplay(idempotencyKey, binding); conflict {
+	reservation, leader, conflict := server.reserveConnect(idempotencyKey, binding)
+	if conflict {
 		server.writeError(w, http.StatusConflict, "idempotency_conflict")
 		return
-	} else if found {
-		replay.result.Replayed = true
-		server.writeConnectResult(w, replay.revision, replay.result)
-		return
 	}
-	record, ok := server.resolveCapability(id, capabilitySelection, body.StateRevision)
-	if !ok {
-		server.writeError(w, http.StatusConflict, "observation_stale")
+	if !leader {
+		if reservation.done == nil && reservation.replay != nil {
+			replay := *reservation.replay
+			replay.result.Replayed = true
+			server.writeConnectResult(w, replay.revision, replay.result)
+			return
+		}
+		if reservation.done == nil {
+			server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
+			return
+		}
+		<-reservation.done
+		if reservation.replay != nil {
+			replay := *reservation.replay
+			replay.result.Replayed = true
+			server.writeConnectResult(w, replay.revision, replay.result)
+			return
+		}
+		if reservation.failure != "" {
+			server.writeAdminFailure(w, &eebusruntime.AdminErrorV1{Code: reservation.failure})
+			return
+		}
+		server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 		return
 	}
 	if server.connectReservationHook != nil {
 		server.connectReservationHook()
 	}
+	record, ok := server.resolveCapability(id, capabilitySelection, body.StateRevision)
+	if !ok {
+		server.finishConnectReservation(idempotencyKey, reservation, nil, eebusruntime.AdminErrorCodeV1ObservationStale)
+		server.writeError(w, http.StatusConflict, "observation_stale")
+		return
+	}
 	server.deleteCapability(id)
 	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})
 	if failure != nil {
+		server.finishConnectReservation(idempotencyKey, reservation, nil, failure.Code)
 		server.invalidateCapabilities()
 		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
 	data := connectResultData{ActionID: result.ActionID, Outcome: string(result.Outcome), Replayed: result.Replayed}
-	server.storeConnectReplay(idempotencyKey, binding, result.StateRevision, data)
+	replay := connectReplay{binding: binding, revision: result.StateRevision, result: data, expiresAt: server.now().Add(2 * time.Minute)}
+	server.finishConnectReservation(idempotencyKey, reservation, &replay, "")
 	server.writeConnectResult(w, result.StateRevision, data)
 }
 
@@ -572,18 +605,31 @@ func decodeConnectMutation(request *http.Request) (connectMutationBody, []byte, 
 	if body.PIN == nil {
 		return body, nil, true
 	}
-	var value string
-	if json.Unmarshal(body.PIN, &value) != nil {
-		clearBytes(body.PIN)
-		return connectMutationBody{}, nil, false
-	}
-	pin := []byte(value)
+	pin, valid := decodeConnectPIN(body.PIN)
 	clearBytes(body.PIN)
-	if !validConnectPIN(pin) {
+	if !valid || !validConnectPIN(pin) {
 		clearBytes(pin)
 		return connectMutationBody{}, nil, false
 	}
 	return body, pin, true
+}
+
+// decodeConnectPIN accepts only a literal ASCII JSON string. Escaped forms
+// are rejected rather than normalized, so every accepted PIN byte has one
+// exact mutable owner from decode through the admin boundary.
+func decodeConnectPIN(raw []byte) ([]byte, bool) {
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return nil, false
+	}
+	pin := make([]byte, len(raw)-2)
+	for index, value := range raw[1 : len(raw)-1] {
+		if value < 0x20 || value == '\\' || value == '"' {
+			clearBytes(pin)
+			return nil, false
+		}
+		pin[index] = value
+	}
+	return pin, true
 }
 
 func validConnectPIN(value []byte) bool {
@@ -621,7 +667,7 @@ func (server *server) connectBinding(selectionID string, revision uint64, pin []
 	return result
 }
 
-func (server *server) lookupConnectReplay(key string, binding [32]byte) (connectReplay, bool, bool) {
+func (server *server) reserveConnect(key string, binding [32]byte) (*connectInFlight, bool, bool) {
 	server.connectMu.Lock()
 	defer server.connectMu.Unlock()
 	for replayKey, replay := range server.connectReplays {
@@ -630,19 +676,38 @@ func (server *server) lookupConnectReplay(key string, binding [32]byte) (connect
 		}
 	}
 	replay, ok := server.connectReplays[key]
-	if !ok {
-		return connectReplay{}, false, false
+	if ok {
+		if !hmac.Equal(replay.binding[:], binding[:]) {
+			return nil, false, true
+		}
+		return &connectInFlight{replay: &replay}, false, false
 	}
-	if !hmac.Equal(replay.binding[:], binding[:]) {
-		return connectReplay{}, false, true
+	if current := server.connectInFlight[key]; current != nil {
+		if !hmac.Equal(current.binding[:], binding[:]) {
+			return nil, false, true
+		}
+		return current, false, false
 	}
-	return replay, true, false
+	reservation := &connectInFlight{binding: binding, done: make(chan struct{})}
+	server.connectInFlight[key] = reservation
+	return reservation, true, false
 }
 
-func (server *server) storeConnectReplay(key string, binding [32]byte, revision uint64, result connectResultData) {
+func (server *server) finishConnectReservation(key string, reservation *connectInFlight, replay *connectReplay, failure eebusruntime.AdminErrorCodeV1) {
 	server.connectMu.Lock()
 	defer server.connectMu.Unlock()
-	server.connectReplays[key] = connectReplay{binding: binding, revision: revision, result: result, expiresAt: server.now().Add(2 * time.Minute)}
+	if reservation == nil || server.connectInFlight[key] != reservation {
+		return
+	}
+	if replay != nil {
+		stored := *replay
+		server.connectReplays[key] = stored
+		reservation.replay = &stored
+	} else {
+		reservation.failure = failure
+	}
+	delete(server.connectInFlight, key)
+	close(reservation.done)
 }
 
 func (server *server) writeConnectResult(w http.ResponseWriter, revision uint64, result connectResultData) {

@@ -381,6 +381,11 @@ func TestIssue848ConcurrentIdenticalConnectReservesOneBackendAction(t *testing.T
 	}
 	go launch()
 	time.Sleep(100 * time.Millisecond)
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, issue817Mutation(http.MethodPost, path, "connect-848-race", `{"state_revision":51,"pin":"a1b2c3d4"}`))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("changed in-flight PIN status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
 	close(releaseReservation)
 	close(admin.connectRelease)
 	first, second := <-responses, <-responses

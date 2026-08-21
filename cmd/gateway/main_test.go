@@ -882,6 +882,9 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	// DriverManager owns both active and passive generations when broadcast
+	// observe-first is enabled; keep this injected runtime fully in-memory.
+	cfg.PassiveTransport = transport.NewLoopback()
 	cfg.BroadcastListen = true
 	cfg.ScanOnStart = true
 
@@ -1129,6 +1132,9 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	// DriverManager owns both active and passive generations when broadcast
+	// observe-first is enabled; keep this injected runtime fully in-memory.
+	cfg.PassiveTransport = transport.NewLoopback()
 	cfg.BroadcastListen = true
 	cfg.ScanOnStart = true
 

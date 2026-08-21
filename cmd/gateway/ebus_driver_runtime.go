@@ -64,6 +64,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	reporter := func(correlation drivermanager.Correlation, rawErr error) {
 		manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
 	}
+	runtime.reporter = reporter
 	controller := &ebusDriverController{
 		manager: manager,
 		active:  newManagedEBusStableTransport(manager, protocol, reporter),
@@ -143,7 +144,8 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	adapterCtx, adapterCancel := context.WithCancel(context.Background())
 	stopForward := context.AfterFunc(factoryCtx, adapterCancel)
 	generationCfg := cfg
-	closer, classifier, err := wireAdapterDirect(adapterCtx, &generationCfg)
+	health := &ebusGenerationHealth{}
+	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLost)
 	if err != nil {
 		stopForward()
 		adapterCancel()
@@ -159,6 +161,9 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 		return closer()
 	}
 	managed := newManagedEBusGenerationParts(factoryCtx, generationCfg.Transport, generationCfg.PassiveTransport, classifier, closeFn)
+	if generation, ok := managed.Transport.(*managedEBusGeneration); ok {
+		generation.health = health
+	}
 	if !stopForward() || factoryCtx.Err() != nil {
 		if err := factoryCtx.Err(); err != nil {
 			return managed, err
@@ -202,7 +207,8 @@ func (controller *ebusDriverController) Snapshot() drivermanager.Snapshot {
 }
 
 type ebusDriverRuntime struct {
-	runtime *transport.DriverRuntime
+	runtime  *transport.DriverRuntime
+	reporter ebusFailureReporter
 }
 
 func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
@@ -244,6 +250,31 @@ func (runtime *ebusDriverRuntime) Revision() uint64 {
 
 func (runtime *ebusDriverRuntime) SafetyQuarantined() bool {
 	return runtime != nil && runtime.runtime != nil && runtime.runtime.SafetyQuarantined()
+}
+
+// BindCorrelation attaches asynchronous generation health only after
+// DriverManager has published RUNNING with a stable operation-zero
+// correlation. If loss raced construction, the generation health object
+// replays it exactly once here.
+func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Correlation) {
+	if runtime == nil || runtime.runtime == nil || runtime.reporter == nil || correlation.Generation == 0 {
+		return
+	}
+	lease, err := runtime.runtime.Admit(context.Background())
+	if err != nil {
+		return
+	}
+	defer func() { _ = lease.Release() }()
+	if lease.Generation() != correlation.Generation {
+		return
+	}
+	_ = lease.Invoke(func(raw transport.RawTransport) error {
+		generation, ok := raw.(*managedEBusGeneration)
+		if ok {
+			generation.bindFailureReporter(correlation, runtime.reporter)
+		}
+		return nil
+	})
 }
 
 func (runtime *ebusDriverRuntime) Admit(ctx context.Context) (*drivermanager.Admission, error) {
@@ -757,6 +788,50 @@ type managedEBusEndpoint struct {
 	closing  *atomic.Bool
 }
 
+// ebusGenerationHealth bridges adapter-owned asynchronous connection loss to
+// the manager's exact stable generation. Loss may race construction, so it is
+// retained until RUNNING correlation is bound. Each generation reports at most
+// once; ordinary read timeouts never call connectionLost.
+type ebusGenerationHealth struct {
+	mu          sync.Mutex
+	lost        bool
+	reported    bool
+	correlation drivermanager.Correlation
+	reporter    ebusFailureReporter
+}
+
+func (health *ebusGenerationHealth) connectionLost() {
+	health.mu.Lock()
+	health.lost = true
+	reporter, correlation := health.pendingReportLocked()
+	health.mu.Unlock()
+	if reporter != nil {
+		reporter(correlation, ebuserrors.ErrAdapterReset)
+	}
+}
+
+func (health *ebusGenerationHealth) bind(correlation drivermanager.Correlation, reporter ebusFailureReporter) {
+	if health == nil || reporter == nil || correlation.Generation == 0 {
+		return
+	}
+	health.mu.Lock()
+	health.correlation = correlation
+	health.reporter = reporter
+	report, reportCorrelation := health.pendingReportLocked()
+	health.mu.Unlock()
+	if report != nil {
+		report(reportCorrelation, ebuserrors.ErrAdapterReset)
+	}
+}
+
+func (health *ebusGenerationHealth) pendingReportLocked() (ebusFailureReporter, drivermanager.Correlation) {
+	if !health.lost || health.reported || health.reporter == nil || health.correlation.Generation == 0 {
+		return nil, drivermanager.Correlation{}
+	}
+	health.reported = true
+	return health.reporter, health.correlation
+}
+
 // managedEBusGeneration keeps the blocking raw reader adapter-owned. Stable
 // provider callbacks block only on results and return as soon as generation
 // context is canceled, allowing DriverRuntime to drain before CloseRequest.
@@ -765,11 +840,18 @@ type managedEBusGeneration struct {
 	passive    *managedEBusEndpoint
 	classifier activeTxnClassifier
 	closeFn    func() error
+	health     *ebusGenerationHealth
 
 	closeRequest chan struct{}
 	closed       chan struct{}
 	closing      atomic.Bool
 	closeOnce    sync.Once
+}
+
+func (generation *managedEBusGeneration) bindFailureReporter(correlation drivermanager.Correlation, reporter ebusFailureReporter) {
+	if generation != nil && generation.health != nil {
+		generation.health.bind(correlation, reporter)
+	}
 }
 
 func newManagedEBusGeneration(ctx context.Context, raw transport.RawTransport, closeFn func() error) *transport.ManagedRawTransport {

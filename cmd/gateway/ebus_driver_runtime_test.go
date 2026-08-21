@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +40,17 @@ type issue851TerminalPassiveRaw struct {
 	err       error
 	closed    chan struct{}
 	closeOnce sync.Once
+}
+
+type issue851ReadSignalingRaw struct {
+	transport.RawTransport
+	readStarted chan struct{}
+	readOnce    sync.Once
+}
+
+func (raw *issue851ReadSignalingRaw) ReadByte() (byte, error) {
+	raw.readOnce.Do(func() { close(raw.readStarted) })
+	return raw.RawTransport.ReadByte()
 }
 
 func newIssue851TerminalPassiveRaw(err error) *issue851TerminalPassiveRaw {
@@ -222,6 +234,91 @@ func TestIssue851ManagedReadLoopDrainsBeforeCloseAndReplaceFencesOldGeneration(t
 	}
 	if err := runtime.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop generation 2: %v", err)
+	}
+}
+
+func TestIssue851EbusdActiveReadRetiresWithTransportLevelClose(t *testing.T) {
+	for _, action := range []string{"stop", "replace"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.BroadcastListen = false
+			cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+			cfg.TransportConfig.Network = "tcp"
+			cfg.TransportConfig.Address = "127.0.0.1:8888"
+			var mu sync.Mutex
+			var servers []net.Conn
+			var raws []*issue851ReadSignalingRaw
+			cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+				client, server := net.Pipe()
+				mu.Lock()
+				servers = append(servers, server)
+				mu.Unlock()
+				return client, nil
+			}
+			t.Cleanup(func() {
+				mu.Lock()
+				defer mu.Unlock()
+				for _, server := range servers {
+					_ = server.Close()
+				}
+			})
+			factory := func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+				active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, cfg)
+				if err != nil {
+					return nil, err
+				}
+				raw := &issue851ReadSignalingRaw{RawTransport: active, readStarted: make(chan struct{})}
+				mu.Lock()
+				raws = append(raws, raw)
+				mu.Unlock()
+				return newManagedEBusGeneration(ctx, raw, activeClose), nil
+			}
+			runtime := transport.NewDriverRuntime(factory, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+			stable := newEBusStableTransport(runtime, ebusgateway.TransportEbusdTCP, nil)
+			if _, err := runtime.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			mu.Lock()
+			first := raws[0]
+			mu.Unlock()
+			readDone := make(chan error, 1)
+			go func() {
+				_, err := stable.ReadByte()
+				readDone <- err
+			}()
+			select {
+			case <-first.readStarted:
+			case <-time.After(time.Second):
+				t.Fatal("ebusd-tcp read did not enter the transport-local wait")
+			}
+
+			switch action {
+			case "stop":
+				if err := runtime.Stop(context.Background()); err != nil {
+					t.Fatalf("Stop() error = %v", err)
+				}
+			case "replace":
+				if generation, err := runtime.Replace(context.Background()); err != nil {
+					t.Fatalf("Replace() error = %v", err)
+				} else if generation != 2 {
+					t.Fatalf("Replace() generation = %d, want 2", generation)
+				}
+				if err := runtime.Stop(context.Background()); err != nil {
+					t.Fatalf("Stop replacement error = %v", err)
+				}
+			}
+			if runtime.SafetyQuarantined() {
+				t.Fatal("ordinary ebusd-tcp retirement entered safety quarantine")
+			}
+			select {
+			case err := <-readDone:
+				if !errors.Is(err, ebuserrors.ErrTransportClosed) && !errors.Is(err, context.Canceled) {
+					t.Fatalf("retired ebusd-tcp read error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("transport-level close did not wake ebusd-tcp reader")
+			}
+		})
 	}
 }
 
@@ -563,6 +660,99 @@ func TestIssue851PassiveDisconnectReportsFailureAndReplacesGeneration(t *testing
 	}
 }
 
+func TestIssue851AdapterDirectConnectionLossWithdrawsCapabilitiesAndRecoversOnce(t *testing.T) {
+	var mu sync.Mutex
+	var healthByGeneration []*ebusGenerationHealth
+	var rawByGeneration []*issue851TerminalPassiveRaw
+	factoryCalls := 0
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		health := &ebusGenerationHealth{}
+		raw := newIssue851TerminalPassiveRaw(ebuserrors.ErrTimeout)
+		managed := newManagedEBusGeneration(ctx, raw, raw.Close)
+		managed.Transport.(*managedEBusGeneration).health = health
+		mu.Lock()
+		factoryCalls++
+		healthByGeneration = append(healthByGeneration, health)
+		rawByGeneration = append(rawByGeneration, raw)
+		mu.Unlock()
+		return managed, nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID:           primaryEBusDriverID,
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+		ClassifyError: func(error) drivermanager.Failure {
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: 25 * time.Millisecond, MaxDelay: 25 * time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	runtime.reporter = func(correlation drivermanager.Correlation, rawErr error) {
+		manager.ReportFailure(primaryEBusDriverID, correlation, classifyEBusDriverError(rawErr))
+	}
+	stable := newManagedEBusStableTransport(manager, ebusgateway.TransportAdapterDirect, runtime.reporter)
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	first := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+	if first.Generation != 1 {
+		t.Fatalf("first generation = %d, want 1", first.Generation)
+	}
+
+	// A normal idle timeout is an operation outcome, not a connection-health
+	// transition. It must not withdraw capabilities or churn the generation.
+	if _, err := stable.ReadByte(); !errors.Is(err, ebuserrors.ErrTimeout) {
+		t.Fatalf("ReadByte() error = %v, want ErrTimeout", err)
+	}
+	afterTimeout, _ := manager.Snapshot(primaryEBusDriverID)
+	if afterTimeout.ObservedState != drivermanager.ObservedRunning || afterTimeout.Generation != first.Generation || afterTimeout.Revision != first.Revision {
+		t.Fatalf("idle timeout changed lifecycle snapshot: before=%#v after=%#v", first, afterTimeout)
+	}
+
+	mu.Lock()
+	firstHealth := healthByGeneration[0]
+	firstRaw := rawByGeneration[0]
+	mu.Unlock()
+	firstHealth.connectionLost()
+	backoff := requireEBusDriverObservedState(t, manager, drivermanager.ObservedBackoff, time.Second)
+	if backoff.Generation != first.Generation || len(backoff.EffectiveCapabilities) != 0 || backoff.Reason.Code != drivermanager.ReasonRetryScheduled {
+		t.Fatalf("connection-loss BACKOFF snapshot = %#v", backoff)
+	}
+
+	second := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+	if second.Generation != first.Generation+1 || len(second.EffectiveCapabilities) != len(second.Capabilities) {
+		t.Fatalf("recovered snapshot = %#v, want generation %d with full capabilities", second, first.Generation+1)
+	}
+	mu.Lock()
+	calls := factoryCalls
+	mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("factory calls = %d, want exactly 2", calls)
+	}
+	select {
+	case <-firstRaw.closed:
+	case <-time.After(time.Second):
+		t.Fatal("lost generation was not proven closed during replacement")
+	}
+
+	// The old mux may observe another terminal edge while it is retiring.
+	// Its generation health is one-shot and cannot start generation 3.
+	firstHealth.connectionLost()
+	time.Sleep(50 * time.Millisecond)
+	afterStale, _ := manager.Snapshot(primaryEBusDriverID)
+	mu.Lock()
+	calls = factoryCalls
+	mu.Unlock()
+	if afterStale.ObservedState != drivermanager.ObservedRunning || afterStale.Generation != second.Generation || calls != 2 {
+		t.Fatalf("stale old connection signal changed recovered generation: snapshot=%#v calls=%d", afterStale, calls)
+	}
+}
+
 func TestIssue851InjectedTransportIsNotReadmittedAfterReplacement(t *testing.T) {
 	raw := newIssue851BlockingRawTransport()
 	cfg := ebusgateway.DefaultConfig()
@@ -595,6 +785,29 @@ func TestIssue851InjectedTransportIsNotReadmittedAfterReplacement(t *testing.T) 
 	case <-raw.closed:
 	case <-time.After(time.Second):
 		t.Fatal("one-shot injected transport was not closed")
+	}
+}
+
+func TestIssue851InvalidTransportURIIsImmediateConfigFailure(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Address = "unsupported://adapter.invalid:9999"
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	failed := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedFailed, time.Second)
+	if failed.Reason.Code != drivermanager.ReasonConfigInvalid || failed.Reason.Retryable || failed.Retry != nil || failed.Generation != 0 || failed.Attempt != 1 {
+		t.Fatalf("invalid URI snapshot = %#v", failed)
+	}
+	time.Sleep(25 * time.Millisecond)
+	after, _ := controller.manager.Snapshot(primaryEBusDriverID)
+	if after.Revision != failed.Revision || after.Attempt != 1 || after.ObservedState != drivermanager.ObservedFailed {
+		t.Fatalf("invalid URI unexpectedly retried: before=%#v after=%#v", failed, after)
 	}
 }
 
@@ -633,4 +846,18 @@ func TestIssue851AdminClassifierResolvesCurrentGenerationWithoutMetricsScrape(t 
 	if err := runtime.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() error = %v", err)
 	}
+}
+
+func requireEBusDriverObservedState(t *testing.T, manager *drivermanager.Manager, want drivermanager.ObservedState, timeout time.Duration) drivermanager.Snapshot {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if snapshot, ok := manager.Snapshot(primaryEBusDriverID); ok && snapshot.ObservedState == want {
+			return snapshot
+		}
+		time.Sleep(time.Millisecond)
+	}
+	snapshot, _ := manager.Snapshot(primaryEBusDriverID)
+	t.Fatalf("eBUS driver state = %s, want %s; snapshot=%#v", snapshot.ObservedState, want, snapshot)
+	return drivermanager.Snapshot{}
 }

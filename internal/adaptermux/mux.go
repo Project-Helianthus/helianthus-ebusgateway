@@ -681,6 +681,12 @@ type Mux struct {
 	passiveMu       sync.Mutex
 	passiveCallback func(PassiveEvent)
 
+	// connectionLostCallback is a generation-lifecycle signal for the
+	// in-process DriverManager. It fires when readLoop enters reconnect after
+	// a terminal read failure or the duration-based blackhole threshold.
+	connectionLostMu       sync.Mutex
+	connectionLostCallback func()
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -1035,6 +1041,25 @@ func (m *Mux) SetPassiveCallback(fn func(PassiveEvent)) {
 	m.passiveMu.Lock()
 	defer m.passiveMu.Unlock()
 	m.passiveCallback = fn
+}
+
+// SetConnectionLostCallback installs a non-blocking generation-lifecycle
+// observer. The callback must not call back into Mux methods and should be set
+// before Start. Idle read timeouts and in-band RESETTED boundaries are not
+// connection-loss notifications.
+func (m *Mux) SetConnectionLostCallback(fn func()) {
+	m.connectionLostMu.Lock()
+	m.connectionLostCallback = fn
+	m.connectionLostMu.Unlock()
+}
+
+func (m *Mux) emitConnectionLost() {
+	m.connectionLostMu.Lock()
+	fn := m.connectionLostCallback
+	m.connectionLostMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // connect dials the adapter and performs the INIT handshake.
@@ -1402,6 +1427,11 @@ func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
 // reconnect tears down the current connection and re-establishes it.
 // Called from the read loop on adapter disconnect.
 func (m *Mux) reconnect() error {
+	// Publish loss before entering the legacy reconnect loop. A managed owner
+	// can withdraw admission immediately and retire this mux on its bounded
+	// replacement schedule. Close and ordinary idle timeouts do not emit it.
+	m.emitConnectionLost()
+
 	// Invalidate INFO cache immediately so CachedInfo returns errors
 	// during the disconnect window rather than serving stale data.
 	m.clearInfoCache()

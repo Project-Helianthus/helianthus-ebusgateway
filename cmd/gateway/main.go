@@ -1631,6 +1631,10 @@ func parseStartupProbeTargets(value string) ([]byte, error) {
 // at the call site in run() — never captured in a package-level closure —
 // so classifier state is strictly instance-local (Codex PR #502 P2).
 func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, activeTxnClassifier, error) {
+	return wireAdapterDirectWithConnectionLost(ctx, cfg, nil)
+}
+
+func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func()) (func() error, activeTxnClassifier, error) {
 	network := cfg.TransportConfig.Network
 	address := cfg.TransportConfig.Address
 
@@ -1782,6 +1786,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	mux := adaptermux.New(muxCfg)
+	mux.SetConnectionLostCallback(onConnectionLost)
 	// Codex PR #502 P2: the instance-scoped classifier is returned to
 	// run() and threaded explicitly as the 5th argument to
 	// startDiscoveryScanLoopFn. No package-level closure captures this

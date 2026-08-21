@@ -146,7 +146,10 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 		return nil, nil, err
 	}
 
-	return transportLayer, conn.Close, nil
+	// Close through the protocol transport, not just its underlying socket.
+	// Stateful transports such as ebusd-tcp have local waiters that are woken
+	// only when their Close method marks the transport closed and broadcasts.
+	return transportLayer, transportLayer.Close, nil
 }
 
 func clampEbusdTCPTimeouts(config TransportConfig, scanRequestTimeout time.Duration) TransportConfig {
@@ -190,7 +193,7 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 
 	protocol, network, address, err := parseTransportEndpoint(config.Address, config.Protocol)
 	if err != nil {
-		return TransportConfig{}, err
+		return TransportConfig{}, fmt.Errorf("invalid gateway transport endpoint: %w: %w", ebuserrors.ErrInvalidPayload, err)
 	}
 	config.Protocol = protocol
 	config.Network = network

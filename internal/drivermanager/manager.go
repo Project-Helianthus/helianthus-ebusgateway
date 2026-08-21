@@ -141,6 +141,13 @@ type AdmittingRuntime interface {
 	Admit(context.Context) (*Admission, error)
 }
 
+// correlationBinder is an optional internal lifecycle hook. It lets an
+// adapter bind generation-owned asynchronous health signals only after the
+// manager has published the corresponding stable RUNNING correlation.
+type correlationBinder interface {
+	BindCorrelation(Correlation)
+}
+
 type DriverConfig struct {
 	ID            string
 	Enabled       bool
@@ -311,6 +318,14 @@ func (manager *Manager) start(ctx context.Context, id string, async bool) error 
 		driver.opMu.Unlock()
 		return nil
 	}
+	// A canceled construction that ignored its context still owns the runtime
+	// retirement fence until startAttempt observes and retires its completion.
+	// Do not let a new Start race the stale cleanup's coarse Runtime.Stop.
+	if driver.activeAttempt != nil {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrUnavailable
+	}
 	if driver.observed == ObservedStopping {
 		driver.mu.Unlock()
 		driver.opMu.Unlock()
@@ -364,6 +379,11 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 		driver.opMu.Unlock()
 		return ErrUnavailable
 	}
+	if driver.activeAttempt != nil {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrUnavailable
+	}
 	driver.desired = DesiredRunning
 	driver.retryRemaining = driver.cfg.Retry.Budget
 	operation := driver.nextOperationLocked()
@@ -390,22 +410,29 @@ func (manager *Manager) Stop(ctx context.Context, id string) error {
 func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) error {
 	manager.cancelRetry(driver)
 	driver.mu.Lock()
+	attempt := driver.activeAttempt
 	if driver.quarantined {
 		if driver.desired != DesiredStopped {
 			driver.desired = DesiredStopped
 			manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
 		}
 		driver.mu.Unlock()
+		cancelAttemptControl(attempt)
 		return nil
 	}
 	driver.desired = DesiredStopped
 	if driver.observed == ObservedStopped || driver.observed == ObservedDisabled {
 		driver.mu.Unlock()
+		cancelAttemptControl(attempt)
 		return nil
 	}
 	driver.nextOperationLocked()
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.mu.Unlock()
+	// activeAttempt is captured under the same lock that publishes STOPPED
+	// intent. Either construction installed its cancel handle first and is
+	// canceled here, or it observes desired STOPPED and never calls Runtime.
+	cancelAttemptControl(attempt)
 
 	var err error
 	if driver.cfg.Runtime != nil {
@@ -428,6 +455,12 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) e
 		manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonInternalError}, nil, nil)
 	}
 	return nil
+}
+
+func cancelAttemptControl(attempt *attemptControl) {
+	if attempt != nil {
+		attempt.cancel()
+	}
 }
 
 func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver, operation uint64, replace bool) {
@@ -464,12 +497,32 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 	} else {
 		generation, err = driver.cfg.Runtime.Start(attemptCtx)
 	}
+	driver.mu.RLock()
+	superseded := manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning
+	currentGeneration := driver.generation
+	driver.mu.RUnlock()
+	if superseded && (err == nil || generation > currentGeneration) {
+		// A runtime that ignored cancellation may have admitted after STOPPED
+		// intent was published. Retire that stale completion immediately; it is
+		// never published as an effective manager generation.
+		_ = driver.cfg.Runtime.Stop(context.Background())
+		return
+	}
 	manager.finishAttempt(driver, operation, generation, err, replace)
 }
 
 func (manager *Manager) finishAttempt(driver *managedDriver, operation, generation uint64, err error, replace bool) {
 	driver.mu.Lock()
-	defer driver.mu.Unlock()
+	var bindCorrelation Correlation
+	defer func() {
+		driver.mu.Unlock()
+		if bindCorrelation.Generation == 0 {
+			return
+		}
+		if binder, ok := driver.cfg.Runtime.(correlationBinder); ok {
+			binder.BindCorrelation(bindCorrelation)
+		}
+	}()
 	if manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning {
 		return
 	}
@@ -481,6 +534,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, operation, generati
 		driver.retryRemaining = driver.cfg.Retry.Budget
 		driver.activeOperation = 0
 		manager.transitionLocked(driver, ObservedRunning, Reason{Code: ReasonNone}, nil, driver.cfg.Capabilities)
+		bindCorrelation = Correlation{Generation: generation}
 		return
 	}
 	if errors.Is(err, ErrSafetyQuarantined) || driver.runtimeQuarantined() {

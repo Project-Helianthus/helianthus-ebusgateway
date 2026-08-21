@@ -50,6 +50,55 @@ type repeatedStartRuntime struct {
 	startOnce    sync.Once
 }
 
+type lateAdmissionRuntime struct {
+	mu           sync.Mutex
+	generation   uint64
+	revision     uint64
+	stopCalls    int
+	running      bool
+	startEntered chan struct{}
+	startRelease chan struct{}
+}
+
+func (runtime *lateAdmissionRuntime) Start(context.Context) (uint64, error) {
+	close(runtime.startEntered)
+	<-runtime.startRelease // deliberately ignores cancellation and Stop
+	runtime.mu.Lock()
+	runtime.generation++
+	runtime.revision++
+	runtime.running = true
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	return generation, nil
+}
+
+func (runtime *lateAdmissionRuntime) Replace(ctx context.Context) (uint64, error) {
+	return runtime.Start(ctx)
+}
+
+func (runtime *lateAdmissionRuntime) Stop(context.Context) error {
+	runtime.mu.Lock()
+	runtime.stopCalls++
+	runtime.revision++
+	runtime.running = false
+	runtime.mu.Unlock()
+	return nil
+}
+
+func (runtime *lateAdmissionRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *lateAdmissionRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (*lateAdmissionRuntime) SafetyQuarantined() bool { return false }
+
 func (runtime *repeatedStartRuntime) Start(context.Context) (uint64, error) {
 	runtime.mu.Lock()
 	runtime.startCalls++
@@ -537,6 +586,53 @@ func TestManagerRepeatedStartJoinsStartingIntent(t *testing.T) {
 		t.Fatalf("first Start() error = %v", err)
 	}
 	requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	_ = manager.Shutdown(context.Background())
+}
+
+func TestManagerRetiresLateAdmissionAfterStopIntent(t *testing.T) {
+	runtime := &lateAdmissionRuntime{startEntered: make(chan struct{}), startRelease: make(chan struct{})}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID: "ebus.primary", Enabled: true, Runtime: runtime, Capabilities: []Capability{CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	select {
+	case <-runtime.startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("StartAsync did not enter runtime")
+	}
+	if err := manager.Stop(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	stopped := requireObservedState(t, manager, "ebus.primary", ObservedStopped, time.Second)
+	if stopped.Generation != 0 {
+		t.Fatalf("STOPPED generation = %d, want 0", stopped.Generation)
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Start() while stale admission retires error = %v, want ErrUnavailable", err)
+	}
+	close(runtime.startRelease)
+	deadline := time.Now().Add(time.Second)
+	for {
+		runtime.mu.Lock()
+		stopCalls, running := runtime.stopCalls, runtime.running
+		runtime.mu.Unlock()
+		if stopCalls >= 2 && !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("late admission was not retired: stopCalls=%d running=%v", stopCalls, running)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	after, _ := manager.Snapshot("ebus.primary")
+	if after.ObservedState != ObservedStopped || after.Generation != 0 || len(after.EffectiveCapabilities) != 0 {
+		t.Fatalf("late admission changed manager snapshot: %#v", after)
+	}
 	_ = manager.Shutdown(context.Background())
 }
 

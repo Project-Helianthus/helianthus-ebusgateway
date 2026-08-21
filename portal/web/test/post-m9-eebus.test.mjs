@@ -593,7 +593,7 @@ test("no-PIN Connect may reselect after pin_required and submit one transient ex
 
   await shell.selectEEBusObservation("observation-1");
   assert.equal(shell._eebusSelection.id, "selection-1");
-  assert.equal(shell._eebusPINRequested, undefined);
+  assert.equal(shell._eebusPINRequested, false, "new selection starts from cleared PIN-request state");
   assert.match(selectionControls.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden for the initial active selection");
   await shell.connectEEBusSelection();
   assert.deepEqual(connectBodies[0], { state_revision: 8 });

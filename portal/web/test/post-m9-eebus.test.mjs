@@ -493,3 +493,64 @@ test("successive pairing actions ignore stale status and render each terminal on
   assert.equal(shell._eebusLastActiveAction, undefined);
   assert.equal(shell._eebusActiveActionRetries, 0);
 });
+
+test("status requests may retire only the action that was current when the request started", async (t) => {
+  for (const staleActiveAction of [undefined, { action_id: "action-1", state: "terminal", outcome: "pin_required", expiry: new Date(Date.now() + 60_000).toISOString() }]) {
+    await t.test(staleActiveAction ? "mismatched terminal" : "missing active action", async () => {
+      let resolvePayload;
+      const delayedPayload = new Promise((resolve) => { resolvePayload = resolve; });
+      const { shell } = await issue817Shell(async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => delayedPayload,
+      }));
+      shell._eebusActiveActionID = "action-1";
+      shell._eebusActiveActionTimer = { owner: "action-1", cleared: false };
+      const delayedStatus = shell.refreshEEBusStatus();
+
+      shell.clearEEBusActiveAction();
+      const action2Timer = { owner: "action-2", cleared: false };
+      shell._eebusActiveActionID = "action-2";
+      shell._eebusLastActiveAction = { action_id: "action-2", state: "running" };
+      shell._eebusActiveActionTimer = action2Timer;
+      shell._eebusActiveActionRetries = 1;
+      resolvePayload({ state_revision: 22, data: staleActiveAction ? { active_action: staleActiveAction } : {}, error: null });
+      await delayedStatus;
+
+      assert.equal(shell._eebusActiveActionID, "action-2");
+      assert.equal(shell._eebusLastActiveAction.action_id, "action-2");
+      assert.equal(shell._eebusActiveActionTimer, action2Timer);
+      assert.equal(action2Timer.cleared, false);
+      assert.equal(shell._eebusActiveActionRetries, 1);
+    });
+  }
+});
+
+test("terminal PIN outcomes and action expiry abort every pairing authority", async (t) => {
+  for (const entry of [
+    { name: "pin required", action: { action_id: "action-secret", state: "terminal", outcome: "pin_required", expiry: new Date(Date.now() + 60_000).toISOString() } },
+    { name: "pin optional", action: { action_id: "action-secret", state: "terminal", outcome: "pin_optional", expiry: new Date(Date.now() + 60_000).toISOString() } },
+    { name: "expired", action: { action_id: "action-secret", state: "running", expiry: new Date(Date.now() - 1).toISOString() } },
+  ]) {
+    await t.test(entry.name, async () => {
+      const elements = issue848PairingElements();
+      const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+      primeIssue848PairingAuthority(shell);
+      shell.renderEEBusActiveAction(entry.action, "action-secret");
+      assertIssue848PairingAuthorityCleared(shell, elements);
+    });
+  }
+
+  await t.test("stale terminal cannot abort the next selection", async () => {
+    const elements = issue848PairingElements();
+    const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+    shell._eebusActiveActionID = "action-2";
+    shell._eebusSelection = { id: "selection-2" };
+    shell._eebusPINRequested = true;
+    shell.renderEEBusActiveAction({ action_id: "action-1", state: "terminal", outcome: "pin_required", expiry: new Date(Date.now() + 60_000).toISOString() }, "action-1");
+    assert.equal(shell._eebusActiveActionID, "action-2");
+    assert.equal(shell._eebusSelection.id, "selection-2");
+    assert.equal(shell._eebusPINRequested, true);
+  });
+});

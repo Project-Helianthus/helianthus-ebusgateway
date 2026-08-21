@@ -8,14 +8,17 @@ import (
 )
 
 // The Portal must never manufacture a terminal PIN outcome from the immediate
-// connection_started acknowledgement. A real terminal callback is required
-// before a gateway-owned ActiveAction status can truthfully resolve.
-func TestIssue848EEBusregExposesTerminalPINOutcomeCallback(t *testing.T) {
+// connection_started acknowledgement. eebusreg owns the one volatile,
+// identity-free action snapshot which is polled through the admin status.
+func TestIssue848EEBusregExposesTerminalPINOutcomeSurface(t *testing.T) {
 	admin := reflect.TypeOf((*eebusruntime.AdminV1)(nil)).Elem()
-	for _, name := range []string{"SubscribeConnectTerminalOutcome", "SubscribePINConnectTerminalOutcome"} {
-		if _, ok := admin.MethodByName(name); ok {
-			return
-		}
+	connect, ok := admin.MethodByName("Connect")
+	if !ok || connect.Type.NumOut() != 2 || connect.Type.Out(0) != reflect.TypeOf(eebusruntime.ConnectResultV1{}) {
+		t.Fatal("eebusreg AdminV1 Connect must return ConnectResultV1")
 	}
-	t.Fatalf("eebusreg AdminV1 lacks a public asynchronous terminal PIN outcome callback; Connect's immediate result is not a terminal pairing outcome")
+	snapshot := reflect.TypeOf(eebusruntime.AdminSnapshotV1{})
+	field, ok := snapshot.FieldByName("ActiveAction")
+	if !ok || field.Type != reflect.TypeOf((*eebusruntime.ActiveActionV1)(nil)) {
+		t.Fatal("eebusreg AdminSnapshotV1 must expose the identity-free ActiveActionV1 status")
+	}
 }

@@ -2,7 +2,10 @@ package eebusadmin
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,13 +26,14 @@ const maxRequestBodyBytes = 4096
 const maxHTTPMutationReplays = 128
 
 type server struct {
-	admin     eebusruntime.AdminV1
-	raw       RawSnapshotProvider
-	audit     func(AuditEvent)
-	now       func() time.Time
-	random    io.Reader
-	readiness ReadinessProvider
-	scopeID   string
+	admin         eebusruntime.AdminV1
+	raw           RawSnapshotProvider
+	audit         func(AuditEvent)
+	now           func() time.Time
+	random        io.Reader
+	readiness     ReadinessProvider
+	scopeID       string
+	pinBindingKey [32]byte
 
 	capabilityMu       sync.Mutex
 	capabilityRevision uint64
@@ -41,6 +45,9 @@ type server struct {
 
 	mutationMu      sync.Mutex
 	mutationReplays map[string]httpMutationReplay
+
+	connectMu      sync.Mutex
+	connectReplays map[string]connectReplay
 }
 
 type capabilityKind string
@@ -72,6 +79,15 @@ type httpMutationReplay struct {
 	action    string
 	status    int
 	body      []byte
+	expiresAt time.Time
+}
+
+// connectReplay intentionally contains no request body, partner identity, or
+// PIN. Its keyed binding covers exact PIN presence and bytes in process memory.
+type connectReplay struct {
+	binding   [32]byte
+	result    connectResultData
+	revision  uint64
 	expiresAt time.Time
 }
 
@@ -120,12 +136,17 @@ func NewServer(config Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("operator scope unavailable")
 	}
+	var pinBindingKey [32]byte
+	if _, err := io.ReadFull(config.Random, pinBindingKey[:]); err != nil {
+		return nil, errors.New("PIN replay binding unavailable")
+	}
 	return &server{
 		admin: config.Admin, raw: config.Raw, audit: config.Audit,
 		now: config.Now, random: config.Random, readiness: config.Readiness, scopeID: scopeID,
 		capabilities: make(map[string]capabilityRecord), capabilityByTarget: make(map[string]string),
 		spineSnapshots:  make(map[string]*spineSnapshot),
 		mutationReplays: make(map[string]httpMutationReplay),
+		connectReplays:  make(map[string]connectReplay), pinBindingKey: pinBindingKey,
 	}, nil
 }
 
@@ -136,6 +157,10 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/selections/") && strings.HasSuffix(request.URL.Path, ":connect") {
+		server.connectSelection(w, request)
+		return
+	}
 	destination := w
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		capture, handled := server.beginHTTPMutation(w, request)
@@ -469,12 +494,28 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	var body revisionMutationBody
-	if !server.decodeMutation(w, request, &body) {
+	body, pin, ok := decodeConnectMutation(request)
+	defer clearBytes(pin)
+	if !ok {
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	if body.StateRevision == 0 {
 		server.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	idempotencyKey := request.Header.Get("Idempotency-Key")
+	if !validIdempotencyKey(idempotencyKey) {
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	binding := server.connectBinding(id, body.StateRevision, pin)
+	if replay, found, conflict := server.lookupConnectReplay(idempotencyKey, binding); conflict {
+		server.writeError(w, http.StatusConflict, "idempotency_conflict")
+		return
+	} else if found {
+		replay.result.Replayed = true
+		server.writeConnectResult(w, replay.revision, replay.result)
 		return
 	}
 	record, ok := server.resolveCapability(id, capabilitySelection, body.StateRevision)
@@ -483,15 +524,123 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		return
 	}
 	server.deleteCapability(id)
-	markHTTPMutationInvoked(w)
-	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: request.Header.Get("Idempotency-Key"), ExpectedStateRevision: body.StateRevision}, Selection: record.selection})
+	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})
 	if failure != nil {
 		server.invalidateCapabilities()
 		server.writeAdminFailure(w, failure)
 		return
 	}
 	server.resetCapabilities(result.StateRevision)
-	server.writeMutationResult(w, result, nil)
+	data := connectResultData{ActionID: result.ActionID, Outcome: string(result.Outcome), Replayed: result.Replayed}
+	server.storeConnectReplay(idempotencyKey, binding, result.StateRevision, data)
+	server.writeConnectResult(w, result.StateRevision, data)
+}
+
+type connectMutationBody struct {
+	StateRevision uint64          `json:"state_revision"`
+	PIN           json.RawMessage `json:"pin"`
+}
+
+func decodeConnectMutation(request *http.Request) (connectMutationBody, []byte, bool) {
+	if !strictJSONContentType(request.Header.Get("Content-Type")) {
+		return connectMutationBody{}, nil, false
+	}
+	content, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBodyBytes+1))
+	if err != nil || len(content) > maxRequestBodyBytes {
+		clearBytes(content)
+		return connectMutationBody{}, nil, false
+	}
+	defer clearBytes(content)
+	var body connectMutationBody
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&body) != nil || body.StateRevision == 0 {
+		clearBytes(body.PIN)
+		return connectMutationBody{}, nil, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		clearBytes(body.PIN)
+		return connectMutationBody{}, nil, false
+	}
+	if body.PIN == nil {
+		return body, nil, true
+	}
+	var value string
+	if json.Unmarshal(body.PIN, &value) != nil {
+		clearBytes(body.PIN)
+		return connectMutationBody{}, nil, false
+	}
+	pin := []byte(value)
+	clearBytes(body.PIN)
+	if !validConnectPIN(pin) {
+		clearBytes(pin)
+		return connectMutationBody{}, nil, false
+	}
+	return body, pin, true
+}
+
+func validConnectPIN(value []byte) bool {
+	if len(value) < 8 || len(value) > 16 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') && !(character >= 'A' && character <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func clearBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
+}
+
+func (server *server) connectBinding(selectionID string, revision uint64, pin []byte) [32]byte {
+	hash := hmac.New(sha256.New, server.pinBindingKey[:])
+	_, _ = hash.Write([]byte(selectionID))
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], revision)
+	_, _ = hash.Write(encoded[:])
+	if pin == nil {
+		_, _ = hash.Write([]byte{0})
+	} else {
+		_, _ = hash.Write([]byte{1})
+		_, _ = hash.Write(pin)
+	}
+	var result [32]byte
+	copy(result[:], hash.Sum(nil))
+	return result
+}
+
+func (server *server) lookupConnectReplay(key string, binding [32]byte) (connectReplay, bool, bool) {
+	server.connectMu.Lock()
+	defer server.connectMu.Unlock()
+	for replayKey, replay := range server.connectReplays {
+		if !server.now().Before(replay.expiresAt) {
+			delete(server.connectReplays, replayKey)
+		}
+	}
+	replay, ok := server.connectReplays[key]
+	if !ok {
+		return connectReplay{}, false, false
+	}
+	if !hmac.Equal(replay.binding[:], binding[:]) {
+		return connectReplay{}, false, true
+	}
+	return replay, true, false
+}
+
+func (server *server) storeConnectReplay(key string, binding [32]byte, revision uint64, result connectResultData) {
+	server.connectMu.Lock()
+	defer server.connectMu.Unlock()
+	server.connectReplays[key] = connectReplay{binding: binding, revision: revision, result: result, expiresAt: server.now().Add(2 * time.Minute)}
+}
+
+func (server *server) writeConnectResult(w http.ResponseWriter, revision uint64, result connectResultData) {
+	server.writeJSON(w, http.StatusOK, ownerEnvelope{Contract: ContractV1, RequestID: server.requestID(), StateRevision: revision, Data: result})
 }
 
 func (server *server) confirmCandidate(w http.ResponseWriter, request *http.Request) {
@@ -730,6 +879,12 @@ func (server *server) status(w http.ResponseWriter, request *http.Request) {
 		TrustedCount: snapshot.TrustedCount, ConnectedCount: snapshot.ConnectedCount,
 		DiscoveredCount: snapshot.DiscoveredCount, CandidateCount: snapshot.CandidateCount,
 		DegradedCode: string(snapshot.DegradedCode),
+	}
+	if action := snapshot.ActiveAction; action != nil {
+		data.ActiveAction = &activeActionData{ActionID: action.ActionID, Kind: action.Kind, State: action.State, Retryable: action.Retryable, ExpiresAt: action.Expiry}
+		if action.Outcome != nil {
+			data.ActiveAction.Outcome = string(*action.Outcome)
+		}
 	}
 	server.writeJSON(w, http.StatusOK, ownerEnvelope{
 		Contract: ContractV1, RequestID: server.requestID(), StateRevision: snapshot.StateRevision, Data: data,

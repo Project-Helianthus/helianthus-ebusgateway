@@ -2442,6 +2442,7 @@ class PortalShell extends HTMLElement {
   applyEEBusStatus(payload) {
     const status = this.querySelector('[data-role="eebus-status"]');
     if (status) status.textContent = JSON.stringify(payload?.data || {}, null, 2);
+	this.renderEEBusActiveAction(payload?.data?.active_action);
   }
 
   async refreshEEBusPartners(view) {
@@ -2499,7 +2500,7 @@ class PortalShell extends HTMLElement {
       return `<article class="eebus-partner">${state}<pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
     }).join("");
     const connect = this._eebusSelection
-      ? `<button class="button" data-eebus-action="connect">Connect selected partner</button>`
+      ? `<div class="snapshot-controls"><button class="button" data-eebus-action="connect">Connect selected partner</button>${this._eebusPINRequested ? `<input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="8–16 ASCII hexadecimal PIN" aria-label="eeBUS pairing PIN" />` : ""}</div>`
       : "";
     container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
   }
@@ -2613,13 +2614,57 @@ class PortalShell extends HTMLElement {
   async connectEEBusSelection() {
     const selectionID = this._eebusSelection?.id;
     if (!selectionID) throw new Error("no active eeBUS selection");
+	const input = this.querySelector?.('[data-role="eebus-connect-pin"]');
+	const pin = input?.value || "";
+	if (input) input.value = "";
+	if (pin && !/^[0-9A-Fa-f]{8,16}$/.test(pin)) throw new Error("enter an exact 8–16 ASCII hexadecimal PIN");
+	const body = { state_revision: this._eebusStateRevision };
+	if (pin) body.pin = pin;
 	try {
-	  const result = await this.eebusMutation(`/selections/${encodeURIComponent(selectionID)}:connect`, { state_revision: this._eebusStateRevision });
+	  const result = await this.eebusAdminFetch(`/selections/${encodeURIComponent(selectionID)}:connect`, { method: "POST", serializedBody: JSON.stringify(body), idempotencyKey: crypto.randomUUID() });
+	  const actionID = result?.data?.action_id;
+	  if (!actionID) throw new Error("eeBUS pairing action authority missing");
 	  this._eebusSelection = undefined;
+	  this._eebusPINRequested = false;
+	  this._eebusActiveActionID = actionID;
+	  this.pollEEBusActiveAction(actionID);
 	  return result;
 	} catch (error) {
-	  if (error?.eebusTerminal) this._eebusSelection = undefined;
+	  // A failed delivery cannot be replayed because the PIN is deliberately not retained.
+	  this._eebusSelection = undefined;
 	  throw error;
+	}
+  }
+
+  pollEEBusActiveAction(actionID) {
+	if (!actionID || this._eebusActiveActionID !== actionID) return;
+	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	this._eebusActiveActionTimer = setTimeout(() => {
+	  this.refreshEEBusStatus().then(() => {
+		const active = this._eebusLastActiveAction;
+		if (active?.action_id === actionID && active.state !== "terminal") this.pollEEBusActiveAction(actionID);
+	  }).catch((error) => this.showEEBusError(error, "pairing"));
+	}, 1000);
+  }
+
+  renderEEBusActiveAction(action) {
+	this._eebusLastActiveAction = action && typeof action === "object" ? { ...action } : undefined;
+	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
+	if (!status || !action || action.action_id !== this._eebusActiveActionID) return;
+	const messages = {
+	  pin_required: "This partner requires a PIN. Select it again, then enter the exact PIN.",
+	  pin_optional: "The partner reports an optional PIN. Select it again to supply one if required.",
+	  pin_busy: "The partner is busy processing PIN pairing. Try again after selecting it again.",
+	  pin_rejected: "The PIN was rejected. Re-enter it after selecting the partner again.",
+	  pin_unavailable: "The PIN exchange is unavailable. Re-enter the PIN after selecting the partner again.",
+	  pin_protocol_error: "The PIN exchange ended with a protocol error. Re-enter it after selecting the partner again.",
+	};
+	const outcome = action.outcome || "";
+	if (Object.hasOwn(messages, outcome)) this._eebusPINRequested = outcome === "pin_required" || outcome === "pin_optional";
+	status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
+	if (action.state === "terminal") {
+	  if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	  this._eebusActiveActionTimer = undefined;
 	}
   }
 
@@ -2687,6 +2732,10 @@ class PortalShell extends HTMLElement {
 	this.clearEEBusCandidate();
 	this._eebusSelection = undefined;
 	this._eebusUntrustArmedID = undefined;
+	this._eebusActiveActionID = undefined;
+	this._eebusLastActiveAction = undefined;
+	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	this._eebusActiveActionTimer = undefined;
   }
 
   clearEEBusPendingMutation() {

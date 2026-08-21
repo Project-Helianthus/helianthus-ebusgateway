@@ -66,11 +66,11 @@ func (stub *adminV1Stub) Select(_ context.Context, request eebusruntime.SelectRe
 	}}, nil
 }
 
-func (stub *adminV1Stub) Connect(_ context.Context, request eebusruntime.ConnectRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+func (stub *adminV1Stub) Connect(_ context.Context, request eebusruntime.ConnectRequestV1) (eebusruntime.ConnectResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
 	stub.connectCalls = append(stub.connectCalls, request)
-	return eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connecting"}, nil
+	return eebusruntime.ConnectResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connection_started"}, ActionID: "action-1"}, nil
 }
 
 func (stub *adminV1Stub) Confirm(_ context.Context, request eebusruntime.ConfirmRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
@@ -251,6 +251,83 @@ func TestIssue817SelectionAndConnectShareProcessLocalScopeAcrossRequests(t *test
 	defer admin.mu.Unlock()
 	if len(admin.selectCalls) != 1 || len(admin.connectCalls) != 1 || admin.selectCalls[0].ExpectedSKI != ski {
 		t.Fatalf("select/connect calls=%#v/%#v", admin.selectCalls, admin.connectCalls)
+	}
+}
+
+func TestIssue848ConnectPINIsSecretSafeAndReplayBound(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	const pin = "A1b2C3d4"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 40
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	var audits []AuditEvent
+	handler, err := NewServer(Config{Admin: admin, Audit: func(event AuditEvent) { audits = append(audits, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	observationID := issue817FirstOpaqueID(t, listed, "observation_id")
+	selected := httptest.NewRecorder()
+	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-848", `{"state_revision":40,"expected_ski":"`+ski+`"}`))
+	selectionID := issue817DataString(t, selected, "selection_id")
+
+	path := "/admin/eebus/v1/selections/" + selectionID + ":connect"
+	request := issue817Mutation(http.MethodPost, path, "connect-848", `{"state_revision":41,"pin":"`+pin+`"}`)
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request)
+	if first.Code != http.StatusOK || strings.Contains(first.Body.String(), pin) {
+		t.Fatalf("first connect status/body=%d/%s", first.Code, first.Body.String())
+	}
+	var firstEnvelope struct {
+		Data connectResultData `json:"data"`
+	}
+	if json.Unmarshal(first.Body.Bytes(), &firstEnvelope) != nil || firstEnvelope.Data.ActionID != "action-1" || firstEnvelope.Data.Replayed {
+		t.Fatalf("first ConnectResult=%s", first.Body.String())
+	}
+
+	replayed := httptest.NewRecorder()
+	handler.ServeHTTP(replayed, issue817Mutation(http.MethodPost, path, "connect-848", `{"state_revision":41,"pin":"`+pin+`"}`))
+	var replayEnvelope struct {
+		Data connectResultData `json:"data"`
+	}
+	if replayed.Code != http.StatusOK || json.Unmarshal(replayed.Body.Bytes(), &replayEnvelope) != nil || replayEnvelope.Data.ActionID != "action-1" || !replayEnvelope.Data.Replayed {
+		t.Fatalf("replayed ConnectResult=%d/%s", replayed.Code, replayed.Body.String())
+	}
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, issue817Mutation(http.MethodPost, path, "connect-848", `{"state_revision":41,"pin":"a1b2c3d4"}`))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("changed PIN status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	admin.mu.Lock()
+	calls := len(admin.connectCalls)
+	admin.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("Connect calls=%d, want one exact-bound launch", calls)
+	}
+	if got := first.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control=%q", got)
+	}
+	for _, event := range audits {
+		encoded, _ := json.Marshal(event)
+		if strings.Contains(string(encoded), pin) {
+			t.Fatalf("audit leaked PIN: %s", encoded)
+		}
+	}
+}
+
+func TestIssue848StatusPassesThroughIdentityFreeActiveAction(t *testing.T) {
+	outcome := eebusruntime.AdminOutcomeV1("pin_required")
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 42
+	snapshot.ActiveAction = &eebusruntime.ActiveActionV1{ActionID: "action-42", Kind: "connect", State: "terminal", Outcome: &outcome, Retryable: true, Expiry: snapshot.CapturedAt.Add(time.Minute)}
+	handler := newIssue817Server(t, &adminV1Stub{snapshot: snapshot}, nil, nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "remote_ski") || !strings.Contains(response.Body.String(), `"action_id":"action-42"`) || !strings.Contains(response.Body.String(), `"outcome":"pin_required"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

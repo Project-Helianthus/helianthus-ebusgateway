@@ -127,7 +127,7 @@ test("Portal emits the exact closed mutation matrix with revision and Idempotenc
       const calls = [];
       const { shell } = await issue817Shell(async (url, init = {}) => {
         calls.push({ url: String(url), init });
-        return response({ state_revision: 10, data: { outcome: entry.name }, error: null });
+        return response({ state_revision: 10, data: entry.name === "connect" ? { outcome: entry.name, action_id: "action-817" } : { outcome: entry.name }, error: null });
       });
       shell._eebusStateRevision = 9;
       entry.setup?.(shell);
@@ -150,7 +150,7 @@ test("selection requires independently entered complete OOB SKI and connect keep
   const { shell } = await issue817Shell(async (url, init = {}) => {
     calls.push({ url: String(url), init });
     if (String(url).includes(":select")) return response({ state_revision: 8, data: { outcome: "selected", selection_id: "selection-1" }, error: null });
-    return response({ state_revision: 9, data: { outcome: "connecting" }, error: null });
+    return response({ state_revision: 9, data: { outcome: "connecting", action_id: "action-1" }, error: null });
   }, new Map([
     ['[data-role="eebus-partners"]', partners],
     ['[data-role="eebus-select-ski"]', selectSKI],
@@ -167,6 +167,44 @@ test("selection requires independently entered complete OOB SKI and connect keep
   for (const forbidden of ["expected_ski", "observation_id", "endpoint", "host", "port"]) {
     assert.equal(Object.hasOwn(JSON.parse(calls[1].init.body), forbidden), false);
   }
+});
+
+test("PIN connect never enters generic pending replay and clears the password field immediately", async () => {
+  const calls = [];
+  const pin = { value: "A1b2C3d4" };
+  const status = { textContent: "" };
+  const { shell, storageWrites } = await issue817Shell(async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return response({ state_revision: 11, data: { action_id: "action-848", outcome: "connection_started" }, error: null });
+  }, new Map([
+    ['[data-role="eebus-connect-pin"]', pin],
+    ['[data-role="eebus-pairing-status"]', status],
+  ]));
+  shell._eebusStateRevision = 10;
+  shell._eebusSelection = { id: "selection-848" };
+  shell._eebusPINRequested = true;
+  await shell.connectEEBusSelection();
+  assert.equal(pin.value, "");
+  assert.equal(shell._eebusPendingMutation, undefined);
+  assert.equal(shell._eebusActiveActionID, "action-848");
+  assert.equal(storageWrites.length, 0);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { state_revision: 10, pin: "A1b2C3d4" });
+  assert.equal(calls[0].init.headers["Idempotency-Key"], "81700000-0000-4000-8000-000000000001");
+  assert.doesNotMatch(shell._eebusPendingMutation ? JSON.stringify(shell._eebusPendingMutation) : "", /A1b2C3d4/);
+});
+
+test("Portal renders only the six documented terminal PIN outcomes", async () => {
+  const status = { textContent: "" };
+  const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), new Map([
+    ['[data-role="eebus-pairing-status"]', status],
+  ]));
+  shell._eebusActiveActionID = "action-848";
+  for (const outcome of ["pin_required", "pin_optional", "pin_busy", "pin_rejected", "pin_unavailable", "pin_protocol_error"]) {
+    shell.renderEEBusActiveAction({ action_id: "action-848", state: "terminal", outcome });
+    assert.notEqual(status.textContent, "");
+  }
+  assert.equal((await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/app.js"), "utf8")).includes("localStorage.setItem(\"eebus"), false);
 });
 
 test("network retry reuses the exact body and Idempotency-Key without session state", async () => {

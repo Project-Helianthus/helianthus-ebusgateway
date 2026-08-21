@@ -32,7 +32,7 @@ func (issue809AdminStub) ClosePairingWindow(context.Context, eebusruntime.CloseP
 func (issue809AdminStub) Select(context.Context, eebusruntime.SelectRequestV1) (eebusruntime.AdminSelectionResultV1, *eebusruntime.AdminErrorV1) {
 	panic("unexpected Select")
 }
-func (issue809AdminStub) Connect(context.Context, eebusruntime.ConnectRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {
+func (issue809AdminStub) Connect(context.Context, eebusruntime.ConnectRequestV1) (eebusruntime.ConnectResultV1, *eebusruntime.AdminErrorV1) {
 	panic("unexpected Connect")
 }
 func (issue809AdminStub) Confirm(context.Context, eebusruntime.ConfirmRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {

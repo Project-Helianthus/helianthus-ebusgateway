@@ -14,7 +14,11 @@ func TestManagedConnectionLossDelegatesRecoveryAndFencesOldMux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() error = %v", err)
 	}
-	defer reconnectTarget.Close()
+	defer func() {
+		if closeErr := reconnectTarget.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			t.Errorf("listener Close() error = %v", closeErr)
+		}
+	}()
 
 	mock := newP3MockTransport()
 	mock.readTimeout = 2 * time.Millisecond

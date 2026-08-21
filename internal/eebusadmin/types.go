@@ -83,18 +83,36 @@ type ownerEnvelope struct {
 }
 
 type ownerStatus struct {
-	Readiness       ReadinessV1 `json:"readiness"`
-	Status          string      `json:"status"`
-	Window          string      `json:"pairing_window"`
-	WindowDeadline  time.Time   `json:"pairing_window_deadline,omitempty"`
-	Register        string      `json:"register"`
-	Listener        string      `json:"listener"`
-	Discovery       string      `json:"discovery"`
-	TrustedCount    uint16      `json:"trusted_count"`
-	ConnectedCount  uint16      `json:"connected_count"`
-	DiscoveredCount uint16      `json:"discovered_count"`
-	CandidateCount  uint16      `json:"candidate_count"`
-	DegradedCode    string      `json:"degraded_code,omitempty"`
+	Readiness       ReadinessV1       `json:"readiness"`
+	Status          string            `json:"status"`
+	Window          string            `json:"pairing_window"`
+	WindowDeadline  time.Time         `json:"pairing_window_deadline,omitempty"`
+	Register        string            `json:"register"`
+	Listener        string            `json:"listener"`
+	Discovery       string            `json:"discovery"`
+	TrustedCount    uint16            `json:"trusted_count"`
+	ConnectedCount  uint16            `json:"connected_count"`
+	DiscoveredCount uint16            `json:"discovered_count"`
+	CandidateCount  uint16            `json:"candidate_count"`
+	DegradedCode    string            `json:"degraded_code,omitempty"`
+	ActiveAction    *activeActionData `json:"active_action,omitempty"`
+}
+
+// connectResultData is deliberately identity-free. The opaque action_id is
+// sufficient to correlate the short-lived pairing outcome through /status.
+type connectResultData struct {
+	ActionID string `json:"action_id"`
+	Outcome  string `json:"outcome"`
+	Replayed bool   `json:"replayed"`
+}
+
+type activeActionData struct {
+	ActionID  string    `json:"action_id"`
+	Kind      string    `json:"kind"`
+	State     string    `json:"state"`
+	Outcome   string    `json:"outcome,omitempty"`
+	Retryable bool      `json:"retryable"`
+	ExpiresAt time.Time `json:"expiry"`
 }
 
 type partnersData struct {

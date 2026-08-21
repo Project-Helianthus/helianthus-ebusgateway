@@ -587,9 +587,7 @@ class PortalShell extends HTMLElement {
       }
     }
 	if (previousTarget === "section-eebus" && targetID !== "section-eebus") {
-	  this.clearEEBusCandidate();
-	  this._eebusSelection = undefined;
-	  this._eebusUntrustArmedID = undefined;
+	  this.clearEEBusVisibilityAuthority();
 	  this.clearEEBusSPINETree();
 	}
     this._activeSectionTarget = targetID;
@@ -2334,7 +2332,7 @@ class PortalShell extends HTMLElement {
         if (workspace === "spine") void this.refreshEEBusSPINEPeers().catch((error) => this.showEEBusError(error, "spine"));
       });
     });
-    for (const partners of this.querySelectorAll('[data-role="eebus-pairing-partners"], [data-role="eebus-ship-partners"], [data-role="eebus-spine-peers"]')) {
+	for (const partners of this.querySelectorAll('[data-role="eebus-selection-controls"], [data-role="eebus-pairing-partners"], [data-role="eebus-ship-partners"], [data-role="eebus-spine-peers"]')) {
       partners.addEventListener("click", (event) => {
         const button = event.target?.closest?.("[data-eebus-action]");
         if (!button) return;
@@ -2381,8 +2379,7 @@ class PortalShell extends HTMLElement {
     const previous = this._eebusWorkspace || "pairing";
     if (previous !== workspace) {
       if (previous === "pairing") {
-        this.clearEEBusCandidate();
-        this._eebusSelection = undefined;
+        this.abortPairingFlow();
       } else if (previous === "ship") {
         this._eebusUntrustArmedID = undefined;
       } else if (previous === "spine") {
@@ -2420,7 +2417,9 @@ class PortalShell extends HTMLElement {
     }
     const response = await fetch(`${this._eebusAdminPath}${path}`, init);
     const payload = await response.json();
-    this.clearEEBusCandidate();
+	if (Number.isSafeInteger(options.pairingGeneration) && !this.isCurrentEEBusPairingGeneration(options.pairingGeneration)) {
+	  return { eebusPairingStale: true };
+	}
     if (!response.ok || payload?.error) {
 	  const error = new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
 	  error.eebusTerminal = true;
@@ -2433,25 +2432,31 @@ class PortalShell extends HTMLElement {
   }
 
   async refreshEEBusStatus() {
+	const expectedActionID = this._eebusActiveActionID;
     const payload = await this.eebusAdminFetch("/status");
-    this.applyEEBusStatus(payload);
+	this.applyEEBusStatus(payload, expectedActionID);
     return payload;
   }
 
-  applyEEBusStatus(payload) {
+  applyEEBusStatus(payload, expectedActionID = this._eebusActiveActionID) {
     const status = this.querySelector('[data-role="eebus-status"]');
     if (status) status.textContent = JSON.stringify(payload?.data || {}, null, 2);
+	this.renderEEBusActiveAction(payload?.data?.active_action, expectedActionID);
   }
 
   async refreshEEBusPartners(view) {
     const allowed = new Set(["trusted", "connected", "discovered", "candidate"]);
     if (!allowed.has(view)) throw new Error("invalid eeBUS partner view");
-	this.clearEEBusCandidate();
+	const candidateGeneration = view === "candidate" ? this.advanceEEBusCandidateGeneration() : undefined;
 	if (!this._eebusPendingMutation) this._eebusUntrustArmedID = undefined;
 	const payload = await this.eebusAdminFetch(`/partners?view=${encodeURIComponent(view)}`);
 	const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
+	if (view === "candidate" && !this.isCurrentEEBusCandidateGeneration(candidateGeneration)) return payload;
 	this._eebusPartnerView = view;
 	this._eebusPartnerRows = view === "candidate" ? undefined : rows.map((row) => ({ ...row }));
+	if (view === "candidate") {
+	  this.clearEEBusCandidateState();
+	}
 	if (view === "candidate" && rows.length === 1) {
 	  this._eebusCandidate = { ...rows[0] };
       const candidate = this.querySelector('[data-role="eebus-candidate"]');
@@ -2480,6 +2485,7 @@ class PortalShell extends HTMLElement {
   }
 
   renderEEBusPartners(rows, view) {
+	this.renderEEBusSelectionControls();
 	const container = this.eebusPartnerContainer(view);
     if (!container) return;
     const rendered = rows.map((row) => {
@@ -2497,10 +2503,15 @@ class PortalShell extends HTMLElement {
       const state = view === "trusted" ? '<p class="eebus-partner-state">Disconnected — Reconnect required</p>' : "";
       return `<article class="eebus-partner">${state}<pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
     }).join("");
-    const connect = this._eebusSelection
-      ? `<button class="button" data-eebus-action="connect">Connect selected partner</button>`
-      : "";
-    container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
+	container.innerHTML = rendered || '<div class="muted-inline">No partners in this view.</div>';
+  }
+
+  renderEEBusSelectionControls() {
+	const container = this.querySelector?.('[data-role="eebus-selection-controls"]');
+	if (!container) return;
+	container.innerHTML = this._eebusSelection
+	  ? '<button class="button" data-eebus-action="connect" type="button">Connect selected partner</button><input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="Optional 8–16 ASCII hexadecimal PIN" aria-label="Optional eeBUS pairing PIN" />'
+	  : "";
   }
 
   renderEEBusSPINEPeers(rows) {
@@ -2514,7 +2525,7 @@ class PortalShell extends HTMLElement {
     container.innerHTML = rendered || '<div class="muted-inline">No live SHIP session. Open SHIP to reconnect.</div>';
   }
 
-  async eebusMutation(path, body, method = "POST") {
+  async eebusMutation(path, body, method = "POST", pairingGeneration) {
 	const serializedBody = JSON.stringify(body);
 	const binding = `${method}\u0000${path}\u0000${serializedBody}`;
 	let pending = this._eebusPendingMutation;
@@ -2529,6 +2540,7 @@ class PortalShell extends HTMLElement {
 		workspace: this._eebusWorkspace || "pairing",
 		idempotencyKey: crypto.randomUUID(),
 		expiresAt: Date.now() + 2 * 60 * 1000,
+		pairingGeneration,
 	  };
 	  this._eebusPendingMutation = pending;
 	  this._eebusPendingMutationTimer = setTimeout(() => {
@@ -2537,12 +2549,18 @@ class PortalShell extends HTMLElement {
 	  this.updateEEBusPendingRetryControl();
 	}
 	try {
-	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey });
+	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey, pairingGeneration });
+	  if (payload?.eebusPairingStale || (Number.isSafeInteger(pairingGeneration) && !this.isCurrentEEBusPairingGeneration(pairingGeneration)) || this._eebusPendingMutation !== pending) {
+		return { eebusPairingStale: true };
+	  }
 	  this.clearEEBusPendingMutation();
-	  this.clearEEBusCandidate();
+	  this.retireEEBusCandidateForMutation(pending.path);
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
+	  if (Number.isSafeInteger(pairingGeneration) && !this.isCurrentEEBusPairingGeneration(pairingGeneration)) {
+		return { eebusPairingStale: true };
+	  }
 	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
 	  throw error;
 	}
@@ -2556,12 +2574,18 @@ class PortalShell extends HTMLElement {
 	  throw new Error("pending eeBUS mutation replay expired");
 	}
 	try {
-	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey });
+	  const payload = await this.eebusAdminFetch(pending.path, { method: pending.method, serializedBody: pending.body, idempotencyKey: pending.idempotencyKey, pairingGeneration: pending.pairingGeneration });
+	  if (payload?.eebusPairingStale || (Number.isSafeInteger(pending.pairingGeneration) && !this.isCurrentEEBusPairingGeneration(pending.pairingGeneration)) || this._eebusPendingMutation !== pending) {
+		return { eebusPairingStale: true };
+	  }
 	  this.clearEEBusPendingMutation();
-	  this.clearEEBusCandidate();
+	  this.retireEEBusCandidateForMutation(pending.path);
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
+	  if (Number.isSafeInteger(pending.pairingGeneration) && !this.isCurrentEEBusPairingGeneration(pending.pairingGeneration)) {
+		return { eebusPairingStale: true };
+	  }
 	  if (error?.eebusTerminal) this.clearEEBusPendingMutation();
 	  throw error;
 	}
@@ -2584,7 +2608,6 @@ class PortalShell extends HTMLElement {
   async closeEEBusPairingWindow() {
 	try {
 	  const result = await this.eebusMutation("/pairing-window:close", { state_revision: this._eebusStateRevision });
-	  this.clearEEBusCandidate();
 	  this._eebusSelection = undefined;
 	  return result;
 	} catch (error) {
@@ -2601,32 +2624,109 @@ class PortalShell extends HTMLElement {
     const expectedSKI = input?.value || "";
     if (input) input.value = "";
     if (!/^[0-9a-f]{40}$/.test(expectedSKI)) throw new Error("enter the complete OOB SKI before selection");
-    const payload = await this.eebusMutation(`/observations/${encodeURIComponent(observationID)}:select`, { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
+	const pairingGeneration = this.abortPairingFlow();
+	const payload = await this.eebusMutation(`/observations/${encodeURIComponent(observationID)}:select`, { state_revision: this._eebusStateRevision, expected_ski: expectedSKI }, "POST", pairingGeneration);
+	if (payload?.eebusPairingStale || !this.isCurrentEEBusPairingGeneration(pairingGeneration)) return payload;
     const selectionID = payload?.data?.selection_id;
     if (!selectionID) throw new Error("selection authority missing");
-    this._eebusSelection = { id: selectionID };
+	this._eebusSelection = { id: selectionID, pairingGeneration };
     this.renderEEBusPartners([], "discovered");
     return payload;
   }
 
   async connectEEBusSelection() {
-    const selectionID = this._eebusSelection?.id;
-    if (!selectionID) throw new Error("no active eeBUS selection");
-	try {
-	  const result = await this.eebusMutation(`/selections/${encodeURIComponent(selectionID)}:connect`, { state_revision: this._eebusStateRevision });
+	const input = this.querySelector?.('[data-role="eebus-connect-pin"]');
+	const selection = this._eebusSelection;
+	const selectionID = selection?.id;
+	if (!selectionID) {
+	  if (input) input.value = "";
+	  this.renderEEBusSelectionControls();
+	  throw new Error("no active eeBUS selection");
+	}
+	const pairingGeneration = Number.isSafeInteger(selection.pairingGeneration) ? selection.pairingGeneration : this.currentEEBusPairingGeneration();
+	if (!this.isCurrentEEBusPairingGeneration(pairingGeneration)) {
+	  if (input) input.value = "";
 	  this._eebusSelection = undefined;
+	  this.renderEEBusSelectionControls();
+	  throw new Error("eeBUS selection flow expired");
+	}
+	const pin = input?.value || "";
+	if (input) input.value = "";
+	if (pin && !/^[0-9A-Fa-f]{8,16}$/.test(pin)) throw new Error("enter an exact 8–16 ASCII hexadecimal PIN");
+	const body = { state_revision: this._eebusStateRevision };
+	if (pin) body.pin = pin;
+	this._eebusSelection = undefined;
+	this.renderEEBusSelectionControls();
+	try {
+	  const result = await this.eebusAdminFetch(`/selections/${encodeURIComponent(selectionID)}:connect`, { method: "POST", serializedBody: JSON.stringify(body), idempotencyKey: crypto.randomUUID(), pairingGeneration });
+	  if (result?.eebusPairingStale || !this.isCurrentEEBusPairingGeneration(pairingGeneration)) return result;
+	  const actionID = result?.data?.action_id;
+	  if (!actionID) throw new Error("eeBUS pairing action authority missing");
+	  this._eebusPINRequested = false;
+	  this.clearEEBusActiveAction();
+	  this._eebusActiveActionID = actionID;
+	  this.pollEEBusActiveAction(actionID);
 	  return result;
 	} catch (error) {
-	  if (error?.eebusTerminal) this._eebusSelection = undefined;
+	  if (!this.isCurrentEEBusPairingGeneration(pairingGeneration)) return { eebusPairingStale: true };
+	  // A failed delivery cannot be replayed because the PIN is deliberately not retained.
+	  this.abortPairingFlow();
 	  throw error;
 	}
+  }
+
+  pollEEBusActiveAction(actionID) {
+	if (!actionID || this._eebusActiveActionID !== actionID) return;
+	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	this._eebusActiveActionTimer = setTimeout(() => {
+	  this.refreshEEBusStatus().then(() => {
+		const active = this._eebusLastActiveAction;
+		if (active?.action_id === actionID && active.state !== "terminal") this.pollEEBusActiveAction(actionID);
+	  }).catch((error) => {
+		this._eebusActiveActionRetries = (this._eebusActiveActionRetries || 0) + 1;
+		if (this._eebusActiveActionRetries <= 1 && this._eebusActiveActionID === actionID) this.pollEEBusActiveAction(actionID);
+		else { this.clearEEBusActiveAction(); this.showEEBusError(error, "pairing"); }
+	  });
+	}, 1000);
+  }
+
+  renderEEBusActiveAction(action, expectedActionID = this._eebusActiveActionID) {
+	if (!expectedActionID || this._eebusActiveActionID !== expectedActionID) return;
+	if (!action || typeof action !== "object" || action.action_id !== expectedActionID) {
+	  this.abortPairingFlow();
+	  return;
+	}
+	this._eebusLastActiveAction = { ...action };
+	const expiry = Date.parse(action.expiry || "");
+	if (!Number.isFinite(expiry) || expiry <= Date.now()) { this.abortPairingFlow(); return; }
+	const messages = {
+	  pin_required: "This partner requires a PIN. Select it again, then enter the exact PIN.",
+	  pin_optional: "The partner reports an optional PIN. Select it again to supply one if required.",
+	  pin_busy: "The partner is busy processing PIN pairing. Try again after selecting it again.",
+	  pin_rejected: "The PIN was rejected. Re-enter it after selecting the partner again.",
+	  pin_unavailable: "The PIN exchange is unavailable. Re-enter the PIN after selecting the partner again.",
+	  pin_protocol_error: "The PIN exchange ended with a protocol error. Re-enter it after selecting the partner again.",
+	};
+	const outcome = action.outcome || "";
+	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
+	if (status) status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
+	if (action.state === "terminal") {
+	  this.abortPairingFlow();
+	}
+  }
+
+  clearEEBusActiveAction() {
+	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	this._eebusActiveActionTimer = undefined;
+	this._eebusActiveActionID = undefined;
+	this._eebusLastActiveAction = undefined;
+	this._eebusActiveActionRetries = 0;
   }
 
   async confirmEEBusCandidate(expectedSKI) {
     if (!this._eebusCandidate || expectedSKI !== this._eebusCandidate.remote_ski) throw new Error("candidate SKI comparison does not match");
     try {
 	  const result = await this.eebusMutation("/candidate:confirm", { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
-	  this.clearEEBusCandidate();
 	  return result;
 	} catch (error) {
 	  if (error?.eebusTerminal) this.clearEEBusCandidate();
@@ -2637,7 +2737,6 @@ class PortalShell extends HTMLElement {
   async cancelEEBusCandidate() {
     try {
 	  const result = await this.eebusMutation("/candidate:cancel", { state_revision: this._eebusStateRevision });
-	  this.clearEEBusCandidate();
 	  return result;
 	} catch (error) {
 	  if (error?.eebusTerminal) this.clearEEBusCandidate();
@@ -2666,7 +2765,26 @@ class PortalShell extends HTMLElement {
 	}
   }
 
-	clearEEBusCandidate() {
+	currentEEBusCandidateGeneration() {
+	  return Number.isSafeInteger(this._eebusCandidateGeneration) ? this._eebusCandidateGeneration : 0;
+	}
+
+	advanceEEBusCandidateGeneration() {
+	  this._eebusCandidateGeneration = this.currentEEBusCandidateGeneration() + 1;
+	  return this._eebusCandidateGeneration;
+	}
+
+	isCurrentEEBusCandidateGeneration(generation) {
+	  return Number.isSafeInteger(generation) && generation === this.currentEEBusCandidateGeneration();
+	}
+
+	retireEEBusCandidateForMutation(path) {
+	  if (path === "/pairing-window:close" || path === "/candidate:confirm" || path === "/candidate:cancel") {
+		this.clearEEBusCandidate();
+	  }
+	}
+
+	clearEEBusCandidateState() {
 	  if (this._eebusCandidateTimer) {
 	  clearTimeout(this._eebusCandidateTimer);
 	  this._eebusCandidateTimer = undefined;
@@ -2682,10 +2800,42 @@ class PortalShell extends HTMLElement {
 	}
   }
 
+	clearEEBusCandidate() {
+	  this.advanceEEBusCandidateGeneration();
+	  this.clearEEBusCandidateState();
+	}
+
   clearEEBusVisibilityAuthority() {
+	this.abortPairingFlow();
+	this._eebusUntrustArmedID = undefined;
+  }
+
+  currentEEBusPairingGeneration() {
+	return Number.isSafeInteger(this._eebusPairingGeneration) ? this._eebusPairingGeneration : 0;
+  }
+
+  isCurrentEEBusPairingGeneration(generation) {
+	return Number.isSafeInteger(generation) && generation === this.currentEEBusPairingGeneration();
+  }
+
+  advanceEEBusPairingGeneration() {
+	this._eebusPairingGeneration = this.currentEEBusPairingGeneration() + 1;
+	return this._eebusPairingGeneration;
+  }
+
+  abortPairingFlow() {
+	const pairingGeneration = this.advanceEEBusPairingGeneration();
 	this.clearEEBusCandidate();
 	this._eebusSelection = undefined;
-	this._eebusUntrustArmedID = undefined;
+	this._eebusPINRequested = false;
+	this.clearEEBusPendingMutation();
+	this.clearEEBusActiveAction();
+	for (const role of ["eebus-connect-pin", "eebus-select-ski", "eebus-confirm-ski"]) {
+	  const input = this.querySelector?.(`[data-role="${role}"]`);
+	  if (input) input.value = "";
+	}
+	this.renderEEBusSelectionControls();
+	return pairingGeneration;
   }
 
   clearEEBusPendingMutation() {
@@ -3083,8 +3233,9 @@ class PortalShell extends HTMLElement {
 			      <button class="button" data-role="eebus-retry-pending" type="button" disabled>Retry pending action</button>
 			    </div>
 			    <label class="eebus-field" for="eebus-select-ski">Independent OOB SKI <span>40 lowercase hexadecimal characters</span></label>
-			    <input id="eebus-select-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-select-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Enter the SKI before Select" />
-			    <div data-role="eebus-pairing-partners"><div class="muted-inline">No discovered service loaded.</div></div>
+				    <input id="eebus-select-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-select-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Enter the SKI before Select" />
+				    <div class="snapshot-controls" data-role="eebus-selection-controls"></div>
+				    <div data-role="eebus-pairing-partners"><div class="muted-inline">No discovered service loaded.</div></div>
 			    <div class="eebus-candidate-panel">
 			      <h4>TLS-bound candidate</h4>
 			      <pre data-role="eebus-candidate"></pre>

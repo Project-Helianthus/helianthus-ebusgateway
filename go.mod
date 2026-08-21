@@ -5,7 +5,7 @@ go 1.22.0
 require (
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260521144203-f9919f4b1007
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260817174811-f8b7082b3fa4
-	github.com/Project-Helianthus/helianthus-eebusreg v0.1.33
+	github.com/Project-Helianthus/helianthus-eebusreg v0.1.35
 	github.com/Project-Helianthus/helianthus-modbus v0.0.0-20260810083147-eab30aed9eb6
 	github.com/Project-Helianthus/helianthus-modbusreg v0.2.1
 	github.com/grandcat/zeroconf v1.0.0
@@ -18,8 +18,8 @@ require (
 )
 
 require (
-	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.17 // indirect
-	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.15 // indirect
+	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.20 // indirect
+	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.18 // indirect
 	github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 // indirect
 	github.com/ahmetb/go-linq/v3 v3.2.0 // indirect
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect

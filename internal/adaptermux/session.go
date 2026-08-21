@@ -222,12 +222,13 @@ const (
 
 // AddSession registers an external TCP connection as an ENH session.
 // Returns the session ID (>0). The session starts reader and writer
-// goroutines. Returns 0 if the mux is shutting down (context cancelled);
+// goroutines. Returns 0 if the mux is shutting down (context cancelled) or a
+// managed connection loss has delegated replacement to the lifecycle owner;
 // the connection is closed and no goroutines are leaked.
 func (m *Mux) AddSession(conn net.Conn) uint64 {
-	if m.ctx == nil || m.ctx.Err() != nil {
+	if m.ctx == nil || m.ctx.Err() != nil || m.connectionLossDelegated.Load() {
 		_ = conn.Close()
-		m.logger.Printf("adaptermux: rejecting session — mux not started or shutting down (AM13)")
+		m.logger.Printf("adaptermux: rejecting session — mux not available (AM13)")
 		return 0
 	}
 

@@ -683,9 +683,12 @@ type Mux struct {
 
 	// connectionLostCallback is a generation-lifecycle signal for the
 	// in-process DriverManager. It fires when readLoop enters reconnect after
-	// a terminal read failure or the duration-based blackhole threshold.
-	connectionLostMu       sync.Mutex
-	connectionLostCallback func()
+	// a terminal read failure or the duration-based blackhole threshold. Once
+	// installed, lifecycle ownership is delegated to that manager: this mux
+	// retires instead of running its legacy in-place reconnect loop.
+	connectionLostMu        sync.Mutex
+	connectionLostCallback  func()
+	connectionLossDelegated atomic.Bool
 
 	// Lifecycle.
 	ctx       context.Context
@@ -1044,22 +1047,31 @@ func (m *Mux) SetPassiveCallback(fn func(PassiveEvent)) {
 }
 
 // SetConnectionLostCallback installs a non-blocking generation-lifecycle
-// observer. The callback must not call back into Mux methods and should be set
-// before Start. Idle read timeouts and in-band RESETTED boundaries are not
-// connection-loss notifications.
+// owner. The callback must not call back into Mux methods and should be set
+// before Start. On a terminal connection-loss boundary, the mux reports the
+// loss, rejects further generation-local work, and exits its read loop; the
+// owner is responsible for replacement. With no callback, the legacy in-place
+// reconnect behavior is preserved. Idle read timeouts and in-band RESETTED
+// boundaries are not connection-loss notifications.
 func (m *Mux) SetConnectionLostCallback(fn func()) {
 	m.connectionLostMu.Lock()
 	m.connectionLostCallback = fn
 	m.connectionLostMu.Unlock()
 }
 
-func (m *Mux) emitConnectionLost() {
+func (m *Mux) emitConnectionLost() bool {
 	m.connectionLostMu.Lock()
 	fn := m.connectionLostCallback
 	m.connectionLostMu.Unlock()
-	if fn != nil {
-		fn()
+	if fn == nil {
+		return false
 	}
+	// Fence proxy and active-path work before publishing BACKOFF through the
+	// callback. This mux never clears the fence: a managed loss retires the
+	// whole generation and the manager constructs a fresh mux.
+	m.connectionLossDelegated.Store(true)
+	fn()
+	return true
 }
 
 // connect dials the adapter and performs the INIT handshake.
@@ -1424,13 +1436,14 @@ func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
 	return result, nil
 }
 
-// reconnect tears down the current connection and re-establishes it.
-// Called from the read loop on adapter disconnect.
-func (m *Mux) reconnect() error {
+// reconnect tears down the current connection. Unmanaged muxes then
+// re-establish it in place; managed muxes delegate replacement to their
+// connection-loss owner and return delegated=true so readLoop retires.
+func (m *Mux) reconnect() (delegated bool, err error) {
 	// Publish loss before entering the legacy reconnect loop. A managed owner
 	// can withdraw admission immediately and retire this mux on its bounded
 	// replacement schedule. Close and ordinary idle timeouts do not emit it.
-	m.emitConnectionLost()
+	delegated = m.emitConnectionLost()
 
 	// Invalidate INFO cache immediately so CachedInfo returns errors
 	// during the disconnect window rather than serving stale data.
@@ -1546,6 +1559,10 @@ func (m *Mux) reconnect() error {
 		}
 	}
 	m.connMu.Unlock()
+	if delegated {
+		m.logger.Printf("adaptermux: connection recovery delegated to lifecycle owner")
+		return true, nil
+	}
 
 	// Reconnection loop with exponential backoff.
 	delay := m.cfg.ReconnectInitialDelay
@@ -1554,7 +1571,7 @@ func (m *Mux) reconnect() error {
 		select {
 		case <-m.ctx.Done():
 			timer.Stop()
-			return m.ctx.Err()
+			return false, m.ctx.Err()
 		case <-timer.C:
 		}
 
@@ -1576,7 +1593,7 @@ func (m *Mux) reconnect() error {
 		// Broadcast RESETTED to external sessions.
 		m.broadcastResetToSessions()
 
-		return nil
+		return false, nil
 	}
 }
 
@@ -1633,8 +1650,12 @@ func (m *Mux) readLoop() {
 					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect (AM27)", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
 					firstTimeoutTime = time.Time{}
 					lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't re-trigger
-					if reconnErr := m.reconnect(); reconnErr != nil {
+					delegated, reconnErr := m.reconnect()
+					if reconnErr != nil {
 						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
+						return
+					}
+					if delegated {
 						return
 					}
 					continue
@@ -1691,8 +1712,12 @@ func (m *Mux) readLoop() {
 			m.logger.Printf("adaptermux: read error: %v", err)
 			firstTimeoutTime = time.Time{}
 			lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't trigger blackhole
-			if reconnErr := m.reconnect(); reconnErr != nil {
+			delegated, reconnErr := m.reconnect()
+			if reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
+				return
+			}
+			if delegated {
 				return
 			}
 			continue
@@ -3404,6 +3429,11 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // rather than calling m.arb.requestStart directly, so both branches
 // of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
+	if m.connectionLossDelegated.Load() {
+		ch := make(chan startResult, 1)
+		ch <- startResult{granted: false, initiator: initiator, err: errNotConnected}
+		return ch
+	}
 	// Steps 1+2 MUST be atomic under stateMu so a concurrent
 	// tryGrantAndStart cannot pop the OLD request out of
 	// pendingExternal between the in-flight check and the
@@ -3502,6 +3532,9 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	if m.connectionLossDelegated.Load() {
+		return
+	}
 	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
 	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
 	// strictly ABBA, keeping consistent ordering is defensive best practice.
@@ -3525,6 +3558,10 @@ func (m *Mux) tryGrantAndStart() {
 	// internally).  No path holds arb.mu then acquires stateMu,
 	// so this is ABBA-safe.
 	m.stateMu.Lock()
+	if m.connectionLossDelegated.Load() {
+		m.stateMu.Unlock()
+		return
+	}
 	if m.pendingStart != nil {
 		m.logger.Printf("adaptermux: tryGrantAndStart skipped — pendingStart already set for session %d", m.pendingStart.sessionID)
 		m.stateMu.Unlock()
@@ -4830,6 +4867,9 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			pacer.CancelEchoWatchdog()
 		}
 	}()
+	if m.connectionLossDelegated.Load() {
+		return errNotConnected
+	}
 
 	if !m.arb.isOwner(sessionID) {
 		return errNotBusOwner

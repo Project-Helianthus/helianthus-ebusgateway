@@ -554,3 +554,60 @@ test("terminal PIN outcomes and action expiry abort every pairing authority", as
     assert.equal(shell._eebusPINRequested, true);
   });
 });
+
+test("no-PIN Connect may reselect after pin_required and submit one transient exact PIN", async () => {
+  const ski = "c".repeat(40);
+  const partners = { innerHTML: "" };
+  const selectSKI = { value: ski };
+  const pinInput = { value: "" };
+  const status = { textContent: "" };
+  const connectBodies = [];
+  let selectionCount = 0;
+  const { shell, storageWrites } = await issue817Shell(async (url, init = {}) => {
+    if (String(url).includes(":select")) {
+      selectionCount += 1;
+      return response({ state_revision: 7 + selectionCount * 2 - 1, data: { outcome: "selected", selection_id: `selection-${selectionCount}` }, error: null });
+    }
+    if (String(url).includes(":connect")) {
+      connectBodies.push(JSON.parse(init.body));
+      return response({ state_revision: 7 + selectionCount * 2, data: { outcome: "connection_started", action_id: `action-${selectionCount}` }, error: null });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  }, new Map([
+    ['[data-role="eebus-pairing-partners"]', partners],
+    ['[data-role="eebus-select-ski"]', selectSKI],
+    ['[data-role="eebus-connect-pin"]', pinInput],
+    ['[data-role="eebus-pairing-status"]', status],
+  ]));
+  shell._eebusStateRevision = 7;
+
+  await shell.selectEEBusObservation("observation-1");
+  assert.equal(shell._eebusSelection.id, "selection-1");
+  assert.equal(shell._eebusPINRequested, undefined);
+  assert.match(partners.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden for the initial active selection");
+  await shell.connectEEBusSelection();
+  assert.deepEqual(connectBodies[0], { state_revision: 8 });
+  shell.renderEEBusActiveAction({ action_id: "action-1", state: "terminal", outcome: "pin_required", expiry: new Date(Date.now() + 60_000).toISOString() }, "action-1");
+  assert.equal(shell._eebusSelection, undefined);
+  assert.equal(shell._eebusPINRequested, false);
+  assert.equal(shell._eebusActiveActionID, undefined);
+  assert.equal(pinInput.value, "");
+  shell.renderEEBusPartners([], "discovered");
+  assert.doesNotMatch(partners.innerHTML, /data-role="eebus-connect-pin"/, "PIN field remains visible without a selection");
+
+  selectSKI.value = ski;
+  await shell.selectEEBusObservation("observation-2");
+  assert.equal(shell._eebusSelection.id, "selection-2");
+  assert.equal(shell._eebusPINRequested, false, "terminal outcome leaked into the successor selection");
+  assert.match(partners.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden after reselect");
+  pinInput.value = "A1b2C3d4";
+  await shell.connectEEBusSelection();
+  assert.deepEqual(connectBodies, [
+    { state_revision: 8 },
+    { state_revision: 10, pin: "A1b2C3d4" },
+  ]);
+  assert.equal(pinInput.value, "");
+  assert.equal(connectBodies.filter((body) => Object.hasOwn(body, "pin")).length, 1);
+  assert.equal(storageWrites.length, 0);
+  shell.abortPairingFlow();
+});

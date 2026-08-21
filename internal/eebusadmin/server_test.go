@@ -1,8 +1,11 @@
 package eebusadmin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,24 +18,25 @@ import (
 )
 
 type adminV1Stub struct {
-	mu               sync.Mutex
-	snapshot         eebusruntime.AdminSnapshotV1
-	snapshots        map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
-	snapshotCalls    int
-	openCalls        []eebusruntime.OpenPairingWindowRequestV1
-	openRevision     uint64
-	selectCalls      []eebusruntime.SelectRequestV1
-	connectCalls     []eebusruntime.ConnectRequestV1
-	confirmCalls     []eebusruntime.ConfirmRequestV1
-	cancelCalls      []eebusruntime.CancelRequestV1
-	closeCalls       []eebusruntime.ClosePairingWindowRequestV1
-	retryCalls       []eebusruntime.RetryTrustedRequestV1
-	untrustCalls     []eebusruntime.UntrustRequestV1
-	connectStarted   chan struct{}
-	connectRelease   chan struct{}
-	connectStartOnce sync.Once
-	connectFailure   *eebusruntime.AdminErrorV1
-	connectPanics    int
+	mu                sync.Mutex
+	snapshot          eebusruntime.AdminSnapshotV1
+	snapshots         map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
+	snapshotCalls     int
+	openCalls         []eebusruntime.OpenPairingWindowRequestV1
+	openRevision      uint64
+	selectCalls       []eebusruntime.SelectRequestV1
+	connectCalls      []eebusruntime.ConnectRequestV1
+	confirmCalls      []eebusruntime.ConfirmRequestV1
+	cancelCalls       []eebusruntime.CancelRequestV1
+	closeCalls        []eebusruntime.ClosePairingWindowRequestV1
+	retryCalls        []eebusruntime.RetryTrustedRequestV1
+	untrustCalls      []eebusruntime.UntrustRequestV1
+	connectStarted    chan struct{}
+	connectRelease    chan struct{}
+	connectStartOnce  sync.Once
+	connectFailure    *eebusruntime.AdminErrorV1
+	connectPanics     int
+	connectPanicValue any
 }
 
 type issue848ObservedDoneContext struct {
@@ -107,6 +111,9 @@ func (stub *adminV1Stub) Connect(ctx context.Context, request eebusruntime.Conne
 		return eebusruntime.ConnectResultV1{}, failure
 	}
 	if shouldPanic {
+		if stub.connectPanicValue != nil {
+			panic(stub.connectPanicValue)
+		}
 		panic("backend panic after launched effect")
 	}
 	return eebusruntime.ConnectResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connection_started"}, ActionID: "action-1"}, nil
@@ -339,6 +346,104 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 		}
 		if dispositions["executed"] != 1 || dispositions["replayed"] != 2 || dispositions["conflict"] != 1 {
 			t.Fatalf("audit dispositions=%v, want executed=1 replayed=2 conflict=1", dispositions)
+		}
+	})
+
+	t.Run("real HTTP server never logs a secret-bearing backend panic", func(t *testing.T) {
+		const panicSecret = "panic-secret-A1b2C3d4-request-body"
+		collector := &auditCollector{}
+		admin := &adminV1Stub{connectPanics: 1, connectPanicValue: panicSecret}
+		handler, route := prepare(t, admin, collector, 110)
+		gatewayServer := handler.(*server)
+		var errorLog bytes.Buffer
+		httpServer := httptest.NewUnstartedServer(handler)
+		httpServer.Config.ErrorLog = log.New(&errorLog, "", 0)
+		httpServer.Start()
+		defer httpServer.Close()
+
+		const key = "real-http-panic-848"
+		body := `{"state_revision":111,"pin":"` + pin + `"}`
+		do := func(requestBody string) (*http.Response, error) {
+			httpRequest, err := http.NewRequest(http.MethodPost, httpServer.URL+route, strings.NewReader(requestBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			httpRequest.Header.Set("Content-Type", "application/json")
+			httpRequest.Header.Set("Idempotency-Key", key)
+			return httpServer.Client().Do(httpRequest)
+		}
+
+		leader, leaderErr := do(body)
+		var responseMaterial bytes.Buffer
+		if leader != nil {
+			content, _ := io.ReadAll(leader.Body)
+			_ = leader.Body.Close()
+			responseMaterial.Write(content)
+		}
+		if leaderErr == nil {
+			t.Fatal("secret-bearing backend panic unexpectedly returned a normal HTTP response")
+		}
+		retry, err := do(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retryBody, _ := io.ReadAll(retry.Body)
+		_ = retry.Body.Close()
+		responseMaterial.Write(retryBody)
+		if retry.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("panic retry status=%d body=%s", retry.StatusCode, retryBody)
+		}
+		conflict, err := do(`{"state_revision":111,"pin":"` + changedPIN + `"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conflictBody, _ := io.ReadAll(conflict.Body)
+		_ = conflict.Body.Close()
+		responseMaterial.Write(conflictBody)
+		if conflict.StatusCode != http.StatusConflict {
+			t.Fatalf("panic changed-binding status=%d body=%s", conflict.StatusCode, conflictBody)
+		}
+
+		admin.mu.Lock()
+		calls := len(admin.connectCalls)
+		admin.mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("real HTTP panic Connect calls=%d, want one", calls)
+		}
+		gatewayServer.connectMu.Lock()
+		tombstone, retained := gatewayServer.connectReplays[key]
+		gatewayServer.connectMu.Unlock()
+		if !retained || tombstone.failure != eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable || tombstone.expiresAt.IsZero() {
+			t.Fatalf("panic tombstone=%#v retained=%v", tombstone, retained)
+		}
+		if bytes.Contains(tombstone.binding[:], []byte(panicSecret)) {
+			t.Fatal("panic tombstone retained the panic secret")
+		}
+
+		collector.mu.Lock()
+		events := append([]AuditEvent(nil), collector.events...)
+		collector.mu.Unlock()
+		if len(events) != 3 {
+			t.Fatalf("real HTTP panic audits=%d, want leader/retry/conflict: %#v", len(events), events)
+		}
+		auditJSON, err := json.Marshal(events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, surface := range []struct {
+			name  string
+			value string
+		}{
+			{"server error log", errorLog.String()},
+			{"HTTP responses", responseMaterial.String()},
+			{"audit", string(auditJSON)},
+			{"replay result", tombstone.result.ActionID + tombstone.result.Outcome},
+		} {
+			for _, forbidden := range []string{panicSecret, pin, body, "request-body"} {
+				if strings.Contains(strings.ToLower(surface.value), strings.ToLower(forbidden)) {
+					t.Fatalf("%s leaked %q: %s", surface.name, forbidden, surface.value)
+				}
+			}
 		}
 	})
 }

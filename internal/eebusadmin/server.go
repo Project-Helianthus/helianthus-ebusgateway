@@ -92,6 +92,7 @@ type httpMutationReplay struct {
 type connectReplay struct {
 	binding   [32]byte
 	result    connectResultData
+	failure   eebusruntime.AdminErrorCodeV1
 	revision  uint64
 	expiresAt time.Time
 }
@@ -111,6 +112,7 @@ type connectAuditCapture struct {
 	body        bytes.Buffer
 	disposition string
 	invoked     bool
+	auditReason string
 }
 
 func (capture *connectAuditCapture) WriteHeader(status int) {
@@ -365,6 +367,10 @@ func auditAction(method, requestPath string) string {
 }
 
 func (server *server) emitMutationAudit(action string, status int, body []byte, idempotencyOutcome string, invoked bool) {
+	server.emitMutationAuditWithReason(action, status, body, idempotencyOutcome, invoked, "")
+}
+
+func (server *server) emitMutationAuditWithReason(action string, status int, body []byte, idempotencyOutcome string, invoked bool, explicitReason string) {
 	if server.audit == nil {
 		return
 	}
@@ -375,16 +381,21 @@ func (server *server) emitMutationAudit(action string, status int, body []byte, 
 		} `json:"data"`
 		Error *errorData `json:"error"`
 	}
-	if json.Unmarshal(body, &envelope) != nil {
-		return
-	}
 	reason := "unknown_state"
 	resulting := "rejected"
-	if envelope.Error != nil {
-		reason = sanitizedAuditReason(envelope.Error.Code)
-	} else if status >= http.StatusOK && status < http.StatusMultipleChoices {
-		reason = sanitizedAuditReason(envelope.Data.Outcome)
-		resulting = "changed"
+	if explicitReason != "" {
+		reason = sanitizedAuditReason(explicitReason)
+		envelope.RequestID = server.requestID()
+	} else {
+		if json.Unmarshal(body, &envelope) != nil {
+			return
+		}
+		if envelope.Error != nil {
+			reason = sanitizedAuditReason(envelope.Error.Code)
+		} else if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			reason = sanitizedAuditReason(envelope.Data.Outcome)
+			resulting = "changed"
+		}
 	}
 	prior := "host_operator"
 	if invoked {
@@ -528,11 +539,18 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 func (server *server) connectSelection(w http.ResponseWriter, request *http.Request) {
 	capture := &connectAuditCapture{ResponseWriter: w, disposition: "rejected"}
 	defer func() {
+		recovered := recover()
+		if recovered != nil {
+			capture.auditReason = string(eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable)
+		}
 		status := capture.status
 		if status == 0 {
 			status = http.StatusInternalServerError
 		}
-		server.emitMutationAudit("connect_selection", status, capture.body.Bytes(), capture.disposition, capture.invoked)
+		server.emitMutationAuditWithReason("connect_selection", status, capture.body.Bytes(), capture.disposition, capture.invoked, capture.auditReason)
+		if recovered != nil {
+			panic(recovered)
+		}
 	}()
 	w = capture
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/selections/", ":connect")
@@ -566,6 +584,10 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		if reservation.done == nil && reservation.replay != nil {
 			capture.disposition = "replayed"
 			replay := *reservation.replay
+			if replay.failure != "" {
+				server.writeAdminFailure(w, &eebusruntime.AdminErrorV1{Code: replay.failure})
+				return
+			}
 			replay.result.Replayed = true
 			server.writeConnectResult(w, replay.revision, replay.result)
 			return
@@ -583,6 +605,10 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		if reservation.replay != nil {
 			capture.disposition = "replayed"
 			replay := *reservation.replay
+			if replay.failure != "" {
+				server.writeAdminFailure(w, &eebusruntime.AdminErrorV1{Code: replay.failure})
+				return
+			}
 			replay.result.Replayed = true
 			server.writeConnectResult(w, replay.revision, replay.result)
 			return
@@ -623,7 +649,11 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 func (server *server) callConnectReserved(ctx context.Context, key string, reservation *connectInFlight, request eebusruntime.ConnectRequestV1) (result eebusruntime.ConnectResultV1, failure *eebusruntime.AdminErrorV1) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			server.finishConnectReservation(key, reservation, nil, eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable)
+			tombstone := connectReplay{
+				binding: reservation.binding, failure: eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable,
+				expiresAt: server.now().Add(2 * time.Minute),
+			}
+			server.finishConnectReservation(key, reservation, &tombstone, "")
 			panic(recovered)
 		}
 	}()

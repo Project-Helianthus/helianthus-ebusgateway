@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -116,6 +117,9 @@ type RetryPolicy struct {
 	Budget       int
 	InitialDelay time.Duration
 	MaxDelay     time.Duration
+	// JitterRatio is the symmetric jitter bound around each exponential
+	// delay. Zero selects the default 20%; a negative value disables jitter.
+	JitterRatio float64
 }
 
 // Runtime is the protocol-neutral lifecycle boundary implemented by adapters.
@@ -158,14 +162,16 @@ type DriverConfig struct {
 }
 
 type Config struct {
-	Drivers []DriverConfig
-	Now     func() time.Time
+	Drivers     []DriverConfig
+	Now         func() time.Time
+	RetryJitter func(time.Duration) time.Duration
 }
 
 type Manager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	now    func() time.Time
+	jitter func(time.Duration) time.Duration
 
 	drivers map[string]*managedDriver
 	wg      sync.WaitGroup
@@ -209,8 +215,12 @@ func New(cfg Config) (*Manager, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	jitter := cfg.RetryJitter
+	if jitter == nil {
+		jitter = defaultRetryJitter
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := &Manager{ctx: ctx, cancel: cancel, now: now, drivers: make(map[string]*managedDriver, len(cfg.Drivers))}
+	manager := &Manager{ctx: ctx, cancel: cancel, now: now, jitter: jitter, drivers: make(map[string]*managedDriver, len(cfg.Drivers))}
 	for _, driverCfg := range cfg.Drivers {
 		id := strings.TrimSpace(driverCfg.ID)
 		if id == "" || id != driverCfg.ID {
@@ -562,7 +572,7 @@ func (manager *Manager) finishAttempt(driver *managedDriver, operation, generati
 }
 
 func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uint64, replace bool) {
-	delay := retryDelay(driver.cfg.Retry, driver.cfg.Retry.Budget-driver.retryRemaining)
+	delay := retryDelay(driver.cfg.Retry, driver.cfg.Retry.Budget-driver.retryRemaining, manager.jitter)
 	retry := &RetrySnapshot{Eligible: true, BudgetRemaining: driver.retryRemaining, NotBeforeUTC: manager.now().Add(delay)}
 	manager.transitionLocked(driver, ObservedBackoff, Reason{Code: ReasonRetryScheduled, Retryable: true}, retry, nil)
 	driver.retryRemaining--
@@ -782,21 +792,53 @@ func normalizeRetryPolicy(policy RetryPolicy) RetryPolicy {
 	if policy.MaxDelay < policy.InitialDelay {
 		policy.MaxDelay = policy.InitialDelay
 	}
+	if policy.JitterRatio == 0 {
+		policy.JitterRatio = 0.2
+	} else if policy.JitterRatio < 0 {
+		policy.JitterRatio = 0
+	} else if policy.JitterRatio > 0.5 {
+		policy.JitterRatio = 0.5
+	}
 	return policy
 }
 
-func retryDelay(policy RetryPolicy, index int) time.Duration {
+func retryDelay(policy RetryPolicy, index int, jitter func(time.Duration) time.Duration) time.Duration {
 	delay := policy.InitialDelay
 	for n := 0; n < index && delay < policy.MaxDelay; n++ {
 		if delay > policy.MaxDelay/2 {
-			return policy.MaxDelay
+			delay = policy.MaxDelay
+			break
 		}
 		delay *= 2
+	}
+	if delay > policy.MaxDelay {
+		delay = policy.MaxDelay
+	}
+	limit := time.Duration(float64(delay) * policy.JitterRatio)
+	if limit <= 0 || jitter == nil {
+		return delay
+	}
+	adjustment := jitter(limit)
+	if adjustment > limit {
+		adjustment = limit
+	} else if adjustment < -limit {
+		adjustment = -limit
+	}
+	delay += adjustment
+	if delay < policy.InitialDelay {
+		return policy.InitialDelay
 	}
 	if delay > policy.MaxDelay {
 		return policy.MaxDelay
 	}
 	return delay
+}
+
+func defaultRetryJitter(limit time.Duration) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	return time.Duration((rand.Float64()*2 - 1) * float64(limit))
 }
 
 func normalizeCapabilities(capabilities []Capability) []Capability {

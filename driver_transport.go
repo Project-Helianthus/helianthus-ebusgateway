@@ -25,9 +25,17 @@ func OpenEBusDriverPassiveTransport(ctx context.Context, cfg Config) (transport.
 // normalization used by transport construction. Invalid endpoints retain the
 // canonical configured fallback so their error remains driver-local.
 func EBusDriverTransportProtocol(config TransportConfig) TransportProtocol {
-	normalized, err := normalizeTransportConfig(config)
+	normalized, err := NormalizeEBusDriverTransportConfig(config)
 	if err == nil {
 		return normalized.Protocol
 	}
 	return canonicalTransportProtocol(config.Protocol)
+}
+
+// NormalizeEBusDriverTransportConfig resolves a valid endpoint URI into the
+// canonical protocol/network/address tuple used by both the process shell and
+// transport construction. Callers must retain an invalid descriptor unchanged
+// so its failure remains isolated to the eBUS driver lifecycle.
+func NormalizeEBusDriverTransportConfig(config TransportConfig) (TransportConfig, error) {
+	return normalizeTransportConfig(config)
 }

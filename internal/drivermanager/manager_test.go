@@ -261,6 +261,65 @@ func (runtime *scriptedRuntime) calls() (start, stop int) {
 	return runtime.startCalls, runtime.stopCalls
 }
 
+func TestRetryDelayUsesBoundedInjectableJitter(t *testing.T) {
+	policy := normalizeRetryPolicy(RetryPolicy{
+		InitialDelay: 10 * time.Millisecond,
+		MaxDelay:     80 * time.Millisecond,
+		JitterRatio:  0.25,
+	})
+	var observedLimit time.Duration
+	positive := retryDelay(policy, 1, func(limit time.Duration) time.Duration {
+		observedLimit = limit
+		return 10 * limit // manager must clamp an out-of-range source
+	})
+	if observedLimit != 5*time.Millisecond || positive != 25*time.Millisecond {
+		t.Fatalf("positive jitter limit/delay = %v/%v, want 5ms/25ms", observedLimit, positive)
+	}
+	negative := retryDelay(policy, 1, func(limit time.Duration) time.Duration { return -10 * limit })
+	if negative != 15*time.Millisecond {
+		t.Fatalf("negative jitter delay = %v, want 15ms", negative)
+	}
+	minimum := retryDelay(policy, 0, func(limit time.Duration) time.Duration { return -limit })
+	if minimum != policy.InitialDelay {
+		t.Fatalf("minimum jitter delay = %v, want floor %v", minimum, policy.InitialDelay)
+	}
+	maximum := retryDelay(policy, 3, func(limit time.Duration) time.Duration { return limit })
+	if maximum != policy.MaxDelay {
+		t.Fatalf("maximum jitter delay = %v, want ceiling %v", maximum, policy.MaxDelay)
+	}
+}
+
+func TestManagerRetrySnapshotUsesInjectedJitter(t *testing.T) {
+	now := time.Date(2026, time.August, 21, 12, 0, 0, 0, time.UTC)
+	runtime := &scriptedRuntime{startResults: []error{errors.New("offline")}}
+	manager, err := New(Config{
+		Now: func() time.Time { return now },
+		RetryJitter: func(limit time.Duration) time.Duration {
+			return limit
+		},
+		Drivers: []DriverConfig{{
+			ID:      "ebus.primary",
+			Enabled: true,
+			Runtime: runtime,
+			ClassifyError: func(error) Failure {
+				return Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}
+			},
+			Retry: RetryPolicy{Budget: 1, InitialDelay: 100 * time.Millisecond, MaxDelay: time.Second, JitterRatio: 0.25},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	backoff := requireObservedState(t, manager, "ebus.primary", ObservedBackoff, time.Second)
+	if backoff.Retry == nil || !backoff.Retry.NotBeforeUTC.Equal(now.Add(125*time.Millisecond)) {
+		t.Fatalf("retry snapshot = %#v, want not-before %s", backoff.Retry, now.Add(125*time.Millisecond))
+	}
+	_ = manager.Stop(context.Background(), "ebus.primary")
+}
+
 func TestManagerInitialFailureBacksOffAndRecoversCategorically(t *testing.T) {
 	rawFailure := errors.New("dial tcp://user:secret@example.invalid:9999: refused")
 	runtime := &scriptedRuntime{startResults: []error{rawFailure, nil}}

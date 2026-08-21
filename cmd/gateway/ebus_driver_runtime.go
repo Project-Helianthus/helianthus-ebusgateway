@@ -23,6 +23,7 @@ const (
 	defaultEBusRetryBudget        = 5
 	defaultEBusRetryInitialDelay  = time.Second
 	defaultEBusRetryMaxDelay      = 30 * time.Second
+	defaultEBusRetryJitterRatio   = 0.2
 )
 
 type ebusDriverController struct {
@@ -56,6 +57,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 			Budget:       defaultEBusRetryBudget,
 			InitialDelay: defaultEBusRetryInitialDelay,
 			MaxDelay:     defaultEBusRetryMaxDelay,
+			JitterRatio:  defaultEBusRetryJitterRatio,
 		},
 	}}})
 	if err != nil {

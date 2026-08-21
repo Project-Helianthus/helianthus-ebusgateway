@@ -166,3 +166,121 @@ func TestIssue851HTTPShellStartsWhileEBusConstructionIsBlocked(t *testing.T) {
 		t.Fatal("run did not shut down after blocked construction was released")
 	}
 }
+
+func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) {
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+
+	tests := []struct {
+		name          string
+		uri           string
+		wantProtocol  ebusgateway.TransportProtocol
+		wantNetwork   string
+		wantAddress   string
+		wantAdmission bool
+		wantSource    byte
+	}{
+		{name: "ebusd", uri: "ebusd://127.0.0.1:8888", wantProtocol: ebusgateway.TransportEbusdTCP, wantNetwork: "tcp", wantAddress: "127.0.0.1:8888", wantAdmission: true, wantSource: ebusgateway.DefaultConfig().ScanSource},
+		{name: "tcp plain", uri: "tcp-plain://127.0.0.1:9999", wantProtocol: ebusgateway.TransportTCPPlain, wantNetwork: "tcp", wantAddress: "127.0.0.1:9999"},
+		{name: "udp plain", uri: "udp-plain://127.0.0.1:9999", wantProtocol: ebusgateway.TransportUDPPlain, wantNetwork: "udp", wantAddress: "127.0.0.1:9999"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			type runtimeObservation struct {
+				cfg      ebusgateway.Config
+				admitted bool
+				source   byte
+			}
+			wireObserved := make(chan ebusgateway.Config, 1)
+			discoveryObserved := make(chan ebusgateway.Config, 1)
+			httpObserved := make(chan runtimeObservation, 1)
+
+			wireObserveFirstObserversFn = func(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+				wireObserved <- *cfg
+				return nil, nil, nil
+			}
+			startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
+				discoveryObserved <- cfg
+				return startupScanSignals{}
+			}
+			startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+				return nil
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			startHTTPServerFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, builder *graphql.Builder, _ *graphql.BroadcastHub, _ graphql.SemanticProvider, _ mcp.ScheduleWriter, _ mcp.ConfigWriter, _ *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+				source, admitted := builder.AdmittedMutationSource()
+				httpObserved <- runtimeObservation{cfg: cfg, admitted: admitted, source: source}
+				cancel()
+				return nil, nil, nil
+			}
+
+			cfg := ebusgateway.DefaultConfig()
+			cfg.Transport = nil
+			cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+			cfg.TransportConfig.Network = "unix"
+			cfg.TransportConfig.Address = test.uri
+			cfg.TransportConfig.DialTimeout = time.Millisecond
+			cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+				return nil, errors.New("test transport unavailable")
+			}
+			cfg.BroadcastListen = false
+			cfg.ScanOnStart = false
+			cfg.ScanSource = 0
+			cfg.ScanSourceAuto = true
+			cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+
+			done := make(chan error, 1)
+			go func() { done <- run(ctx, cfg) }()
+			var httpResult runtimeObservation
+			select {
+			case httpResult = <-httpObserved:
+			case err := <-done:
+				t.Fatalf("run() exited before HTTP observation: %v", err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("HTTP runtime did not start")
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("run() error = %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("run() did not stop after HTTP observation")
+			}
+
+			assertCanonical := func(label string, observed ebusgateway.Config) {
+				t.Helper()
+				if observed.TransportConfig.Protocol != test.wantProtocol || observed.TransportConfig.Network != test.wantNetwork || observed.TransportConfig.Address != test.wantAddress {
+					t.Fatalf("%s transport = protocol:%q network:%q address:%q, want %q/%q/%q", label, observed.TransportConfig.Protocol, observed.TransportConfig.Network, observed.TransportConfig.Address, test.wantProtocol, test.wantNetwork, test.wantAddress)
+				}
+			}
+			assertCanonical("HTTP", httpResult.cfg)
+			select {
+			case observed := <-wireObserved:
+				assertCanonical("observer wiring", observed)
+			default:
+				t.Fatal("observer wiring did not receive runtime config")
+			}
+			select {
+			case observed := <-discoveryObserved:
+				assertCanonical("discovery", observed)
+			default:
+				t.Fatal("discovery did not receive runtime config")
+			}
+			if httpResult.admitted != test.wantAdmission || httpResult.source != test.wantSource {
+				t.Fatalf("HTTP admitted source = 0x%02X admitted=%v, want 0x%02X/%v", httpResult.source, httpResult.admitted, test.wantSource, test.wantAdmission)
+			}
+		})
+	}
+}

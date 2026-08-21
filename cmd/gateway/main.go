@@ -1313,6 +1313,13 @@ func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	if cfg == nil {
 		return
 	}
+	// Resolve a valid URI override once at the process integration boundary so
+	// every downstream admission/source/evidence decision sees the same
+	// canonical transport tuple as the driver factory. Invalid descriptors stay
+	// untouched and are classified driver-locally by DriverManager.
+	if normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig); err == nil {
+		cfg.TransportConfig = normalized
+	}
 
 	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
 	switch protocol {

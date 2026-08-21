@@ -32,6 +32,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
@@ -96,8 +97,8 @@ var (
 // non-nil after a successful ebusgateway.New(), and the wiring site
 // guards on it.
 type v8RolloutExpvarSource struct {
-	bus        *protocol.Bus
-	classifier *v8classifier.Classifier
+	bus          *protocol.Bus
+	classifierFn func() *v8classifier.Classifier
 }
 
 type runtimeWatchObserver struct {
@@ -269,18 +270,37 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 	}()
 
-	// Wire adapter-direct mode: create multiplexer, configure active
-	// and passive transports before gateway construction.
-	adapterMuxCloser, adapterClassifier, err := wireAdapterDirect(ctx, &cfg)
+	// Construct the protocol-neutral manager and stable eBUS provider before
+	// opening any eBUS resource. Driver-local construction failure is retained
+	// as categorical state and never promoted to process failure.
+	ebusDriver, err := newEBusDriverController(cfg)
 	if err != nil {
-		return withEndpointOwner(endpointOwnerAdapterDirect, fmt.Errorf("adapter-direct: %w", err))
+		return fmt.Errorf("construct eBUS DriverManager: %w", err)
 	}
-	if adapterMuxCloser != nil {
-		defer func() {
-			if err := adapterMuxCloser(); err != nil {
-				log.Printf("adapter-direct close: %v", err)
-			}
-		}()
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*defaultEBusDriverDrainTimeout+time.Second)
+		defer cancel()
+		if err := ebusDriver.Shutdown(stopCtx); err != nil {
+			result = errors.Join(result, fmt.Errorf("shutdown eBUS driver: %w", err))
+		}
+	}()
+	cfg.Transport = ebusDriver.active
+	if ebusDriver.passive != nil {
+		cfg.PassiveTransport = ebusDriver.passive
+		if configuredEBusDriverProtocol(cfg) == ebusgateway.TransportAdapterDirect {
+			cfg.ObserveFirstWarmupCompletedTransactions = 0
+			cfg.ObserveFirstWarmupConnectedWindow = 0
+			cfg.ObserveFirstWarmupPostResetTransactions = 0
+			cfg.ObserveFirstWarmupPostResetWindow = 0
+		}
+	}
+	adapterClassifier := ebusDriver.classifier
+	if err := ebusDriver.Start(ctx); err != nil {
+		return fmt.Errorf("start eBUS DriverManager: %w", err)
+	}
+	ebusDriverSnapshot := ebusDriver.Snapshot()
+	if ebusDriverSnapshot.ObservedState != "RUNNING" {
+		log.Printf("eBUS driver unavailable; continuing state=%s reason=%s", ebusDriverSnapshot.ObservedState, ebusDriverSnapshot.Reason.Code)
 	}
 
 	// Warn if --proxy-listen is set but adapter-direct transport was not
@@ -396,11 +416,14 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	// internal/adaptermux/v8classifier/classifier.go:848).
 	if busObservability != nil && gateway.Bus != nil {
 		bus := gateway.Bus
-		var classifier *v8classifier.Classifier
-		if m, ok := adapterClassifier.(*adaptermux.Mux); ok {
-			classifier = m.V8Classifier()
+		classifierFn := func() *v8classifier.Classifier { return nil }
+		if provider, ok := adapterClassifier.(interface {
+			V8Classifier() *v8classifier.Classifier
+		}); ok {
+			classifierFn = provider.V8Classifier
 		}
 		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
+			classifier := classifierFn()
 			return ebusgateway.V8RolloutSnapshot{
 				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
 				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
@@ -427,8 +450,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		// immediately starts reading the new bus — no surface
 		// inconsistency between /metrics and /debug/vars.
 		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
-			bus:        bus,
-			classifier: classifier,
+			bus:          bus,
+			classifierFn: classifierFn,
 		})
 		// F-NEW-26: pin the current classifier for the
 		// /debug/v8/admin-events HTTP handler too. Same atomic-
@@ -439,7 +462,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		// handler's nil-check returns an empty event list in
 		// that case so the surface stays available across
 		// transports for tooling that probes it unconditionally.
-		v8AdminEventsCurrentClassifier.Store(classifier)
+		v8AdminEventsCurrentClassifier.Store(classifierFn())
 		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
 				expvar.Func(func() any {
@@ -475,7 +498,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 						// classifier may be nil on non-adapter-direct
 						// transports — the method has nil-receiver
 						// handling and returns 0.
-						return src.classifier.ShadowWouldHaveDroppedTotal()
+						classifier := src.classifierFn
+						if classifier == nil {
+							return uint64(0)
+						}
+						return classifier().ShadowWouldHaveDroppedTotal()
 					}
 					return uint64(0)
 				}))
@@ -1625,7 +1652,7 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		network = "tcp"
 	}
 	if address == "" {
-		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
+		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999): %w", ebuserrors.ErrInvalidPayload)
 	}
 
 	// Determine ENH vs ENS sub-protocol. ENH is the default.

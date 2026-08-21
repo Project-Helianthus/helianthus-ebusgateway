@@ -12,6 +12,7 @@ import (
 type scriptedRuntime struct {
 	mu           sync.Mutex
 	startResults []error
+	stopResults  []error
 	startCalls   int
 	stopCalls    int
 	generation   uint64
@@ -48,7 +49,15 @@ func (runtime *scriptedRuntime) Stop(context.Context) error {
 	defer runtime.mu.Unlock()
 	runtime.stopCalls++
 	runtime.revision++
-	return nil
+	var err error
+	if len(runtime.stopResults) != 0 {
+		err = runtime.stopResults[0]
+		runtime.stopResults = runtime.stopResults[1:]
+	}
+	if errors.Is(err, ErrSafetyQuarantined) {
+		runtime.quarantined = true
+	}
+	return err
 }
 
 func (runtime *scriptedRuntime) Generation() uint64 {
@@ -190,6 +199,81 @@ func TestManagerRejectsStaleGenerationHealthCallbackAfterReplace(t *testing.T) {
 	afterStale, _ := manager.Snapshot("ebus.primary")
 	if afterStale.ObservedState != ObservedRunning || afterStale.Generation != second.Generation || !reflect.DeepEqual(afterStale.EffectiveCapabilities, second.Capabilities) {
 		t.Fatalf("snapshot after stale callback = %#v", afterStale)
+	}
+}
+
+func TestManagerSafetyQuarantineMirrorsRuntimeAndBlocksRecovery(t *testing.T) {
+	runtime := &scriptedRuntime{stopResults: []error{ErrSafetyQuarantined}}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		Retry:        RetryPolicy{Budget: 2, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if err := manager.Stop(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	failed := requireObservedState(t, manager, "ebus.primary", ObservedFailed, time.Second)
+	if !failed.SafetyQuarantined || failed.Reason.Code != ReasonCloseUnconfirmed || len(failed.EffectiveCapabilities) != 0 {
+		t.Fatalf("quarantined snapshot = %#v", failed)
+	}
+	if failed.Generation != running.Generation {
+		t.Fatalf("quarantine generation = %d, want %d", failed.Generation, running.Generation)
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); !errors.Is(err, ErrSafetyQuarantined) {
+		t.Fatalf("Start() after quarantine error = %v, want ErrSafetyQuarantined", err)
+	}
+	if err := manager.Replace(context.Background(), "ebus.primary"); !errors.Is(err, ErrSafetyQuarantined) {
+		t.Fatalf("Replace() after quarantine error = %v, want ErrSafetyQuarantined", err)
+	}
+	if accepted := manager.ReportDegradedCorrelated("ebus.primary", Correlation{Generation: running.Generation}, []Capability{CapabilityRead}, Reason{Code: ReasonCapabilityDegraded}); accepted {
+		t.Fatal("late callback cleared process-epoch quarantine")
+	}
+	starts, stops := runtime.calls()
+	if starts != 1 || stops != 1 {
+		t.Fatalf("runtime calls after recovery attempts = start:%d stop:%d, want 1/1", starts, stops)
+	}
+}
+
+func TestManagerRejectsCallbackFromSupersededOperation(t *testing.T) {
+	runtime := &scriptedRuntime{}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		Retry:        RetryPolicy{Budget: 1, InitialDelay: 100 * time.Millisecond, MaxDelay: 100 * time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	oldCorrelation := Correlation{Generation: running.Generation}
+	if accepted := manager.ReportFailure("ebus.primary", oldCorrelation, Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}); !accepted {
+		t.Fatal("first current-operation failure was rejected")
+	}
+	backoff := requireObservedState(t, manager, "ebus.primary", ObservedBackoff, time.Second)
+	if backoff.ActiveOperation == 0 {
+		t.Fatalf("BACKOFF snapshot has no active operation: %#v", backoff)
+	}
+	if accepted := manager.ReportFailure("ebus.primary", oldCorrelation, Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}); accepted {
+		t.Fatal("callback from superseded operation mutated BACKOFF state")
+	}
+	after, _ := manager.Snapshot("ebus.primary")
+	if after.Revision != backoff.Revision || after.ActiveOperation != backoff.ActiveOperation {
+		t.Fatalf("superseded callback changed snapshot: before=%#v after=%#v", backoff, after)
 	}
 }
 

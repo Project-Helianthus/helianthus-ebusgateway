@@ -637,3 +637,114 @@ test("no-PIN Connect may reselect after pin_required and submit one transient ex
   assert.equal(pinInput.value, "");
   shell.abortPairingFlow();
 });
+
+function issue848Deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function issue848AsyncFlowElements() {
+  const elements = issue848PairingElements();
+  elements.set('[data-role="eebus-pairing-partners"]', { innerHTML: "partner-marker", addEventListener() {} });
+  elements.get('[data-role="eebus-selection-controls"]').innerHTML = "";
+  elements.get('[data-role="eebus-select-ski"]').value = "d".repeat(40);
+  elements.get('[data-role="eebus-connect-pin"]').value = "";
+  return elements;
+}
+
+test("late Select and Connect completions cannot escape pairing retirement boundaries", async (t) => {
+  const boundaries = {
+    "navigate SHIP": (shell) => shell.switchEEBusWorkspace("ship"),
+    "navigate SPINE": (shell) => shell.switchEEBusWorkspace("spine"),
+    "visibility loss": (shell) => shell.clearEEBusVisibilityAuthority(),
+    "component disconnect": (shell) => { shell.endBootstrapLifecycle = () => {}; shell.disconnectedCallback(); },
+    "leave eeBUS component": (shell) => { shell._activeSectionTarget = "section-eebus"; shell.querySelectorAll = () => []; shell.activateSection("section-registry"); },
+  };
+
+  for (const requestKind of ["select", "connect"]) {
+    for (const [boundaryName, retire] of Object.entries(boundaries)) {
+      await t.test(`${requestKind} then ${boundaryName}`, async () => {
+        const deferred = issue848Deferred();
+        const elements = issue848AsyncFlowElements();
+        const { shell } = await issue817Shell(async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => deferred.promise,
+        }), elements);
+        shell._eebusWorkspace = "pairing";
+        shell._eebusStateRevision = 20;
+        let pending;
+        if (requestKind === "select") {
+          pending = shell.selectEEBusObservation("observation-late");
+        } else {
+          shell._eebusSelection = { id: "selection-late" };
+          shell.renderEEBusSelectionControls();
+          pending = shell.connectEEBusSelection();
+          assert.equal(elements.get('[data-role="eebus-selection-controls"]').innerHTML, "", "Connect did not consume controls synchronously");
+        }
+
+        retire(shell);
+        deferred.resolve(requestKind === "select"
+          ? { state_revision: 21, data: { outcome: "selected", selection_id: "selection-late" }, error: null }
+          : { state_revision: 21, data: { outcome: "connection_started", action_id: "action-late" }, error: null });
+        await pending;
+
+        assert.equal(shell._eebusSelection, undefined);
+        assert.equal(elements.get('[data-role="eebus-selection-controls"]').innerHTML, "");
+        assert.equal(shell._eebusActiveActionID, undefined);
+        assert.equal(shell._eebusLastActiveAction, undefined);
+        assert.equal(shell._eebusActiveActionTimer, undefined);
+        assert.equal(shell._eebusPendingMutation, undefined);
+      });
+    }
+  }
+});
+
+test("late predecessor Select and Connect completions cannot overwrite a successor flow", async (t) => {
+  await t.test("Select predecessor", async () => {
+    const predecessor = issue848Deferred();
+    const elements = issue848AsyncFlowElements();
+    const { shell } = await issue817Shell(async (url) => {
+      if (String(url).includes("observation-1")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => predecessor.promise };
+      }
+      return response({ state_revision: 32, data: { outcome: "selected", selection_id: "selection-2" }, error: null });
+    }, elements);
+    shell._eebusStateRevision = 30;
+    const first = shell.selectEEBusObservation("observation-1");
+    elements.get('[data-role="eebus-select-ski"]').value = "e".repeat(40);
+    await shell.selectEEBusObservation("observation-2");
+    assert.equal(shell._eebusSelection.id, "selection-2");
+    predecessor.resolve({ state_revision: 31, data: { outcome: "selected", selection_id: "selection-1" }, error: null });
+    await first;
+    assert.equal(shell._eebusSelection.id, "selection-2");
+    assert.match(elements.get('[data-role="eebus-selection-controls"]').innerHTML, /data-eebus-action="connect"/);
+  });
+
+  await t.test("Connect predecessor", async () => {
+    const predecessor = issue848Deferred();
+    const elements = issue848AsyncFlowElements();
+    const { shell } = await issue817Shell(async (url) => {
+      if (String(url).includes("selection-1:connect")) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => predecessor.promise };
+      }
+      return response({ state_revision: 42, data: { outcome: "selected", selection_id: "selection-2" }, error: null });
+    }, elements);
+    shell._eebusStateRevision = 40;
+    shell._eebusSelection = { id: "selection-1" };
+    shell.renderEEBusSelectionControls();
+    const first = shell.connectEEBusSelection();
+    assert.equal(elements.get('[data-role="eebus-selection-controls"]').innerHTML, "");
+    elements.get('[data-role="eebus-select-ski"]').value = "f".repeat(40);
+    await shell.selectEEBusObservation("observation-2");
+    assert.equal(shell._eebusSelection.id, "selection-2");
+    predecessor.resolve({ state_revision: 41, data: { outcome: "connection_started", action_id: "action-1" }, error: null });
+    await first;
+    assert.equal(shell._eebusSelection.id, "selection-2");
+    assert.equal(shell._eebusActiveActionID, undefined);
+    assert.equal(shell._eebusActiveActionTimer, undefined);
+    assert.match(elements.get('[data-role="eebus-selection-controls"]').innerHTML, /data-eebus-action="connect"/);
+  });
+});

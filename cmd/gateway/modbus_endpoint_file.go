@@ -45,14 +45,6 @@ func withEndpointOwner(owner endpointOwner, err error) error {
 	return &endpointOwnedError{owner: owner, err: err}
 }
 
-func endpointOwnerOf(err error) endpointOwner {
-	var owned *endpointOwnedError
-	if errors.As(err, &owned) {
-		return owned.owner
-	}
-	return endpointOwnerUnknown
-}
-
 type gatewayFlagInputs struct {
 	modbusEndpointFile string
 }

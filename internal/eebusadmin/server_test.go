@@ -14,19 +14,22 @@ import (
 )
 
 type adminV1Stub struct {
-	mu            sync.Mutex
-	snapshot      eebusruntime.AdminSnapshotV1
-	snapshots     map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
-	snapshotCalls int
-	openCalls     []eebusruntime.OpenPairingWindowRequestV1
-	openRevision  uint64
-	selectCalls   []eebusruntime.SelectRequestV1
-	connectCalls  []eebusruntime.ConnectRequestV1
-	confirmCalls  []eebusruntime.ConfirmRequestV1
-	cancelCalls   []eebusruntime.CancelRequestV1
-	closeCalls    []eebusruntime.ClosePairingWindowRequestV1
-	retryCalls    []eebusruntime.RetryTrustedRequestV1
-	untrustCalls  []eebusruntime.UntrustRequestV1
+	mu               sync.Mutex
+	snapshot         eebusruntime.AdminSnapshotV1
+	snapshots        map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1
+	snapshotCalls    int
+	openCalls        []eebusruntime.OpenPairingWindowRequestV1
+	openRevision     uint64
+	selectCalls      []eebusruntime.SelectRequestV1
+	connectCalls     []eebusruntime.ConnectRequestV1
+	confirmCalls     []eebusruntime.ConfirmRequestV1
+	cancelCalls      []eebusruntime.CancelRequestV1
+	closeCalls       []eebusruntime.ClosePairingWindowRequestV1
+	retryCalls       []eebusruntime.RetryTrustedRequestV1
+	untrustCalls     []eebusruntime.UntrustRequestV1
+	connectStarted   chan struct{}
+	connectRelease   chan struct{}
+	connectStartOnce sync.Once
 }
 
 func (stub *adminV1Stub) Snapshot(_ context.Context, request eebusruntime.AdminSnapshotRequestV1) (eebusruntime.AdminSnapshotV1, *eebusruntime.AdminErrorV1) {
@@ -68,8 +71,15 @@ func (stub *adminV1Stub) Select(_ context.Context, request eebusruntime.SelectRe
 
 func (stub *adminV1Stub) Connect(_ context.Context, request eebusruntime.ConnectRequestV1) (eebusruntime.ConnectResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
-	defer stub.mu.Unlock()
 	stub.connectCalls = append(stub.connectCalls, request)
+	started, release := stub.connectStarted, stub.connectRelease
+	stub.mu.Unlock()
+	if started != nil {
+		stub.connectStartOnce.Do(func() { close(started) })
+	}
+	if release != nil {
+		<-release
+	}
 	return eebusruntime.ConnectResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connection_started"}, ActionID: "action-1"}, nil
 }
 
@@ -328,6 +338,62 @@ func TestIssue848StatusPassesThroughIdentityFreeActiveAction(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "remote_ski") || !strings.Contains(response.Body.String(), `"action_id":"action-42"`) || !strings.Contains(response.Body.String(), `"outcome":"pin_required"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestIssue848ConcurrentIdenticalConnectReservesOneBackendAction(t *testing.T) {
+	const ski = "0123456789abcdef0123456789abcdef01234567"
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 50
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}, connectStarted: make(chan struct{}), connectRelease: make(chan struct{})}
+	handler, err := NewServer(Config{Admin: admin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := handler.(*server)
+	hooks := make(chan struct{}, 2)
+	releaseReservation := make(chan struct{})
+	server.connectReservationHook = func() {
+		hooks <- struct{}{}
+		<-releaseReservation
+	}
+
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	observationID := issue817FirstOpaqueID(t, listed, "observation_id")
+	selected := httptest.NewRecorder()
+	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-848-race", `{"state_revision":50,"expected_ski":"`+ski+`"}`))
+	selectionID := issue817DataString(t, selected, "selection_id")
+	path := "/admin/eebus/v1/selections/" + selectionID + ":connect"
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	launch := func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, issue817Mutation(http.MethodPost, path, "connect-848-race", `{"state_revision":51,"pin":"A1b2C3d4"}`))
+		responses <- response
+	}
+	go launch()
+	select {
+	case <-hooks:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not reach reservation boundary")
+	}
+	go launch()
+	time.Sleep(100 * time.Millisecond)
+	close(releaseReservation)
+	close(admin.connectRelease)
+	first, second := <-responses, <-responses
+	for _, response := range []*httptest.ResponseRecorder{first, second} {
+		if response.Code != http.StatusOK {
+			t.Fatalf("concurrent connect status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	admin.mu.Lock()
+	calls := len(admin.connectCalls)
+	admin.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("Connect calls=%d, want one", calls)
 	}
 }
 

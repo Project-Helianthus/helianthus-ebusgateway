@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
@@ -20,5 +22,15 @@ func TestIssue848EEBusregExposesTerminalPINOutcomeSurface(t *testing.T) {
 	field, ok := snapshot.FieldByName("ActiveAction")
 	if !ok || field.Type != reflect.TypeOf((*eebusruntime.ActiveActionV1)(nil)) {
 		t.Fatal("eebusreg AdminSnapshotV1 must expose the identity-free ActiveActionV1 status")
+	}
+}
+
+func TestIssue848GatewayPINDecoderNeverConstructsAnImmutableString(t *testing.T) {
+	source, err := os.ReadFile("../../internal/eebusadmin/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "json.Unmarshal(body.PIN, &value)") || strings.Contains(string(source), "[]byte(value)") {
+		t.Fatal("gateway PIN decoder constructs an immutable Go string instead of decoding into owned mutable bytes")
 	}
 }

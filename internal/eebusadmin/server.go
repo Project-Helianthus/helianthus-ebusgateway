@@ -48,6 +48,9 @@ type server struct {
 
 	connectMu      sync.Mutex
 	connectReplays map[string]connectReplay
+	// connectReservationHook is test-only synchronization around the
+	// process-local idempotency reservation boundary.
+	connectReservationHook func()
 }
 
 type capabilityKind string
@@ -522,6 +525,9 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 	if !ok {
 		server.writeError(w, http.StatusConflict, "observation_stale")
 		return
+	}
+	if server.connectReservationHook != nil {
+		server.connectReservationHook()
 	}
 	server.deleteCapability(id)
 	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})

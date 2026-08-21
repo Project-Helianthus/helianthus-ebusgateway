@@ -32,6 +32,19 @@ type adminV1Stub struct {
 	connectRelease   chan struct{}
 	connectStartOnce sync.Once
 	connectFailure   *eebusruntime.AdminErrorV1
+	connectPanics    int
+}
+
+type issue848ObservedDoneContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+	done     chan struct{}
+}
+
+func (ctx *issue848ObservedDoneContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.observed) })
+	return ctx.done
 }
 
 func (stub *adminV1Stub) Snapshot(_ context.Context, request eebusruntime.AdminSnapshotRequestV1) (eebusruntime.AdminSnapshotV1, *eebusruntime.AdminErrorV1) {
@@ -75,6 +88,10 @@ func (stub *adminV1Stub) Connect(ctx context.Context, request eebusruntime.Conne
 	stub.mu.Lock()
 	stub.connectCalls = append(stub.connectCalls, request)
 	started, release, failure := stub.connectStarted, stub.connectRelease, stub.connectFailure
+	shouldPanic := stub.connectPanics > 0
+	if shouldPanic {
+		stub.connectPanics--
+	}
 	stub.mu.Unlock()
 	if started != nil {
 		stub.connectStartOnce.Do(func() { close(started) })
@@ -88,6 +105,9 @@ func (stub *adminV1Stub) Connect(ctx context.Context, request eebusruntime.Conne
 	}
 	if failure != nil {
 		return eebusruntime.ConnectResultV1{}, failure
+	}
+	if shouldPanic {
+		panic("backend panic after launched effect")
 	}
 	return eebusruntime.ConnectResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connection_started"}, ActionID: "action-1"}, nil
 }
@@ -222,6 +242,104 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 			{IdempotencyOutcome: "rejected", PriorStateClass: "host_operator", ResultingStateClass: "rejected", Reason: "attempt_timeout"},
 			{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "changed", Reason: "connection_started"},
 		})
+	})
+
+	t.Run("panic after launched effect is a bounded replay tombstone", func(t *testing.T) {
+		collector := &auditCollector{}
+		admin := &adminV1Stub{connectStarted: make(chan struct{}), connectRelease: make(chan struct{}), connectPanics: 1}
+		handler, route := prepare(t, admin, collector, 100)
+		server := handler.(*server)
+		const key = "panic-after-effect-848"
+		body := `{"state_revision":101,"pin":"` + pin + `"}`
+
+		leaderPanicked := make(chan bool, 1)
+		go func() {
+			panicked := false
+			defer func() {
+				if recover() != nil {
+					panicked = true
+				}
+				leaderPanicked <- panicked
+			}()
+			handler.ServeHTTP(httptest.NewRecorder(), request(route, key, body))
+		}()
+		select {
+		case <-admin.connectStarted:
+		case <-time.After(time.Second):
+			t.Fatal("leader did not launch backend effect")
+		}
+
+		followerObserved := make(chan struct{})
+		followerContext := &issue848ObservedDoneContext{Context: context.Background(), observed: followerObserved, done: make(chan struct{})}
+		followerDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request(route, key, body).WithContext(followerContext))
+			followerDone <- response
+		}()
+		select {
+		case <-followerObserved:
+		case <-time.After(time.Second):
+			t.Fatal("follower did not enter the shared reservation wait")
+		}
+		close(admin.connectRelease)
+		if !<-leaderPanicked {
+			t.Fatal("leader did not re-panic after the launched backend effect")
+		}
+		follower := <-followerDone
+		if follower.Code != http.StatusServiceUnavailable {
+			t.Fatalf("follower status=%d body=%s", follower.Code, follower.Body.String())
+		}
+
+		retry := httptest.NewRecorder()
+		handler.ServeHTTP(retry, request(route, key, body))
+		if retry.Code != http.StatusServiceUnavailable {
+			t.Fatalf("identical retry status=%d body=%s", retry.Code, retry.Body.String())
+		}
+		conflict := httptest.NewRecorder()
+		handler.ServeHTTP(conflict, request(route, key, `{"state_revision":101,"pin":"`+changedPIN+`"}`))
+		if conflict.Code != http.StatusConflict {
+			t.Fatalf("changed binding status=%d body=%s", conflict.Code, conflict.Body.String())
+		}
+
+		admin.mu.Lock()
+		calls := len(admin.connectCalls)
+		admin.mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("backend Connect calls=%d, want one launched effect", calls)
+		}
+		server.connectMu.Lock()
+		_, stillInFlight := server.connectInFlight[key]
+		server.connectMu.Unlock()
+		if stillInFlight {
+			t.Fatal("panic left followers blocked on an in-flight reservation")
+		}
+
+		collector.mu.Lock()
+		events := append([]AuditEvent(nil), collector.events...)
+		collector.mu.Unlock()
+		if len(events) != 4 {
+			t.Fatalf("audit events=%d, want exactly one per request: %#v", len(events), events)
+		}
+		dispositions := map[string]int{}
+		for _, event := range events {
+			if event.Action != "connect_selection" || event.ResultingStateClass != "rejected" || (event.Reason != "admin_boundary_unavailable" && event.Reason != "idempotency_conflict") {
+				t.Fatalf("unsanitized panic audit=%#v", event)
+			}
+			dispositions[event.IdempotencyOutcome]++
+			encoded, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{ski, pin, changedPIN, key, body, "backend panic", "launched effect", "hmac", "sha256", "binding"} {
+				if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
+					t.Fatalf("panic audit leaked %q: %s", forbidden, encoded)
+				}
+			}
+		}
+		if dispositions["executed"] != 1 || dispositions["replayed"] != 2 || dispositions["conflict"] != 1 {
+			t.Fatalf("audit dispositions=%v, want executed=1 replayed=2 conflict=1", dispositions)
+		}
 	})
 }
 

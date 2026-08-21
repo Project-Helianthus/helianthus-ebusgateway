@@ -103,6 +103,29 @@ type connectInFlight struct {
 	failure eebusruntime.AdminErrorCodeV1
 }
 
+// connectAuditCapture retains only the already-sanitized response envelope.
+// It never observes the secret-bearing request body or PIN binding.
+type connectAuditCapture struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+}
+
+func (capture *connectAuditCapture) WriteHeader(status int) {
+	if capture.status == 0 {
+		capture.status = status
+	}
+	capture.ResponseWriter.WriteHeader(status)
+}
+
+func (capture *connectAuditCapture) Write(value []byte) (int, error) {
+	if capture.status == 0 {
+		capture.status = http.StatusOK
+	}
+	_, _ = capture.body.Write(value)
+	return capture.ResponseWriter.Write(value)
+}
+
 type mutationResponseCapture struct {
 	header             http.Header
 	status             int
@@ -501,6 +524,15 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 }
 
 func (server *server) connectSelection(w http.ResponseWriter, request *http.Request) {
+	capture := &connectAuditCapture{ResponseWriter: w}
+	defer func() {
+		status := capture.status
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		server.emitMutationAudit("connect_selection", status, capture.body.Bytes(), connectAuditDisposition(capture.body.Bytes()), true)
+	}()
+	w = capture
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/selections/", ":connect")
 	if !ok {
 		server.writeError(w, http.StatusBadRequest, "invalid_request")
@@ -579,6 +611,19 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 	replay := connectReplay{binding: binding, revision: result.StateRevision, result: data, expiresAt: server.now().Add(2 * time.Minute)}
 	server.finishConnectReservation(idempotencyKey, reservation, &replay, "")
 	server.writeConnectResult(w, result.StateRevision, data)
+}
+
+func connectAuditDisposition(body []byte) string {
+	switch {
+	case bytes.Contains(body, []byte(`"replayed":true`)):
+		return "replayed"
+	case bytes.Contains(body, []byte(`"idempotency_conflict"`)):
+		return "conflict"
+	case bytes.Contains(body, []byte(`"error"`)):
+		return "rejected"
+	default:
+		return "executed"
+	}
 }
 
 func (server *server) callConnectReserved(ctx context.Context, key string, reservation *connectInFlight, request eebusruntime.ConnectRequestV1) (result eebusruntime.ConnectResultV1, failure *eebusruntime.AdminErrorV1) {

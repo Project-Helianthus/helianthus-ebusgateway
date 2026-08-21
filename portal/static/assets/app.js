@@ -2382,8 +2382,7 @@ class PortalShell extends HTMLElement {
     const previous = this._eebusWorkspace || "pairing";
     if (previous !== workspace) {
       if (previous === "pairing") {
-        this.clearEEBusCandidate();
-        this._eebusSelection = undefined;
+        this.abortPairingFlow();
       } else if (previous === "ship") {
         this._eebusUntrustArmedID = undefined;
       } else if (previous === "spine") {
@@ -2749,10 +2748,20 @@ class PortalShell extends HTMLElement {
   }
 
   clearEEBusVisibilityAuthority() {
+	this.abortPairingFlow();
+	this._eebusUntrustArmedID = undefined;
+  }
+
+  abortPairingFlow() {
 	this.clearEEBusCandidate();
 	this._eebusSelection = undefined;
-	this._eebusUntrustArmedID = undefined;
+	this._eebusPINRequested = false;
+	this.clearEEBusPendingMutation();
 	this.clearEEBusActiveAction();
+	for (const role of ["eebus-connect-pin", "eebus-select-ski", "eebus-confirm-ski"]) {
+	  const input = this.querySelector?.(`[data-role="${role}"]`);
+	  if (input) input.value = "";
+	}
   }
 
   clearEEBusPendingMutation() {

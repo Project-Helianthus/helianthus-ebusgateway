@@ -201,7 +201,8 @@ test("Portal renders only the six documented terminal PIN outcomes", async () =>
   ]));
   shell._eebusActiveActionID = "action-848";
   for (const outcome of ["pin_required", "pin_optional", "pin_busy", "pin_rejected", "pin_unavailable", "pin_protocol_error"]) {
-    shell.renderEEBusActiveAction({ action_id: "action-848", state: "terminal", outcome });
+    shell._eebusActiveActionID = "action-848";
+    shell.renderEEBusActiveAction({ action_id: "action-848", state: "terminal", outcome, expiry: new Date(Date.now() + 60_000).toISOString() });
     assert.notEqual(status.textContent, "");
   }
   assert.equal((await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/app.js"), "utf8")).includes("localStorage.setItem(\"eebus"), false);

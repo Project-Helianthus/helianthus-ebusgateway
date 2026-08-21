@@ -112,7 +112,7 @@ type activeActionData struct {
 	State     string    `json:"state"`
 	Outcome   string    `json:"outcome,omitempty"`
 	Retryable bool      `json:"retryable"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt time.Time `json:"expiry"`
 }
 
 type partnersData struct {

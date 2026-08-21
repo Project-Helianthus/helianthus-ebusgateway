@@ -2,6 +2,7 @@ package eebusadmin
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -537,7 +538,12 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 			server.writeError(w, http.StatusServiceUnavailable, "admin_boundary_unavailable")
 			return
 		}
-		<-reservation.done
+		select {
+		case <-reservation.done:
+		case <-request.Context().Done():
+			server.writeError(w, http.StatusRequestTimeout, "attempt_timeout")
+			return
+		}
 		if reservation.replay != nil {
 			replay := *reservation.replay
 			replay.result.Replayed = true
@@ -560,19 +566,29 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		server.writeError(w, http.StatusConflict, "observation_stale")
 		return
 	}
-	server.deleteCapability(id)
-	result, failure := server.admin.Connect(request.Context(), eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})
+	result, failure := server.callConnectReserved(request.Context(), idempotencyKey, reservation, eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})
 	if failure != nil {
 		server.finishConnectReservation(idempotencyKey, reservation, nil, failure.Code)
 		server.invalidateCapabilities()
 		server.writeAdminFailure(w, failure)
 		return
 	}
+	server.deleteCapability(id)
 	server.resetCapabilities(result.StateRevision)
 	data := connectResultData{ActionID: result.ActionID, Outcome: string(result.Outcome), Replayed: result.Replayed}
 	replay := connectReplay{binding: binding, revision: result.StateRevision, result: data, expiresAt: server.now().Add(2 * time.Minute)}
 	server.finishConnectReservation(idempotencyKey, reservation, &replay, "")
 	server.writeConnectResult(w, result.StateRevision, data)
+}
+
+func (server *server) callConnectReserved(ctx context.Context, key string, reservation *connectInFlight, request eebusruntime.ConnectRequestV1) (result eebusruntime.ConnectResultV1, failure *eebusruntime.AdminErrorV1) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			server.finishConnectReservation(key, reservation, nil, eebusruntime.AdminErrorCodeV1AdminBoundaryUnavailable)
+			panic(recovered)
+		}
+	}()
+	return server.admin.Connect(ctx, request)
 }
 
 type connectMutationBody struct {

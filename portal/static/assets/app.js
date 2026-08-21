@@ -2643,14 +2643,24 @@ class PortalShell extends HTMLElement {
 	  this.refreshEEBusStatus().then(() => {
 		const active = this._eebusLastActiveAction;
 		if (active?.action_id === actionID && active.state !== "terminal") this.pollEEBusActiveAction(actionID);
-	  }).catch((error) => this.showEEBusError(error, "pairing"));
+	  }).catch((error) => {
+		this._eebusActiveActionRetries = (this._eebusActiveActionRetries || 0) + 1;
+		if (this._eebusActiveActionRetries <= 1 && this._eebusActiveActionID === actionID) this.pollEEBusActiveAction(actionID);
+		else { this.clearEEBusActiveAction(); this.showEEBusError(error, "pairing"); }
+	  });
 	}, 1000);
   }
 
   renderEEBusActiveAction(action) {
-	this._eebusLastActiveAction = action && typeof action === "object" ? { ...action } : undefined;
+	if (!action || typeof action !== "object" || action.action_id !== this._eebusActiveActionID) {
+	  if (this._eebusActiveActionID) this.clearEEBusActiveAction();
+	  return;
+	}
+	this._eebusLastActiveAction = { ...action };
 	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
-	if (!status || !action || action.action_id !== this._eebusActiveActionID) return;
+	if (!status) return;
+	const expiry = Date.parse(action.expiry || "");
+	if (!Number.isFinite(expiry) || expiry <= Date.now()) { this.clearEEBusActiveAction(); return; }
 	const messages = {
 	  pin_required: "This partner requires a PIN. Select it again, then enter the exact PIN.",
 	  pin_optional: "The partner reports an optional PIN. Select it again to supply one if required.",
@@ -2665,7 +2675,17 @@ class PortalShell extends HTMLElement {
 	if (action.state === "terminal") {
 	  if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
 	  this._eebusActiveActionTimer = undefined;
+	  this._eebusActiveActionID = undefined;
+	  this._eebusLastActiveAction = undefined;
 	}
+  }
+
+  clearEEBusActiveAction() {
+	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
+	this._eebusActiveActionTimer = undefined;
+	this._eebusActiveActionID = undefined;
+	this._eebusLastActiveAction = undefined;
+	this._eebusActiveActionRetries = 0;
   }
 
   async confirmEEBusCandidate(expectedSKI) {
@@ -2732,10 +2752,7 @@ class PortalShell extends HTMLElement {
 	this.clearEEBusCandidate();
 	this._eebusSelection = undefined;
 	this._eebusUntrustArmedID = undefined;
-	this._eebusActiveActionID = undefined;
-	this._eebusLastActiveAction = undefined;
-	if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
-	this._eebusActiveActionTimer = undefined;
+	this.clearEEBusActiveAction();
   }
 
   clearEEBusPendingMutation() {

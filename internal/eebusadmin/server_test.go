@@ -336,7 +336,7 @@ func TestIssue848StatusPassesThroughIdentityFreeActiveAction(t *testing.T) {
 	handler := newIssue817Server(t, &adminV1Stub{snapshot: snapshot}, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "remote_ski") || !strings.Contains(response.Body.String(), `"action_id":"action-42"`) || !strings.Contains(response.Body.String(), `"outcome":"pin_required"`) {
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "remote_ski") || strings.Contains(response.Body.String(), "expires_at") || !strings.Contains(response.Body.String(), `"action_id":"action-42"`) || !strings.Contains(response.Body.String(), `"outcome":"pin_required"`) || !strings.Contains(response.Body.String(), `"expiry"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

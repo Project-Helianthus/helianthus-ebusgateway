@@ -479,7 +479,7 @@ test("successive pairing actions ignore stale status and render each terminal on
 
   shell._eebusActiveActionID = "action-2";
   shell._eebusActiveActionTimer = { cleared: false };
-  shell.renderEEBusActiveAction(firstTerminal);
+  shell.renderEEBusActiveAction(firstTerminal, "action-1");
   assert.equal(shell._eebusActiveActionID, "action-2", "stale first action retired the second action");
   assert.equal(shell._eebusLastActiveAction, undefined, "stale first action contaminated the second cache");
   shell.renderEEBusActiveAction({ action_id: "action-2", state: "running", expiry: new Date(Date.now() + 60_000).toISOString() });

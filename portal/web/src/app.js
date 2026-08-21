@@ -2430,15 +2430,16 @@ class PortalShell extends HTMLElement {
   }
 
   async refreshEEBusStatus() {
+	const expectedActionID = this._eebusActiveActionID;
     const payload = await this.eebusAdminFetch("/status");
-    this.applyEEBusStatus(payload);
+	this.applyEEBusStatus(payload, expectedActionID);
     return payload;
   }
 
-  applyEEBusStatus(payload) {
+  applyEEBusStatus(payload, expectedActionID = this._eebusActiveActionID) {
     const status = this.querySelector('[data-role="eebus-status"]');
     if (status) status.textContent = JSON.stringify(payload?.data || {}, null, 2);
-	this.renderEEBusActiveAction(payload?.data?.active_action);
+	this.renderEEBusActiveAction(payload?.data?.active_action, expectedActionID);
   }
 
   async refreshEEBusPartners(view) {
@@ -2648,17 +2649,15 @@ class PortalShell extends HTMLElement {
 	}, 1000);
   }
 
-  renderEEBusActiveAction(action) {
-	if (!action || typeof action !== "object") {
-	  if (this._eebusActiveActionID) this.clearEEBusActiveAction();
+  renderEEBusActiveAction(action, expectedActionID = this._eebusActiveActionID) {
+	if (!expectedActionID || this._eebusActiveActionID !== expectedActionID) return;
+	if (!action || typeof action !== "object" || action.action_id !== expectedActionID) {
+	  this.abortPairingFlow();
 	  return;
 	}
-	if (action.action_id !== this._eebusActiveActionID) return;
 	this._eebusLastActiveAction = { ...action };
-	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
-	if (!status) return;
 	const expiry = Date.parse(action.expiry || "");
-	if (!Number.isFinite(expiry) || expiry <= Date.now()) { this.clearEEBusActiveAction(); return; }
+	if (!Number.isFinite(expiry) || expiry <= Date.now()) { this.abortPairingFlow(); return; }
 	const messages = {
 	  pin_required: "This partner requires a PIN. Select it again, then enter the exact PIN.",
 	  pin_optional: "The partner reports an optional PIN. Select it again to supply one if required.",
@@ -2669,9 +2668,10 @@ class PortalShell extends HTMLElement {
 	};
 	const outcome = action.outcome || "";
 	if (Object.hasOwn(messages, outcome)) this._eebusPINRequested = outcome === "pin_required" || outcome === "pin_optional";
-	status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
+	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
+	if (status) status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
 	if (action.state === "terminal") {
-	  this.clearEEBusActiveAction();
+	  this.abortPairingFlow();
 	}
   }
 

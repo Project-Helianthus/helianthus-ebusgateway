@@ -335,6 +335,7 @@ function issue848PairingElements() {
     ['[data-role="eebus-candidate"]', { textContent: "candidate-secret" }],
     ['[data-role="eebus-retry-pending"]', { disabled: false }],
     ['[data-role="eebus-pairing-status"]', { textContent: "pairing" }],
+    ['[data-role="eebus-selection-controls"]', { innerHTML: '<button data-eebus-action="connect">stale</button><input data-role="eebus-connect-pin" value="A1b2C3d4">' }],
   ]);
   for (const element of elements.values()) element.addEventListener = () => {};
   return elements;
@@ -361,6 +362,7 @@ function assertIssue848PairingAuthorityCleared(shell, elements) {
   }
   assert.equal(elements.get('[data-role="eebus-candidate"]').textContent, "");
   assert.equal(elements.get('[data-role="eebus-retry-pending"]').disabled, true);
+  assert.equal(elements.get('[data-role="eebus-selection-controls"]').innerHTML, "");
   assert.equal(shell._eebusCandidate, undefined);
   assert.equal(shell._eebusCandidateTimer, undefined);
   assert.equal(shell._eebusSelection, undefined);
@@ -450,6 +452,7 @@ test("candidate, pending replay, and active action expiry retire their volatile 
   assert.equal(shell._eebusLastActiveAction, undefined);
   assert.equal(shell._eebusActiveActionTimer, undefined);
   assert.equal(shell._eebusActiveActionRetries, 0);
+  assert.equal(elements.get('[data-role="eebus-selection-controls"]').innerHTML, "");
 });
 
 test("successive pairing actions ignore stale status and render each terminal only once", async () => {
@@ -558,23 +561,30 @@ test("terminal PIN outcomes and action expiry abort every pairing authority", as
 test("no-PIN Connect may reselect after pin_required and submit one transient exact PIN", async () => {
   const ski = "c".repeat(40);
   const partners = { innerHTML: "" };
+  const selectionControls = { innerHTML: "" };
   const selectSKI = { value: ski };
   const pinInput = { value: "" };
   const status = { textContent: "" };
   const connectBodies = [];
   let selectionCount = 0;
+  let failNextConnect = false;
   const { shell, storageWrites } = await issue817Shell(async (url, init = {}) => {
     if (String(url).includes(":select")) {
       selectionCount += 1;
       return response({ state_revision: 7 + selectionCount * 2 - 1, data: { outcome: "selected", selection_id: `selection-${selectionCount}` }, error: null });
     }
     if (String(url).includes(":connect")) {
+      if (failNextConnect) {
+        failNextConnect = false;
+        throw new Error("ambiguous connect delivery");
+      }
       connectBodies.push(JSON.parse(init.body));
       return response({ state_revision: 7 + selectionCount * 2, data: { outcome: "connection_started", action_id: `action-${selectionCount}` }, error: null });
     }
     throw new Error(`unexpected URL ${url}`);
   }, new Map([
     ['[data-role="eebus-pairing-partners"]', partners],
+    ['[data-role="eebus-selection-controls"]', selectionControls],
     ['[data-role="eebus-select-ski"]', selectSKI],
     ['[data-role="eebus-connect-pin"]', pinInput],
     ['[data-role="eebus-pairing-status"]', status],
@@ -584,22 +594,24 @@ test("no-PIN Connect may reselect after pin_required and submit one transient ex
   await shell.selectEEBusObservation("observation-1");
   assert.equal(shell._eebusSelection.id, "selection-1");
   assert.equal(shell._eebusPINRequested, undefined);
-  assert.match(partners.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden for the initial active selection");
+  assert.match(selectionControls.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden for the initial active selection");
   await shell.connectEEBusSelection();
   assert.deepEqual(connectBodies[0], { state_revision: 8 });
+  assert.equal(selectionControls.innerHTML, "", "successful Connect retained stale PIN/Connect controls");
+  partners.innerHTML = '<article data-current-partner="marker">current partner content</article>';
   shell.renderEEBusActiveAction({ action_id: "action-1", state: "terminal", outcome: "pin_required", expiry: new Date(Date.now() + 60_000).toISOString() }, "action-1");
   assert.equal(shell._eebusSelection, undefined);
   assert.equal(shell._eebusPINRequested, false);
   assert.equal(shell._eebusActiveActionID, undefined);
   assert.equal(pinInput.value, "");
-  shell.renderEEBusPartners([], "discovered");
-  assert.doesNotMatch(partners.innerHTML, /data-role="eebus-connect-pin"/, "PIN field remains visible without a selection");
+  assert.equal(selectionControls.innerHTML, "", "terminal abort retained stale PIN/Connect controls");
+  assert.match(partners.innerHTML, /data-current-partner="marker"/, "terminal abort replaced current partner content");
 
   selectSKI.value = ski;
   await shell.selectEEBusObservation("observation-2");
   assert.equal(shell._eebusSelection.id, "selection-2");
   assert.equal(shell._eebusPINRequested, false, "terminal outcome leaked into the successor selection");
-  assert.match(partners.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden after reselect");
+  assert.match(selectionControls.innerHTML, /data-role="eebus-connect-pin"/, "optional PIN field is hidden after reselect");
   pinInput.value = "A1b2C3d4";
   await shell.connectEEBusSelection();
   assert.deepEqual(connectBodies, [
@@ -607,7 +619,21 @@ test("no-PIN Connect may reselect after pin_required and submit one transient ex
     { state_revision: 10, pin: "A1b2C3d4" },
   ]);
   assert.equal(pinInput.value, "");
+  assert.equal(selectionControls.innerHTML, "", "PIN Connect retained stale controls");
   assert.equal(connectBodies.filter((body) => Object.hasOwn(body, "pin")).length, 1);
   assert.equal(storageWrites.length, 0);
+
+  pinInput.value = "DEADBEEF";
+  await assert.rejects(shell.connectEEBusSelection(), /no active eeBUS selection/);
+  assert.equal(pinInput.value, "", "stale Connect click retained a PIN after selection retirement");
+
+  selectSKI.value = ski;
+  await shell.selectEEBusObservation("observation-3");
+  assert.match(selectionControls.innerHTML, /data-eebus-action="connect"/);
+  failNextConnect = true;
+  await assert.rejects(shell.connectEEBusSelection(), /ambiguous connect delivery/);
+  assert.equal(shell._eebusSelection, undefined);
+  assert.equal(selectionControls.innerHTML, "", "ambiguous Connect retained stale controls");
+  assert.equal(pinInput.value, "");
   shell.abortPairingFlow();
 });

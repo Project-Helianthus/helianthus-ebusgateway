@@ -249,7 +249,8 @@ test("candidate and raw SPINE remain active-memory only and clear on visibility 
   assert.equal(storageWrites.length, 0);
   await shell.loadEEBusSPINERoot("partner-1");
   assert.equal(storageWrites.length, 0);
-  assert.equal(shell._eebusCandidate, undefined, "a later operator response replaces the active candidate view");
+  assert.equal(shell._eebusCandidate.remote_ski, "a".repeat(40), "an unrelated SPINE response cleared the active candidate");
+  assert.equal(input.value, "a".repeat(40), "an unrelated SPINE response cleared the independent candidate comparison");
   assert.match(tree.innerHTML, /EnergyManagementSystem/);
   document.visibilityState = "hidden";
   documentListeners.get("visibilitychange")();
@@ -257,6 +258,103 @@ test("candidate and raw SPINE remain active-memory only and clear on visibility 
   assert.equal(candidate.textContent, "");
   assert.equal(input.value, "");
   assert.doesNotMatch(tree.innerHTML, /EnergyManagementSystem/);
+});
+
+test("newest candidate survives delayed unrelated admin responses and older candidate refreshes", async (t) => {
+  const candidateOne = {
+    view: "candidate",
+    remote_ski: "a".repeat(40),
+    remote_ship_id: "ship-one",
+    candidate_state: "tls_bound",
+    candidate_expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const candidateTwo = {
+    view: "candidate",
+    remote_ski: "b".repeat(40),
+    remote_ship_id: "ship-two",
+    candidate_state: "tls_bound",
+    candidate_expires_at: new Date(Date.now() + 120_000).toISOString(),
+  };
+  const unrelatedCases = {
+    status: (shell) => shell.refreshEEBusStatus(),
+    partners: (shell) => shell.refreshEEBusPartners("trusted"),
+    discovery: (shell) => shell.refreshEEBusPartners("discovered"),
+    selection: (shell) => shell.selectEEBusObservation("observation-delayed"),
+    readiness: (shell) => shell.eebusAdminFetch("/status?request=readiness"),
+  };
+
+  for (const [name, startUnrelated] of Object.entries(unrelatedCases)) {
+    await t.test(`delayed ${name}`, async () => {
+      const delayed = issue848Deferred();
+      const candidate = { textContent: "" };
+      const confirmSKI = { value: "c".repeat(40) };
+      const selectSKI = { value: "d".repeat(40) };
+      let candidateCall = 0;
+      const { shell } = await issue817Shell(async (url) => {
+        const requestURL = String(url);
+        if (requestURL.includes("view=candidate")) {
+          candidateCall += 1;
+          const row = candidateCall === 1 ? candidateOne : candidateTwo;
+          return response({ state_revision: 20 + candidateCall, data: { partners: [row] }, error: null });
+        }
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => delayed.promise };
+      }, new Map([
+        ['[data-role="eebus-candidate"]', candidate],
+        ['[data-role="eebus-confirm-ski"]', confirmSKI],
+        ['[data-role="eebus-select-ski"]', selectSKI],
+        ['[data-role="eebus-status"]', { textContent: "" }],
+        ['[data-role="eebus-pairing-partners"]', { innerHTML: "", addEventListener() {} }],
+        ['[data-role="eebus-ship-partners"]', { innerHTML: "", addEventListener() {} }],
+        ['[data-role="eebus-selection-controls"]', { innerHTML: "" }],
+      ]));
+      shell._eebusWorkspace = "pairing";
+      shell._eebusStateRevision = 20;
+
+      const pending = startUnrelated(shell);
+      await shell.refreshEEBusPartners("candidate");
+      await shell.refreshEEBusPartners("candidate");
+      confirmSKI.value = candidateTwo.remote_ski;
+      const candidateTimer = shell._eebusCandidateTimer;
+
+      delayed.resolve(name === "selection"
+        ? { state_revision: 23, data: { outcome: "selected", selection_id: "selection-delayed" }, error: null }
+        : { state_revision: 23, data: { partners: [], readiness: { process_readiness: "ready" } }, error: null });
+      await pending;
+
+      assert.deepEqual(JSON.parse(JSON.stringify(shell._eebusCandidate)), candidateTwo);
+      assert.equal(confirmSKI.value, candidateTwo.remote_ski);
+      assert.equal(shell._eebusCandidateTimer, candidateTimer);
+    });
+  }
+
+  await t.test("older candidate response", async () => {
+    const delayedFirst = issue848Deferred();
+    const candidate = { textContent: "" };
+    const confirmSKI = { value: "" };
+    let candidateCall = 0;
+    const { shell } = await issue817Shell(async () => {
+      candidateCall += 1;
+      if (candidateCall === 1) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => delayedFirst.promise };
+      }
+      return response({ state_revision: 32, data: { partners: [candidateTwo] }, error: null });
+    }, new Map([
+      ['[data-role="eebus-candidate"]', candidate],
+      ['[data-role="eebus-confirm-ski"]', confirmSKI],
+      ['[data-role="eebus-pairing-partners"]', { innerHTML: "", addEventListener() {} }],
+    ]));
+
+    const first = shell.refreshEEBusPartners("candidate");
+    await shell.refreshEEBusPartners("candidate");
+    confirmSKI.value = candidateTwo.remote_ski;
+    const candidateTimer = shell._eebusCandidateTimer;
+    delayedFirst.resolve({ state_revision: 31, data: { partners: [candidateOne] }, error: null });
+    await first;
+
+    assert.deepEqual(JSON.parse(JSON.stringify(shell._eebusCandidate)), candidateTwo);
+    assert.equal(confirmSKI.value, candidateTwo.remote_ski);
+    assert.equal(shell._eebusCandidateTimer, candidateTimer);
+  });
 });
 
 test("eeBUS renders three separate Pairing SHIP and SPINE workspaces", async () => {

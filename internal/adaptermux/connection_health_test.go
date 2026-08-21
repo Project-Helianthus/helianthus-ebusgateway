@@ -334,10 +334,7 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 		requestReturned := make(chan (<-chan startResult), 1)
 		go func() { requestReturned <- mux.requestStartForSession(51, 0x33) }()
 		deadline := time.Now().Add(time.Second)
-		for {
-			if !mux.connectionUseMu.TryLock() {
-				break // the START admission owns R
-			}
+		for mux.connectionUseMu.TryLock() {
 			mux.connectionUseMu.Unlock()
 			if time.Now().After(deadline) {
 				mux.stateMu.Unlock()

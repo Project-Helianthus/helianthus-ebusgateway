@@ -27,9 +27,16 @@ func OpenEBusDriverPassiveTransport(ctx context.Context, cfg Config) (transport.
 func EBusDriverTransportProtocol(config TransportConfig) TransportProtocol {
 	normalized, err := NormalizeEBusDriverTransportConfig(config)
 	if err == nil {
+		if isAdapterDirectTransportProtocol(normalized.Protocol) {
+			return TransportAdapterDirect
+		}
 		return normalized.Protocol
 	}
-	return canonicalTransportProtocol(config.Protocol)
+	protocol := canonicalTransportProtocol(config.Protocol)
+	if isAdapterDirectTransportProtocol(protocol) {
+		return TransportAdapterDirect
+	}
+	return protocol
 }
 
 // NormalizeEBusDriverTransportConfig resolves a valid endpoint URI into the

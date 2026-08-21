@@ -167,6 +167,92 @@ func TestIssue851HTTPShellStartsWhileEBusConstructionIsBlocked(t *testing.T) {
 	}
 }
 
+func TestIssue851HTTPShellStartsBeforeENHSourceSelectionWarmup(t *testing.T) {
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return nil
+	}
+
+	dialStarted := make(chan struct{}, 1)
+	dialRelease := make(chan struct{})
+	httpStarted := make(chan struct{}, 1)
+	var surfaceErr error
+	startHTTPServerFn = func(_ context.Context, _ ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, _ *graphql.BroadcastHub, _ graphql.SemanticProvider, schedule mcp.ScheduleWriter, config mcp.ConfigWriter, _ *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		if gateway == nil || gateway.Transport == nil || builder == nil || schedule == nil || config == nil {
+			surfaceErr = errors.New("early HTTP shell received nil runtime binding")
+		} else if _, admitted := builder.AdmittedMutationSource(); admitted {
+			surfaceErr = errors.New("early HTTP shell exposed an admitted write source")
+		} else if result, err := schedule.SetZoneTimeProgram(context.Background(), 0, 0, nil); err != nil || result.Success || result.Error != semanticWriterSourceNotAdmittedError {
+			surfaceErr = errors.New("early HTTP schedule binding did not fail closed")
+		} else if result := config.SetSystemConfig(context.Background(), "field", "value"); result.Success || result.Error != semanticWriterSourceNotAdmittedError {
+			surfaceErr = errors.New("early HTTP config binding did not fail closed")
+		}
+		httpStarted <- struct{}{}
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = nil
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "blocked.invalid:8888"
+	cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-dialRelease // deliberately ignores context
+		return nil, errors.New("offline")
+	}
+	cfg.BroadcastListen = true
+	cfg.ScanOnStart = false
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, cfg) }()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("eBUS ENH construction did not start")
+	}
+	select {
+	case <-httpStarted:
+	case err := <-done:
+		t.Fatalf("run exited before early HTTP shell: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("HTTP shell waited for ENH passive source-selection warmup")
+	}
+	if surfaceErr != nil {
+		t.Fatal(surfaceErr)
+	}
+	close(dialRelease)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not shut down after early HTTP test cancellation")
+	}
+}
+
 func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) {
 	originalWire := wireObserveFirstObserversFn
 	originalDiscovery := startDiscoveryScanLoopFn
@@ -191,6 +277,8 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 		{name: "ebusd", uri: "ebusd://127.0.0.1:8888", wantProtocol: ebusgateway.TransportEbusdTCP, wantNetwork: "tcp", wantAddress: "127.0.0.1:8888", wantAdmission: true, wantSource: ebusgateway.DefaultConfig().ScanSource},
 		{name: "tcp plain", uri: "tcp-plain://127.0.0.1:9999", wantProtocol: ebusgateway.TransportTCPPlain, wantNetwork: "tcp", wantAddress: "127.0.0.1:9999"},
 		{name: "udp plain", uri: "udp-plain://127.0.0.1:9999", wantProtocol: ebusgateway.TransportUDPPlain, wantNetwork: "udp", wantAddress: "127.0.0.1:9999"},
+		{name: "adapter direct enh", uri: "adapter-direct://127.0.0.1:1", wantProtocol: ebusgateway.TransportAdapterDirect, wantNetwork: "tcp", wantAddress: "127.0.0.1:1"},
+		{name: "adapter direct ens", uri: "adapter-direct-ens://127.0.0.1:1", wantProtocol: adapterDirectENSProtocol, wantNetwork: "tcp", wantAddress: "127.0.0.1:1"},
 	}
 
 	for _, test := range tests {
@@ -201,27 +289,28 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 				source   byte
 			}
 			wireObserved := make(chan ebusgateway.Config, 1)
-			discoveryObserved := make(chan ebusgateway.Config, 1)
+			discoveryObserved := make(chan runtimeObservation, 1)
 			httpObserved := make(chan runtimeObservation, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 
 			wireObserveFirstObserversFn = func(cfg *ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 				wireObserved <- *cfg
 				return nil, nil, nil
 			}
-			startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
-				discoveryObserved <- cfg
+			startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, builder *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
+				source, admitted := builder.AdmittedMutationSource()
+				discoveryObserved <- runtimeObservation{cfg: cfg, admitted: admitted, source: source}
+				cancel()
 				return startupScanSignals{}
 			}
 			startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
 				return nil
 			}
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
 			startHTTPServerFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, builder *graphql.Builder, _ *graphql.BroadcastHub, _ graphql.SemanticProvider, _ mcp.ScheduleWriter, _ mcp.ConfigWriter, _ *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
 				source, admitted := builder.AdmittedMutationSource()
 				httpObserved <- runtimeObservation{cfg: cfg, admitted: admitted, source: source}
-				cancel()
 				return nil, nil, nil
 			}
 
@@ -250,15 +339,6 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 			case <-time.After(2 * time.Second):
 				t.Fatal("HTTP runtime did not start")
 			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("run() error = %v", err)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("run() did not stop after HTTP observation")
-			}
-
 			assertCanonical := func(label string, observed ebusgateway.Config) {
 				t.Helper()
 				if observed.TransportConfig.Protocol != test.wantProtocol || observed.TransportConfig.Network != test.wantNetwork || observed.TransportConfig.Address != test.wantAddress {
@@ -273,13 +353,24 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 				t.Fatal("observer wiring did not receive runtime config")
 			}
 			select {
-			case observed := <-discoveryObserved:
-				assertCanonical("discovery", observed)
-			default:
+			case discoveryResult := <-discoveryObserved:
+				assertCanonical("discovery", discoveryResult.cfg)
+				if discoveryResult.admitted != test.wantAdmission || discoveryResult.source != test.wantSource {
+					t.Fatalf("discovery admitted source = 0x%02X admitted=%v, want 0x%02X/%v", discoveryResult.source, discoveryResult.admitted, test.wantSource, test.wantAdmission)
+				}
+			case <-time.After(2 * time.Second):
 				t.Fatal("discovery did not receive runtime config")
 			}
-			if httpResult.admitted != test.wantAdmission || httpResult.source != test.wantSource {
-				t.Fatalf("HTTP admitted source = 0x%02X admitted=%v, want 0x%02X/%v", httpResult.source, httpResult.admitted, test.wantSource, test.wantAdmission)
+			if httpResult.admitted || httpResult.source != 0 {
+				t.Fatalf("early HTTP admitted source = 0x%02X admitted=%v, want fail-closed 0x00/false", httpResult.source, httpResult.admitted)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("run() error = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("run() did not stop after discovery observation")
 			}
 		})
 	}

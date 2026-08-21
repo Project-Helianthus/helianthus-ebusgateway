@@ -151,7 +151,7 @@ func ClassifyTransportAdmission(kind TransportProtocol) (TransportAdmissionPath,
 // adapter-direct, contradicting main.go's special-case. Centralising the
 // logic here keeps all call sites in agreement.
 func ResolveAdmissionPath(kind TransportProtocol) (path TransportAdmissionPath, adapterDirectSpecialCase bool) {
-	if kind == TransportAdapterDirect {
+	if isAdapterDirectTransportProtocol(kind) {
 		return TransportAdmissionSourceSelectionCapable, true
 	}
 	resolved, err := ClassifyTransportAdmission(kind)

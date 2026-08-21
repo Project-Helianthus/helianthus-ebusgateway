@@ -686,8 +686,15 @@ type Mux struct {
 	// a terminal read failure or the duration-based blackhole threshold. Once
 	// installed, lifecycle ownership is delegated to that manager: this mux
 	// retires instead of running its legacy in-place reconnect loop.
-	connectionLostMu        sync.Mutex
-	connectionLostCallback  func()
+	connectionLostMu       sync.Mutex
+	connectionLostCallback func()
+	connectionLossManaged  atomic.Bool
+	// connectionUseMu is the managed-generation linearization fence. It is
+	// inactive for callback-free muxes. Managed proxy admission and physical
+	// START/SEND use hold R; terminal loss fences new work, closes the upstream
+	// to unblock existing use, drains R with W, tears state down, and publishes
+	// BACKOFF while W remains held.
+	connectionUseMu         sync.RWMutex
 	connectionLossDelegated atomic.Bool
 
 	// Lifecycle.
@@ -1057,21 +1064,36 @@ func (m *Mux) SetConnectionLostCallback(fn func()) {
 	m.connectionLostMu.Lock()
 	m.connectionLostCallback = fn
 	m.connectionLostMu.Unlock()
+	m.connectionLossManaged.Store(fn != nil)
 }
 
-func (m *Mux) emitConnectionLost() bool {
+func (m *Mux) connectionLostOwner() func() {
 	m.connectionLostMu.Lock()
 	fn := m.connectionLostCallback
 	m.connectionLostMu.Unlock()
-	if fn == nil {
-		return false
+	return fn
+
+}
+
+// beginManagedConnectionUse admits one generation-local proxy/provider use.
+// The bool pair is (gateHeld, admitted). Callback-free muxes avoid the RWMutex
+// hot path entirely and preserve legacy behavior.
+func (m *Mux) beginManagedConnectionUse() (bool, bool) {
+	if !m.connectionLossManaged.Load() {
+		return false, true
 	}
-	// Fence proxy and active-path work before publishing BACKOFF through the
-	// callback. This mux never clears the fence: a managed loss retires the
-	// whole generation and the manager constructs a fresh mux.
-	m.connectionLossDelegated.Store(true)
-	fn()
-	return true
+	m.connectionUseMu.RLock()
+	if m.connectionLossDelegated.Load() {
+		m.connectionUseMu.RUnlock()
+		return false, false
+	}
+	return true, true
+}
+
+func (m *Mux) endManagedConnectionUse(gateHeld bool) {
+	if gateHeld {
+		m.connectionUseMu.RUnlock()
+	}
 }
 
 // connect dials the adapter and performs the INIT handshake.
@@ -1440,10 +1462,40 @@ func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
 // re-establish it in place; managed muxes delegate replacement to their
 // connection-loss owner and return delegated=true so readLoop retires.
 func (m *Mux) reconnect() (delegated bool, err error) {
-	// Publish loss before entering the legacy reconnect loop. A managed owner
-	// can withdraw admission immediately and retire this mux on its bounded
-	// replacement schedule. Close and ordinary idle timeouts do not emit it.
-	delegated = m.emitConnectionLost()
+	// A managed owner is the sole reconnect authority. Fence new work first,
+	// then detach/close the transport so already-admitted START/SEND calls
+	// unblock before we drain the managed-use gate. BACKOFF is published only
+	// after the common state teardown below, while the write gate remains held.
+	owner := m.connectionLostOwner()
+	delegated = owner != nil
+	managedGateHeld := false
+	if delegated {
+		m.connectionLossDelegated.Store(true)
+
+		m.connMu.Lock()
+		upstream := m.upstream
+		conn := m.conn
+		m.upstream = nil
+		m.conn = nil
+		m.connMu.Unlock()
+		if upstream != nil {
+			if closeErr := upstream.Close(); closeErr != nil {
+				m.logger.Printf("adaptermux: managed upstream close: %v", closeErr)
+			}
+		} else if conn != nil {
+			if closeErr := conn.Close(); closeErr != nil {
+				m.logger.Printf("adaptermux: managed conn close: %v", closeErr)
+			}
+		}
+
+		m.connectionUseMu.Lock()
+		managedGateHeld = true
+		defer func() {
+			if managedGateHeld {
+				m.connectionUseMu.Unlock()
+			}
+		}()
+	}
 
 	// Invalidate INFO cache immediately so CachedInfo returns errors
 	// during the disconnect window rather than serving stale data.
@@ -1551,16 +1603,22 @@ func (m *Mux) reconnect() (delegated bool, err error) {
 		m.logger.Printf("adaptermux: active channel full, dropping disconnect notification")
 	}
 
-	// Close old connection.
-	m.connMu.Lock()
-	if m.conn != nil {
-		if err := m.conn.Close(); err != nil {
-			m.logger.Printf("adaptermux: old conn close: %v", err)
+	// Close the old connection for callback-free muxes. Managed teardown
+	// detached and closed the transport before draining provider use above.
+	if !delegated {
+		m.connMu.Lock()
+		if m.conn != nil {
+			if err := m.conn.Close(); err != nil {
+				m.logger.Printf("adaptermux: old conn close: %v", err)
+			}
 		}
+		m.connMu.Unlock()
 	}
-	m.connMu.Unlock()
 	if delegated {
+		owner()
 		m.logger.Printf("adaptermux: connection recovery delegated to lifecycle owner")
+		m.connectionUseMu.Unlock()
+		managedGateHeld = false
 		return true, nil
 	}
 
@@ -3532,9 +3590,11 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
-	if m.connectionLossDelegated.Load() {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
 		return
 	}
+	defer m.endManagedConnectionUse(managedGateHeld)
 	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
 	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
 	// strictly ABBA, keeping consistent ordering is defensive best practice.
@@ -3558,10 +3618,6 @@ func (m *Mux) tryGrantAndStart() {
 	// internally).  No path holds arb.mu then acquires stateMu,
 	// so this is ABBA-safe.
 	m.stateMu.Lock()
-	if m.connectionLossDelegated.Load() {
-		m.stateMu.Unlock()
-		return
-	}
 	if m.pendingStart != nil {
 		m.logger.Printf("adaptermux: tryGrantAndStart skipped — pendingStart already set for session %d", m.pendingStart.sessionID)
 		m.stateMu.Unlock()
@@ -3873,7 +3929,16 @@ func (m *Mux) tryGrantAndStart() {
 		m.closeMu.Unlock()
 		go func() {
 			defer m.wg.Done()
-			if err := starter.StartArbitration(initiator); err != nil {
+			blockingGateHeld, blockingAdmitted := m.beginManagedConnectionUse()
+			var startErr error
+			if !blockingAdmitted {
+				startErr = errNotConnected
+			} else {
+				startErr = starter.StartArbitration(initiator)
+				m.endManagedConnectionUse(blockingGateHeld)
+			}
+			if startErr != nil {
+				err := startErr
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 				// P1 fix (#3063005909): only send failure if we still own
 				// the pending slot.  cancelPendingStart may have cleared
@@ -4867,9 +4932,11 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			pacer.CancelEchoWatchdog()
 		}
 	}()
-	if m.connectionLossDelegated.Load() {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
 		return errNotConnected
 	}
+	defer m.endManagedConnectionUse(managedGateHeld)
 
 	if !m.arb.isOwner(sessionID) {
 		return errNotBusOwner

@@ -226,7 +226,14 @@ const (
 // managed connection loss has delegated replacement to the lifecycle owner;
 // the connection is closed and no goroutines are leaked.
 func (m *Mux) AddSession(conn net.Conn) uint64 {
-	if m.ctx == nil || m.ctx.Err() != nil || m.connectionLossDelegated.Load() {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
+		_ = conn.Close()
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		return 0
+	}
+	defer m.endManagedConnectionUse(managedGateHeld)
+	if m.ctx == nil || m.ctx.Err() != nil {
 		_ = conn.Close()
 		m.logger.Printf("adaptermux: rejecting session — mux not available (AM13)")
 		return 0

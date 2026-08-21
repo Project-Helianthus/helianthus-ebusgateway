@@ -1422,6 +1422,12 @@ func TestWireAdapterDirect_URIScheme_ForcesTCP(t *testing.T) {
 	if !strings.Contains(err.Error(), "192.0.2.1:9999") {
 		t.Fatalf("expected stripped address in error, got: %v", err)
 	}
+	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect || cfg.TransportConfig.Network != "tcp" || cfg.TransportConfig.Address != "192.0.2.1:9999" {
+		t.Fatalf("canonical adapter-direct tuple = %q/%q/%q", cfg.TransportConfig.Protocol, cfg.TransportConfig.Network, cfg.TransportConfig.Address)
+	}
+	if got := adapterDirectMuxProtocol(cfg.TransportConfig.Protocol); got != "enh" {
+		t.Fatalf("adapterDirectMuxProtocol() = %q, want enh", got)
+	}
 }
 
 func TestWireAdapterDirect_ExplicitProtocol_ForcesTCPForHostPort(t *testing.T) {
@@ -1478,9 +1484,12 @@ func TestWireAdapterDirect_ENSScheme_SelectsENS(t *testing.T) {
 	if !strings.Contains(err.Error(), "tcp") {
 		t.Fatalf("expected TCP network, got: %v", err)
 	}
-	// Note: ENS protocol selection is verified implicitly — if the
-	// scheme were not recognized, wireAdapterDirect would return (nil,
-	// nil) and we would not get a dial error.
+	if cfg.TransportConfig.Protocol != adapterDirectENSProtocol || cfg.TransportConfig.Network != "tcp" || cfg.TransportConfig.Address != "192.0.2.1:9999" {
+		t.Fatalf("canonical adapter-direct ENS tuple = %q/%q/%q", cfg.TransportConfig.Protocol, cfg.TransportConfig.Network, cfg.TransportConfig.Address)
+	}
+	if got := adapterDirectMuxProtocol(cfg.TransportConfig.Protocol); got != "ens" {
+		t.Fatalf("adapterDirectMuxProtocol() = %q, want ens", got)
+	}
 }
 
 func TestWireAdapterDirect_ProxyListener_ReturnedAsCloser(t *testing.T) {

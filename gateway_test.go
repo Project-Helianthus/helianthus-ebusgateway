@@ -362,6 +362,38 @@ func TestNormalizeTransportConfigTCPPlainEndpoint(t *testing.T) {
 	}
 }
 
+func TestNormalizeTransportConfigAdapterDirectEndpoints(t *testing.T) {
+	tests := []struct {
+		name         string
+		endpoint     string
+		wantProtocol TransportProtocol
+	}{
+		{name: "enh family", endpoint: "adapter-direct://adapter.local:9999", wantProtocol: TransportAdapterDirect},
+		{name: "ens family", endpoint: "adapter-direct-ens://adapter.local:9999", wantProtocol: transportAdapterDirectENS},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := normalizeTransportConfig(TransportConfig{
+				Protocol: TransportENH,
+				Network:  "unix",
+				Address:  test.endpoint,
+			})
+			if err != nil {
+				t.Fatalf("normalizeTransportConfig() error = %v", err)
+			}
+			if cfg.Protocol != test.wantProtocol || cfg.Network != "tcp" || cfg.Address != "adapter.local:9999" {
+				t.Fatalf("normalized tuple = %q/%q/%q, want %q/tcp/adapter.local:9999", cfg.Protocol, cfg.Network, cfg.Address, test.wantProtocol)
+			}
+			if got := EBusDriverTransportProtocol(TransportConfig{Protocol: TransportENH, Network: "unix", Address: test.endpoint}); got != TransportAdapterDirect {
+				t.Fatalf("EBusDriverTransportProtocol() = %q, want stable adapter-direct shape", got)
+			}
+			if path, special := ResolveAdmissionPath(cfg.Protocol); path != TransportAdmissionSourceSelectionCapable || !special {
+				t.Fatalf("ResolveAdmissionPath(%q) = %q/%v, want source-selection-capable/true", cfg.Protocol, path, special)
+			}
+		})
+	}
+}
+
 func TestNormalizeTransportConfigCanonicalizesEbusdAlias(t *testing.T) {
 	cfg, err := normalizeTransportConfig(TransportConfig{
 		Protocol: TransportProtocol("ebusd"),

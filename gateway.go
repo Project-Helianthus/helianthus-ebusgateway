@@ -188,6 +188,10 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 		if config.Protocol == "" {
 			config.Protocol = TransportENH
 		}
+		if isAdapterDirectTransportProtocol(config.Protocol) &&
+			(config.Network == "" || (config.Network == "unix" && strings.Contains(config.Address, ":"))) {
+			config.Network = "tcp"
+		}
 		return config, nil
 	}
 
@@ -199,6 +203,11 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 	config.Network = network
 	config.Address = address
 	return config, nil
+}
+
+func isAdapterDirectTransportProtocol(protocol TransportProtocol) bool {
+	protocol = canonicalTransportProtocol(protocol)
+	return protocol == TransportAdapterDirect || protocol == transportAdapterDirectENS
 }
 
 func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
@@ -314,7 +323,9 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 		}
 	case "unix":
 	case "adapter-direct":
-		return "", "", "", fmt.Errorf("gateway transport endpoint scheme %q requires preconfigured adapter-direct transport (use wireAdapterDirect)", scheme)
+		protocol = TransportAdapterDirect
+	case "adapter-direct-ens":
+		protocol = transportAdapterDirectENS
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
 	}

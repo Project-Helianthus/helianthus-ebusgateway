@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,10 +92,6 @@ func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportP
 			return ebusgateway.TransportAdapterDirect
 		}
 		return ebusgateway.TransportENH
-	}
-	address := strings.ToLower(strings.TrimSpace(cfg.TransportConfig.Address))
-	if strings.HasPrefix(address, "adapter-direct://") || strings.HasPrefix(address, "adapter-direct-ens://") {
-		return ebusgateway.TransportAdapterDirect
 	}
 	return ebusgateway.EBusDriverTransportProtocol(cfg.TransportConfig)
 }

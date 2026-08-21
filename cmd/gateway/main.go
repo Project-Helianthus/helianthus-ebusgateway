@@ -87,6 +87,7 @@ var (
 	// empty events array + dropped=0 in that case so the contract
 	// degrades cleanly without 404-ing.
 	v8AdminEventsCurrentClassifier atomic.Pointer[v8classifier.Classifier]
+	v8AdminEventsCurrentProvider   atomic.Pointer[v8AdminClassifierProvider]
 )
 
 // v8RolloutExpvarSource is the indirection layer for the five
@@ -99,6 +100,23 @@ var (
 type v8RolloutExpvarSource struct {
 	bus          *protocol.Bus
 	classifierFn func() *v8classifier.Classifier
+}
+
+type v8AdminClassifierProvider struct {
+	classifierFn func() *v8classifier.Classifier
+}
+
+func currentV8AdminClassifier() *v8classifier.Classifier {
+	// Direct pointer is retained as a test/backward-compatible injection seam.
+	// Production clears it and installs the generation-aware provider below.
+	if classifier := v8AdminEventsCurrentClassifier.Load(); classifier != nil {
+		return classifier
+	}
+	provider := v8AdminEventsCurrentProvider.Load()
+	if provider == nil || provider.classifierFn == nil {
+		return nil
+	}
+	return provider.classifierFn()
 }
 
 type runtimeWatchObserver struct {
@@ -462,7 +480,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		// handler's nil-check returns an empty event list in
 		// that case so the surface stays available across
 		// transports for tooling that probes it unconditionally.
-		v8AdminEventsCurrentClassifier.Store(classifierFn())
+		v8AdminEventsCurrentClassifier.Store(nil)
+		v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{classifierFn: classifierFn})
 		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
 				expvar.Func(func() any {
@@ -1925,7 +1944,7 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 		Events: []v8AdminEventJSON{},
 	}
 
-	classifier := v8AdminEventsCurrentClassifier.Load()
+	classifier := currentV8AdminClassifier()
 	if classifier != nil {
 		var events []v8classifier.ClassifierAdminEvent
 		var dropped uint64

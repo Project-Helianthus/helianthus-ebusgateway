@@ -20,3 +20,14 @@ func OpenEBusDriverPassiveTransport(ctx context.Context, cfg Config) (transport.
 	cfg = applyDefaults(cfg)
 	return resolvePassiveTransport(ctx, cfg)
 }
+
+// EBusDriverTransportProtocol resolves URI scheme overrides through the same
+// normalization used by transport construction. Invalid endpoints retain the
+// canonical configured fallback so their error remains driver-local.
+func EBusDriverTransportProtocol(config TransportConfig) TransportProtocol {
+	normalized, err := normalizeTransportConfig(config)
+	if err == nil {
+		return normalized.Protocol
+	}
+	return canonicalTransportProtocol(config.Protocol)
+}

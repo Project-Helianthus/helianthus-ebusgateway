@@ -72,6 +72,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 		controller.passive = newEBusStablePassiveTransport(
 			managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID},
 			protocol,
+			reporter,
 		)
 	}
 	if protocol == ebusgateway.TransportAdapterDirect {
@@ -94,13 +95,17 @@ func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportP
 	if strings.HasPrefix(address, "adapter-direct://") || strings.HasPrefix(address, "adapter-direct-ens://") {
 		return ebusgateway.TransportAdapterDirect
 	}
-	return ebusgateway.CanonicalTransportProtocol(cfg.TransportConfig.Protocol)
+	return ebusgateway.EBusDriverTransportProtocol(cfg.TransportConfig)
 }
 
 func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool) transport.DriverRuntimeFactory {
+	var injectedUsed atomic.Bool
 	return func(ctx context.Context) (*transport.ManagedRawTransport, error) {
-		if protocol == ebusgateway.TransportAdapterDirect {
+		if protocol == ebusgateway.TransportAdapterDirect && cfg.Transport == nil {
 			return buildManagedAdapterDirectGeneration(ctx, cfg)
+		}
+		if cfg.Transport != nil && !injectedUsed.CompareAndSwap(false, true) {
+			return nil, transport.ErrDriverUnavailable
 		}
 		active, activeClose, err := ebusgateway.OpenEBusDriverTransport(ctx, cfg)
 		if err != nil {
@@ -111,7 +116,11 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 		}
 		var passive transport.RawTransport
 		if needsPassive {
-			passive, err = ebusgateway.OpenEBusDriverPassiveTransport(ctx, cfg)
+			if cfg.PassiveTransport != nil {
+				passive = cfg.PassiveTransport
+			} else {
+				passive, err = ebusgateway.OpenEBusDriverPassiveTransport(ctx, cfg)
+			}
 			if err != nil {
 				// Return the partially constructed generation with its error so
 				// DriverRuntime retires it through the same CloseRequest/Closed
@@ -174,7 +183,7 @@ func (controller *ebusDriverController) Start(ctx context.Context) error {
 	if controller == nil || controller.manager == nil {
 		return drivermanager.ErrUnavailable
 	}
-	return controller.manager.Start(ctx, primaryEBusDriverID)
+	return controller.manager.StartAsync(ctx, primaryEBusDriverID)
 }
 
 func (controller *ebusDriverController) Shutdown(ctx context.Context) error {
@@ -547,15 +556,20 @@ func (slot *ebusStableAdapterDirectTransport) Write(payload []byte) (written int
 }
 
 type ebusStablePassiveTransport struct {
-	invoker ebusSlotInvoker
+	invoker  ebusSlotInvoker
+	reporter ebusFailureReporter
+
+	readMu  sync.Mutex
+	readSeq uint64
+	reads   map[uint64]context.CancelFunc
 }
 
 type ebusStableEnhancedPassiveTransport struct {
 	*ebusStablePassiveTransport
 }
 
-func newEBusStablePassiveTransport(invoker ebusSlotInvoker, protocol ebusgateway.TransportProtocol) transport.RawTransport {
-	base := &ebusStablePassiveTransport{invoker: invoker}
+func newEBusStablePassiveTransport(invoker ebusSlotInvoker, protocol ebusgateway.TransportProtocol, reporter ebusFailureReporter) transport.RawTransport {
+	base := &ebusStablePassiveTransport{invoker: invoker, reporter: reporter}
 	switch ebusgateway.CanonicalTransportProtocol(protocol) {
 	case ebusgateway.TransportENH, ebusgateway.TransportENS, ebusgateway.TransportAdapterDirect:
 		return &ebusStableEnhancedPassiveTransport{ebusStablePassiveTransport: base}
@@ -564,11 +578,13 @@ func newEBusStablePassiveTransport(invoker ebusSlotInvoker, protocol ebusgateway
 	}
 }
 
-func (slot *ebusStablePassiveTransport) withPassive(callback func(transport.RawTransport) error) error {
+func (slot *ebusStablePassiveTransport) withPassive(callback func(context.Context, transport.RawTransport) error) error {
 	if slot == nil || slot.invoker == nil {
 		return transport.ErrDriverUnavailable
 	}
-	_, err := slot.invoker.Invoke(context.Background(), drivermanager.CapabilityRead, func(raw transport.RawTransport) error {
+	readCtx, finishRead := slot.beginRead()
+	defer finishRead()
+	correlation, err := slot.invoker.Invoke(readCtx, drivermanager.CapabilityRead, func(raw transport.RawTransport) error {
 		provider, ok := raw.(interface{ PassiveTransport() transport.RawTransport })
 		if !ok {
 			return transport.ErrDriverUnavailable
@@ -577,29 +593,67 @@ func (slot *ebusStablePassiveTransport) withPassive(callback func(transport.RawT
 		if passive == nil {
 			return transport.ErrDriverUnavailable
 		}
-		return callback(passive)
+		return callback(readCtx, passive)
 	})
 	if errors.Is(err, drivermanager.ErrUnavailable) {
-		return errors.Join(transport.ErrDriverUnavailable, err)
+		err = errors.Join(transport.ErrDriverUnavailable, err)
+	}
+	if readCtx.Err() == nil && shouldReportPassiveFailure(err) && slot.reporter != nil {
+		slot.reporter(correlation, err)
 	}
 	return err
 }
 
+func (slot *ebusStablePassiveTransport) beginRead() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	slot.readMu.Lock()
+	slot.readSeq++
+	id := slot.readSeq
+	if slot.reads == nil {
+		slot.reads = make(map[uint64]context.CancelFunc)
+	}
+	slot.reads[id] = cancel
+	slot.readMu.Unlock()
+	return ctx, func() {
+		cancel()
+		slot.readMu.Lock()
+		delete(slot.reads, id)
+		slot.readMu.Unlock()
+	}
+}
+
+func shouldReportPassiveFailure(err error) bool {
+	return err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, ebuserrors.ErrTimeout) &&
+		!errors.Is(err, transport.ErrDriverUnavailable) &&
+		!errors.Is(err, transport.ErrStaleDriverGeneration)
+}
+
 func (slot *ebusStablePassiveTransport) ReadByte() (value byte, err error) {
-	err = slot.withPassive(func(passive transport.RawTransport) error {
-		value, err = passive.ReadByte()
+	err = slot.withPassive(func(ctx context.Context, passive transport.RawTransport) error {
+		reader, ok := passive.(interface {
+			ReadByteContext(context.Context) (byte, error)
+		})
+		if !ok {
+			return transport.ErrDriverUnavailable
+		}
+		value, err = reader.ReadByteContext(ctx)
 		return err
 	})
 	return value, err
 }
 
 func (slot *ebusStableEnhancedPassiveTransport) ReadEvent() (event transport.StreamEvent, err error) {
-	err = slot.withPassive(func(passive transport.RawTransport) error {
-		reader, ok := passive.(transport.StreamEventReader)
+	err = slot.withPassive(func(ctx context.Context, passive transport.RawTransport) error {
+		reader, ok := passive.(interface {
+			ReadEventContext(context.Context) (transport.StreamEvent, error)
+		})
 		if !ok {
 			return transport.ErrDriverUnavailable
 		}
-		event, err = reader.ReadEvent()
+		event, err = reader.ReadEventContext(ctx)
 		return err
 	})
 	return event, err
@@ -609,7 +663,21 @@ func (*ebusStablePassiveTransport) Write([]byte) (int, error) {
 	return 0, transport.ErrDriverUnavailable
 }
 
-func (*ebusStablePassiveTransport) Close() error { return nil }
+func (slot *ebusStablePassiveTransport) Close() error {
+	if slot == nil {
+		return nil
+	}
+	slot.readMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(slot.reads))
+	for _, cancel := range slot.reads {
+		cancels = append(cancels, cancel)
+	}
+	slot.readMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return nil
+}
 
 func (*ebusStableEnhancedPassiveTransport) BytesAreUnescaped() bool { return true }
 
@@ -661,12 +729,13 @@ func (classifier *ebusStableClassifier) ActiveTxnSnapshot() (snapshot adaptermux
 
 func (classifier *ebusStableClassifier) V8Classifier() (result *v8classifier.Classifier) {
 	classifier.withClassifier(func(current activeTxnClassifier) {
-		mux, ok := current.(*adaptermux.Mux)
+		provider, ok := current.(interface {
+			V8Classifier() *v8classifier.Classifier
+		})
 		if ok {
-			result = mux.V8Classifier()
+			result = provider.V8Classifier()
 		}
 	})
-	v8AdminEventsCurrentClassifier.Store(result)
 	return result
 }
 
@@ -675,11 +744,15 @@ type managedEBusReadResult struct {
 	err   error
 }
 
+type managedEBusReadRequest struct {
+	ctx    context.Context
+	result chan managedEBusReadResult
+}
+
 type managedEBusEndpoint struct {
 	ctx      context.Context
 	raw      transport.RawTransport
-	demand   chan struct{}
-	results  chan managedEBusReadResult
+	requests chan managedEBusReadRequest
 	pumpDone chan struct{}
 	closing  *atomic.Bool
 }
@@ -731,8 +804,7 @@ func newManagedEBusEndpoint(ctx context.Context, raw transport.RawTransport, clo
 	endpoint := &managedEBusEndpoint{
 		ctx:      ctx,
 		raw:      raw,
-		demand:   make(chan struct{}),
-		results:  make(chan managedEBusReadResult),
+		requests: make(chan managedEBusReadRequest),
 		pumpDone: make(chan struct{}),
 		closing:  closing,
 	}
@@ -753,19 +825,20 @@ func (endpoint *managedEBusEndpoint) pump() {
 		select {
 		case <-endpoint.ctx.Done():
 			return
-		case <-endpoint.demand:
-		}
-		if endpoint.ctx.Err() != nil {
-			return
-		}
-		event, err := readManagedEBusEvent(endpoint.raw)
-		select {
-		case endpoint.results <- managedEBusReadResult{event: event, err: err}:
-		case <-endpoint.ctx.Done():
-			return
-		}
-		if err != nil && endpoint.closing.Load() {
-			return
+		case request := <-endpoint.requests:
+			if request.ctx.Err() != nil {
+				continue
+			}
+			event, err := readManagedEBusEvent(endpoint.raw)
+			select {
+			case request.result <- managedEBusReadResult{event: event, err: err}:
+			case <-request.ctx.Done():
+			case <-endpoint.ctx.Done():
+				return
+			}
+			if err != nil && endpoint.closing.Load() {
+				return
+			}
 		}
 	}
 }
@@ -798,23 +871,20 @@ func readManagedEBusEvent(raw transport.RawTransport) (transport.StreamEvent, er
 }
 
 func (endpoint *managedEBusEndpoint) nextByte() (byte, bool, error) {
+	return endpoint.nextByteContext(context.Background())
+}
+
+func (endpoint *managedEBusEndpoint) nextByteContext(ctx context.Context) (byte, bool, error) {
 	for {
-		if err := endpoint.requestRead(); err != nil {
-			return 0, false, err
+		result := endpoint.readContext(ctx)
+		if result.err != nil {
+			return 0, false, result.err
 		}
-		select {
-		case <-endpoint.ctx.Done():
-			return 0, false, ebuserrors.ErrTransportClosed
-		case result := <-endpoint.results:
-			if result.err != nil {
-				return 0, false, result.err
-			}
-			switch result.event.Kind {
-			case transport.StreamEventByte:
-				return result.event.Byte, result.event.WasEscaped, nil
-			case transport.StreamEventReset:
-				return 0, false, ebuserrors.ErrAdapterReset
-			}
+		switch result.event.Kind {
+		case transport.StreamEventByte:
+			return result.event.Byte, result.event.WasEscaped, nil
+		case transport.StreamEventReset:
+			return 0, false, ebuserrors.ErrAdapterReset
 		}
 	}
 }
@@ -833,26 +903,36 @@ func (generation *managedEBusGeneration) ReadEvent() (transport.StreamEvent, err
 }
 
 func (endpoint *managedEBusEndpoint) readEvent() (transport.StreamEvent, error) {
-	if err := endpoint.requestRead(); err != nil {
-		return transport.StreamEvent{}, err
-	}
-	select {
-	case <-endpoint.ctx.Done():
-		return transport.StreamEvent{}, ebuserrors.ErrTransportClosed
-	case result := <-endpoint.results:
-		return result.event, result.err
-	}
+	return endpoint.readEventContext(context.Background())
 }
 
-func (endpoint *managedEBusEndpoint) requestRead() error {
+func (endpoint *managedEBusEndpoint) readEventContext(ctx context.Context) (transport.StreamEvent, error) {
+	result := endpoint.readContext(ctx)
+	return result.event, result.err
+}
+
+func (endpoint *managedEBusEndpoint) readContext(ctx context.Context) managedEBusReadResult {
 	if endpoint == nil || endpoint.raw == nil {
-		return transport.ErrDriverUnavailable
+		return managedEBusReadResult{err: transport.ErrDriverUnavailable}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	request := managedEBusReadRequest{ctx: ctx, result: make(chan managedEBusReadResult)}
+	select {
+	case <-endpoint.ctx.Done():
+		return managedEBusReadResult{err: ebuserrors.ErrTransportClosed}
+	case <-ctx.Done():
+		return managedEBusReadResult{err: ctx.Err()}
+	case endpoint.requests <- request:
 	}
 	select {
 	case <-endpoint.ctx.Done():
-		return ebuserrors.ErrTransportClosed
-	case endpoint.demand <- struct{}{}:
-		return nil
+		return managedEBusReadResult{err: ebuserrors.ErrTransportClosed}
+	case <-ctx.Done():
+		return managedEBusReadResult{err: ctx.Err()}
+	case result := <-request.result:
+		return result
 	}
 }
 
@@ -945,8 +1025,17 @@ func (passive *managedEBusPassiveTransport) ReadByte() (byte, error) {
 	return value, err
 }
 
+func (passive *managedEBusPassiveTransport) ReadByteContext(ctx context.Context) (byte, error) {
+	value, _, err := passive.endpoint.nextByteContext(ctx)
+	return value, err
+}
+
 func (passive *managedEBusPassiveTransport) ReadEvent() (transport.StreamEvent, error) {
 	return passive.endpoint.readEvent()
+}
+
+func (passive *managedEBusPassiveTransport) ReadEventContext(ctx context.Context) (transport.StreamEvent, error) {
+	return passive.endpoint.readEventContext(ctx)
 }
 
 func (*managedEBusPassiveTransport) Write([]byte) (int, error) {

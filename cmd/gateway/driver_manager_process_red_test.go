@@ -93,3 +93,76 @@ func TestIssue851RunKeepsHTTPShellAliveWhenEBusConstructionFails(t *testing.T) {
 		t.Fatal("test did not exercise eBUS construction")
 	}
 }
+
+func TestIssue851HTTPShellStartsWhileEBusConstructionIsBlocked(t *testing.T) {
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return nil
+	}
+
+	dialStarted := make(chan struct{}, 1)
+	dialRelease := make(chan struct{})
+	httpStarted := make(chan struct{}, 1)
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		httpStarted <- struct{}{}
+		return nil, nil, nil
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = nil
+	cfg.TransportConfig.Protocol = ebusgateway.TransportTCPPlain
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "blocked.invalid:9999"
+	cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-dialRelease // deliberately ignores context
+		return nil, errors.New("offline")
+	}
+	cfg.BroadcastListen = false
+	cfg.ScanOnStart = false
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, cfg) }()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("eBUS construction did not start")
+	}
+	select {
+	case <-httpStarted:
+	case err := <-done:
+		t.Fatalf("run exited while eBUS construction was blocked: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("HTTP shell waited for blocked eBUS construction")
+	}
+	close(dialRelease)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not shut down after blocked construction was released")
+	}
+}

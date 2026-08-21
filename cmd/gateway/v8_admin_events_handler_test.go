@@ -14,6 +14,13 @@ import (
 // v8_admin_events_handler_test.go pins the HTTP contract for the
 // /debug/v8/admin-events endpoint added by F-NEW-26 (2026-05-21).
 
+func isolateV8AdminProvider(t *testing.T) {
+	t.Helper()
+	original := v8AdminEventsCurrentProvider.Load()
+	v8AdminEventsCurrentProvider.Store(nil)
+	t.Cleanup(func() { v8AdminEventsCurrentProvider.Store(original) })
+}
+
 // TestHandleV8AdminEvents_NilClassifier_ReturnsEmptyResponse pins
 // the nil-safe degradation contract: when no classifier is
 // registered in v8AdminEventsCurrentClassifier (non-adapter-direct
@@ -21,6 +28,7 @@ import (
 // `{"events": [], "dropped": 0}` with HTTP 200. Tooling that
 // probes this endpoint unconditionally must NOT see a 404.
 func TestHandleV8AdminEvents_NilClassifier_ReturnsEmptyResponse(t *testing.T) {
+	isolateV8AdminProvider(t)
 	// Restore the original pointer after the test so subsequent
 	// tests that depend on a registered classifier (none today,
 	// but defensively) are not affected.
@@ -63,6 +71,7 @@ func TestHandleV8AdminEvents_NilClassifier_ReturnsEmptyResponse(t *testing.T) {
 // admin events returns those events JSON-encoded, drains the
 // buffer, and a subsequent GET returns the empty envelope.
 func TestHandleV8AdminEvents_DrainsClassifierEvents(t *testing.T) {
+	isolateV8AdminProvider(t)
 	orig := v8AdminEventsCurrentClassifier.Load()
 	t.Cleanup(func() { v8AdminEventsCurrentClassifier.Store(orig) })
 
@@ -137,6 +146,7 @@ func TestHandleV8AdminEvents_DrainsClassifierEvents(t *testing.T) {
 // respond 405 — the drain is state-mutating; only GET is the
 // documented action.
 func TestHandleV8AdminEvents_OnlyGetAllowed(t *testing.T) {
+	isolateV8AdminProvider(t)
 	orig := v8AdminEventsCurrentClassifier.Load()
 	t.Cleanup(func() { v8AdminEventsCurrentClassifier.Store(orig) })
 
@@ -169,6 +179,7 @@ func TestHandleV8AdminEvents_OnlyGetAllowed(t *testing.T) {
 // `max-age=1` (peek) so caching proxies treat the two modes
 // correctly.
 func TestHandleV8AdminEvents_PeekDoesNotDrain(t *testing.T) {
+	isolateV8AdminProvider(t)
 	orig := v8AdminEventsCurrentClassifier.Load()
 	t.Cleanup(func() { v8AdminEventsCurrentClassifier.Store(orig) })
 
@@ -257,6 +268,7 @@ func TestHandleV8AdminEvents_PeekDoesNotDrain(t *testing.T) {
 // affecting the registered handler. Mirrors the contract added
 // for v8RolloutExpvarCurrent in PR #655.
 func TestV8AdminEventsCurrentClassifier_AtomicSwap(t *testing.T) {
+	isolateV8AdminProvider(t)
 	orig := v8AdminEventsCurrentClassifier.Load()
 	t.Cleanup(func() { v8AdminEventsCurrentClassifier.Store(orig) })
 

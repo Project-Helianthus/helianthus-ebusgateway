@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,7 @@ var (
 	ErrUnavailable       = errors.New("driver unavailable")
 	ErrStopTimeout       = errors.New("driver stop timed out")
 	ErrSafetyQuarantined = errors.New("driver safety quarantined")
+	ErrManagerClosed     = errors.New("driver manager is shutting down")
 )
 
 type DesiredState string
@@ -161,6 +163,8 @@ type Manager struct {
 	drivers map[string]*managedDriver
 	wg      sync.WaitGroup
 	once    sync.Once
+	taskMu  sync.Mutex
+	closed  atomic.Bool
 }
 
 type managedDriver struct {
@@ -265,27 +269,52 @@ func (driver *managedDriver) snapshotLocked() Snapshot {
 }
 
 func (manager *Manager) Start(ctx context.Context, id string) error {
+	return manager.start(ctx, id, false)
+}
+
+// StartAsync reserves STARTING synchronously, then runs construction as a
+// manager-owned task. Shutdown fences new tasks, cancels the attempt, and
+// accounts for it in the manager wait group.
+func (manager *Manager) StartAsync(ctx context.Context, id string) error {
+	return manager.start(ctx, id, true)
+}
+
+func (manager *Manager) start(ctx context.Context, id string, async bool) error {
 	driver := manager.drivers[id]
 	if driver == nil {
 		return ErrDriverNotFound
 	}
-	// Cancel an automatic or caller-owned construction before waiting for the
-	// lifecycle serializer. This lets Stop/Start intent interrupt a blocked
-	// factory through its context instead of waiting for the dial timeout.
+	// Cancel a pending backoff before reserving explicit start intent. An
+	// already STARTING driver remains idempotent and keeps its one construction.
 	manager.cancelRetry(driver)
-	manager.cancelAttempt(driver)
 	driver.opMu.Lock()
-	defer driver.opMu.Unlock()
 	manager.cancelRetry(driver)
 
 	driver.mu.Lock()
+	if manager.closed.Load() {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrManagerClosed
+	}
 	if driver.quarantined {
 		driver.mu.Unlock()
+		driver.opMu.Unlock()
 		return ErrSafetyQuarantined
 	}
 	if driver.observed == ObservedRunning {
 		driver.mu.Unlock()
+		driver.opMu.Unlock()
 		return nil
+	}
+	if driver.desired == DesiredRunning && driver.observed == ObservedStarting {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return nil
+	}
+	if driver.observed == ObservedStopping {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
 	driver.retryRemaining = driver.cfg.Retry.Budget
@@ -294,6 +323,18 @@ func (manager *Manager) Start(ctx context.Context, id string) error {
 	manager.transitionLocked(driver, ObservedStarting, Reason{Code: ReasonStartRequested}, nil, nil)
 	driver.attempt++
 	driver.mu.Unlock()
+	driver.opMu.Unlock()
+
+	if async {
+		if !manager.beginTask() {
+			return ErrManagerClosed
+		}
+		go func() {
+			defer manager.wg.Done()
+			manager.startAttempt(manager.ctx, driver, operation, replace)
+		}()
+		return nil
+	}
 	manager.startAttempt(ctx, driver, operation, replace)
 	return nil
 }
@@ -304,15 +345,24 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 		return ErrDriverNotFound
 	}
 	manager.cancelRetry(driver)
-	manager.cancelAttempt(driver)
 	driver.opMu.Lock()
-	defer driver.opMu.Unlock()
 	manager.cancelRetry(driver)
 
 	driver.mu.Lock()
+	if manager.closed.Load() {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrManagerClosed
+	}
 	if driver.quarantined {
 		driver.mu.Unlock()
+		driver.opMu.Unlock()
 		return ErrSafetyQuarantined
+	}
+	if driver.observed == ObservedStarting || driver.observed == ObservedStopping {
+		driver.mu.Unlock()
+		driver.opMu.Unlock()
+		return ErrUnavailable
 	}
 	driver.desired = DesiredRunning
 	driver.retryRemaining = driver.cfg.Retry.Budget
@@ -320,6 +370,7 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.attempt++
 	driver.mu.Unlock()
+	driver.opMu.Unlock()
 	manager.startAttempt(ctx, driver, operation, true)
 	return nil
 }
@@ -419,7 +470,7 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 func (manager *Manager) finishAttempt(driver *managedDriver, operation, generation uint64, err error, replace bool) {
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
-	if driver.activeOperation != operation || driver.desired != DesiredRunning {
+	if manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning {
 		return
 	}
 	if err == nil {
@@ -466,7 +517,11 @@ func (manager *Manager) scheduleRetryLocked(driver *managedDriver, operation uin
 	driver.retryNeedsReplace = replace
 	retryCtx, cancel := context.WithCancel(manager.ctx)
 	driver.retryCancel = cancel
-	manager.wg.Add(1)
+	if !manager.beginTask() {
+		cancel()
+		driver.retryCancel = nil
+		return
+	}
 	go manager.runRetry(retryCtx, driver, operation, token, delay)
 }
 
@@ -481,10 +536,10 @@ func (manager *Manager) runRetry(ctx context.Context, driver *managedDriver, ope
 	}
 
 	driver.opMu.Lock()
-	defer driver.opMu.Unlock()
 	driver.mu.Lock()
-	if driver.retryToken != token || driver.activeOperation != operation || driver.desired != DesiredRunning || driver.observed != ObservedBackoff || driver.quarantined {
+	if manager.closed.Load() || driver.retryToken != token || driver.activeOperation != operation || driver.desired != DesiredRunning || driver.observed != ObservedBackoff || driver.quarantined {
 		driver.mu.Unlock()
+		driver.opMu.Unlock()
 		return
 	}
 	driver.retryCancel = nil
@@ -492,7 +547,18 @@ func (manager *Manager) runRetry(ctx context.Context, driver *managedDriver, ope
 	manager.transitionLocked(driver, ObservedStarting, Reason{Code: ReasonStartRequested}, nil, nil)
 	driver.attempt++
 	driver.mu.Unlock()
+	driver.opMu.Unlock()
 	manager.startAttempt(ctx, driver, operation, replace)
+}
+
+func (manager *Manager) beginTask() bool {
+	manager.taskMu.Lock()
+	defer manager.taskMu.Unlock()
+	if manager.closed.Load() {
+		return false
+	}
+	manager.wg.Add(1)
+	return true
 }
 
 func (manager *Manager) cancelRetry(driver *managedDriver) {
@@ -551,13 +617,13 @@ func (manager *Manager) ReportDegraded(id string, generation uint64, effective [
 
 func (manager *Manager) ReportDegradedCorrelated(id string, correlation Correlation, effective []Capability, reason Reason) bool {
 	driver := manager.drivers[id]
-	if driver == nil || reason.Code != ReasonCapabilityDegraded {
+	if driver == nil || manager.closed.Load() || reason.Code != ReasonCapabilityDegraded {
 		return false
 	}
 	effective = normalizeCapabilities(effective)
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
-	if !driver.acceptsCallbackLocked(correlation) || (driver.observed != ObservedRunning && driver.observed != ObservedDegraded) || len(effective) == 0 || len(effective) >= len(driver.cfg.Capabilities) || !capabilitySubset(effective, driver.cfg.Capabilities) {
+	if manager.closed.Load() || !driver.acceptsCallbackLocked(correlation) || (driver.observed != ObservedRunning && driver.observed != ObservedDegraded) || len(effective) == 0 || len(effective) >= len(driver.cfg.Capabilities) || !capabilitySubset(effective, driver.cfg.Capabilities) {
 		return false
 	}
 	manager.transitionLocked(driver, ObservedDegraded, reason, nil, effective)
@@ -568,13 +634,13 @@ func (manager *Manager) ReportDegradedCorrelated(id string, correlation Correlat
 // replacement after the current callback releases its DriverRuntime admission.
 func (manager *Manager) ReportFailure(id string, correlation Correlation, failure Failure) bool {
 	driver := manager.drivers[id]
-	if driver == nil || !validReasonCode(failure.Reason.Code) {
+	if driver == nil || manager.closed.Load() || !validReasonCode(failure.Reason.Code) {
 		return false
 	}
 	failure.Reason = normalizeReason(failure.Reason)
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
-	if !driver.acceptsCallbackLocked(correlation) || (driver.observed != ObservedRunning && driver.observed != ObservedDegraded) {
+	if manager.closed.Load() || !driver.acceptsCallbackLocked(correlation) || (driver.observed != ObservedRunning && driver.observed != ObservedDegraded) {
 		return false
 	}
 	operation := driver.nextOperationLocked()
@@ -597,11 +663,11 @@ func (driver *managedDriver) acceptsCallbackLocked(correlation Correlation) bool
 // same state lock used to withdraw capabilities during Stop/Replace/failure.
 func (manager *Manager) Invoke(ctx context.Context, id string, capability Capability, fn func(any) error) (Correlation, error) {
 	driver := manager.drivers[id]
-	if driver == nil {
+	if driver == nil || manager.closed.Load() {
 		return Correlation{}, ErrUnavailable
 	}
 	driver.mu.Lock()
-	if !containsCapability(driver.effective, capability) || driver.quarantined {
+	if manager.closed.Load() || !containsCapability(driver.effective, capability) || driver.quarantined {
 		correlation := Correlation{Generation: driver.generation, Operation: driver.activeOperation}
 		driver.mu.Unlock()
 		return correlation, ErrUnavailable
@@ -622,7 +688,10 @@ func (manager *Manager) Invoke(ctx context.Context, id string, capability Capabi
 }
 
 func (manager *Manager) Shutdown(ctx context.Context) error {
+	manager.taskMu.Lock()
+	manager.closed.Store(true)
 	manager.once.Do(manager.cancel)
+	manager.taskMu.Unlock()
 	ids := make([]string, 0, len(manager.drivers))
 	for id := range manager.drivers {
 		ids = append(ids, id)

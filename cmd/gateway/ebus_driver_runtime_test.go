@@ -8,6 +8,8 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -31,6 +33,48 @@ type issue851EnhancedArbitrationRaw struct {
 	arbitrationRelease chan struct{}
 	closed             chan struct{}
 	closeOnce          sync.Once
+}
+
+type issue851TerminalPassiveRaw struct {
+	err       error
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newIssue851TerminalPassiveRaw(err error) *issue851TerminalPassiveRaw {
+	return &issue851TerminalPassiveRaw{err: err, closed: make(chan struct{})}
+}
+
+func (raw *issue851TerminalPassiveRaw) ReadByte() (byte, error) {
+	select {
+	case <-raw.closed:
+		return 0, ebuserrors.ErrTransportClosed
+	default:
+		return 0, raw.err
+	}
+}
+
+func (raw *issue851TerminalPassiveRaw) ReadEvent() (transport.StreamEvent, error) {
+	_, err := raw.ReadByte()
+	return transport.StreamEvent{}, err
+}
+
+func (*issue851TerminalPassiveRaw) Write([]byte) (int, error) {
+	return 0, transport.ErrDriverUnavailable
+}
+
+func (raw *issue851TerminalPassiveRaw) Close() error {
+	raw.closeOnce.Do(func() { close(raw.closed) })
+	return nil
+}
+
+type issue851Classifier struct {
+	v8 *v8classifier.Classifier
+}
+
+func (*issue851Classifier) LastTxnClass() string { return "" }
+func (classifier *issue851Classifier) V8Classifier() *v8classifier.Classifier {
+	return classifier.v8
 }
 
 func newIssue851BlockingRawTransport() *issue851BlockingRawTransport {
@@ -251,7 +295,7 @@ func TestIssue851StableTransportShapeMatchesConfiguredFamily(t *testing.T) {
 
 	for _, protocol := range []ebusgateway.TransportProtocol{ebusgateway.TransportENH, ebusgateway.TransportENS} {
 		slot := newEBusStableTransport(runtime, protocol, nil)
-		passive := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, protocol)
+		passive := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, protocol, nil)
 		if _, ok := slot.(transport.EscapeAware); !ok {
 			t.Errorf("%s slot does not preserve EscapeAware", protocol)
 		}
@@ -271,7 +315,7 @@ func TestIssue851StableTransportShapeMatchesConfiguredFamily(t *testing.T) {
 
 	for _, protocol := range []ebusgateway.TransportProtocol{ebusgateway.TransportTCPPlain, ebusgateway.TransportUDPPlain, ebusgateway.TransportEbusdTCP} {
 		slot := newEBusStableTransport(runtime, protocol, nil)
-		passive := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, protocol)
+		passive := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, protocol, nil)
 		if _, ok := slot.(transport.EscapeAware); ok {
 			t.Errorf("%s slot unexpectedly advertises EscapeAware", protocol)
 		}
@@ -286,6 +330,26 @@ func TestIssue851StableTransportShapeMatchesConfiguredFamily(t *testing.T) {
 		}
 		if _, ok := passive.(transport.StreamEventReader); ok {
 			t.Errorf("%s passive slot unexpectedly advertises StreamEventReader", protocol)
+		}
+	}
+}
+
+func TestIssue851TransportURIOverrideSelectsPlainStableShape(t *testing.T) {
+	for _, endpoint := range []string{
+		"tcp-plain://127.0.0.1:9999",
+		"udp-plain://127.0.0.1:9999",
+		"ebusd://127.0.0.1:8888",
+	} {
+		cfg := ebusgateway.DefaultConfig()
+		cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+		cfg.TransportConfig.Address = endpoint
+		protocol := configuredEBusDriverProtocol(cfg)
+		slot := newEBusStableTransport(transport.NewDriverRuntime(nil, transport.DriverRuntimeConfig{}), protocol, nil)
+		if _, ok := slot.(transport.EscapeAware); ok {
+			t.Errorf("endpoint %q resolved protocol %q with enhanced EscapeAware shape", endpoint, protocol)
+		}
+		if _, ok := slot.(interface{ StartArbitration(byte) error }); ok {
+			t.Errorf("endpoint %q resolved protocol %q with enhanced arbitration shape", endpoint, protocol)
 		}
 	}
 }
@@ -324,4 +388,249 @@ func TestIssue851ActiveCallbackTimeoutQuarantinesWithoutClosingRawTransport(t *t
 		t.Fatalf("admitted callback error = %v", err)
 	}
 	_ = raw.Close()
+}
+
+func TestIssue851ManagerStopReachesRuntimeWithIgnoringContextFactory(t *testing.T) {
+	factoryStarted := make(chan struct{})
+	factoryRelease := make(chan struct{})
+	raw := newIssue851BlockingRawTransport()
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		close(factoryStarted)
+		<-factoryRelease // deliberately ignores ctx
+		return newManagedEBusGeneration(ctx, raw, raw.Close), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 20 * time.Millisecond})
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID:           primaryEBusDriverID,
+		Enabled:      true,
+		Runtime:      &ebusDriverRuntime{runtime: runtimeSeam},
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	startDone := make(chan error, 1)
+	go func() { startDone <- manager.Start(context.Background(), primaryEBusDriverID) }()
+	select {
+	case <-factoryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("factory did not start")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), primaryEBusDriverID) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Stop could not reach DriverRuntime bounded cancellation")
+	}
+	snapshot, _ := manager.Snapshot(primaryEBusDriverID)
+	if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+		t.Fatalf("snapshot after uncooperative factory = %#v", snapshot)
+	}
+	close(factoryRelease)
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start() returned manager error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not retire canceled construction after release")
+	}
+}
+
+func TestIssue851PassiveCloseInterruptsReadWithoutOwningGeneration(t *testing.T) {
+	active := newIssue851BlockingRawTransport()
+	passive := newIssue851BlockingRawTransport()
+	runtime := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		return newManagedEBusGenerationParts(ctx, active, passive, nil, func() error {
+			return errors.Join(active.Close(), passive.Close())
+		}), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	if _, err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	slot := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, ebusgateway.TransportENH, nil)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := slot.(transport.StreamEventReader).ReadEvent()
+		readDone <- err
+	}()
+	select {
+	case <-passive.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("passive read did not reach adapter-owned pump")
+	}
+	if err := slot.Close(); err != nil {
+		t.Fatalf("stable passive Close() error = %v", err)
+	}
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted ReadEvent() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("stable passive Close did not interrupt current read")
+	}
+	select {
+	case <-passive.closed:
+		t.Fatal("stable passive Close retired the driver generation")
+	default:
+	}
+	if runtime.SafetyQuarantined() {
+		t.Fatal("interrupting the passive consumer quarantined the generation")
+	}
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("runtime Stop() error = %v", err)
+	}
+}
+
+func TestIssue851PassiveDisconnectReportsFailureAndReplacesGeneration(t *testing.T) {
+	var mu sync.Mutex
+	var activeGenerations []*issue851BlockingRawTransport
+	factoryCalls := 0
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		mu.Lock()
+		factoryCalls++
+		call := factoryCalls
+		active := newIssue851BlockingRawTransport()
+		activeGenerations = append(activeGenerations, active)
+		mu.Unlock()
+		var passive transport.RawTransport = newIssue851BlockingRawTransport()
+		if call == 1 {
+			passive = newIssue851TerminalPassiveRaw(errors.New("passive provider disconnected"))
+		}
+		return newManagedEBusGenerationParts(ctx, active, passive, nil, func() error {
+			return errors.Join(active.Close(), passive.Close())
+		}), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID:           primaryEBusDriverID,
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+		ClassifyError: func(error) drivermanager.Failure {
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: 5 * time.Millisecond, MaxDelay: 5 * time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	reporter := func(correlation drivermanager.Correlation, rawErr error) {
+		manager.ReportFailure(primaryEBusDriverID, correlation, drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}})
+	}
+	activeSlot := newManagedEBusStableTransport(manager, ebusgateway.TransportTCPPlain, reporter)
+	passiveSlot := newEBusStablePassiveTransport(managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID}, ebusgateway.TransportENH, reporter)
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if written, err := activeSlot.Write([]byte{0x01}); err != nil || written != 1 {
+		t.Fatalf("active Write before passive failure = (%d, %v)", written, err)
+	}
+	if _, err := passiveSlot.(transport.StreamEventReader).ReadEvent(); err == nil {
+		t.Fatal("passive disconnect did not surface an error")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot, _ := manager.Snapshot(primaryEBusDriverID)
+		if snapshot.ObservedState == drivermanager.ObservedRunning && snapshot.Generation == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("passive failure did not replace generation: %#v", snapshot)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	mu.Lock()
+	first := activeGenerations[0]
+	calls := factoryCalls
+	mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("factory calls = %d, want 2", calls)
+	}
+	select {
+	case <-first.closed:
+	case <-time.After(time.Second):
+		t.Fatal("old generation did not close after passive disconnect")
+	}
+	if written, err := activeSlot.Write([]byte{0x02}); err != nil || written != 1 {
+		t.Fatalf("active Write after passive replacement = (%d, %v)", written, err)
+	}
+}
+
+func TestIssue851InjectedTransportIsNotReadmittedAfterReplacement(t *testing.T) {
+	raw := newIssue851BlockingRawTransport()
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = raw
+	cfg.TransportConfig.Protocol = ebusgateway.TransportTCPPlain
+	cfg.BroadcastListen = false
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for controller.Snapshot().ObservedState != drivermanager.ObservedRunning {
+		if time.Now().After(deadline) {
+			t.Fatalf("injected generation did not start: %#v", controller.Snapshot())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := controller.manager.Replace(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Replace() manager error = %v", err)
+	}
+	snapshot := controller.Snapshot()
+	if snapshot.ObservedState != drivermanager.ObservedFailed || snapshot.Reason.Code != drivermanager.ReasonProviderUnavailable || snapshot.Generation != 1 {
+		t.Fatalf("replacement reused injected transport: %#v", snapshot)
+	}
+	select {
+	case <-raw.closed:
+	case <-time.After(time.Second):
+		t.Fatal("one-shot injected transport was not closed")
+	}
+}
+
+func TestIssue851AdminClassifierResolvesCurrentGenerationWithoutMetricsScrape(t *testing.T) {
+	originalStatic := v8AdminEventsCurrentClassifier.Load()
+	originalProvider := v8AdminEventsCurrentProvider.Load()
+	t.Cleanup(func() {
+		v8AdminEventsCurrentClassifier.Store(originalStatic)
+		v8AdminEventsCurrentProvider.Store(originalProvider)
+	})
+	first := v8classifier.New(v8classifier.ModeShadow)
+	second := v8classifier.New(v8classifier.ModeShadow)
+	classifiers := []*v8classifier.Classifier{first, second}
+	index := 0
+	runtime := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		raw := newIssue851BlockingRawTransport()
+		classifier := &issue851Classifier{v8: classifiers[index]}
+		index++
+		return newManagedEBusGenerationParts(ctx, raw, nil, classifier, raw.Close), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	stable := &ebusStableClassifier{invoker: directEBusSlotInvoker{runtime: runtime}}
+	v8AdminEventsCurrentClassifier.Store(nil)
+	v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{classifierFn: stable.V8Classifier})
+	if _, err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got := currentV8AdminClassifier(); got != first {
+		t.Fatalf("generation 1 admin classifier = %p, want %p", got, first)
+	}
+	if _, err := runtime.Replace(context.Background()); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	if got := currentV8AdminClassifier(); got != second {
+		t.Fatalf("generation 2 admin classifier = %p, want %p", got, second)
+	}
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }

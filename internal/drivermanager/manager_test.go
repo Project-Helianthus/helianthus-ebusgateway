@@ -32,6 +32,74 @@ type cancelableConstructionRuntime struct {
 	cancelOnce      sync.Once
 }
 
+type shutdownBlockingRuntime struct {
+	*scriptedRuntime
+	stopEntered chan struct{}
+	stopRelease chan struct{}
+	stopOnce    sync.Once
+}
+
+type repeatedStartRuntime struct {
+	mu           sync.Mutex
+	startCalls   int
+	stopCalls    int
+	generation   uint64
+	revision     uint64
+	startEntered chan struct{}
+	startRelease chan struct{}
+	startOnce    sync.Once
+}
+
+func (runtime *repeatedStartRuntime) Start(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	runtime.startCalls++
+	runtime.revision++
+	runtime.mu.Unlock()
+	runtime.startOnce.Do(func() { close(runtime.startEntered) })
+	<-runtime.startRelease
+	runtime.mu.Lock()
+	runtime.generation++
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	return generation, nil
+}
+
+func (runtime *repeatedStartRuntime) Replace(ctx context.Context) (uint64, error) {
+	return runtime.Start(ctx)
+}
+
+func (runtime *repeatedStartRuntime) Stop(context.Context) error {
+	runtime.mu.Lock()
+	runtime.stopCalls++
+	runtime.revision++
+	runtime.mu.Unlock()
+	return nil
+}
+
+func (runtime *repeatedStartRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *repeatedStartRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (*repeatedStartRuntime) SafetyQuarantined() bool { return false }
+
+func (runtime *shutdownBlockingRuntime) Stop(ctx context.Context) error {
+	runtime.stopOnce.Do(func() { close(runtime.stopEntered) })
+	select {
+	case <-runtime.stopRelease:
+		return runtime.scriptedRuntime.Stop(ctx)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func newCancelableConstructionRuntime() *cancelableConstructionRuntime {
 	return &cancelableConstructionRuntime{
 		replaceStarted:  make(chan struct{}),
@@ -381,6 +449,95 @@ func TestManagerStopCancelsInFlightRetryConstruction(t *testing.T) {
 	if stopped.DesiredState != DesiredStopped || len(stopped.EffectiveCapabilities) != 0 {
 		t.Fatalf("STOPPED snapshot = %#v", stopped)
 	}
+}
+
+func TestManagerShutdownFencePreventsEarlierDriverResurrection(t *testing.T) {
+	firstRuntime := &scriptedRuntime{}
+	secondRuntime := &shutdownBlockingRuntime{
+		scriptedRuntime: &scriptedRuntime{},
+		stopEntered:     make(chan struct{}),
+		stopRelease:     make(chan struct{}),
+	}
+	manager, err := New(Config{Drivers: []DriverConfig{
+		{ID: "driver.a", Enabled: true, Runtime: firstRuntime, Capabilities: []Capability{CapabilityRead}},
+		{ID: "driver.b", Enabled: true, Runtime: secondRuntime, Capabilities: []Capability{CapabilityRead}},
+	}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := manager.Start(context.Background(), "driver.a"); err != nil {
+		t.Fatalf("Start(driver.a) error = %v", err)
+	}
+	if err := manager.Start(context.Background(), "driver.b"); err != nil {
+		t.Fatalf("Start(driver.b) error = %v", err)
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- manager.Shutdown(context.Background()) }()
+	select {
+	case <-secondRuntime.stopEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not reach the second driver")
+	}
+	if err := manager.Start(context.Background(), "driver.a"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Start(driver.a) during Shutdown error = %v, want ErrManagerClosed", err)
+	}
+	if err := manager.Replace(context.Background(), "driver.a"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Replace(driver.a) during Shutdown error = %v, want ErrManagerClosed", err)
+	}
+	close(secondRuntime.stopRelease)
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not finish")
+	}
+	first, _ := manager.Snapshot("driver.a")
+	if first.ObservedState != ObservedStopped || first.DesiredState != DesiredStopped {
+		t.Fatalf("driver.a resurrected after Shutdown: %#v", first)
+	}
+	starts, stops := firstRuntime.calls()
+	if starts != 1 || stops != 1 {
+		t.Fatalf("driver.a runtime calls = start:%d stop:%d, want 1/1", starts, stops)
+	}
+}
+
+func TestManagerRepeatedStartJoinsStartingIntent(t *testing.T) {
+	runtime := &repeatedStartRuntime{startEntered: make(chan struct{}), startRelease: make(chan struct{})}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID: "ebus.primary", Enabled: true, Runtime: runtime, Capabilities: []Capability{CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- manager.Start(context.Background(), "ebus.primary") }()
+	select {
+	case <-runtime.startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first Start did not reach runtime")
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("repeated Start() error = %v", err)
+	}
+	snapshot, _ := manager.Snapshot("ebus.primary")
+	if snapshot.ObservedState != ObservedStarting || snapshot.Reason.Code != ReasonStartRequested {
+		t.Fatalf("repeated Start changed in-progress state: %#v", snapshot)
+	}
+	runtime.mu.Lock()
+	calls := runtime.startCalls
+	runtime.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("runtime Start calls = %d, want 1", calls)
+	}
+	close(runtime.startRelease)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	_ = manager.Shutdown(context.Background())
 }
 
 func requireObservedState(t *testing.T, manager *Manager, id string, want ObservedState, timeout time.Duration) Snapshot {

@@ -2332,7 +2332,7 @@ class PortalShell extends HTMLElement {
         if (workspace === "spine") void this.refreshEEBusSPINEPeers().catch((error) => this.showEEBusError(error, "spine"));
       });
     });
-    for (const partners of this.querySelectorAll('[data-role="eebus-pairing-partners"], [data-role="eebus-ship-partners"], [data-role="eebus-spine-peers"]')) {
+	for (const partners of this.querySelectorAll('[data-role="eebus-selection-controls"], [data-role="eebus-pairing-partners"], [data-role="eebus-ship-partners"], [data-role="eebus-spine-peers"]')) {
       partners.addEventListener("click", (event) => {
         const button = event.target?.closest?.("[data-eebus-action]");
         if (!button) return;
@@ -2479,6 +2479,7 @@ class PortalShell extends HTMLElement {
   }
 
   renderEEBusPartners(rows, view) {
+	this.renderEEBusSelectionControls();
 	const container = this.eebusPartnerContainer(view);
     if (!container) return;
     const rendered = rows.map((row) => {
@@ -2496,10 +2497,15 @@ class PortalShell extends HTMLElement {
       const state = view === "trusted" ? '<p class="eebus-partner-state">Disconnected — Reconnect required</p>' : "";
       return `<article class="eebus-partner">${state}<pre>${safe}</pre><div class="snapshot-controls">${actions}</div></article>`;
     }).join("");
-	const connect = this._eebusSelection
-	  ? `<div class="snapshot-controls"><button class="button" data-eebus-action="connect">Connect selected partner</button><input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="Optional 8–16 ASCII hexadecimal PIN" aria-label="Optional eeBUS pairing PIN" /></div>`
-      : "";
-    container.innerHTML = `${connect}${rendered || '<div class="muted-inline">No partners in this view.</div>'}`;
+	container.innerHTML = rendered || '<div class="muted-inline">No partners in this view.</div>';
+  }
+
+  renderEEBusSelectionControls() {
+	const container = this.querySelector?.('[data-role="eebus-selection-controls"]');
+	if (!container) return;
+	container.innerHTML = this._eebusSelection
+	  ? '<button class="button" data-eebus-action="connect" type="button">Connect selected partner</button><input class="search timeline-filter" data-role="eebus-connect-pin" type="password" autocomplete="off" spellcheck="false" inputmode="text" minlength="8" maxlength="16" placeholder="Optional 8–16 ASCII hexadecimal PIN" aria-label="Optional eeBUS pairing PIN" />'
+	  : "";
   }
 
   renderEEBusSPINEPeers(rows) {
@@ -2609,9 +2615,13 @@ class PortalShell extends HTMLElement {
   }
 
   async connectEEBusSelection() {
-    const selectionID = this._eebusSelection?.id;
-    if (!selectionID) throw new Error("no active eeBUS selection");
 	const input = this.querySelector?.('[data-role="eebus-connect-pin"]');
+    const selectionID = this._eebusSelection?.id;
+	if (!selectionID) {
+	  if (input) input.value = "";
+	  this.renderEEBusSelectionControls();
+	  throw new Error("no active eeBUS selection");
+	}
 	const pin = input?.value || "";
 	if (input) input.value = "";
 	if (pin && !/^[0-9A-Fa-f]{8,16}$/.test(pin)) throw new Error("enter an exact 8–16 ASCII hexadecimal PIN");
@@ -2622,6 +2632,7 @@ class PortalShell extends HTMLElement {
 	  const actionID = result?.data?.action_id;
 	  if (!actionID) throw new Error("eeBUS pairing action authority missing");
 	  this._eebusSelection = undefined;
+	  this.renderEEBusSelectionControls();
 	  this._eebusPINRequested = false;
 	  this.clearEEBusActiveAction();
 	  this._eebusActiveActionID = actionID;
@@ -2630,6 +2641,7 @@ class PortalShell extends HTMLElement {
 	} catch (error) {
 	  // A failed delivery cannot be replayed because the PIN is deliberately not retained.
 	  this._eebusSelection = undefined;
+	  this.renderEEBusSelectionControls();
 	  throw error;
 	}
   }
@@ -2757,6 +2769,7 @@ class PortalShell extends HTMLElement {
 	  const input = this.querySelector?.(`[data-role="${role}"]`);
 	  if (input) input.value = "";
 	}
+	this.renderEEBusSelectionControls();
   }
 
   clearEEBusPendingMutation() {
@@ -3154,8 +3167,9 @@ class PortalShell extends HTMLElement {
 			      <button class="button" data-role="eebus-retry-pending" type="button" disabled>Retry pending action</button>
 			    </div>
 			    <label class="eebus-field" for="eebus-select-ski">Independent OOB SKI <span>40 lowercase hexadecimal characters</span></label>
-			    <input id="eebus-select-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-select-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Enter the SKI before Select" />
-			    <div data-role="eebus-pairing-partners"><div class="muted-inline">No discovered service loaded.</div></div>
+				    <input id="eebus-select-ski" class="search timeline-filter eebus-ski-input" data-role="eebus-select-ski" autocomplete="off" inputmode="text" spellcheck="false" maxlength="40" placeholder="Enter the SKI before Select" />
+				    <div class="snapshot-controls" data-role="eebus-selection-controls"></div>
+				    <div data-role="eebus-pairing-partners"><div class="muted-inline">No discovered service loaded.</div></div>
 			    <div class="eebus-candidate-panel">
 			      <h4>TLS-bound candidate</h4>
 			      <pre data-role="eebus-candidate"></pre>

@@ -186,6 +186,11 @@ type managedDriver struct {
 	retryCancel       context.CancelFunc
 	retryNeedsReplace bool
 	needsReplace      bool
+	activeAttempt     *attemptControl
+}
+
+type attemptControl struct {
+	cancel context.CancelFunc
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -264,6 +269,11 @@ func (manager *Manager) Start(ctx context.Context, id string) error {
 	if driver == nil {
 		return ErrDriverNotFound
 	}
+	// Cancel an automatic or caller-owned construction before waiting for the
+	// lifecycle serializer. This lets Stop/Start intent interrupt a blocked
+	// factory through its context instead of waiting for the dial timeout.
+	manager.cancelRetry(driver)
+	manager.cancelAttempt(driver)
 	driver.opMu.Lock()
 	defer driver.opMu.Unlock()
 	manager.cancelRetry(driver)
@@ -293,6 +303,8 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 	if driver == nil {
 		return ErrDriverNotFound
 	}
+	manager.cancelRetry(driver)
+	manager.cancelAttempt(driver)
 	driver.opMu.Lock()
 	defer driver.opMu.Unlock()
 	manager.cancelRetry(driver)
@@ -317,6 +329,8 @@ func (manager *Manager) Stop(ctx context.Context, id string) error {
 	if driver == nil {
 		return ErrDriverNotFound
 	}
+	manager.cancelRetry(driver)
+	manager.cancelAttempt(driver)
 	driver.opMu.Lock()
 	defer driver.opMu.Unlock()
 	return manager.stopLocked(ctx, driver)
@@ -366,6 +380,28 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) e
 }
 
 func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver, operation uint64, replace bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	attemptCtx, cancel := context.WithCancel(ctx)
+	control := &attemptControl{cancel: cancel}
+	driver.mu.Lock()
+	if driver.activeOperation != operation || driver.desired != DesiredRunning || driver.quarantined {
+		driver.mu.Unlock()
+		cancel()
+		return
+	}
+	driver.activeAttempt = control
+	driver.mu.Unlock()
+	defer func() {
+		cancel()
+		driver.mu.Lock()
+		if driver.activeAttempt == control {
+			driver.activeAttempt = nil
+		}
+		driver.mu.Unlock()
+	}()
+
 	if driver.cfg.Runtime == nil {
 		manager.finishAttempt(driver, operation, 0, errors.New("provider unavailable"), replace)
 		return
@@ -373,9 +409,9 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 	var generation uint64
 	var err error
 	if replace {
-		generation, err = driver.cfg.Runtime.Replace(ctx)
+		generation, err = driver.cfg.Runtime.Replace(attemptCtx)
 	} else {
-		generation, err = driver.cfg.Runtime.Start(ctx)
+		generation, err = driver.cfg.Runtime.Start(attemptCtx)
 	}
 	manager.finishAttempt(driver, operation, generation, err, replace)
 }
@@ -464,10 +500,18 @@ func (manager *Manager) cancelRetry(driver *managedDriver) {
 	driver.retryToken++
 	cancel := driver.retryCancel
 	driver.retryCancel = nil
-	driver.retry = nil
 	driver.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+func (manager *Manager) cancelAttempt(driver *managedDriver) {
+	driver.mu.Lock()
+	attempt := driver.activeAttempt
+	driver.mu.Unlock()
+	if attempt != nil {
+		attempt.cancel()
 	}
 }
 
@@ -586,6 +630,8 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 	sort.Strings(ids)
 	for _, id := range ids {
 		driver := manager.drivers[id]
+		manager.cancelRetry(driver)
+		manager.cancelAttempt(driver)
 		driver.opMu.Lock()
 		_ = manager.stopLocked(ctx, driver)
 		driver.opMu.Unlock()

@@ -20,6 +20,66 @@ type scriptedRuntime struct {
 	quarantined  bool
 }
 
+type cancelableConstructionRuntime struct {
+	mu              sync.Mutex
+	generation      uint64
+	revision        uint64
+	replaceCalls    int
+	stopCalls       int
+	replaceStarted  chan struct{}
+	replaceCanceled chan struct{}
+	startOnce       sync.Once
+	cancelOnce      sync.Once
+}
+
+func newCancelableConstructionRuntime() *cancelableConstructionRuntime {
+	return &cancelableConstructionRuntime{
+		replaceStarted:  make(chan struct{}),
+		replaceCanceled: make(chan struct{}),
+	}
+}
+
+func (runtime *cancelableConstructionRuntime) Start(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.generation++
+	runtime.revision++
+	return runtime.generation, nil
+}
+
+func (runtime *cancelableConstructionRuntime) Replace(ctx context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	runtime.replaceCalls++
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	runtime.startOnce.Do(func() { close(runtime.replaceStarted) })
+	<-ctx.Done()
+	runtime.cancelOnce.Do(func() { close(runtime.replaceCanceled) })
+	return generation, ctx.Err()
+}
+
+func (runtime *cancelableConstructionRuntime) Stop(context.Context) error {
+	runtime.mu.Lock()
+	runtime.stopCalls++
+	runtime.revision++
+	runtime.mu.Unlock()
+	return nil
+}
+
+func (runtime *cancelableConstructionRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *cancelableConstructionRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (*cancelableConstructionRuntime) SafetyQuarantined() bool { return false }
+
 func (runtime *scriptedRuntime) Start(context.Context) (uint64, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
@@ -274,6 +334,52 @@ func TestManagerRejectsCallbackFromSupersededOperation(t *testing.T) {
 	after, _ := manager.Snapshot("ebus.primary")
 	if after.Revision != backoff.Revision || after.ActiveOperation != backoff.ActiveOperation {
 		t.Fatalf("superseded callback changed snapshot: before=%#v after=%#v", backoff, after)
+	}
+}
+
+func TestManagerStopCancelsInFlightRetryConstruction(t *testing.T) {
+	runtime := newCancelableConstructionRuntime()
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		Retry:        RetryPolicy{Budget: 1, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if accepted := manager.ReportFailure("ebus.primary", Correlation{Generation: running.Generation}, Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}); !accepted {
+		t.Fatal("ReportFailure() rejected current generation")
+	}
+	select {
+	case <-runtime.replaceStarted:
+	case <-time.After(time.Second):
+		t.Fatal("automatic retry construction did not start")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), "ebus.primary") }()
+	select {
+	case <-runtime.replaceCanceled:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Stop did not cancel the in-flight retry construction")
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not complete after construction cancellation")
+	}
+	stopped := requireObservedState(t, manager, "ebus.primary", ObservedStopped, time.Second)
+	if stopped.DesiredState != DesiredStopped || len(stopped.EffectiveCapabilities) != 0 {
+		t.Fatalf("STOPPED snapshot = %#v", stopped)
 	}
 }
 

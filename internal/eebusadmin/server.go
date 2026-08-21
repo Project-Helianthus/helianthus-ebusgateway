@@ -107,8 +107,10 @@ type connectInFlight struct {
 // It never observes the secret-bearing request body or PIN binding.
 type connectAuditCapture struct {
 	http.ResponseWriter
-	status int
-	body   bytes.Buffer
+	status      int
+	body        bytes.Buffer
+	disposition string
+	invoked     bool
 }
 
 func (capture *connectAuditCapture) WriteHeader(status int) {
@@ -524,13 +526,13 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 }
 
 func (server *server) connectSelection(w http.ResponseWriter, request *http.Request) {
-	capture := &connectAuditCapture{ResponseWriter: w}
+	capture := &connectAuditCapture{ResponseWriter: w, disposition: "rejected"}
 	defer func() {
 		status := capture.status
 		if status == 0 {
 			status = http.StatusInternalServerError
 		}
-		server.emitMutationAudit("connect_selection", status, capture.body.Bytes(), connectAuditDisposition(capture.body.Bytes()), true)
+		server.emitMutationAudit("connect_selection", status, capture.body.Bytes(), capture.disposition, capture.invoked)
 	}()
 	w = capture
 	id, ok := pathIdentifier(request.URL.Path, "/admin/eebus/v1/selections/", ":connect")
@@ -556,11 +558,13 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 	binding := server.connectBinding(id, body.StateRevision, pin)
 	reservation, leader, conflict := server.reserveConnect(idempotencyKey, binding)
 	if conflict {
+		capture.disposition = "conflict"
 		server.writeError(w, http.StatusConflict, "idempotency_conflict")
 		return
 	}
 	if !leader {
 		if reservation.done == nil && reservation.replay != nil {
+			capture.disposition = "replayed"
 			replay := *reservation.replay
 			replay.result.Replayed = true
 			server.writeConnectResult(w, replay.revision, replay.result)
@@ -577,6 +581,7 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 			return
 		}
 		if reservation.replay != nil {
+			capture.disposition = "replayed"
 			replay := *reservation.replay
 			replay.result.Replayed = true
 			server.writeConnectResult(w, replay.revision, replay.result)
@@ -598,6 +603,8 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 		server.writeError(w, http.StatusConflict, "observation_stale")
 		return
 	}
+	capture.disposition = "executed"
+	capture.invoked = true
 	result, failure := server.callConnectReserved(request.Context(), idempotencyKey, reservation, eebusruntime.ConnectRequestV1{MutationPreconditionV1: eebusruntime.MutationPreconditionV1{IdempotencyKey: idempotencyKey, ExpectedStateRevision: body.StateRevision}, Selection: record.selection, PIN: pin})
 	if failure != nil {
 		server.finishConnectReservation(idempotencyKey, reservation, nil, failure.Code)
@@ -611,19 +618,6 @@ func (server *server) connectSelection(w http.ResponseWriter, request *http.Requ
 	replay := connectReplay{binding: binding, revision: result.StateRevision, result: data, expiresAt: server.now().Add(2 * time.Minute)}
 	server.finishConnectReservation(idempotencyKey, reservation, &replay, "")
 	server.writeConnectResult(w, result.StateRevision, data)
-}
-
-func connectAuditDisposition(body []byte) string {
-	switch {
-	case bytes.Contains(body, []byte(`"replayed":true`)):
-		return "replayed"
-	case bytes.Contains(body, []byte(`"idempotency_conflict"`)):
-		return "conflict"
-	case bytes.Contains(body, []byte(`"error"`)):
-		return "rejected"
-	default:
-		return "executed"
-	}
 }
 
 func (server *server) callConnectReserved(ctx context.Context, key string, reservation *connectInFlight, request eebusruntime.ConnectRequestV1) (result eebusruntime.ConnectResultV1, failure *eebusruntime.AdminErrorV1) {

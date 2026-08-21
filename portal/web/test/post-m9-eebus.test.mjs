@@ -326,3 +326,170 @@ test("workspace navigation clears only the departing workspace volatile authorit
   shell.switchEEBusWorkspace("pairing");
   assert.equal(shell._spineCleared, true);
 });
+
+function issue848PairingElements() {
+  const elements = new Map([
+    ['[data-role="eebus-connect-pin"]', { value: "A1b2C3d4" }],
+    ['[data-role="eebus-select-ski"]', { value: "a".repeat(40) }],
+    ['[data-role="eebus-confirm-ski"]', { value: "b".repeat(40) }],
+    ['[data-role="eebus-candidate"]', { textContent: "candidate-secret" }],
+    ['[data-role="eebus-retry-pending"]', { disabled: false }],
+    ['[data-role="eebus-pairing-status"]', { textContent: "pairing" }],
+  ]);
+  for (const element of elements.values()) element.addEventListener = () => {};
+  return elements;
+}
+
+function primeIssue848PairingAuthority(shell) {
+  shell._eebusWorkspace = "pairing";
+  shell._eebusCandidate = { remote_ski: "b".repeat(40), candidate_state: "tls_bound" };
+  shell._eebusCandidateTimer = { cleared: false };
+  shell._eebusSelection = { id: "selection-secret" };
+  shell._eebusPINRequested = true;
+  shell._eebusPendingMutation = { method: "POST", path: "/candidate:confirm", body: "request-secret", idempotencyKey: "pending-secret", workspace: "pairing" };
+  shell._eebusPendingMutationTimer = { cleared: false };
+  shell._eebusActiveActionID = "action-secret";
+  shell._eebusLastActiveAction = { action_id: "action-secret", state: "running" };
+  shell._eebusActiveActionTimer = { cleared: false };
+  shell._eebusActiveActionRetries = 1;
+  shell._eebusUntrustArmedID = "partner-secret";
+}
+
+function assertIssue848PairingAuthorityCleared(shell, elements) {
+  for (const role of ["eebus-connect-pin", "eebus-select-ski", "eebus-confirm-ski"]) {
+    assert.equal(elements.get(`[data-role="${role}"]`).value, "", `${role} was retained`);
+  }
+  assert.equal(elements.get('[data-role="eebus-candidate"]').textContent, "");
+  assert.equal(elements.get('[data-role="eebus-retry-pending"]').disabled, true);
+  assert.equal(shell._eebusCandidate, undefined);
+  assert.equal(shell._eebusCandidateTimer, undefined);
+  assert.equal(shell._eebusSelection, undefined);
+  assert.equal(shell._eebusPINRequested, false);
+  assert.equal(shell._eebusPendingMutation, undefined);
+  assert.equal(shell._eebusPendingMutationTimer, undefined);
+  assert.equal(shell._eebusActiveActionID, undefined);
+  assert.equal(shell._eebusLastActiveAction, undefined);
+  assert.equal(shell._eebusActiveActionTimer, undefined);
+  assert.equal(shell._eebusActiveActionRetries, 0);
+}
+
+test("Pairing to SHIP and Pairing to SPINE clear every transient pairing authority", async (t) => {
+  for (const destination of ["ship", "spine"]) {
+    await t.test(destination, async () => {
+      const elements = issue848PairingElements();
+      const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+      shell.querySelectorAll = () => [];
+      primeIssue848PairingAuthority(shell);
+      shell.switchEEBusWorkspace(destination);
+      assertIssue848PairingAuthorityCleared(shell, elements);
+    });
+  }
+});
+
+test("visibility loss, component disconnect, and leaving eeBUS clear pairing authority", async (t) => {
+  await t.test("visibility loss", async () => {
+    const elements = issue848PairingElements();
+    const { shell, document, documentListeners } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+    shell.bindEEBusAdminEvents();
+    primeIssue848PairingAuthority(shell);
+    document.visibilityState = "hidden";
+    documentListeners.get("visibilitychange")();
+    assertIssue848PairingAuthorityCleared(shell, elements);
+  });
+
+  await t.test("component disconnect", async () => {
+    const elements = issue848PairingElements();
+    const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+    shell.endBootstrapLifecycle = () => {};
+    primeIssue848PairingAuthority(shell);
+    shell.disconnectedCallback();
+    assertIssue848PairingAuthorityCleared(shell, elements);
+  });
+
+  await t.test("leave eeBUS section", async () => {
+    const elements = issue848PairingElements();
+    const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), elements);
+    shell.querySelectorAll = () => [];
+    shell._activeSectionTarget = "section-eebus";
+    primeIssue848PairingAuthority(shell);
+    shell.activateSection("section-registry");
+    assertIssue848PairingAuthorityCleared(shell, elements);
+  });
+});
+
+test("candidate, pending replay, and active action expiry retire their volatile caches", async () => {
+  const elements = issue848PairingElements();
+  let fetchMode = "candidate";
+  const { shell } = await issue817Shell(async () => {
+    if (fetchMode === "candidate") {
+      return response({ state_revision: 12, data: { partners: [{ view: "candidate", remote_ski: "b".repeat(40), candidate_state: "tls_bound", candidate_expires_at: new Date(Date.now() + 1000).toISOString() }] }, error: null });
+    }
+    throw new Error("ambiguous network failure");
+  }, elements);
+  await shell.refreshEEBusPartners("candidate");
+  assert.ok(shell._eebusCandidateTimer);
+  shell._eebusCandidateTimer.callback();
+  assert.equal(shell._eebusCandidate, undefined);
+  assert.equal(elements.get('[data-role="eebus-confirm-ski"]').value, "");
+
+  fetchMode = "pending";
+  shell._eebusStateRevision = 12;
+  await assert.rejects(shell.openEEBusPairingWindow(), /ambiguous network failure/);
+  assert.ok(shell._eebusPendingMutationTimer);
+  shell._eebusPendingMutationTimer.callback();
+  assert.equal(shell._eebusPendingMutation, undefined);
+  assert.equal(shell._eebusPendingMutationTimer, undefined);
+  assert.equal(elements.get('[data-role="eebus-retry-pending"]').disabled, true);
+
+  shell._eebusActiveActionID = "action-expired";
+  shell._eebusLastActiveAction = { action_id: "action-expired", state: "running" };
+  shell._eebusActiveActionTimer = { cleared: false };
+  shell._eebusActiveActionRetries = 1;
+  shell.renderEEBusActiveAction({ action_id: "action-expired", state: "running", expiry: new Date(Date.now() - 1).toISOString() });
+  assert.equal(shell._eebusActiveActionID, undefined);
+  assert.equal(shell._eebusLastActiveAction, undefined);
+  assert.equal(shell._eebusActiveActionTimer, undefined);
+  assert.equal(shell._eebusActiveActionRetries, 0);
+});
+
+test("successive pairing actions ignore stale status and render each terminal only once", async () => {
+  let renders = 0;
+  let renderedText = "";
+  const status = {};
+  Object.defineProperty(status, "textContent", {
+    get: () => renderedText,
+    set: (value) => { renderedText = value; renders += 1; },
+  });
+  const { shell } = await issue817Shell(async () => response({ state_revision: 1, data: {} }), new Map([
+    ['[data-role="eebus-pairing-status"]', status],
+  ]));
+
+  shell._eebusActiveActionID = "action-1";
+  shell._eebusActiveActionTimer = { cleared: false };
+  shell._eebusActiveActionRetries = 1;
+  const firstTerminal = { action_id: "action-1", state: "terminal", outcome: "pin_rejected", expiry: new Date(Date.now() + 60_000).toISOString() };
+  shell.renderEEBusActiveAction(firstTerminal);
+  assert.equal(renders, 1);
+  assert.equal(shell._eebusActiveActionID, undefined);
+  assert.equal(shell._eebusLastActiveAction, undefined);
+  assert.equal(shell._eebusActiveActionTimer, undefined);
+  assert.equal(shell._eebusActiveActionRetries, 0);
+  shell.renderEEBusActiveAction(firstTerminal);
+  assert.equal(renders, 1, "first terminal rendered more than once");
+
+  shell._eebusActiveActionID = "action-2";
+  shell._eebusActiveActionTimer = { cleared: false };
+  shell.renderEEBusActiveAction(firstTerminal);
+  assert.equal(shell._eebusActiveActionID, "action-2", "stale first action retired the second action");
+  assert.equal(shell._eebusLastActiveAction, undefined, "stale first action contaminated the second cache");
+  shell.renderEEBusActiveAction({ action_id: "action-2", state: "running", expiry: new Date(Date.now() + 60_000).toISOString() });
+  assert.equal(shell._eebusLastActiveAction.action_id, "action-2");
+  const secondTerminal = { action_id: "action-2", state: "terminal", outcome: "connection_started", expiry: new Date(Date.now() + 60_000).toISOString() };
+  shell.renderEEBusActiveAction(secondTerminal);
+  const afterSecondTerminal = renders;
+  shell.renderEEBusActiveAction(secondTerminal);
+  assert.equal(renders, afterSecondTerminal, "second terminal rendered more than once");
+  assert.equal(shell._eebusActiveActionID, undefined);
+  assert.equal(shell._eebusLastActiveAction, undefined);
+  assert.equal(shell._eebusActiveActionRetries, 0);
+});

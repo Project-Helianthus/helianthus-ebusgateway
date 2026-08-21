@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ type adminV1Stub struct {
 	connectStarted   chan struct{}
 	connectRelease   chan struct{}
 	connectStartOnce sync.Once
+	connectFailure   *eebusruntime.AdminErrorV1
 }
 
 func (stub *adminV1Stub) Snapshot(_ context.Context, request eebusruntime.AdminSnapshotRequestV1) (eebusruntime.AdminSnapshotV1, *eebusruntime.AdminErrorV1) {
@@ -69,18 +71,158 @@ func (stub *adminV1Stub) Select(_ context.Context, request eebusruntime.SelectRe
 	}}, nil
 }
 
-func (stub *adminV1Stub) Connect(_ context.Context, request eebusruntime.ConnectRequestV1) (eebusruntime.ConnectResultV1, *eebusruntime.AdminErrorV1) {
+func (stub *adminV1Stub) Connect(ctx context.Context, request eebusruntime.ConnectRequestV1) (eebusruntime.ConnectResultV1, *eebusruntime.AdminErrorV1) {
 	stub.mu.Lock()
 	stub.connectCalls = append(stub.connectCalls, request)
-	started, release := stub.connectStarted, stub.connectRelease
+	started, release, failure := stub.connectStarted, stub.connectRelease, stub.connectFailure
 	stub.mu.Unlock()
 	if started != nil {
 		stub.connectStartOnce.Do(func() { close(started) })
 	}
 	if release != nil {
-		<-release
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return eebusruntime.ConnectResultV1{}, &eebusruntime.AdminErrorV1{Code: eebusruntime.AdminErrorCodeV1AttemptTimeout}
+		}
+	}
+	if failure != nil {
+		return eebusruntime.ConnectResultV1{}, failure
 	}
 	return eebusruntime.ConnectResultV1{AdminMutationResultV1: eebusruntime.AdminMutationResultV1{StateRevision: request.ExpectedStateRevision + 1, Outcome: "connection_started"}, ActionID: "action-1"}, nil
+}
+
+func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
+	const (
+		ski         = "0123456789abcdef0123456789abcdef01234567"
+		pin         = "A1b2C3d4"
+		changedPIN  = "a1b2c3d4"
+		idempotency = "connect-audit-848"
+	)
+	type auditCollector struct {
+		mu     sync.Mutex
+		events []AuditEvent
+	}
+	collect := func(target *auditCollector) func(AuditEvent) {
+		return func(event AuditEvent) {
+			target.mu.Lock()
+			defer target.mu.Unlock()
+			target.events = append(target.events, event)
+		}
+	}
+	assertEvents := func(t *testing.T, target *auditCollector, wants []AuditEvent) {
+		t.Helper()
+		target.mu.Lock()
+		defer target.mu.Unlock()
+		if len(target.events) != len(wants) {
+			t.Fatalf("audit events=%d, want %d: %#v", len(target.events), len(wants), target.events)
+		}
+		for index, want := range wants {
+			got := target.events[index]
+			if got.Action != "connect_selection" || got.Principal != PrincipalHostOperator || got.IdempotencyOutcome != want.IdempotencyOutcome || got.PriorStateClass != want.PriorStateClass || got.ResultingStateClass != want.ResultingStateClass || got.Reason != want.Reason || got.RequestID == "" || got.Timestamp.IsZero() {
+				t.Fatalf("audit[%d]=%#v, want disposition=%q prior=%q resulting=%q reason=%q", index, got, want.IdempotencyOutcome, want.PriorStateClass, want.ResultingStateClass, want.Reason)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{ski, pin, changedPIN, idempotency, `"state_revision"`, `"pin"`, `"selection_id"`, "connect-binding", "hmac", "sha256"} {
+				if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(forbidden)) {
+					t.Fatalf("audit[%d] leaked request/PIN/HMAC/selection material %q: %s", index, forbidden, encoded)
+				}
+			}
+		}
+	}
+	prepare := func(t *testing.T, admin *adminV1Stub, collector *auditCollector, revision uint64) (http.Handler, string) {
+		t.Helper()
+		snapshot := testAdminSnapshot()
+		snapshot.StateRevision = revision
+		snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4}}
+		admin.snapshot = snapshot
+		admin.snapshots = map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}
+		handler, err := NewServer(Config{Admin: admin, Audit: collect(collector)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed := httptest.NewRecorder()
+		handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+		observationID := issue817FirstOpaqueID(t, listed, "observation_id")
+		selected := httptest.NewRecorder()
+		handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-audit-848", `{"state_revision":`+strconv.FormatUint(revision, 10)+`,"expected_ski":"`+ski+`"}`))
+		if selected.Code != http.StatusOK {
+			t.Fatalf("select status=%d body=%s", selected.Code, selected.Body.String())
+		}
+		collector.mu.Lock()
+		collector.events = nil // The matrix is scoped to the specialized Connect route.
+		collector.mu.Unlock()
+		return handler, "/admin/eebus/v1/selections/" + issue817DataString(t, selected, "selection_id") + ":connect"
+	}
+	request := func(path, key, body string) *http.Request {
+		return issue817Mutation(http.MethodPost, path, key, body)
+	}
+
+	t.Run("launch replay and changed-binding conflict", func(t *testing.T) {
+		collector := &auditCollector{}
+		handler, route := prepare(t, &adminV1Stub{}, collector, 70)
+		for _, body := range []string{
+			`{"state_revision":71,"pin":"` + pin + `"}`,
+			`{"state_revision":71,"pin":"` + pin + `"}`,
+			`{"state_revision":71,"pin":"` + changedPIN + `"}`,
+		} {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request(route, idempotency, body))
+		}
+		assertEvents(t, collector, []AuditEvent{
+			{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "changed", Reason: "connection_started"},
+			{IdempotencyOutcome: "replayed", PriorStateClass: "host_operator", ResultingStateClass: "changed", Reason: "connection_started"},
+			{IdempotencyOutcome: "conflict", PriorStateClass: "host_operator", ResultingStateClass: "rejected", Reason: "idempotency_conflict"},
+		})
+	})
+
+	t.Run("backend rejection", func(t *testing.T) {
+		collector := &auditCollector{}
+		admin := &adminV1Stub{connectFailure: &eebusruntime.AdminErrorV1{Code: eebusruntime.AdminErrorCodeV1PairingClosed}}
+		handler, route := prepare(t, admin, collector, 80)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request(route, "backend-failure-848", `{"state_revision":81,"pin":"`+pin+`"}`))
+		if response.Code != http.StatusConflict {
+			t.Fatalf("backend rejection status=%d body=%s", response.Code, response.Body.String())
+		}
+		assertEvents(t, collector, []AuditEvent{{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "rejected", Reason: "pairing_closed"}})
+	})
+
+	t.Run("canceled follower", func(t *testing.T) {
+		collector := &auditCollector{}
+		admin := &adminV1Stub{connectStarted: make(chan struct{}), connectRelease: make(chan struct{})}
+		handler, route := prepare(t, admin, collector, 90)
+		leaderDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request(route, "follower-cancel-848", `{"state_revision":91,"pin":"`+pin+`"}`))
+			leaderDone <- response
+		}()
+		select {
+		case <-admin.connectStarted:
+		case <-time.After(time.Second):
+			t.Fatal("leader did not reach backend")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		follower := httptest.NewRecorder()
+		handler.ServeHTTP(follower, request(route, "follower-cancel-848", `{"state_revision":91,"pin":"`+pin+`"}`).WithContext(ctx))
+		if follower.Code != http.StatusRequestTimeout {
+			t.Fatalf("canceled follower status=%d body=%s", follower.Code, follower.Body.String())
+		}
+		close(admin.connectRelease)
+		leader := <-leaderDone
+		if leader.Code != http.StatusOK {
+			t.Fatalf("leader status=%d body=%s", leader.Code, leader.Body.String())
+		}
+		assertEvents(t, collector, []AuditEvent{
+			{IdempotencyOutcome: "rejected", PriorStateClass: "host_operator", ResultingStateClass: "rejected", Reason: "attempt_timeout"},
+			{IdempotencyOutcome: "executed", PriorStateClass: "precondition_accepted", ResultingStateClass: "changed", Reason: "connection_started"},
+		})
+	})
 }
 
 func (stub *adminV1Stub) Confirm(_ context.Context, request eebusruntime.ConfirmRequestV1) (eebusruntime.AdminMutationResultV1, *eebusruntime.AdminErrorV1) {

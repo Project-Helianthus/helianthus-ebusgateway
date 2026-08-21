@@ -588,9 +588,7 @@ class PortalShell extends HTMLElement {
       }
     }
 	if (previousTarget === "section-eebus" && targetID !== "section-eebus") {
-	  this.clearEEBusCandidate();
-	  this._eebusSelection = undefined;
-	  this._eebusUntrustArmedID = undefined;
+	  this.clearEEBusVisibilityAuthority();
 	  this.clearEEBusSPINETree();
 	}
     this._activeSectionTarget = targetID;
@@ -2625,6 +2623,7 @@ class PortalShell extends HTMLElement {
 	  if (!actionID) throw new Error("eeBUS pairing action authority missing");
 	  this._eebusSelection = undefined;
 	  this._eebusPINRequested = false;
+	  this.clearEEBusActiveAction();
 	  this._eebusActiveActionID = actionID;
 	  this.pollEEBusActiveAction(actionID);
 	  return result;
@@ -2651,10 +2650,11 @@ class PortalShell extends HTMLElement {
   }
 
   renderEEBusActiveAction(action) {
-	if (!action || typeof action !== "object" || action.action_id !== this._eebusActiveActionID) {
+	if (!action || typeof action !== "object") {
 	  if (this._eebusActiveActionID) this.clearEEBusActiveAction();
 	  return;
 	}
+	if (action.action_id !== this._eebusActiveActionID) return;
 	this._eebusLastActiveAction = { ...action };
 	const status = this.querySelector?.('[data-role="eebus-pairing-status"]');
 	if (!status) return;
@@ -2672,10 +2672,7 @@ class PortalShell extends HTMLElement {
 	if (Object.hasOwn(messages, outcome)) this._eebusPINRequested = outcome === "pin_required" || outcome === "pin_optional";
 	status.textContent = messages[outcome] || (action.state === "terminal" ? `eeBUS pairing: ${outcome || "unknown_state"}` : "eeBUS pairing action is in progress.");
 	if (action.state === "terminal") {
-	  if (this._eebusActiveActionTimer) clearTimeout(this._eebusActiveActionTimer);
-	  this._eebusActiveActionTimer = undefined;
-	  this._eebusActiveActionID = undefined;
-	  this._eebusLastActiveAction = undefined;
+	  this.clearEEBusActiveAction();
 	}
   }
 

@@ -2420,7 +2420,6 @@ class PortalShell extends HTMLElement {
 	if (Number.isSafeInteger(options.pairingGeneration) && !this.isCurrentEEBusPairingGeneration(options.pairingGeneration)) {
 	  return { eebusPairingStale: true };
 	}
-    this.clearEEBusCandidate();
     if (!response.ok || payload?.error) {
 	  const error = new Error(payload?.error?.code || `eeBUS admin HTTP ${response.status}`);
 	  error.eebusTerminal = true;
@@ -2448,12 +2447,16 @@ class PortalShell extends HTMLElement {
   async refreshEEBusPartners(view) {
     const allowed = new Set(["trusted", "connected", "discovered", "candidate"]);
     if (!allowed.has(view)) throw new Error("invalid eeBUS partner view");
-	this.clearEEBusCandidate();
+	const candidateGeneration = view === "candidate" ? this.advanceEEBusCandidateGeneration() : undefined;
 	if (!this._eebusPendingMutation) this._eebusUntrustArmedID = undefined;
 	const payload = await this.eebusAdminFetch(`/partners?view=${encodeURIComponent(view)}`);
 	const rows = Array.isArray(payload?.data?.partners) ? payload.data.partners : [];
+	if (view === "candidate" && !this.isCurrentEEBusCandidateGeneration(candidateGeneration)) return payload;
 	this._eebusPartnerView = view;
 	this._eebusPartnerRows = view === "candidate" ? undefined : rows.map((row) => ({ ...row }));
+	if (view === "candidate") {
+	  this.clearEEBusCandidateState();
+	}
 	if (view === "candidate" && rows.length === 1) {
 	  this._eebusCandidate = { ...rows[0] };
       const candidate = this.querySelector('[data-role="eebus-candidate"]');
@@ -2551,7 +2554,7 @@ class PortalShell extends HTMLElement {
 		return { eebusPairingStale: true };
 	  }
 	  this.clearEEBusPendingMutation();
-	  this.clearEEBusCandidate();
+	  this.retireEEBusCandidateForMutation(pending.path);
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
@@ -2576,7 +2579,7 @@ class PortalShell extends HTMLElement {
 		return { eebusPairingStale: true };
 	  }
 	  this.clearEEBusPendingMutation();
-	  this.clearEEBusCandidate();
+	  this.retireEEBusCandidateForMutation(pending.path);
 	  this.applyEEBusStatus(payload);
 	  return payload;
 	} catch (error) {
@@ -2605,7 +2608,6 @@ class PortalShell extends HTMLElement {
   async closeEEBusPairingWindow() {
 	try {
 	  const result = await this.eebusMutation("/pairing-window:close", { state_revision: this._eebusStateRevision });
-	  this.clearEEBusCandidate();
 	  this._eebusSelection = undefined;
 	  return result;
 	} catch (error) {
@@ -2725,7 +2727,6 @@ class PortalShell extends HTMLElement {
     if (!this._eebusCandidate || expectedSKI !== this._eebusCandidate.remote_ski) throw new Error("candidate SKI comparison does not match");
     try {
 	  const result = await this.eebusMutation("/candidate:confirm", { state_revision: this._eebusStateRevision, expected_ski: expectedSKI });
-	  this.clearEEBusCandidate();
 	  return result;
 	} catch (error) {
 	  if (error?.eebusTerminal) this.clearEEBusCandidate();
@@ -2736,7 +2737,6 @@ class PortalShell extends HTMLElement {
   async cancelEEBusCandidate() {
     try {
 	  const result = await this.eebusMutation("/candidate:cancel", { state_revision: this._eebusStateRevision });
-	  this.clearEEBusCandidate();
 	  return result;
 	} catch (error) {
 	  if (error?.eebusTerminal) this.clearEEBusCandidate();
@@ -2765,7 +2765,26 @@ class PortalShell extends HTMLElement {
 	}
   }
 
-	clearEEBusCandidate() {
+	currentEEBusCandidateGeneration() {
+	  return Number.isSafeInteger(this._eebusCandidateGeneration) ? this._eebusCandidateGeneration : 0;
+	}
+
+	advanceEEBusCandidateGeneration() {
+	  this._eebusCandidateGeneration = this.currentEEBusCandidateGeneration() + 1;
+	  return this._eebusCandidateGeneration;
+	}
+
+	isCurrentEEBusCandidateGeneration(generation) {
+	  return Number.isSafeInteger(generation) && generation === this.currentEEBusCandidateGeneration();
+	}
+
+	retireEEBusCandidateForMutation(path) {
+	  if (path === "/pairing-window:close" || path === "/candidate:confirm" || path === "/candidate:cancel") {
+		this.clearEEBusCandidate();
+	  }
+	}
+
+	clearEEBusCandidateState() {
 	  if (this._eebusCandidateTimer) {
 	  clearTimeout(this._eebusCandidateTimer);
 	  this._eebusCandidateTimer = undefined;
@@ -2780,6 +2799,11 @@ class PortalShell extends HTMLElement {
 	  if (partners) partners.innerHTML = '<div class="muted-inline">Candidate view cleared.</div>';
 	}
   }
+
+	clearEEBusCandidate() {
+	  this.advanceEEBusCandidateGeneration();
+	  this.clearEEBusCandidateState();
+	}
 
   clearEEBusVisibilityAuthority() {
 	this.abortPairingFlow();

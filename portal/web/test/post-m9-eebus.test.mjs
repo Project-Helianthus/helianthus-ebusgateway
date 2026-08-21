@@ -246,6 +246,7 @@ test("candidate and raw SPINE remain active-memory only and clear on visibility 
   shell.bindEEBusAdminEvents();
   await shell.refreshEEBusPartners("candidate");
   assert.equal(shell._eebusCandidate.remote_ski, "a".repeat(40));
+  input.value = "a".repeat(40);
   assert.equal(storageWrites.length, 0);
   await shell.loadEEBusSPINERoot("partner-1");
   assert.equal(storageWrites.length, 0);

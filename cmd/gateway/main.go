@@ -451,6 +451,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			})
 			return total
 		}
+		if provider, ok := adapterClassifier.(interface {
+			V8ShadowWouldHaveDroppedTotal() uint64
+		}); ok {
+			shadowDropCountFn = provider.V8ShadowWouldHaveDroppedTotal
+		}
 		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
 			return ebusgateway.V8RolloutSnapshot{
 				Round9AbsorbEntered:            bus.Round9AbsorbEntered(),
@@ -749,6 +754,15 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			}
 		}
 	}()
+
+	// The control plane is already serving through stable fail-closed
+	// bindings. For startup-scan deployments, wait for the first correlated
+	// RUNNING generation before source admission and the one initial scan pass.
+	// This turns a slow healthy constructor into one immediate scan instead of
+	// an unavailable pass followed by the default 30-second retry interval.
+	if cfg.ScanOnStart && !ebusDriver.WaitRunning(ctx) {
+		return nil
+	}
 
 	var sourceSelection *protocol.SourceAddressSelection
 	if admissionPath == ebusgateway.TransportAdmissionSourceSelectionCapable && !overrideSet && cfg.ScanSourceAuto && cfg.ScanSource == 0x00 && !shouldStartPassiveObserveFirst(cfg) {

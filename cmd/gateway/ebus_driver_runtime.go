@@ -30,16 +30,19 @@ type ebusDriverController struct {
 	active     transport.RawTransport
 	passive    transport.RawTransport
 	classifier activeTxnClassifier
+	running    <-chan drivermanager.Correlation
 }
 
 func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, error) {
 	protocol := configuredEBusDriverProtocol(cfg)
 	needsPassive := cfg.BroadcastListen && (protocol == ebusgateway.TransportAdapterDirect || shouldStartPassiveObserveFirst(cfg))
+	running := make(chan drivermanager.Correlation, 1)
+	v8Counter := &ebusV8CumulativeCounter{}
 	runtimeSeam := transport.NewDriverRuntime(
-		newEBusDriverFactory(cfg, protocol, needsPassive),
+		newEBusDriverFactory(cfg, protocol, needsPassive, v8Counter),
 		transport.DriverRuntimeConfig{DrainTimeout: defaultEBusDriverDrainTimeout},
 	)
-	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam, running: running}
 	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
 		ID:      primaryEBusDriverID,
 		Enabled: true,
@@ -69,6 +72,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	controller := &ebusDriverController{
 		manager: manager,
 		active:  newManagedEBusStableTransport(manager, protocol, reporter),
+		running: running,
 	}
 	if needsPassive {
 		controller.passive = newEBusStablePassiveTransport(
@@ -78,7 +82,10 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 		)
 	}
 	if protocol == ebusgateway.TransportAdapterDirect {
-		controller.classifier = &ebusStableClassifier{invoker: managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID}}
+		controller.classifier = &ebusStableClassifier{
+			invoker: managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID},
+			counter: v8Counter,
+		}
 	}
 	return controller, nil
 }
@@ -96,11 +103,11 @@ func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportP
 	return ebusgateway.EBusDriverTransportProtocol(cfg.TransportConfig)
 }
 
-func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool) transport.DriverRuntimeFactory {
+func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool, v8Counter *ebusV8CumulativeCounter) transport.DriverRuntimeFactory {
 	var injectedUsed atomic.Bool
 	return func(ctx context.Context) (*transport.ManagedRawTransport, error) {
 		if protocol == ebusgateway.TransportAdapterDirect && cfg.Transport == nil {
-			return buildManagedAdapterDirectGeneration(ctx, cfg)
+			return buildManagedAdapterDirectGeneration(ctx, cfg, v8Counter)
 		}
 		if cfg.Transport != nil && !injectedUsed.CompareAndSwap(false, true) {
 			return nil, transport.ErrDriverUnavailable
@@ -137,7 +144,7 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 	}
 }
 
-func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgateway.Config) (*transport.ManagedRawTransport, error) {
+func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgateway.Config, v8Counter *ebusV8CumulativeCounter) (*transport.ManagedRawTransport, error) {
 	adapterCtx, adapterCancel := context.WithCancel(context.Background())
 	stopForward := context.AfterFunc(factoryCtx, adapterCancel)
 	generationCfg := cfg
@@ -155,7 +162,9 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	}
 	closeFn := func() error {
 		adapterCancel()
-		return closer()
+		err := closer()
+		v8Counter.retire(classifier)
+		return err
 	}
 	managed := newManagedEBusGenerationParts(factoryCtx, generationCfg.Transport, generationCfg.PassiveTransport, classifier, closeFn)
 	if generation, ok := managed.Transport.(*managedEBusGeneration); ok {
@@ -203,9 +212,34 @@ func (controller *ebusDriverController) Snapshot() drivermanager.Snapshot {
 	return snapshot
 }
 
+// WaitRunning blocks eBUS-only startup work until a correlated generation is
+// actually admitted. The process-owned HTTP/API shell is started before this
+// wait, so a slow provider cannot delay control-plane availability.
+func (controller *ebusDriverController) WaitRunning(ctx context.Context) bool {
+	if controller == nil || controller.manager == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if controller.Snapshot().ObservedState == drivermanager.ObservedRunning {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-controller.running:
+			// Loss can race the RUNNING notification, so always recheck the
+			// manager's correlated state before admitting startup work.
+		}
+	}
+}
+
 type ebusDriverRuntime struct {
 	runtime  *transport.DriverRuntime
 	reporter ebusFailureReporter
+	running  chan<- drivermanager.Correlation
 }
 
 func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
@@ -254,7 +288,7 @@ func (runtime *ebusDriverRuntime) SafetyQuarantined() bool {
 // correlation. If loss raced construction, the generation health object
 // replays it exactly once here.
 func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Correlation) {
-	if runtime == nil || runtime.runtime == nil || runtime.reporter == nil || correlation.Generation == 0 {
+	if runtime == nil || runtime.runtime == nil || correlation.Generation == 0 {
 		return
 	}
 	lease, err := runtime.runtime.Admit(context.Background())
@@ -265,13 +299,22 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 	if lease.Generation() != correlation.Generation {
 		return
 	}
-	_ = lease.Invoke(func(raw transport.RawTransport) error {
+	err = lease.Invoke(func(raw transport.RawTransport) error {
 		generation, ok := raw.(*managedEBusGeneration)
-		if ok {
+		if ok && runtime.reporter != nil {
 			generation.bindFailureReporter(correlation, runtime.reporter)
 		}
 		return nil
 	})
+	if err != nil || runtime.running == nil {
+		return
+	}
+	select {
+	case runtime.running <- correlation:
+	default:
+		// One buffered wakeup is enough because WaitRunning rechecks the
+		// authoritative manager snapshot after every notification.
+	}
 }
 
 func (runtime *ebusDriverRuntime) Admit(ctx context.Context) (*drivermanager.Admission, error) {
@@ -711,6 +754,56 @@ func (*ebusStableEnhancedPassiveTransport) BytesAreUnescaped() bool { return tru
 
 type ebusStableClassifier struct {
 	invoker ebusSlotInvoker
+	counter *ebusV8CumulativeCounter
+}
+
+// ebusV8CumulativeCounter keeps the process-level Prometheus/expvar total
+// monotonic while adapter-direct classifiers remain generation-owned. The
+// live classifier is read only inside stable driver admission; retirement
+// captures increments that happened between scrapes before it is discarded.
+type ebusV8CumulativeCounter struct {
+	mu      sync.Mutex
+	retired uint64
+	floor   uint64
+}
+
+func (counter *ebusV8CumulativeCounter) retire(classifier activeTxnClassifier) {
+	if counter == nil {
+		return
+	}
+	current := v8ClassifierFor(classifier).ShadowWouldHaveDroppedTotal()
+	counter.mu.Lock()
+	counter.retired += current
+	if counter.retired > counter.floor {
+		counter.floor = counter.retired
+	}
+	counter.mu.Unlock()
+}
+
+func (counter *ebusV8CumulativeCounter) total(current *v8classifier.Classifier) uint64 {
+	if counter == nil {
+		return current.ShadowWouldHaveDroppedTotal()
+	}
+	currentTotal := current.ShadowWouldHaveDroppedTotal()
+	counter.mu.Lock()
+	total := counter.retired + currentTotal
+	if total > counter.floor {
+		counter.floor = total
+	} else {
+		total = counter.floor
+	}
+	counter.mu.Unlock()
+	return total
+}
+
+func v8ClassifierFor(classifier activeTxnClassifier) *v8classifier.Classifier {
+	provider, ok := classifier.(interface {
+		V8Classifier() *v8classifier.Classifier
+	})
+	if !ok {
+		return nil
+	}
+	return provider.V8Classifier()
 }
 
 func (classifier *ebusStableClassifier) withClassifier(callback func(activeTxnClassifier)) {
@@ -769,6 +862,25 @@ func (classifier *ebusStableClassifier) WithV8Classifier(callback func(*v8classi
 			}
 		}
 	})
+}
+
+// V8ShadowWouldHaveDroppedTotal resolves the live generation under admission
+// and folds it into a process-owned cumulative offset. During replacement,
+// when no generation is admitted, the last monotonic floor is returned.
+func (classifier *ebusStableClassifier) V8ShadowWouldHaveDroppedTotal() uint64 {
+	if classifier == nil {
+		return 0
+	}
+	var total uint64
+	resolved := false
+	classifier.withClassifier(func(current activeTxnClassifier) {
+		resolved = true
+		total = classifier.counter.total(v8ClassifierFor(current))
+	})
+	if !resolved {
+		return classifier.counter.total(nil)
+	}
+	return total
 }
 
 type managedEBusReadResult struct {

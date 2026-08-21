@@ -463,6 +463,136 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 	})
 }
 
+func TestManagedConnectionLossDoesNotDeadlockCancelledStartQueueAdvance(t *testing.T) {
+	mock := &failingStartTransport{
+		p3MockTransport: newP3MockTransport(),
+		startGate:       make(chan struct{}),
+		startErr:        errors.New("adapter disconnected"),
+	}
+	mux := New(Config{
+		Protocol:        "enh",
+		PendingStartTTL: time.Hour,
+		SYNInterval:     time.Hour,
+		StartDeadline:   time.Hour,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+	mux.connMu.Lock()
+	mux.upstream = mock
+	mux.connMu.Unlock()
+
+	callback := make(chan struct{})
+	var callbackOnce sync.Once
+	mux.SetConnectionLostCallback(func() {
+		callbackOnce.Do(func() { close(callback) })
+	})
+	var releaseOnce sync.Once
+	releaseStart := func() { releaseOnce.Do(func() { close(mock.startGate) }) }
+	defer releaseStart()
+
+	firstResult := mux.arb.requestStart(41, 0x31)
+	grantDone := make(chan struct{})
+	go func() {
+		mux.tryGrantAndStart()
+		close(grantDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mux.stateMu.Lock()
+		pending := mux.pendingStart != nil && mux.pendingStart.sessionID == 41
+		mux.stateMu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first START did not enter managed provider use")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Cancel A while its RequestStart still holds the managed R admission,
+	// then queue B. When A later fails it will take the recursive queue-
+	// advance branch that previously tried to nest another RLock.
+	mux.cancelPendingStart(41)
+	secondResult := mux.arb.requestStart(42, 0x32)
+
+	reconnectDone := make(chan error, 1)
+	go func() {
+		delegated, err := mux.reconnect()
+		if !delegated && err == nil {
+			err = errors.New("reconnect did not delegate")
+		}
+		reconnectDone <- err
+	}()
+
+	// An existing reader does not block TryRLock. Failure here therefore
+	// proves the managed-loss writer is queued behind the first START before
+	// RequestStart is released, making the writer-preference deadlock exact.
+	deadline = time.Now().Add(time.Second)
+	for {
+		if mux.connectionUseMu.TryRLock() {
+			mux.connectionUseMu.RUnlock()
+		} else {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("managed loss writer did not queue behind RequestStart")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	releaseStart()
+
+	select {
+	case <-callback:
+	case <-time.After(time.Second):
+		t.Fatal("managed loss did not publish BACKOFF after cancelled START")
+	}
+	select {
+	case err := <-reconnectDone:
+		if err != nil {
+			t.Fatalf("reconnect() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("managed reconnect deadlocked behind nested queue advance")
+	}
+	select {
+	case <-grantDone:
+	case <-time.After(time.Second):
+		t.Fatal("tryGrantAndStart deadlocked after managed loss")
+	}
+	select {
+	case result := <-firstResult:
+		if !result.cancelled {
+			t.Fatalf("first START result = %#v, want cancelled", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled first START remained unresolved")
+	}
+	select {
+	case result := <-secondResult:
+		if result.err == nil {
+			t.Fatal("queued second START survived managed connection loss")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued second START remained unresolved after BACKOFF")
+	}
+	mux.stateMu.Lock()
+	pendingStart := mux.pendingStart
+	mux.stateMu.Unlock()
+	mux.arb.mu.Lock()
+	pendingGateway := mux.arb.pendingGateway
+	pendingExternal := len(mux.arb.pendingExternal)
+	mux.arb.mu.Unlock()
+	if pendingStart != nil || pendingGateway != nil || pendingExternal != 0 {
+		t.Fatalf("pending START residue after managed loss: active=%v gateway=%v external=%d", pendingStart != nil, pendingGateway != nil, pendingExternal)
+	}
+	if err := mux.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestUnmanagedConnectionLossKeepsLegacyReconnectLoop(t *testing.T) {
 	mux := New(Config{Protocol: "enh", ReconnectInitialDelay: time.Hour})
 	ctx, cancel := context.WithCancel(context.Background())

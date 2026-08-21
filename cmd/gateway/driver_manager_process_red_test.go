@@ -167,6 +167,114 @@ func TestIssue851HTTPShellStartsWhileEBusConstructionIsBlocked(t *testing.T) {
 	}
 }
 
+func TestIssue851DelayedHealthyDriverWakesOneImmediateStartupScan(t *testing.T) {
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
+	t.Cleanup(func() {
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
+	})
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return nil
+	}
+
+	dialStarted := make(chan struct{}, 1)
+	dialRelease := make(chan struct{})
+	defer func() {
+		select {
+		case <-dialRelease:
+		default:
+			close(dialRelease)
+		}
+	}()
+	httpStarted := make(chan struct{}, 1)
+	scanStarted := make(chan struct{}, 1)
+	var scanCalls atomic.Int32
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		httpStarted <- struct{}{}
+		return nil, nil, nil
+	}
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		scanCalls.Add(1)
+		select {
+		case scanStarted <- struct{}{}:
+		default:
+		}
+		return startupScanSignals{}
+	}
+
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	cfg := ebusgateway.DefaultConfig()
+	cfg.Transport = nil
+	cfg.TransportConfig.Protocol = ebusgateway.TransportTCPPlain
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "delayed.invalid:9999"
+	cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		select {
+		case dialStarted <- struct{}{}:
+		default:
+		}
+		<-dialRelease
+		return client, nil
+	}
+	cfg.BroadcastListen = false
+	cfg.ScanOnStart = true
+	cfg.ScanInterval = time.Minute
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, cfg) }()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("delayed eBUS construction did not start")
+	}
+	select {
+	case <-httpStarted:
+	case err := <-done:
+		t.Fatalf("run() exited before HTTP shell startup: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("HTTP shell waited for delayed healthy eBUS construction")
+	}
+	select {
+	case <-scanStarted:
+		t.Fatal("startup scan ran before the first correlated RUNNING generation")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(dialRelease)
+	select {
+	case <-scanStarted:
+	case err := <-done:
+		t.Fatalf("run() exited before delayed healthy startup scan: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("RUNNING notification did not wake the initial scan immediately")
+	}
+	time.Sleep(25 * time.Millisecond)
+	if got := scanCalls.Load(); got != 1 {
+		t.Fatalf("startup scan calls = %d, want exactly one", got)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run() did not shut down after delayed healthy scan")
+	}
+}
+
 func TestIssue851HTTPShellStartsBeforeENHSourceSelectionWarmup(t *testing.T) {
 	originalWire := wireObserveFirstObserversFn
 	originalDiscovery := startDiscoveryScanLoopFn

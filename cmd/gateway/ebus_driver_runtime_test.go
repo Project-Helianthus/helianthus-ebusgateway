@@ -907,6 +907,62 @@ func TestIssue851AdminClassifierResolvesCurrentGenerationWithoutMetricsScrape(t 
 	}
 }
 
+func TestIssue851V8ShadowTotalIsProcessMonotonicAcrossReplacement(t *testing.T) {
+	first := v8classifier.New(v8classifier.ModeShadow)
+	second := v8classifier.New(v8classifier.ModeShadow)
+	classifiers := []*v8classifier.Classifier{first, second}
+	counter := &ebusV8CumulativeCounter{}
+	index := 0
+	runtime := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		if index >= len(classifiers) {
+			return nil, errors.New("unexpected extra generation")
+		}
+		classifier := &issue851Classifier{v8: classifiers[index]}
+		index++
+		raw := newIssue851BlockingRawTransport()
+		closeFn := func() error {
+			err := raw.Close()
+			counter.retire(classifier)
+			return err
+		}
+		return newManagedEBusGenerationParts(ctx, raw, nil, classifier, closeFn), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	defer func() { _ = runtime.Stop(context.Background()) }()
+	stable := &ebusStableClassifier{
+		invoker: directEBusSlotInvoker{runtime: runtime},
+		counter: counter,
+	}
+	observeShadowDrop := func(classifier *v8classifier.Classifier) {
+		now := time.Unix(0, 0)
+		classifier.Observe(transport.StreamEvent{Kind: transport.StreamEventStarted, Data: 0x71}, now)
+		classifier.Observe(transport.StreamEvent{Kind: transport.StreamEventByte, Byte: 0xAA}, now)
+	}
+
+	if _, err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	observeShadowDrop(first)
+	if got := stable.V8ShadowWouldHaveDroppedTotal(); got != 1 {
+		t.Fatalf("generation 1 process total = %d, want 1", got)
+	}
+	if _, err := runtime.Replace(context.Background()); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	if got := stable.V8ShadowWouldHaveDroppedTotal(); got != 1 {
+		t.Fatalf("post-replacement process total = %d, want retained 1", got)
+	}
+
+	// Do not scrape generation 2 before retirement. Its final increment must
+	// still be folded into the process total by the close-proof path.
+	observeShadowDrop(second)
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if got := stable.V8ShadowWouldHaveDroppedTotal(); got != 2 {
+		t.Fatalf("post-stop process total = %d, want unscraped generation 2 increment retained", got)
+	}
+}
+
 func requireEBusDriverObservedState(t *testing.T, manager *drivermanager.Manager, want drivermanager.ObservedState, timeout time.Duration) drivermanager.Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

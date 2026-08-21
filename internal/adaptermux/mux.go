@@ -3606,7 +3606,13 @@ func (m *Mux) tryGrantAndStart() {
 	if !admitted {
 		return
 	}
-	defer m.endManagedConnectionUse(managedGateHeld)
+	releaseManagedGate := func() {
+		if managedGateHeld {
+			m.endManagedConnectionUse(true)
+			managedGateHeld = false
+		}
+	}
+	defer releaseManagedGate()
 	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
 	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
 	// strictly ABBA, keeping consistent ordering is defensive best practice.
@@ -3870,6 +3876,11 @@ func (m *Mux) tryGrantAndStart() {
 				}
 				m.stateMu.Unlock()
 				if shouldAdvance {
+					// A managed loss writer may already be waiting. Release the
+					// outer R admission before recursively advancing the queue;
+					// otherwise RWMutex writer preference blocks the nested RLock
+					// while this frame can never release its original read lock.
+					releaseManagedGate()
 					m.tryGrantAndStart()
 				}
 			}

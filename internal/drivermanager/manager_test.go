@@ -682,6 +682,45 @@ func TestManagerRejectsCallbackFromSupersededOperation(t *testing.T) {
 	}
 }
 
+func TestManagerReportFailureWithZeroRetryBudgetPublishesRetryExhausted(t *testing.T) {
+	runtime := &scriptedRuntime{}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		Retry:        RetryPolicy{Budget: 0},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if accepted := manager.ReportFailure(
+		"ebus.primary",
+		Correlation{Generation: running.Generation},
+		Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}},
+	); !accepted {
+		t.Fatal("ReportFailure() rejected current generation")
+	}
+
+	failed := requireObservedState(t, manager, "ebus.primary", ObservedFailed, time.Second)
+	if failed.DesiredState != DesiredRunning || failed.Reason != (Reason{Code: ReasonRetryExhausted}) {
+		t.Fatalf("zero-budget failure snapshot = %#v", failed)
+	}
+	if failed.Retry != nil || len(failed.EffectiveCapabilities) != 0 || failed.ActiveOperation != 0 {
+		t.Fatalf("zero-budget failure retained retry/admission = %#v", failed)
+	}
+	starts, stops := runtime.calls()
+	if starts != 1 || stops != 0 {
+		t.Fatalf("zero-budget failure runtime calls = start:%d stop:%d, want 1/0", starts, stops)
+	}
+}
+
 func TestManagerStopCancelsInFlightRetryConstruction(t *testing.T) {
 	runtime := newCancelableConstructionRuntime()
 	manager, err := New(Config{Drivers: []DriverConfig{{

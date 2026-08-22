@@ -784,9 +784,12 @@ func (manager *Manager) ReportFailure(id string, correlation Correlation, failur
 	operation := driver.nextOperationLocked()
 	driver.needsReplace = true
 	driver.retryRemaining = driver.cfg.Retry.Budget
-	if failure.Reason.Retryable && driver.retryRemaining > 0 {
-		manager.scheduleRetryLocked(driver, operation, true)
-		return true
+	if failure.Reason.Retryable {
+		if driver.retryRemaining > 0 {
+			manager.scheduleRetryLocked(driver, operation, true)
+			return true
+		}
+		failure.Reason = Reason{Code: ReasonRetryExhausted}
 	}
 	driver.activeOperation = 0
 	manager.transitionLocked(driver, ObservedFailed, failure.Reason, nil, nil)

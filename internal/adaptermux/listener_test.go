@@ -2,6 +2,7 @@ package adaptermux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -189,6 +190,81 @@ func TestProxyListenerContextCancel(t *testing.T) {
 	if err == nil {
 		closeOrLog(t, conn, "unexpected-open conn")
 		t.Fatal("expected dial to fail after context cancel, but it succeeded")
+	}
+}
+
+func TestProxyListenerFatalAcceptDropsReadinessAndReportsOnce(t *testing.T) {
+	mux, _, cleanup := newTestMux(t)
+	defer cleanup()
+	// Managed readiness is enabled only when a lifecycle owner exists.
+	mux.SetConnectionLostCallback(func() {})
+	fatal := make(chan error, 1)
+	var reports atomic.Int32
+	pl, err := NewProxyListenerWithFatalCallback(context.Background(), mux, "127.0.0.1:0", log.Default(), func(err error) {
+		mux.FenceManagedConnection()
+		reports.Add(1)
+		fatal <- err
+	})
+	if err != nil {
+		t.Fatalf("NewProxyListenerWithFatalCallback: %v", err)
+	}
+	if !pl.Ready() || !mux.ManagedConnectionReady() {
+		t.Fatal("successfully bound listener was not live")
+	}
+
+	// Close the underlying listener without canceling the owner context. This
+	// is the real accept-loop permanent-error path, not normal lifecycle Close.
+	if err := pl.listener.Close(); err != nil {
+		t.Fatalf("fatal listener close: %v", err)
+	}
+	select {
+	case acceptErr := <-fatal:
+		if !errors.Is(acceptErr, net.ErrClosed) {
+			t.Fatalf("fatal callback error = %v, want net.ErrClosed", acceptErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("permanent Accept failure was not reported")
+	}
+	if pl.Ready() || mux.ManagedConnectionReady() {
+		t.Fatal("fatal Accept failure retained proxy readiness")
+	}
+	if err := pl.Close(); err != nil {
+		t.Fatalf("Close() after fatal Accept error = %v", err)
+	}
+	if got := reports.Load(); got != 1 {
+		t.Fatalf("fatal reports = %d, want exactly 1", got)
+	}
+}
+
+func TestProxyListenerNormalRetirementDoesNotReportFatal(t *testing.T) {
+	for _, action := range []string{"close", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			mux := New(Config{})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var reports atomic.Int32
+			pl, err := NewProxyListenerWithFatalCallback(ctx, mux, "127.0.0.1:0", log.Default(), func(error) {
+				reports.Add(1)
+			})
+			if err != nil {
+				t.Fatalf("NewProxyListenerWithFatalCallback: %v", err)
+			}
+			switch action {
+			case "close":
+				if err := pl.Close(); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+				cancel()
+			case "cancel":
+				cancel()
+				if err := pl.Close(); err != nil {
+					t.Fatalf("Close() after cancel error = %v", err)
+				}
+			}
+			if pl.Ready() || reports.Load() != 0 {
+				t.Fatalf("normal %s readiness=%v fatal_reports=%d", action, pl.Ready(), reports.Load())
+			}
+		})
 	}
 }
 

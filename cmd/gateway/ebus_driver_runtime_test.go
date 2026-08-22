@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
@@ -1128,6 +1129,70 @@ func TestIssue851ProxyReadinessDropsAtMuxFenceBeforeManagerFailure(t *testing.T)
 	}
 	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
 		t.Fatalf("loss-fenced readiness = %q, want DEGRADED", got)
+	}
+}
+
+func TestIssue851FatalProxyAcceptRecoversOnceAndRejectsStaleGeneration(t *testing.T) {
+	adapterAddress := newIssue851AdapterServer(t)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = adapterAddress
+	cfg.TransportConfig.DialTimeout = time.Second
+	cfg.ProxyListenAddr = "127.0.0.1:0"
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	firstSnapshot := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+	var firstGeneration *managedEBusGeneration
+	if _, err := controller.manager.Invoke(context.Background(), primaryEBusDriverID, drivermanager.CapabilityRead, func(provider any) error {
+		firstGeneration, _ = provider.(*managedEBusGeneration)
+		return nil
+	}); err != nil || firstGeneration == nil {
+		t.Fatalf("capture first generation = (%T, %v)", firstGeneration, err)
+	}
+	firstMux, ok := firstGeneration.proxyLifecycle.(*adaptermux.Mux)
+	if !ok || firstGeneration.health == nil {
+		t.Fatalf("first generation listener lifecycle = %T health=%v", firstGeneration.proxyLifecycle, firstGeneration.health != nil)
+	}
+	onFatal := adapterDirectProxyFatalCallback(firstMux, firstGeneration.health.connectionLost)
+	if onFatal == nil {
+		t.Fatal("managed proxy fatal callback is nil")
+	}
+	onFatal(net.ErrClosed)
+	backoff := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedBackoff, time.Second)
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("fatal-Accept readiness = %q, want DEGRADED", got)
+	}
+	// The same listener/mux can surface follow-on errors while teardown drains.
+	// Generation health and the wire-level owner are one-shot, so this cannot
+	// schedule a second replacement or consume another retry.
+	onFatal(errors.New("stale accept-loop completion"))
+	afterDuplicate, _ := controller.manager.Snapshot(primaryEBusDriverID)
+	if afterDuplicate.Revision != backoff.Revision || afterDuplicate.Attempt != backoff.Attempt {
+		t.Fatalf("duplicate fatal Accept changed recovery: before=%#v after=%#v", backoff, afterDuplicate)
+	}
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("expedite recovery Start() error = %v", err)
+	}
+	second := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+	if second.Generation != firstSnapshot.Generation+1 || controller.ProxyReadiness() != ebusProxyReadinessReady {
+		t.Fatalf("fatal-Accept recovery snapshot=%#v readiness=%q", second, controller.ProxyReadiness())
+	}
+	// A late callback from the retired listener is generation-correlated and
+	// must not fence or replace the healthy successor.
+	onFatal(errors.New("late retired-listener error"))
+	time.Sleep(25 * time.Millisecond)
+	afterStale, _ := controller.manager.Snapshot(primaryEBusDriverID)
+	if afterStale.ObservedState != drivermanager.ObservedRunning || afterStale.Generation != second.Generation || afterStale.Revision != second.Revision {
+		t.Fatalf("stale listener callback changed successor: before=%#v after=%#v", second, afterStale)
 	}
 }
 

@@ -696,6 +696,10 @@ type Mux struct {
 	// BACKOFF while W remains held.
 	connectionUseMu         sync.RWMutex
 	connectionLossDelegated atomic.Bool
+	// proxyListener is populated by NewProxyListener after a successful bind.
+	// ManagedConnectionReady consults its live accept-loop state so a fatal
+	// listener exit cannot be masked by an otherwise healthy upstream mux.
+	proxyListener atomic.Pointer[ProxyListener]
 
 	// Lifecycle.
 	ctx       context.Context
@@ -1119,6 +1123,9 @@ func (m *Mux) ManagedConnectionReady() bool {
 		return false
 	}
 	if m.connectionLossDelegated.Load() || m.ctx == nil || m.ctx.Err() != nil {
+		return false
+	}
+	if listener := m.proxyListener.Load(); listener != nil && !listener.Ready() {
 		return false
 	}
 	m.connMu.Lock()

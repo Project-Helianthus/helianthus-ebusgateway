@@ -1775,7 +1775,12 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	}
 
 	mux := adaptermux.New(muxCfg)
-	mux.SetConnectionLostCallback(onConnectionLost)
+	connectionLostOwner := onConnectionLost
+	if onConnectionLost != nil {
+		var connectionLostOnce sync.Once
+		connectionLostOwner = func() { connectionLostOnce.Do(onConnectionLost) }
+	}
+	mux.SetConnectionLostCallback(connectionLostOwner)
 	// Codex PR #502 P2: the instance-scoped classifier is returned to
 	// run() and threaded explicitly as the 5th argument to
 	// startDiscoveryScanLoopFn. No package-level closure captures this
@@ -1809,7 +1814,8 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 	// external clients like ebusd).
 	var proxyListener *adaptermux.ProxyListener
 	if cfg.ProxyListenAddr != "" {
-		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
+		onProxyFatal := adapterDirectProxyFatalCallback(mux, connectionLostOwner)
+		pl, err := adaptermux.NewProxyListenerWithFatalCallback(ctx, mux, cfg.ProxyListenAddr, log.Default(), onProxyFatal)
 		if err != nil {
 			if cerr := mux.Close(); cerr != nil {
 				log.Printf("adapter-direct: mux.Close after proxy-listener error: %v", cerr)
@@ -1838,6 +1844,20 @@ func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.C
 		return mux.Close()
 	}
 	return closer, activeTxnClassifier(mux), nil
+}
+
+func adapterDirectProxyFatalCallback(mux *adaptermux.Mux, owner func()) func(error) {
+	if mux == nil || owner == nil {
+		return nil
+	}
+	return func(err error) {
+		// Fatal listener loss is a generation boundary just like upstream loss.
+		// Fence all proxy work before publishing failure; wireAdapterDirect's
+		// shared one-shot owner prevents duplicate recovery with a mux loss.
+		mux.FenceManagedConnection()
+		log.Printf("adapter-direct: proxy listener failed: %v", err)
+		owner()
+	}
 }
 
 func adapterDirectMuxProtocol(protocol ebusgateway.TransportProtocol) string {

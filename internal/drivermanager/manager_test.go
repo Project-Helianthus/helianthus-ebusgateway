@@ -692,6 +692,63 @@ func TestManagerRepeatedStartJoinsStartingIntent(t *testing.T) {
 	_ = manager.Shutdown(context.Background())
 }
 
+func TestManagerRepeatedStartDuringRetryPublicationKeepsRecoveryLive(t *testing.T) {
+	runtime := &scriptedRuntime{startResults: []error{errors.New("offline"), nil}}
+	classification := make(chan bool, 1)
+	releaseClassification := make(chan struct{})
+	var manager *Manager
+	var err error
+	manager, err = New(Config{Drivers: []DriverConfig{{
+		ID:      "ebus.primary",
+		Enabled: true,
+		Runtime: runtime,
+		ClassifyError: func(error) Failure {
+			// finishAttempt holds driver.mu while classifying. The completed
+			// attempt must already be retired before BACKOFF and its sole retry
+			// can be published under that same lock.
+			classification <- manager.drivers["ebus.primary"].activeAttempt == nil
+			<-releaseClassification
+			return Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: RetryPolicy{Budget: 1, InitialDelay: time.Second, MaxDelay: time.Second},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- manager.Start(context.Background(), "ebus.primary") }()
+	attemptRetired := <-classification
+
+	repeatedStarted := make(chan struct{})
+	repeatedDone := make(chan error, 1)
+	go func() {
+		close(repeatedStarted)
+		repeatedDone <- manager.Start(context.Background(), "ebus.primary")
+	}()
+	<-repeatedStarted
+	close(releaseClassification)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	if err := <-repeatedDone; err != nil {
+		t.Fatalf("repeated Start() error = %v", err)
+	}
+	if !attemptRetired {
+		t.Fatal("retry publication retained its completed active attempt")
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if running.Generation != 1 || running.Reason.Code != ReasonNone || running.Retry != nil {
+		t.Fatalf("repeated Start stranded recovery: %#v", running)
+	}
+	starts, _ := runtime.calls()
+	if starts != 2 {
+		t.Fatalf("runtime Start calls = %d, want initial failure plus one recovery", starts)
+	}
+}
+
 func TestManagerRetiresLateAdmissionAfterStopIntent(t *testing.T) {
 	runtime := &lateAdmissionRuntime{startEntered: make(chan struct{}), startRelease: make(chan struct{})}
 	manager, err := New(Config{Drivers: []DriverConfig{{

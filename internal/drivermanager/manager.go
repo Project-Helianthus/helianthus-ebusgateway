@@ -505,7 +505,7 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 	}()
 
 	if driver.cfg.Runtime == nil {
-		manager.finishAttempt(driver, operation, 0, errors.New("provider unavailable"), replace)
+		manager.finishAttempt(driver, control, operation, 0, errors.New("provider unavailable"), replace)
 		return
 	}
 	var generation uint64
@@ -526,10 +526,10 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 		_ = driver.cfg.Runtime.Stop(context.Background())
 		return
 	}
-	manager.finishAttempt(driver, operation, generation, err, replace)
+	manager.finishAttempt(driver, control, operation, generation, err, replace)
 }
 
-func (manager *Manager) finishAttempt(driver *managedDriver, operation, generation uint64, err error, replace bool) {
+func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptControl, operation, generation uint64, err error, replace bool) {
 	driver.mu.Lock()
 	var bindCorrelation Correlation
 	defer func() {
@@ -541,6 +541,14 @@ func (manager *Manager) finishAttempt(driver *managedDriver, operation, generati
 			binder.BindCorrelation(bindCorrelation)
 		}
 	}()
+	// Retire the completed construction before publishing any terminal or
+	// retry state. A repeated Start that observes BACKOFF must therefore see no
+	// stale in-flight attempt: it may atomically replace the scheduled retry,
+	// rather than canceling the only recovery path and then returning because
+	// this already-completed attempt still appeared active.
+	if driver.activeAttempt == control {
+		driver.activeAttempt = nil
+	}
 	if manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning {
 		return
 	}

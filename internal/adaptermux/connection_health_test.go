@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
 
 type managedFenceTransport struct {
@@ -515,6 +517,64 @@ func TestManagedExplicitWithdrawalFencesExistingAndNewProxyWork(t *testing.T) {
 	_ = laterClient.Close()
 	if err := mux.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestIssue851ManagedFatalListenerRetiresSessionsAndCachedFrames(t *testing.T) {
+	mux := New(Config{Protocol: "enh"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+	mux.SetConnectionLostCallback(func() {})
+	mux.infoCacheMu.Lock()
+	mux.infoCache = map[transport.AdapterInfoID][]byte{transport.AdapterInfoVersion: {0x12, 0x34}}
+	mux.infoCacheMu.Unlock()
+
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("pre-failure AddSession returned 0")
+	}
+	mux.sessionsMu.Lock()
+	sess := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	if sess == nil {
+		t.Fatal("managed session not registered")
+	}
+
+	// Queue each forbidden post-failure class while net.Pipe's writer is
+	// deliberately blocked: passive traffic, cached INIT, and cached INFO.
+	sess.deliverReceived(0x99)
+	sess.handleInit(0x03)
+	sess.handleInfo(byte(transport.AdapterInfoVersion))
+
+	retired := make(chan struct{})
+	go func() {
+		mux.RetireManagedProxySessions()
+		close(retired)
+	}()
+	select {
+	case <-retired:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("managed session retirement was not bounded")
+	}
+
+	if _, err := mux.CachedInfo(transport.AdapterInfoVersion); err == nil {
+		t.Fatal("fatal listener retirement retained cached INFO")
+	}
+	// A net.Pipe endpoint may reject deadline changes once retirement has
+	// already closed it; either way the subsequent read must expose no bytes.
+	_ = client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	buffer := make([]byte, 32)
+	if count, err := client.Read(buffer); count != 0 || err == nil {
+		t.Fatalf("retired client read = %d/%v bytes=%x, want closed with no passive/INIT/INFO", count, err, buffer[:count])
+	}
+	mux.sessionsMu.Lock()
+	remaining := len(mux.sessions)
+	mux.sessionsMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("managed sessions after fatal retirement = %d, want 0", remaining)
 	}
 }
 

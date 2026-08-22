@@ -782,6 +782,11 @@ func (manager *Manager) ReportFailure(id string, correlation Correlation, failur
 		return false
 	}
 	operation := driver.nextOperationLocked()
+	// Failure withdrawal has the same generation-local admission boundary as
+	// explicit Stop/Replace. The hook is non-blocking by contract and runs
+	// before BACKOFF/FAILED becomes observable; resource drain remains the
+	// later Runtime.Replace/Stop owner's responsibility.
+	manager.fenceWithdrawalLocked(driver)
 	driver.needsReplace = true
 	driver.retryRemaining = driver.cfg.Retry.Budget
 	if failure.Reason.Retryable {

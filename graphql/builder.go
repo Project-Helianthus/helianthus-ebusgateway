@@ -19,6 +19,7 @@ type Builder struct {
 	vaillantB503           VaillantB503Provider
 	mutationSource         byte
 	mutationSourceAdmitted bool
+	mutationSourceProvider func() (byte, bool)
 
 	mu       sync.RWMutex
 	schema   Schema
@@ -280,6 +281,18 @@ func (b *Builder) ClearAdmittedMutationSource() {
 	b.mu.Unlock()
 }
 
+// SetAdmittedMutationSourceProvider installs the live request-time authority
+// used by GraphQL mutations. The builder's selected source remains separate so
+// source-selection state can survive a temporary driver withdrawal.
+func (b *Builder) SetAdmittedMutationSourceProvider(provider func() (byte, bool)) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.mutationSourceProvider = provider
+	b.mu.Unlock()
+}
+
 func (b *Builder) admittedMutationSource() (byte, bool) {
 	if b == nil {
 		return 0, false
@@ -292,6 +305,19 @@ func (b *Builder) admittedMutationSource() (byte, bool) {
 }
 
 func (b *Builder) AdmittedMutationSource() (byte, bool) {
+	return b.admittedMutationSource()
+}
+
+func (b *Builder) mutationSourceForRequest() (byte, bool) {
+	if b == nil {
+		return 0, false
+	}
+	b.mu.RLock()
+	provider := b.mutationSourceProvider
+	b.mu.RUnlock()
+	if provider != nil {
+		return provider()
+	}
 	return b.admittedMutationSource()
 }
 

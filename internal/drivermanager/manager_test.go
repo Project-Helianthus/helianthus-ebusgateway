@@ -721,6 +721,39 @@ func TestManagerReportFailureWithZeroRetryBudgetPublishesRetryExhausted(t *testi
 	}
 }
 
+func TestIssue851ManagerReportFailureFencesRuntimeBeforeBackoff(t *testing.T) {
+	runtime := &withdrawalFenceRuntime{}
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID:           "ebus.primary",
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		Retry:        RetryPolicy{Budget: 1, InitialDelay: time.Hour, MaxDelay: time.Hour},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if accepted := manager.ReportFailure(
+		"ebus.primary",
+		Correlation{Generation: running.Generation},
+		Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}},
+	); !accepted {
+		t.Fatal("ReportFailure() rejected current generation")
+	}
+	backoff := requireObservedState(t, manager, "ebus.primary", ObservedBackoff, time.Second)
+	runtime.mu.Lock()
+	fenced := runtime.fenced
+	runtime.mu.Unlock()
+	if !fenced {
+		t.Fatalf("BACKOFF published before runtime withdrawal fence: %#v", backoff)
+	}
+}
+
 func TestManagerStopCancelsInFlightRetryConstruction(t *testing.T) {
 	runtime := newCancelableConstructionRuntime()
 	manager, err := New(Config{Drivers: []DriverConfig{{

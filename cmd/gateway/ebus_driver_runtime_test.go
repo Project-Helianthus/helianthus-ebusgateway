@@ -1512,6 +1512,63 @@ func TestIssue851FatalProxyAcceptRecoversOnceAndRejectsStaleGeneration(t *testin
 	}
 }
 
+func TestIssue851FatalProxyAcceptClosesExistingSessionBeforeOwnerPublication(t *testing.T) {
+	adapterAddress := newIssue851AdapterServer(t)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = adapterAddress
+	cfg.TransportConfig.DialTimeout = time.Second
+	cfg.ProxyListenAddr = "127.0.0.1:0"
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+	var generation *managedEBusGeneration
+	if _, err := controller.manager.Invoke(context.Background(), primaryEBusDriverID, drivermanager.CapabilityRead, func(provider any) error {
+		generation, _ = provider.(*managedEBusGeneration)
+		return nil
+	}); err != nil || generation == nil {
+		t.Fatalf("capture generation = (%T, %v)", generation, err)
+	}
+	mux, ok := generation.proxyLifecycle.(*adaptermux.Mux)
+	if !ok {
+		t.Fatalf("proxy lifecycle = %T, want *adaptermux.Mux", generation.proxyLifecycle)
+	}
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	if id := mux.AddSession(server); id == 0 {
+		t.Fatal("pre-failure proxy session was rejected")
+	}
+
+	ownerCalled := make(chan struct{})
+	var ownerSawOpen atomic.Bool
+	onFatal := adapterDirectProxyFatalCallback(mux, func() {
+		if err := client.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err == nil {
+			initRequest := transport.EncodeENH(transport.ENHReqInit, 0x03)
+			if _, writeErr := client.Write(initRequest[:]); writeErr == nil {
+				ownerSawOpen.Store(true)
+			}
+		}
+		close(ownerCalled)
+	})
+	onFatal(net.ErrClosed)
+	select {
+	case <-ownerCalled:
+	case <-time.After(time.Second):
+		t.Fatal("fatal listener owner was not called")
+	}
+	if ownerSawOpen.Load() {
+		t.Fatal("failure owner published while existing proxy session still accepted cached INIT")
+	}
+}
+
 func TestIssue851InjectedTransportIsNotReadmittedAfterReplacement(t *testing.T) {
 	raw := newIssue851BlockingRawTransport()
 	cfg := ebusgateway.DefaultConfig()

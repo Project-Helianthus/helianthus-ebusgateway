@@ -1113,6 +1113,48 @@ func (m *Mux) FenceManagedConnection() {
 	}
 }
 
+// RetireManagedProxySessions synchronously removes and closes every external
+// session owned by a managed generation. Fatal proxy-listener loss calls this
+// before notifying DriverManager, so no queued passive/INIT/INFO frame can be
+// published after BACKOFF becomes visible. It deliberately does not acquire
+// connectionUseMu's write side: pre-fence upstream work may be blocked until
+// DriverRuntime closes the transport. AddSession rechecks the fence under
+// sessionsMu, which makes detachment linearizable without that lock-order risk.
+// Callback-free muxes retain their legacy session/reconnect behavior.
+func (m *Mux) RetireManagedProxySessions() {
+	if m == nil || !m.connectionLossManaged.Load() {
+		return
+	}
+	m.FenceManagedConnection()
+	m.clearInfoCache()
+
+	m.sessionsMu.Lock()
+	toClose := make([]*session, 0, len(m.sessions))
+	for id, sess := range m.sessions {
+		toClose = append(toClose, sess)
+		delete(m.sessions, id)
+	}
+	m.sessionsMu.Unlock()
+
+	var closeWG sync.WaitGroup
+	for _, sess := range toClose {
+		m.sessionRemoteAddrs.Delete(sess.id)
+		if value, ok := m.sessionPacers.Load(sess.id); ok {
+			if pacer, _ := value.(*v8classifier.Pacer); pacer != nil {
+				pacer.CancelEchoWatchdog()
+			}
+		}
+		m.sessionPacers.Delete(sess.id)
+		m.arb.removeSession(sess.id)
+		closeWG.Add(1)
+		go func(current *session) {
+			defer closeWG.Done()
+			current.close()
+		}(sess)
+	}
+	closeWG.Wait()
+}
+
 // ManagedConnectionReady reports whether the current managed mux generation
 // can admit proxy work. Readiness is deliberately lock-free with respect to
 // connectionUseMu: reconnect holds its write side while publishing loss, and a

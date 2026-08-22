@@ -250,6 +250,17 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 
 	// AM25/AM50: check + insert under a single lock to prevent TOCTOU.
 	m.sessionsMu.Lock()
+	// Fatal listener retirement does not take connectionUseMu's write side:
+	// an already-admitted START/SEND may be blocked in the upstream transport.
+	// Recheck the atomic fence under the session-map lock instead, so an
+	// AddSession that acquired its managed read lease before withdrawal cannot
+	// insert after RetireManagedProxySessions detached the generation's map.
+	if m.connectionLossManaged.Load() && m.connectionLossDelegated.Load() {
+		m.sessionsMu.Unlock()
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		_ = conn.Close()
+		return 0
+	}
 	if len(m.sessions) >= maxSessions {
 		m.sessionsMu.Unlock()
 		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)

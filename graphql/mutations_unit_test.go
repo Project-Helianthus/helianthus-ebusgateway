@@ -402,6 +402,40 @@ func TestSetCircuitConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T)
 	}
 }
 
+func TestIssue851BuilderMutationProviderFencesDirectGraphQLInvoker(t *testing.T) {
+	registry := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	invoker := &mutationTestInvoker{}
+	admitted := false
+	builder := NewBuilder(nil, nil)
+	builder.SetAdmittedMutationSource(0x77)
+	builder.SetAdmittedMutationSourceProvider(func() (byte, bool) {
+		return 0x77, admitted
+	})
+	schema, err := NewSchema(builder, registry, invoker, nil)
+	if err != nil {
+		t.Fatalf("NewSchema() error = %v", err)
+	}
+
+	data := executeMutation(t, schema, `mutation {
+		setCircuitConfig(index: 1, field: "heatingCurve", value: "1.5") {
+			success
+			error
+		}
+	}`)
+	payload, _ := data["setCircuitConfig"].(map[string]any)
+	if success, _ := payload["success"].(bool); success {
+		t.Fatalf("withdrawn GraphQL mutation = %#v, want unavailable", payload)
+	}
+	if len(invoker.calls) != 0 {
+		t.Fatalf("withdrawn GraphQL invoker calls = %d, want 0", len(invoker.calls))
+	}
+}
+
 func TestApplyConfigMutation_FailsClosedBeforeSourceAdmission(t *testing.T) {
 	registry := mutationTestRegistry{
 		entries: map[byte]registry.DeviceEntry{

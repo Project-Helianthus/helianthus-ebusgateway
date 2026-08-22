@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -148,7 +151,16 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 	builder.SetAdmittedMutationSource(selected)
 	liveSource := newManagedEBusSourceProvider(controller, builder.AdmittedMutationSource)
 	status := newRuntimeStatusProvider(nil, liveSource)
+	mcpStatus := newMCPRuntimeStatusProvider(nil, liveSource)
 	explorerBus := &issue851LiveSourceExplorerBus{}
+	underlyingWriter := &recordingSemanticWriter{}
+	graphWriter := admittedGraphQLSemanticWriter{
+		boiler: underlyingWriter, system: underlyingWriter, schedule: underlyingWriter, admitted: liveSource,
+	}
+	mcpConfig := admittedMCPConfigWriter{writer: admittedMCPConfigAdapter{writer: underlyingWriter}, admitted: liveSource}
+	mcpSchedule := admittedMCPScheduleWriter{writer: underlyingWriter, admitted: liveSource}
+	b503Manager := b503session.New(b503session.TransportKey{}, 30*time.Second, nil)
+	b503Dispatcher := newRawFrameDispatcherWithSourceProvider(explorerBus, liveSource, &sync.Mutex{}, b503Manager, 100*time.Millisecond)
 	explorer := portal.NewHandler(portal.Options{
 		GatewayVersion:         "test",
 		BuildID:                "test",
@@ -161,7 +173,29 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 		if got := status.DaemonStatus().InitiatorAddress; got != "" {
 			t.Fatalf("%s GraphQL source = %q, want unavailable", label, got)
 		}
+		if got := mcpStatus.DaemonStatus().InitiatorAddress; got == formatConfiguredInitiator(selected, false) {
+			t.Fatalf("%s MCP source retained selected authority = %q", label, got)
+		}
+		writerCalls := underlyingWriter.calls
+		if result := graphWriter.SetSystemConfig(context.Background(), "field", "value"); result.Success {
+			t.Fatalf("%s GraphQL writer delegated while unavailable: %#v", label, result)
+		}
+		if result := mcpConfig.SetBoilerConfig(context.Background(), "field", "value"); result.Success {
+			t.Fatalf("%s MCP config writer delegated while unavailable: %#v", label, result)
+		}
+		if result, err := mcpSchedule.SetZoneTimeProgram(context.Background(), 0, 0, nil); err != nil || result.Success {
+			t.Fatalf("%s MCP schedule writer = %#v/%v, want unavailable", label, result, err)
+		}
+		if underlyingWriter.calls != writerCalls {
+			t.Fatalf("%s writer delegates = %d->%d, want unchanged", label, writerCalls, underlyingWriter.calls)
+		}
 		before := len(explorerBus.snapshotSources())
+		if _, err := b503Dispatcher.Invoke(context.Background(), 0x15, []byte{0x01}); !errors.Is(err, b503session.ErrTransportDown) {
+			t.Fatalf("%s B503 error = %v, want transport unavailable", label, err)
+		}
+		if after := len(explorerBus.snapshotSources()); after != before {
+			t.Fatalf("%s B503 Bus.Send calls = %d->%d", label, before, after)
+		}
 		recorder := httptest.NewRecorder()
 		explorer.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/b509?target=15&addr=0028", nil))
 		if recorder.Code != http.StatusServiceUnavailable {
@@ -175,6 +209,30 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 		t.Helper()
 		if got, want := status.DaemonStatus().InitiatorAddress, formatConfiguredInitiator(selected, false); got != want {
 			t.Fatalf("%s GraphQL source = %q, want %q", label, got, want)
+		}
+		if got, want := mcpStatus.DaemonStatus().InitiatorAddress, formatConfiguredInitiator(selected, false); got != want {
+			t.Fatalf("%s MCP source = %q, want %q", label, got, want)
+		}
+		writerCalls := underlyingWriter.calls
+		if result := graphWriter.SetSystemConfig(context.Background(), "field", "value"); !result.Success {
+			t.Fatalf("%s GraphQL writer = %#v, want success", label, result)
+		}
+		if result := mcpConfig.SetBoilerConfig(context.Background(), "field", "value"); !result.Success {
+			t.Fatalf("%s MCP config writer = %#v, want success", label, result)
+		}
+		if result, err := mcpSchedule.SetZoneTimeProgram(context.Background(), 0, 0, nil); err != nil || !result.Success {
+			t.Fatalf("%s MCP schedule writer = %#v/%v, want success", label, result, err)
+		}
+		if underlyingWriter.calls != writerCalls+3 {
+			t.Fatalf("%s writer delegates = %d->%d, want +3", label, writerCalls, underlyingWriter.calls)
+		}
+		beforeB503 := len(explorerBus.snapshotSources())
+		if _, err := b503Dispatcher.Invoke(context.Background(), 0x15, []byte{0x01}); err != nil {
+			t.Fatalf("%s B503 Invoke() error = %v", label, err)
+		}
+		b503Sources := explorerBus.snapshotSources()
+		if len(b503Sources) != beforeB503+1 || b503Sources[len(b503Sources)-1] != selected {
+			t.Fatalf("%s B503 sources = %v, want one exact 0x%02X", label, b503Sources, selected)
 		}
 		recorder := httptest.NewRecorder()
 		explorer.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/b509?target=15&addr=0028", nil))
@@ -238,6 +296,25 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 	}
 	requireEBusDriverObservedState(t, manager, drivermanager.ObservedStopped, time.Second)
 	assertUnavailable("withdrawn STOPPED")
+}
+
+func TestIssue851MainWiresOneManagedSourceAuthorityToEveryEBusSurface(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(source)
+	staleWiring := []string{
+		"admitted: builder.AdmittedMutationSource",
+		"SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)",
+		"newMCPRuntimeStatusProvider(semanticProvider, builder.AdmittedMutationSource)",
+		"installVaillantB503(mcpServer, gateway, &cfg, builder.AdmittedMutationSource)",
+	}
+	for _, stale := range staleWiring {
+		if strings.Contains(text, stale) {
+			t.Errorf("source-dependent surface bypasses live DriverManager authority: %s", stale)
+		}
+	}
 }
 
 func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {

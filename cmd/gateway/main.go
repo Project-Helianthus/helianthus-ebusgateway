@@ -550,6 +550,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
 	liveAdmittedEBusSource := newManagedEBusSourceProvider(ebusDriver, builder.AdmittedMutationSource)
+	builder.SetAdmittedMutationSourceProvider(liveAdmittedEBusSource)
 
 	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
 	// the PassiveTransactionReconstructor's classified events to insert
@@ -1009,7 +1010,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			boiler:   semanticPoller,
 			system:   semanticPoller,
 			schedule: semanticPoller,
-			admitted: builder.AdmittedMutationSource,
+			admitted: liveAdmittedEBusSource,
 		}
 		lateGraphQLWriter.Bind(gatedGraphQLWriter)
 		lateGraphQLWatchProvider.Bind(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
@@ -1019,7 +1020,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			semanticPoller,
 			eebusAdapter,
 			eebusMCPCommandRouter(eebusAdapter),
-			builder.AdmittedMutationSource,
+			liveAdmittedEBusSource,
 		)
 		captureRuntime, captureErr := newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
 		if captureErr != nil {
@@ -1241,11 +1242,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	if semanticPoller != nil {
 		lateScheduleWriter.Bind(admittedMCPScheduleWriter{
 			writer:   semanticPoller,
-			admitted: builder.AdmittedMutationSource,
+			admitted: liveAdmittedEBusSource,
 		})
 		lateConfigWriter.Bind(admittedMCPConfigWriter{
 			writer:   &mcpConfigWriterAdapter{poller: semanticPoller},
-			admitted: builder.AdmittedMutationSource,
+			admitted: liveAdmittedEBusSource,
 		})
 		lateWatchProvider.Bind(newMCPWatchSummaryProvider(semanticPoller.shadow))
 	}
@@ -1853,9 +1854,10 @@ func adapterDirectProxyFatalCallback(mux *adaptermux.Mux, owner func()) func(err
 	}
 	return func(err error) {
 		// Fatal listener loss is a generation boundary just like upstream loss.
-		// Fence all proxy work before publishing failure; wireAdapterDirect's
-		// shared one-shot owner prevents duplicate recovery with a mux loss.
-		mux.FenceManagedConnection()
+		// Fence and synchronously retire every existing proxy session before
+		// publishing failure; wireAdapterDirect's shared one-shot owner prevents
+		// duplicate recovery with a concurrent upstream loss.
+		mux.RetireManagedProxySessions()
 		log.Printf("adapter-direct: proxy listener failed: %v", err)
 		owner()
 	}
@@ -2038,7 +2040,7 @@ func startHTTPServer(
 	eebusAdminHandler http.Handler,
 	eebusLifecycle *eebusRuntimeLifecycle,
 	ebusProxyReadiness func() string,
-	explorerSourceProvider func() (byte, bool),
+	ebusSourceProvider func() (byte, bool),
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2115,8 +2117,8 @@ func startHTTPServer(
 			return nil, nil, fmt.Errorf("register synchronized evidence capture: %w", err)
 		}
 	}
-	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(semanticProvider, builder.AdmittedMutationSource))
+	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(semanticProvider, ebusSourceProvider))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}
@@ -2146,7 +2148,7 @@ func startHTTPServer(
 	// paths use the real session FSM so EXPIRED normalization, session
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
-	b503rt := installVaillantB503(mcpServer, gateway, &cfg, builder.AdmittedMutationSource)
+	b503rt := installVaillantB503(mcpServer, gateway, &cfg, ebusSourceProvider)
 	// M2b_GATEWAY_GRAPHQL (execution-plans#19): wire the GraphQL B503
 	// provider to the same Manager + Dispatcher the MCP surface uses. A
 	// single Manager across both surfaces is mandatory — GraphQL
@@ -2417,7 +2419,7 @@ func startHTTPServer(
 				return portal.ProjectionGraph{}, false
 			},
 			ExplorerBus:            gateway.Bus,
-			ExplorerSourceProvider: explorerSourceProvider,
+			ExplorerSourceProvider: ebusSourceProvider,
 			// Wire the in-process L7 catalog sub-server (M5_PORTAL).
 			// mcpServer.EbusStandardServer() returns the same instance
 			// RegisterEbusStandardTools installed inside mcp.NewServer;

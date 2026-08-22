@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -52,6 +53,73 @@ type issue851ReadSignalingRaw struct {
 type issue851CancelBeforeByteRaw struct {
 	cancel context.CancelFunc
 	value  byte
+}
+
+func newIssue851AdapterServer(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake adapter: %v", err)
+	}
+	var connectionMu sync.Mutex
+	connections := make(map[net.Conn]struct{})
+	var connectionWG sync.WaitGroup
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			connectionMu.Lock()
+			connections[connection] = struct{}{}
+			connectionMu.Unlock()
+			connectionWG.Add(1)
+			go func() {
+				defer connectionWG.Done()
+				defer func() {
+					connectionMu.Lock()
+					delete(connections, connection)
+					connectionMu.Unlock()
+					_ = connection.Close()
+				}()
+				request := make([]byte, 2)
+				if _, readErr := io.ReadFull(connection, request); readErr != nil {
+					return
+				}
+				response := transport.EncodeENH(transport.ENHResResetted, 0x01)
+				if _, writeErr := connection.Write(response[:]); writeErr != nil {
+					return
+				}
+				// adaptermux always probes INFO version once during startup. A
+				// one-byte payload is deliberately non-parseable, which proves the
+				// request path without triggering the optional paced INFO sweep.
+				infoRequest := make([]byte, 2)
+				if _, readErr := io.ReadFull(connection, infoRequest); readErr != nil {
+					return
+				}
+				infoLength := transport.EncodeENH(transport.ENHResInfo, 0x01)
+				infoValue := transport.EncodeENH(transport.ENHResInfo, 0x00)
+				infoResponse := append(infoLength[:], infoValue[:]...)
+				if _, writeErr := connection.Write(infoResponse); writeErr != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, connection)
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		<-acceptDone
+		connectionMu.Lock()
+		for connection := range connections {
+			_ = connection.Close()
+		}
+		connectionMu.Unlock()
+		connectionWG.Wait()
+	})
+	return listener.Addr().String()
 }
 
 func (raw issue851CancelBeforeByteRaw) ReadByte() (byte, error) {
@@ -801,6 +869,121 @@ func TestIssue851AdapterDirectConnectionLossWithdrawsCapabilitiesAndRecoversOnce
 	mu.Unlock()
 	if afterStale.ObservedState != drivermanager.ObservedRunning || afterStale.Generation != second.Generation || calls != 2 {
 		t.Fatalf("stale old connection signal changed recovered generation: snapshot=%#v calls=%d", afterStale, calls)
+	}
+}
+
+func TestIssue851ProxyReadinessStaysDegradedOnAdapterDialFailure(t *testing.T) {
+	unused, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve unused adapter address: %v", err)
+	}
+	adapterAddress := unused.Addr().String()
+	if err := unused.Close(); err != nil {
+		t.Fatalf("release unused adapter address: %v", err)
+	}
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = adapterAddress
+	cfg.TransportConfig.DialTimeout = 100 * time.Millisecond
+	cfg.ProxyListenAddr = "127.0.0.1:0"
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("pre-construction proxy readiness = %q, want DEGRADED", got)
+	}
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedBackoff, time.Second)
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("dial-failure proxy readiness = %q, want DEGRADED", got)
+	}
+}
+
+func TestIssue851ProxyReadinessStaysDegradedOnListenerBindFailure(t *testing.T) {
+	adapterAddress := newIssue851AdapterServer(t)
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy proxy address: %v", err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = adapterAddress
+	cfg.TransportConfig.DialTimeout = time.Second
+	cfg.ProxyListenAddr = occupied.Addr().String()
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedBackoff, time.Second)
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("bind-failure proxy readiness = %q, want DEGRADED", got)
+	}
+}
+
+func TestIssue851ProxyReadinessWithdrawsAndRecoversWithAdmittedListener(t *testing.T) {
+	adapterAddress := newIssue851AdapterServer(t)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = adapterAddress
+	cfg.TransportConfig.DialTimeout = time.Second
+	cfg.ProxyListenAddr = "127.0.0.1:0"
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	first := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
+		t.Fatalf("bound generation proxy readiness = %q, want READY", got)
+	}
+
+	if accepted := controller.manager.ReportFailure(
+		primaryEBusDriverID,
+		drivermanager.Correlation{Generation: first.Generation},
+		drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}},
+	); !accepted {
+		t.Fatal("current-generation proxy withdrawal was rejected")
+	}
+	requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedBackoff, time.Second)
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("withdrawn generation proxy readiness = %q, want DEGRADED", got)
+	}
+
+	// Explicit repeated RUNNING intent expedites the already-scheduled
+	// replacement. The next generation cannot publish READY until its own
+	// listener has bound and DriverManager admits that exact generation.
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("recovery Start() error = %v", err)
+	}
+	second := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+	if second.Generation != first.Generation+1 {
+		t.Fatalf("recovered generation = %d, want %d", second.Generation, first.Generation+1)
+	}
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
+		t.Fatalf("recovered proxy readiness = %q, want READY", got)
 	}
 }
 

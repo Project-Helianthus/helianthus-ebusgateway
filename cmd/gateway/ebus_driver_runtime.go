@@ -26,11 +26,12 @@ const (
 )
 
 type ebusDriverController struct {
-	manager    *drivermanager.Manager
-	active     transport.RawTransport
-	passive    transport.RawTransport
-	classifier activeTxnClassifier
-	running    <-chan drivermanager.Correlation
+	manager         *drivermanager.Manager
+	active          transport.RawTransport
+	passive         transport.RawTransport
+	classifier      activeTxnClassifier
+	running         <-chan drivermanager.Correlation
+	proxyConfigured bool
 }
 
 func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, error) {
@@ -70,9 +71,10 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	}
 	runtime.reporter = reporter
 	controller := &ebusDriverController{
-		manager: manager,
-		active:  newManagedEBusStableTransport(manager, protocol, reporter),
-		running: running,
+		manager:         manager,
+		active:          newManagedEBusStableTransport(manager, protocol, reporter),
+		running:         running,
+		proxyConfigured: cfg.ProxyListenAddr != "",
 	}
 	if needsPassive {
 		controller.passive = newEBusStablePassiveTransport(
@@ -169,6 +171,10 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	managed := newManagedEBusGenerationParts(factoryCtx, generationCfg.Transport, generationCfg.PassiveTransport, classifier, closeFn)
 	if generation, ok := managed.Transport.(*managedEBusGeneration); ok {
 		generation.health = health
+		// The adapter-direct constructor returns successfully only after the
+		// configured proxy listener has bound. Keep that fact generation-local;
+		// readiness still has to acquire this generation through DriverManager.
+		generation.proxyListenerBound = generationCfg.ProxyListenAddr != ""
 	}
 	if !stopForward() || factoryCtx.Err() != nil {
 		if err := factoryCtx.Err(); err != nil {
@@ -210,6 +216,41 @@ func (controller *ebusDriverController) Snapshot() drivermanager.Snapshot {
 	}
 	snapshot, _ := controller.manager.Snapshot(primaryEBusDriverID)
 	return snapshot
+}
+
+const (
+	ebusProxyReadinessDisabled = "DISABLED"
+	ebusProxyReadinessDegraded = "DEGRADED"
+	ebusProxyReadinessReady    = "READY"
+)
+
+// ProxyReadiness resolves the listener through the current admitted driver
+// generation. A configured address alone is never readiness authority: dial
+// and bind failures have no admitted generation, and lifecycle withdrawal
+// closes admission before the listener is torn down.
+func (controller *ebusDriverController) ProxyReadiness() string {
+	if controller == nil || !controller.proxyConfigured {
+		return ebusProxyReadinessDisabled
+	}
+	if controller.manager == nil {
+		return ebusProxyReadinessDegraded
+	}
+	_, err := controller.manager.Invoke(
+		context.Background(),
+		primaryEBusDriverID,
+		drivermanager.CapabilityRead,
+		func(provider any) error {
+			generation, ok := provider.(*managedEBusGeneration)
+			if !ok || generation == nil || !generation.proxyListenerBound {
+				return drivermanager.ErrUnavailable
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return ebusProxyReadinessDegraded
+	}
+	return ebusProxyReadinessReady
 }
 
 // WaitRunning blocks eBUS-only startup work until a correlated generation is
@@ -949,11 +990,12 @@ func (health *ebusGenerationHealth) pendingReportLocked() (ebusFailureReporter, 
 // provider callbacks block only on results and return as soon as generation
 // context is canceled, allowing DriverRuntime to drain before CloseRequest.
 type managedEBusGeneration struct {
-	active     *managedEBusEndpoint
-	passive    *managedEBusEndpoint
-	classifier activeTxnClassifier
-	closeFn    func() error
-	health     *ebusGenerationHealth
+	active             *managedEBusEndpoint
+	passive            *managedEBusEndpoint
+	classifier         activeTxnClassifier
+	closeFn            func() error
+	health             *ebusGenerationHealth
+	proxyListenerBound bool
 
 	closeRequest chan struct{}
 	closed       chan struct{}

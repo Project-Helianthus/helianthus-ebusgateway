@@ -322,25 +322,27 @@ func issue846WaitForLifecycleState(t *testing.T, lifecycle *eebusRuntimeLifecycl
 
 func TestIssue846GatewayReadinessProjectsLifecycleAndConditionalProxy(t *testing.T) {
 	tests := []struct {
-		name        string
-		proxyListen string
-		lifecycle   eebusRuntimeLifecycleSnapshot
-		wantProxy   string
-		wantEEBus   string
-		wantReason  eebusadmin.EEBusDegradedReason
+		name           string
+		proxyReadiness string
+		lifecycle      eebusRuntimeLifecycleSnapshot
+		wantProxy      string
+		wantEEBus      string
+		wantReason     eebusadmin.EEBusDegradedReason
 	}{
 		{name: "disabled", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDisabled}, wantProxy: "DISABLED", wantEEBus: "DISABLED"},
-		{name: "starting with conditional proxy", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting}, wantProxy: "READY", wantEEBus: "STARTING"},
+		{name: "starting with unavailable proxy", proxyReadiness: "DEGRADED", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting}, wantProxy: "DEGRADED", wantEEBus: "STARTING"},
 		{name: "initial failure backoff", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleBackoff, DegradedReason: eebusadmin.EEBusDegradedReasonListenerUnavailable}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonListenerUnavailable},
-		{name: "recovered", proxyListen: ":19001", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning}, wantProxy: "READY", wantEEBus: "READY"},
+		{name: "recovered", proxyReadiness: "READY", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning}, wantProxy: "READY", wantEEBus: "READY"},
 		{name: "unknown failure", lifecycle: eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDegraded, DegradedReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure}, wantProxy: "DISABLED", wantEEBus: "DEGRADED", wantReason: eebusadmin.EEBusDegradedReasonUnknownStartupFailure},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := ebusgateway.DefaultConfig()
-			cfg.ProxyListenAddr = test.proxyListen
-			got := projectGatewayReadiness(cfg, test.lifecycle)
+			var proxyReadiness func() string
+			if test.proxyReadiness != "" {
+				proxyReadiness = func() string { return test.proxyReadiness }
+			}
+			got := projectGatewayReadiness(proxyReadiness, test.lifecycle)
 			if got.ProcessReadiness != "READY" || got.HTTPReadiness != "READY" || got.ProxyReadiness != test.wantProxy || got.EEBusReadiness != test.wantEEBus || got.EEBusDegradedReason != string(test.wantReason) {
 				t.Fatalf("readiness=%#v; want process/http READY proxy=%s eeBUS=%s reason=%s", got, test.wantProxy, test.wantEEBus, test.wantReason)
 			}

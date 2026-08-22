@@ -699,7 +699,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -2016,6 +2016,7 @@ func startHTTPServer(
 	watchSummaryProvider mcp.WatchSummaryProvider,
 	eebusAdminHandler http.Handler,
 	eebusLifecycle *eebusRuntimeLifecycle,
+	ebusProxyReadiness func() string,
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2241,7 +2242,7 @@ func startHTTPServer(
 			MCPPath:          cfg.MCPPath,
 			EEBusAdminPath:   "/admin/eebus/v1",
 			Readiness: func() portal.RuntimeReadiness {
-				return projectGatewayReadiness(cfg, eebusLifecycle.LifecycleSnapshot())
+				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
 			},
 			GatewayVersion:    buildInfo.ReleaseVersion,
 			BuildID:           buildInfo.BuildID,
@@ -3111,11 +3112,11 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 	return mgr, state
 }
 
-func projectGatewayReadiness(cfg ebusgateway.Config, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
+func projectGatewayReadiness(ebusProxyReadiness func() string, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
 	eebusReadiness := eebusReadinessForLifecycle(snapshot)
-	proxyReadiness := "DISABLED"
-	if cfg.ProxyListenAddr != "" {
-		proxyReadiness = "READY"
+	proxyReadiness := ebusProxyReadinessDisabled
+	if ebusProxyReadiness != nil {
+		proxyReadiness = ebusProxyReadiness()
 	}
 	return portal.RuntimeReadiness{
 		ProcessReadiness:    string(eebusReadiness.ProcessReadiness),

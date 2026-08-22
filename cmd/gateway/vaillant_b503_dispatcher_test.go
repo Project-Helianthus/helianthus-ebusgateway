@@ -62,6 +62,23 @@ type b503DispatcherMockBus struct {
 	blockUntil <-chan struct{}
 }
 
+// issue851ClassifyBarrierError blocks the first Error call. bus.Send returns
+// the value without formatting it, so reaching this barrier proves Invoke has
+// already completed its post-Send epoch check and entered error classification.
+type issue851ClassifyBarrierError struct {
+	once             sync.Once
+	classification   chan struct{}
+	continueClassify <-chan struct{}
+}
+
+func (err *issue851ClassifyBarrierError) Error() string {
+	err.once.Do(func() {
+		close(err.classification)
+		<-err.continueClassify
+	})
+	return "ebus: transport closed"
+}
+
 func newB503DispatcherMockBus() *b503DispatcherMockBus {
 	return &b503DispatcherMockBus{
 		respByPrefix: make(map[string]*protocol.Frame),
@@ -298,6 +315,67 @@ func TestM6Dispatcher_TransportDown_FiresOnTransportDisconnect(t *testing.T) {
 	}
 	if mgr.IsOwned() {
 		t.Fatalf("Manager.IsOwned() = true after transport-down; want false (OnTransportDisconnect should fire)")
+	}
+}
+
+func TestIssue851B503StaleSendErrorCannotDisconnectRecoveredIssuer(t *testing.T) {
+	disp, bus, mgr := newTestDispatcher(t)
+	runtime := &b503Runtime{manager: mgr}
+	disp.disconnectIfCurrent = runtime.disconnectIfCurrent
+	if _, err := mgr.Enable(context.Background()); err != nil {
+		t.Fatalf("old generation Enable() error = %v", err)
+	}
+
+	classification := make(chan struct{})
+	continueClassify := make(chan struct{})
+	defer func() {
+		select {
+		case <-continueClassify:
+		default:
+			close(continueClassify)
+		}
+	}()
+	bus.setErr([2]byte{0x00, 0x01}, &issue851ClassifyBarrierError{
+		classification:   classification,
+		continueClassify: continueClassify,
+	})
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, err := disp.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
+		invokeDone <- err
+	}()
+
+	select {
+	case <-classification:
+		// The request from generation 1 passed its end-epoch check. Retire it
+		// and install a new issuer before the stale send error is classified.
+	case <-time.After(time.Second):
+		t.Fatal("Invoke did not reach the post-epoch-check classification barrier")
+	}
+	runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 1})
+	runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 2})
+	recovered, err := mgr.Enable(context.Background())
+	if err != nil {
+		t.Fatalf("recovered generation Enable() error = %v", err)
+	}
+	close(continueClassify)
+
+	select {
+	case err := <-invokeDone:
+		if err == nil || !errors.Is(err, errRawFrameTransportDown) {
+			t.Fatalf("stale Invoke error = %v, want errRawFrameTransportDown", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale Invoke did not finish classification")
+	}
+	if !mgr.IsOwned() {
+		t.Fatal("generation-1 send error disconnected the recovered generation-2 issuer")
+	}
+	if got := mgr.TransportKey().TransportEpoch; got != 2 {
+		t.Fatalf("recovered transport epoch = %d, want 2", got)
+	}
+	if recovered.Transport.TransportEpoch != 2 {
+		t.Fatalf("recovered issuer epoch = %d, want 2", recovered.Transport.TransportEpoch)
 	}
 }
 

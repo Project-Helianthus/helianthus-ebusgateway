@@ -165,6 +165,15 @@ type correlationBinder interface {
 	BindCorrelation(Correlation)
 }
 
+// correlationActivator is an optional pre-admission lifecycle hook. Manager
+// invokes it under the driver state lock after a provider generation has been
+// constructed but immediately before RUNNING publishes effective capability.
+// Implementations MUST be bounded and MUST NOT call back into Manager. Health
+// reporters that may re-enter Manager belong in correlationBinder instead.
+type correlationActivator interface {
+	ActivateCorrelation(Correlation)
+}
+
 type DriverConfig struct {
 	ID            string
 	Enabled       bool
@@ -617,8 +626,11 @@ func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptCon
 		driver.needsReplace = false
 		driver.retryRemaining = driver.cfg.Retry.Budget
 		driver.activeOperation = 0
-		manager.transitionLocked(driver, ObservedRunning, Reason{Code: ReasonNone}, nil, driver.cfg.Capabilities)
 		bindCorrelation = Correlation{Generation: generation}
+		if activator, ok := driver.cfg.Runtime.(correlationActivator); ok {
+			activator.ActivateCorrelation(bindCorrelation)
+		}
+		manager.transitionLocked(driver, ObservedRunning, Reason{Code: ReasonNone}, nil, driver.cfg.Capabilities)
 		return
 	}
 	if errors.Is(err, ErrSafetyQuarantined) || driver.runtimeQuarantined() {

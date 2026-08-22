@@ -62,6 +62,19 @@ type issue851ProxyLifecycle struct {
 	fences atomic.Int32
 }
 
+type issue851BindBarrierRuntime struct {
+	*ebusDriverRuntime
+	bindOnce    sync.Once
+	bindEntered chan struct{}
+	bindRelease <-chan struct{}
+}
+
+func (runtime *issue851BindBarrierRuntime) BindCorrelation(correlation drivermanager.Correlation) {
+	runtime.bindOnce.Do(func() { close(runtime.bindEntered) })
+	<-runtime.bindRelease
+	runtime.ebusDriverRuntime.BindCorrelation(correlation)
+}
+
 type issue851OneShotPassiveRaw struct {
 	closed          atomic.Bool
 	closeCalls      atomic.Int32
@@ -1464,6 +1477,90 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *
 				t.Fatalf("constructed generations = %d, want exactly 2", constructed)
 			}
 		})
+	}
+}
+
+func TestIssue851B503ActivationPrecedesRunningAdmission(t *testing.T) {
+	raw := newIssue851BlockingRawTransport()
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		return newManagedEBusGeneration(ctx, raw, raw.Close), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	ebusRuntime := &ebusDriverRuntime{runtime: runtimeSeam}
+	bindEntered := make(chan struct{})
+	bindRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBind := func() { releaseOnce.Do(func() { close(bindRelease) }) }
+	defer releaseBind()
+	barrierRuntime := &issue851BindBarrierRuntime{
+		ebusDriverRuntime: ebusRuntime,
+		bindEntered:       bindEntered,
+		bindRelease:       bindRelease,
+	}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID:           primaryEBusDriverID,
+		Enabled:      true,
+		Runtime:      barrierRuntime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	controller := &ebusDriverController{manager: manager, runtime: ebusRuntime}
+	b503rt := &b503Runtime{manager: b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "gateway"},
+		30*time.Second,
+		b503StubRefresh,
+	)}
+	controller.SetLifecycleObserver(b503rt)
+	t.Cleanup(func() {
+		releaseBind()
+		_ = controller.Shutdown(context.Background())
+	})
+
+	startDone := make(chan error, 1)
+	go func() { startDone <- manager.Start(context.Background(), primaryEBusDriverID) }()
+	select {
+	case <-bindEntered:
+		// RUNNING is already published on the buggy path, but post-publication
+		// BindCorrelation has not yet activated the B503 epoch.
+	case <-time.After(time.Second):
+		t.Fatal("driver did not reach the post-publication BindCorrelation barrier")
+	}
+	snapshot, ok := manager.Snapshot(primaryEBusDriverID)
+	if !ok || snapshot.ObservedState != drivermanager.ObservedRunning {
+		t.Fatalf("snapshot at bind barrier = %#v, want RUNNING", snapshot)
+	}
+
+	issuer, enableErr := b503rt.manager.Enable(context.Background())
+	bus := newB503DispatcherMockBus()
+	bus.setResp([2]byte{0x00, 0x01}, []byte{0x01})
+	sourceProvider := newManagedEBusSourceProvider(controller, func() (byte, bool) { return 0x77, true })
+	dispatcher := newRawFrameDispatcherWithSourceProvider(bus, sourceProvider, nil, b503rt.manager, time.Second)
+	dispatcher.disconnectIfCurrent = b503rt.disconnectIfCurrent
+	_, invokeErr := dispatcher.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
+	requestEpoch := issuer.Transport.TransportEpoch
+	busCalls := bus.callCount()
+
+	releaseBind()
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start() did not finish after releasing BindCorrelation")
+	}
+	if enableErr != nil {
+		t.Fatalf("B503 Enable() error = %v", enableErr)
+	}
+	if invokeErr != nil {
+		t.Fatalf("B503 Invoke() error = %v", invokeErr)
+	}
+	if requestEpoch != snapshot.Generation {
+		t.Fatalf("B503 request sent %d time(s) via driver generation %d with stale issuer epoch %d", busCalls, snapshot.Generation, requestEpoch)
+	}
+	if !b503rt.manager.IsOwned() {
+		t.Fatal("post-bind activation immediately retired the issuer that was admitted during RUNNING")
 	}
 }
 

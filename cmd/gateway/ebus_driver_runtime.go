@@ -500,10 +500,24 @@ func (runtime *ebusDriverRuntime) SafetyQuarantined() bool {
 	return runtime != nil && runtime.runtime != nil && runtime.runtime.SafetyQuarantined()
 }
 
-// BindCorrelation attaches asynchronous generation health only after
-// DriverManager has published RUNNING with a stable operation-zero
-// correlation. If loss raced construction, the generation health object
-// replays it exactly once here.
+// ActivateCorrelation publishes the process-local generation lifecycle before
+// DriverManager exposes RUNNING capabilities. It is bounded and never calls
+// back into DriverManager; asynchronous health binding remains a separate
+// post-publication operation below.
+func (runtime *ebusDriverRuntime) ActivateCorrelation(correlation drivermanager.Correlation) {
+	if runtime == nil || runtime.runtime == nil || correlation.Generation == 0 {
+		return
+	}
+	if runtime.runtime.Generation() != correlation.Generation {
+		return
+	}
+	runtime.activateLifecycle(correlation)
+}
+
+// BindCorrelation attaches asynchronous generation health after DriverManager
+// has published RUNNING with a stable operation-zero correlation. If loss
+// raced construction, the generation health object replays it exactly once
+// here and may therefore re-enter DriverManager.
 func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Correlation) {
 	if runtime == nil || runtime.runtime == nil || correlation.Generation == 0 {
 		return
@@ -520,10 +534,6 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 		generation, ok := raw.(*managedEBusGeneration)
 		if ok {
 			runtime.current.Store(generation)
-			// Activation must precede asynchronous health binding: bind may
-			// synchronously replay an already-observed connection loss, whose
-			// DriverManager failure path then withdraws this exact correlation.
-			runtime.activateLifecycle(correlation)
 			if runtime.reporter != nil {
 				generation.bindFailureReporter(correlation, runtime.reporter)
 			}

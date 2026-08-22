@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
@@ -61,9 +62,53 @@ func b503StubRefresh(ctx context.Context) (b503session.TransportKey, error) {
 // on a different Manager than MCP would trivially break the single-owner
 // invariant.
 type b503Runtime struct {
-	mcpServer  *mcp.Server
-	manager    *b503session.Manager
-	dispatcher mcp.RPCDispatcher
+	lifecycleMu sync.Mutex
+	mcpServer   *mcp.Server
+	manager     *b503session.Manager
+	dispatcher  mcp.RPCDispatcher
+}
+
+// EBusDriverActivated advances the B503 transport epoch to the exact admitted
+// DriverManager generation. Duplicate or stale notifications are no-ops. This
+// callback performs no I/O and never calls back into DriverManager.
+func (runtime *b503Runtime) EBusDriverActivated(correlation drivermanager.Correlation) {
+	if runtime == nil || runtime.manager == nil || correlation.Generation == 0 {
+		return
+	}
+	runtime.lifecycleMu.Lock()
+	defer runtime.lifecycleMu.Unlock()
+	if correlation.Generation <= runtime.manager.TransportKey().TransportEpoch {
+		return
+	}
+	runtime.manager.OnEpochAdvance(context.Background(), correlation.Generation)
+}
+
+// EBusDriverWithdrawn releases only the issuer owned by the withdrawn
+// generation. OnTransportDisconnect is idempotent and deliberately does not
+// advance the transport epoch; activation of generation N+1 owns that step.
+func (runtime *b503Runtime) EBusDriverWithdrawn(correlation drivermanager.Correlation) {
+	if runtime == nil || runtime.manager == nil || correlation.Generation == 0 {
+		return
+	}
+	runtime.disconnectIfCurrent(b503session.TransportKey{
+		AdapterInstanceID: runtime.manager.TransportKey().AdapterInstanceID,
+		TransportEpoch:    correlation.Generation,
+	})
+}
+
+// disconnectIfCurrent serializes the request-side source-unavailable fallback
+// with DriverManager activation/withdrawal. An invocation that observed epoch
+// N cannot disconnect a newly enabled issuer after epoch N+1 becomes active.
+func (runtime *b503Runtime) disconnectIfCurrent(expected b503session.TransportKey) {
+	if runtime == nil || runtime.manager == nil {
+		return
+	}
+	runtime.lifecycleMu.Lock()
+	defer runtime.lifecycleMu.Unlock()
+	if runtime.manager.TransportKey() != expected {
+		return
+	}
+	runtime.manager.OnTransportDisconnect()
 }
 
 // installVaillantB503 installs the Vaillant B503 MCP tool surface and
@@ -89,6 +134,7 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 		TransportEpoch:    0,
 	}
 	mgr := b503session.New(initialTK, 30*time.Second, b503StubRefresh)
+	runtime := &b503Runtime{mcpServer: s, manager: mgr}
 
 	var disp mcp.RPCDispatcher
 	if gw != nil && gw.Bus != nil {
@@ -112,7 +158,9 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 			// concurrency is governed at the bus.Send level (the bus
 			// arbitrates per-frame serially regardless).
 			readMu := &sync.Mutex{}
-			disp = newRawFrameDispatcherWithSourceProvider(gw.Bus, sourceProvider, readMu, mgr, b503DispatcherRequestTimeout)
+			rawDispatcher := newRawFrameDispatcherWithSourceProvider(gw.Bus, sourceProvider, readMu, mgr, b503DispatcherRequestTimeout)
+			rawDispatcher.disconnectIfCurrent = runtime.disconnectIfCurrent
+			disp = rawDispatcher
 		}
 	} else {
 		disp = b503StubDispatcher{}
@@ -124,9 +172,6 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 		DefaultTarget:  defaultVaillantTarget,
 	})
 
-	return &b503Runtime{
-		mcpServer:  s,
-		manager:    mgr,
-		dispatcher: disp,
-	}
+	runtime.dispatcher = disp
+	return runtime
 }

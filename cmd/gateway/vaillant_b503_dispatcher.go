@@ -96,12 +96,13 @@ var (
 // (R1 P2 fix). Production callers pass a `*sync.Mutex`, which satisfies
 // `sync.Locker` natively — no production behaviour change.
 type rawFrameDispatcher struct {
-	bus            b503Bus
-	source         byte
-	sourceProvider func() (byte, bool)
-	readMu         sync.Locker
-	mgr            *b503session.Manager
-	requestTimeout time.Duration
+	bus                 b503Bus
+	source              byte
+	sourceProvider      func() (byte, bool)
+	readMu              sync.Locker
+	mgr                 *b503session.Manager
+	requestTimeout      time.Duration
+	disconnectIfCurrent func(b503session.TransportKey)
 }
 
 // newRawFrameDispatcher constructs a production dispatcher.
@@ -172,8 +173,23 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	if len(payload) >= 2 && payload[0] == b503PrimaryByte && payload[1] == b503SecondaryByte {
 		return nil, errRawFrameMalformedPayload
 	}
+	transportAtIssue := d.mgr.TransportKey()
 	source, admitted := d.admittedSource()
 	if !admitted || source == 0 {
+		// Source admission is intersected with DriverManager capability. A
+		// source disappearing therefore means the issuer's generation has
+		// withdrawn even when no transport error reached bus.Send. Release the
+		// owner here as an idempotent fallback; the correlated lifecycle event
+		// may already have performed the same disconnect and never advances the
+		// B503 transport epoch.
+		if d.disconnectIfCurrent != nil {
+			d.disconnectIfCurrent(transportAtIssue)
+		} else if d.mgr.TransportKey() == transportAtIssue {
+			// Direct constructor users have no lifecycle gate. Keep the legacy
+			// fail-closed behavior; production install always supplies the
+			// generation-correlated callback above.
+			d.mgr.OnTransportDisconnect()
+		}
 		return nil, fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown)
 	}
 

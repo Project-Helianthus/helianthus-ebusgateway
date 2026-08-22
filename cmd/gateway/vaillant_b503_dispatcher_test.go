@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -369,18 +370,82 @@ func TestM6Dispatcher_NilManager_ReturnsMisconfigured(t *testing.T) {
 	}
 }
 
-func TestM6Dispatcher_SourceNotAdmitted_FailsClosedBeforeBusSend(t *testing.T) {
+func TestIssue851B503SourceNotAdmittedDisconnectsOwnerWithoutAdvancingEpoch(t *testing.T) {
 	bus := newB503DispatcherMockBus()
-	mgr := b503session.New(b503session.TransportKey{}, 30*time.Second, nil)
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "gateway", TransportEpoch: 7},
+		30*time.Second,
+		nil,
+	)
+	if _, err := mgr.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable() error = %v", err)
+	}
 	disp := newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
 		return 0, false
 	}, nil, mgr, 0)
+	disp.disconnectIfCurrent = (&b503Runtime{manager: mgr}).disconnectIfCurrent
 	_, err := disp.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
 	if err == nil || !errors.Is(err, errRawFrameSourceNotAdmitted) {
 		t.Fatalf("Invoke before admission = %v; want errRawFrameSourceNotAdmitted", err)
 	}
 	if bus.callCount() != 0 {
 		t.Fatalf("bus.Send calls = %d; want 0 before source admission", bus.callCount())
+	}
+	if mgr.IsOwned() {
+		t.Fatal("source-unavailable read retained the old B503 issuer")
+	}
+	if got := mgr.TransportKey().TransportEpoch; got != 7 {
+		t.Fatalf("transport epoch after source-unavailable read = %d, want 7", got)
+	}
+	// A later lifecycle withdrawal for the same generation is intentionally
+	// idempotent: disconnect releases ownership but never manufactures an epoch.
+	mgr.OnTransportDisconnect()
+	if got := mgr.TransportKey().TransportEpoch; got != 7 {
+		t.Fatalf("transport epoch after duplicate disconnect = %d, want 7", got)
+	}
+}
+
+func TestIssue851B503StaleSourceFallbackCannotDisconnectRecoveredIssuer(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "gateway", TransportEpoch: 7},
+		30*time.Second,
+		nil,
+	)
+	if _, err := mgr.Enable(context.Background()); err != nil {
+		t.Fatalf("old generation Enable() error = %v", err)
+	}
+	runtime := &b503Runtime{manager: mgr}
+	var recovered b503session.SessionKey
+	disp := newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
+		// Invoke already captured epoch 7. Complete the exact lifecycle
+		// withdrawal/recovery before returning the stale unavailable result.
+		runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 7})
+		runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 8})
+		var err error
+		recovered, err = mgr.Enable(context.Background())
+		if err != nil {
+			t.Fatalf("recovered generation Enable() error = %v", err)
+		}
+		return 0, false
+	}, nil, mgr, 0)
+	disp.disconnectIfCurrent = runtime.disconnectIfCurrent
+
+	_, err := disp.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
+	if err == nil || !errors.Is(err, errRawFrameSourceNotAdmitted) {
+		t.Fatalf("Invoke with stale unavailable result = %v, want errRawFrameSourceNotAdmitted", err)
+	}
+	if !mgr.IsOwned() {
+		t.Fatal("epoch-7 source fallback disconnected the recovered epoch-8 issuer")
+	}
+	if got := mgr.TransportKey().TransportEpoch; got != 8 {
+		t.Fatalf("recovered transport epoch = %d, want 8", got)
+	}
+	if recovered.Transport.TransportEpoch != 8 {
+		t.Fatalf("recovered issuer epoch = %d, want 8", recovered.Transport.TransportEpoch)
+	}
+	if bus.callCount() != 0 {
+		t.Fatalf("bus.Send calls = %d, want 0 for unavailable source", bus.callCount())
 	}
 }
 

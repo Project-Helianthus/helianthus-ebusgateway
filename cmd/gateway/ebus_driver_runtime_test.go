@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
@@ -1347,6 +1348,122 @@ func TestIssue851ProxyReadinessWithdrawsAndRecoversWithAdmittedListener(t *testi
 	}
 	if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
 		t.Fatalf("recovered proxy readiness = %q, want READY", got)
+	}
+}
+
+func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		retryBudget    int
+		withdrawnState drivermanager.ObservedState
+	}{
+		{name: "backoff", retryBudget: 1, withdrawnState: drivermanager.ObservedBackoff},
+		{name: "failed", retryBudget: 0, withdrawnState: drivermanager.ObservedFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rawsMu sync.Mutex
+			var raws []*issue851BlockingRawTransport
+			runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+				raw := newIssue851BlockingRawTransport()
+				rawsMu.Lock()
+				raws = append(raws, raw)
+				rawsMu.Unlock()
+				return newManagedEBusGeneration(ctx, raw, raw.Close), nil
+			}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+			runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+				ID:           primaryEBusDriverID,
+				Enabled:      true,
+				Runtime:      runtime,
+				Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+				ClassifyError: func(error) drivermanager.Failure {
+					return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+				},
+				Retry: drivermanager.RetryPolicy{
+					Budget:       tc.retryBudget,
+					InitialDelay: time.Hour,
+					MaxDelay:     time.Hour,
+					JitterRatio:  -1,
+				},
+			}}})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			controller := &ebusDriverController{manager: manager, runtime: runtime}
+			b503rt := &b503Runtime{manager: b503session.New(
+				b503session.TransportKey{AdapterInstanceID: "gateway"},
+				30*time.Second,
+				b503StubRefresh,
+			)}
+			controller.SetLifecycleObserver(b503rt)
+			t.Cleanup(func() { _ = controller.Shutdown(context.Background()) })
+
+			if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			first := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+			if got := b503rt.manager.TransportKey().TransportEpoch; got != first.Generation {
+				t.Fatalf("B503 epoch after activation = %d, want generation %d", got, first.Generation)
+			}
+			oldIssuer, err := b503rt.manager.Enable(context.Background())
+			if err != nil {
+				t.Fatalf("B503 Enable() error = %v", err)
+			}
+			// A duplicate correlation bind must not re-run epoch activation and
+			// expire the live owner.
+			runtime.BindCorrelation(drivermanager.Correlation{Generation: first.Generation})
+			if !b503rt.manager.IsOwned() {
+				t.Fatal("duplicate activation disconnected the current B503 issuer")
+			}
+
+			if accepted := manager.ReportFailure(
+				primaryEBusDriverID,
+				drivermanager.Correlation{Generation: first.Generation},
+				drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}},
+			); !accepted {
+				t.Fatal("current-generation failure was rejected")
+			}
+			requireEBusDriverObservedState(t, manager, tc.withdrawnState, time.Second)
+			if b503rt.manager.IsOwned() {
+				t.Fatal("DriverManager withdrawal retained the old B503 issuer without an outage request")
+			}
+			if got := b503rt.manager.TransportKey().TransportEpoch; got != first.Generation {
+				t.Fatalf("B503 withdrawal manufactured epoch %d, want %d", got, first.Generation)
+			}
+			// A repeated fence for the same generation is a no-op.
+			runtime.FenceWithdrawal()
+			if got := b503rt.manager.TransportKey().TransportEpoch; got != first.Generation {
+				t.Fatalf("duplicate withdrawal manufactured epoch %d, want %d", got, first.Generation)
+			}
+
+			if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+				t.Fatalf("recovery Start() error = %v", err)
+			}
+			second := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+			if second.Generation != first.Generation+1 {
+				t.Fatalf("recovered generation = %d, want %d", second.Generation, first.Generation+1)
+			}
+			if got := b503rt.manager.TransportKey().TransportEpoch; got != second.Generation {
+				t.Fatalf("B503 recovery epoch = %d, want generation %d", got, second.Generation)
+			}
+			if err := b503rt.manager.Read(oldIssuer.Transport); !errors.Is(err, b503session.ErrNotActive) {
+				t.Fatalf("old generation issuer Read() error = %v, want ErrNotActive", err)
+			}
+			newIssuer, err := b503rt.manager.Enable(context.Background())
+			if err != nil {
+				t.Fatalf("new generation Enable() error = %v", err)
+			}
+			if newIssuer.Transport.TransportEpoch != second.Generation {
+				t.Fatalf("new issuer epoch = %d, want %d", newIssuer.Transport.TransportEpoch, second.Generation)
+			}
+
+			rawsMu.Lock()
+			constructed := len(raws)
+			rawsMu.Unlock()
+			if constructed != 2 {
+				t.Fatalf("constructed generations = %d, want exactly 2", constructed)
+			}
+		})
 	}
 }
 

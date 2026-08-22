@@ -701,7 +701,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, ebusDriver,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -2042,6 +2042,7 @@ func startHTTPServer(
 	ebusProxyReadiness func() string,
 	ebusSourceProvider func() (byte, bool),
 	buildInfo gatewayBuildInfo,
+	ebusDriver *ebusDriverController,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
@@ -2149,6 +2150,9 @@ func startHTTPServer(
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
 	b503rt := installVaillantB503(mcpServer, gateway, &cfg, ebusSourceProvider)
+	if b503rt != nil && ebusDriver != nil {
+		ebusDriver.SetLifecycleObserver(b503rt)
+	}
 	// M2b_GATEWAY_GRAPHQL (execution-plans#19): wire the GraphQL B503
 	// provider to the same Manager + Dispatcher the MCP surface uses. A
 	// single Manager across both surfaces is mandatory — GraphQL

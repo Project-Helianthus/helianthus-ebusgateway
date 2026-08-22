@@ -27,6 +27,7 @@ const (
 
 type ebusDriverController struct {
 	manager         *drivermanager.Manager
+	runtime         *ebusDriverRuntime
 	active          transport.RawTransport
 	passive         transport.RawTransport
 	classifier      activeTxnClassifier
@@ -72,6 +73,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	runtime.reporter = reporter
 	controller := &ebusDriverController{
 		manager:         manager,
+		runtime:         runtime,
 		active:          newManagedEBusStableTransport(manager, protocol, reporter),
 		running:         running,
 		proxyConfigured: cfg.ProxyListenAddr != "",
@@ -236,6 +238,16 @@ func (controller *ebusDriverController) Snapshot() drivermanager.Snapshot {
 	return snapshot
 }
 
+// SetLifecycleObserver binds the one process-owned consumer of exact eBUS
+// driver activation and withdrawal events. The observer stays private to the
+// gateway process; DriverManager remains the sole lifecycle authority.
+func (controller *ebusDriverController) SetLifecycleObserver(observer ebusDriverLifecycleObserver) {
+	if controller == nil || controller.runtime == nil {
+		return
+	}
+	controller.runtime.setLifecycleObserver(observer)
+}
+
 // newManagedEBusSourceProvider intersects the builder-selected source with
 // current DriverManager write admission. A configured or previously selected
 // source is not operational authority while the driver is STARTING, BACKOFF,
@@ -335,6 +347,72 @@ type ebusDriverRuntime struct {
 	reporter ebusFailureReporter
 	running  chan<- drivermanager.Correlation
 	current  atomic.Pointer[managedEBusGeneration]
+
+	// lifecycleMu orders activation and withdrawal for the private B503
+	// observer. Observer callbacks are bounded local FSM mutations: they must
+	// perform no I/O and must never re-enter DriverManager. Keeping the callback
+	// under this mutex prevents a late activation from overtaking withdrawal.
+	lifecycleMu            sync.Mutex
+	lifecycleObserver      ebusDriverLifecycleObserver
+	lifecycleCorrelation   drivermanager.Correlation
+	lifecycleLastWithdrawn uint64
+}
+
+// ebusDriverLifecycleObserver is intentionally private. It projects the exact
+// DriverManager generation boundary into process-local consumers without
+// creating a public drivers API or a second lifecycle authority.
+type ebusDriverLifecycleObserver interface {
+	EBusDriverActivated(drivermanager.Correlation)
+	EBusDriverWithdrawn(drivermanager.Correlation)
+}
+
+func (runtime *ebusDriverRuntime) setLifecycleObserver(observer ebusDriverLifecycleObserver) {
+	if runtime == nil || observer == nil {
+		return
+	}
+	runtime.lifecycleMu.Lock()
+	defer runtime.lifecycleMu.Unlock()
+	// The B503 runtime is process-owned and installed once. Refuse replacement
+	// so a late registration cannot replay an activation to multiple owners.
+	if runtime.lifecycleObserver != nil {
+		return
+	}
+	runtime.lifecycleObserver = observer
+	if runtime.lifecycleCorrelation.Generation != 0 {
+		observer.EBusDriverActivated(runtime.lifecycleCorrelation)
+	}
+}
+
+func (runtime *ebusDriverRuntime) activateLifecycle(correlation drivermanager.Correlation) {
+	if runtime == nil || correlation.Generation == 0 {
+		return
+	}
+	runtime.lifecycleMu.Lock()
+	defer runtime.lifecycleMu.Unlock()
+	if correlation.Generation <= runtime.lifecycleLastWithdrawn || runtime.lifecycleCorrelation == correlation {
+		return
+	}
+	runtime.lifecycleCorrelation = correlation
+	if runtime.lifecycleObserver != nil {
+		runtime.lifecycleObserver.EBusDriverActivated(correlation)
+	}
+}
+
+func (runtime *ebusDriverRuntime) withdrawLifecycle() {
+	if runtime == nil {
+		return
+	}
+	runtime.lifecycleMu.Lock()
+	defer runtime.lifecycleMu.Unlock()
+	correlation := runtime.lifecycleCorrelation
+	if correlation.Generation == 0 || correlation.Generation <= runtime.lifecycleLastWithdrawn {
+		return
+	}
+	runtime.lifecycleCorrelation = drivermanager.Correlation{}
+	runtime.lifecycleLastWithdrawn = correlation.Generation
+	if runtime.lifecycleObserver != nil {
+		runtime.lifecycleObserver.EBusDriverWithdrawn(correlation)
+	}
 }
 
 func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
@@ -370,13 +448,14 @@ func (runtime *ebusDriverRuntime) Stop(ctx context.Context) error {
 	return mapEBusLifecycleError(runtime.runtime.Stop(ctx))
 }
 
-// FenceWithdrawal implements drivermanager's private non-blocking withdrawal
-// hook. It must remain lock-free and manager-non-reentrant because the manager
-// invokes it under the same state lock that publishes STOPPING.
+// FenceWithdrawal implements drivermanager's private bounded withdrawal hook.
+// It performs only process-local, manager-non-reentrant FSM mutations because
+// DriverManager invokes it under the state lock before publishing withdrawal.
 func (runtime *ebusDriverRuntime) FenceWithdrawal() {
 	if runtime == nil {
 		return
 	}
+	runtime.withdrawLifecycle()
 	if generation := runtime.current.Load(); generation != nil {
 		generation.fenceProxy()
 	}
@@ -441,6 +520,10 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 		generation, ok := raw.(*managedEBusGeneration)
 		if ok {
 			runtime.current.Store(generation)
+			// Activation must precede asynchronous health binding: bind may
+			// synchronously replay an already-observed connection loss, whose
+			// DriverManager failure path then withdraws this exact correlation.
+			runtime.activateLifecycle(correlation)
 			if runtime.reporter != nil {
 				generation.bindFailureReporter(correlation, runtime.reporter)
 			}

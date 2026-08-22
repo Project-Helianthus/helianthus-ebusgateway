@@ -236,6 +236,41 @@ func (controller *ebusDriverController) Snapshot() drivermanager.Snapshot {
 	return snapshot
 }
 
+// newManagedEBusSourceProvider intersects the builder-selected source with
+// current DriverManager write admission. A configured or previously selected
+// source is not operational authority while the driver is STARTING, BACKOFF,
+// FAILED, withdrawn, or degraded without WRITE capability.
+func newManagedEBusSourceProvider(controller *ebusDriverController, selectedSource func() (byte, bool)) func() (byte, bool) {
+	return func() (byte, bool) {
+		if controller == nil || controller.manager == nil || selectedSource == nil {
+			return 0, false
+		}
+		source, selected := selectedSource()
+		if !selected || source == 0 {
+			return 0, false
+		}
+		_, err := controller.manager.Invoke(
+			context.Background(),
+			primaryEBusDriverID,
+			drivermanager.CapabilityWrite,
+			func(provider any) error {
+				if provider == nil {
+					return drivermanager.ErrUnavailable
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			return 0, false
+		}
+		currentSource, stillSelected := selectedSource()
+		if !stillSelected || currentSource == 0 || currentSource != source {
+			return 0, false
+		}
+		return currentSource, true
+	}
+}
+
 const (
 	ebusProxyReadinessDisabled = "DISABLED"
 	ebusProxyReadinessDegraded = "DEGRADED"
@@ -755,11 +790,14 @@ func newEBusStablePassiveTransport(invoker ebusSlotInvoker, protocol ebusgateway
 	}
 }
 
-func (slot *ebusStablePassiveTransport) withPassive(callback func(context.Context, transport.RawTransport) error) error {
+func (slot *ebusStablePassiveTransport) withPassive(parent context.Context, callback func(context.Context, transport.RawTransport) error) error {
 	if slot == nil || slot.invoker == nil {
 		return transport.ErrDriverUnavailable
 	}
-	readCtx, finishRead := slot.beginRead()
+	if parent == nil {
+		parent = context.Background()
+	}
+	readCtx, finishRead := slot.beginRead(parent)
 	defer finishRead()
 	correlation, err := slot.invoker.Invoke(readCtx, drivermanager.CapabilityRead, func(raw transport.RawTransport) error {
 		provider, ok := raw.(interface{ PassiveTransport() transport.RawTransport })
@@ -781,8 +819,8 @@ func (slot *ebusStablePassiveTransport) withPassive(callback func(context.Contex
 	return err
 }
 
-func (slot *ebusStablePassiveTransport) beginRead() (context.Context, func()) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (slot *ebusStablePassiveTransport) beginRead(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
 	slot.readMu.Lock()
 	slot.readSeq++
 	id := slot.readSeq
@@ -809,7 +847,11 @@ func shouldReportPassiveFailure(err error) bool {
 }
 
 func (slot *ebusStablePassiveTransport) ReadByte() (value byte, err error) {
-	err = slot.withPassive(func(ctx context.Context, passive transport.RawTransport) error {
+	return slot.ReadByteContext(context.Background())
+}
+
+func (slot *ebusStablePassiveTransport) ReadByteContext(parent context.Context) (value byte, err error) {
+	err = slot.withPassive(parent, func(ctx context.Context, passive transport.RawTransport) error {
 		reader, ok := passive.(interface {
 			ReadByteContext(context.Context) (byte, error)
 		})
@@ -823,7 +865,11 @@ func (slot *ebusStablePassiveTransport) ReadByte() (value byte, err error) {
 }
 
 func (slot *ebusStableEnhancedPassiveTransport) ReadEvent() (event transport.StreamEvent, err error) {
-	err = slot.withPassive(func(ctx context.Context, passive transport.RawTransport) error {
+	return slot.ReadEventContext(context.Background())
+}
+
+func (slot *ebusStableEnhancedPassiveTransport) ReadEventContext(parent context.Context) (event transport.StreamEvent, err error) {
+	err = slot.withPassive(parent, func(ctx context.Context, passive transport.RawTransport) error {
 		reader, ok := passive.(interface {
 			ReadEventContext(context.Context) (transport.StreamEvent, error)
 		})

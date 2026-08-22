@@ -549,6 +549,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	}
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
+	liveAdmittedEBusSource := newManagedEBusSourceProvider(ebusDriver, builder.AdmittedMutationSource)
 
 	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
 	// the PassiveTransactionReconstructor's classified events to insert
@@ -632,7 +633,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
-	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), builder.AdmittedMutationSource))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
@@ -699,7 +700,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, resolvedBuildInfo,
+			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -972,7 +973,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		cfg.ScanSource = overrideSource
 		cfg.ScanSourceAuto = false
 	}
-	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), builder.AdmittedMutationSource))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
 	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
 	if syncStaticAdmitted {
 		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)
@@ -2037,6 +2038,7 @@ func startHTTPServer(
 	eebusAdminHandler http.Handler,
 	eebusLifecycle *eebusRuntimeLifecycle,
 	ebusProxyReadiness func() string,
+	explorerSourceProvider func() (byte, bool),
 	buildInfo gatewayBuildInfo,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -2415,7 +2417,7 @@ func startHTTPServer(
 				return portal.ProjectionGraph{}, false
 			},
 			ExplorerBus:            gateway.Bus,
-			ExplorerSourceProvider: builder.AdmittedMutationSource,
+			ExplorerSourceProvider: explorerSourceProvider,
 			// Wire the in-process L7 catalog sub-server (M5_PORTAL).
 			// mcpServer.EbusStandardServer() returns the same instance
 			// RegisterEbusStandardTools installed inside mcp.NewServer;

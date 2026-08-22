@@ -68,6 +68,59 @@ type issue851OneShotPassiveRaw struct {
 	readsAfterClose atomic.Int32
 }
 
+type issue851LatePassiveRead struct {
+	inner         transport.RawTransport
+	readEntered   chan struct{}
+	releaseRead   chan struct{}
+	closeReturned chan struct{}
+	readOnce      sync.Once
+	closeOnce     sync.Once
+}
+
+type issue851PassiveTapConsumer struct{}
+
+func (issue851PassiveTapConsumer) OnPassiveTapEvent(ebusgateway.PassiveTapEvent) {}
+
+func (raw *issue851LatePassiveRead) ReadEvent() (transport.StreamEvent, error) {
+	return raw.ReadEventContext(context.Background())
+}
+
+func (raw *issue851LatePassiveRead) ReadEventContext(ctx context.Context) (transport.StreamEvent, error) {
+	raw.readOnce.Do(func() { close(raw.readEntered) })
+	<-raw.releaseRead
+	if reader, ok := raw.inner.(interface {
+		ReadEventContext(context.Context) (transport.StreamEvent, error)
+	}); ok {
+		return reader.ReadEventContext(ctx)
+	}
+	reader, ok := raw.inner.(transport.StreamEventReader)
+	if !ok {
+		return transport.StreamEvent{}, transport.ErrDriverUnavailable
+	}
+	return reader.ReadEvent()
+}
+
+func (raw *issue851LatePassiveRead) ReadByte() (byte, error) {
+	return raw.ReadByteContext(context.Background())
+}
+
+func (raw *issue851LatePassiveRead) ReadByteContext(ctx context.Context) (byte, error) {
+	event, err := raw.ReadEventContext(ctx)
+	return event.Byte, err
+}
+
+func (*issue851LatePassiveRead) Write([]byte) (int, error) {
+	return 0, transport.ErrDriverUnavailable
+}
+
+func (raw *issue851LatePassiveRead) Close() error {
+	err := raw.inner.Close()
+	raw.closeOnce.Do(func() { close(raw.closeReturned) })
+	return err
+}
+
+func (*issue851LatePassiveRead) BytesAreUnescaped() bool { return true }
+
 func (raw *issue851OneShotPassiveRaw) ReadByte() (byte, error) {
 	raw.reads.Add(1)
 	if raw.closed.Load() {
@@ -747,6 +800,175 @@ func TestIssue851PassiveCloseInterruptsReadWithoutOwningGeneration(t *testing.T)
 	}
 	if err := runtime.Stop(context.Background()); err != nil {
 		t.Fatalf("runtime Stop() error = %v", err)
+	}
+}
+
+func TestIssue851PassiveTapCloseFencesReadThatStartsAfterCloseSnapshot(t *testing.T) {
+	active := newIssue851BlockingRawTransport()
+	passive := newIssue851BlockingRawTransport()
+	runtime := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		return newManagedEBusGenerationParts(ctx, active, passive, nil, func() error {
+			return errors.Join(active.Close(), passive.Close())
+		}), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	if _, err := runtime.Start(context.Background()); err != nil {
+		t.Fatalf("runtime Start() error = %v", err)
+	}
+	stable := newEBusStablePassiveTransport(directEBusSlotInvoker{runtime: runtime}, ebusgateway.TransportENH, nil)
+	late := &issue851LatePassiveRead{
+		inner:         stable,
+		readEntered:   make(chan struct{}),
+		releaseRead:   make(chan struct{}),
+		closeReturned: make(chan struct{}),
+	}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.PassiveTransport = stable
+	tap, err := ebusgateway.StartPassiveBusTapWithTransport(
+		context.Background(),
+		cfg,
+		issue851PassiveTapConsumer{},
+		func(transport.RawTransport) transport.RawTransport { return late },
+	)
+	if err != nil {
+		_ = runtime.Stop(context.Background())
+		t.Fatalf("StartPassiveBusTapWithTransport() error = %v", err)
+	}
+	select {
+	case <-late.readEntered:
+	case <-time.After(time.Second):
+		_ = runtime.Stop(context.Background())
+		t.Fatal("passive tap did not pass its context check and enter delayed read")
+	}
+
+	tapCloseDone := make(chan error, 1)
+	go func() { tapCloseDone <- tap.Close() }()
+	select {
+	case <-late.closeReturned:
+	case <-time.After(time.Second):
+		_ = runtime.Stop(context.Background())
+		t.Fatal("passive tap Close did not close the stable slot")
+	}
+	// Delegate only after stable Close has taken its read snapshot and
+	// returned. A post-Close read must be rejected before it reaches the raw
+	// generation; otherwise PassiveBusTap.Close waits forever on its run loop.
+	close(late.releaseRead)
+	select {
+	case err := <-tapCloseDone:
+		if err != nil {
+			t.Fatalf("PassiveBusTap.Close() error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		_ = runtime.Stop(context.Background())
+		<-tapCloseDone
+		t.Fatal("PassiveBusTap.Close blocked on read admitted after stable Close")
+	}
+	select {
+	case <-passive.readStarted:
+		_ = runtime.Stop(context.Background())
+		t.Fatal("post-Close passive read reached retired raw generation")
+	default:
+	}
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("runtime Stop() error = %v", err)
+	}
+}
+
+func TestIssue851PassiveTapReconnectsStableSlotAfterManagedRecovery(t *testing.T) {
+	var mu sync.Mutex
+	var recoveredPassive *issue851BlockingRawTransport
+	factoryCalls := 0
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		mu.Lock()
+		factoryCalls++
+		call := factoryCalls
+		mu.Unlock()
+		active := newIssue851BlockingRawTransport()
+		var passive transport.RawTransport = newIssue851TerminalPassiveRaw(errors.New("passive provider disconnected"))
+		if call > 1 {
+			blocking := newIssue851BlockingRawTransport()
+			passive = blocking
+			mu.Lock()
+			recoveredPassive = blocking
+			mu.Unlock()
+		}
+		return newManagedEBusGenerationParts(ctx, active, passive, nil, func() error {
+			return errors.Join(active.Close(), passive.Close())
+		}), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID:           primaryEBusDriverID,
+		Enabled:      true,
+		Runtime:      runtime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+		ClassifyError: func(error) drivermanager.Failure {
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: 5 * time.Millisecond, MaxDelay: 5 * time.Millisecond},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	reporter := func(correlation drivermanager.Correlation, rawErr error) {
+		manager.ReportFailure(primaryEBusDriverID, correlation, drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}})
+	}
+	stable := newEBusStablePassiveTransport(
+		managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID},
+		ebusgateway.TransportENH,
+		reporter,
+	)
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.PassiveTransport = stable
+	cfg.PassiveReconnectInitialDelay = time.Millisecond
+	cfg.PassiveReconnectMaxDelay = time.Millisecond
+	tap, err := ebusgateway.StartPassiveBusTap(context.Background(), cfg, issue851PassiveTapConsumer{})
+	if err != nil {
+		_ = manager.Shutdown(context.Background())
+		t.Fatalf("StartPassiveBusTap() error = %v", err)
+	}
+	defer func() {
+		_ = tap.Close()
+		_ = manager.Shutdown(context.Background())
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	var recovered drivermanager.Snapshot
+	for {
+		recovered, _ = manager.Snapshot(primaryEBusDriverID)
+		if recovered.ObservedState == drivermanager.ObservedRunning && recovered.Generation == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("managed recovery snapshot = %#v, want RUNNING generation 2", recovered)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	mu.Lock()
+	passive := recoveredPassive
+	mu.Unlock()
+	if passive == nil {
+		t.Fatal("recovered passive generation was not constructed")
+	}
+	select {
+	case <-passive.readStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("PassiveBusTap did not reopen the stable slot after managed recovery")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- tap.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("PassiveBusTap.Close() error = %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("PassiveBusTap.Close() blocked after recovered read")
 	}
 }
 

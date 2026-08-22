@@ -1,14 +1,48 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 )
+
+type issue851LiveSourceExplorerBus struct {
+	mu      sync.Mutex
+	sources []byte
+}
+
+func (bus *issue851LiveSourceExplorerBus) Send(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	bus.mu.Lock()
+	bus.sources = append(bus.sources, frame.Source)
+	bus.mu.Unlock()
+	return &protocol.Frame{
+		Source:    frame.Target,
+		Target:    frame.Source,
+		Primary:   frame.Primary,
+		Secondary: frame.Secondary,
+		Data:      []byte{0x01, 0x02, 0x03, 0x04},
+	}, nil
+}
+
+func (bus *issue851LiveSourceExplorerBus) snapshotSources() []byte {
+	bus.mu.Lock()
+	defer bus.mu.Unlock()
+	return append([]byte(nil), bus.sources...)
+}
 
 func TestFormatConfiguredInitiator(t *testing.T) {
 	tests := []struct {
@@ -57,6 +91,153 @@ func TestRuntimeStatusProviderRequiresLiveGraphQLAdmission(t *testing.T) {
 	if got := provider.DaemonStatus().InitiatorAddress; got != "" {
 		t.Fatalf("withdrawn daemon initiatorAddress = %q, want unavailable", got)
 	}
+}
+
+func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing.T) {
+	startEntered := make(chan struct{})
+	startRelease := make(chan struct{})
+	var factoryCalls atomic.Int32
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		call := factoryCalls.Add(1)
+		if call == 1 {
+			close(startEntered)
+			select {
+			case <-startRelease:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if call == 2 {
+			return nil, errors.New("retry construction unavailable")
+		}
+		raw := newIssue851BlockingRawTransport()
+		return newManagedEBusGeneration(ctx, raw, raw.Close), nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{
+		RetryJitter: func(time.Duration) time.Duration { return 0 },
+		Drivers: []drivermanager.DriverConfig{{
+			ID:           primaryEBusDriverID,
+			Enabled:      true,
+			Runtime:      runtime,
+			Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+			ClassifyError: func(error) drivermanager.Failure {
+				return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+			},
+			Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: 25 * time.Millisecond, MaxDelay: 25 * time.Millisecond},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("drivermanager.New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	controller := &ebusDriverController{manager: manager}
+
+	// ScanOnStart=false still lets the static ebusd policy select a builder
+	// source synchronously. That selection is not runtime admission authority.
+	staticCfg := ebusgateway.DefaultConfig()
+	staticCfg.ScanOnStart = false
+	staticCfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+	staticCfg.ScanSource = 0
+	staticCfg.ScanSourceAuto = true
+	selected, selectedOK := admittedMutationSourceForGateway(staticCfg, ebusgateway.TransportAdmissionStaticFallback, false)
+	if !selectedOK || selected == 0 {
+		t.Fatalf("static source fixture = 0x%02X/%v", selected, selectedOK)
+	}
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetAdmittedMutationSource(selected)
+	liveSource := newManagedEBusSourceProvider(controller, builder.AdmittedMutationSource)
+	status := newRuntimeStatusProvider(nil, liveSource)
+	explorerBus := &issue851LiveSourceExplorerBus{}
+	explorer := portal.NewHandler(portal.Options{
+		GatewayVersion:         "test",
+		BuildID:                "test",
+		ExplorerBus:            explorerBus,
+		ExplorerSourceProvider: liveSource,
+	})
+
+	assertUnavailable := func(label string) {
+		t.Helper()
+		if got := status.DaemonStatus().InitiatorAddress; got != "" {
+			t.Fatalf("%s GraphQL source = %q, want unavailable", label, got)
+		}
+		before := len(explorerBus.snapshotSources())
+		recorder := httptest.NewRecorder()
+		explorer.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/b509?target=15&addr=0028", nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s Explorer status = %d, want %d", label, recorder.Code, http.StatusServiceUnavailable)
+		}
+		if after := len(explorerBus.snapshotSources()); after != before {
+			t.Fatalf("%s Explorer Bus.Send calls = %d->%d", label, before, after)
+		}
+	}
+	assertAvailable := func(label string) {
+		t.Helper()
+		if got, want := status.DaemonStatus().InitiatorAddress, formatConfiguredInitiator(selected, false); got != want {
+			t.Fatalf("%s GraphQL source = %q, want %q", label, got, want)
+		}
+		recorder := httptest.NewRecorder()
+		explorer.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/explorer/read/b509?target=15&addr=0028", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s Explorer status = %d, want %d body=%s", label, recorder.Code, http.StatusOK, recorder.Body.String())
+		}
+		sources := explorerBus.snapshotSources()
+		if len(sources) == 0 || sources[len(sources)-1] != selected {
+			t.Fatalf("%s Explorer sources = %v, want last 0x%02X", label, sources, selected)
+		}
+	}
+
+	assertUnavailable("pending static source")
+	if err := manager.StartAsync(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	select {
+	case <-startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("initial construction did not enter")
+	}
+	requireEBusDriverObservedState(t, manager, drivermanager.ObservedStarting, time.Second)
+	assertUnavailable("STARTING")
+	close(startRelease)
+	first := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+	selectionReads := 0
+	changingSelection := newManagedEBusSourceProvider(controller, func() (byte, bool) {
+		selectionReads++
+		if selectionReads == 1 {
+			return selected, true
+		}
+		return 0, false
+	})
+	if source, admitted := changingSelection(); admitted || source != 0 {
+		t.Fatalf("selection withdrawn during driver admission = 0x%02X/%v, want unavailable", source, admitted)
+	}
+	assertAvailable("RUNNING generation 1")
+
+	if accepted := manager.ReportFailure(
+		primaryEBusDriverID,
+		drivermanager.Correlation{Generation: first.Generation},
+		drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}},
+	); !accepted {
+		t.Fatal("ReportFailure() rejected current generation")
+	}
+	requireEBusDriverObservedState(t, manager, drivermanager.ObservedBackoff, time.Second)
+	assertUnavailable("BACKOFF")
+	requireEBusDriverObservedState(t, manager, drivermanager.ObservedFailed, time.Second)
+	assertUnavailable("FAILED")
+
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("recovery Start() error = %v", err)
+	}
+	second := requireEBusDriverObservedState(t, manager, drivermanager.ObservedRunning, time.Second)
+	if second.Generation != first.Generation+1 {
+		t.Fatalf("recovery generation = %d, want %d", second.Generation, first.Generation+1)
+	}
+	assertAvailable("RUNNING recovery")
+	if err := manager.Stop(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	requireEBusDriverObservedState(t, manager, drivermanager.ObservedStopped, time.Second)
+	assertUnavailable("withdrawn STOPPED")
 }
 
 func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {

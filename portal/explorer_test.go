@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -426,6 +427,106 @@ func TestExplorerSingleB509Read(t *testing.T) {
 	}
 	if int(payload["raw_len"].(float64)) != 4 {
 		t.Fatalf("raw_len = %v; want 4", payload["raw_len"])
+	}
+}
+
+func TestExplorerReadsUseLiveAdmittedSourceAndFailClosedBeforeAdmission(t *testing.T) {
+	bus := &mockExplorerBus{
+		handler: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			return &protocol.Frame{
+				Source:    frame.Target,
+				Target:    frame.Source,
+				Primary:   frame.Primary,
+				Secondary: frame.Secondary,
+				Data:      []byte{0x01, 0x02, 0x03, 0x04},
+			}, nil
+		},
+	}
+	var sourceMu sync.RWMutex
+	var source byte
+	var admitted bool
+	h := NewHandler(Options{
+		GatewayVersion: "test",
+		BuildID:        "test",
+		ExplorerBus:    bus,
+		ExplorerSourceProvider: func() (byte, bool) {
+			sourceMu.RLock()
+			defer sourceMu.RUnlock()
+			return source, admitted
+		},
+	})
+
+	read := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	preAdmission := read("/api/v1/explorer/read/b509?target=15&addr=0028")
+	if preAdmission.Code != http.StatusServiceUnavailable {
+		t.Fatalf("pre-admission status = %d, want %d", preAdmission.Code, http.StatusServiceUnavailable)
+	}
+	bus.mu.Lock()
+	preAdmissionSends := len(bus.requests)
+	bus.mu.Unlock()
+	if preAdmissionSends != 0 {
+		t.Fatalf("pre-admission Bus.Send calls = %d, want 0", preAdmissionSends)
+	}
+
+	sourceMu.Lock()
+	source = 0x77
+	admitted = true
+	sourceMu.Unlock()
+	postAdmission := read("/api/v1/explorer/read/b509?target=15&addr=0028")
+	if postAdmission.Code != http.StatusOK {
+		t.Fatalf("post-admission status = %d, want %d body=%s", postAdmission.Code, http.StatusOK, postAdmission.Body.String())
+	}
+	bus.mu.Lock()
+	requests := append([]protocol.Frame(nil), bus.requests...)
+	bus.mu.Unlock()
+	if len(requests) != 1 || requests[0].Source != 0x77 {
+		t.Fatalf("post-admission requests = %#v, want one frame from 0x77", requests)
+	}
+
+	// An explicit query source is not a second authority. It may match the
+	// admitted source, but cannot bypass it with another address.
+	notAdmitted := read("/api/v1/explorer/read/b509?target=15&source=f0&addr=0028")
+	if notAdmitted.Code != http.StatusServiceUnavailable {
+		t.Fatalf("non-admitted explicit source status = %d, want %d", notAdmitted.Code, http.StatusServiceUnavailable)
+	}
+	bus.mu.Lock()
+	finalSends := len(bus.requests)
+	bus.mu.Unlock()
+	if finalSends != 1 {
+		t.Fatalf("non-admitted explicit source added Bus.Send calls: got %d, want 1 total", finalSends)
+	}
+}
+
+func TestExplorerRetryRechecksAdmissionBeforeEveryBusSend(t *testing.T) {
+	var sourceMu sync.RWMutex
+	admitted := true
+	bus := &mockExplorerBus{
+		handler: func(context.Context, protocol.Frame) (*protocol.Frame, error) {
+			sourceMu.Lock()
+			admitted = false
+			sourceMu.Unlock()
+			return nil, fmt.Errorf("retryable bus error")
+		},
+	}
+	store := newExplorerStore(bus, 0, func() (byte, bool) {
+		sourceMu.RLock()
+		defer sourceMu.RUnlock()
+		return 0x77, admitted
+	})
+	_, err := store.sendWithRetry(context.Background(), protocol.Frame{Source: 0x77, Target: 0x15})
+	if !errors.Is(err, ErrExplorerSourceUnavailable) {
+		t.Fatalf("sendWithRetry() error = %v, want ErrExplorerSourceUnavailable", err)
+	}
+	bus.mu.Lock()
+	sends := len(bus.requests)
+	bus.mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("underlying Bus.Send calls after admission withdrawal = %d, want 1", sends)
 	}
 }
 

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
 func TestFormatConfiguredInitiator(t *testing.T) {
@@ -130,7 +132,7 @@ func TestAD24_DaemonInitiatorAddressDoesNotLeakCachedHint(t *testing.T) {
 	// the package-level coupling enforces AD24 by construction (Codex
 	// reviewers should flag any change that introduces a runtimestate
 	// import here without an explicit hint-only audit).
-	mcpProvider := newMCPRuntimeStatusProvider(cfg, nil)
+	mcpProvider := newMCPRuntimeStatusProvider(nil, func() (byte, bool) { return 0, false })
 	mcpDaemon := mcpProvider.DaemonStatus()
 	if mcpDaemon.InitiatorAddress != "auto" {
 		t.Errorf("AD24 violation: MCP daemon InitiatorAddress = %q; want \"auto\"",
@@ -165,6 +167,41 @@ func TestAD24_DaemonInitiatorAddressReflectsValidatedSourcePostSelection(t *test
 	if daemon.InitiatorAddress != "0x77" {
 		t.Errorf("post-selection daemon InitiatorAddress = %q; want \"0x77\"",
 			daemon.InitiatorAddress)
+	}
+}
+
+func TestMCPRuntimeStatusProviderReadsLiveAdmissionThroughEarlyHTTPHandler(t *testing.T) {
+	var admitted atomic.Uint32
+	provider := newMCPRuntimeStatusProvider(nil, func() (byte, bool) {
+		source := admitted.Load()
+		return byte(source), source != 0
+	})
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	server.SetStatusProvider(provider)
+
+	initiatorAddress := func() string {
+		envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+		data, ok := envelope["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("runtime status data = %T, want object", envelope["data"])
+		}
+		daemon, ok := data["daemon_status"].(map[string]any)
+		if !ok {
+			t.Fatalf("daemon_status = %T, want object", data["daemon_status"])
+		}
+		value, _ := daemon["initiator_address"].(string)
+		return value
+	}
+
+	if got := initiatorAddress(); got != "auto" {
+		t.Fatalf("pre-admission MCP initiator_address = %q, want auto", got)
+	}
+	admitted.Store(0x77)
+	if got := initiatorAddress(); got != "0x77" {
+		t.Fatalf("post-admission MCP initiator_address = %q, want 0x77", got)
 	}
 }
 

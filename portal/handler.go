@@ -58,20 +58,21 @@ var (
 )
 
 type Options struct {
-	GraphQLPath         string
-	SnapshotPath        string
-	SubscriptionPath    string
-	MCPPath             string
-	EEBusAdminPath      string
-	GatewayVersion      string
-	BuildID             string
-	ListRegistry        func() []RegistryDevice
-	ListSemantic        func() SemanticSnapshot
-	GetBusObservability func() any
-	ListProjections     func() []ProjectionDevice
-	GetProjection       func(address byte, plane string) (ProjectionGraph, bool)
-	ExplorerBus         ExplorerBus // nil disables explorer
-	ExplorerSource      byte        // default eBUS source address (0xF0 if zero)
+	GraphQLPath            string
+	SnapshotPath           string
+	SubscriptionPath       string
+	MCPPath                string
+	EEBusAdminPath         string
+	GatewayVersion         string
+	BuildID                string
+	ListRegistry           func() []RegistryDevice
+	ListSemantic           func() SemanticSnapshot
+	GetBusObservability    func() any
+	ListProjections        func() []ProjectionDevice
+	GetProjection          func(address byte, plane string) (ProjectionGraph, bool)
+	ExplorerBus            ExplorerBus // nil disables explorer
+	ExplorerSource         byte        // static fallback for standalone/test handlers
+	ExplorerSourceProvider func() (byte, bool)
 	// EbusStandardServer is the in-process L7 catalog sub-server consumed
 	// by the M5_PORTAL read-only consumer UI. Nil disables the
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
@@ -607,7 +608,7 @@ func NewHandler(opts Options) http.Handler {
 		sessions:  newSessionStore(100),
 	}
 	if opts.ExplorerBus != nil {
-		h.explorer = newExplorerStore(opts.ExplorerBus, opts.ExplorerSource)
+		h.explorer = newExplorerStore(opts.ExplorerBus, opts.ExplorerSource, opts.ExplorerSourceProvider)
 	}
 	return h
 }

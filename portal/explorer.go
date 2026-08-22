@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -20,6 +21,11 @@ import (
 type ExplorerBus interface {
 	Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error)
 }
+
+// ErrExplorerSourceUnavailable means no current-session eBUS source is
+// admitted for Explorer traffic. Callers must surface this as unavailable and
+// must not fall back to a configured or historical source address.
+var ErrExplorerSourceUnavailable = errors.New("explorer source unavailable")
 
 // Scan phases.
 const (
@@ -115,11 +121,11 @@ type explorerSubscriber struct {
 }
 
 type explorerStore struct {
-	mu      sync.Mutex
-	current *ExplorerScanState
-	bus     ExplorerBus
-	source  byte
-	cancel  context.CancelFunc
+	mu             sync.Mutex
+	current        *ExplorerScanState
+	bus            ExplorerBus
+	sourceProvider func() (byte, bool)
+	cancel         context.CancelFunc
 
 	// SSE subscribers
 	subMu    sync.Mutex
@@ -128,15 +134,53 @@ type explorerStore struct {
 	scanNext uint64
 }
 
-func newExplorerStore(bus ExplorerBus, source byte) *explorerStore {
-	if source == 0 {
-		source = 0xF0
+func newExplorerStore(bus ExplorerBus, source byte, sourceProviders ...func() (byte, bool)) *explorerStore {
+	sourceProvider := func() (byte, bool) {
+		if source == 0 {
+			return 0xF0, true
+		}
+		return source, true
+	}
+	if len(sourceProviders) > 0 && sourceProviders[0] != nil {
+		sourceProvider = sourceProviders[0]
 	}
 	return &explorerStore{
-		bus:    bus,
-		source: source,
-		subs:   make(map[uint64]*explorerSubscriber),
+		bus:            bus,
+		sourceProvider: sourceProvider,
+		subs:           make(map[uint64]*explorerSubscriber),
 	}
+}
+
+func (es *explorerStore) resolveSource(requested byte) (byte, error) {
+	if es == nil || es.sourceProvider == nil {
+		return 0, ErrExplorerSourceUnavailable
+	}
+	admitted, ok := es.sourceProvider()
+	if !ok || admitted == 0 {
+		return 0, ErrExplorerSourceUnavailable
+	}
+	if requested != 0 && requested != admitted {
+		return 0, fmt.Errorf("%w: requested source 0x%02X is not admitted", ErrExplorerSourceUnavailable, requested)
+	}
+	return admitted, nil
+}
+
+type admittedExplorerBus struct{ store *explorerStore }
+
+func (bus admittedExplorerBus) Send(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	if bus.store == nil || bus.store.bus == nil {
+		return nil, ErrExplorerSourceUnavailable
+	}
+	source, err := bus.store.resolveSource(frame.Source)
+	if err != nil {
+		return nil, err
+	}
+	frame.Source = source
+	return bus.store.bus.Send(ctx, frame)
+}
+
+func (es *explorerStore) sendWithRetry(ctx context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+	return explorerSendWithRetry(ctx, admittedExplorerBus{store: es}, frame)
 }
 
 func cloneExplorerScanState(state *ExplorerScanState) *ExplorerScanState {
@@ -281,9 +325,9 @@ func (es *explorerStore) startB524Scan(req ExplorerScanRequest) error {
 		}
 	}
 
-	source := req.Source
-	if source == 0 {
-		source = es.source
+	source, err := es.resolveSource(req.Source)
+	if err != nil {
+		return err
 	}
 	opcode := req.Opcode
 	if opcode == 0 {
@@ -322,9 +366,9 @@ func (es *explorerStore) startB509Scan(req ExplorerScanRequest) error {
 		}
 	}
 
-	source := req.Source
-	if source == 0 {
-		source = es.source
+	source, err := es.resolveSource(req.Source)
+	if err != nil {
+		return err
 	}
 	opcode := req.Opcode
 	if opcode == 0 {
@@ -392,6 +436,12 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 
 		group := byte(g)
 		val, err := es.readB524GroupDescriptor(ctx, req.Target, source, opcode, group)
+		if errors.Is(err, ErrExplorerSourceUnavailable) {
+			es.mu.Lock()
+			state.Error = ErrExplorerSourceUnavailable.Error()
+			es.mu.Unlock()
+			return
+		}
 
 		gr := ExplorerGroupResult{
 			Group:    group,
@@ -471,7 +521,13 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 					return
 				}
 				inst := byte(i)
-				present := es.probeInstance(ctx, req.Target, source, opcode, gr.Group, inst)
+				present, err := es.probeInstance(ctx, req.Target, source, opcode, gr.Group, inst)
+				if errors.Is(err, ErrExplorerSourceUnavailable) {
+					es.mu.Lock()
+					state.Error = ErrExplorerSourceUnavailable.Error()
+					es.mu.Unlock()
+					return
+				}
 				es.mu.Lock()
 				state.CompletedReads++
 				state.Progress = ExplorerProgress{
@@ -510,7 +566,13 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 			}
 
 			addr := uint16(r)
-			result := es.readB524Register(ctx, req.Target, source, opcode, tgt.group, tgt.instance, addr)
+			result, err := es.readB524Register(ctx, req.Target, source, opcode, tgt.group, tgt.instance, addr)
+			if errors.Is(err, ErrExplorerSourceUnavailable) {
+				es.mu.Lock()
+				state.Error = ErrExplorerSourceUnavailable.Error()
+				es.mu.Unlock()
+				return
+			}
 
 			es.mu.Lock()
 			state.Results = append(state.Results, result)
@@ -564,7 +626,13 @@ func (es *explorerStore) runB509Scan(ctx context.Context, req ExplorerScanReques
 		}
 
 		addr := uint16(a)
-		result := es.readB509Register(ctx, req.Target, source, addr, opcode)
+		result, err := es.readB509Register(ctx, req.Target, source, addr, opcode)
+		if errors.Is(err, ErrExplorerSourceUnavailable) {
+			es.mu.Lock()
+			state.Error = ErrExplorerSourceUnavailable.Error()
+			es.mu.Unlock()
+			return
+		}
 
 		es.mu.Lock()
 		state.Results = append(state.Results, result)
@@ -593,7 +661,7 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 		Data:      []byte{opcode, 0x00, group, 0x00, 0x00, 0x00},
 	}
 
-	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+	resp, err := es.sendWithRetry(ctx, frame)
 	if err != nil {
 		return 0, err
 	}
@@ -615,7 +683,7 @@ func (es *explorerStore) readB524GroupDescriptor(ctx context.Context, target, so
 }
 
 // probeInstance checks if instance exists by reading register 0x0000.
-func (es *explorerStore) probeInstance(ctx context.Context, target, source, opcode, group, instance byte) bool {
+func (es *explorerStore) probeInstance(ctx context.Context, target, source, opcode, group, instance byte) (bool, error) {
 	frame := protocol.Frame{
 		FrameType: protocol.FrameTypeForTarget(target),
 		Source:    source,
@@ -625,23 +693,23 @@ func (es *explorerStore) probeInstance(ctx context.Context, target, source, opco
 		Data:      []byte{opcode, 0x00, group, instance, 0x00, 0x00},
 	}
 
-	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+	resp, err := es.sendWithRetry(ctx, frame)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if len(resp.Data) == 0 {
-		return false
+		return false, nil
 	}
 	// A non-error response with data indicates the instance exists.
 	// Single byte 0x00 is an error/empty marker.
 	if len(resp.Data) == 1 && resp.Data[0] == 0x00 {
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 // readB524Register reads a single B524 register.
-func (es *explorerStore) readB524Register(ctx context.Context, target, source, opcode, group, instance byte, addr uint16) ExplorerRegisterResult {
+func (es *explorerStore) readB524Register(ctx context.Context, target, source, opcode, group, instance byte, addr uint16) (ExplorerRegisterResult, error) {
 	result := ExplorerRegisterResult{
 		Group:    group,
 		Instance: instance,
@@ -658,16 +726,16 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 		Data:      []byte{opcode, 0x00, group, instance, byte(addr), byte(addr >> 8)},
 	}
 
-	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+	resp, err := es.sendWithRetry(ctx, frame)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return result, err
 	}
 
 	payload := extractB524Payload(resp.Data, group, addr)
 	if len(payload) == 0 {
 		result.Error = "no data in response"
-		return result
+		return result, nil
 	}
 
 	result.RawHex = hex.EncodeToString(payload)
@@ -682,11 +750,11 @@ func (es *explorerStore) readB524Register(ctx context.Context, target, source, o
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // readB509Register reads a single B509 register.
-func (es *explorerStore) readB509Register(ctx context.Context, target, source byte, addr uint16, opcode byte) ExplorerRegisterResult {
+func (es *explorerStore) readB509Register(ctx context.Context, target, source byte, addr uint16, opcode byte) (ExplorerRegisterResult, error) {
 	result := ExplorerRegisterResult{
 		Addr:    addr,
 		AddrHex: fmt.Sprintf("%04x", addr),
@@ -704,15 +772,15 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 		Data:      []byte{opcode, byte(addr >> 8), byte(addr)},
 	}
 
-	resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+	resp, err := es.sendWithRetry(ctx, frame)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return result, err
 	}
 
 	if len(resp.Data) == 0 {
 		result.Error = "no data in response"
-		return result
+		return result, nil
 	}
 
 	result.RawHex = hex.EncodeToString(resp.Data)
@@ -726,7 +794,7 @@ func (es *explorerStore) readB509Register(ctx context.Context, target, source by
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // extractB524Payload extracts register data from a B524 response.
@@ -772,25 +840,27 @@ func extractB524Payload(data []byte, group byte, addr uint16) []byte {
 }
 
 // singleB524Read performs a single synchronous B524 read.
-func (es *explorerStore) singleB524Read(ctx context.Context, target, source, opcode, group, instance byte, addr uint16) ExplorerRegisterResult {
-	if source == 0 {
-		source = es.source
+func (es *explorerStore) singleB524Read(ctx context.Context, target, source, opcode, group, instance byte, addr uint16) (ExplorerRegisterResult, error) {
+	resolved, err := es.resolveSource(source)
+	if err != nil {
+		return ExplorerRegisterResult{}, err
 	}
 	if opcode == 0 {
 		opcode = 0x02
 	}
-	return es.readB524Register(ctx, target, source, opcode, group, instance, addr)
+	return es.readB524Register(ctx, target, resolved, opcode, group, instance, addr)
 }
 
 // singleB509Read performs a single synchronous B509 read.
-func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte, addr uint16, opcode byte) ExplorerRegisterResult {
-	if source == 0 {
-		source = es.source
+func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte, addr uint16, opcode byte) (ExplorerRegisterResult, error) {
+	resolved, err := es.resolveSource(source)
+	if err != nil {
+		return ExplorerRegisterResult{}, err
 	}
 	if opcode == 0 {
 		opcode = 0x0D
 	}
-	return es.readB509Register(ctx, target, source, addr, opcode)
+	return es.readB509Register(ctx, target, resolved, addr, opcode)
 }
 
 // readScanID reads the device serial via B5.09 ScanID frames (QQ=0x24..0x27).
@@ -801,10 +871,12 @@ func (es *explorerStore) singleB509Read(ctx context.Context, target, source byte
 // return 9 bytes of raw serial data with no status prefix.  We try the status-byte
 // interpretation first; if it doesn't yield a formatted serial we fall back to
 // the full-9-byte interpretation.
-func (es *explorerStore) readScanID(ctx context.Context, target, source byte) ExplorerScanIDResult {
-	if source == 0 {
-		source = es.source
+func (es *explorerStore) readScanID(ctx context.Context, target, source byte) (ExplorerScanIDResult, error) {
+	resolved, err := es.resolveSource(source)
+	if err != nil {
+		return ExplorerScanIDResult{}, err
 	}
+	source = resolved
 	result := ExplorerScanIDResult{
 		Target: target,
 		Source: source,
@@ -827,8 +899,11 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 			Secondary: 0x09,
 			Data:      []byte{qq},
 		}
-		resp, err := explorerSendWithRetry(ctx, es.bus, frame)
+		resp, err := es.sendWithRetry(ctx, frame)
 		if err != nil {
+			if errors.Is(err, ErrExplorerSourceUnavailable) {
+				return ExplorerScanIDResult{}, err
+			}
 			msg := fmt.Sprintf("chunk 0x%02x: %v", qq, err)
 			errs = append(errs, msg)
 			chunks = append(chunks, chunkResp{err: msg})
@@ -860,7 +935,7 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 		serial := formatScanIDSerial(string(trimScanIDPadding(statusRaw)))
 		if serial != "" {
 			result.Serial = serial
-			return result
+			return result, nil
 		}
 	}
 
@@ -881,7 +956,7 @@ func (es *explorerStore) readScanID(ctx context.Context, target, source byte) Ex
 	if len(errs) > 0 {
 		result.Error = strings.Join(errs, "; ")
 	}
-	return result
+	return result, nil
 }
 
 // trimScanIDPadding strips leading and trailing NUL/space/0xFF bytes.
@@ -970,6 +1045,10 @@ func (h *handler) handleExplorerStartScan(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
+		if errors.Is(err, ErrExplorerSourceUnavailable) {
+			http.Error(w, ErrExplorerSourceUnavailable.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -1098,7 +1177,11 @@ func (h *handler) handleExplorerSingleB524(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid addr", http.StatusBadRequest)
 		return
 	}
-	result := h.explorer.singleB524Read(r.Context(), target, source, opcode, group, instance, addr)
+	result, readErr := h.explorer.singleB524Read(r.Context(), target, source, opcode, group, instance, addr)
+	if errors.Is(readErr, ErrExplorerSourceUnavailable) {
+		http.Error(w, ErrExplorerSourceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1120,7 +1203,11 @@ func (h *handler) handleExplorerSingleB509(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid addr", http.StatusBadRequest)
 		return
 	}
-	result := h.explorer.singleB509Read(r.Context(), target, source, addr, opcode)
+	result, readErr := h.explorer.singleB509Read(r.Context(), target, source, addr, opcode)
+	if errors.Is(readErr, ErrExplorerSourceUnavailable) {
+		http.Error(w, ErrExplorerSourceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1136,7 +1223,11 @@ func (h *handler) handleExplorerScanID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source, _ := parseHexByte(q.Get("source"))
-	result := h.explorer.readScanID(r.Context(), target, source)
+	result, readErr := h.explorer.readScanID(r.Context(), target, source)
+	if errors.Is(readErr, ErrExplorerSourceUnavailable) {
+		http.Error(w, ErrExplorerSourceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -1206,6 +1297,9 @@ func explorerSendWithRetry(ctx context.Context, bus ExplorerBus, frame protocol.
 		cancel()
 
 		if err != nil {
+			if errors.Is(err, ErrExplorerSourceUnavailable) {
+				return nil, err
+			}
 			lastErr = err
 		} else if resp == nil {
 			lastErr = fmt.Errorf("empty response")

@@ -2093,7 +2093,7 @@ func startHTTPServer(
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(semanticProvider, builder.AdmittedMutationSource))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}
@@ -2393,8 +2393,8 @@ func startHTTPServer(
 				}
 				return portal.ProjectionGraph{}, false
 			},
-			ExplorerBus:    gateway.Bus,
-			ExplorerSource: cfg.ScanSource,
+			ExplorerBus:            gateway.Bus,
+			ExplorerSourceProvider: builder.AdmittedMutationSource,
 			// Wire the in-process L7 catalog sub-server (M5_PORTAL).
 			// mcpServer.EbusStandardServer() returns the same instance
 			// RegisterEbusStandardTools installed inside mcp.NewServer;

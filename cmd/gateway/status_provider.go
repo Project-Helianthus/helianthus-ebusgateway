@@ -46,12 +46,20 @@ func newRuntimeGatewayIdentityProvider(cfg ebusgateway.Config) graphql.GatewayId
 }
 
 type runtimeMCPStatusProvider struct {
-	daemon   mcp.ServiceStatus
-	semantic graphql.SemanticProvider
+	daemon         mcp.ServiceStatus
+	semantic       graphql.SemanticProvider
+	admittedSource func() (byte, bool)
 }
 
 func (p runtimeMCPStatusProvider) DaemonStatus() mcp.ServiceStatus {
-	return p.daemon
+	status := p.daemon
+	status.InitiatorAddress = "auto"
+	if p.admittedSource != nil {
+		if source, ok := p.admittedSource(); ok && source != 0 {
+			status.InitiatorAddress = formatConfiguredInitiator(source, false)
+		}
+	}
+	return status
 }
 
 func (p runtimeMCPStatusProvider) AdapterStatus() mcp.ServiceStatus {
@@ -64,15 +72,15 @@ func (p runtimeMCPStatusProvider) AdapterStatus() mcp.ServiceStatus {
 	}
 }
 
-func newMCPRuntimeStatusProvider(cfg ebusgateway.Config, semantic graphql.SemanticProvider) mcp.StatusProvider {
+func newMCPRuntimeStatusProvider(semantic graphql.SemanticProvider, admittedSource func() (byte, bool)) mcp.StatusProvider {
 	return runtimeMCPStatusProvider{
 		daemon: mcp.ServiceStatus{
 			Status:           "running",
 			FirmwareVersion:  "",
 			UpdatesAvailable: false,
-			InitiatorAddress: formatConfiguredInitiator(cfg.ScanSource, cfg.ScanSourceAuto),
 		},
-		semantic: semantic,
+		semantic:       semantic,
+		admittedSource: admittedSource,
 	}
 }
 

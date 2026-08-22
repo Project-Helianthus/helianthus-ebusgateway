@@ -60,6 +60,32 @@ type issue851ProxyLifecycle struct {
 	fences atomic.Int32
 }
 
+type issue851OneShotPassiveRaw struct {
+	closed          atomic.Bool
+	closeCalls      atomic.Int32
+	reads           atomic.Int32
+	readsAfterClose atomic.Int32
+}
+
+func (raw *issue851OneShotPassiveRaw) ReadByte() (byte, error) {
+	raw.reads.Add(1)
+	if raw.closed.Load() {
+		raw.readsAfterClose.Add(1)
+		return 0, ebuserrors.ErrTransportClosed
+	}
+	return 0x55, nil
+}
+
+func (*issue851OneShotPassiveRaw) Write([]byte) (int, error) {
+	return 0, transport.ErrDriverUnavailable
+}
+
+func (raw *issue851OneShotPassiveRaw) Close() error {
+	raw.closeCalls.Add(1)
+	raw.closed.Store(true)
+	return nil
+}
+
 func newIssue851ProxyLifecycle() *issue851ProxyLifecycle {
 	lifecycle := &issue851ProxyLifecycle{}
 	lifecycle.ready.Store(true)
@@ -1137,6 +1163,73 @@ func TestIssue851InjectedTransportIsNotReadmittedAfterReplacement(t *testing.T) 
 	case <-raw.closed:
 	case <-time.After(time.Second):
 		t.Fatal("one-shot injected transport was not closed")
+	}
+}
+
+func TestIssue851InjectedPassiveTransportIsNotReadmittedAfterReplacement(t *testing.T) {
+	passive := &issue851OneShotPassiveRaw{}
+	var serversMu sync.Mutex
+	var servers []net.Conn
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.PassiveTransport = passive
+	cfg.TransportConfig.Protocol = ebusgateway.TransportTCPPlain
+	cfg.TransportConfig.Network = "tcp"
+	cfg.TransportConfig.Address = "fresh-active.invalid:9999"
+	cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		client, server := net.Pipe()
+		serversMu.Lock()
+		servers = append(servers, server)
+		serversMu.Unlock()
+		return client, nil
+	}
+	defer func() {
+		serversMu.Lock()
+		defer serversMu.Unlock()
+		for _, server := range servers {
+			_ = server.Close()
+		}
+	}()
+
+	runtimeSeam := transport.NewDriverRuntime(
+		newEBusDriverFactory(cfg, ebusgateway.TransportTCPPlain, true, &ebusV8CumulativeCounter{}),
+		transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond},
+	)
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: primaryEBusDriverID, Enabled: true, Runtime: runtime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	passiveSlot := newEBusStablePassiveTransport(
+		managedEBusSlotInvoker{manager: manager, id: primaryEBusDriverID},
+		ebusgateway.TransportTCPPlain,
+		nil,
+	)
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := manager.Replace(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Replace() manager error = %v", err)
+	}
+	// Exercise the stable passive slot after replacement intent. A reused
+	// generation would call ReadByte on the already-closed injected pointer;
+	// the one-shot factory must instead leave the manager unavailable.
+	if _, err := passiveSlot.ReadByte(); err == nil {
+		t.Fatal("passive slot unexpectedly reached a replacement provider")
+	}
+	snapshot, _ := manager.Snapshot(primaryEBusDriverID)
+	if snapshot.ObservedState != drivermanager.ObservedFailed || snapshot.Reason.Code != drivermanager.ReasonProviderUnavailable || snapshot.Generation != 1 {
+		t.Fatalf("passive replacement snapshot = %#v, want generation-1 PROVIDER_UNAVAILABLE", snapshot)
+	}
+	if got := passive.closeCalls.Load(); got != 1 {
+		t.Fatalf("injected passive Close calls = %d, want exactly 1", got)
+	}
+	if got := passive.reads.Load(); got != 0 {
+		t.Fatalf("retired injected passive was accessed after replacement: reads=%d after_close=%d", got, passive.readsAfterClose.Load())
 	}
 }
 

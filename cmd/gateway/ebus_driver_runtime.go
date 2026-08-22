@@ -107,6 +107,7 @@ func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportP
 
 func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool, v8Counter *ebusV8CumulativeCounter) transport.DriverRuntimeFactory {
 	var injectedUsed atomic.Bool
+	var injectedPassiveUsed atomic.Bool
 	return func(ctx context.Context) (*transport.ManagedRawTransport, error) {
 		if protocol == ebusgateway.TransportAdapterDirect && cfg.Transport == nil {
 			return buildManagedAdapterDirectGeneration(ctx, cfg, v8Counter)
@@ -124,6 +125,12 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 		var passive transport.RawTransport
 		if needsPassive {
 			if cfg.PassiveTransport != nil {
+				// An injected passive transport is the same concrete resource
+				// across config copies. Retirement closes it, so a replacement
+				// must never publish the closed pointer as a fresh generation.
+				if !injectedPassiveUsed.CompareAndSwap(false, true) {
+					return newManagedEBusGenerationParts(ctx, active, nil, nil, activeClose), transport.ErrDriverUnavailable
+				}
 				passive = cfg.PassiveTransport
 			} else {
 				passive, err = ebusgateway.OpenEBusDriverPassiveTransport(ctx, cfg)

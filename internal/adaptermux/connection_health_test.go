@@ -463,6 +463,115 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 	})
 }
 
+func TestManagedExplicitWithdrawalFencesExistingAndNewProxyWork(t *testing.T) {
+	upstream := newManagedFenceTransport()
+	mux := New(Config{Protocol: "enh"})
+	ctx, cancel := context.WithCancel(context.Background())
+	mux.ctx, mux.cancel = ctx, cancel
+	mux.connMu.Lock()
+	mux.upstream = upstream
+	mux.connMu.Unlock()
+	mux.SetConnectionLostCallback(func() {})
+
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	id := mux.AddSession(server)
+	if id == 0 {
+		t.Fatal("pre-withdrawal AddSession returned 0")
+	}
+	if !mux.ManagedConnectionReady() {
+		t.Fatal("healthy managed mux reported not ready")
+	}
+	mux.arb.mu.Lock()
+	mux.arb.hasOwner = true
+	mux.arb.currentOwner = id
+	mux.arb.mu.Unlock()
+
+	// This is the non-blocking hook DriverManager invokes immediately before
+	// publishing STOPPING. Existing sessions remain allocated until bounded
+	// close, but none of their later bus operations may reach the old upstream.
+	mux.FenceManagedConnection()
+	if mux.ManagedConnectionReady() {
+		t.Fatal("withdrawn managed mux still reported ready")
+	}
+	if err := mux.doSend(id, 0x55); !errors.Is(err, errNotConnected) {
+		t.Fatalf("existing-session SEND error = %v, want errNotConnected", err)
+	}
+	if got := upstream.writes.Load(); got != 0 {
+		t.Fatalf("existing-session SEND reached withdrawn upstream: writes=%d", got)
+	}
+	result := <-mux.requestStartForSession(id, 0x31)
+	if !errors.Is(result.err, errNotConnected) {
+		t.Fatalf("existing-session START error = %v, want errNotConnected", result.err)
+	}
+	if got := upstream.startCalls.Load(); got != 0 {
+		t.Fatalf("existing-session START reached withdrawn upstream: starts=%d", got)
+	}
+
+	laterServer, laterClient := net.Pipe()
+	if got := mux.AddSession(laterServer); got != 0 {
+		t.Fatalf("post-withdrawal AddSession id = %d, want 0", got)
+	}
+	_ = laterClient.Close()
+	if err := mux.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestManagedConnectionReadinessDropsBeforeLossOwnerCallback(t *testing.T) {
+	upstream := newManagedFenceTransport()
+	mux := New(Config{Protocol: "enh"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux.ctx, mux.cancel = ctx, cancel
+	mux.connMu.Lock()
+	mux.upstream = upstream
+	mux.connMu.Unlock()
+	callbackEntered := make(chan struct{})
+	callbackRelease := make(chan struct{})
+	mux.SetConnectionLostCallback(func() {
+		close(callbackEntered)
+		<-callbackRelease
+	})
+	if !mux.ManagedConnectionReady() {
+		t.Fatal("healthy managed mux reported not ready")
+	}
+
+	reconnectDone := make(chan error, 1)
+	go func() {
+		delegated, err := mux.reconnect()
+		if !delegated && err == nil {
+			err = errors.New("reconnect did not delegate")
+		}
+		reconnectDone <- err
+	}()
+	select {
+	case <-callbackEntered:
+	case <-time.After(time.Second):
+		t.Fatal("loss owner callback was not reached")
+	}
+	// reconnect set the generation retirement flag before invoking its owner.
+	// A Portal read in this interval must not block behind publication and must
+	// not project the static listener-bound fact as READY.
+	readinessDone := make(chan bool, 1)
+	go func() { readinessDone <- mux.ManagedConnectionReady() }()
+	select {
+	case ready := <-readinessDone:
+		if ready {
+			t.Fatal("managed mux reported ready after loss fence but before owner callback returned")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("readiness blocked behind loss-owner callback")
+	}
+	close(callbackRelease)
+	if err := <-reconnectDone; err != nil {
+		t.Fatalf("reconnect() error = %v", err)
+	}
+	if err := mux.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestManagedConnectionLossDoesNotDeadlockCancelledStartQueueAdvance(t *testing.T) {
 	mock := &failingStartTransport{
 		p3MockTransport: newP3MockTransport(),

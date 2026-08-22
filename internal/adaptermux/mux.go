@@ -1083,7 +1083,7 @@ func (m *Mux) beginManagedConnectionUse() (bool, bool) {
 		return false, true
 	}
 	m.connectionUseMu.RLock()
-	if m.connectionLossDelegated.Load() {
+	if m.connectionLossDelegated.Load() || m.ctx == nil || m.ctx.Err() != nil {
 		m.connectionUseMu.RUnlock()
 		return false, false
 	}
@@ -1094,6 +1094,37 @@ func (m *Mux) endManagedConnectionUse(gateHeld bool) {
 	if gateHeld {
 		m.connectionUseMu.RUnlock()
 	}
+}
+
+// FenceManagedConnection is the non-blocking generation-withdrawal half of
+// managed mux retirement. It is safe to call while DriverManager holds its
+// state lock: it performs one atomic store, never calls the lifecycle owner,
+// and never acquires a mux mutex. Existing pre-fence uses retain their R lease
+// until DriverRuntime closes the upstream; all later proxy START/SEND/session
+// admission is rejected by beginManagedConnectionUse. Callback-free muxes keep
+// their legacy reconnect behavior unchanged.
+func (m *Mux) FenceManagedConnection() {
+	if m != nil && m.connectionLossManaged.Load() {
+		m.connectionLossDelegated.Store(true)
+	}
+}
+
+// ManagedConnectionReady reports whether the current managed mux generation
+// can admit proxy work. Readiness is deliberately lock-free with respect to
+// connectionUseMu: reconnect holds its write side while publishing loss, and a
+// status request must report the already-set retirement flag rather than wait
+// behind that callback. The atomic flag is the readiness linearization point.
+func (m *Mux) ManagedConnectionReady() bool {
+	if m == nil || !m.connectionLossManaged.Load() || m.closing.Load() {
+		return false
+	}
+	if m.connectionLossDelegated.Load() || m.ctx == nil || m.ctx.Err() != nil {
+		return false
+	}
+	m.connMu.Lock()
+	ready := m.upstream != nil
+	m.connMu.Unlock()
+	return ready
 }
 
 // connect dials the adapter and performs the INIT handshake.

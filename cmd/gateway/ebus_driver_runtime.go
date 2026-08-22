@@ -147,18 +147,19 @@ func newEBusDriverFactory(cfg ebusgateway.Config, protocol ebusgateway.Transport
 }
 
 func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgateway.Config, v8Counter *ebusV8CumulativeCounter) (*transport.ManagedRawTransport, error) {
-	adapterCtx, adapterCancel := context.WithCancel(context.Background())
-	stopForward := context.AfterFunc(factoryCtx, adapterCancel)
+	// DriverRuntime owns factoryCtx for the admitted generation and cancels it
+	// at the withdrawal boundary. Deriving the adapter context preserves that
+	// fence for the proxy listener and mux; close proof still belongs to the
+	// adapter-owned lifecycle worker below.
+	adapterCtx, adapterCancel := context.WithCancel(factoryCtx)
 	generationCfg := cfg
 	health := &ebusGenerationHealth{}
 	closer, classifier, err := wireAdapterDirectWithConnectionLost(adapterCtx, &generationCfg, health.connectionLost)
 	if err != nil {
-		stopForward()
 		adapterCancel()
 		return nil, err
 	}
 	if generationCfg.Transport == nil || closer == nil {
-		stopForward()
 		adapterCancel()
 		return nil, errors.New("adapter-direct provider unavailable")
 	}
@@ -171,16 +172,17 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 	managed := newManagedEBusGenerationParts(factoryCtx, generationCfg.Transport, generationCfg.PassiveTransport, classifier, closeFn)
 	if generation, ok := managed.Transport.(*managedEBusGeneration); ok {
 		generation.health = health
+		generation.adapterCancel = adapterCancel
+		if lifecycle, ok := classifier.(managedEBusProxyLifecycle); ok {
+			generation.proxyLifecycle = lifecycle
+		}
 		// The adapter-direct constructor returns successfully only after the
 		// configured proxy listener has bound. Keep that fact generation-local;
 		// readiness still has to acquire this generation through DriverManager.
 		generation.proxyListenerBound = generationCfg.ProxyListenAddr != ""
 	}
-	if !stopForward() || factoryCtx.Err() != nil {
-		if err := factoryCtx.Err(); err != nil {
-			return managed, err
-		}
-		return managed, context.Canceled
+	if err := factoryCtx.Err(); err != nil {
+		return managed, err
 	}
 	return managed, nil
 }
@@ -241,7 +243,7 @@ func (controller *ebusDriverController) ProxyReadiness() string {
 		drivermanager.CapabilityRead,
 		func(provider any) error {
 			generation, ok := provider.(*managedEBusGeneration)
-			if !ok || generation == nil || !generation.proxyListenerBound {
+			if !ok || generation == nil || !generation.proxyReady() {
 				return drivermanager.ErrUnavailable
 			}
 			return nil
@@ -281,6 +283,7 @@ type ebusDriverRuntime struct {
 	runtime  *transport.DriverRuntime
 	reporter ebusFailureReporter
 	running  chan<- drivermanager.Correlation
+	current  atomic.Pointer[managedEBusGeneration]
 }
 
 func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
@@ -288,6 +291,9 @@ func (runtime *ebusDriverRuntime) Start(ctx context.Context) (uint64, error) {
 		return 0, drivermanager.ErrUnavailable
 	}
 	generation, err := runtime.runtime.Start(ctx)
+	if err == nil {
+		runtime.captureGeneration(generation)
+	}
 	return generation, mapEBusLifecycleError(err)
 }
 
@@ -295,7 +301,12 @@ func (runtime *ebusDriverRuntime) Replace(ctx context.Context) (uint64, error) {
 	if runtime == nil || runtime.runtime == nil {
 		return 0, drivermanager.ErrUnavailable
 	}
+	runtime.FenceWithdrawal()
+	runtime.current.Store(nil)
 	generation, err := runtime.runtime.Replace(ctx)
+	if err == nil {
+		runtime.captureGeneration(generation)
+	}
 	return generation, mapEBusLifecycleError(err)
 }
 
@@ -303,7 +314,42 @@ func (runtime *ebusDriverRuntime) Stop(ctx context.Context) error {
 	if runtime == nil || runtime.runtime == nil {
 		return nil
 	}
+	runtime.FenceWithdrawal()
+	runtime.current.Store(nil)
 	return mapEBusLifecycleError(runtime.runtime.Stop(ctx))
+}
+
+// FenceWithdrawal implements drivermanager's private non-blocking withdrawal
+// hook. It must remain lock-free and manager-non-reentrant because the manager
+// invokes it under the same state lock that publishes STOPPING.
+func (runtime *ebusDriverRuntime) FenceWithdrawal() {
+	if runtime == nil {
+		return
+	}
+	if generation := runtime.current.Load(); generation != nil {
+		generation.fenceProxy()
+	}
+}
+
+func (runtime *ebusDriverRuntime) captureGeneration(generation uint64) {
+	if runtime == nil || runtime.runtime == nil || generation == 0 {
+		return
+	}
+	lease, err := runtime.runtime.Admit(context.Background())
+	if err != nil {
+		return
+	}
+	defer func() { _ = lease.Release() }()
+	if lease.Generation() != generation {
+		return
+	}
+	_ = lease.Invoke(func(raw transport.RawTransport) error {
+		managed, ok := raw.(*managedEBusGeneration)
+		if ok {
+			runtime.current.Store(managed)
+		}
+		return nil
+	})
 }
 
 func (runtime *ebusDriverRuntime) Generation() uint64 {
@@ -342,8 +388,11 @@ func (runtime *ebusDriverRuntime) BindCorrelation(correlation drivermanager.Corr
 	}
 	err = lease.Invoke(func(raw transport.RawTransport) error {
 		generation, ok := raw.(*managedEBusGeneration)
-		if ok && runtime.reporter != nil {
-			generation.bindFailureReporter(correlation, runtime.reporter)
+		if ok {
+			runtime.current.Store(generation)
+			if runtime.reporter != nil {
+				generation.bindFailureReporter(correlation, runtime.reporter)
+			}
 		}
 		return nil
 	})
@@ -954,6 +1003,11 @@ type ebusGenerationHealth struct {
 	reporter    ebusFailureReporter
 }
 
+type managedEBusProxyLifecycle interface {
+	FenceManagedConnection()
+	ManagedConnectionReady() bool
+}
+
 func (health *ebusGenerationHealth) connectionLost() {
 	health.mu.Lock()
 	health.lost = true
@@ -996,11 +1050,29 @@ type managedEBusGeneration struct {
 	closeFn            func() error
 	health             *ebusGenerationHealth
 	proxyListenerBound bool
+	proxyLifecycle     managedEBusProxyLifecycle
+	adapterCancel      context.CancelFunc
 
 	closeRequest chan struct{}
 	closed       chan struct{}
 	closing      atomic.Bool
 	closeOnce    sync.Once
+}
+
+func (generation *managedEBusGeneration) fenceProxy() {
+	if generation == nil {
+		return
+	}
+	if generation.proxyLifecycle != nil {
+		generation.proxyLifecycle.FenceManagedConnection()
+	}
+	if generation.adapterCancel != nil {
+		generation.adapterCancel()
+	}
+}
+
+func (generation *managedEBusGeneration) proxyReady() bool {
+	return generation != nil && generation.proxyListenerBound && generation.proxyLifecycle != nil && generation.proxyLifecycle.ManagedConnectionReady()
 }
 
 func (generation *managedEBusGeneration) bindFailureReporter(correlation drivermanager.Correlation, reporter ebusFailureReporter) {

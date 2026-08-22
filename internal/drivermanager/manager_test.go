@@ -60,6 +60,131 @@ type lateAdmissionRuntime struct {
 	startRelease chan struct{}
 }
 
+type lateCleanupRuntime struct {
+	mu            sync.Mutex
+	generation    uint64
+	revision      uint64
+	stopCalls     int
+	running       bool
+	startEntered  chan struct{}
+	startRelease  chan struct{}
+	lateStopError error
+	quarantined   bool
+}
+
+type withdrawalFenceRuntime struct {
+	mu              sync.Mutex
+	generation      uint64
+	revision        uint64
+	fenced          bool
+	stopSawFence    bool
+	replaceSawFence bool
+}
+
+func (runtime *withdrawalFenceRuntime) FenceWithdrawal() {
+	runtime.mu.Lock()
+	runtime.fenced = true
+	runtime.mu.Unlock()
+}
+
+func (runtime *withdrawalFenceRuntime) Start(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.generation++
+	runtime.revision++
+	runtime.fenced = false
+	return runtime.generation, nil
+}
+
+func (runtime *withdrawalFenceRuntime) Replace(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.replaceSawFence = runtime.fenced
+	runtime.generation++
+	runtime.revision++
+	runtime.fenced = false
+	return runtime.generation, nil
+}
+
+func (runtime *withdrawalFenceRuntime) Stop(context.Context) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.stopSawFence = runtime.fenced
+	runtime.revision++
+	return nil
+}
+
+func (runtime *withdrawalFenceRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *withdrawalFenceRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (*withdrawalFenceRuntime) SafetyQuarantined() bool { return false }
+
+func (runtime *lateCleanupRuntime) Start(context.Context) (uint64, error) {
+	close(runtime.startEntered)
+	<-runtime.startRelease
+	runtime.mu.Lock()
+	runtime.generation++
+	runtime.revision++
+	runtime.running = true
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	return generation, nil
+}
+
+func (runtime *lateCleanupRuntime) Replace(ctx context.Context) (uint64, error) {
+	return runtime.Start(ctx)
+}
+
+func (runtime *lateCleanupRuntime) Stop(ctx context.Context) error {
+	runtime.mu.Lock()
+	runtime.stopCalls++
+	call := runtime.stopCalls
+	runtime.revision++
+	runtime.running = false
+	err := runtime.lateStopError
+	runtime.mu.Unlock()
+	if call == 1 {
+		return nil
+	}
+	if err != nil {
+		if errors.Is(err, ErrSafetyQuarantined) {
+			runtime.mu.Lock()
+			runtime.quarantined = true
+			runtime.mu.Unlock()
+		}
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (runtime *lateCleanupRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *lateCleanupRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (runtime *lateCleanupRuntime) SafetyQuarantined() bool {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.quarantined
+}
+
 func (runtime *lateAdmissionRuntime) Start(context.Context) (uint64, error) {
 	close(runtime.startEntered)
 	<-runtime.startRelease // deliberately ignores cancellation and Stop
@@ -794,6 +919,97 @@ func TestManagerRetiresLateAdmissionAfterStopIntent(t *testing.T) {
 		t.Fatalf("late admission changed manager snapshot: %#v", after)
 	}
 	_ = manager.Shutdown(context.Background())
+}
+
+func TestManagerWithdrawalFencePrecedesStopAndReplace(t *testing.T) {
+	for _, action := range []string{"stop", "replace"} {
+		t.Run(action, func(t *testing.T) {
+			runtime := &withdrawalFenceRuntime{}
+			manager, err := New(Config{Drivers: []DriverConfig{{
+				ID: "ebus.primary", Enabled: true, Runtime: runtime, Capabilities: []Capability{CapabilityRead},
+			}}})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			switch action {
+			case "stop":
+				if err := manager.Stop(context.Background(), "ebus.primary"); err != nil {
+					t.Fatalf("Stop() error = %v", err)
+				}
+			case "replace":
+				if err := manager.Replace(context.Background(), "ebus.primary"); err != nil {
+					t.Fatalf("Replace() error = %v", err)
+				}
+			}
+			runtime.mu.Lock()
+			stopSawFence := runtime.stopSawFence
+			replaceSawFence := runtime.replaceSawFence
+			runtime.mu.Unlock()
+			if action == "stop" && !stopSawFence {
+				t.Fatal("Runtime.Stop observed an unfenced external surface")
+			}
+			if action == "replace" && !replaceSawFence {
+				t.Fatal("Runtime.Replace observed an unfenced external surface")
+			}
+			_ = manager.Shutdown(context.Background())
+		})
+	}
+}
+
+func TestManagerLateAdmissionCleanupFailureQuarantinesProcessEpoch(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		lateStopError   error
+		cleanupDeadline time.Duration
+	}{
+		{name: "deadline-dependent cleanup", cleanupDeadline: 10 * time.Millisecond},
+		{name: "runtime safety quarantine", lateStopError: ErrSafetyQuarantined, cleanupDeadline: time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &lateCleanupRuntime{
+				startEntered:  make(chan struct{}),
+				startRelease:  make(chan struct{}),
+				lateStopError: test.lateStopError,
+			}
+			manager, err := New(Config{
+				LateRetireTimeout: test.cleanupDeadline,
+				Drivers: []DriverConfig{{
+					ID: "ebus.primary", Enabled: true, Runtime: runtime, Capabilities: []Capability{CapabilityRead},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+				t.Fatalf("StartAsync() error = %v", err)
+			}
+			select {
+			case <-runtime.startEntered:
+			case <-time.After(time.Second):
+				t.Fatal("late runtime did not enter Start")
+			}
+			if err := manager.Stop(context.Background(), "ebus.primary"); err != nil {
+				t.Fatalf("Stop() error = %v", err)
+			}
+			close(runtime.startRelease)
+			failed := requireObservedState(t, manager, "ebus.primary", ObservedFailed, time.Second)
+			if failed.DesiredState != DesiredStopped || failed.Reason.Code != ReasonCloseUnconfirmed || !failed.SafetyQuarantined || len(failed.EffectiveCapabilities) != 0 {
+				t.Fatalf("late cleanup failure snapshot = %#v", failed)
+			}
+			if err := manager.Start(context.Background(), "ebus.primary"); !errors.Is(err, ErrSafetyQuarantined) {
+				t.Fatalf("Start() after late cleanup failure error = %v, want ErrSafetyQuarantined", err)
+			}
+			runtime.mu.Lock()
+			stopCalls := runtime.stopCalls
+			runtime.mu.Unlock()
+			if stopCalls != 2 {
+				t.Fatalf("Runtime.Stop calls = %d, want initial stop plus bounded late retirement", stopCalls)
+			}
+		})
+	}
 }
 
 func requireObservedState(t *testing.T, manager *Manager, id string, want ObservedState, timeout time.Duration) Snapshot {

@@ -55,6 +55,26 @@ type issue851CancelBeforeByteRaw struct {
 	value  byte
 }
 
+type issue851ProxyLifecycle struct {
+	ready  atomic.Bool
+	fences atomic.Int32
+}
+
+func newIssue851ProxyLifecycle() *issue851ProxyLifecycle {
+	lifecycle := &issue851ProxyLifecycle{}
+	lifecycle.ready.Store(true)
+	return lifecycle
+}
+
+func (lifecycle *issue851ProxyLifecycle) FenceManagedConnection() {
+	lifecycle.fences.Add(1)
+	lifecycle.ready.Store(false)
+}
+
+func (lifecycle *issue851ProxyLifecycle) ManagedConnectionReady() bool {
+	return lifecycle != nil && lifecycle.ready.Load()
+}
+
 func newIssue851AdapterServer(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -984,6 +1004,104 @@ func TestIssue851ProxyReadinessWithdrawsAndRecoversWithAdmittedListener(t *testi
 	}
 	if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
 		t.Fatalf("recovered proxy readiness = %q, want READY", got)
+	}
+}
+
+func TestIssue851ManagerWithdrawalFencesCurrentProxyGeneration(t *testing.T) {
+	for _, action := range []string{"stop", "replace"} {
+		t.Run(action, func(t *testing.T) {
+			var mu sync.Mutex
+			var lifecycles []*issue851ProxyLifecycle
+			runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+				raw := newIssue851BlockingRawTransport()
+				lifecycle := newIssue851ProxyLifecycle()
+				managed := newManagedEBusGeneration(ctx, raw, raw.Close)
+				generation := managed.Transport.(*managedEBusGeneration)
+				generation.proxyListenerBound = true
+				generation.proxyLifecycle = lifecycle
+				mu.Lock()
+				lifecycles = append(lifecycles, lifecycle)
+				mu.Unlock()
+				return managed, nil
+			}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+			runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+				ID: primaryEBusDriverID, Enabled: true, Runtime: runtime,
+				Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead, drivermanager.CapabilityWrite},
+			}}})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			controller := &ebusDriverController{manager: manager, proxyConfigured: true}
+			defer func() { _ = manager.Shutdown(context.Background()) }()
+			if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
+				t.Fatalf("pre-withdrawal readiness = %q, want READY", got)
+			}
+			mu.Lock()
+			first := lifecycles[0]
+			mu.Unlock()
+
+			switch action {
+			case "stop":
+				if err := manager.Stop(context.Background(), primaryEBusDriverID); err != nil {
+					t.Fatalf("Stop() error = %v", err)
+				}
+				if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+					t.Fatalf("post-stop readiness = %q, want DEGRADED", got)
+				}
+			case "replace":
+				if err := manager.Replace(context.Background(), primaryEBusDriverID); err != nil {
+					t.Fatalf("Replace() error = %v", err)
+				}
+				if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
+					t.Fatalf("replacement readiness = %q, want READY", got)
+				}
+			}
+			if first.ready.Load() || first.fences.Load() == 0 {
+				t.Fatalf("old proxy generation was not fenced before %s: ready=%v fences=%d", action, first.ready.Load(), first.fences.Load())
+			}
+		})
+	}
+}
+
+func TestIssue851ProxyReadinessDropsAtMuxFenceBeforeManagerFailure(t *testing.T) {
+	raw := newIssue851BlockingRawTransport()
+	lifecycle := newIssue851ProxyLifecycle()
+	runtimeSeam := transport.NewDriverRuntime(func(ctx context.Context) (*transport.ManagedRawTransport, error) {
+		managed := newManagedEBusGeneration(ctx, raw, raw.Close)
+		generation := managed.Transport.(*managedEBusGeneration)
+		generation.proxyListenerBound = true
+		generation.proxyLifecycle = lifecycle
+		return managed, nil
+	}, transport.DriverRuntimeConfig{DrainTimeout: 100 * time.Millisecond})
+	runtime := &ebusDriverRuntime{runtime: runtimeSeam}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: primaryEBusDriverID, Enabled: true, Runtime: runtime,
+		Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead},
+	}}})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	controller := &ebusDriverController{manager: manager, proxyConfigured: true}
+	if err := manager.Start(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessReady {
+		t.Fatalf("healthy readiness = %q, want READY", got)
+	}
+
+	// This is the reachable interval after adaptermux fenced physical loss but
+	// before its owner callback publishes DriverManager BACKOFF.
+	lifecycle.FenceManagedConnection()
+	if snapshot := controller.Snapshot(); snapshot.ObservedState != drivermanager.ObservedRunning {
+		t.Fatalf("manager state changed before failure callback: %#v", snapshot)
+	}
+	if got := controller.ProxyReadiness(); got != ebusProxyReadinessDegraded {
+		t.Fatalf("loss-fenced readiness = %q, want DEGRADED", got)
 	}
 }
 

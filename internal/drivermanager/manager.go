@@ -21,6 +21,8 @@ var (
 	ErrManagerClosed     = errors.New("driver manager is shutting down")
 )
 
+const defaultLateRetireTimeout = 2 * time.Second
+
 type DesiredState string
 
 const (
@@ -123,6 +125,8 @@ type RetryPolicy struct {
 }
 
 // Runtime is the protocol-neutral lifecycle boundary implemented by adapters.
+// Stop must honor ctx cancellation; Manager supplies an independent deadline
+// when retiring a provider admitted after its original operation was canceled.
 type Runtime interface {
 	Start(context.Context) (uint64, error)
 	Replace(context.Context) (uint64, error)
@@ -130,6 +134,15 @@ type Runtime interface {
 	Generation() uint64
 	Revision() uint64
 	SafetyQuarantined() bool
+}
+
+// withdrawalFencer is an optional internal hook for runtimes that expose
+// generation-local work outside Manager.Invoke (for example, an adapter proxy
+// listener). The hook runs while the manager state lock is held immediately
+// before STOPPING is published, so it MUST be non-blocking and MUST NOT call
+// back into Manager. Resource drain and close proof remain Runtime.Stop's job.
+type withdrawalFencer interface {
+	FenceWithdrawal()
 }
 
 // Admission keeps a provider handle private until its guarded callback runs.
@@ -162,9 +175,10 @@ type DriverConfig struct {
 }
 
 type Config struct {
-	Drivers     []DriverConfig
-	Now         func() time.Time
-	RetryJitter func(time.Duration) time.Duration
+	Drivers           []DriverConfig
+	Now               func() time.Time
+	RetryJitter       func(time.Duration) time.Duration
+	LateRetireTimeout time.Duration
 }
 
 type Manager struct {
@@ -172,6 +186,9 @@ type Manager struct {
 	cancel context.CancelFunc
 	now    func() time.Time
 	jitter func(time.Duration) time.Duration
+	// lateRetireTimeout bounds cleanup of a provider that completed admission
+	// after its manager operation had already been superseded.
+	lateRetireTimeout time.Duration
 
 	drivers map[string]*managedDriver
 	wg      sync.WaitGroup
@@ -220,7 +237,18 @@ func New(cfg Config) (*Manager, error) {
 		jitter = defaultRetryJitter
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := &Manager{ctx: ctx, cancel: cancel, now: now, jitter: jitter, drivers: make(map[string]*managedDriver, len(cfg.Drivers))}
+	lateRetireTimeout := cfg.LateRetireTimeout
+	if lateRetireTimeout <= 0 {
+		lateRetireTimeout = defaultLateRetireTimeout
+	}
+	manager := &Manager{
+		ctx:               ctx,
+		cancel:            cancel,
+		now:               now,
+		jitter:            jitter,
+		lateRetireTimeout: lateRetireTimeout,
+		drivers:           make(map[string]*managedDriver, len(cfg.Drivers)),
+	}
 	for _, driverCfg := range cfg.Drivers {
 		id := strings.TrimSpace(driverCfg.ID)
 		if id == "" || id != driverCfg.ID {
@@ -405,6 +433,7 @@ func (manager *Manager) Replace(ctx context.Context, id string) error {
 	driver.desired = DesiredRunning
 	driver.retryRemaining = driver.cfg.Retry.Budget
 	operation := driver.nextOperationLocked()
+	manager.fenceWithdrawalLocked(driver)
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.attempt++
 	driver.mu.Unlock()
@@ -445,6 +474,7 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) e
 		return nil
 	}
 	driver.nextOperationLocked()
+	manager.fenceWithdrawalLocked(driver)
 	manager.transitionLocked(driver, ObservedStopping, Reason{Code: ReasonStopRequested}, nil, nil)
 	driver.mu.Unlock()
 	// activeAttempt is captured under the same lock that publishes STOPPED
@@ -523,10 +553,38 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 		// A runtime that ignored cancellation may have admitted after STOPPED
 		// intent was published. Retire that stale completion immediately; it is
 		// never published as an effective manager generation.
-		_ = driver.cfg.Runtime.Stop(context.Background())
+		manager.retireSupersededAdmission(driver)
 		return
 	}
 	manager.finishAttempt(driver, control, operation, generation, err, replace)
+}
+
+func (manager *Manager) fenceWithdrawalLocked(driver *managedDriver) {
+	if driver == nil || driver.cfg.Runtime == nil {
+		return
+	}
+	if fencer, ok := driver.cfg.Runtime.(withdrawalFencer); ok {
+		fencer.FenceWithdrawal()
+	}
+}
+
+// retireSupersededAdmission handles the only path where a runtime can finish
+// admission after its manager operation was canceled. The cleanup deadline is
+// independent of the canceled caller and every unproven close is promoted to
+// process-epoch quarantine; a stale provider is never silently abandoned.
+func (manager *Manager) retireSupersededAdmission(driver *managedDriver) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.lateRetireTimeout)
+	err := driver.cfg.Runtime.Stop(cleanupCtx)
+	cancel()
+	if err == nil && !driver.runtimeQuarantined() {
+		return
+	}
+
+	driver.mu.Lock()
+	driver.quarantined = true
+	driver.activeOperation = 0
+	manager.transitionLocked(driver, ObservedFailed, Reason{Code: ReasonCloseUnconfirmed}, nil, nil)
+	driver.mu.Unlock()
 }
 
 func (manager *Manager) finishAttempt(driver *managedDriver, control *attemptControl, operation, generation uint64, err error, replace bool) {

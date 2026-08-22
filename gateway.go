@@ -2,10 +2,12 @@ package ebusgateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -358,11 +360,31 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	if scheme == "unix" && network != "unix" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing unix path", endpoint)
 	}
+	if network == "tcp" || network == "udp" {
+		if err := validateNetworkTransportHostPort(address); err != nil {
+			return "", "", "", fmt.Errorf("gateway transport endpoint %q invalid %s host:port: %w", endpoint, network, err)
+		}
+	}
 	if protocol == "" {
 		protocol = TransportENH
 	}
 
 	return protocol, network, address, nil
+}
+
+func validateNetworkTransportHostPort(address string) error {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(host) == "" {
+		return errors.New("host is empty")
+	}
+	port, err := strconv.ParseUint(strings.TrimSpace(portText), 10, 16)
+	if err != nil || port == 0 {
+		return fmt.Errorf("port %q is not in numeric range 1..65535", portText)
+	}
+	return nil
 }
 
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {

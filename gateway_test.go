@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -305,6 +306,30 @@ func TestNormalizeTransportConfigRejectsUnsupportedEndpointScheme(t *testing.T) 
 	})
 	if err == nil {
 		t.Fatalf("expected error for unsupported endpoint scheme")
+	}
+}
+
+func TestNormalizeTransportConfigRejectsNetworkURIWithoutHostPort(t *testing.T) {
+	for _, endpoint := range []string{
+		"enh://adapter.invalid",
+		"ens://adapter.invalid",
+		"tcp://adapter.invalid",
+		"tcp-plain://adapter.invalid",
+		"udp-plain://adapter.invalid",
+		"ebusd://adapter.invalid",
+		"ebusd-tcp://adapter.invalid",
+		"adapter-direct://adapter.invalid",
+		"adapter-direct-ens://adapter.invalid",
+		"tcp-plain://:9999",
+		"tcp-plain://adapter.invalid:",
+		"tcp-plain://adapter.invalid:notaport",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := normalizeTransportConfig(TransportConfig{Address: endpoint})
+			if !errors.Is(err, ebuserrors.ErrInvalidPayload) {
+				t.Fatalf("normalizeTransportConfig(%q) error = %v, want ErrInvalidPayload", endpoint, err)
+			}
+		})
 	}
 }
 

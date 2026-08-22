@@ -632,7 +632,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
-	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), builder.AdmittedMutationSource))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
@@ -972,7 +972,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		cfg.ScanSource = overrideSource
 		cfg.ScanSourceAuto = false
 	}
-	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), builder.AdmittedMutationSource))
 	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
 	if syncStaticAdmitted {
 		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)

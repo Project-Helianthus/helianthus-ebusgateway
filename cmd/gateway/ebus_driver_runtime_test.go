@@ -919,6 +919,100 @@ func TestIssue851AdapterDirectConnectionLossWithdrawsCapabilitiesAndRecoversOnce
 	}
 }
 
+func TestIssue851AdapterDirectBroadcastPassiveBridgeRetiresWithGeneration(t *testing.T) {
+	for _, action := range []string{"stop", "loss_replace"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.BroadcastListen = true
+			cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
+			cfg.TransportConfig.Network = "tcp"
+			cfg.TransportConfig.Address = newIssue851AdapterServer(t)
+			cfg.TransportConfig.DialTimeout = time.Second
+
+			controller, err := newEBusDriverController(cfg)
+			if err != nil {
+				t.Fatalf("newEBusDriverController() error = %v", err)
+			}
+			defer func() { _ = controller.Shutdown(context.Background()) }()
+			if err := controller.Start(context.Background()); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			firstSnapshot := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 2*time.Second)
+			var first *managedEBusGeneration
+			if _, err := controller.manager.Invoke(context.Background(), primaryEBusDriverID, drivermanager.CapabilityRead, func(provider any) error {
+				first, _ = provider.(*managedEBusGeneration)
+				return nil
+			}); err != nil || first == nil || first.passive == nil || first.health == nil {
+				t.Fatalf("capture broadcast generation = (%T, %v), passive=%v health=%v", first, err, first != nil && first.passive != nil, first != nil && first.health != nil)
+			}
+
+			// Mux.Start publishes one connected/reset boundary before the factory
+			// returns. Drain it, then hand one demand directly to the generation's
+			// adapter-owned pump. The send completes only after the pump accepts the
+			// request; with no further fake-adapter traffic it is then blocked in the
+			// generation-owned passive bridge.
+			reader, ok := first.passive.raw.(transport.StreamEventReader)
+			if !ok {
+				t.Fatalf("passive bridge = %T, want StreamEventReader", first.passive.raw)
+			}
+			if _, err := reader.ReadEvent(); err != nil {
+				t.Fatalf("drain passive connected boundary: %v", err)
+			}
+			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			defer cancelRequest()
+			staleResult := make(chan managedEBusReadResult, 1)
+			select {
+			case first.passive.requests <- managedEBusReadRequest{ctx: requestCtx, result: staleResult}:
+			case <-time.After(time.Second):
+				t.Fatal("passive generation pump did not accept blocking demand")
+			}
+
+			switch action {
+			case "stop":
+				stopCtx, cancelStop := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancelStop()
+				if err := controller.manager.Stop(stopCtx, primaryEBusDriverID); err != nil {
+					t.Fatalf("Stop() error = %v", err)
+				}
+				stopped := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedStopped, time.Second)
+				if stopped.SafetyQuarantined || stopped.Generation != firstSnapshot.Generation {
+					t.Fatalf("broadcast Stop snapshot = %#v", stopped)
+				}
+			case "loss_replace":
+				// Physical mux loss fences adapter work before its correlated owner
+				// callback publishes BACKOFF.
+				first.fenceProxy()
+				first.health.connectionLost()
+				requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedBackoff, time.Second)
+				if err := controller.Start(context.Background()); err != nil {
+					t.Fatalf("expedite recovery Start() error = %v", err)
+				}
+				second := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedRunning, 3*time.Second)
+				if second.SafetyQuarantined || second.Generation != firstSnapshot.Generation+1 {
+					t.Fatalf("broadcast loss recovery snapshot = %#v", second)
+				}
+				first.health.connectionLost()
+				time.Sleep(25 * time.Millisecond)
+				afterStale, _ := controller.manager.Snapshot(primaryEBusDriverID)
+				if afterStale.ObservedState != drivermanager.ObservedRunning || afterStale.Generation != second.Generation || afterStale.Revision != second.Revision {
+					t.Fatalf("stale broadcast generation changed successor: before=%#v after=%#v", second, afterStale)
+				}
+			}
+
+			select {
+			case <-first.passive.pumpDone:
+			case <-time.After(time.Second):
+				t.Fatal("retired broadcast passive pump did not close")
+			}
+			select {
+			case result := <-staleResult:
+				t.Fatalf("retired broadcast generation published stale result: %#v", result)
+			default:
+			}
+		})
+	}
+}
+
 func TestIssue851ProxyReadinessStaysDegradedOnAdapterDialFailure(t *testing.T) {
 	unused, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1318,6 +1412,37 @@ func TestIssue851InvalidTransportURIIsImmediateConfigFailure(t *testing.T) {
 	after, _ := controller.manager.Snapshot(primaryEBusDriverID)
 	if after.Revision != failed.Revision || after.Attempt != 1 || after.ObservedState != drivermanager.ObservedFailed {
 		t.Fatalf("invalid URI unexpectedly retried: before=%#v after=%#v", failed, after)
+	}
+}
+
+func TestIssue851TCPFamilyURIWithoutPortFailsConfigBeforeDialOrRetry(t *testing.T) {
+	var dials atomic.Int32
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = false
+	cfg.TransportConfig.Address = "tcp-plain://adapter.invalid"
+	cfg.TransportConfig.Dial = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("dial must not be reached")
+	}
+	controller, err := newEBusDriverController(cfg)
+	if err != nil {
+		t.Fatalf("newEBusDriverController() error = %v", err)
+	}
+	defer func() { _ = controller.Shutdown(context.Background()) }()
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	failed := requireEBusDriverObservedState(t, controller.manager, drivermanager.ObservedFailed, 250*time.Millisecond)
+	if failed.Reason.Code != drivermanager.ReasonConfigInvalid || failed.Reason.Retryable || failed.Retry != nil || failed.Generation != 0 || failed.Attempt != 1 {
+		t.Fatalf("invalid host:port snapshot = %#v", failed)
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("invalid host:port dial calls = %d, want 0", got)
+	}
+	time.Sleep(25 * time.Millisecond)
+	after, _ := controller.manager.Snapshot(primaryEBusDriverID)
+	if after.Revision != failed.Revision || after.Attempt != 1 || after.ObservedState != drivermanager.ObservedFailed {
+		t.Fatalf("invalid host:port unexpectedly retried: before=%#v after=%#v", failed, after)
 	}
 }
 

@@ -9,8 +9,9 @@ import (
 )
 
 type runtimeStatusProvider struct {
-	daemon   graphql.ServiceStatus
-	semantic graphql.SemanticProvider
+	daemon         graphql.ServiceStatus
+	semantic       graphql.SemanticProvider
+	admittedSource func() (byte, bool)
 }
 
 type runtimeGatewayIdentityProvider struct {
@@ -18,7 +19,14 @@ type runtimeGatewayIdentityProvider struct {
 }
 
 func (p runtimeStatusProvider) DaemonStatus() graphql.ServiceStatus {
-	return p.daemon
+	status := p.daemon
+	status.InitiatorAddress = ""
+	if p.admittedSource != nil {
+		if source, ok := p.admittedSource(); ok && source != 0 {
+			status.InitiatorAddress = formatConfiguredInitiator(source, false)
+		}
+	}
+	return status
 }
 
 func (p runtimeStatusProvider) AdapterStatus() graphql.ServiceStatus {
@@ -29,15 +37,15 @@ func (p runtimeGatewayIdentityProvider) GatewayIdentity() graphql.GatewayIdentit
 	return graphql.GatewayIdentity{InstanceGUID: p.instanceGUID}
 }
 
-func newRuntimeStatusProvider(cfg ebusgateway.Config, semantic graphql.SemanticProvider) graphql.StatusProvider {
+func newRuntimeStatusProvider(semantic graphql.SemanticProvider, admittedSource func() (byte, bool)) graphql.StatusProvider {
 	return runtimeStatusProvider{
 		daemon: graphql.ServiceStatus{
 			Status:           "running",
 			FirmwareVersion:  "",
 			UpdatesAvailable: false,
-			InitiatorAddress: formatConfiguredInitiator(cfg.ScanSource, cfg.ScanSourceAuto),
 		},
-		semantic: semantic,
+		semantic:       semantic,
+		admittedSource: admittedSource,
 	}
 }
 

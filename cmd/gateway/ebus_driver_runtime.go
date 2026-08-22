@@ -170,9 +170,18 @@ func buildManagedAdapterDirectGeneration(factoryCtx context.Context, cfg ebusgat
 		adapterCancel()
 		return nil, errors.New("adapter-direct provider unavailable")
 	}
+	passiveBridge := generationCfg.PassiveTransport
 	closeFn := func() error {
 		adapterCancel()
-		err := closer()
+		// The passive bridge is generation-owned but is not closed by Mux.Close:
+		// the mux only retains its delivery callback. Close it before waiting on
+		// the adapter-owned passive pump, otherwise a demanded ReadEvent can stay
+		// parked forever after both Stop and loss-driven Replace.
+		var passiveErr error
+		if passiveBridge != nil {
+			passiveErr = passiveBridge.Close()
+		}
+		err := errors.Join(passiveErr, closer())
 		v8Counter.retire(classifier)
 		return err
 	}

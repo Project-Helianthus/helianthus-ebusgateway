@@ -32,11 +32,7 @@ func TestFormatConfiguredInitiator(t *testing.T) {
 }
 
 func TestRuntimeStatusProviderIncludesInitiatorAddress(t *testing.T) {
-	cfg := ebusgateway.DefaultConfig()
-	cfg.ScanSource = 0xF7
-	cfg.ScanSourceAuto = false
-
-	provider := newRuntimeStatusProvider(cfg, nil)
+	provider := newRuntimeStatusProvider(nil, func() (byte, bool) { return 0xF7, true })
 	daemon := provider.DaemonStatus()
 	adapter := provider.AdapterStatus()
 	if daemon.InitiatorAddress != "0xF7" {
@@ -47,8 +43,23 @@ func TestRuntimeStatusProviderIncludesInitiatorAddress(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusProviderRequiresLiveGraphQLAdmission(t *testing.T) {
+	builder := graphql.NewBuilder(nil, nil)
+	provider := newRuntimeStatusProvider(nil, builder.AdmittedMutationSource)
+	if got := provider.DaemonStatus().InitiatorAddress; got != "" {
+		t.Fatalf("pre-admission daemon initiatorAddress = %q, want unavailable", got)
+	}
+	builder.SetAdmittedMutationSource(0x77)
+	if got := provider.DaemonStatus().InitiatorAddress; got != "0x77" {
+		t.Fatalf("admitted daemon initiatorAddress = %q, want 0x77", got)
+	}
+	builder.ClearAdmittedMutationSource()
+	if got := provider.DaemonStatus().InitiatorAddress; got != "" {
+		t.Fatalf("withdrawn daemon initiatorAddress = %q, want unavailable", got)
+	}
+}
+
 func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
-	cfg := ebusgateway.DefaultConfig()
 	semantic := graphql.NewLiveSemanticProvider()
 	semantic.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{
 		FirmwareVersion:    "0x31",
@@ -56,7 +67,7 @@ func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
 		VersionResponseLen: 5,
 	})
 
-	provider := newRuntimeStatusProvider(cfg, semantic)
+	provider := newRuntimeStatusProvider(semantic, nil)
 	adapter := provider.AdapterStatus()
 	if adapter.Status != "running" {
 		t.Fatalf("adapter status = %q; want running", adapter.Status)
@@ -89,9 +100,9 @@ func TestRuntimeGatewayIdentityProviderExposesConfiguredGUID(t *testing.T) {
 //
 // These tests pin the gateway-side surface contract: even when a
 // runtime-state cache holds ebus.self.last_admitted_source = X, BEFORE the
-// selector validates a candidate the surfaces (daemon InitiatorAddress,
-// gatewayIdentity, MCP runtime status) MUST report the configured/auto
-// state — never the cached X.
+// selector validates a candidate, GraphQL daemon status MUST keep the source
+// unavailable, MCP may report its documented "auto" state, and neither may
+// expose the cached X.
 // -----------------------------------------------------------------------------
 
 func TestAD24_DaemonInitiatorAddressDoesNotLeakCachedHint(t *testing.T) {
@@ -117,10 +128,10 @@ func TestAD24_DaemonInitiatorAddressDoesNotLeakCachedHint(t *testing.T) {
 	cfg.ScanSource = 0x00     // pre-selection auto
 	cfg.ScanSourceAuto = true // pre-selection auto
 
-	provider := newRuntimeStatusProvider(cfg, nil)
+	provider := newRuntimeStatusProvider(nil, nil)
 	daemon := provider.DaemonStatus()
-	if daemon.InitiatorAddress != "auto" {
-		t.Errorf("AD24 violation: daemon InitiatorAddress = %q; want \"auto\" "+
+	if daemon.InitiatorAddress != "" {
+		t.Errorf("AD24 violation: daemon InitiatorAddress = %q; want unavailable "+
 			"(cached hint 0x%02x must NOT leak into the daemon-status surface "+
 			"before SourceAddressSelector validation completes)",
 			daemon.InitiatorAddress, cachedHint)
@@ -152,17 +163,12 @@ func TestAD24_DaemonInitiatorAddressDoesNotLeakCachedHint(t *testing.T) {
 }
 
 func TestAD24_DaemonInitiatorAddressReflectsValidatedSourcePostSelection(t *testing.T) {
-	// After SourceAddressSelector validation succeeds (or operator pinned
-	// an explicit source), cfg.ScanSource is mutated to the validated
-	// byte and cfg.ScanSourceAuto is cleared. The daemon-status surface
-	// then reports the validated source — but the runtime-state cache
-	// is irrelevant to this transition: the surface reads from cfg, not
-	// from any State / Manager.
-	cfg := ebusgateway.DefaultConfig()
-	cfg.ScanSource = 0x77
-	cfg.ScanSourceAuto = false
-
-	provider := newRuntimeStatusProvider(cfg, nil)
+	// After validation succeeds (or an explicit source is admitted), GraphQL
+	// reports only the live builder authority. Runtime-state and copied config
+	// remain irrelevant to the transition.
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetAdmittedMutationSource(0x77)
+	provider := newRuntimeStatusProvider(nil, builder.AdmittedMutationSource)
 	daemon := provider.DaemonStatus()
 	if daemon.InitiatorAddress != "0x77" {
 		t.Errorf("post-selection daemon InitiatorAddress = %q; want \"0x77\"",
@@ -206,11 +212,10 @@ func TestMCPRuntimeStatusProviderReadsLiveAdmissionThroughEarlyHTTPHandler(t *te
 }
 
 func TestRuntimeStatusProviderKeepsUnknownWithoutAdapterIdentity(t *testing.T) {
-	cfg := ebusgateway.DefaultConfig()
 	semantic := graphql.NewLiveSemanticProvider()
 	semantic.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{})
 
-	provider := newRuntimeStatusProvider(cfg, semantic)
+	provider := newRuntimeStatusProvider(semantic, nil)
 	adapter := provider.AdapterStatus()
 	if adapter.Status != "unknown" {
 		t.Fatalf("adapter status = %q; want unknown", adapter.Status)

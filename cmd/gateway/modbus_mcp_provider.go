@@ -142,6 +142,23 @@ func (provider *gatewayModbusMCPProvider) CanonicalPV(_ context.Context, profile
 	return mcp.ModbusCanonicalPVResult{Snapshot: snapshot, ProducedAt: producedAt.Format(time.RFC3339Nano)}, nil
 }
 
+// TeslaHSCV1 exposes only the disabled-by-default profile state. It does not
+// open a serial endpoint, schedule acquisition, or transmit vendor frames.
+func (provider *gatewayModbusMCPProvider) TeslaHSCV1(_ context.Context) (mcp.TeslaHSCV1Result, error) {
+	profile, err := modbusreg.NewTeslaHSCProfile(modbusreg.TeslaHSCProfileConfig{
+		Node:                 0x10,
+		CompatibilityVersion: "unknown",
+	})
+	if err != nil {
+		return mcp.TeslaHSCV1Result{}, err
+	}
+	return mcp.TeslaHSCV1Result{
+		Disposition:     string(profile.Disposition()),
+		Compatibility:   "unknown",
+		OutboundAllowed: profile.OutboundAllowed(),
+	}, nil
+}
+
 func profileObservationResult(record modbusadapter.ProfileObservationRecord) (mcp.ModbusProfileObservationResult, error) {
 	spec := record.Observation.Spec()
 	encoded, err := json.Marshal(record.Observation)

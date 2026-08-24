@@ -52,5 +52,16 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("Tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.TeslaHSCV1(ctx)
+	result = failClosedTeslaHSCV1Result(result)
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
+}
+
+// failClosedTeslaHSCV1Result preserves status-only profile information while
+// preventing a provider from granting operation admission or exposing opaque
+// retention metadata through the MCP boundary.
+func failClosedTeslaHSCV1Result(result TeslaHSCV1Result) TeslaHSCV1Result {
+	result.OutboundAllowed = false
+	result.RetainedLength = 0
+	result.RetainedDigest = ""
+	return result
 }

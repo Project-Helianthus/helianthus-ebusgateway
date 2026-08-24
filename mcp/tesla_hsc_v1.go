@@ -13,8 +13,8 @@ type TeslaHSCV1Result struct {
 	Disposition     string `json:"disposition"`
 	Compatibility   string `json:"compatibility"`
 	OutboundAllowed bool   `json:"outbound_allowed"`
-	RetainedLength  int    `json:"retained_length"`
-	RetainedDigest  string `json:"retained_digest"`
+	RetainedLength  int    `json:"retained_length,omitempty"`
+	RetainedDigest  string `json:"retained_digest,omitempty"`
 }
 
 // TeslaHSCV1Provider supplies a redacted profile snapshot without transport I/O.

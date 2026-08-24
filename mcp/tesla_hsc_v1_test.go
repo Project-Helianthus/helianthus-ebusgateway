@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -56,7 +55,10 @@ func TestTeslaHSCV1StatusToolFailsClosedForProviderOutput(t *testing.T) {
 	if data["outbound_allowed"] != false {
 		t.Fatalf("outbound_allowed = %#v", data["outbound_allowed"])
 	}
-	if fmt.Sprint(data["retained_length"]) != "0" || data["retained_digest"] != "" {
+	if _, exists := data["retained_length"]; exists {
+		t.Fatalf("retained_length was exposed: %#v", data)
+	}
+	if _, exists := data["retained_digest"]; exists {
 		t.Fatalf("retention metadata = %#v", data)
 	}
 }

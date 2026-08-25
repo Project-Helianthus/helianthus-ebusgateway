@@ -73,6 +73,23 @@ Existing `ebus.v1.*` tools are stable consumer contracts:
 - Missing or unknown intent and missing safety fields fail closed. Preserve
   replay/idempotency behavior when changing invoke request normalization.
 
+### eBUS MCP to GraphQL graduation and parity
+
+For eBUS capabilities, MCP remains the discovery and stabilization surface. A
+capability may graduate to GraphQL only when:
+
+1. it exists as a core stable `ebus.v1.*` MCP capability rather than only under
+   an experimental namespace;
+2. its determinism, contract, classification, and golden-snapshot tests are
+   green; and
+3. executable MCP-to-GraphQL parity coverage for that capability is green.
+
+Parity drift between an existing eBUS MCP contract and its GraphQL exposure is a
+CI failure. Home Assistant, Portal, and other consumers adopt the capability only
+after GraphQL parity and stability are established. These are eBUS compatibility
+rules for the current gateway; they do not impose MCP-first delivery on other
+protocol families.
+
 Public eBUS and B524 contracts are documented at:
 
 - https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524.md

@@ -39,6 +39,9 @@ func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Res
 	if err != nil {
 		return TeslaHSCV1Result{}, err
 	}
+	if len(responses) == 0 {
+		return TeslaHSCV1Result{}, errors.New("Tesla HSC correlated response batch is empty")
+	}
 	for _, response := range responses {
 		if !validTeslaHSCV1CorrelatedResponse(response) {
 			return TeslaHSCV1Result{}, errors.New("Tesla HSC correlated response is invalid")

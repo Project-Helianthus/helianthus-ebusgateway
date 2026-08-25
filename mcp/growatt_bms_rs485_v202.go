@@ -50,15 +50,22 @@ type GrowattBMSRS485V202Telemetry struct {
 	CumulativeDischargeAmpHours float64 `json:"cumulative_discharge_amp_hours"`
 }
 
+type GrowattBMSRS485V202Revision struct {
+	Family             string `json:"family"`
+	FileRevision       string `json:"file_revision"`
+	HeaderVersion      string `json:"header_version"`
+	CumulativeRevision string `json:"cumulative_revision"`
+}
+
 type GrowattBMSRS485V202Result struct {
-	Profile         string                            `json:"profile"`
-	Revision        modbusreg.GrowattBMSRevisionTuple `json:"revision"`
-	Qualified       bool                              `json:"qualified"`
-	RawRedacted     bool                              `json:"raw_redacted"`
-	OutboundAllowed bool                              `json:"outbound_allowed"`
-	Identity        GrowattBMSRS485V202Identity       `json:"identity"`
-	Status          GrowattBMSRS485V202Status         `json:"status"`
-	Telemetry       GrowattBMSRS485V202Telemetry      `json:"telemetry"`
+	Profile         string                       `json:"profile"`
+	Revision        GrowattBMSRS485V202Revision  `json:"revision"`
+	Qualified       bool                         `json:"qualified"`
+	RawRedacted     bool                         `json:"raw_redacted"`
+	OutboundAllowed bool                         `json:"outbound_allowed"`
+	Identity        GrowattBMSRS485V202Identity  `json:"identity"`
+	Status          GrowattBMSRS485V202Status    `json:"status"`
+	Telemetry       GrowattBMSRS485V202Telemetry `json:"telemetry"`
 }
 
 // GrowattBMSRS485V202Provider supplies only a previously decoded typed status.
@@ -113,8 +120,13 @@ func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (
 		return GrowattBMSRS485V202Result{}, ErrGrowattBMSRS485V202NotQualified
 	}
 	return GrowattBMSRS485V202Result{
-		Profile:         GrowattBMSRS485V202Profile,
-		Revision:        status.Revision,
+		Profile: GrowattBMSRS485V202Profile,
+		Revision: GrowattBMSRS485V202Revision{
+			Family:             status.Revision.Family,
+			FileRevision:       status.Revision.FileRevision,
+			HeaderVersion:      status.Revision.HeaderVersion,
+			CumulativeRevision: status.Revision.CumulativeRevision,
+		},
 		Qualified:       true,
 		RawRedacted:     true,
 		OutboundAllowed: false,

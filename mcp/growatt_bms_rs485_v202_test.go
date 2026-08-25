@@ -32,8 +32,12 @@ func TestGrowattBMSRS485V202ToolProjectsOnlyQualifiedTypedStatus(t *testing.T) {
 	identity := msp06Map(t, d["identity"], "identity")
 	status := msp06Map(t, d["status"], "status")
 	telemetry := msp06Map(t, d["telemetry"], "telemetry")
+	revision := msp06Map(t, d["revision"], "revision")
 	if identity["mcu_software_version"] != "1.2" || identity["bms_company"] != json.Number("4") || status["operating_state"] != "charging" || status["soc_percent"] != json.Number("75") || telemetry["pack_voltage_volts"] != json.Number("52") || telemetry["pack_current_amps"] != json.Number("-1") || telemetry["cumulative_discharge_amp_hours"] != json.Number("0.6") {
 		t.Fatalf("data=%#v", d)
+	}
+	if revision["family"] != "1xSxxP ESS" || revision["file_revision"] != "Rev2.01" || revision["header_version"] != "V2.0" || revision["cumulative_revision"] != "2.02" {
+		t.Fatalf("revision=%#v", revision)
 	}
 	for _, key := range []string{"raw", "serial", "endpoint", "slice", "transport", "request", "control"} {
 		if _, ok := d[key]; ok {

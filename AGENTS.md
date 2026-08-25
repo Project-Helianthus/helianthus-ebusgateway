@@ -50,12 +50,12 @@ private network, Home Assistant instance, or physical bus.
 
 Existing `ebus.v1.*` tools are stable consumer contracts:
 
-- Preserve the top-level `meta`, `data`, and `error` envelope. `meta` retains
-  `contract`, `consistency`, `data_timestamp`, and deterministic `data_hash`
-  fields where the tool contract defines them.
+- Every tool returns the top-level `meta`, `data`, and `error` envelope. `meta`
+  contains `contract`, `consistency`, `data_timestamp`, and deterministic
+  `data_hash`; `error` is null or a structured error.
 - Keep list ordering and snapshot hashes deterministic for identical inputs and
-  state. Update and review golden snapshots whenever an intentional compatible
-  output change occurs.
+  state. Every tool schema and output has a golden snapshot. Update and review
+  those goldens whenever an intentional compatible output change occurs.
 - A breaking schema or behavior change requires a new major namespace; changing
   existing goldens does not by itself make a breaking `ebus.v1.*` change
   compatible.
@@ -90,6 +90,15 @@ after GraphQL parity and stability are established. These are eBUS compatibility
 rules for the current gateway; they do not impose MCP-first delivery on other
 protocol families.
 
+### eBUS heat-source modeling boundary
+
+- Treat `scan` as cross-device discovery, not as a class-specific heat-source
+  plane.
+- Keep `HEAT_SOURCE` and `REGULATOR` semantic domains isolated. Cross-domain
+  register access must be denied explicitly.
+- Mirror heat-source architecture changes in `helianthus-docs-ebus` and keep the
+  design reusable for equivalent VWZ-class implementations.
+
 Public eBUS and B524 contracts are documented at:
 
 - https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524.md
@@ -106,7 +115,9 @@ Public eBUS and B524 contracts are documented at:
 - A transport-gate override requires both
   `TRANSPORT_GATE_OWNER_OVERRIDE=OVERRIDE_TRANSPORT_GATE_BY_OWNER` and a
   non-empty `TRANSPORT_GATE_OWNER_REASON`. The reason must identify the exact
-  scope and residual risk; an override never implies permission for live writes.
+  scope and residual risk. An override never implies permission for live writes
+  and never creates standing or permanent merge authorization; every use remains
+  bound to its recorded scope and current merge gates.
 - Prefer deterministic fixtures, replay, mocks, and local integration tests.
 - A real Home Assistant or live-device smoke is supplemental unless the issue
   explicitly requires it; it is not a prerequisite for ordinary contribution.

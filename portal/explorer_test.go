@@ -56,6 +56,67 @@ func explorerJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return payload
 }
 
+func explorerSSEStates(t *testing.T, body string) []ExplorerScanState {
+	t.Helper()
+	var states []ExplorerScanState
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var state ExplorerScanState
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &state); err != nil {
+			t.Fatalf("unmarshal SSE state: %v; line=%s", err, line)
+		}
+		states = append(states, state)
+	}
+	return states
+}
+
+func waitExplorerPhase(t *testing.T, store *explorerStore, want string) *ExplorerScanState {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		state := store.getState()
+		if state.Phase == want {
+			return state
+		}
+		if state.Phase == ExplorerPhaseDone || state.Phase == ExplorerPhaseError {
+			t.Fatalf("scan reached %s while waiting for %s: %#v", state.Phase, want, state)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for explorer phase %s; last=%#v", want, store.getState())
+	return nil
+}
+
+type explorerFlushRecorder struct {
+	*httptest.ResponseRecorder
+	flushed chan struct{}
+}
+
+func (rec *explorerFlushRecorder) Flush() {
+	rec.ResponseRecorder.Flush()
+	select {
+	case rec.flushed <- struct{}{}:
+	default:
+	}
+}
+
+type explorerBlockingFlushRecorder struct {
+	*httptest.ResponseRecorder
+	firstFlushed chan struct{}
+	releaseFirst chan struct{}
+	once         sync.Once
+}
+
+func (rec *explorerBlockingFlushRecorder) Flush() {
+	rec.ResponseRecorder.Flush()
+	rec.once.Do(func() {
+		close(rec.firstFlushed)
+		<-rec.releaseFirst
+	})
+}
+
 // --- Tests ---
 
 func TestExplorerBootstrapCapability(t *testing.T) {
@@ -240,6 +301,41 @@ func TestExplorerResults_NegativeOffset(t *testing.T) {
 	payload := explorerJSON(t, rec)
 	if int(payload["count"].(float64)) != 0 {
 		t.Fatalf("count = %v; want 0 (no results in idle scan)", payload["count"])
+	}
+}
+
+func TestExplorerResults_MaxPositiveLimitDoesNotOverflow(t *testing.T) {
+	h := explorerHandler(&mockExplorerBus{}).(*handler)
+	h.explorer.current = &ExplorerScanState{
+		Phase: ExplorerPhaseDone,
+		Results: []ExplorerRegisterResult{
+			{Addr: 1, RawHex: "01"},
+			{Addr: 2, RawHex: "02"},
+		},
+	}
+	maxInt := int(^uint(0) >> 1)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/explorer/scans/current/results?offset=1&limit=%d", maxInt),
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	payload := explorerJSON(t, rec)
+	if got := int(payload["count"].(float64)); got != 1 {
+		t.Fatalf("count = %d; want 1", got)
+	}
+	results := payload["results"].([]any)
+	result := results[0].(map[string]any)
+	if got := int(result["addr"].(float64)); got != 2 {
+		t.Fatalf("returned addr = %d; want suffix addr 2", got)
+	}
+	if got := result["raw_hex"].(string); got != "02" {
+		t.Fatalf("returned raw_hex = %q; want 02", got)
 	}
 }
 
@@ -584,28 +680,306 @@ func TestExplorerScanAlreadyRunning(t *testing.T) {
 	h.ServeHTTP(rec, req)
 }
 
-func TestExplorerSSEStream_TerminalState(t *testing.T) {
-	h := explorerHandler(&mockExplorerBus{})
+func TestExplorerSSEStream_InitialTerminalStatesEmitAndClose(t *testing.T) {
+	for _, phase := range []string{
+		ExplorerPhaseIdle,
+		ExplorerPhaseDone,
+		ExplorerPhaseCancelled,
+		ExplorerPhaseError,
+	} {
+		t.Run(phase, func(t *testing.T) {
+			h := explorerHandler(&mockExplorerBus{}).(*handler)
+			h.explorer.current = &ExplorerScanState{
+				Phase:          phase,
+				Kind:           ExplorerKindB524,
+				Target:         0x15,
+				Source:         0xF0,
+				Opcode:         0x02,
+				StartedUTC:     "2026-08-25T00:00:00Z",
+				FinishedUTC:    "2026-08-25T00:00:01Z",
+				Error:          "fixture-error",
+				Results:        []ExplorerRegisterResult{{Addr: 0x1234, RawHex: "aabb"}},
+				Progress:       ExplorerProgress{Percent: 100, Description: "fixture-complete"},
+				TotalReads:     1,
+				CompletedReads: 1,
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				h.ServeHTTP(rec, req)
+				close(done)
+			}()
 
-	// SSE stream when idle should return immediately with idle state.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			select {
+			case <-done:
+				cancel()
+			case <-time.After(500 * time.Millisecond):
+				cancel()
+				<-done
+				t.Fatal("initial terminal SSE handler did not close before request cancellation")
+			}
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+				t.Fatalf("Content-Type = %q; want text/event-stream", got)
+			}
+			states := explorerSSEStates(t, rec.Body.String())
+			if len(states) != 1 {
+				t.Fatalf("SSE event count = %d; want 1; body=%s", len(states), rec.Body.String())
+			}
+			state := states[0]
+			if state.Phase != phase || state.Kind != ExplorerKindB524 || state.Target != 0x15 {
+				t.Fatalf("initial state = %#v; want phase=%s kind=%s target=0x15", state, phase, ExplorerKindB524)
+			}
+			if len(state.Results) != 1 || state.Results[0].Addr != 0x1234 || state.Progress.Description != "fixture-complete" {
+				t.Fatalf("initial event did not preserve full state: %#v", state)
+			}
+		})
+	}
+}
+
+func TestExplorerSSEStream_ActiveToTerminalEmitsAndCloses(t *testing.T) {
+	for _, terminal := range []string{
+		ExplorerPhaseDone,
+		ExplorerPhaseCancelled,
+		ExplorerPhaseError,
+	} {
+		t.Run(terminal, func(t *testing.T) {
+			h := explorerHandler(&mockExplorerBus{}).(*handler)
+			h.explorer.current = &ExplorerScanState{Phase: ExplorerPhaseRegisterScan}
+			rec := &explorerFlushRecorder{
+				ResponseRecorder: httptest.NewRecorder(),
+				flushed:          make(chan struct{}, 2),
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+			done := make(chan struct{})
+			go func() {
+				h.ServeHTTP(rec, req)
+				close(done)
+			}()
+
+			select {
+			case <-rec.flushed:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for initial SSE state")
+			}
+
+			h.explorer.mu.Lock()
+			h.explorer.current = &ExplorerScanState{Phase: terminal}
+			h.explorer.mu.Unlock()
+			h.explorer.notifySubscribers()
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for terminal SSE closure")
+			}
+
+			body := rec.Body.String()
+			if !strings.Contains(body, `"phase":"register_scan"`) {
+				t.Fatalf("SSE body missing active state: %s", body)
+			}
+			if !strings.Contains(body, fmt.Sprintf(`"phase":%q`, terminal)) {
+				t.Fatalf("SSE body missing terminal %s state: %s", terminal, body)
+			}
+			if got := strings.Count(body, "data: "); got != 2 {
+				t.Fatalf("SSE event count = %d; want 2; body=%s", got, body)
+			}
+		})
+	}
+}
+
+func TestExplorerSSEStream_QueuedTerminalSurvivesSuccessorScan(t *testing.T) {
+	h := explorerHandler(&mockExplorerBus{}).(*handler)
+	h.explorer.scanNext = 1
+	h.explorer.current = &ExplorerScanState{
+		scanID: 1,
+		Phase:  ExplorerPhaseRegisterScan,
+		Kind:   ExplorerKindB524,
+		Target: 0x15,
+	}
+	rec := &explorerBlockingFlushRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		firstFlushed:     make(chan struct{}),
+		releaseFirst:     make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
-	req = req.WithContext(ctx)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	select {
+	case <-rec.firstFlushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial SSE state")
 	}
-	ct := rec.Header().Get("Content-Type")
-	if ct != "text/event-stream" {
-		t.Fatalf("Content-Type = %q; want text/event-stream", ct)
+
+	terminalA := &ExplorerScanState{
+		scanID:      1,
+		Phase:       ExplorerPhaseDone,
+		Kind:        ExplorerKindB524,
+		Target:      0x15,
+		FinishedUTC: "2026-08-25T00:00:01Z",
+		Results:     []ExplorerRegisterResult{{Addr: 0x1234, RawHex: "aabb"}},
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"phase":"idle"`) {
-		t.Fatalf("SSE body missing idle state: %s", body)
+	h.explorer.mu.Lock()
+	h.explorer.current = terminalA
+	h.explorer.mu.Unlock()
+	h.explorer.notifySubscribers(terminalA)
+
+	h.explorer.mu.Lock()
+	h.explorer.scanNext = 2
+	h.explorer.current = &ExplorerScanState{
+		scanID: 2,
+		Phase:  ExplorerPhaseRegisterScan,
+		Kind:   ExplorerKindB509,
+		Target: 0x08,
 	}
+	h.explorer.mu.Unlock()
+	h.explorer.notifySubscribers()
+	close(rec.releaseFirst)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not emit the queued predecessor terminal and close")
+	}
+
+	states := explorerSSEStates(t, rec.Body.String())
+	if len(states) != 2 {
+		t.Fatalf("SSE event count = %d; want initial A plus terminal A; body=%s", len(states), rec.Body.String())
+	}
+	terminal := states[1]
+	if terminal.Phase != ExplorerPhaseDone || terminal.Kind != ExplorerKindB524 || terminal.Target != 0x15 {
+		t.Fatalf("terminal event = %#v; want predecessor A done state", terminal)
+	}
+	if len(terminal.Results) != 1 || terminal.Results[0].Addr != 0x1234 {
+		t.Fatalf("terminal event lost predecessor A results: %#v", terminal)
+	}
+}
+
+func TestExplorerNotifyWithoutSubscribersDoesNotCopyAccumulatedResults(t *testing.T) {
+	store := newExplorerStore(&mockExplorerBus{}, 0xF0)
+	store.current = &ExplorerScanState{
+		scanID:  1,
+		Phase:   ExplorerPhaseRegisterScan,
+		Results: make([]ExplorerRegisterResult, 1<<16),
+	}
+	if allocs := testing.AllocsPerRun(20, func() { store.notifySubscribers() }); allocs > 1 {
+		t.Fatalf("notify without subscribers allocated %.1f times; want at most lock overhead", allocs)
+	}
+}
+
+func TestExplorerSSEStream_RealCancellationBeforeAndDuringStream(t *testing.T) {
+	newCancellableHandler := func(t *testing.T) (*handler, <-chan struct{}) {
+		t.Helper()
+		started := make(chan struct{})
+		var once sync.Once
+		bus := &mockExplorerBus{
+			handler: func(ctx context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+				once.Do(func() { close(started) })
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		return explorerHandler(bus).(*handler), started
+	}
+	startScan := func(t *testing.T, h *handler, started <-chan struct{}) {
+		t.Helper()
+		body := `{"kind":"b509","target":21,"b509_addr_min":0,"b509_addr_max":1}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/explorer/scans", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("start status = %d; want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+		}
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for cancellable scan worker")
+		}
+	}
+	cancelScan := func(t *testing.T, h *handler) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/explorer/scans/current", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"cancelled"`) {
+			t.Fatalf("cancel response = status %d body %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	t.Run("connect_after_cancelled_terminal", func(t *testing.T) {
+		h, started := newCancellableHandler(t)
+		startScan(t, h, started)
+		cancelScan(t, h)
+		terminal := waitExplorerPhase(t, h.explorer, ExplorerPhaseCancelled)
+		if terminal.Kind != ExplorerKindB509 || terminal.Target != 0x15 {
+			t.Fatalf("cancelled terminal lost full scan state: %#v", terminal)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+		rec := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			h.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("pre-connected cancelled stream did not emit and close")
+		}
+		states := explorerSSEStates(t, rec.Body.String())
+		if len(states) != 1 || states[0].Phase != ExplorerPhaseCancelled || states[0].Kind != ExplorerKindB509 {
+			t.Fatalf("cancelled initial SSE states = %#v; want one full cancelled B509 state", states)
+		}
+	})
+
+	t.Run("cancel_already_active_stream", func(t *testing.T) {
+		h, started := newCancellableHandler(t)
+		startScan(t, h, started)
+		rec := &explorerFlushRecorder{
+			ResponseRecorder: httptest.NewRecorder(),
+			flushed:          make(chan struct{}, 2),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+		done := make(chan struct{})
+		go func() {
+			h.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-rec.flushed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for active SSE state")
+		}
+
+		cancelScan(t, h)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("active stream did not emit real cancelled terminal and close")
+		}
+		states := explorerSSEStates(t, rec.Body.String())
+		if len(states) < 2 || states[0].Phase != ExplorerPhaseRegisterScan || states[len(states)-1].Phase != ExplorerPhaseCancelled {
+			t.Fatalf("active cancellation SSE states = %#v; want active state(s) ending in cancelled", states)
+		}
+		terminal := states[len(states)-1]
+		if terminal.Kind != ExplorerKindB509 || terminal.Target != 0x15 || terminal.FinishedUTC == "" {
+			t.Fatalf("cancelled terminal lost full scan state: %#v", terminal)
+		}
+	})
 }
 
 func TestExtractB524Payload_5ByteHeader(t *testing.T) {

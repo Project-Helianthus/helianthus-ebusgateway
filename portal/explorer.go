@@ -75,6 +75,7 @@ type ExplorerRegisterResult struct {
 
 // ExplorerScanState is the current scan state returned to the frontend.
 type ExplorerScanState struct {
+	scanID         uint64
 	Phase          string                   `json:"phase"`
 	Kind           string                   `json:"kind"`
 	Target         byte                     `json:"target"`
@@ -108,6 +109,11 @@ type ExplorerScanIDResult struct {
 	Error  string   `json:"error,omitempty"`
 }
 
+type explorerSubscriber struct {
+	scanID uint64
+	ch     chan *ExplorerScanState
+}
+
 type explorerStore struct {
 	mu      sync.Mutex
 	current *ExplorerScanState
@@ -116,9 +122,10 @@ type explorerStore struct {
 	cancel  context.CancelFunc
 
 	// SSE subscribers
-	subMu   sync.Mutex
-	subs    map[uint64]chan struct{}
-	subNext uint64
+	subMu    sync.Mutex
+	subs     map[uint64]*explorerSubscriber
+	subNext  uint64
+	scanNext uint64
 }
 
 func newExplorerStore(bus ExplorerBus, source byte) *explorerStore {
@@ -128,29 +135,84 @@ func newExplorerStore(bus ExplorerBus, source byte) *explorerStore {
 	return &explorerStore{
 		bus:    bus,
 		source: source,
-		subs:   make(map[uint64]chan struct{}),
+		subs:   make(map[uint64]*explorerSubscriber),
 	}
 }
 
-func (es *explorerStore) notifySubscribers() {
+func cloneExplorerScanState(state *ExplorerScanState) *ExplorerScanState {
+	if state == nil {
+		return &ExplorerScanState{Phase: ExplorerPhaseIdle}
+	}
+	snap := *state
+	snap.Groups = append([]ExplorerGroupResult(nil), state.Groups...)
+	snap.Results = append([]ExplorerRegisterResult(nil), state.Results...)
+	return &snap
+}
+
+func (es *explorerStore) hasSubscriberForScan(scanID uint64) bool {
 	es.subMu.Lock()
 	defer es.subMu.Unlock()
-	for _, ch := range es.subs {
+	for _, sub := range es.subs {
+		if scanID == 0 || sub.scanID == 0 || scanID == sub.scanID {
+			return true
+		}
+	}
+	return false
+}
+
+func (es *explorerStore) notifySubscribers(states ...*ExplorerScanState) {
+	var state *ExplorerScanState
+	if len(states) > 0 {
+		if states[0] == nil || !es.hasSubscriberForScan(states[0].scanID) {
+			return
+		}
+		state = cloneExplorerScanState(states[0])
+	} else {
+		es.mu.Lock()
+		scanID := uint64(0)
+		if es.current != nil {
+			scanID = es.current.scanID
+		}
+		es.mu.Unlock()
+		if !es.hasSubscriberForScan(scanID) {
+			return
+		}
+		state = es.getState()
+	}
+
+	es.subMu.Lock()
+	defer es.subMu.Unlock()
+	for _, sub := range es.subs {
+		if state.scanID != 0 && sub.scanID != 0 && state.scanID != sub.scanID {
+			continue
+		}
 		select {
-		case ch <- struct{}{}:
+		case sub.ch <- state:
 		default:
+			select {
+			case <-sub.ch:
+			default:
+			}
+			select {
+			case sub.ch <- state:
+			default:
+			}
 		}
 	}
 }
 
-func (es *explorerStore) subscribe() (uint64, chan struct{}) {
+func (es *explorerStore) subscribeWithState() (uint64, chan *ExplorerScanState, *ExplorerScanState) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	state := cloneExplorerScanState(es.current)
+
 	es.subMu.Lock()
 	defer es.subMu.Unlock()
 	id := es.subNext
 	es.subNext++
-	ch := make(chan struct{}, 1)
-	es.subs[id] = ch
-	return id, ch
+	ch := make(chan *ExplorerScanState, 1)
+	es.subs[id] = &explorerSubscriber{scanID: state.scanID, ch: ch}
+	return id, ch, state
 }
 
 func (es *explorerStore) unsubscribe(id uint64) {
@@ -166,11 +228,7 @@ func (es *explorerStore) getState() *ExplorerScanState {
 	if es.current == nil {
 		return &ExplorerScanState{Phase: ExplorerPhaseIdle}
 	}
-	// Shallow copy to avoid data races on slices.
-	snap := *es.current
-	snap.Groups = append([]ExplorerGroupResult(nil), es.current.Groups...)
-	snap.Results = append([]ExplorerRegisterResult(nil), es.current.Results...)
-	return &snap
+	return cloneExplorerScanState(es.current)
 }
 
 // getResults returns a page of results.
@@ -187,12 +245,13 @@ func (es *explorerStore) getResults(offset, limit int) []ExplorerRegisterResult 
 	if offset >= len(results) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(results) {
-		end = len(results)
+	remaining := len(results) - offset
+	pageLen := limit
+	if pageLen <= 0 || pageLen > remaining {
+		pageLen = remaining
 	}
-	out := make([]ExplorerRegisterResult, end-offset)
-	copy(out, results[offset:end])
+	out := make([]ExplorerRegisterResult, pageLen)
+	copy(out, results[offset:offset+pageLen])
 	return out
 }
 
@@ -234,7 +293,9 @@ func (es *explorerStore) startB524Scan(req ExplorerScanRequest) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	es.cancel = cancel
 
+	es.scanNext++
 	state := &ExplorerScanState{
+		scanID:     es.scanNext,
 		Phase:      ExplorerPhaseGroupDiscovery,
 		Kind:       ExplorerKindB524,
 		Target:     req.Target,
@@ -273,7 +334,9 @@ func (es *explorerStore) startB509Scan(req ExplorerScanRequest) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	es.cancel = cancel
 
+	es.scanNext++
 	state := &ExplorerScanState{
+		scanID:     es.scanNext,
 		Phase:      ExplorerPhaseRegisterScan,
 		Kind:       ExplorerKindB509,
 		Target:     req.Target,
@@ -299,8 +362,9 @@ func (es *explorerStore) runB524Scan(ctx context.Context, req ExplorerScanReques
 			}
 		}
 		state.FinishedUTC = time.Now().UTC().Format(time.RFC3339)
+		terminal := cloneExplorerScanState(state)
 		es.mu.Unlock()
-		es.notifySubscribers()
+		es.notifySubscribers(terminal)
 	}()
 
 	groupMin := int(req.GroupMin)
@@ -475,8 +539,9 @@ func (es *explorerStore) runB509Scan(ctx context.Context, req ExplorerScanReques
 			}
 		}
 		state.FinishedUTC = time.Now().UTC().Format(time.RFC3339)
+		terminal := cloneExplorerScanState(state)
 		es.mu.Unlock()
-		es.notifySubscribers()
+		es.notifySubscribers(terminal)
 	}()
 
 	addrMin := int(req.B509AddrMin)
@@ -972,13 +1037,12 @@ func (h *handler) handleExplorerStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	subID, ch := h.explorer.subscribe()
+	subID, ch, state := h.explorer.subscribeWithState()
 	defer h.explorer.unsubscribe(subID)
 
 	ctx := r.Context()
 
 	// Send initial state and exit early if already terminal.
-	state := h.explorer.getState()
 	data, _ := json.Marshal(state)
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 		return
@@ -994,8 +1058,7 @@ func (h *handler) handleExplorerStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ch:
-			state := h.explorer.getState()
+		case state := <-ch:
 			data, _ := json.Marshal(state)
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 				return

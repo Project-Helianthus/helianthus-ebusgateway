@@ -85,9 +85,9 @@ func (server *Server) handleTeslaFC100SummaryV1Call(ctx context.Context, name st
 func validTeslaFC100SummaryV1Result(result TeslaFC100SummaryV1Result) bool {
 	if (result.Qualification != TeslaFC100SummaryV1QualificationFramingOnly &&
 		result.Qualification != TeslaFC100SummaryV1QualificationQualifiedReadOnly) ||
-		result.MessageLength < 1 || result.MessageLength > maxTeslaFC100SummaryV1Message ||
+		result.MessageLength < 0 || result.MessageLength > maxTeslaFC100SummaryV1Message ||
 		result.EnvelopeLength != result.MessageLength+1 ||
-		result.EntryCount < 1 || result.EntryCount > maxTeslaFC100SummaryV1Entries ||
+		result.EntryCount < 0 || result.EntryCount > maxTeslaFC100SummaryV1Entries ||
 		len(result.Entries) != result.EntryCount {
 		return false
 	}

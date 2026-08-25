@@ -59,6 +59,35 @@ func TestTeslaFC100SummaryV1MCPProjectsOnlyBoundedStructuralProvenance(t *testin
 	}
 }
 
+func TestTeslaFC100SummaryV1MCPProjectsEmptyFC100Message(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &teslaFC100SummaryV1FixtureProvider{
+		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
+		result: TeslaFC100SummaryV1Result{
+			Qualification:   TeslaFC100SummaryV1QualificationFramingOnly,
+			EnvelopeLength:  1,
+			MessageLength:   0,
+			EntryCount:      0,
+			PayloadDigest:   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			OutboundAllowed: true,
+		},
+	}
+	RegisterModbusV1Tools(server, provider)
+	result := msp06Call(t, server.Handler(), TeslaFC100SummaryV1GetTool, map[string]any{})
+	if result.isError {
+		t.Fatalf("empty FC100 message = %#v", result)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	if fmt.Sprint(data["envelope_length"]) != "1" ||
+		fmt.Sprint(data["message_length"]) != "0" ||
+		fmt.Sprint(data["entry_count"]) != "0" || data["outbound_allowed"] != false {
+		t.Fatalf("empty FC100 summary data = %#v", data)
+	}
+}
+
 func TestTeslaFC100SummaryV1MCPFailsClosedForInvalidProviderSummary(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
 	if err != nil {

@@ -78,4 +78,7 @@ func TestTeslaHSCV1RuntimeRejectsEmptyCorrelatedResponseBatch(t *testing.T) {
 	if err == nil {
 		t.Fatalf("empty correlated response batch accepted as %#v", result)
 	}
+	if result != (TeslaHSCV1Result{}) {
+		t.Fatalf("empty correlated response batch retained result %#v", result)
+	}
 }

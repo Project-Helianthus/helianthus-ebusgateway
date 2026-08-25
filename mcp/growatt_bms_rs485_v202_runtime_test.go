@@ -49,6 +49,9 @@ func TestGrowattBMSRS485V202RuntimeFeedsRedactedMCPStatus(t *testing.T) {
 			}
 		}
 	}
+	if session.unitID != 7 {
+		t.Fatalf("unit_id=%d", session.unitID)
+	}
 }
 
 func TestGrowattBMSRS485V202RuntimeFailsClosedAtMCPBoundary(t *testing.T) {
@@ -69,6 +72,24 @@ func TestGrowattBMSRS485V202RuntimeFailsClosedAtMCPBoundary(t *testing.T) {
 	}
 }
 
+func TestGrowattBMSRS485V202RuntimeRejectsMismatchedResponseAtMCPBoundary(t *testing.T) {
+	session := &growattBMSRS485RuntimeSessionFake{wordsByOffset: growattBMSRS485RuntimeWords(), failAt: -1, mismatchAt: 2}
+	runtime, err := NewGrowattBMSRS485V202Runtime(growattBMSRS485RuntimeRevision(), 7, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime})
+
+	r := msp06Call(t, s.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{})
+	if !r.isError || r.envelope["data"] != nil || len(session.calls) != 3 {
+		t.Fatalf("result/calls=%#v/%#v", r, session.calls)
+	}
+}
+
 type growattBMSRS485RuntimeProvider struct {
 	*modbusV1FixtureProvider
 	runtime *GrowattBMSRS485V202Runtime
@@ -82,15 +103,17 @@ type growattBMSRS485RuntimeSessionFake struct {
 	wordsByOffset map[uint16][]uint16
 	calls         [][2]uint16
 	functions     []modbus.FunctionCode
+	unitID        byte
 	failAt        int
 	mismatchAt    int
 }
 
 func (session *growattBMSRS485RuntimeSessionFake) ReadHolding(
 	_ context.Context,
-	_ byte,
+	unitID byte,
 	request modbus.ReadRegistersRequest,
 ) (modbus.ReadRegistersResponse, error) {
+	session.unitID = unitID
 	session.calls = append(session.calls, [2]uint16{request.Offset(), request.Quantity()})
 	session.functions = append(session.functions, request.Function())
 	index := len(session.calls) - 1

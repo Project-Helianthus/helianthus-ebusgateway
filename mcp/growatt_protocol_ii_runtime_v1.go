@@ -6,8 +6,8 @@ import (
 )
 
 var (
-	ErrGrowattProtocolIIV1ProviderUnavailable = errors.New("Growatt Protocol II provider is unavailable")
-	ErrGrowattProtocolIIV1NotAdmitted         = errors.New("Growatt Protocol II identity is not admitted")
+	ErrGrowattProtocolIIV1ProviderUnavailable = errors.New("growatt Protocol II provider is unavailable")
+	ErrGrowattProtocolIIV1NotAdmitted         = errors.New("growatt Protocol II identity is not admitted")
 )
 
 // GrowattProtocolIIV1ProviderSnapshot is provider-private. RawIdentity is

@@ -53,7 +53,7 @@ func (server *Server) handleGrowattProtocolIIV1Call(ctx context.Context, name st
 	provider := growattProtocolIIV1Providers.byServer[server]
 	growattProtocolIIV1Providers.RUnlock()
 	if provider == nil {
-		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("Growatt Protocol II provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("growatt Protocol II provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.GrowattProtocolIIV1(ctx)
 	result = failClosedGrowattProtocolIIV1Result(result)

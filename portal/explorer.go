@@ -187,12 +187,13 @@ func (es *explorerStore) getResults(offset, limit int) []ExplorerRegisterResult 
 	if offset >= len(results) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(results) {
-		end = len(results)
+	remaining := len(results) - offset
+	pageLen := limit
+	if pageLen <= 0 || pageLen > remaining {
+		pageLen = remaining
 	}
-	out := make([]ExplorerRegisterResult, end-offset)
-	copy(out, results[offset:end])
+	out := make([]ExplorerRegisterResult, pageLen)
+	copy(out, results[offset:offset+pageLen])
 	return out
 }
 

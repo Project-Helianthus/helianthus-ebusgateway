@@ -70,6 +70,8 @@ func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 		{name: "wrong profile", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Admitted: true, Profile: "other", OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "not admitted", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "no cells", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
+		{name: "unsupported opcode", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x12, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
+		{name: "unknown cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x1c}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			runtime, err := NewGreeVRFCANCandidateV1Runtime(testCase.provider)

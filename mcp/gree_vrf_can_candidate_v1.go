@@ -106,7 +106,7 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 }
 
 func greeVRFCANCandidateV1Admitted(snapshot GreeVRFCANCandidateV1ProviderSnapshot) bool {
-	if snapshot.Profile != GreeVRFCANCandidateV1Profile || !snapshot.Admitted || snapshot.Class8 != 0xf7 || snapshot.Unit7 != 8 || !greeVRFCANCandidateV1Opcode(snapshot.Opcode7) || len(snapshot.OpaqueCells) == 0 {
+	if snapshot.Profile != GreeVRFCANCandidateV1Profile || !snapshot.Admitted || snapshot.Class8 != 0xf7 || snapshot.Opaque7 > 0x7f || snapshot.Unit7 != 8 || !greeVRFCANCandidateV1Opcode(snapshot.Opcode7) || len(snapshot.OpaqueCells) == 0 {
 		return false
 	}
 	for _, cell := range snapshot.OpaqueCells {

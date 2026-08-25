@@ -128,7 +128,7 @@ Each subsection states (a) the concrete signals that would trigger rollback, (b)
 - **Mechanism:**
   - For M4c2 regression: revert `547fd4e feat(M4c2): gateway responder runtime for FF 03-06 + meta.capabilities.responder emission` — the envelope composer reverts to minor=0 (no capability key); consumers fail-closed per rule 1.
   - For M5_PORTAL regression: revert `205c2a8 feat(M5_PORTAL): ebus_standard L7 consumer UI + XSS-hardened decode sandbox`; consumer surface rolls back independently of envelope contract.
-  - Feature-flag disable: set `TRANSPORT_GATE_OWNER_OVERRIDE=OVERRIDE_TRANSPORT_GATE_BY_OWNER` with documented reason per AGENTS.md §Workflow item 6, and disable responder emission at the bootstrap site by calling `SetResponderCapabilityProvider(nil)` unconditionally in `cmd/gateway/main.go` while a code-level revert is prepared.
+  - Feature-flag disable: set `TRANSPORT_GATE_OWNER_OVERRIDE=OVERRIDE_TRANSPORT_GATE_BY_OWNER` together with a non-empty `TRANSPORT_GATE_OWNER_REASON` per AGENTS.md §Gates and validation, and disable responder emission at the bootstrap site by calling `SetResponderCapabilityProvider(nil)` unconditionally in `cmd/gateway/main.go` while a code-level revert is prepared.
 
 ### §6.5 helianthus-ha-integration
 

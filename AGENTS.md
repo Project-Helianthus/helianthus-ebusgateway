@@ -46,6 +46,19 @@ private network, Home Assistant instance, or physical bus.
 - Existing eBUS MCP namespaces are compatibility surfaces, not a universal
   delivery rule for other protocol families.
 
+### eBUS MCP invoke safety
+
+`ebus.v1.rpc.invoke` is an eBUS compatibility and safety surface:
+
+- Every call requires explicit `intent` (`READ_ONLY` or `MUTATE`) and an
+  `allow_dangerous` boolean.
+- `READ_ONLY` is allowed only for a known method classified as read-only;
+  mutating or unknown methods fail closed.
+- `MUTATE` requires `allow_dangerous=true` and a non-empty
+  `idempotency_key`.
+- Missing or unknown intent and missing safety fields fail closed. Preserve
+  replay/idempotency behavior when changing invoke request normalization.
+
 Public eBUS and B524 contracts are documented at:
 
 - https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524.md
@@ -59,6 +72,10 @@ Public eBUS and B524 contracts are documented at:
 - Transport or protocol-code changes require the applicable T01..T88 result with
   no unexpected fail or xpass unless the operator records a scope-specific
   override.
+- A transport-gate override requires both
+  `TRANSPORT_GATE_OWNER_OVERRIDE=OVERRIDE_TRANSPORT_GATE_BY_OWNER` and a
+  non-empty `TRANSPORT_GATE_OWNER_REASON`. The reason must identify the exact
+  scope and residual risk; an override never implies permission for live writes.
 - Prefer deterministic fixtures, replay, mocks, and local integration tests.
 - A real Home Assistant or live-device smoke is supplemental unless the issue
   explicitly requires it; it is not a prerequisite for ordinary contribution.

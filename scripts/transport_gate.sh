@@ -277,7 +277,7 @@ def normalized_outcome(case):
 
 unexpected = []
 xfailed = 0
-xpassed = 0
+xpassed = []
 passed = 0
 blocked = 0
 blocked_invalid = []
@@ -289,7 +289,7 @@ for case in cases:
     elif value == "xfail":
         xfailed += 1
     elif value == "xpass":
-        xpassed += 1
+        xpassed.append(case_id)
     elif value == "blocked-infra":
         reason = str(case.get("infra_reason", "")).strip()
         if reason != "adapter_no_signal":
@@ -309,8 +309,11 @@ if unexpected:
     print(f"transport gate: matrix has unexpected failures/planned ({len(unexpected)}). sample={preview}")
     raise SystemExit(1)
 
-msg = f"transport gate: PASS (pass={passed}, xfail={xfailed}, xpass={xpassed}, blocked={blocked}, total={len(cases)})."
 if xpassed:
-    msg += " review expected-failure list (xpass present)."
+    preview = ",".join(xpassed[:10])
+    print(f"transport gate: matrix has unexpected xpass ({len(xpassed)}). sample={preview}")
+    raise SystemExit(1)
+
+msg = f"transport gate: PASS (pass={passed}, xfail={xfailed}, xpass={len(xpassed)}, blocked={blocked}, total={len(cases)})."
 print(msg)
 PY

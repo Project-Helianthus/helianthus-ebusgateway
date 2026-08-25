@@ -108,6 +108,32 @@ class TransportGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
+    def test_transport_gate_fails_when_matrix_contains_xpass(self) -> None:
+        repo_path, report_path = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
+            modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["cases"][0]["outcome"] = "xpass"
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(
+                TRANSPORT_GATE_BASE_REF="HEAD",
+                TRANSPORT_MATRIX_REPORT=str(report_path),
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("xpass", result.stdout)
+        self.assertIn("T01", result.stdout)
+
     def test_transport_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

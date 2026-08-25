@@ -72,6 +72,23 @@ func explorerSSEStates(t *testing.T, body string) []ExplorerScanState {
 	return states
 }
 
+func waitExplorerPhase(t *testing.T, store *explorerStore, want string) *ExplorerScanState {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		state := store.getState()
+		if state.Phase == want {
+			return state
+		}
+		if state.Phase == ExplorerPhaseDone || state.Phase == ExplorerPhaseError {
+			t.Fatalf("scan reached %s while waiting for %s: %#v", state.Phase, want, state)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for explorer phase %s; last=%#v", want, store.getState())
+	return nil
+}
+
 type explorerFlushRecorder struct {
 	*httptest.ResponseRecorder
 	flushed chan struct{}
@@ -848,6 +865,121 @@ func TestExplorerSSEStream_QueuedTerminalSurvivesSuccessorScan(t *testing.T) {
 	if len(terminal.Results) != 1 || terminal.Results[0].Addr != 0x1234 {
 		t.Fatalf("terminal event lost predecessor A results: %#v", terminal)
 	}
+}
+
+func TestExplorerNotifyWithoutSubscribersDoesNotCopyAccumulatedResults(t *testing.T) {
+	store := newExplorerStore(&mockExplorerBus{}, 0xF0)
+	store.current = &ExplorerScanState{
+		scanID:  1,
+		Phase:   ExplorerPhaseRegisterScan,
+		Results: make([]ExplorerRegisterResult, 1<<16),
+	}
+	if allocs := testing.AllocsPerRun(20, func() { store.notifySubscribers() }); allocs > 1 {
+		t.Fatalf("notify without subscribers allocated %.1f times; want at most lock overhead", allocs)
+	}
+}
+
+func TestExplorerSSEStream_RealCancellationBeforeAndDuringStream(t *testing.T) {
+	newCancellableHandler := func(t *testing.T) (*handler, <-chan struct{}) {
+		t.Helper()
+		started := make(chan struct{})
+		var once sync.Once
+		bus := &mockExplorerBus{
+			handler: func(ctx context.Context, _ protocol.Frame) (*protocol.Frame, error) {
+				once.Do(func() { close(started) })
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		return explorerHandler(bus).(*handler), started
+	}
+	startScan := func(t *testing.T, h *handler, started <-chan struct{}) {
+		t.Helper()
+		body := `{"kind":"b509","target":21,"b509_addr_min":0,"b509_addr_max":1}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/explorer/scans", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("start status = %d; want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+		}
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for cancellable scan worker")
+		}
+	}
+	cancelScan := func(t *testing.T, h *handler) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/explorer/scans/current", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"cancelled"`) {
+			t.Fatalf("cancel response = status %d body %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	t.Run("connect_after_cancelled_terminal", func(t *testing.T) {
+		h, started := newCancellableHandler(t)
+		startScan(t, h, started)
+		cancelScan(t, h)
+		terminal := waitExplorerPhase(t, h.explorer, ExplorerPhaseCancelled)
+		if terminal.Kind != ExplorerKindB509 || terminal.Target != 0x15 {
+			t.Fatalf("cancelled terminal lost full scan state: %#v", terminal)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+		rec := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			h.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("pre-connected cancelled stream did not emit and close")
+		}
+		states := explorerSSEStates(t, rec.Body.String())
+		if len(states) != 1 || states[0].Phase != ExplorerPhaseCancelled || states[0].Kind != ExplorerKindB509 {
+			t.Fatalf("cancelled initial SSE states = %#v; want one full cancelled B509 state", states)
+		}
+	})
+
+	t.Run("cancel_already_active_stream", func(t *testing.T) {
+		h, started := newCancellableHandler(t)
+		startScan(t, h, started)
+		rec := &explorerFlushRecorder{
+			ResponseRecorder: httptest.NewRecorder(),
+			flushed:          make(chan struct{}, 2),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
+		done := make(chan struct{})
+		go func() {
+			h.ServeHTTP(rec, req)
+			close(done)
+		}()
+		select {
+		case <-rec.flushed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for active SSE state")
+		}
+
+		cancelScan(t, h)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("active stream did not emit real cancelled terminal and close")
+		}
+		states := explorerSSEStates(t, rec.Body.String())
+		if len(states) < 2 || states[0].Phase != ExplorerPhaseRegisterScan || states[len(states)-1].Phase != ExplorerPhaseCancelled {
+			t.Fatalf("active cancellation SSE states = %#v; want active state(s) ending in cancelled", states)
+		}
+		terminal := states[len(states)-1]
+		if terminal.Kind != ExplorerKindB509 || terminal.Target != 0x15 || terminal.FinishedUTC == "" {
+			t.Fatalf("cancelled terminal lost full scan state: %#v", terminal)
+		}
+	})
 }
 
 func TestExtractB524Payload_5ByteHeader(t *testing.T) {

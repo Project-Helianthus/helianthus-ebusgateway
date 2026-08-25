@@ -149,11 +149,34 @@ func cloneExplorerScanState(state *ExplorerScanState) *ExplorerScanState {
 	return &snap
 }
 
+func (es *explorerStore) hasSubscriberForScan(scanID uint64) bool {
+	es.subMu.Lock()
+	defer es.subMu.Unlock()
+	for _, sub := range es.subs {
+		if scanID == 0 || sub.scanID == 0 || scanID == sub.scanID {
+			return true
+		}
+	}
+	return false
+}
+
 func (es *explorerStore) notifySubscribers(states ...*ExplorerScanState) {
 	var state *ExplorerScanState
 	if len(states) > 0 {
+		if states[0] == nil || !es.hasSubscriberForScan(states[0].scanID) {
+			return
+		}
 		state = cloneExplorerScanState(states[0])
 	} else {
+		es.mu.Lock()
+		scanID := uint64(0)
+		if es.current != nil {
+			scanID = es.current.scanID
+		}
+		es.mu.Unlock()
+		if !es.hasSubscriberForScan(scanID) {
+			return
+		}
 		state = es.getState()
 	}
 

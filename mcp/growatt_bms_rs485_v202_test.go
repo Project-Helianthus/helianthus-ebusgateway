@@ -67,7 +67,7 @@ func (f growattBMSRS485V202ResultFixture) GrowattBMSRS485V202(context.Context) (
 
 func growattBMSRS485V202FixtureStatus() modbusreg.GrowattBMSTypedReadOnlyStatus {
 	return modbusreg.GrowattBMSTypedReadOnlyStatus{
-		Revision: modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"},
+		Revision:                    modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"},
 		MCUSoftwareVersion:          "1.2",
 		GaugeVersion:                "3.4",
 		BMSCompany:                  4,

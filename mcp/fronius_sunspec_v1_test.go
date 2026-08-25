@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -15,10 +16,10 @@ func (*froniusSunSpecFixture) FroniusSunSpecV1(context.Context) (FroniusSunSpecV
 	return FroniusSunSpecV1Result{
 		Qualified: true,
 		Telemetry: &FroniusSunSpecV1Telemetry{
-			ACActivePowerWatts:       8421.5,
-			ACFrequencyHertz:         50,
-			LifetimeEnergyWattHours:  123456.75,
-			OperatingState:           "MPPT",
+			ACActivePowerWatts:      8421.5,
+			ACFrequencyHertz:        50,
+			LifetimeEnergyWattHours: 123456.75,
+			OperatingState:          "MPPT",
 		},
 	}, nil
 }
@@ -38,7 +39,7 @@ func TestFroniusSunSpecV1ToolProjectsOnlyQualifiedStandardTelemetry(t *testing.T
 		t.Fatalf("%#v", d)
 	}
 	telemetry := msp06Map(t, d["telemetry"], "telemetry")
-	if telemetry["ac_active_power_watts"] != 8421.5 || telemetry["ac_frequency_hertz"] != 50.0 || telemetry["lifetime_energy_watt_hours"] != 123456.75 || telemetry["operating_state"] != "MPPT" {
+	if telemetry["ac_active_power_watts"] != json.Number("8421.5") || telemetry["ac_frequency_hertz"] != json.Number("50") || telemetry["lifetime_energy_watt_hours"] != json.Number("123456.75") || telemetry["operating_state"] != "MPPT" {
 		t.Fatalf("%#v", telemetry)
 	}
 	for _, key := range []string{"endpoint", "raw", "replay", "firmware", "configuration", "control"} {

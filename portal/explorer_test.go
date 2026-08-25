@@ -56,6 +56,22 @@ func explorerJSON(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return payload
 }
 
+func explorerSSEStates(t *testing.T, body string) []ExplorerScanState {
+	t.Helper()
+	var states []ExplorerScanState
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var state ExplorerScanState
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &state); err != nil {
+			t.Fatalf("unmarshal SSE state: %v; line=%s", err, line)
+		}
+		states = append(states, state)
+	}
+	return states
+}
+
 type explorerFlushRecorder struct {
 	*httptest.ResponseRecorder
 	flushed chan struct{}
@@ -67,6 +83,21 @@ func (rec *explorerFlushRecorder) Flush() {
 	case rec.flushed <- struct{}{}:
 	default:
 	}
+}
+
+type explorerBlockingFlushRecorder struct {
+	*httptest.ResponseRecorder
+	firstFlushed chan struct{}
+	releaseFirst chan struct{}
+	once         sync.Once
+}
+
+func (rec *explorerBlockingFlushRecorder) Flush() {
+	rec.ResponseRecorder.Flush()
+	rec.once.Do(func() {
+		close(rec.firstFlushed)
+		<-rec.releaseFirst
+	})
 }
 
 // --- Tests ---
@@ -280,6 +311,14 @@ func TestExplorerResults_MaxPositiveLimitDoesNotOverflow(t *testing.T) {
 	payload := explorerJSON(t, rec)
 	if got := int(payload["count"].(float64)); got != 1 {
 		t.Fatalf("count = %d; want 1", got)
+	}
+	results := payload["results"].([]any)
+	result := results[0].(map[string]any)
+	if got := int(result["addr"].(float64)); got != 2 {
+		t.Fatalf("returned addr = %d; want suffix addr 2", got)
+	}
+	if got := result["raw_hex"].(string); got != "02" {
+		t.Fatalf("returned raw_hex = %q; want 02", got)
 	}
 }
 
@@ -633,15 +672,38 @@ func TestExplorerSSEStream_InitialTerminalStatesEmitAndClose(t *testing.T) {
 	} {
 		t.Run(phase, func(t *testing.T) {
 			h := explorerHandler(&mockExplorerBus{}).(*handler)
-			if phase != ExplorerPhaseIdle {
-				h.explorer.current = &ExplorerScanState{Phase: phase}
+			h.explorer.current = &ExplorerScanState{
+				Phase:          phase,
+				Kind:           ExplorerKindB524,
+				Target:         0x15,
+				Source:         0xF0,
+				Opcode:         0x02,
+				StartedUTC:     "2026-08-25T00:00:00Z",
+				FinishedUTC:    "2026-08-25T00:00:01Z",
+				Error:          "fixture-error",
+				Results:        []ExplorerRegisterResult{{Addr: 0x1234, RawHex: "aabb"}},
+				Progress:       ExplorerProgress{Percent: 100, Description: "fixture-complete"},
+				TotalReads:     1,
+				CompletedReads: 1,
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+			ctx, cancel := context.WithCancel(context.Background())
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil)
 			req = req.WithContext(ctx)
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
+			done := make(chan struct{})
+			go func() {
+				h.ServeHTTP(rec, req)
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				cancel()
+			case <-time.After(500 * time.Millisecond):
+				cancel()
+				<-done
+				t.Fatal("initial terminal SSE handler did not close before request cancellation")
+			}
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
@@ -649,12 +711,16 @@ func TestExplorerSSEStream_InitialTerminalStatesEmitAndClose(t *testing.T) {
 			if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
 				t.Fatalf("Content-Type = %q; want text/event-stream", got)
 			}
-			body := rec.Body.String()
-			if !strings.Contains(body, fmt.Sprintf(`"phase":%q`, phase)) {
-				t.Fatalf("SSE body missing %s state: %s", phase, body)
+			states := explorerSSEStates(t, rec.Body.String())
+			if len(states) != 1 {
+				t.Fatalf("SSE event count = %d; want 1; body=%s", len(states), rec.Body.String())
 			}
-			if got := strings.Count(body, "data: "); got != 1 {
-				t.Fatalf("SSE event count = %d; want 1; body=%s", got, body)
+			state := states[0]
+			if state.Phase != phase || state.Kind != ExplorerKindB524 || state.Target != 0x15 {
+				t.Fatalf("initial state = %#v; want phase=%s kind=%s target=0x15", state, phase, ExplorerKindB524)
+			}
+			if len(state.Results) != 1 || state.Results[0].Addr != 0x1234 || state.Progress.Description != "fixture-complete" {
+				t.Fatalf("initial event did not preserve full state: %#v", state)
 			}
 		})
 	}
@@ -708,6 +774,79 @@ func TestExplorerSSEStream_ActiveToTerminalEmitsAndCloses(t *testing.T) {
 				t.Fatalf("SSE event count = %d; want 2; body=%s", got, body)
 			}
 		})
+	}
+}
+
+func TestExplorerSSEStream_QueuedTerminalSurvivesSuccessorScan(t *testing.T) {
+	h := explorerHandler(&mockExplorerBus{}).(*handler)
+	h.explorer.scanNext = 1
+	h.explorer.current = &ExplorerScanState{
+		scanID: 1,
+		Phase:  ExplorerPhaseRegisterScan,
+		Kind:   ExplorerKindB524,
+		Target: 0x15,
+	}
+	rec := &explorerBlockingFlushRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		firstFlushed:     make(chan struct{}),
+		releaseFirst:     make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/scans/current/stream", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-rec.firstFlushed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial SSE state")
+	}
+
+	terminalA := &ExplorerScanState{
+		scanID:      1,
+		Phase:       ExplorerPhaseDone,
+		Kind:        ExplorerKindB524,
+		Target:      0x15,
+		FinishedUTC: "2026-08-25T00:00:01Z",
+		Results:     []ExplorerRegisterResult{{Addr: 0x1234, RawHex: "aabb"}},
+	}
+	h.explorer.mu.Lock()
+	h.explorer.current = terminalA
+	h.explorer.mu.Unlock()
+	h.explorer.notifySubscribers(terminalA)
+
+	h.explorer.mu.Lock()
+	h.explorer.scanNext = 2
+	h.explorer.current = &ExplorerScanState{
+		scanID: 2,
+		Phase:  ExplorerPhaseRegisterScan,
+		Kind:   ExplorerKindB509,
+		Target: 0x08,
+	}
+	h.explorer.mu.Unlock()
+	h.explorer.notifySubscribers()
+	close(rec.releaseFirst)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not emit the queued predecessor terminal and close")
+	}
+
+	states := explorerSSEStates(t, rec.Body.String())
+	if len(states) != 2 {
+		t.Fatalf("SSE event count = %d; want initial A plus terminal A; body=%s", len(states), rec.Body.String())
+	}
+	terminal := states[1]
+	if terminal.Phase != ExplorerPhaseDone || terminal.Kind != ExplorerKindB524 || terminal.Target != 0x15 {
+		t.Fatalf("terminal event = %#v; want predecessor A done state", terminal)
+	}
+	if len(terminal.Results) != 1 || terminal.Results[0].Addr != 0x1234 {
+		t.Fatalf("terminal event lost predecessor A results: %#v", terminal)
 	}
 }
 

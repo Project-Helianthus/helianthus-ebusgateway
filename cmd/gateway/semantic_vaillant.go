@@ -154,7 +154,8 @@ const (
 
 // b524GroupDef binds a B524 group number to its owning opcode.
 // This eliminates the possibility of accidentally mixing OP/GG pairs.
-// See AGENTS.md §1.3.1 B524 Register Namespace Contract.
+// Public contract:
+// https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/b524-namespace-invariants.md
 type b524GroupDef struct {
 	group  byte
 	opcode byte

@@ -49,7 +49,7 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 	provider := teslaHSCV1Providers.byServer[server]
 	teslaHSCV1Providers.RUnlock()
 	if provider == nil {
-		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("Tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.TeslaHSCV1(ctx)
 	result = failClosedTeslaHSCV1Result(result)

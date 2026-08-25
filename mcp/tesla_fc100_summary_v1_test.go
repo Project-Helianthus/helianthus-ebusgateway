@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -47,8 +48,8 @@ func TestTeslaFC100SummaryV1MCPProjectsOnlyBoundedStructuralProvenance(t *testin
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
 	if data["qualification"] != TeslaFC100SummaryV1QualificationFramingOnly ||
-		data["envelope_length"] != "8" || data["message_length"] != "7" ||
-		data["entry_count"] != "2" || data["outbound_allowed"] != false {
+		fmt.Sprint(data["envelope_length"]) != "8" || fmt.Sprint(data["message_length"]) != "7" ||
+		fmt.Sprint(data["entry_count"]) != "2" || data["outbound_allowed"] != false {
 		t.Fatalf("summary data = %#v", data)
 	}
 	for _, forbidden := range []string{"raw", "value", "operation", "capability", "request"} {

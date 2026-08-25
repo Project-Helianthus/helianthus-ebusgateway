@@ -47,8 +47,8 @@ func TestTeslaFC100SummaryV1MCPProjectsOnlyBoundedStructuralProvenance(t *testin
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
 	if data["qualification"] != TeslaFC100SummaryV1QualificationFramingOnly ||
-		data["envelope_length"] != float64(8) || data["message_length"] != float64(7) ||
-		data["entry_count"] != float64(2) || data["outbound_allowed"] != false {
+		data["envelope_length"] != "8" || data["message_length"] != "7" ||
+		data["entry_count"] != "2" || data["outbound_allowed"] != false {
 		t.Fatalf("summary data = %#v", data)
 	}
 	for _, forbidden := range []string{"raw", "value", "operation", "capability", "request"} {
@@ -66,9 +66,9 @@ func TestTeslaFC100SummaryV1MCPFailsClosedForInvalidProviderSummary(t *testing.T
 	provider := &teslaFC100SummaryV1FixtureProvider{
 		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
 		result: TeslaFC100SummaryV1Result{
-			Qualification: TeslaFC100SummaryV1QualificationFramingOnly,
+			Qualification:  TeslaFC100SummaryV1QualificationFramingOnly,
 			EnvelopeLength: 8, MessageLength: 7, EntryCount: 2,
-			Entries: []TeslaFC100SummaryV1WireEntry{{FieldNumber: 1, WireType: 0}},
+			Entries:       []TeslaFC100SummaryV1WireEntry{{FieldNumber: 1, WireType: 0}},
 			PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		},
 	}

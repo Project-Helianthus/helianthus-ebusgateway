@@ -18,7 +18,7 @@ func (provider *teslaHSCProvenanceV1FixtureProvider) TeslaHSCProvenanceV1(contex
 
 func TestTeslaHSCProvenanceV1RuntimeProjectsOnlyRedactedSelectedTerminalMetadata(t *testing.T) {
 	provider := &teslaHSCProvenanceV1FixtureProvider{records: []TeslaHSCProvenanceV1Record{
-		{Function: 101, PayloadLength: 0, PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		{Function: 101, PayloadLength: 0, PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", OutboundAllowed: true},
 		{Function: 102, PayloadLength: 2, PayloadDigest: "9ee50aea7e52b0fd0c9dcae1a059ac08b94c21ad3e2fa7e6cbf9b6b5279d93d8"},
 	}}
 	runtime, err := NewTeslaHSCProvenanceV1Runtime(provider)

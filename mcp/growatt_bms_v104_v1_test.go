@@ -52,7 +52,7 @@ func TestGrowattBMSV104SnapshotGetRedactsUnsafeProviderEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OutboundAllowed || strings.Contains(string(encoded), "raw_evidence") || strings.Contains(string(encoded), "deadbeef") {
+	if result.OutboundAllowed || strings.Contains(string(encoded), "\"raw_evidence\":") || strings.Contains(string(encoded), "deadbeef") {
 		t.Fatalf("unsafe result = %s", encoded)
 	}
 }

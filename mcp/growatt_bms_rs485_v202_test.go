@@ -58,6 +58,9 @@ func TestGrowattBMSRS485V202ToolRejectsNonExactRevision(t *testing.T) {
 	if !r.isError {
 		t.Fatal(r)
 	}
+	if r.envelope["data"] != nil {
+		t.Fatalf("data=%#v", r.envelope["data"])
+	}
 }
 
 type growattBMSRS485V202ResultFixture struct {

@@ -108,6 +108,9 @@ func (server *Server) handleGrowattBMSRS485V202Call(ctx context.Context, name st
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := growattBMSRS485V202Result(status)
+	if err != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
+	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
 }
 

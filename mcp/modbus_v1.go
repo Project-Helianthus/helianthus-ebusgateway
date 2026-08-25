@@ -139,10 +139,14 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		},
 	)
 	registerTeslaHSCV1Tool(server, provider)
+	registerGrowattProtocolIIV1Tool(server, provider)
 }
 
 func (server *Server) handleModbusV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
 	if result, handled := server.handleTeslaHSCV1Call(ctx, name, args); handled {
+		return result, true
+	}
+	if result, handled := server.handleGrowattProtocolIIV1Call(ctx, name, args); handled {
 		return result, true
 	}
 	modbusV1Providers.RLock()

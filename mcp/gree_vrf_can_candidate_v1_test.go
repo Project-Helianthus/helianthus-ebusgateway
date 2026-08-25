@@ -58,6 +58,23 @@ func TestGreeVRFCANCandidateV1SnapshotGetRedactsRawEvidenceAndCellValues(t *test
 	}
 }
 
+func TestGreeVRFCANCandidateV1SnapshotGetOrdersOpaqueCellsDeterministically(t *testing.T) {
+	snapshot := greeVRFCANCandidateV1FixtureSnapshot()
+	snapshot.OpaqueCells = []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x14, Value: 0xa5}, {Cell: 0x13, Value: 0xa4}}
+	runtime, err := NewGreeVRFCANCandidateV1Runtime(greeVRFCANCandidateV1FixtureProvider{snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runtime.SnapshotGet(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[1].Cell != 0x14 {
+		t.Fatalf("opaque cells = %#v", result.OpaqueCells)
+	}
+}
+
 func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 	providerFailure := errors.New("provider failure")
 	for _, testCase := range []struct {

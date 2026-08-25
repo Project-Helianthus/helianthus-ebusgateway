@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"sort"
 )
 
 const GreeVRFCANCandidateV1Profile = "gree.vrf.canbus.candidate.v1"
@@ -91,6 +92,9 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 	for index, cell := range snapshot.OpaqueCells {
 		cells[index] = GreeVRFCANCandidateV1OpaqueCellMetadata{Cell: cell.Cell}
 	}
+	sort.Slice(cells, func(left, right int) bool {
+		return cells[left].Cell < cells[right].Cell
+	})
 
 	return GreeVRFCANCandidateV1Result{
 		Profile:             GreeVRFCANCandidateV1Profile,

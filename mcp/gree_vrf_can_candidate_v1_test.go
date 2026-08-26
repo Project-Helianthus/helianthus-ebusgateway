@@ -56,7 +56,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetPreservesNativeEvidenceAndCapability(t 
 	if !result.OutboundAllowed || !strings.Contains(string(encoded), "\"raw_evidence\":") || !strings.Contains(string(encoded), "\"dlc\":3") || !strings.Contains(string(encoded), "\"value\":222") {
 		t.Fatalf("unsafe result = %s", encoded)
 	}
-	if len(result.RawEvidence) != 1 || result.RawEvidence[0].Identifier != 0x1ee04458 || result.RawEvidence[0].Data[0] != 0xde || result.RawEvidence[0].Interface != "can0" || result.RawEvidence[0].DLC != 3 || result.RawEvidence[0].RawDLC != 3 {
+	if len(result.RawEvidence) != 1 || result.RawEvidence[0].Identifier != 0x1ee04458 || result.RawEvidence[0].Data[0] != 0xde || result.RawEvidence[0].Data[3] != 0 || result.RawEvidence[0].Interface != "can0" || result.RawEvidence[0].DLC != 3 || result.RawEvidence[0].RawDLC != 3 {
 		t.Fatalf("raw evidence = %#v", result.RawEvidence)
 	}
 }
@@ -94,6 +94,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 		{name: "opaque field exceeds seven bits", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Opaque7: 0xff, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "unknown cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x1c}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "duplicate cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}, {Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
+		{name: "invalid raw DLC", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}, RawEvidence: []GreeVRFCANCandidateV1RawEvidence{{DLC: 3, RawDLC: 4}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			runtime, err := NewGreeVRFCANCandidateV1Runtime(testCase.provider)
@@ -125,6 +126,6 @@ func greeVRFCANCandidateV1FixtureSnapshot() GreeVRFCANCandidateV1ProviderSnapsho
 			{Cell: 0x13, Value: 0xa4},
 			{Cell: 0x14, Value: 0xa5},
 		},
-		RawEvidence: []GreeVRFCANCandidateV1RawEvidence{{Identifier: 0x1ee04458, Data: [8]byte{0x5d, 0xa4, 0xa5}}},
+		RawEvidence: []GreeVRFCANCandidateV1RawEvidence{{Identifier: 0x1ee04458, DLC: 3, RawDLC: 3, Data: [8]byte{0x5d, 0xa4, 0xa5}}},
 	}
 }

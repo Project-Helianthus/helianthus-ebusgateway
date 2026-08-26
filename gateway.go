@@ -2,10 +2,12 @@ package ebusgateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,7 +148,10 @@ func resolveTransport(ctx context.Context, cfg Config) (transport.RawTransport, 
 		return nil, nil, err
 	}
 
-	return transportLayer, conn.Close, nil
+	// Close through the protocol transport, not just its underlying socket.
+	// Stateful transports such as ebusd-tcp have local waiters that are woken
+	// only when their Close method marks the transport closed and broadcasts.
+	return transportLayer, transportLayer.Close, nil
 }
 
 func clampEbusdTCPTimeouts(config TransportConfig, scanRequestTimeout time.Duration) TransportConfig {
@@ -185,17 +190,26 @@ func normalizeTransportConfig(config TransportConfig) (TransportConfig, error) {
 		if config.Protocol == "" {
 			config.Protocol = TransportENH
 		}
+		if isAdapterDirectTransportProtocol(config.Protocol) &&
+			(config.Network == "" || (config.Network == "unix" && strings.Contains(config.Address, ":"))) {
+			config.Network = "tcp"
+		}
 		return config, nil
 	}
 
 	protocol, network, address, err := parseTransportEndpoint(config.Address, config.Protocol)
 	if err != nil {
-		return TransportConfig{}, err
+		return TransportConfig{}, fmt.Errorf("invalid gateway transport endpoint: %w: %w", ebuserrors.ErrInvalidPayload, err)
 	}
 	config.Protocol = protocol
 	config.Network = network
 	config.Address = address
 	return config, nil
+}
+
+func isAdapterDirectTransportProtocol(protocol TransportProtocol) bool {
+	protocol = canonicalTransportProtocol(protocol)
+	return protocol == TransportAdapterDirect || protocol == transportAdapterDirectENS
 }
 
 func canonicalTransportProtocol(protocol TransportProtocol) TransportProtocol {
@@ -311,7 +325,9 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 		}
 	case "unix":
 	case "adapter-direct":
-		return "", "", "", fmt.Errorf("gateway transport endpoint scheme %q requires preconfigured adapter-direct transport (use wireAdapterDirect)", scheme)
+		protocol = TransportAdapterDirect
+	case "adapter-direct-ens":
+		protocol = transportAdapterDirectENS
 	default:
 		return "", "", "", fmt.Errorf("gateway transport endpoint unsupported scheme %q", scheme)
 	}
@@ -344,11 +360,31 @@ func parseTransportEndpoint(endpoint string, fallbackProtocol TransportProtocol)
 	if scheme == "unix" && network != "unix" {
 		return "", "", "", fmt.Errorf("gateway transport endpoint %q missing unix path", endpoint)
 	}
+	if network == "tcp" || network == "udp" {
+		if err := validateNetworkTransportHostPort(address); err != nil {
+			return "", "", "", fmt.Errorf("gateway transport endpoint %q invalid %s host:port: %w", endpoint, network, err)
+		}
+	}
 	if protocol == "" {
 		protocol = TransportENH
 	}
 
 	return protocol, network, address, nil
+}
+
+func validateNetworkTransportHostPort(address string) error {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(host) == "" {
+		return errors.New("host is empty")
+	}
+	port, err := strconv.ParseUint(strings.TrimSpace(portText), 10, 16)
+	if err != nil || port == 0 {
+		return fmt.Errorf("port %q is not in numeric range 1..65535", portText)
+	}
+	return nil
 }
 
 func transportFromConn(protocolName TransportProtocol, conn net.Conn, readTimeout, writeTimeout time.Duration) (transport.RawTransport, error) {

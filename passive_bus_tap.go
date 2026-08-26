@@ -215,7 +215,7 @@ func (tap *PassiveBusTap) readLoop(tr transport.RawTransport) error {
 			return err
 		}
 
-		event, err := readPassiveTransportEvent(tr)
+		event, err := readPassiveTransportEvent(tap.ctx, tr)
 		if err != nil {
 			if errors.Is(err, ebuserrors.ErrTimeout) {
 				tap.emit(PassiveTapEvent{
@@ -459,9 +459,23 @@ func reconnectDelay(attempt int, initial, max time.Duration) time.Duration {
 	return delay
 }
 
-func readPassiveTransportEvent(tr transport.RawTransport) (transport.StreamEvent, error) {
+func readPassiveTransportEvent(ctx context.Context, tr transport.RawTransport) (transport.StreamEvent, error) {
+	if reader, ok := tr.(interface {
+		ReadEventContext(context.Context) (transport.StreamEvent, error)
+	}); ok {
+		return reader.ReadEventContext(ctx)
+	}
 	if reader, ok := tr.(transport.StreamEventReader); ok {
 		return reader.ReadEvent()
+	}
+	if reader, ok := tr.(interface {
+		ReadByteContext(context.Context) (byte, error)
+	}); ok {
+		value, err := reader.ReadByteContext(ctx)
+		if err != nil {
+			return transport.StreamEvent{}, err
+		}
+		return transport.StreamEvent{Kind: transport.StreamEventByte, Byte: value}, nil
 	}
 
 	value, err := tr.ReadByte()

@@ -32,6 +32,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	ebusgoTransport "github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
@@ -86,6 +87,7 @@ var (
 	// empty events array + dropped=0 in that case so the contract
 	// degrades cleanly without 404-ing.
 	v8AdminEventsCurrentClassifier atomic.Pointer[v8classifier.Classifier]
+	v8AdminEventsCurrentProvider   atomic.Pointer[v8AdminClassifierProvider]
 )
 
 // v8RolloutExpvarSource is the indirection layer for the five
@@ -96,8 +98,29 @@ var (
 // non-nil after a successful ebusgateway.New(), and the wiring site
 // guards on it.
 type v8RolloutExpvarSource struct {
-	bus        *protocol.Bus
-	classifier *v8classifier.Classifier
+	bus               *protocol.Bus
+	shadowDropCountFn func() uint64
+}
+
+type v8AdminClassifierProvider struct {
+	withClassifier func(func(*v8classifier.Classifier))
+}
+
+func withCurrentV8AdminClassifier(callback func(*v8classifier.Classifier)) {
+	if callback == nil {
+		return
+	}
+	// Direct pointer is retained as a test/backward-compatible injection seam.
+	// Production clears it and installs the generation-aware provider below.
+	if classifier := v8AdminEventsCurrentClassifier.Load(); classifier != nil {
+		callback(classifier)
+		return
+	}
+	provider := v8AdminEventsCurrentProvider.Load()
+	if provider == nil || provider.withClassifier == nil {
+		return
+	}
+	provider.withClassifier(callback)
 }
 
 type runtimeWatchObserver struct {
@@ -269,23 +292,42 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 	}()
 
-	// Wire adapter-direct mode: create multiplexer, configure active
-	// and passive transports before gateway construction.
-	adapterMuxCloser, adapterClassifier, err := wireAdapterDirect(ctx, &cfg)
+	// Construct the protocol-neutral manager and stable eBUS provider before
+	// opening any eBUS resource. Driver-local construction failure is retained
+	// as categorical state and never promoted to process failure.
+	ebusDriver, err := newEBusDriverController(cfg)
 	if err != nil {
-		return withEndpointOwner(endpointOwnerAdapterDirect, fmt.Errorf("adapter-direct: %w", err))
+		return fmt.Errorf("construct eBUS DriverManager: %w", err)
 	}
-	if adapterMuxCloser != nil {
-		defer func() {
-			if err := adapterMuxCloser(); err != nil {
-				log.Printf("adapter-direct close: %v", err)
-			}
-		}()
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*defaultEBusDriverDrainTimeout+time.Second)
+		defer cancel()
+		if err := ebusDriver.Shutdown(stopCtx); err != nil {
+			result = errors.Join(result, fmt.Errorf("shutdown eBUS driver: %w", err))
+		}
+	}()
+	cfg.Transport = ebusDriver.active
+	if ebusDriver.passive != nil {
+		cfg.PassiveTransport = ebusDriver.passive
+		if configuredEBusDriverProtocol(cfg) == ebusgateway.TransportAdapterDirect {
+			cfg.ObserveFirstWarmupCompletedTransactions = 0
+			cfg.ObserveFirstWarmupConnectedWindow = 0
+			cfg.ObserveFirstWarmupPostResetTransactions = 0
+			cfg.ObserveFirstWarmupPostResetWindow = 0
+		}
+	}
+	adapterClassifier := ebusDriver.classifier
+	if err := ebusDriver.Start(ctx); err != nil {
+		return fmt.Errorf("start eBUS DriverManager: %w", err)
+	}
+	ebusDriverSnapshot := ebusDriver.Snapshot()
+	if ebusDriverSnapshot.ObservedState != "RUNNING" {
+		log.Printf("eBUS driver unavailable; continuing state=%s reason=%s", ebusDriverSnapshot.ObservedState, ebusDriverSnapshot.Reason.Code)
 	}
 
 	// Warn if --proxy-listen is set but adapter-direct transport was not
 	// activated (the proxy endpoint requires the adapter multiplexer).
-	if cfg.ProxyListenAddr != "" && cfg.Transport == nil {
+	if cfg.ProxyListenAddr != "" && !adapterDirectProxyEnabled(cfg.TransportConfig) {
 		log.Printf("warning: --proxy-listen requires adapter-direct transport; proxy endpoint not started")
 	}
 
@@ -396,9 +438,23 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	// internal/adaptermux/v8classifier/classifier.go:848).
 	if busObservability != nil && gateway.Bus != nil {
 		bus := gateway.Bus
-		var classifier *v8classifier.Classifier
-		if m, ok := adapterClassifier.(*adaptermux.Mux); ok {
-			classifier = m.V8Classifier()
+		withClassifier := func(func(*v8classifier.Classifier)) {}
+		if provider, ok := adapterClassifier.(interface {
+			WithV8Classifier(func(*v8classifier.Classifier))
+		}); ok {
+			withClassifier = provider.WithV8Classifier
+		}
+		shadowDropCountFn := func() uint64 {
+			var total uint64
+			withClassifier(func(classifier *v8classifier.Classifier) {
+				total = classifier.ShadowWouldHaveDroppedTotal()
+			})
+			return total
+		}
+		if provider, ok := adapterClassifier.(interface {
+			V8ShadowWouldHaveDroppedTotal() uint64
+		}); ok {
+			shadowDropCountFn = provider.V8ShadowWouldHaveDroppedTotal
 		}
 		busObservability.SetV8RolloutProvider(func() ebusgateway.V8RolloutSnapshot {
 			return ebusgateway.V8RolloutSnapshot{
@@ -406,7 +462,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 				PayloadAaAutoSynAbsorbed:       bus.PayloadAaAutoSynAbsorbed(),
 				PayloadAaAutoSynRecovered:      bus.PayloadAaAutoSynRecovered(),
 				PayloadAaAutoSynDrainExhausted: bus.PayloadAaAutoSynDrainExhausted(),
-				V8ShadowWouldHaveDroppedTotal:  classifier.ShadowWouldHaveDroppedTotal(),
+				V8ShadowWouldHaveDroppedTotal:  shadowDropCountFn(),
 			}
 		})
 
@@ -427,19 +483,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		// immediately starts reading the new bus — no surface
 		// inconsistency between /metrics and /debug/vars.
 		v8RolloutExpvarCurrent.Store(&v8RolloutExpvarSource{
-			bus:        bus,
-			classifier: classifier,
+			bus:               bus,
+			shadowDropCountFn: shadowDropCountFn,
 		})
-		// F-NEW-26: pin the current classifier for the
-		// /debug/v8/admin-events HTTP handler too. Same atomic-
-		// pointer pattern as v8RolloutExpvarCurrent — handler
-		// registered ONCE per process at startHTTPServer,
-		// dereferences this pointer at request time. classifier
-		// may be nil (non-adapter-direct transports); the
-		// handler's nil-check returns an empty event list in
-		// that case so the surface stays available across
-		// transports for tooling that probes it unconditionally.
-		v8AdminEventsCurrentClassifier.Store(classifier)
+		// F-NEW-26: install the current-generation classifier callback for
+		// /debug/v8/admin-events. Production operations execute inside stable
+		// driver admission, so a classifier pointer cannot escape across
+		// replacement. A missing classifier (non-adapter-direct transport)
+		// leaves the response empty while preserving the HTTP contract.
+		v8AdminEventsCurrentClassifier.Store(nil)
+		v8AdminEventsCurrentProvider.Store(&v8AdminClassifierProvider{withClassifier: withClassifier})
 		v8RolloutExpvarPublishOnce.Do(func() {
 			expvar.Publish("helianthus_round9_absorb_entered_total",
 				expvar.Func(func() any {
@@ -472,10 +525,11 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			expvar.Publish("helianthus_v8_shadow_would_have_dropped_total",
 				expvar.Func(func() any {
 					if src := v8RolloutExpvarCurrent.Load(); src != nil {
-						// classifier may be nil on non-adapter-direct
-						// transports — the method has nil-receiver
-						// handling and returns 0.
-						return src.classifier.ShadowWouldHaveDroppedTotal()
+						// Non-adapter-direct transports install no counter callback.
+						if src.shadowDropCountFn == nil {
+							return uint64(0)
+						}
+						return src.shadowDropCountFn()
 					}
 					return uint64(0)
 				}))
@@ -495,6 +549,8 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	}
 
 	builder := graphql.NewBuilder(gateway.Registry, nil)
+	liveAdmittedEBusSource := newManagedEBusSourceProvider(ebusDriver, builder.AdmittedMutationSource)
+	builder.SetAdmittedMutationSourceProvider(liveAdmittedEBusSource)
 
 	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
 	// the PassiveTransactionReconstructor's classified events to insert
@@ -578,7 +634,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
-	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
@@ -599,6 +655,115 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		busObservability.SetEnergyFreshnessMetricsRefresher(func(now time.Time, passiveState string) {
 			semanticRuntime.Provider().RefreshEnergyFreshnessMetrics(now, passiveState)
 		})
+	}
+	// The control plane is process-owned, not eBUS-owned. Start it before
+	// passive source-selection warmup so a slow or unavailable provider cannot
+	// delay the stable HTTP/API shell. Mutable eBUS surfaces use late bindings:
+	// they fail closed before source admission and delegate without rebuilding
+	// the server once the healthy semantic poller is ready.
+	lateScheduleWriter := &lateEBusScheduleWriter{}
+	lateConfigWriter := &lateEBusConfigWriter{}
+	lateWatchProvider := &lateEBusWatchSummaryProvider{}
+	lateGraphQLWriter := &lateEBusGraphQLWriter{}
+	lateGraphQLWatchProvider := &lateEBusGraphQLWatchSummaryProvider{}
+	builder.SetBoilerConfigWriter(lateGraphQLWriter)
+	builder.SetSystemConfigWriter(lateGraphQLWriter)
+	builder.SetScheduleWriter(lateGraphQLWriter)
+	builder.SetWatchSummaryProvider(lateGraphQLWatchProvider)
+	if err := builder.Start(ctx); err != nil {
+		return err
+	}
+	var (
+		listener      *ebusgateway.BroadcastListener
+		reconstructor *ebusgateway.PassiveTransactionReconstructor
+	)
+	startHTTPServerOverride := startHTTPServerFn
+	startHTTPServerFn := func(
+		ctx context.Context,
+		cfg ebusgateway.Config,
+		gateway *ebusgateway.Gateway,
+		builder *graphql.Builder,
+		hub *graphql.BroadcastHub,
+		semanticProvider graphql.SemanticProvider,
+		eebusProvider mcp.EEBusV1Provider,
+		eebusCommandRouter mcp.EEBusV1CommandRouter,
+		modbusProvider mcp.ModbusV1Provider,
+		scheduleWriter mcp.ScheduleWriter,
+		configWriter mcp.ConfigWriter,
+		busObservability *ebusgateway.BusObservabilityStore,
+		shadowCache *ebusgateway.ShadowCache,
+	) (*http.Server, mdns.Advertiser, error) {
+		if startHTTPServerOverride != nil {
+			return startHTTPServerOverride(
+				ctx, cfg, gateway, builder, hub, semanticProvider, scheduleWriter,
+				configWriter, busObservability, shadowCache,
+			)
+		}
+		return startHTTPServer(
+			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
+			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, ebusDriver,
+		)
+	}
+	server, advertiser, err := startHTTPServerFn(
+		ctx,
+		cfg,
+		gateway,
+		builder,
+		hub,
+		portalSemanticProvider,
+		eebusMCPProvider(eebusAdapter),
+		eebusMCPCommandRouter(eebusAdapter),
+		newGatewayModbusMCPProvider(modbusAdapter),
+		lateScheduleWriter,
+		lateConfigWriter,
+		busObservability,
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Preserve the historical teardown order: stop eBUS consumers before
+		// closing observability, then retire mDNS and HTTP before Gateway/driver.
+		if listener != nil {
+			if err := listener.Close(); err != nil {
+				log.Printf("broadcast listener close: %v", err)
+			}
+		}
+		if deduplicator != nil {
+			if err := deduplicator.Close(); err != nil {
+				log.Printf("deduplicator close: %v", err)
+			}
+		}
+		if reconstructor != nil {
+			if err := reconstructor.Close(); err != nil {
+				log.Printf("reconstructor close: %v", err)
+			}
+		}
+		if busObservability != nil {
+			if err := busObservability.Close(); err != nil {
+				log.Printf("bus observability close: %v", err)
+			}
+		}
+		if advertiser != nil {
+			if err := advertiser.Close(); err != nil {
+				log.Printf("mdns close: %v", err)
+			}
+		}
+		if server != nil {
+			if err := server.Close(); err != nil {
+				log.Printf("http server close: %v", err)
+			}
+		}
+	}()
+
+	// The control plane is already serving through stable fail-closed
+	// bindings. For startup-scan deployments, wait for the first correlated
+	// RUNNING generation before source admission and the one initial scan pass.
+	// This turns a slow healthy constructor into one immediate scan instead of
+	// an unavailable pass followed by the default 30-second retry interval.
+	if cfg.ScanOnStart && !ebusDriver.WaitRunning(ctx) {
+		return nil
 	}
 
 	var sourceSelection *protocol.SourceAddressSelection
@@ -642,8 +807,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	}
 
 	var (
-		listener            *ebusgateway.BroadcastListener
-		reconstructor       *ebusgateway.PassiveTransactionReconstructor
 		insertSubscribeOnce sync.Once
 		insertSubscribed    atomic.Bool
 	)
@@ -811,7 +974,7 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		cfg.ScanSource = overrideSource
 		cfg.ScanSourceAuto = false
 	}
-	builder.SetStatusProvider(newRuntimeStatusProvider(cfg, semanticRuntime.Provider()))
+	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
 	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
 	if syncStaticAdmitted {
 		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)
@@ -847,19 +1010,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 			boiler:   semanticPoller,
 			system:   semanticPoller,
 			schedule: semanticPoller,
-			admitted: builder.AdmittedMutationSource,
+			admitted: liveAdmittedEBusSource,
 		}
-		builder.SetSystemConfigWriter(gatedGraphQLWriter)
-		builder.SetBoilerConfigWriter(gatedGraphQLWriter)
-		builder.SetScheduleWriter(gatedGraphQLWriter)
-		builder.SetWatchSummaryProvider(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
+		lateGraphQLWriter.Bind(gatedGraphQLWriter)
+		lateGraphQLWatchProvider.Bind(newGraphQLWatchSummaryProvider(semanticPoller.shadow))
 	}
 	if semanticPoller != nil && eebusAdapter != nil {
 		captureSource := newLeafPromotionLiveSource(
 			semanticPoller,
 			eebusAdapter,
 			eebusMCPCommandRouter(eebusAdapter),
-			builder.AdmittedMutationSource,
+			liveAdmittedEBusSource,
 		)
 		captureRuntime, captureErr := newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
 		if captureErr != nil {
@@ -888,10 +1049,6 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		if err := attachPassiveShadowProducerFn(semanticPoller, ctx, deduplicator); err != nil {
 			return err
 		}
-	}
-
-	if err := builder.Start(ctx); err != nil {
-		return err
 	}
 
 	startupCfg := resolveStartupScanSourceConfig(cfg)
@@ -1082,69 +1239,16 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 		}
 	}
 
-	var scheduleWriter mcp.ScheduleWriter
 	if semanticPoller != nil {
-		scheduleWriter = admittedMCPScheduleWriter{
+		lateScheduleWriter.Bind(admittedMCPScheduleWriter{
 			writer:   semanticPoller,
-			admitted: builder.AdmittedMutationSource,
-		}
-	}
-	var configWriter mcp.ConfigWriter
-	if semanticPoller != nil {
-		configWriter = admittedMCPConfigWriter{
+			admitted: liveAdmittedEBusSource,
+		})
+		lateConfigWriter.Bind(admittedMCPConfigWriter{
 			writer:   &mcpConfigWriterAdapter{poller: semanticPoller},
-			admitted: builder.AdmittedMutationSource,
-		}
-	}
-	var shadowCache *ebusgateway.ShadowCache
-	if semanticPoller != nil {
-		shadowCache = semanticPoller.shadow
-	}
-
-	startHTTPServerOverride := startHTTPServerFn
-	startHTTPServerFn := func(
-		ctx context.Context,
-		cfg ebusgateway.Config,
-		gateway *ebusgateway.Gateway,
-		builder *graphql.Builder,
-		hub *graphql.BroadcastHub,
-		semanticProvider graphql.SemanticProvider,
-		eebusProvider mcp.EEBusV1Provider,
-		eebusCommandRouter mcp.EEBusV1CommandRouter,
-		modbusProvider mcp.ModbusV1Provider,
-		scheduleWriter mcp.ScheduleWriter,
-		configWriter mcp.ConfigWriter,
-		busObservability *ebusgateway.BusObservabilityStore,
-		shadowCache *ebusgateway.ShadowCache,
-	) (*http.Server, mdns.Advertiser, error) {
-		if startHTTPServerOverride != nil {
-			return startHTTPServerOverride(
-				ctx, cfg, gateway, builder, hub, semanticProvider, scheduleWriter,
-				configWriter, busObservability, shadowCache,
-			)
-		}
-		return startHTTPServer(
-			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, shadowCache, eebusAdminHandler, eebusLifecycle, resolvedBuildInfo,
-		)
-	}
-	server, advertiser, err := startHTTPServerFn(
-		ctx,
-		cfg,
-		gateway,
-		builder,
-		hub,
-		portalSemanticProvider,
-		eebusMCPProvider(eebusAdapter),
-		eebusMCPCommandRouter(eebusAdapter),
-		newGatewayModbusMCPProvider(modbusAdapter),
-		scheduleWriter,
-		configWriter,
-		busObservability,
-		shadowCache,
-	)
-	if err != nil {
-		return err
+			admitted: liveAdmittedEBusSource,
+		})
+		lateWatchProvider.Bind(newMCPWatchSummaryProvider(semanticPoller.shadow))
 	}
 	if shouldStartPassiveObserveFirst(cfg) {
 		if reconstructor == nil {
@@ -1152,62 +1256,17 @@ func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
 
 			reconstructor, err = startPassiveTransactionReconstructor(ctx, cfg)
 			if err != nil {
-				if advertiser != nil {
-					_ = advertiser.Close()
-				}
-				if server != nil {
-					_ = server.Close()
-				}
 				return err
 			}
 		}
 		if err := attachPassiveObserveFirst(); err != nil {
 			_ = reconstructor.Close()
-			if advertiser != nil {
-				_ = advertiser.Close()
-			}
-			if server != nil {
-				_ = server.Close()
-			}
 			return err
 		}
 	}
 	if cfg.BroadcastListen && !shouldStartPassiveObserveFirst(cfg) {
 		log.Printf("passive observe-first unavailable on transport=%s; continuing degraded", cfg.TransportConfig.Protocol)
 	}
-	defer func() {
-		if listener != nil {
-			if err := listener.Close(); err != nil {
-				log.Printf("broadcast listener close: %v", err)
-			}
-		}
-		if deduplicator != nil {
-			if err := deduplicator.Close(); err != nil {
-				log.Printf("deduplicator close: %v", err)
-			}
-		}
-		if reconstructor != nil {
-			if err := reconstructor.Close(); err != nil {
-				log.Printf("reconstructor close: %v", err)
-			}
-		}
-		if busObservability != nil {
-			if err := busObservability.Close(); err != nil {
-				log.Printf("bus observability close: %v", err)
-			}
-		}
-		if advertiser != nil {
-			if err := advertiser.Close(); err != nil {
-				log.Printf("mdns close: %v", err)
-			}
-		}
-		if server != nil {
-			if err := server.Close(); err != nil {
-				log.Printf("http server close: %v", err)
-			}
-		}
-	}()
-
 	<-ctx.Done()
 	return nil
 }
@@ -1266,6 +1325,13 @@ func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObserva
 func applyTransportSourcePolicy(cfg *ebusgateway.Config) {
 	if cfg == nil {
 		return
+	}
+	// Resolve a valid URI override once at the process integration boundary so
+	// every downstream admission/source/evidence decision sees the same
+	// canonical transport tuple as the driver factory. Invalid descriptors stay
+	// untouched and are classified driver-locally by DriverManager.
+	if normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig); err == nil {
+		cfg.TransportConfig = normalized
 	}
 
 	protocol := strings.TrimSpace(strings.ToLower(string(cfg.TransportConfig.Protocol)))
@@ -1585,55 +1651,30 @@ func parseStartupProbeTargets(value string) ([]byte, error) {
 // at the call site in run() — never captured in a package-level closure —
 // so classifier state is strictly instance-local (Codex PR #502 P2).
 func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() error, activeTxnClassifier, error) {
-	network := cfg.TransportConfig.Network
-	address := cfg.TransportConfig.Address
+	return wireAdapterDirectWithConnectionLost(ctx, cfg, nil)
+}
 
-	// Detect adapter-direct:// or adapter-direct-ens:// URI scheme in
-	// the address field. When the user passes
-	// --address=adapter-direct://host:port the protocol flag is still
-	// the default ("enh") because parseTransportEndpoint runs later
-	// inside ebusgateway.New.
-	const (
-		schemePrefix    = "adapter-direct://"
-		schemePrefixENS = "adapter-direct-ens://"
-	)
-	addrLower := strings.ToLower(address)
-	uriIsENS := strings.HasPrefix(addrLower, schemePrefixENS)
-	uriIsStd := strings.HasPrefix(addrLower, schemePrefix)
-	if !strings.EqualFold(string(cfg.TransportConfig.Protocol), string(ebusgateway.TransportAdapterDirect)) {
-		if !uriIsStd && !uriIsENS {
-			return nil, nil, nil
-		}
-	}
+const adapterDirectENSProtocol ebusgateway.TransportProtocol = "adapter-direct-ens"
 
-	// Always strip the scheme prefix if present, regardless of which
-	// detection branch was taken. Without this, net.Dial receives
-	// "adapter-direct://host:port" as the address and fails.
-	if uriIsENS {
-		address = address[len(schemePrefixENS):]
-		network = "tcp"
-	} else if uriIsStd {
-		address = address[len(schemePrefix):]
-		// The URI form implies TCP — force it unconditionally since
-		// the default TransportConfig.Network is "unix" and would
-		// cause net.Dial("unix", "host:port") to fail.
-		network = "tcp"
-	} else if network == "" || (network == "unix" && strings.Contains(address, ":")) {
-		// Explicit --transport adapter-direct path: if network is
-		// still the default "unix" but address looks like host:port,
-		// force TCP to avoid net.Dial("unix", "host:port") failures.
-		network = "tcp"
+func wireAdapterDirectWithConnectionLost(ctx context.Context, cfg *ebusgateway.Config, onConnectionLost func()) (func() error, activeTxnClassifier, error) {
+	normalized, err := ebusgateway.NormalizeEBusDriverTransportConfig(cfg.TransportConfig)
+	if err != nil {
+		return nil, nil, err
 	}
+	if normalized.Protocol != ebusgateway.TransportAdapterDirect && normalized.Protocol != adapterDirectENSProtocol {
+		return nil, nil, nil
+	}
+	cfg.TransportConfig = normalized
+	network := normalized.Network
+	address := normalized.Address
 	if address == "" {
-		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999)")
+		return nil, nil, fmt.Errorf("adapter-direct requires an address (e.g. adapter-direct://boiler.local:9999): %w", ebuserrors.ErrInvalidPayload)
 	}
 
 	// Determine ENH vs ENS sub-protocol. ENH is the default.
-	// The adapter-direct-ens:// URI scheme selects ENS explicitly.
-	adapterProtocol := "enh"
-	if uriIsENS {
-		adapterProtocol = "ens"
-	}
+	// The shared normalizer preserves adapter-direct-ens as a private
+	// canonical literal after stripping the URI.
+	adapterProtocol := adapterDirectMuxProtocol(normalized.Protocol)
 
 	muxCfg := adaptermux.Config{
 		Protocol:     adapterProtocol,
@@ -1736,6 +1777,12 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	}
 
 	mux := adaptermux.New(muxCfg)
+	connectionLostOwner := onConnectionLost
+	if onConnectionLost != nil {
+		var connectionLostOnce sync.Once
+		connectionLostOwner = func() { connectionLostOnce.Do(onConnectionLost) }
+	}
+	mux.SetConnectionLostCallback(connectionLostOwner)
 	// Codex PR #502 P2: the instance-scoped classifier is returned to
 	// run() and threaded explicitly as the 5th argument to
 	// startDiscoveryScanLoopFn. No package-level closure captures this
@@ -1769,7 +1816,8 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 	// external clients like ebusd).
 	var proxyListener *adaptermux.ProxyListener
 	if cfg.ProxyListenAddr != "" {
-		pl, err := adaptermux.NewProxyListener(ctx, mux, cfg.ProxyListenAddr, log.Default())
+		onProxyFatal := adapterDirectProxyFatalCallback(mux, connectionLostOwner)
+		pl, err := adaptermux.NewProxyListenerWithFatalCallback(ctx, mux, cfg.ProxyListenAddr, log.Default(), onProxyFatal)
 		if err != nil {
 			if cerr := mux.Close(); cerr != nil {
 				log.Printf("adapter-direct: mux.Close after proxy-listener error: %v", cerr)
@@ -1798,6 +1846,32 @@ func wireAdapterDirect(ctx context.Context, cfg *ebusgateway.Config) (func() err
 		return mux.Close()
 	}
 	return closer, activeTxnClassifier(mux), nil
+}
+
+func adapterDirectProxyFatalCallback(mux *adaptermux.Mux, owner func()) func(error) {
+	if mux == nil || owner == nil {
+		return nil
+	}
+	return func(err error) {
+		// Fatal listener loss is a generation boundary just like upstream loss.
+		// Fence and synchronously retire every existing proxy session before
+		// publishing failure; wireAdapterDirect's shared one-shot owner prevents
+		// duplicate recovery with a concurrent upstream loss.
+		mux.RetireManagedProxySessions()
+		log.Printf("adapter-direct: proxy listener failed: %v", err)
+		owner()
+	}
+}
+
+func adapterDirectMuxProtocol(protocol ebusgateway.TransportProtocol) string {
+	if protocol == adapterDirectENSProtocol {
+		return "ens"
+	}
+	return "enh"
+}
+
+func adapterDirectProxyEnabled(config ebusgateway.TransportConfig) bool {
+	return ebusgateway.EBusDriverTransportProtocol(config) == ebusgateway.TransportAdapterDirect
 }
 
 // v8AdminEventsResponse is the JSON envelope returned by
@@ -1898,8 +1972,7 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 		Events: []v8AdminEventJSON{},
 	}
 
-	classifier := v8AdminEventsCurrentClassifier.Load()
-	if classifier != nil {
+	withCurrentV8AdminClassifier(func(classifier *v8classifier.Classifier) {
 		var events []v8classifier.ClassifierAdminEvent
 		var dropped uint64
 		if peekOnly {
@@ -1925,7 +1998,7 @@ func handleV8AdminEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-	}
+	})
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if peekOnly {
@@ -1963,10 +2036,13 @@ func startHTTPServer(
 	scheduleWriter mcp.ScheduleWriter,
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
-	shadowCache *ebusgateway.ShadowCache,
+	watchSummaryProvider mcp.WatchSummaryProvider,
 	eebusAdminHandler http.Handler,
 	eebusLifecycle *eebusRuntimeLifecycle,
+	ebusProxyReadiness func() string,
+	ebusSourceProvider func() (byte, bool),
 	buildInfo gatewayBuildInfo,
+	ebusDriver *ebusDriverController,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
@@ -2042,13 +2118,13 @@ func startHTTPServer(
 			return nil, nil, fmt.Errorf("register synchronized evidence capture: %w", err)
 		}
 	}
-	mcpServer.SetAdmittedRPCSourceProvider(builder.AdmittedMutationSource)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(cfg, semanticProvider))
+	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(semanticProvider, ebusSourceProvider))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}
-	if shadowCache != nil {
-		mcpServer.SetWatchSummaryProvider(newMCPWatchSummaryProvider(shadowCache))
+	if watchSummaryProvider != nil {
+		mcpServer.SetWatchSummaryProvider(watchSummaryProvider)
 	}
 	mcpServer.SetSemanticProvider(newMCPSemanticProvider(semanticProvider))
 
@@ -2073,7 +2149,10 @@ func startHTTPServer(
 	// paths use the real session FSM so EXPIRED normalization, session
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
-	b503rt := installVaillantB503(mcpServer, gateway, &cfg, builder.AdmittedMutationSource)
+	b503rt := installVaillantB503(mcpServer, gateway, &cfg, ebusSourceProvider)
+	if b503rt != nil && ebusDriver != nil {
+		ebusDriver.SetLifecycleObserver(b503rt)
+	}
 	// M2b_GATEWAY_GRAPHQL (execution-plans#19): wire the GraphQL B503
 	// provider to the same Manager + Dispatcher the MCP surface uses. A
 	// single Manager across both surfaces is mandatory — GraphQL
@@ -2191,7 +2270,7 @@ func startHTTPServer(
 			MCPPath:          cfg.MCPPath,
 			EEBusAdminPath:   "/admin/eebus/v1",
 			Readiness: func() portal.RuntimeReadiness {
-				return projectGatewayReadiness(cfg, eebusLifecycle.LifecycleSnapshot())
+				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
 			},
 			GatewayVersion:    buildInfo.ReleaseVersion,
 			BuildID:           buildInfo.BuildID,
@@ -2343,8 +2422,8 @@ func startHTTPServer(
 				}
 				return portal.ProjectionGraph{}, false
 			},
-			ExplorerBus:    gateway.Bus,
-			ExplorerSource: cfg.ScanSource,
+			ExplorerBus:            gateway.Bus,
+			ExplorerSourceProvider: ebusSourceProvider,
 			// Wire the in-process L7 catalog sub-server (M5_PORTAL).
 			// mcpServer.EbusStandardServer() returns the same instance
 			// RegisterEbusStandardTools installed inside mcp.NewServer;
@@ -3061,11 +3140,11 @@ func initRuntimeStateManager(ctx context.Context, cfg ebusgateway.Config, buildI
 	return mgr, state
 }
 
-func projectGatewayReadiness(cfg ebusgateway.Config, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
+func projectGatewayReadiness(ebusProxyReadiness func() string, snapshot eebusRuntimeLifecycleSnapshot) portal.RuntimeReadiness {
 	eebusReadiness := eebusReadinessForLifecycle(snapshot)
-	proxyReadiness := "DISABLED"
-	if cfg.ProxyListenAddr != "" {
-		proxyReadiness = "READY"
+	proxyReadiness := ebusProxyReadinessDisabled
+	if ebusProxyReadiness != nil {
+		proxyReadiness = ebusProxyReadiness()
 	}
 	return portal.RuntimeReadiness{
 		ProcessReadiness:    string(eebusReadiness.ProcessReadiness),

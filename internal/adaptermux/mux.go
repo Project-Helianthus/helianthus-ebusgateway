@@ -681,6 +681,26 @@ type Mux struct {
 	passiveMu       sync.Mutex
 	passiveCallback func(PassiveEvent)
 
+	// connectionLostCallback is a generation-lifecycle signal for the
+	// in-process DriverManager. It fires when readLoop enters reconnect after
+	// a terminal read failure or the duration-based blackhole threshold. Once
+	// installed, lifecycle ownership is delegated to that manager: this mux
+	// retires instead of running its legacy in-place reconnect loop.
+	connectionLostMu       sync.Mutex
+	connectionLostCallback func()
+	connectionLossManaged  atomic.Bool
+	// connectionUseMu is the managed-generation linearization fence. It is
+	// inactive for callback-free muxes. Managed proxy admission and physical
+	// START/SEND use hold R; terminal loss fences new work, closes the upstream
+	// to unblock existing use, drains R with W, tears state down, and publishes
+	// BACKOFF while W remains held.
+	connectionUseMu         sync.RWMutex
+	connectionLossDelegated atomic.Bool
+	// proxyListener is populated by NewProxyListener after a successful bind.
+	// ManagedConnectionReady consults its live accept-loop state so a fatal
+	// listener exit cannot be masked by an otherwise healthy upstream mux.
+	proxyListener atomic.Pointer[ProxyListener]
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -1035,6 +1055,125 @@ func (m *Mux) SetPassiveCallback(fn func(PassiveEvent)) {
 	m.passiveMu.Lock()
 	defer m.passiveMu.Unlock()
 	m.passiveCallback = fn
+}
+
+// SetConnectionLostCallback installs a non-blocking generation-lifecycle
+// owner. The callback must not call back into Mux methods and should be set
+// before Start. On a terminal connection-loss boundary, the mux reports the
+// loss, rejects further generation-local work, and exits its read loop; the
+// owner is responsible for replacement. With no callback, the legacy in-place
+// reconnect behavior is preserved. Idle read timeouts and in-band RESETTED
+// boundaries are not connection-loss notifications.
+func (m *Mux) SetConnectionLostCallback(fn func()) {
+	m.connectionLostMu.Lock()
+	m.connectionLostCallback = fn
+	m.connectionLostMu.Unlock()
+	m.connectionLossManaged.Store(fn != nil)
+}
+
+func (m *Mux) connectionLostOwner() func() {
+	m.connectionLostMu.Lock()
+	fn := m.connectionLostCallback
+	m.connectionLostMu.Unlock()
+	return fn
+
+}
+
+// beginManagedConnectionUse admits one generation-local proxy/provider use.
+// The bool pair is (gateHeld, admitted). Callback-free muxes avoid the RWMutex
+// hot path entirely and preserve legacy behavior.
+func (m *Mux) beginManagedConnectionUse() (bool, bool) {
+	if !m.connectionLossManaged.Load() {
+		return false, true
+	}
+	m.connectionUseMu.RLock()
+	if m.connectionLossDelegated.Load() || m.ctx == nil || m.ctx.Err() != nil {
+		m.connectionUseMu.RUnlock()
+		return false, false
+	}
+	return true, true
+}
+
+func (m *Mux) endManagedConnectionUse(gateHeld bool) {
+	if gateHeld {
+		m.connectionUseMu.RUnlock()
+	}
+}
+
+// FenceManagedConnection is the non-blocking generation-withdrawal half of
+// managed mux retirement. It is safe to call while DriverManager holds its
+// state lock: it performs one atomic store, never calls the lifecycle owner,
+// and never acquires a mux mutex. Existing pre-fence uses retain their R lease
+// until DriverRuntime closes the upstream; all later proxy START/SEND/session
+// admission is rejected by beginManagedConnectionUse. Callback-free muxes keep
+// their legacy reconnect behavior unchanged.
+func (m *Mux) FenceManagedConnection() {
+	if m != nil && m.connectionLossManaged.Load() {
+		m.connectionLossDelegated.Store(true)
+	}
+}
+
+// RetireManagedProxySessions synchronously removes and closes every external
+// session owned by a managed generation. Fatal proxy-listener loss calls this
+// before notifying DriverManager, so no queued passive/INIT/INFO frame can be
+// published after BACKOFF becomes visible. It deliberately does not acquire
+// connectionUseMu's write side: pre-fence upstream work may be blocked until
+// DriverRuntime closes the transport. AddSession rechecks the fence under
+// sessionsMu, which makes detachment linearizable without that lock-order risk.
+// Callback-free muxes retain their legacy session/reconnect behavior.
+func (m *Mux) RetireManagedProxySessions() {
+	if m == nil || !m.connectionLossManaged.Load() {
+		return
+	}
+	m.FenceManagedConnection()
+	m.clearInfoCache()
+
+	m.sessionsMu.Lock()
+	toClose := make([]*session, 0, len(m.sessions))
+	for id, sess := range m.sessions {
+		toClose = append(toClose, sess)
+		delete(m.sessions, id)
+	}
+	m.sessionsMu.Unlock()
+
+	var closeWG sync.WaitGroup
+	for _, sess := range toClose {
+		m.sessionRemoteAddrs.Delete(sess.id)
+		if value, ok := m.sessionPacers.Load(sess.id); ok {
+			if pacer, _ := value.(*v8classifier.Pacer); pacer != nil {
+				pacer.CancelEchoWatchdog()
+			}
+		}
+		m.sessionPacers.Delete(sess.id)
+		m.arb.removeSession(sess.id)
+		closeWG.Add(1)
+		go func(current *session) {
+			defer closeWG.Done()
+			current.close()
+		}(sess)
+	}
+	closeWG.Wait()
+}
+
+// ManagedConnectionReady reports whether the current managed mux generation
+// can admit proxy work. Readiness is deliberately lock-free with respect to
+// connectionUseMu: reconnect holds its write side while publishing loss, and a
+// status request must report the already-set retirement flag rather than wait
+// behind that callback. The atomic flag is the readiness linearization point.
+func (m *Mux) ManagedConnectionReady() bool {
+	if m == nil || !m.connectionLossManaged.Load() || m.closing.Load() {
+		return false
+	}
+	if m.connectionLossDelegated.Load() || m.ctx == nil || m.ctx.Err() != nil {
+		return false
+	}
+	if listener := m.proxyListener.Load(); listener != nil && !listener.Ready() {
+		return false
+	}
+	m.connMu.Lock()
+	ready := m.upstream != nil
+	m.connMu.Unlock()
+	return ready
 }
 
 // connect dials the adapter and performs the INIT handshake.
@@ -1399,9 +1538,45 @@ func (m *Mux) CachedInfo(id transport.AdapterInfoID) ([]byte, error) {
 	return result, nil
 }
 
-// reconnect tears down the current connection and re-establishes it.
-// Called from the read loop on adapter disconnect.
-func (m *Mux) reconnect() error {
+// reconnect tears down the current connection. Unmanaged muxes then
+// re-establish it in place; managed muxes delegate replacement to their
+// connection-loss owner and return delegated=true so readLoop retires.
+func (m *Mux) reconnect() (delegated bool, err error) {
+	// A managed owner is the sole reconnect authority. Fence new work first,
+	// then detach/close the transport so already-admitted START/SEND calls
+	// unblock before we drain the managed-use gate. BACKOFF is published only
+	// after the common state teardown below, while the write gate remains held.
+	owner := m.connectionLostOwner()
+	delegated = owner != nil
+	managedGateHeld := false
+	if delegated {
+		m.connectionLossDelegated.Store(true)
+
+		m.connMu.Lock()
+		upstream := m.upstream
+		conn := m.conn
+		m.upstream = nil
+		m.conn = nil
+		m.connMu.Unlock()
+		if upstream != nil {
+			if closeErr := upstream.Close(); closeErr != nil {
+				m.logger.Printf("adaptermux: managed upstream close: %v", closeErr)
+			}
+		} else if conn != nil {
+			if closeErr := conn.Close(); closeErr != nil {
+				m.logger.Printf("adaptermux: managed conn close: %v", closeErr)
+			}
+		}
+
+		m.connectionUseMu.Lock()
+		managedGateHeld = true
+		defer func() {
+			if managedGateHeld {
+				m.connectionUseMu.Unlock()
+			}
+		}()
+	}
+
 	// Invalidate INFO cache immediately so CachedInfo returns errors
 	// during the disconnect window rather than serving stale data.
 	m.clearInfoCache()
@@ -1508,14 +1683,24 @@ func (m *Mux) reconnect() error {
 		m.logger.Printf("adaptermux: active channel full, dropping disconnect notification")
 	}
 
-	// Close old connection.
-	m.connMu.Lock()
-	if m.conn != nil {
-		if err := m.conn.Close(); err != nil {
-			m.logger.Printf("adaptermux: old conn close: %v", err)
+	// Close the old connection for callback-free muxes. Managed teardown
+	// detached and closed the transport before draining provider use above.
+	if !delegated {
+		m.connMu.Lock()
+		if m.conn != nil {
+			if err := m.conn.Close(); err != nil {
+				m.logger.Printf("adaptermux: old conn close: %v", err)
+			}
 		}
+		m.connMu.Unlock()
 	}
-	m.connMu.Unlock()
+	if delegated {
+		owner()
+		m.logger.Printf("adaptermux: connection recovery delegated to lifecycle owner")
+		m.connectionUseMu.Unlock()
+		managedGateHeld = false
+		return true, nil
+	}
 
 	// Reconnection loop with exponential backoff.
 	delay := m.cfg.ReconnectInitialDelay
@@ -1524,7 +1709,7 @@ func (m *Mux) reconnect() error {
 		select {
 		case <-m.ctx.Done():
 			timer.Stop()
-			return m.ctx.Err()
+			return false, m.ctx.Err()
 		case <-timer.C:
 		}
 
@@ -1546,7 +1731,7 @@ func (m *Mux) reconnect() error {
 		// Broadcast RESETTED to external sessions.
 		m.broadcastResetToSessions()
 
-		return nil
+		return false, nil
 	}
 }
 
@@ -1603,8 +1788,12 @@ func (m *Mux) readLoop() {
 					m.logger.Printf("adaptermux: consecutive timeouts for %v (threshold %v), triggering reconnect (AM27)", time.Since(firstTimeoutTime).Round(time.Millisecond), m.cfg.BlackholeThreshold)
 					firstTimeoutTime = time.Time{}
 					lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't re-trigger
-					if reconnErr := m.reconnect(); reconnErr != nil {
+					delegated, reconnErr := m.reconnect()
+					if reconnErr != nil {
 						m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
+						return
+					}
+					if delegated {
 						return
 					}
 					continue
@@ -1661,8 +1850,12 @@ func (m *Mux) readLoop() {
 			m.logger.Printf("adaptermux: read error: %v", err)
 			firstTimeoutTime = time.Time{}
 			lastDataTime = time.Time{} // reset after reconnect so quiet bus doesn't trigger blackhole
-			if reconnErr := m.reconnect(); reconnErr != nil {
+			delegated, reconnErr := m.reconnect()
+			if reconnErr != nil {
 				m.logger.Printf("adaptermux: reconnect gave up: %v", reconnErr)
+				return
+			}
+			if delegated {
 				return
 			}
 			continue
@@ -3374,6 +3567,19 @@ func (m *Mux) deliverToActive(symbol byte, countAsDelivered bool) {
 // rather than calling m.arb.requestStart directly, so both branches
 // of the C4 cancel + the C1 enqueue-kick are guaranteed to run.
 func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan startResult {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	releaseManagedGate := func() {
+		if managedGateHeld {
+			m.endManagedConnectionUse(true)
+			managedGateHeld = false
+		}
+	}
+	defer releaseManagedGate()
+	if !admitted || m.closing.Load() {
+		ch := make(chan startResult, 1)
+		ch <- startResult{granted: false, initiator: initiator, err: errNotConnected}
+		return ch
+	}
 	// Steps 1+2 MUST be atomic under stateMu so a concurrent
 	// tryGrantAndStart cannot pop the OLD request out of
 	// pendingExternal between the in-flight check and the
@@ -3461,6 +3667,10 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 	idle := m.lastWireActivity.IsZero() ||
 		time.Since(m.lastWireActivity) >= m.cfg.SYNInterval
 	m.stateMu.Unlock()
+	// Release before the idle kick: tryGrantAndStart takes its own managed
+	// read admission. Keeping this R lock while a loss writer is queued would
+	// make the nested RLock self-deadlock under RWMutex writer preference.
+	releaseManagedGate()
 	if idle {
 		m.tryGrantAndStart()
 	}
@@ -3472,6 +3682,17 @@ func (m *Mux) requestStartForSession(sessionID uint64, initiator byte) <-chan st
 // this method is a no-op — the next tryGrantAndStart will fire after
 // the current one resolves.
 func (m *Mux) tryGrantAndStart() {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
+		return
+	}
+	releaseManagedGate := func() {
+		if managedGateHeld {
+			m.endManagedConnectionUse(true)
+			managedGateHeld = false
+		}
+	}
+	defer releaseManagedGate()
 	// Snapshot transport BEFORE acquiring stateMu to avoid stateMu → connMu
 	// lock nesting. doSend uses connMu → (release) → stateMu, so while not
 	// strictly ABBA, keeping consistent ordering is defensive best practice.
@@ -3735,6 +3956,11 @@ func (m *Mux) tryGrantAndStart() {
 				}
 				m.stateMu.Unlock()
 				if shouldAdvance {
+					// A managed loss writer may already be waiting. Release the
+					// outer R admission before recursively advancing the queue;
+					// otherwise RWMutex writer preference blocks the nested RLock
+					// while this frame can never release its original read lock.
+					releaseManagedGate()
 					m.tryGrantAndStart()
 				}
 			}
@@ -3806,7 +4032,16 @@ func (m *Mux) tryGrantAndStart() {
 		m.closeMu.Unlock()
 		go func() {
 			defer m.wg.Done()
-			if err := starter.StartArbitration(initiator); err != nil {
+			blockingGateHeld, blockingAdmitted := m.beginManagedConnectionUse()
+			var startErr error
+			if !blockingAdmitted {
+				startErr = errNotConnected
+			} else {
+				startErr = starter.StartArbitration(initiator)
+				m.endManagedConnectionUse(blockingGateHeld)
+			}
+			if startErr != nil {
+				err := startErr
 				m.logger.Printf("adaptermux: START arbitration failed for session %d: %v", sessionID, err)
 				// P1 fix (#3063005909): only send failure if we still own
 				// the pending slot.  cancelPendingStart may have cleared
@@ -4800,6 +5035,11 @@ func (m *Mux) doSend(sessionID uint64, data byte) error {
 			pacer.CancelEchoWatchdog()
 		}
 	}()
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
+		return errNotConnected
+	}
+	defer m.endManagedConnectionUse(managedGateHeld)
 
 	if !m.arb.isOwner(sessionID) {
 		return errNotBusOwner

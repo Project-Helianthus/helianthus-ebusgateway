@@ -6,13 +6,18 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
 
@@ -150,12 +155,20 @@ func TestRunKeepsModbusStartupFailureProtocolLocal(t *testing.T) {
 	}
 }
 
-func TestRunMarksAdapterDirectStartupFailureForOwnedRedaction(t *testing.T) {
+func TestRunKeepsAdapterDirectConfigFailureDriverLocal(t *testing.T) {
 	originalDial := dialModbusEndpointFn
 	originalFactory := newModbusEndpointFn
+	originalWire := wireObserveFirstObserversFn
+	originalDiscovery := startDiscoveryScanLoopFn
+	originalSemantic := startVaillantSemanticPollingFn
+	originalHTTP := startHTTPServerFn
 	t.Cleanup(func() {
 		dialModbusEndpointFn = originalDial
 		newModbusEndpointFn = originalFactory
+		wireObserveFirstObserversFn = originalWire
+		startDiscoveryScanLoopFn = originalDiscovery
+		startVaillantSemanticPollingFn = originalSemantic
+		startHTTPServerFn = originalHTTP
 	})
 
 	client, peer := net.Pipe()
@@ -177,12 +190,31 @@ func TestRunMarksAdapterDirectStartupFailureForOwnedRedaction(t *testing.T) {
 	cfg.TransportConfig.Protocol = ebusgateway.TransportAdapterDirect
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = ""
+	cfg.BroadcastListen = false
+	cfg.ScanOnStart = false
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
 
-	err := run(context.Background(), cfg)
-	if err == nil {
-		t.Fatal("run accepted adapter-direct without an address")
+	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+		return nil, nil, nil
 	}
-	if got := endpointOwnerOf(err); got != endpointOwnerAdapterDirect {
-		t.Fatalf("startup error owner = %v; want adapter-direct; error=%v", got, err)
+	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		return startupScanSignals{}
+	}
+	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	httpStarted := false
+	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+		httpStarted = true
+		cancel()
+		return nil, nil, nil
+	}
+
+	if err := run(ctx, cfg); err != nil {
+		t.Fatalf("run promoted adapter-direct config failure to process failure: %v", err)
+	}
+	if !httpStarted {
+		t.Fatal("HTTP shell did not start after adapter-direct config failure")
 	}
 }

@@ -882,6 +882,9 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	// DriverManager owns both active and passive generations when broadcast
+	// observe-first is enabled; keep this injected runtime fully in-memory.
+	cfg.PassiveTransport = transport.NewLoopback()
 	cfg.BroadcastListen = true
 	cfg.ScanOnStart = true
 
@@ -1129,6 +1132,9 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
+	// DriverManager owns both active and passive generations when broadcast
+	// observe-first is enabled; keep this injected runtime fully in-memory.
+	cfg.PassiveTransport = transport.NewLoopback()
 	cfg.BroadcastListen = true
 	cfg.ScanOnStart = true
 
@@ -1422,6 +1428,12 @@ func TestWireAdapterDirect_URIScheme_ForcesTCP(t *testing.T) {
 	if !strings.Contains(err.Error(), "192.0.2.1:9999") {
 		t.Fatalf("expected stripped address in error, got: %v", err)
 	}
+	if cfg.TransportConfig.Protocol != ebusgateway.TransportAdapterDirect || cfg.TransportConfig.Network != "tcp" || cfg.TransportConfig.Address != "192.0.2.1:9999" {
+		t.Fatalf("canonical adapter-direct tuple = %q/%q/%q", cfg.TransportConfig.Protocol, cfg.TransportConfig.Network, cfg.TransportConfig.Address)
+	}
+	if got := adapterDirectMuxProtocol(cfg.TransportConfig.Protocol); got != "enh" {
+		t.Fatalf("adapterDirectMuxProtocol() = %q, want enh", got)
+	}
 }
 
 func TestWireAdapterDirect_ExplicitProtocol_ForcesTCPForHostPort(t *testing.T) {
@@ -1478,9 +1490,33 @@ func TestWireAdapterDirect_ENSScheme_SelectsENS(t *testing.T) {
 	if !strings.Contains(err.Error(), "tcp") {
 		t.Fatalf("expected TCP network, got: %v", err)
 	}
-	// Note: ENS protocol selection is verified implicitly — if the
-	// scheme were not recognized, wireAdapterDirect would return (nil,
-	// nil) and we would not get a dial error.
+	if cfg.TransportConfig.Protocol != adapterDirectENSProtocol || cfg.TransportConfig.Network != "tcp" || cfg.TransportConfig.Address != "192.0.2.1:9999" {
+		t.Fatalf("canonical adapter-direct ENS tuple = %q/%q/%q", cfg.TransportConfig.Protocol, cfg.TransportConfig.Network, cfg.TransportConfig.Address)
+	}
+	if got := adapterDirectMuxProtocol(cfg.TransportConfig.Protocol); got != "ens" {
+		t.Fatalf("adapterDirectMuxProtocol() = %q, want ens", got)
+	}
+}
+
+func TestAdapterDirectProxyAvailabilityUsesCanonicalEndpointProtocol(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  ebusgateway.TransportConfig
+		enabled bool
+	}{
+		{name: "explicit adapter direct", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportAdapterDirect, Address: "adapter.local:9999"}, enabled: true},
+		{name: "adapter direct URI", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter-direct://adapter.local:9999"}, enabled: true},
+		{name: "adapter direct ENS URI", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter-direct-ens://adapter.local:9999"}, enabled: true},
+		{name: "ordinary ENH", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportENH, Address: "adapter.local:9999"}},
+		{name: "TCP plain", config: ebusgateway.TransportConfig{Protocol: ebusgateway.TransportTCPPlain, Address: "adapter.local:9999"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := adapterDirectProxyEnabled(test.config); got != test.enabled {
+				t.Fatalf("adapterDirectProxyEnabled(%#v) = %v, want %v", test.config, got, test.enabled)
+			}
+		})
+	}
 }
 
 func TestWireAdapterDirect_ProxyListener_ReturnedAsCloser(t *testing.T) {

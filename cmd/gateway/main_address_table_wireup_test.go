@@ -39,7 +39,9 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 	// goroutine inside run() fires SetAdmittedMutationSource — which the
 	// inserter now gates its subscription on (Phase A.5 round 3 fix).
 	activeProbePassed := make(chan struct{})
+	discoveryStarted := make(chan struct{})
 	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
+		close(discoveryStarted)
 		return startupScanSignals{
 			activeProbePassed: activeProbePassed,
 		}
@@ -47,7 +49,9 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
 		return nil
 	}
+	passiveAttached := make(chan struct{})
 	startBroadcastListenerWithReconstructorFn = func(context.Context, *router.BusEventRouter, *ebusgateway.PassiveTransactionReconstructor) (*ebusgateway.BroadcastListener, error) {
+		close(passiveAttached)
 		return nil, nil
 	}
 
@@ -108,12 +112,25 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 		t.Fatal("gateway runtime did not reach HTTP startup")
 	}
 
+	// HTTP now starts before source-selection warmup. Wait until the startup
+	// scan is actually installed before signaling its probe result.
+	select {
+	case <-discoveryStarted:
+	case <-time.After(8 * time.Second):
+		t.Fatal("gateway runtime did not finish source-selection warmup")
+	}
+
 	// Signal active-probe success so the async goroutine in run() calls
 	// builder.SetAdmittedMutationSource(sourceSelection.Source). The
 	// AddressTableInserter subscription is gated on AdmittedMutationSource
 	// returning ok=true (Phase A.5 round 3 — Codex bot P2). Without this
 	// signal the inserter never binds.
 	close(activeProbePassed)
+	select {
+	case <-passiveAttached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("passive AddressTable path did not attach after admission")
+	}
 
 	feedCtx, stopFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})

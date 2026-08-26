@@ -181,6 +181,23 @@ func TestBuildSchema_ReflectsRegistry(t *testing.T) {
 	}
 }
 
+func TestIssue851MutationSourceProviderOverridesSelectedSourceSnapshot(t *testing.T) {
+	builder := NewBuilder(nil, nil)
+	builder.SetAdmittedMutationSource(0x77)
+	builder.SetAdmittedMutationSourceProvider(func() (byte, bool) {
+		return 0, false
+	})
+
+	// The selected source remains available to process-owned selection state,
+	// while GraphQL mutations use the live driver-intersected authority.
+	if selected, ok := builder.AdmittedMutationSource(); !ok || selected != 0x77 {
+		t.Fatalf("selected source = 0x%02X/%v, want 0x77/true", selected, ok)
+	}
+	if source, ok := builder.mutationSourceForRequest(); ok || source != 0 {
+		t.Fatalf("mutation source = 0x%02X/%v, want unavailable", source, ok)
+	}
+}
+
 func TestBuildSchema_ProjectionCanonicalIDs(t *testing.T) {
 	canonicalRoot := registry.ProjectionPath{
 		Plane: registry.ServicePlane,

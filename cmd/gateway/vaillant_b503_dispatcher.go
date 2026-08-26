@@ -96,12 +96,13 @@ var (
 // (R1 P2 fix). Production callers pass a `*sync.Mutex`, which satisfies
 // `sync.Locker` natively — no production behaviour change.
 type rawFrameDispatcher struct {
-	bus            b503Bus
-	source         byte
-	sourceProvider func() (byte, bool)
-	readMu         sync.Locker
-	mgr            *b503session.Manager
-	requestTimeout time.Duration
+	bus                 b503Bus
+	source              byte
+	sourceProvider      func() (byte, bool)
+	readMu              sync.Locker
+	mgr                 *b503session.Manager
+	requestTimeout      time.Duration
+	disconnectIfCurrent func(b503session.TransportKey)
 }
 
 // newRawFrameDispatcher constructs a production dispatcher.
@@ -128,13 +129,22 @@ func newRawFrameDispatcher(bus b503Bus, source byte, readMu sync.Locker, mgr *b5
 }
 
 func newRawFrameDispatcherWithSourceProvider(bus b503Bus, sourceProvider func() (byte, bool), readMu sync.Locker, mgr *b503session.Manager, requestTimeout time.Duration) *rawFrameDispatcher {
-	return &rawFrameDispatcher{
+	dispatcher := &rawFrameDispatcher{
 		bus:            bus,
 		sourceProvider: sourceProvider,
 		readMu:         readMu,
 		mgr:            mgr,
 		requestTimeout: requestTimeout,
 	}
+	if mgr != nil {
+		// Standalone/test dispatchers still require the same serialized,
+		// generation-correlated disconnect boundary as production wiring.
+		// installVaillantB503 replaces this private gate with the process-owned
+		// b503Runtime shared by DriverManager lifecycle notifications.
+		lifecycle := &b503Runtime{manager: mgr}
+		dispatcher.disconnectIfCurrent = lifecycle.disconnectIfCurrent
+	}
+	return dispatcher
 }
 
 // Invoke implements mcp.RPCDispatcher.
@@ -172,8 +182,18 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	if len(payload) >= 2 && payload[0] == b503PrimaryByte && payload[1] == b503SecondaryByte {
 		return nil, errRawFrameMalformedPayload
 	}
+	transportAtIssue := d.mgr.TransportKey()
 	source, admitted := d.admittedSource()
 	if !admitted || source == 0 {
+		// Source admission is intersected with DriverManager capability. A
+		// source disappearing therefore means the issuer's generation has
+		// withdrawn even when no transport error reached bus.Send. Release the
+		// owner here as an idempotent fallback; the correlated lifecycle event
+		// may already have performed the same disconnect and never advances the
+		// B503 transport epoch.
+		if d.disconnectIfCurrent != nil {
+			d.disconnectIfCurrent(transportAtIssue)
+		}
 		return nil, fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown)
 	}
 
@@ -183,7 +203,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	// reply from epoch N arriving after a rollover to N+1 must be
 	// rejected without the Manager being consulted at completion-time
 	// in a way that could "rescue" the stale frame.
-	startEpoch := d.mgr.TransportKey().TransportEpoch
+	startEpoch := transportAtIssue.TransportEpoch
 
 	// Optional internal timeout. The caller's ctx still bounds the call
 	// regardless — whichever fires first wins.
@@ -232,7 +252,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	}
 
 	if sendErr != nil {
-		return nil, d.classifySendErr(ctx, bsCtx, sendErr)
+		return nil, d.classifySendErr(ctx, bsCtx, transportAtIssue, sendErr)
 	}
 	if resp == nil {
 		// Defensive: bus.Send returned (nil, nil). Treat as protocol
@@ -255,8 +275,8 @@ func (d *rawFrameDispatcher) admittedSource() (byte, bool) {
 // classifySendErr maps bus.Send errors to dispatcher sentinels per
 // §12.4. The mapping is conservative:
 //
-//   - transport-closed / queue-full → TRANSPORT_DOWN AND fire
-//     OnTransportDisconnect so AD04 quiesce-release runs. The returned
+//   - transport-closed / queue-full → TRANSPORT_DOWN AND run the
+//     generation-correlated disconnect so AD04 quiesce-release runs. The returned
 //     error chain matches errors.Is(_, b503session.ErrTransportDown)
 //     so the existing capability probe classifies it correctly. This
 //     check runs FIRST (R1 P1 fix) — a sendErr that signals transport
@@ -272,15 +292,17 @@ func (d *rawFrameDispatcher) admittedSource() (byte, bool) {
 // explicitly the transport is closed; ambiguous bus errors remain
 // UPSTREAM_RPC_FAILED so legitimate B503 protocol failures are not
 // collapsed into transport errors (§12.4 discriminator rules).
-func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, sendErr error) error {
+func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, transportAtIssue b503session.TransportKey, sendErr error) error {
 	// Transport-down signal in sendErr takes precedence over ctx-cancel
 	// classification. A timed-out call whose underlying transport was
 	// dropped MUST trigger AD04 quiesce-release; otherwise the
 	// live-monitor session gate would stay held and surface SESSION_BUSY
-	// instead of TRANSPORT_DOWN to the next caller (R1 P1 fix).
+	// instead of TRANSPORT_DOWN to the next caller (R1 P1 fix). Correlation
+	// to transportAtIssue prevents a stale generation-N completion from
+	// disconnecting the issuer admitted on generation N+1.
 	if isTransportDownErr(sendErr) {
-		if d.mgr != nil {
-			d.mgr.OnTransportDisconnect()
+		if d.disconnectIfCurrent != nil {
+			d.disconnectIfCurrent(transportAtIssue)
 		}
 		// errors.Join lets the resulting error chain match BOTH
 		// errRawFrameTransportDown (M6 sentinel) AND

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -308,6 +309,30 @@ func TestNormalizeTransportConfigRejectsUnsupportedEndpointScheme(t *testing.T) 
 	}
 }
 
+func TestNormalizeTransportConfigRejectsNetworkURIWithoutHostPort(t *testing.T) {
+	for _, endpoint := range []string{
+		"enh://adapter.invalid",
+		"ens://adapter.invalid",
+		"tcp://adapter.invalid",
+		"tcp-plain://adapter.invalid",
+		"udp-plain://adapter.invalid",
+		"ebusd://adapter.invalid",
+		"ebusd-tcp://adapter.invalid",
+		"adapter-direct://adapter.invalid",
+		"adapter-direct-ens://adapter.invalid",
+		"tcp-plain://:9999",
+		"tcp-plain://adapter.invalid:",
+		"tcp-plain://adapter.invalid:notaport",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := normalizeTransportConfig(TransportConfig{Address: endpoint})
+			if !errors.Is(err, ebuserrors.ErrInvalidPayload) {
+				t.Fatalf("normalizeTransportConfig(%q) error = %v, want ErrInvalidPayload", endpoint, err)
+			}
+		})
+	}
+}
+
 func TestNormalizeTransportConfigENHUnixEndpoint(t *testing.T) {
 	cfg, err := normalizeTransportConfig(TransportConfig{
 		Address: "enh:///var/run/ebusd/ebusd.socket",
@@ -359,6 +384,38 @@ func TestNormalizeTransportConfigTCPPlainEndpoint(t *testing.T) {
 	}
 	if cfg.Address != "127.0.0.1:9999" {
 		t.Fatalf("address = %q; want 127.0.0.1:9999", cfg.Address)
+	}
+}
+
+func TestNormalizeTransportConfigAdapterDirectEndpoints(t *testing.T) {
+	tests := []struct {
+		name         string
+		endpoint     string
+		wantProtocol TransportProtocol
+	}{
+		{name: "enh family", endpoint: "adapter-direct://adapter.local:9999", wantProtocol: TransportAdapterDirect},
+		{name: "ens family", endpoint: "adapter-direct-ens://adapter.local:9999", wantProtocol: transportAdapterDirectENS},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := normalizeTransportConfig(TransportConfig{
+				Protocol: TransportENH,
+				Network:  "unix",
+				Address:  test.endpoint,
+			})
+			if err != nil {
+				t.Fatalf("normalizeTransportConfig() error = %v", err)
+			}
+			if cfg.Protocol != test.wantProtocol || cfg.Network != "tcp" || cfg.Address != "adapter.local:9999" {
+				t.Fatalf("normalized tuple = %q/%q/%q, want %q/tcp/adapter.local:9999", cfg.Protocol, cfg.Network, cfg.Address, test.wantProtocol)
+			}
+			if got := EBusDriverTransportProtocol(TransportConfig{Protocol: TransportENH, Network: "unix", Address: test.endpoint}); got != TransportAdapterDirect {
+				t.Fatalf("EBusDriverTransportProtocol() = %q, want stable adapter-direct shape", got)
+			}
+			if path, special := ResolveAdmissionPath(cfg.Protocol); path != TransportAdmissionSourceSelectionCapable || !special {
+				t.Fatalf("ResolveAdmissionPath(%q) = %q/%v, want source-selection-capable/true", cfg.Protocol, path, special)
+			}
+		})
 	}
 }
 

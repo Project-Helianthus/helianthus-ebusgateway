@@ -26,6 +26,10 @@ const (
 	TransportTCPPlain      TransportProtocol = "tcp-plain"
 	TransportEbusdTCP      TransportProtocol = "ebusd-tcp"
 	TransportAdapterDirect TransportProtocol = "adapter-direct"
+	// transportAdapterDirectENS is the private canonical form of the
+	// documented adapter-direct-ens:// URI. It preserves mux wire-family
+	// selection after URI stripping without widening the public enum surface.
+	transportAdapterDirectENS TransportProtocol = "adapter-direct-ens"
 
 	DefaultSemanticZonePresenceMissThreshold = 3
 	DefaultSemanticZonePresenceHitThreshold  = 2

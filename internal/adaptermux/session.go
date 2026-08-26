@@ -222,12 +222,20 @@ const (
 
 // AddSession registers an external TCP connection as an ENH session.
 // Returns the session ID (>0). The session starts reader and writer
-// goroutines. Returns 0 if the mux is shutting down (context cancelled);
+// goroutines. Returns 0 if the mux is shutting down (context cancelled) or a
+// managed connection loss has delegated replacement to the lifecycle owner;
 // the connection is closed and no goroutines are leaked.
 func (m *Mux) AddSession(conn net.Conn) uint64 {
+	managedGateHeld, admitted := m.beginManagedConnectionUse()
+	if !admitted {
+		_ = conn.Close()
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		return 0
+	}
+	defer m.endManagedConnectionUse(managedGateHeld)
 	if m.ctx == nil || m.ctx.Err() != nil {
 		_ = conn.Close()
-		m.logger.Printf("adaptermux: rejecting session — mux not started or shutting down (AM13)")
+		m.logger.Printf("adaptermux: rejecting session — mux not available (AM13)")
 		return 0
 	}
 
@@ -242,6 +250,17 @@ func (m *Mux) AddSession(conn net.Conn) uint64 {
 
 	// AM25/AM50: check + insert under a single lock to prevent TOCTOU.
 	m.sessionsMu.Lock()
+	// Fatal listener retirement does not take connectionUseMu's write side:
+	// an already-admitted START/SEND may be blocked in the upstream transport.
+	// Recheck the atomic fence under the session-map lock instead, so an
+	// AddSession that acquired its managed read lease before withdrawal cannot
+	// insert after RetireManagedProxySessions detached the generation's map.
+	if m.connectionLossManaged.Load() && m.connectionLossDelegated.Load() {
+		m.sessionsMu.Unlock()
+		m.logger.Printf("adaptermux: rejecting session — managed generation retired (AM13)")
+		_ = conn.Close()
+		return 0
+	}
 	if len(m.sessions) >= maxSessions {
 		m.sessionsMu.Unlock()
 		m.logger.Printf("adaptermux: rejecting session — max sessions (%d) reached (AM50)", maxSessions)

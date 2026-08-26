@@ -21,11 +21,23 @@ type ProxyListener struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	closed   atomic.Bool // AM54: prevent double-close panics
+	ready    atomic.Bool
+	failOnce sync.Once
+	onFatal  func(error)
 }
 
 // NewProxyListener creates and starts a proxy listener on listenAddr.
 // The listener runs until Close() is called or ctx is cancelled.
 func NewProxyListener(ctx context.Context, mux *Mux, listenAddr string, logger *log.Logger) (*ProxyListener, error) {
+	return NewProxyListenerWithFatalCallback(ctx, mux, listenAddr, logger, nil)
+}
+
+// NewProxyListenerWithFatalCallback creates a proxy listener and reports an
+// unexpected permanent Accept failure exactly once. Normal Close and context
+// cancellation are lifecycle teardown, not failures. The callback must not
+// call back into ProxyListener; managed callers use it to fence the mux and
+// notify their generation owner.
+func NewProxyListenerWithFatalCallback(ctx context.Context, mux *Mux, listenAddr string, logger *log.Logger, onFatal func(error)) (*ProxyListener, error) {
 	if mux == nil {
 		return nil, errors.New("adaptermux: proxy listener requires non-nil mux")
 	}
@@ -46,7 +58,10 @@ func NewProxyListener(ctx context.Context, mux *Mux, listenAddr string, logger *
 		logger:   logger,
 		ctx:      plCtx,
 		cancel:   plCancel,
+		onFatal:  onFatal,
 	}
+	pl.ready.Store(true)
+	mux.proxyListener.Store(pl)
 
 	pl.wg.Add(1)
 	// goroutine: closes the TCP listener when the context is cancelled,
@@ -67,6 +82,7 @@ func (pl *ProxyListener) Close() error {
 	if pl.closed.Swap(true) {
 		return nil // AM54: already closed, no-op
 	}
+	pl.ready.Store(false)
 	pl.cancel()
 	err := pl.listener.Close()
 	pl.wg.Wait()
@@ -74,6 +90,13 @@ func (pl *ProxyListener) Close() error {
 		return nil
 	}
 	return err
+}
+
+// Ready reports live accept-loop availability. A successful construction is
+// insufficient: permanent Accept failure clears readiness before notifying
+// the generation owner.
+func (pl *ProxyListener) Ready() bool {
+	return pl != nil && pl.ready.Load() && !pl.closed.Load() && pl.ctx.Err() == nil
 }
 
 // Addr returns the listener's network address (useful when bound to ":0").
@@ -85,6 +108,7 @@ func (pl *ProxyListener) Addr() net.Addr {
 func (pl *ProxyListener) watchCtx() {
 	defer pl.wg.Done()
 	<-pl.ctx.Done()
+	pl.ready.Store(false)
 	// Closing the listener unblocks Accept in the accept loop.
 	_ = pl.listener.Close()
 }
@@ -98,6 +122,7 @@ func (pl *ProxyListener) acceptLoop() {
 		if err != nil {
 			// Check if shutdown is in progress.
 			if pl.ctx.Err() != nil {
+				pl.ready.Store(false)
 				return
 			}
 			// Transient errors (fd exhaustion, etc.): log and retry.
@@ -109,6 +134,12 @@ func (pl *ProxyListener) acceptLoop() {
 				continue
 			}
 			// Non-transient error (listener closed, etc.): exit.
+			pl.ready.Store(false)
+			pl.failOnce.Do(func() {
+				if pl.onFatal != nil {
+					pl.onFatal(err)
+				}
+			})
 			pl.logger.Printf("adaptermux: proxy accept error (fatal): %v", err)
 			return
 		}

@@ -12,18 +12,18 @@ const (
 )
 
 type OutBackAXSV1Result struct {
-	Profile            string `json:"profile"`
-	Qualified          bool   `json:"qualified"`
-	FirmwareMajor      uint16 `json:"firmware_major"`
-	FirmwareMid        uint16 `json:"firmware_mid"`
-	FirmwareMinor      uint16 `json:"firmware_minor"`
-	BatteryTemperature int16  `json:"battery_temperature"`
-	AmbientTemperature int16  `json:"ambient_temperature"`
-	TemperatureScale   int16  `json:"temperature_scale"`
-	Error              uint16 `json:"error"`
-	Status             uint16 `json:"status"`
-	RawRedacted        bool   `json:"raw_redacted"`
-	OutboundAllowed    bool   `json:"outbound_allowed"`
+	Profile            string   `json:"profile"`
+	Qualified          bool     `json:"qualified"`
+	FirmwareMajor      uint16   `json:"firmware_major"`
+	FirmwareMid        uint16   `json:"firmware_mid"`
+	FirmwareMinor      uint16   `json:"firmware_minor"`
+	BatteryTemperature int16    `json:"battery_temperature"`
+	AmbientTemperature int16    `json:"ambient_temperature"`
+	TemperatureScale   int16    `json:"temperature_scale"`
+	Error              uint16   `json:"error"`
+	Status             uint16   `json:"status"`
+	RawWords           []uint16 `json:"raw_words"`
+	OutboundAllowed    bool     `json:"outbound_allowed"`
 }
 type OutBackAXSV1Provider interface {
 	OutBackAXSV1(context.Context) (OutBackAXSV1Result, error)
@@ -42,7 +42,7 @@ func registerOutBackAXSV1Tool(server *Server, provider ModbusV1Provider) {
 	outBackAXSV1Providers.Lock()
 	outBackAXSV1Providers.byServer[server] = p
 	outBackAXSV1Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: OutBackAXSV1StatusGetTool, Description: "Get the redacted read-only OutBack AXS status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: OutBackAXSV1StatusGetTool, Description: "Get the native OutBack AXS observation status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 func (server *Server) handleOutBackAXSV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
 	if name != OutBackAXSV1StatusGetTool {
@@ -58,7 +58,6 @@ func (server *Server) handleOutBackAXSV1Call(ctx context.Context, name string, a
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("outback AXS provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	r, err := p.OutBackAXSV1(ctx)
-	r.RawRedacted = true
-	r.OutboundAllowed = false
+	r.RawWords = append([]uint16(nil), r.RawWords...)
 	return callToolResultText(mustJSON(newModbusV1Envelope(r, err, true, "RETAINED_PROFILE", "")), err != nil), true
 }

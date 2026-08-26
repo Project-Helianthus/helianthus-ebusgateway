@@ -17,6 +17,7 @@ type OutBackAXSV1ProviderSnapshot struct {
 	BatteryTemperature, AmbientTemperature, TemperatureScale int16
 	Error, Status                                            uint16
 	RawWords                                                 []uint16
+	OutboundAllowed                                          bool
 }
 type OutBackAXSV1SnapshotProvider interface {
 	OutBackAXSV1Snapshot(context.Context) (OutBackAXSV1ProviderSnapshot, error)
@@ -40,5 +41,5 @@ func (r *OutBackAXSV1Runtime) OutBackAXSV1(ctx context.Context) (OutBackAXSV1Res
 	if s.Profile != OutBackAXSV1Profile || !s.Qualified {
 		return OutBackAXSV1Result{}, ErrOutBackAXSV1NotQualified
 	}
-	return OutBackAXSV1Result{Profile: s.Profile, Qualified: true, FirmwareMajor: s.FirmwareMajor, FirmwareMid: s.FirmwareMid, FirmwareMinor: s.FirmwareMinor, BatteryTemperature: s.BatteryTemperature, AmbientTemperature: s.AmbientTemperature, TemperatureScale: s.TemperatureScale, Error: s.Error, Status: s.Status, RawRedacted: true, OutboundAllowed: false}, nil
+	return OutBackAXSV1Result{Profile: s.Profile, Qualified: true, FirmwareMajor: s.FirmwareMajor, FirmwareMid: s.FirmwareMid, FirmwareMinor: s.FirmwareMinor, BatteryTemperature: s.BatteryTemperature, AmbientTemperature: s.AmbientTemperature, TemperatureScale: s.TemperatureScale, Error: s.Error, Status: s.Status, RawWords: append([]uint16(nil), s.RawWords...), OutboundAllowed: s.OutboundAllowed}, nil
 }

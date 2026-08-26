@@ -78,6 +78,23 @@ func TestGreeVRFCANCandidateV1SnapshotGetOrdersOpaqueCellsDeterministically(t *t
 	}
 }
 
+func TestGreeVRFCANCandidateV1SnapshotGetDropsMalformedRawEvidenceWithoutSuppressingCells(t *testing.T) {
+	snapshot := greeVRFCANCandidateV1FixtureSnapshot()
+	snapshot.RawEvidence = []GreeVRFCANCandidateV1RawEvidence{{DLC: 3, RawDLC: 4, Data: [8]byte{0xde, 0xad, 0xbe, 0xef}}}
+	runtime, err := NewGreeVRFCANCandidateV1Runtime(greeVRFCANCandidateV1FixtureProvider{snapshot: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runtime.SnapshotGet(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.OpaqueCells) != 2 || len(result.RawEvidence) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 	providerFailure := errors.New("provider failure")
 	for _, testCase := range []struct {
@@ -94,7 +111,6 @@ func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 		{name: "opaque field exceeds seven bits", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Opaque7: 0xff, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "unknown cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x1c}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "duplicate cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}, {Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
-		{name: "invalid raw DLC", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}, RawEvidence: []GreeVRFCANCandidateV1RawEvidence{{DLC: 3, RawDLC: 4}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			runtime, err := NewGreeVRFCANCandidateV1Runtime(testCase.provider)

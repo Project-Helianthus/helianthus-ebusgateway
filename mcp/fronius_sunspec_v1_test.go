@@ -14,7 +14,9 @@ type froniusSunSpecFixture struct{ *modbusV1FixtureProvider }
 
 func (*froniusSunSpecFixture) FroniusSunSpecV1(context.Context) (FroniusSunSpecV1Result, error) {
 	return FroniusSunSpecV1Result{
-		Qualified: true,
+		Qualified:       true,
+		RawRedacted:     false,
+		OutboundAllowed: true,
 		Telemetry: &FroniusSunSpecV1Telemetry{
 			ACActivePowerWatts:      8421.5,
 			ACFrequencyHertz:        50,
@@ -35,7 +37,7 @@ func TestFroniusSunSpecV1ToolProjectsOnlyQualifiedStandardTelemetry(t *testing.T
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["profile"] != FroniusSunSpecV1Profile || d["capability"] != modbusreg.SunSpecThreePhaseMonitoringCapabilityID || d["qualification"] != "QUALIFIED" || d["qualified"] != true || d["raw_redacted"] != true || d["outbound_allowed"] != false {
+	if d["profile"] != FroniusSunSpecV1Profile || d["capability"] != modbusreg.SunSpecThreePhaseMonitoringCapabilityID || d["qualification"] != "QUALIFIED" || d["qualified"] != true || d["raw_redacted"] != false || d["outbound_allowed"] != true {
 		t.Fatalf("%#v", d)
 	}
 	telemetry := msp06Map(t, d["telemetry"], "telemetry")

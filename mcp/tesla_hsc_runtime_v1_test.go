@@ -1,21 +1,22 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
-	"reflect"
 	"testing"
 )
 
-func TestTeslaHSCV1RuntimeInjectsOnlyRedactedCorrelatedResponses(t *testing.T) {
-	responseType := reflect.TypeOf(TeslaHSCV1CorrelatedResponse{})
-	for field := 0; field < responseType.NumField(); field++ {
-		if typeContainsBytes(responseType.Field(field).Type) {
-			t.Fatalf("correlated response accepts raw bytes through %s", responseType.Field(field).Name)
-		}
-	}
+func TestTeslaHSCV1RuntimeRetainsInjectedNativeRecords(t *testing.T) {
+	payload := []byte{0x32, 0x02, 0x2a, 0x00}
 	runtime, err := NewTeslaHSCV1Runtime(&teslaHSCV1RuntimeFixture{responses: []TeslaHSCV1CorrelatedResponse{
-		{Function: 100, PayloadCount: 2},
-		{Function: 101, PayloadCount: 1},
+		{Function: 100, Records: []TeslaHSCV1NativeRecord{{
+			Function: 100, Payload: payload, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+			Family: 6, RequestTag: 5, ResponseTag: 6, RequestName: "GetConfig", ResponseName: "WCConfig",
+			FieldNames: []string{"settings", "wifi_config"},
+		}}},
+		{Function: 101, OutboundAllowed: true, Records: []TeslaHSCV1NativeRecord{{
+			Function: 101, Payload: []byte{}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+		}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -24,25 +25,26 @@ func TestTeslaHSCV1RuntimeInjectsOnlyRedactedCorrelatedResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OutboundAllowed || result.RetainedLength != 0 || result.RetainedDigest != "" {
-		t.Fatalf("unsafe result: %#v", result)
-	}
-	if result.Disposition != "framing_only" || result.Compatibility != "correlated_response" {
+	if result.Disposition != "native_records" || result.Compatibility != "correlated_response" || !result.OutboundAllowed || len(result.NativeRecords) != 2 {
 		t.Fatalf("result = %#v", result)
 	}
-}
-
-func typeContainsBytes(typ reflect.Type) bool {
-	if typ.Kind() == reflect.Array || typ.Kind() == reflect.Slice {
-		return typ.Elem().Kind() == reflect.Uint8 || typeContainsBytes(typ.Elem())
+	if record := result.NativeRecords[0]; !bytes.Equal(record.Payload, payload) || record.RequestName != "GetConfig" || record.ResponseName != "WCConfig" || len(record.FieldNames) != 2 {
+		t.Fatalf("record = %#v", record)
 	}
-	return false
+	payload[0] = 0
+	if result.NativeRecords[0].Payload[0] != 0x32 {
+		t.Fatalf("native payload was not copied: %#v", result.NativeRecords[0])
+	}
 }
 
-func TestTeslaHSCV1RuntimeRejectsUncorrelatedOrOpaqueOutboundPaths(t *testing.T) {
+func TestTeslaHSCV1RuntimeRejectsInvalidCorrelatedRecords(t *testing.T) {
+	valid := TeslaHSCV1NativeRecord{Function: 101, Payload: []byte{}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"}
 	for _, response := range []TeslaHSCV1CorrelatedResponse{
-		{Function: 101, PayloadCount: 2},
+		{Function: 101, Records: []TeslaHSCV1NativeRecord{valid, valid}},
 		{Function: 102},
+		{Function: 101, Records: []TeslaHSCV1NativeRecord{{Function: 102, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"}}},
+		{Function: 100, Records: []TeslaHSCV1NativeRecord{{Function: 100, Payload: bytes.Repeat([]byte{1}, 253), Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"}}},
+		{Function: 100, Records: []TeslaHSCV1NativeRecord{{Function: 100, Compatibility: "", Provenance: "synthetic-replay"}}},
 	} {
 		runtime, err := NewTeslaHSCV1Runtime(&teslaHSCV1RuntimeFixture{responses: []TeslaHSCV1CorrelatedResponse{response}})
 		if err != nil {

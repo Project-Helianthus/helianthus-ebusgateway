@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -37,16 +38,16 @@ func (*teslaHSCV1UnsafeFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1R
 		Compatibility:   "fixture",
 		OutboundAllowed: true,
 		NativeRecords: []TeslaHSCV1NativeRecord{{
-			Function:     100,
-			Payload:      []byte{0x32, 0x02, 0x2a, 0x00},
+			Function:      100,
+			Payload:       []byte{0x32, 0x02, 0x2a, 0x00},
 			Compatibility: "wc3_24_44_3",
-			Provenance:   "synthetic-replay",
-			Family:       6,
-			RequestTag:   5,
-			ResponseTag:  6,
-			RequestName:  "GetConfig",
-			ResponseName: "WCConfig",
-			FieldNames:   []string{"settings", "wifi_config"},
+			Provenance:    "synthetic-replay",
+			Family:        6,
+			RequestTag:    5,
+			ResponseTag:   6,
+			RequestName:   "GetConfig",
+			ResponseName:  "WCConfig",
+			FieldNames:    []string{"settings", "wifi_config"},
 		}},
 	}, nil
 }
@@ -70,7 +71,7 @@ func TestTeslaHSCV1StatusToolPreservesNativePayloadAndContext(t *testing.T) {
 		t.Fatalf("native_records = %#v", data["native_records"])
 	}
 	record, ok := records[0].(map[string]any)
-	if !ok || record["function"] != float64(100) || record["payload"] == nil ||
+	if !ok || fmt.Sprint(record["function"]) != "100" || record["payload"] != "MgIqAA==" ||
 		record["compatibility"] != "wc3_24_44_3" || record["provenance"] != "synthetic-replay" ||
 		record["request_name"] != "GetConfig" || record["response_name"] != "WCConfig" {
 		t.Fatalf("native record = %#v", records[0])
@@ -92,7 +93,7 @@ func TestTeslaHSCV1RuntimeRejectsEmptyCorrelatedResponseBatch(t *testing.T) {
 	if err == nil {
 		t.Fatalf("empty correlated response batch accepted as %#v", result)
 	}
-	if result != (TeslaHSCV1Result{}) {
+	if result.Disposition != "" || result.Compatibility != "" || result.OutboundAllowed || len(result.NativeRecords) != 0 {
 		t.Fatalf("empty correlated response batch retained result %#v", result)
 	}
 }

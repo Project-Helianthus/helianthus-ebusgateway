@@ -8,16 +8,31 @@ import (
 
 const TeslaHSCV1StatusGetTool = "modbus.v1.tesla.hsc.status.get"
 
-// TeslaHSCV1Result is the redacted, read-only Tesla profile snapshot.
-type TeslaHSCV1Result struct {
-	Disposition     string `json:"disposition"`
-	Compatibility   string `json:"compatibility"`
-	OutboundAllowed bool   `json:"outbound_allowed"`
-	RetainedLength  int    `json:"retained_length,omitempty"`
-	RetainedDigest  string `json:"retained_digest,omitempty"`
+// TeslaHSCV1NativeRecord retains one native Tesla HSC message with the
+// firmware-scoped names and provenance supplied by the selected codec.
+type TeslaHSCV1NativeRecord struct {
+	Function      byte     `json:"function"`
+	Payload       []byte   `json:"payload"`
+	Compatibility string   `json:"compatibility"`
+	Provenance    string   `json:"provenance"`
+	Family        uint64   `json:"family,omitempty"`
+	RequestTag    uint64   `json:"request_tag,omitempty"`
+	ResponseTag   uint64   `json:"response_tag,omitempty"`
+	RequestName   string   `json:"request_name,omitempty"`
+	ResponseName  string   `json:"response_name,omitempty"`
+	FieldNames    []string `json:"field_names,omitempty"`
 }
 
-// TeslaHSCV1Provider supplies a redacted profile snapshot without transport I/O.
+// TeslaHSCV1Result is the native Tesla HSC profile snapshot. It carries the
+// complete records emitted by an already-correlated injected provider.
+type TeslaHSCV1Result struct {
+	Disposition     string                   `json:"disposition"`
+	Compatibility   string                   `json:"compatibility"`
+	OutboundAllowed bool                     `json:"outbound_allowed"`
+	NativeRecords   []TeslaHSCV1NativeRecord `json:"native_records,omitempty"`
+}
+
+// TeslaHSCV1Provider supplies a native profile snapshot without transport I/O.
 type TeslaHSCV1Provider interface {
 	TeslaHSCV1(context.Context) (TeslaHSCV1Result, error)
 }
@@ -35,7 +50,7 @@ func registerTeslaHSCV1Tool(server *Server, provider ModbusV1Provider) {
 	teslaHSCV1Providers.Lock()
 	teslaHSCV1Providers.byServer[server] = tesla
 	teslaHSCV1Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: TeslaHSCV1StatusGetTool, Description: "Get the read-only Tesla HSC profile disposition and redacted opaque retention metadata.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: TeslaHSCV1StatusGetTool, Description: "Get native Tesla HSC records and firmware-scoped provenance from an injected correlated provider.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 
 func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -52,16 +67,5 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.TeslaHSCV1(ctx)
-	result = failClosedTeslaHSCV1Result(result)
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
-}
-
-// failClosedTeslaHSCV1Result preserves status-only profile information while
-// preventing a provider from granting operation admission or exposing opaque
-// retention metadata through the MCP boundary.
-func failClosedTeslaHSCV1Result(result TeslaHSCV1Result) TeslaHSCV1Result {
-	result.OutboundAllowed = false
-	result.RetainedLength = 0
-	result.RetainedDigest = ""
-	return result
 }

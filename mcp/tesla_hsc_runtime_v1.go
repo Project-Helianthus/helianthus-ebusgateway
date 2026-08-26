@@ -5,11 +5,13 @@ import (
 	"errors"
 )
 
-// TeslaHSCV1CorrelatedResponse is one inbound RTU exchange already correlated
-// by the transport. It has no request-construction or transmit capability.
+// TeslaHSCV1CorrelatedResponse is one RTU exchange already correlated by the
+// transport. Native records are copied into the MCP result without invoking
+// transport or constructing a request.
 type TeslaHSCV1CorrelatedResponse struct {
-	Function     byte
-	PayloadCount uint8
+	Function        byte
+	OutboundAllowed bool
+	Records         []TeslaHSCV1NativeRecord
 }
 
 // TeslaHSCV1ResponseProvider supplies only completed correlated responses.
@@ -17,8 +19,8 @@ type TeslaHSCV1ResponseProvider interface {
 	TeslaHSCV1Responses(context.Context) ([]TeslaHSCV1CorrelatedResponse, error)
 }
 
-// TeslaHSCV1Runtime projects injected Tesla response metadata into the
-// existing read-only MCP profile status surface.
+// TeslaHSCV1Runtime projects injected Tesla native records into the MCP
+// profile status surface.
 type TeslaHSCV1Runtime struct{ provider TeslaHSCV1ResponseProvider }
 
 func NewTeslaHSCV1Runtime(provider TeslaHSCV1ResponseProvider) (*TeslaHSCV1Runtime, error) {
@@ -28,9 +30,8 @@ func NewTeslaHSCV1Runtime(provider TeslaHSCV1ResponseProvider) (*TeslaHSCV1Runti
 	return &TeslaHSCV1Runtime{provider: provider}, nil
 }
 
-// TeslaHSCV1 validates only inbound response multiplicity and always projects
-// a fail-closed read-only result. It performs no I/O beyond calling its
-// injected response provider.
+// TeslaHSCV1 validates only already-correlated native record multiplicity. It
+// performs no I/O beyond calling its injected response provider.
 func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Result, error) {
 	if runtime == nil || runtime.provider == nil || ctx == nil {
 		return TeslaHSCV1Result{}, errors.New("tesla HSC runtime is unavailable")
@@ -42,24 +43,44 @@ func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Res
 	if len(responses) == 0 {
 		return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response batch is empty")
 	}
+	result := TeslaHSCV1Result{Disposition: "native_records", Compatibility: "correlated_response"}
 	for _, response := range responses {
 		if !validTeslaHSCV1CorrelatedResponse(response) {
 			return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response is invalid")
 		}
+		result.OutboundAllowed = result.OutboundAllowed || response.OutboundAllowed
+		for _, record := range response.Records {
+			result.NativeRecords = append(result.NativeRecords, copyTeslaHSCV1NativeRecord(record))
+		}
 	}
-	return TeslaHSCV1Result{Disposition: "framing_only", Compatibility: "correlated_response", OutboundAllowed: false}, nil
+	return result, nil
 }
 
 func validTeslaHSCV1CorrelatedResponse(response TeslaHSCV1CorrelatedResponse) bool {
-	if response.PayloadCount == 0 || response.PayloadCount > 8 {
+	if len(response.Records) == 0 || len(response.Records) > 8 {
 		return false
 	}
 	switch response.Function {
 	case 100:
-		return true
+		// FC100 may retain a bounded echo/result sequence.
 	case 101, 102:
-		return response.PayloadCount == 1
+		if len(response.Records) != 1 {
+			return false
+		}
 	default:
 		return false
 	}
+	for _, record := range response.Records {
+		if record.Function != response.Function || len(record.Payload) > 252 ||
+			record.Compatibility == "" || record.Provenance == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func copyTeslaHSCV1NativeRecord(record TeslaHSCV1NativeRecord) TeslaHSCV1NativeRecord {
+	record.Payload = append([]byte(nil), record.Payload...)
+	record.FieldNames = append([]string(nil), record.FieldNames...)
+	return record
 }

@@ -10,10 +10,10 @@ import (
 type smartLoggerFixture struct{ *modbusV1FixtureProvider }
 
 func (*smartLoggerFixture) HuaweiSmartLoggerV1(context.Context) (HuaweiSmartLoggerV1Result, error) {
-	return HuaweiSmartLoggerV1Result{Profile: HuaweiSmartLoggerV1Profile, Family: "SmartLogger", Qualified: false}, nil
+	return HuaweiSmartLoggerV1Result{Profile: HuaweiSmartLoggerV1Profile, Family: "SmartLogger", Qualified: false, RawRedacted: false, OutboundAllowed: true}, nil
 }
 
-func TestHuaweiSmartLoggerV1ToolRedactsInventoryAndDisablesOutbound(t *testing.T) {
+func TestHuaweiSmartLoggerV1ToolPreservesNativeState(t *testing.T) {
 	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +24,7 @@ func TestHuaweiSmartLoggerV1ToolRedactsInventoryAndDisablesOutbound(t *testing.T
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["profile"] != HuaweiSmartLoggerV1Profile || d["family"] != "SmartLogger" || d["raw_redacted"] != true || d["outbound_allowed"] != false {
+	if d["profile"] != HuaweiSmartLoggerV1Profile || d["family"] != "SmartLogger" || d["raw_redacted"] != false || d["outbound_allowed"] != true {
 		t.Fatalf("%#v", d)
 	}
 	for _, key := range []string{"mei", "inventory", "endpoint", "firmware", "child"} {

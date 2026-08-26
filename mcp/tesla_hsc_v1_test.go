@@ -62,3 +62,23 @@ func TestTeslaHSCV1StatusToolFailsClosedForProviderOutput(t *testing.T) {
 		t.Fatalf("retention metadata = %#v", data)
 	}
 }
+
+type teslaHSCV1EmptyResponseProvider struct{}
+
+func (teslaHSCV1EmptyResponseProvider) TeslaHSCV1Responses(context.Context) ([]TeslaHSCV1CorrelatedResponse, error) {
+	return nil, nil
+}
+
+func TestTeslaHSCV1RuntimeRejectsEmptyCorrelatedResponseBatch(t *testing.T) {
+	runtime, err := NewTeslaHSCV1Runtime(teslaHSCV1EmptyResponseProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.TeslaHSCV1(context.Background())
+	if err == nil {
+		t.Fatalf("empty correlated response batch accepted as %#v", result)
+	}
+	if result != (TeslaHSCV1Result{}) {
+		t.Fatalf("empty correlated response batch retained result %#v", result)
+	}
+}

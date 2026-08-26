@@ -23,7 +23,7 @@ type TeslaHSCV1Runtime struct{ provider TeslaHSCV1ResponseProvider }
 
 func NewTeslaHSCV1Runtime(provider TeslaHSCV1ResponseProvider) (*TeslaHSCV1Runtime, error) {
 	if provider == nil {
-		return nil, errors.New("Tesla HSC response provider is required")
+		return nil, errors.New("tesla HSC response provider is required")
 	}
 	return &TeslaHSCV1Runtime{provider: provider}, nil
 }
@@ -33,18 +33,18 @@ func NewTeslaHSCV1Runtime(provider TeslaHSCV1ResponseProvider) (*TeslaHSCV1Runti
 // injected response provider.
 func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Result, error) {
 	if runtime == nil || runtime.provider == nil || ctx == nil {
-		return TeslaHSCV1Result{}, errors.New("Tesla HSC runtime is unavailable")
+		return TeslaHSCV1Result{}, errors.New("tesla HSC runtime is unavailable")
 	}
 	responses, err := runtime.provider.TeslaHSCV1Responses(ctx)
 	if err != nil {
 		return TeslaHSCV1Result{}, err
 	}
 	if len(responses) == 0 {
-		return TeslaHSCV1Result{}, errors.New("Tesla HSC correlated response batch is empty")
+		return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response batch is empty")
 	}
 	for _, response := range responses {
 		if !validTeslaHSCV1CorrelatedResponse(response) {
-			return TeslaHSCV1Result{}, errors.New("Tesla HSC correlated response is invalid")
+			return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response is invalid")
 		}
 	}
 	return TeslaHSCV1Result{Disposition: "framing_only", Compatibility: "correlated_response", OutboundAllowed: false}, nil

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"path"
 	"strconv"
@@ -196,6 +197,10 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Expires", "0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if !hostLocalTransportPeer(request.RemoteAddr) {
+		server.writeError(w, http.StatusForbidden, "host_local_required")
+		return
+	}
 	if request.Method == http.MethodPost && strings.HasPrefix(request.URL.Path, "/admin/eebus/v1/selections/") && strings.HasSuffix(request.URL.Path, ":connect") {
 		server.connectSelection(w, request)
 		return
@@ -242,6 +247,15 @@ func (server *server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	default:
 		server.writeError(w, http.StatusNotFound, "invalid_request")
 	}
+}
+
+func hostLocalTransportPeer(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func (server *server) beginHTTPMutation(w http.ResponseWriter, request *http.Request) (*mutationResponseCapture, bool) {

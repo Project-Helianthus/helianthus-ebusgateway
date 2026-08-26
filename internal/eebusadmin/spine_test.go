@@ -102,7 +102,7 @@ func TestIssue817SPINEUsesTheSameOperatorScopeAndRejectsUnknownQueryBeforeRawCap
 	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
 	handler := newIssue817Server(t, admin, raw, nil)
 	partnerID := issue844PartnerID(t, handler, "connected")
-	bad := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root&cursor=extra", nil)
+	bad := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root&cursor=extra", nil)
 	issue817AddIrrelevantAuthMaterial(bad)
 	badResponse := httptest.NewRecorder()
 	handler.ServeHTTP(badResponse, bad)
@@ -133,7 +133,7 @@ func TestIssue817SPINEFailsClosedOnUnattributedTopLevelOpaqueForMultiplePartners
 	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
 	handler := newIssue817Server(t, admin, raw, nil)
 	partnerID := issue844PartnerID(t, handler, "connected")
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
+	request := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
@@ -149,7 +149,7 @@ func TestIssue844TrustedOfflineSPINEIsDisconnectedBeforeRawCapture(t *testing.T)
 	handler := newIssue817Server(t, admin, raw, nil)
 	partnerID := issue844PartnerID(t, handler, "trusted")
 
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
+	request := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertIssue817ErrorEnvelope(t, response.Body.String(), "disconnected")
@@ -179,7 +179,7 @@ func TestIssue844ConnectedWithoutTopologyHasScopedAvailabilityError(t *testing.T
 	handler := newIssue817Server(t, admin, raw, nil)
 	partnerID := issue844PartnerID(t, handler, "connected")
 
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
+	request := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assertIssue817ErrorEnvelope(t, response.Body.String(), "spine_topology_unavailable")
@@ -190,7 +190,7 @@ func TestIssue844ConnectedWithoutTopologyHasScopedAvailabilityError(t *testing.T
 
 func issue844PartnerID(t *testing.T, handler http.Handler, view string) string {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view="+view, nil)
+	request := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view="+view, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {
@@ -208,7 +208,7 @@ func issue844PartnerID(t *testing.T, handler http.Handler, view string) string {
 
 func issue817GetSpinePage(t *testing.T, handler http.Handler, target string) issue809SpinePage {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request := hostLocalRequest(http.MethodGet, target, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var envelope struct {

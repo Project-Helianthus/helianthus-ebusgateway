@@ -172,7 +172,7 @@ func TestIssue848ConnectAuditMatrixIsExactlyOnceAndSecretFree(t *testing.T) {
 			t.Fatal(err)
 		}
 		listed := httptest.NewRecorder()
-		handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+		handler.ServeHTTP(listed, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
 		observationID := issue817FirstOpaqueID(t, listed, "observation_id")
 		selected := httptest.NewRecorder()
 		handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-audit-848", `{"state_revision":`+strconv.FormatUint(revision, 10)+`,"expected_ski":"`+ski+`"}`))
@@ -478,7 +478,7 @@ func (stub *adminV1Stub) Untrust(_ context.Context, request eebusruntime.Untrust
 
 func TestIssue817UnavailableBoundaryStaysMountedAndSanitized(t *testing.T) {
 	handler := NewUnavailableHandler()
-	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
+	request := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
 	request.Header.Set("Authorization", "Bearer must-not-be-reflected")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -514,8 +514,27 @@ func TestIssue846StatusExposesCanonicalReadinessWhenAvailableOrUnavailable(t *te
 		t.Fatal(err)
 	}
 	availableResponse := httptest.NewRecorder()
-	available.ServeHTTP(availableResponse, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+	available.ServeHTTP(availableResponse, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
 	assertIssue846Readiness(t, availableResponse, http.StatusOK, ready)
+}
+
+func TestIssue916RejectsNonLocalPeerBeforeAdminAccess(t *testing.T) {
+	admin := &adminV1Stub{snapshot: testAdminSnapshot()}
+	handler := newIssue817Server(t, admin, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil)
+	request.RemoteAddr = "198.51.100.10:54321"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s, want forbidden", response.Code, response.Body.String())
+	}
+	admin.mu.Lock()
+	defer admin.mu.Unlock()
+	if admin.snapshotCalls != 0 {
+		t.Fatalf("snapshot calls=%d, want no runtime access", admin.snapshotCalls)
+	}
 }
 
 func assertIssue846Readiness(t *testing.T, response *httptest.ResponseRecorder, wantStatus int, want ReadinessV1) {
@@ -552,7 +571,7 @@ func TestIssue817CredentialFreeReadsUseOneStateRevisionEnvelope(t *testing.T) {
 		paths = append(paths, "/admin/eebus/v1/partners?view="+view)
 	}
 	for index, target := range paths {
-		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request := hostLocalRequest(http.MethodGet, target, nil)
 		if index%2 == 1 {
 			issue817AddIrrelevantAuthMaterial(request)
 		}
@@ -583,7 +602,7 @@ func TestIssue817CapabilityCapacityFailsClosedWithoutPartialRows(t *testing.T) {
 	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
 	handler := newIssue817Server(t, admin, nil, nil)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	handler.ServeHTTP(response, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("capacity status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -601,7 +620,7 @@ func TestIssue817SelectionAndConnectShareProcessLocalScopeAcrossRequests(t *test
 	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
 	handler := newIssue817Server(t, admin, nil, nil)
 
-	list := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
+	list := hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil)
 	listResponse := httptest.NewRecorder()
 	handler.ServeHTTP(listResponse, list)
 	observationID := issue817FirstOpaqueID(t, listResponse, "observation_id")
@@ -643,7 +662,7 @@ func TestIssue848ConnectPINIsSecretSafeAndReplayBound(t *testing.T) {
 	}
 
 	listed := httptest.NewRecorder()
-	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	handler.ServeHTTP(listed, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
 	observationID := issue817FirstOpaqueID(t, listed, "observation_id")
 	selected := httptest.NewRecorder()
 	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-848", `{"state_revision":40,"expected_ski":"`+ski+`"}`))
@@ -700,7 +719,7 @@ func TestIssue848StatusPassesThroughIdentityFreeActiveAction(t *testing.T) {
 	snapshot.ActiveAction = &eebusruntime.ActiveActionV1{ActionID: "action-42", Kind: "connect", State: "terminal", Outcome: &outcome, Retryable: true, Expiry: snapshot.CapturedAt.Add(time.Minute)}
 	handler := newIssue817Server(t, &adminV1Stub{snapshot: snapshot}, nil, nil)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+	handler.ServeHTTP(response, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "remote_ski") || strings.Contains(response.Body.String(), "expires_at") || !strings.Contains(response.Body.String(), `"action_id":"action-42"`) || !strings.Contains(response.Body.String(), `"outcome":"pin_required"`) || !strings.Contains(response.Body.String(), `"expiry"`) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -725,7 +744,7 @@ func TestIssue848ConcurrentIdenticalConnectReservesOneBackendAction(t *testing.T
 	}
 
 	listed := httptest.NewRecorder()
-	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	handler.ServeHTTP(listed, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
 	observationID := issue817FirstOpaqueID(t, listed, "observation_id")
 	selected := httptest.NewRecorder()
 	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-848-race", `{"state_revision":50,"expected_ski":"`+ski+`"}`))
@@ -803,7 +822,7 @@ func TestIssue817ClosedMutationMatrixNeedsOnlyRevisionIdempotencyAndTypedArgumen
 			admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Candidate: snapshot}}
 			handler := newIssue817Server(t, admin, nil, nil)
 			candidate := httptest.NewRecorder()
-			handler.ServeHTTP(candidate, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil))
+			handler.ServeHTTP(candidate, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=candidate", nil))
 			if candidate.Code != http.StatusOK || !strings.Contains(candidate.Body.String(), ski) {
 				t.Fatalf("candidate status=%d body=%s", candidate.Code, candidate.Body.String())
 			}
@@ -832,7 +851,7 @@ func TestIssue817ClosedMutationMatrixNeedsOnlyRevisionIdempotencyAndTypedArgumen
 			admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Trusted: snapshot}}
 			handler := newIssue817Server(t, admin, nil, nil)
 			trusted := httptest.NewRecorder()
-			handler.ServeHTTP(trusted, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil))
+			handler.ServeHTTP(trusted, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=trusted", nil))
 			partnerID := issue817FirstOpaqueID(t, trusted, "partner_id")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, issue817Mutation(test.method, "/admin/eebus/v1/partners/"+partnerID+test.suffix, test.key, `{"state_revision":41}`))
@@ -857,7 +876,7 @@ func TestIssue817SuccessfulLostResponseReplaysLogicalResultAndOpaqueHandle(t *te
 	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
 	handler := newIssue817Server(t, admin, nil, nil)
 	list := httptest.NewRecorder()
-	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	handler.ServeHTTP(list, hostLocalRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
 	observationID := issue817FirstOpaqueID(t, list, "observation_id")
 	route := "/admin/eebus/v1/observations/" + observationID + ":select"
 	body := `{"state_revision":51,"expected_ski":"` + ski + `"}`
@@ -971,9 +990,15 @@ func newIssue817Server(t *testing.T, admin eebusruntime.AdminV1, raw RawSnapshot
 }
 
 func issue817Mutation(method, path, idempotencyKey, body string) *http.Request {
-	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request := hostLocalRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", idempotencyKey)
+	return request
+}
+
+func hostLocalRequest(method, target string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, target, body)
+	request.RemoteAddr = "127.0.0.1:12345"
 	return request
 }
 

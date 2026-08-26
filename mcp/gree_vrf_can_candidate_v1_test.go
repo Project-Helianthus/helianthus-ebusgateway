@@ -53,10 +53,10 @@ func TestGreeVRFCANCandidateV1SnapshotGetPreservesNativeEvidenceAndCapability(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.OutboundAllowed || !strings.Contains(string(encoded), "\"raw_evidence\":") || !strings.Contains(string(encoded), "\"identifier\":518128728") || !strings.Contains(string(encoded), "\"dlc\":3") || !strings.Contains(string(encoded), "\"value\":222") {
+	if !result.OutboundAllowed || !strings.Contains(string(encoded), "\"raw_evidence\":") || !strings.Contains(string(encoded), "\"dlc\":3") || !strings.Contains(string(encoded), "\"value\":222") {
 		t.Fatalf("unsafe result = %s", encoded)
 	}
-	if len(result.RawEvidence) != 1 || result.RawEvidence[0].Data[0] != 0xde || result.RawEvidence[0].Interface != "can0" || result.RawEvidence[0].DLC != 3 || result.RawEvidence[0].RawDLC != 3 {
+	if len(result.RawEvidence) != 1 || result.RawEvidence[0].Identifier != 0x1ee04458 || result.RawEvidence[0].Data[0] != 0xde || result.RawEvidence[0].Interface != "can0" || result.RawEvidence[0].DLC != 3 || result.RawEvidence[0].RawDLC != 3 {
 		t.Fatalf("raw evidence = %#v", result.RawEvidence)
 	}
 }

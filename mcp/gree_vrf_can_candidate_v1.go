@@ -13,11 +13,17 @@ var (
 	ErrGreeVRFCANCandidateV1NotAdmitted         = errors.New("gree VRF CAN candidate snapshot is not admitted")
 )
 
-// GreeVRFCANCandidateV1RawEvidence is retained by the injected provider only.
-// It is deliberately absent from the MCP-facing result.
+// GreeVRFCANCandidateV1RawEvidence preserves the available native observation
+// context without assigning HVAC semantics to its bytes.
 type GreeVRFCANCandidateV1RawEvidence struct {
-	Identifier uint32
-	Data       [8]byte
+	Interface      string  `json:"interface"`
+	Sequence       uint64  `json:"sequence"`
+	MonotonicNanos int64   `json:"monotonic_nanos"`
+	Identifier     uint32  `json:"identifier"`
+	Extended       bool    `json:"extended"`
+	DLC            uint8   `json:"dlc"`
+	RawDLC         uint8   `json:"raw_dlc"`
+	Data           [8]byte `json:"data"`
 }
 
 // GreeVRFCANCandidateV1OpaqueCell is a bounded opaque candidate cell value.
@@ -47,15 +53,15 @@ type GreeVRFCANCandidateV1SnapshotProvider interface {
 
 // GreeVRFCANCandidateV1Result is the safe, read-only MCP-facing candidate status.
 type GreeVRFCANCandidateV1Result struct {
-	Profile             string                            `json:"profile"`
-	Admitted            bool                              `json:"admitted"`
-	OutboundAllowed     bool                              `json:"outbound_allowed"`
-	RawEvidenceRedacted bool                              `json:"raw_evidence_redacted"`
-	Class8              uint8                             `json:"class8"`
-	Opaque7             uint8                             `json:"opaque7"`
-	Unit7               uint8                             `json:"unit7"`
-	Opcode7             uint8                             `json:"opcode7"`
-	OpaqueCells         []GreeVRFCANCandidateV1OpaqueCell `json:"opaque_cells"`
+	Profile         string                             `json:"profile"`
+	Admitted        bool                               `json:"admitted"`
+	OutboundAllowed bool                               `json:"outbound_allowed"`
+	Class8          uint8                              `json:"class8"`
+	Opaque7         uint8                              `json:"opaque7"`
+	Unit7           uint8                              `json:"unit7"`
+	Opcode7         uint8                              `json:"opcode7"`
+	OpaqueCells     []GreeVRFCANCandidateV1OpaqueCell  `json:"opaque_cells"`
+	RawEvidence     []GreeVRFCANCandidateV1RawEvidence `json:"raw_evidence"`
 }
 
 // GreeVRFCANCandidateV1Runtime owns the injected read-only candidate boundary.
@@ -84,6 +90,7 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 	}
 
 	cells := append([]GreeVRFCANCandidateV1OpaqueCell(nil), snapshot.OpaqueCells...)
+	rawEvidence := append([]GreeVRFCANCandidateV1RawEvidence(nil), snapshot.RawEvidence...)
 	sort.Slice(cells, func(left, right int) bool {
 		if cells[left].Cell != cells[right].Cell {
 			return cells[left].Cell < cells[right].Cell
@@ -92,15 +99,15 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 	})
 
 	return GreeVRFCANCandidateV1Result{
-		Profile:             GreeVRFCANCandidateV1Profile,
-		Admitted:            true,
-		OutboundAllowed:     false,
-		RawEvidenceRedacted: true,
-		Class8:              snapshot.Class8,
-		Opaque7:             snapshot.Opaque7,
-		Unit7:               snapshot.Unit7,
-		Opcode7:             snapshot.Opcode7,
-		OpaqueCells:         cells,
+		Profile:         GreeVRFCANCandidateV1Profile,
+		Admitted:        true,
+		OutboundAllowed: snapshot.OutboundAllowed,
+		Class8:          snapshot.Class8,
+		Opaque7:         snapshot.Opaque7,
+		Unit7:           snapshot.Unit7,
+		Opcode7:         snapshot.Opcode7,
+		OpaqueCells:     cells,
+		RawEvidence:     rawEvidence,
 	}, nil
 }
 

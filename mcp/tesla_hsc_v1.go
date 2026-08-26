@@ -72,12 +72,7 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 	if provider == nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
-	result, err := provider.TeslaHSCV1(ctx)
-	valid := validTeslaHSCV1Result(result)
-	if !valid {
-		result = TeslaHSCV1Result{}
-		err = errors.New("tesla HSC native provider result is invalid")
-	}
+	result, err, valid := normalizeTeslaHSCV1ProviderResult(provider.TeslaHSCV1(ctx))
 	if err != nil {
 		var data any
 		if valid {
@@ -86,6 +81,17 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 		return callToolResultText(mustJSON(newModbusV1Envelope(data, err, true, "RETAINED_PROFILE", "")), true), true
 	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
+}
+
+func normalizeTeslaHSCV1ProviderResult(result TeslaHSCV1Result, providerErr error) (TeslaHSCV1Result, error, bool) {
+	if validTeslaHSCV1Result(result) {
+		return result, providerErr, true
+	}
+	validationErr := errors.New("tesla HSC native provider result is invalid")
+	if providerErr != nil {
+		validationErr = errors.Join(providerErr, validationErr)
+	}
+	return TeslaHSCV1Result{}, validationErr, false
 }
 
 func validTeslaHSCV1Result(result TeslaHSCV1Result) bool {

@@ -108,15 +108,54 @@ func (*teslaHSCV1ErrorFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Re
 	}}}, errors.New("synthetic provider error")
 }
 
-func TestTeslaHSCV1StatusToolClearsNativeRecordsOnProviderError(t *testing.T) {
+func TestTeslaHSCV1StatusToolRetainsValidNativeRecordsOnProviderError(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	RegisterModbusV1Tools(server, &teslaHSCV1ErrorFixtureProvider{&modbusV1FixtureProvider{}})
 	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
-	if !result.isError || result.envelope["data"] != nil {
+	if !result.isError {
 		t.Fatalf("provider-error result = %#v", result)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	records, ok := data["native_records"].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("native_records = %#v", data["native_records"])
+	}
+	record, ok := records[0].(map[string]any)
+	if !ok || fmt.Sprint(record["function"]) != "101" || record["payload"] != "AQ==" ||
+		record["compatibility"] != "wc3_24_44_3" || record["provenance"] != "synthetic-replay" {
+		t.Fatalf("native record = %#v", records[0])
+	}
+}
+
+type teslaHSCV1EmptyPayloadFixtureProvider struct{ *modbusV1FixtureProvider }
+
+func (*teslaHSCV1EmptyPayloadFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {
+	return TeslaHSCV1Result{NativeRecords: []TeslaHSCV1NativeRecord{{
+		Function: 101, Payload: []byte{}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+	}}}, nil
+}
+
+func TestTeslaHSCV1StatusToolPreservesNonNilEmptyPayload(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &teslaHSCV1EmptyPayloadFixtureProvider{&modbusV1FixtureProvider{}})
+	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
+	if result.isError {
+		t.Fatalf("result = %#v", result)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	records, ok := data["native_records"].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("native_records = %#v", data["native_records"])
+	}
+	record, ok := records[0].(map[string]any)
+	if !ok || record["payload"] != "" {
+		t.Fatalf("empty native payload = %#v", records[0])
 	}
 }
 

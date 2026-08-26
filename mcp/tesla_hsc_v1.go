@@ -84,7 +84,7 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 }
 
 func normalizeTeslaHSCV1ProviderResult(result TeslaHSCV1Result, providerErr error) (TeslaHSCV1Result, error, bool) {
-	if validTeslaHSCV1Result(result) {
+	if validTeslaHSCV1Result(result) && (providerErr == nil || meaningfulTeslaHSCV1Result(result)) {
 		return result, providerErr, true
 	}
 	validationErr := errors.New("tesla HSC native provider result is invalid")
@@ -92,6 +92,10 @@ func normalizeTeslaHSCV1ProviderResult(result TeslaHSCV1Result, providerErr erro
 		validationErr = errors.Join(providerErr, validationErr)
 	}
 	return TeslaHSCV1Result{}, validationErr, false
+}
+
+func meaningfulTeslaHSCV1Result(result TeslaHSCV1Result) bool {
+	return result.Disposition != "" || result.Compatibility != "" || result.OutboundAllowed || len(result.NativeRecords) != 0
 }
 
 func validTeslaHSCV1Result(result TeslaHSCV1Result) bool {

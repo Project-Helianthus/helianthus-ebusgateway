@@ -12,11 +12,17 @@ var (
 	ErrGrowattBMSV104NotAdmitted         = errors.New("growatt BMS V1.04 snapshot is not admitted")
 )
 
-// GrowattBMSV104RawEvidence is retained by the injected provider only.
-// It is deliberately absent from the MCP-facing result.
+// GrowattBMSV104RawEvidence preserves the available native observation context.
 type GrowattBMSV104RawEvidence struct {
-	Identifier uint32
-	Data       [8]byte
+	Interface      string  `json:"interface"`
+	Sequence       uint64  `json:"sequence"`
+	MonotonicNanos int64   `json:"monotonic_nanos"`
+	Identifier     uint32  `json:"identifier"`
+	Extended       bool    `json:"extended"`
+	RTR            bool    `json:"rtr"`
+	DLC            uint8   `json:"dlc"`
+	RawDLC         uint8   `json:"raw_dlc"`
+	Data           [8]byte `json:"data"`
 }
 
 type GrowattBMSV104Limits struct {
@@ -59,15 +65,15 @@ type GrowattBMSV104SnapshotProvider interface {
 	GrowattBMSV104Snapshot(context.Context) (GrowattBMSV104ProviderSnapshot, error)
 }
 
-// GrowattBMSV104Result is the safe, read-only MCP-facing projection.
+// GrowattBMSV104Result is the MCP-facing native and decoded projection.
 type GrowattBMSV104Result struct {
-	Profile             string                     `json:"profile"`
-	Admitted            bool                       `json:"admitted"`
-	OutboundAllowed     bool                       `json:"outbound_allowed"`
-	RawEvidenceRedacted bool                       `json:"raw_evidence_redacted"`
-	Limits              GrowattBMSV104Limits       `json:"limits"`
-	Status              GrowattBMSV104Status       `json:"status"`
-	Measurements        GrowattBMSV104Measurements `json:"measurements"`
+	Profile         string                      `json:"profile"`
+	Admitted        bool                        `json:"admitted"`
+	OutboundAllowed bool                        `json:"outbound_allowed"`
+	Limits          GrowattBMSV104Limits        `json:"limits"`
+	Status          GrowattBMSV104Status        `json:"status"`
+	Measurements    GrowattBMSV104Measurements  `json:"measurements"`
+	RawEvidence     []GrowattBMSV104RawEvidence `json:"raw_evidence"`
 }
 
 // GrowattBMSV104Runtime owns the injected read-only snapshot boundary.
@@ -95,13 +101,24 @@ func (runtime *GrowattBMSV104Runtime) SnapshotGet(ctx context.Context) (GrowattB
 		return GrowattBMSV104Result{}, ErrGrowattBMSV104NotAdmitted
 	}
 
+	rawEvidence := make([]GrowattBMSV104RawEvidence, 0, len(snapshot.RawEvidence))
+	for _, evidence := range snapshot.RawEvidence {
+		if growattBMSV104RawEvidenceValid(evidence) {
+			rawEvidence = append(rawEvidence, evidence)
+		}
+	}
+
 	return GrowattBMSV104Result{
-		Profile:             GrowattBMSV104Profile,
-		Admitted:            true,
-		OutboundAllowed:     false,
-		RawEvidenceRedacted: true,
-		Limits:              snapshot.Limits,
-		Status:              snapshot.Status,
-		Measurements:        snapshot.Measurements,
+		Profile:         GrowattBMSV104Profile,
+		Admitted:        true,
+		OutboundAllowed: snapshot.OutboundAllowed,
+		Limits:          snapshot.Limits,
+		Status:          snapshot.Status,
+		Measurements:    snapshot.Measurements,
+		RawEvidence:     rawEvidence,
 	}, nil
+}
+
+func growattBMSV104RawEvidenceValid(evidence GrowattBMSV104RawEvidence) bool {
+	return evidence.Identifier <= 0x7ff && !evidence.Extended && !evidence.RTR && evidence.DLC == 8 && evidence.RawDLC >= 8 && evidence.RawDLC <= 15
 }

@@ -11,8 +11,8 @@ const (
 	HuaweiSmartLoggerV1Profile       = "huawei.smartlogger.readonly.v1"
 )
 
-// HuaweiSmartLoggerV1Result is intentionally limited to redacted, read-only
-// qualification status. Inventory and transport evidence remain private.
+// HuaweiSmartLoggerV1Result is the provider-supplied native qualification
+// status. Inventory acquisition remains outside this MCP seam.
 type HuaweiSmartLoggerV1Result struct {
 	Profile         string `json:"profile"`
 	Family          string `json:"family"`
@@ -38,7 +38,7 @@ func registerHuaweiSmartLoggerV1Tool(server *Server, provider ModbusV1Provider) 
 	huaweiSmartLoggerV1Providers.Lock()
 	huaweiSmartLoggerV1Providers.byServer[server] = value
 	huaweiSmartLoggerV1Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: HuaweiSmartLoggerV1StatusGetTool, Description: "Get the redacted read-only Huawei SmartLogger status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: HuaweiSmartLoggerV1StatusGetTool, Description: "Get the native Huawei SmartLogger status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 
 func (server *Server) handleHuaweiSmartLoggerV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -55,7 +55,5 @@ func (server *Server) handleHuaweiSmartLoggerV1Call(ctx context.Context, name st
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("huawei SmartLogger provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.HuaweiSmartLoggerV1(ctx)
-	result.RawRedacted = true
-	result.OutboundAllowed = false
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
 }

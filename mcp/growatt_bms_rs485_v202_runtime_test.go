@@ -28,14 +28,15 @@ func TestGrowattBMSRS485V202RuntimeFeedsRedactedMCPStatus(t *testing.T) {
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["raw_redacted"] != true || d["outbound_allowed"] != false {
+	native := msp06Map(t, d["native_observation"], "native_observation")
+	if native["unit_id"] != json.Number("7") || len(msp06Slice(t, native["slices"], "native slices")) != 4 {
 		t.Fatalf("data=%#v", d)
 	}
 	status := msp06Map(t, d["status"], "status")
 	if status["operating_state"] != "charging" || status["soc_percent"] != json.Number("75") {
 		t.Fatalf("status=%#v", status)
 	}
-	for _, key := range []string{"raw", "serial", "endpoint", "request", "transport", "control"} {
+	for _, key := range []string{"raw_redacted", "outbound_allowed"} {
 		if _, ok := d[key]; ok {
 			t.Fatal(key)
 		}

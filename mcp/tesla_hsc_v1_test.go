@@ -100,6 +100,16 @@ func TestTeslaHSCV1StatusToolRejectsInvalidNativeProviderRecord(t *testing.T) {
 	}
 }
 
+func TestTeslaHSCV1ProviderResultRetainsProviderErrorWhenNativeDataIsInvalid(t *testing.T) {
+	providerErr := errors.New("synthetic decoder error")
+	result, err, valid := normalizeTeslaHSCV1ProviderResult(TeslaHSCV1Result{NativeRecords: []TeslaHSCV1NativeRecord{{
+		Function: 101, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay", ResponseName: "unqualified",
+	}}}, providerErr)
+	if valid || len(result.NativeRecords) != 0 || !errors.Is(err, providerErr) || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("result=%#v err=%v valid=%t", result, err, valid)
+	}
+}
+
 type teslaHSCV1ErrorFixtureProvider struct{ *modbusV1FixtureProvider }
 
 func (*teslaHSCV1ErrorFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {

@@ -11,15 +11,25 @@ const (
 	GrowattProtocolIIV1Profile         = "growatt.protocol_ii.tl3_x.identity.readonly.v1"
 )
 
-// GrowattProtocolIIV1Result is the only identity status projected to MCP.
-// Raw identity words and individual tuple values remain provider-private.
+type GrowattProtocolIIV1NativeIdentity struct {
+	Family string                                   `json:"family"`
+	UnitID byte                                     `json:"unit_id"`
+	Slices []GrowattProtocolIIV1NativeIdentitySlice `json:"slices"`
+}
+
+type GrowattProtocolIIV1NativeIdentitySlice struct {
+	Offset uint16   `json:"offset"`
+	Words  []uint16 `json:"words"`
+}
+
+// GrowattProtocolIIV1Result projects the validated native identity supplied
+// by the caller-selected Protocol II runtime.
 type GrowattProtocolIIV1Result struct {
-	Profile           string `json:"profile"`
-	Disposition       string `json:"disposition"`
-	Family            string `json:"family"`
-	IdentityQualified bool   `json:"identity_qualified"`
-	IdentityRedacted  bool   `json:"identity_redacted"`
-	OutboundAllowed   bool   `json:"outbound_allowed"`
+	Profile           string                            `json:"profile"`
+	Disposition       string                            `json:"disposition"`
+	Family            string                            `json:"family"`
+	IdentityQualified bool                              `json:"identity_qualified"`
+	NativeIdentity    GrowattProtocolIIV1NativeIdentity `json:"native_identity"`
 }
 
 type GrowattProtocolIIV1Provider interface {
@@ -39,7 +49,7 @@ func registerGrowattProtocolIIV1Tool(server *Server, provider ModbusV1Provider) 
 	growattProtocolIIV1Providers.Lock()
 	growattProtocolIIV1Providers.byServer[server] = growatt
 	growattProtocolIIV1Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: GrowattProtocolIIV1IdentityGetTool, Description: "Get the redacted read-only Growatt Protocol II identity qualification.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: GrowattProtocolIIV1IdentityGetTool, Description: "Get the native Growatt Protocol II identity qualification.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 
 func (server *Server) handleGrowattProtocolIIV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -56,12 +66,5 @@ func (server *Server) handleGrowattProtocolIIV1Call(ctx context.Context, name st
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("growatt Protocol II provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.GrowattProtocolIIV1(ctx)
-	result = failClosedGrowattProtocolIIV1Result(result)
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
-}
-
-func failClosedGrowattProtocolIIV1Result(result GrowattProtocolIIV1Result) GrowattProtocolIIV1Result {
-	result.IdentityRedacted = true
-	result.OutboundAllowed = false
-	return result
 }

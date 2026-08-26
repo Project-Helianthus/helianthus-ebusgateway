@@ -21,7 +21,8 @@ func TestGrowattProtocolIIV1RuntimeProjectsOnlySanitizedIdentityStatus(t *testin
 		Family:                  "MAC",
 		OfflineIdentityAdmitted: true,
 		OutboundAllowed:         true,
-		RawIdentity:             []uint16{0x4657, 0x2d31, 0x1234},
+		UnitID:                  1,
+		IdentitySlices:          growattProtocolIITestSlices(),
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +32,7 @@ func TestGrowattProtocolIIV1RuntimeProjectsOnlySanitizedIdentityStatus(t *testin
 		t.Fatal(err)
 	}
 	if result.Profile != GrowattProtocolIIV1Profile || result.Family != "MAC" || !result.IdentityQualified ||
-		!result.IdentityRedacted || result.OutboundAllowed {
+		result.NativeIdentity.Family != "MAC" || result.NativeIdentity.UnitID != 1 || len(result.NativeIdentity.Slices) != 5 {
 		t.Fatalf("result = %#v", result)
 	}
 }

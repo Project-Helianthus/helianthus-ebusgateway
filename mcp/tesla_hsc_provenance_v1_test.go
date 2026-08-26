@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"testing"
 )
@@ -16,10 +17,10 @@ func (provider *teslaHSCProvenanceV1FixtureProvider) TeslaHSCProvenanceV1(contex
 	return provider.records, provider.err
 }
 
-func TestTeslaHSCProvenanceV1RuntimeProjectsOnlyRedactedSelectedTerminalMetadata(t *testing.T) {
+func TestTeslaHSCProvenanceV1RuntimePreservesNativeTerminalRecords(t *testing.T) {
 	provider := &teslaHSCProvenanceV1FixtureProvider{records: []TeslaHSCProvenanceV1Record{
-		{Function: 101, PayloadLength: 0, PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", OutboundAllowed: true},
-		{Function: 102, PayloadLength: 2, PayloadDigest: "9ee50aea7e52b0fd0c9dcae1a059ac08b94c21ad3e2fa7e6cbf9b6b5279d93d8"},
+		{Function: 101, Payload: []byte{}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay", OutboundAllowed: true},
+		{Function: 102, Payload: []byte{0x42, 0x99}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"},
 	}}
 	runtime, err := NewTeslaHSCProvenanceV1Runtime(provider)
 	if err != nil {
@@ -34,19 +35,28 @@ func TestTeslaHSCProvenanceV1RuntimeProjectsOnlyRedactedSelectedTerminalMetadata
 	}
 	for index, record := range got {
 		if record.Function != provider.records[index].Function ||
-			record.PayloadLength != provider.records[index].PayloadLength ||
-			record.PayloadDigest != provider.records[index].PayloadDigest ||
-			record.OutboundAllowed {
-			t.Fatalf("redacted provenance[%d] = %#v", index, record)
+			!bytes.Equal(record.Payload, provider.records[index].Payload) ||
+			record.Compatibility != provider.records[index].Compatibility ||
+			record.Provenance != provider.records[index].Provenance ||
+			record.OutboundAllowed != provider.records[index].OutboundAllowed {
+			t.Fatalf("native provenance[%d] = %#v", index, record)
 		}
+	}
+	if got[0].Payload == nil {
+		t.Fatalf("non-nil empty payload became nil: %#v", got[0])
+	}
+	provider.records[1].Payload[0] = 0
+	if got[1].Payload[0] != 0x42 {
+		t.Fatalf("native payload was not copied: %#v", got[1])
 	}
 }
 
-func TestTeslaHSCProvenanceV1RuntimeRejectsUnselectedOrMalformedMetadata(t *testing.T) {
+func TestTeslaHSCProvenanceV1RuntimeRejectsInvalidNativeRecords(t *testing.T) {
 	for _, record := range []TeslaHSCProvenanceV1Record{
-		{Function: 100, PayloadLength: 0, PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
-		{Function: 101, PayloadLength: 253, PayloadDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
-		{Function: 102, PayloadLength: 1, PayloadDigest: "not-a-digest"},
+		{Function: 100, Payload: []byte{}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"},
+		{Function: 101, Payload: bytes.Repeat([]byte{1}, 253), Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"},
+		{Function: 102, Payload: []byte{}, Provenance: "synthetic-replay"},
+		{Function: 102, Payload: []byte{}, Compatibility: "wc3_24_44_3"},
 	} {
 		provider := &teslaHSCProvenanceV1FixtureProvider{records: []TeslaHSCProvenanceV1Record{record}}
 		runtime, err := NewTeslaHSCProvenanceV1Runtime(provider)

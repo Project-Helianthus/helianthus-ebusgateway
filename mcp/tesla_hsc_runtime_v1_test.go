@@ -31,6 +31,9 @@ func TestTeslaHSCV1RuntimeRetainsInjectedNativeRecords(t *testing.T) {
 	if record := result.NativeRecords[0]; !bytes.Equal(record.Payload, payload) || record.RequestName != "GetConfig" || record.ResponseName != "WCConfig" || len(record.FieldNames) != 2 {
 		t.Fatalf("record = %#v", record)
 	}
+	if payload := result.NativeRecords[1].Payload; payload == nil || len(payload) != 0 {
+		t.Fatalf("non-nil empty payload = %#v", payload)
+	}
 	payload[0] = 0
 	if result.NativeRecords[0].Payload[0] != 0x32 {
 		t.Fatalf("native payload was not copied: %#v", result.NativeRecords[0])

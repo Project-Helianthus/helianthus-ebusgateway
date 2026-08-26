@@ -26,8 +26,12 @@ func TestGrowattBMSRS485V202ToolProjectsOnlyQualifiedTypedStatus(t *testing.T) {
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["profile"] != GrowattBMSRS485V202Profile || d["qualified"] != true || d["raw_redacted"] != true || d["outbound_allowed"] != false {
+	if d["profile"] != GrowattBMSRS485V202Profile || d["qualified"] != true {
 		t.Fatalf("%#v", d)
+	}
+	native := msp06Map(t, d["native_observation"], "native_observation")
+	if native["unit_id"] != json.Number("7") || len(msp06Slice(t, native["slices"], "native slices")) != 4 {
+		t.Fatalf("native observation=%#v", native)
 	}
 	identity := msp06Map(t, d["identity"], "identity")
 	status := msp06Map(t, d["status"], "status")
@@ -39,7 +43,7 @@ func TestGrowattBMSRS485V202ToolProjectsOnlyQualifiedTypedStatus(t *testing.T) {
 	if revision["family"] != "1xSxxP ESS" || revision["file_revision"] != "Rev2.01" || revision["header_version"] != "V2.0" || revision["cumulative_revision"] != "2.02" {
 		t.Fatalf("revision=%#v", revision)
 	}
-	for _, key := range []string{"raw", "serial", "endpoint", "slice", "transport", "request", "control"} {
+	for _, key := range []string{"raw_redacted", "outbound_allowed"} {
 		if _, ok := d[key]; ok {
 			t.Fatal(key)
 		}
@@ -73,27 +77,9 @@ func (f growattBMSRS485V202ResultFixture) GrowattBMSRS485V202(context.Context) (
 }
 
 func growattBMSRS485V202FixtureStatus() modbusreg.GrowattBMSTypedReadOnlyStatus {
-	return modbusreg.GrowattBMSTypedReadOnlyStatus{
-		Revision:                    modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"},
-		MCUSoftwareVersion:          "1.2",
-		GaugeVersion:                "3.4",
-		BMSCompany:                  4,
-		BMSGeneration:               2,
-		PackCompany:                 1,
-		PackGeneration:              3,
-		OperatingState:              modbusreg.GrowattBMSStateCharging,
-		SOCPercent:                  75,
-		PackVoltageVolts:            52,
-		PackCurrentAmps:             -1,
-		TemperatureCelsius:          25,
-		RemainingCapacityAmpHours:   32,
-		FullChargeCapacityAmpHours:  50,
-		CycleCount:                  110,
-		ContinuousChargeSeconds:     100,
-		CurrentCycleChargeAmpHours:  12.3,
-		AverageCellVoltageVolts:     3.3,
-		FloatingPackVoltageVolts:    51.2,
-		CumulativeChargeAmpHours:    0.5,
-		CumulativeDischargeAmpHours: 0.6,
+	status, err := modbusreg.DecodeGrowattBMSTypedReadOnlyStatus(modbusreg.GrowattBMSReadOnlyInput{UnitID: 7, Function: modbusreg.FunctionReadHoldingRegisters, Revision: modbusreg.GrowattBMSRevisionTuple{Family: "1xSxxP ESS", FileRevision: "Rev2.01", HeaderVersion: "V2.0", CumulativeRevision: "2.02"}, Slices: []modbusreg.GrowattBMSReadOnlySlice{{Offset: 1, Words: []uint16{0x0102, 0x0304, 0, 0, 0, 0, 0}}, {Offset: 13, Words: []uint16{0x0204, 0x0301, 0, 0, 0, 0, 2, 0, 75, 5200, 0xff9c, 25, 0, 3200, 5000, 0, 0, 110, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}}, {Offset: 256, Words: []uint16{100, 123, 3300, 0, 512, 5, 6, 0, 0, 0, 0, 0}}, {Offset: 269, Words: []uint16{0, 0}}}})
+	if err != nil {
+		panic(err)
 	}
+	return status
 }

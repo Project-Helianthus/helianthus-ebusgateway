@@ -57,19 +57,29 @@ type GrowattBMSRS485V202Revision struct {
 	CumulativeRevision string `json:"cumulative_revision"`
 }
 
-type GrowattBMSRS485V202Result struct {
-	Profile         string                       `json:"profile"`
-	Revision        GrowattBMSRS485V202Revision  `json:"revision"`
-	Qualified       bool                         `json:"qualified"`
-	RawRedacted     bool                         `json:"raw_redacted"`
-	OutboundAllowed bool                         `json:"outbound_allowed"`
-	Identity        GrowattBMSRS485V202Identity  `json:"identity"`
-	Status          GrowattBMSRS485V202Status    `json:"status"`
-	Telemetry       GrowattBMSRS485V202Telemetry `json:"telemetry"`
+type GrowattBMSRS485V202NativeSlice struct {
+	Offset uint16   `json:"offset"`
+	Words  []uint16 `json:"words"`
 }
 
-// GrowattBMSRS485V202Provider supplies only a previously decoded typed status.
-// It has no route for raw words, a serial, an endpoint, or a transport handle.
+type GrowattBMSRS485V202NativeObservation struct {
+	UnitID   byte                             `json:"unit_id"`
+	Revision GrowattBMSRS485V202Revision      `json:"revision"`
+	Slices   []GrowattBMSRS485V202NativeSlice `json:"slices"`
+}
+
+type GrowattBMSRS485V202Result struct {
+	Profile           string                               `json:"profile"`
+	Revision          GrowattBMSRS485V202Revision          `json:"revision"`
+	Qualified         bool                                 `json:"qualified"`
+	NativeObservation GrowattBMSRS485V202NativeObservation `json:"native_observation"`
+	Identity          GrowattBMSRS485V202Identity          `json:"identity"`
+	Status            GrowattBMSRS485V202Status            `json:"status"`
+	Telemetry         GrowattBMSRS485V202Telemetry         `json:"telemetry"`
+}
+
+// GrowattBMSRS485V202Provider supplies a previously decoded typed status with
+// its validated native observation.
 type GrowattBMSRS485V202Provider interface {
 	GrowattBMSRS485V202(context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error)
 }
@@ -87,7 +97,7 @@ func registerGrowattBMSRS485V202Tool(server *Server, provider ModbusV1Provider) 
 	growattBMSRS485V202Providers.Lock()
 	growattBMSRS485V202Providers.byServer[server] = p
 	growattBMSRS485V202Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: GrowattBMSRS485V202StatusGetTool, Description: "Get the redacted, read-only Growatt BMS RS485 typed status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: GrowattBMSRS485V202StatusGetTool, Description: "Get the native Growatt BMS RS485 typed status and validated FC03 observation.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 
 func (server *Server) handleGrowattBMSRS485V202Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -122,6 +132,14 @@ func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (
 		!validGrowattBMSRS485V202State(status.OperatingState) || !validGrowattBMSRS485V202Telemetry(status) {
 		return GrowattBMSRS485V202Result{}, ErrGrowattBMSRS485V202NotQualified
 	}
+	native := status.NativeObservation()
+	if native.UnitID() == 0 || native.Revision() != status.Revision || len(native.Slices()) != 4 {
+		return GrowattBMSRS485V202Result{}, ErrGrowattBMSRS485V202NotQualified
+	}
+	nativeSlices := make([]GrowattBMSRS485V202NativeSlice, 0, len(native.Slices()))
+	for _, slice := range native.Slices() {
+		nativeSlices = append(nativeSlices, GrowattBMSRS485V202NativeSlice{Offset: slice.Offset, Words: append([]uint16(nil), slice.Words...)})
+	}
 	return GrowattBMSRS485V202Result{
 		Profile: GrowattBMSRS485V202Profile,
 		Revision: GrowattBMSRS485V202Revision{
@@ -130,9 +148,11 @@ func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (
 			HeaderVersion:      status.Revision.HeaderVersion,
 			CumulativeRevision: status.Revision.CumulativeRevision,
 		},
-		Qualified:       true,
-		RawRedacted:     true,
-		OutboundAllowed: false,
+		Qualified: true,
+		NativeObservation: GrowattBMSRS485V202NativeObservation{UnitID: native.UnitID(), Revision: GrowattBMSRS485V202Revision{
+			Family: native.Revision().Family, FileRevision: native.Revision().FileRevision,
+			HeaderVersion: native.Revision().HeaderVersion, CumulativeRevision: native.Revision().CumulativeRevision,
+		}, Slices: nativeSlices},
 		Identity: GrowattBMSRS485V202Identity{
 			MCUSoftwareVersion: status.MCUSoftwareVersion, GaugeVersion: status.GaugeVersion,
 			BMSCompany: status.BMSCompany, BMSGeneration: status.BMSGeneration,

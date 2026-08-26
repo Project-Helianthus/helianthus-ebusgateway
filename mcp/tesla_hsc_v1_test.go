@@ -110,6 +110,14 @@ func TestTeslaHSCV1ProviderResultRetainsProviderErrorWhenNativeDataIsInvalid(t *
 	}
 }
 
+func TestTeslaHSCV1ProviderResultTreatsZeroValueErrorResultAsAbsent(t *testing.T) {
+	providerErr := errors.New("synthetic provider error")
+	result, err, valid := normalizeTeslaHSCV1ProviderResult(TeslaHSCV1Result{}, providerErr)
+	if valid || len(result.NativeRecords) != 0 || !errors.Is(err, providerErr) || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("result=%#v err=%v valid=%t", result, err, valid)
+	}
+}
+
 type teslaHSCV1ErrorFixtureProvider struct{ *modbusV1FixtureProvider }
 
 func (*teslaHSCV1ErrorFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {

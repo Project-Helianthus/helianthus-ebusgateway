@@ -19,7 +19,7 @@ func (*growattProtocolIIV1FixtureProvider) GrowattProtocolIIV1(context.Context) 
 	}, nil
 }
 
-func TestGrowattProtocolIIV1IdentityToolIsReadOnlyAndRedacted(t *testing.T) {
+func TestGrowattProtocolIIV1IdentityToolPreservesNativeIdentity(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
 	if err != nil {
 		t.Fatal(err)
@@ -31,14 +31,18 @@ func TestGrowattProtocolIIV1IdentityToolIsReadOnlyAndRedacted(t *testing.T) {
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
 	if data["profile"] != GrowattProtocolIIV1Profile || data["disposition"] != "OFFLINE_IDENTITY_ADMITTED" ||
-		data["family"] != "MAX" || data["identity_qualified"] != true || data["identity_redacted"] != true ||
-		data["outbound_allowed"] != false {
+		data["family"] != "MAX" || data["identity_qualified"] != true {
 		t.Fatalf("data = %#v", data)
 	}
-	for _, forbidden := range []string{"words", "device_type", "model_build", "protocol_version", "firmware"} {
-		if _, found := data[forbidden]; found {
-			t.Fatalf("raw identity field %q leaked: %#v", forbidden, data)
-		}
+	if _, found := data["identity_redacted"]; found {
+		t.Fatalf("identity redaction survived: %#v", data)
+	}
+	if _, found := data["outbound_allowed"]; found {
+		t.Fatalf("observation invented operation authority: %#v", data)
+	}
+	native := msp06Map(t, data["native_identity"], "native_identity")
+	if native["family"] != "MAX" || len(msp06Slice(t, native["words"], "native words")) == 0 {
+		t.Fatalf("native identity = %#v", native)
 	}
 }
 

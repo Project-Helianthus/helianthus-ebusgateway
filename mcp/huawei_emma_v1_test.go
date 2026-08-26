@@ -9,9 +9,9 @@ import (
 type emmaFixture struct{ *modbusV1FixtureProvider }
 
 func (*emmaFixture) HuaweiEMMAV1(context.Context) (HuaweiEMMAV1Result, error) {
-	return HuaweiEMMAV1Result{Profile: HuaweiEMMAV1Profile, CanonicalClass: "EMMA", ModelVariant: "EMMA-A02", Qualified: true}, nil
+	return HuaweiEMMAV1Result{Profile: HuaweiEMMAV1Profile, CanonicalClass: "EMMA", ModelVariant: "EMMA-A02", Qualified: true, RawRedacted: false, OutboundAllowed: true}, nil
 }
-func TestHuaweiEMMAV1ToolRedactsOfflineIdentity(t *testing.T) {
+func TestHuaweiEMMAV1ToolPreservesNativeIdentityState(t *testing.T) {
 	s, e := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
 	if e != nil {
 		t.Fatal(e)
@@ -22,7 +22,7 @@ func TestHuaweiEMMAV1ToolRedactsOfflineIdentity(t *testing.T) {
 		t.Fatal(r)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
-	if d["qualified"] != true || d["raw_redacted"] != true || d["outbound_allowed"] != false {
+	if d["qualified"] != true || d["raw_redacted"] != false || d["outbound_allowed"] != true {
 		t.Fatalf("%#v", d)
 	}
 	for _, k := range []string{"mei", "inventory", "endpoint", "offering", "firmware"} {

@@ -43,6 +43,7 @@ func TestTeslaHSCV1RuntimeRejectsInvalidCorrelatedRecords(t *testing.T) {
 		{Function: 101, Records: []TeslaHSCV1NativeRecord{valid, valid}},
 		{Function: 102},
 		{Function: 101, Records: []TeslaHSCV1NativeRecord{{Function: 102, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"}}},
+		{Function: 102, Records: []TeslaHSCV1NativeRecord{{Function: 102, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay", ResponseName: "unqualified"}}},
 		{Function: 100, Records: []TeslaHSCV1NativeRecord{{Function: 100, Payload: bytes.Repeat([]byte{1}, 253), Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay"}}},
 		{Function: 100, Records: []TeslaHSCV1NativeRecord{{Function: 100, Compatibility: "", Provenance: "synthetic-replay"}}},
 	} {

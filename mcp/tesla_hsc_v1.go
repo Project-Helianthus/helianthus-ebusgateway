@@ -93,8 +93,11 @@ func validTeslaHSCV1NativeRecord(record TeslaHSCV1NativeRecord) bool {
 		return false
 	}
 	switch record.Function {
-	case 100, 101, 102:
+	case 100:
 		return true
+	case 101, 102:
+		return record.Family == 0 && record.RequestTag == 0 && record.ResponseTag == 0 &&
+			record.RequestName == "" && record.ResponseName == "" && len(record.FieldNames) == 0
 	default:
 		return false
 	}

@@ -36,7 +36,7 @@ func registerHuaweiSDongleV1Tool(s *Server, p ModbusV1Provider) {
 	huaweiSDongleV1Providers.Lock()
 	huaweiSDongleV1Providers.byServer[s] = v
 	huaweiSDongleV1Providers.Unlock()
-	s.tools = append(s.tools, Tool{Name: HuaweiSDongleV1StatusGetTool, Description: "Get the redacted pre-live Huawei S-Dongle status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	s.tools = append(s.tools, Tool{Name: HuaweiSDongleV1StatusGetTool, Description: "Get the native Huawei S-Dongle status.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 func (s *Server) handleHuaweiSDongleV1Call(ctx context.Context, n string, a map[string]any) (map[string]any, bool) {
 	if n != HuaweiSDongleV1StatusGetTool {
@@ -52,11 +52,5 @@ func (s *Server) handleHuaweiSDongleV1Call(ctx context.Context, n string, a map[
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("huawei S-Dongle provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	r, e := p.HuaweiSDongleV1(ctx)
-	r.Profile = HuaweiSDongleV1Profile
-	r.Family = "S-Dongle"
-	r.Disposition = "PRE_LIVE_INSUFFICIENT_EVIDENCE"
-	r.Qualified = false
-	r.RawRedacted = true
-	r.OutboundAllowed = false
 	return callToolResultText(mustJSON(newModbusV1Envelope(r, e, true, "RETAINED_PROFILE", "")), e != nil), true
 }

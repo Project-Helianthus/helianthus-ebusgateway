@@ -36,7 +36,7 @@ func registerHuaweiEMMAV1Tool(s *Server, p ModbusV1Provider) {
 	huaweiEMMAV1Providers.Lock()
 	huaweiEMMAV1Providers.byServer[s] = v
 	huaweiEMMAV1Providers.Unlock()
-	s.tools = append(s.tools, Tool{Name: HuaweiEMMAV1IdentityGetTool, Description: "Get the redacted read-only Huawei EMMA identity qualification.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	s.tools = append(s.tools, Tool{Name: HuaweiEMMAV1IdentityGetTool, Description: "Get the native Huawei EMMA identity qualification.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 func (s *Server) handleHuaweiEMMAV1Call(ctx context.Context, n string, a map[string]any) (map[string]any, bool) {
 	if n != HuaweiEMMAV1IdentityGetTool {
@@ -52,7 +52,5 @@ func (s *Server) handleHuaweiEMMAV1Call(ctx context.Context, n string, a map[str
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("huawei EMMA provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	r, e := p.HuaweiEMMAV1(ctx)
-	r.RawRedacted = true
-	r.OutboundAllowed = false
 	return callToolResultText(mustJSON(newModbusV1Envelope(r, e, true, "RETAINED_PROFILE", "")), e != nil), true
 }

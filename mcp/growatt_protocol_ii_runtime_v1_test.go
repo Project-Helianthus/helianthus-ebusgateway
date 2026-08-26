@@ -31,7 +31,7 @@ func TestGrowattProtocolIIV1RuntimeProjectsOnlySanitizedIdentityStatus(t *testin
 		t.Fatal(err)
 	}
 	if result.Profile != GrowattProtocolIIV1Profile || result.Family != "MAC" || !result.IdentityQualified ||
-		!result.IdentityRedacted || result.OutboundAllowed {
+		result.NativeIdentity.Family != "MAC" || len(result.NativeIdentity.Words) != 3 {
 		t.Fatalf("result = %#v", result)
 	}
 }

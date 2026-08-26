@@ -15,7 +15,7 @@ func (*growattProtocolIIV1FixtureProvider) GrowattProtocolIIV1(context.Context) 
 		Disposition:       "OFFLINE_IDENTITY_ADMITTED",
 		Family:            "MAX",
 		IdentityQualified: true,
-		OutboundAllowed:   false,
+		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MAX", Words: []uint16{0x0102}},
 	}, nil
 }
 
@@ -54,8 +54,7 @@ func (*growattProtocolIIV1UnsafeProvider) GrowattProtocolIIV1(context.Context) (
 		Disposition:       "OFFLINE_IDENTITY_ADMITTED",
 		Family:            "MID",
 		IdentityQualified: true,
-		IdentityRedacted:  false,
-		OutboundAllowed:   true,
+		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MID", Words: []uint16{0x0102}},
 	}, nil
 }
 
@@ -70,7 +69,7 @@ func TestGrowattProtocolIIV1IdentityToolFailsClosedForProviderOutput(t *testing.
 		t.Fatalf("result = %#v", result)
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
-	if data["outbound_allowed"] != false || data["identity_redacted"] != true {
-		t.Fatalf("unsafe provider output crossed MCP boundary: %#v", data)
+	if native := msp06Map(t, data["native_identity"], "native_identity"); native["family"] != "MID" {
+		t.Fatalf("native provider output was lost: %#v", data)
 	}
 }

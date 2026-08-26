@@ -10,8 +10,8 @@ var (
 	ErrGrowattProtocolIIV1NotAdmitted         = errors.New("growatt Protocol II identity is not admitted")
 )
 
-// GrowattProtocolIIV1ProviderSnapshot is provider-private. RawIdentity is
-// deliberately excluded from the MCP result.
+// GrowattProtocolIIV1ProviderSnapshot carries the caller-selected native
+// identity words validated by this runtime.
 type GrowattProtocolIIV1ProviderSnapshot struct {
 	Profile                 string
 	Family                  string
@@ -46,7 +46,10 @@ func (runtime *GrowattProtocolIIV1Runtime) GrowattProtocolIIV1(ctx context.Conte
 	if snapshot.Profile != GrowattProtocolIIV1Profile || !validGrowattProtocolIIV1Family(snapshot.Family) || !snapshot.OfflineIdentityAdmitted {
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}
-	return GrowattProtocolIIV1Result{Profile: GrowattProtocolIIV1Profile, Disposition: "OFFLINE_IDENTITY_ADMITTED", Family: snapshot.Family, IdentityQualified: true, IdentityRedacted: true, OutboundAllowed: false}, nil
+	if len(snapshot.RawIdentity) == 0 {
+		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
+	}
+	return GrowattProtocolIIV1Result{Profile: GrowattProtocolIIV1Profile, Disposition: "OFFLINE_IDENTITY_ADMITTED", Family: snapshot.Family, IdentityQualified: true, NativeIdentity: GrowattProtocolIIV1NativeIdentity{Family: snapshot.Family, Words: append([]uint16(nil), snapshot.RawIdentity...)}}, nil
 }
 
 func validGrowattProtocolIIV1Family(family string) bool {

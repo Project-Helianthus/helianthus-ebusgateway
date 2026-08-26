@@ -69,9 +69,14 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.TeslaHSCV1(ctx)
-	if err == nil && !validTeslaHSCV1Result(result) {
+	if err != nil {
+		result = TeslaHSCV1Result{}
+	} else if !validTeslaHSCV1Result(result) {
 		result = TeslaHSCV1Result{}
 		err = errors.New("tesla HSC native provider result is invalid")
+	}
+	if err != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
 	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
 }

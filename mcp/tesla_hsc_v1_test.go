@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -95,6 +96,26 @@ func TestTeslaHSCV1StatusToolRejectsInvalidNativeProviderRecord(t *testing.T) {
 	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
 	if !result.isError {
 		t.Fatalf("invalid native record accepted: %#v", result)
+	}
+}
+
+type teslaHSCV1ErrorFixtureProvider struct{ *modbusV1FixtureProvider }
+
+func (*teslaHSCV1ErrorFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {
+	return TeslaHSCV1Result{NativeRecords: []TeslaHSCV1NativeRecord{{
+		Function: 101, Payload: []byte{1}, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+	}}}, errors.New("synthetic provider error")
+}
+
+func TestTeslaHSCV1StatusToolClearsNativeRecordsOnProviderError(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &teslaHSCV1ErrorFixtureProvider{&modbusV1FixtureProvider{}})
+	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
+	if !result.isError || result.envelope["data"] != nil {
+		t.Fatalf("provider-error result = %#v", result)
 	}
 }
 

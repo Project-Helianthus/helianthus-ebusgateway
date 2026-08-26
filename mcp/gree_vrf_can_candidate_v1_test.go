@@ -27,7 +27,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetProjectsAdmittedOpaqueCellValues(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Profile != GreeVRFCANCandidateV1Profile || !result.Admitted || result.OutboundAllowed || !result.RawEvidenceRedacted {
+	if result.Profile != GreeVRFCANCandidateV1Profile || !result.Admitted || result.OutboundAllowed {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.Class8 != 0xf7 || result.Opaque7 != 1 || result.Unit7 != 8 || result.Opcode7 != 0x58 || len(result.OpaqueCells) != 2 || result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[0].Value != 0xa4 || result.OpaqueCells[1].Cell != 0x14 || result.OpaqueCells[1].Value != 0xa5 {
@@ -35,10 +35,10 @@ func TestGreeVRFCANCandidateV1SnapshotGetProjectsAdmittedOpaqueCellValues(t *tes
 	}
 }
 
-func TestGreeVRFCANCandidateV1SnapshotGetRedactsOnlyRawEvidence(t *testing.T) {
+func TestGreeVRFCANCandidateV1SnapshotGetPreservesNativeEvidenceAndCapability(t *testing.T) {
 	snapshot := greeVRFCANCandidateV1FixtureSnapshot()
 	snapshot.OutboundAllowed = true
-	snapshot.RawEvidence = []GreeVRFCANCandidateV1RawEvidence{{Identifier: 0x1ee04458, Data: [8]byte{0xde, 0xad, 0xbe, 0xef}}}
+	snapshot.RawEvidence = []GreeVRFCANCandidateV1RawEvidence{{Interface: "can0", Sequence: 7, MonotonicNanos: 99, Identifier: 0x1ee04458, Extended: true, DLC: 3, RawDLC: 3, Data: [8]byte{0xde, 0xad, 0xbe, 0xef}}}
 	snapshot.OpaqueCells = []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13, Value: 0xde}}
 	runtime, err := NewGreeVRFCANCandidateV1Runtime(greeVRFCANCandidateV1FixtureProvider{snapshot: snapshot})
 	if err != nil {
@@ -53,8 +53,11 @@ func TestGreeVRFCANCandidateV1SnapshotGetRedactsOnlyRawEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OutboundAllowed || strings.Contains(string(encoded), "\"raw_evidence\":") || strings.Contains(string(encoded), "deadbeef") || !strings.Contains(string(encoded), "\"value\":222") {
+	if !result.OutboundAllowed || !strings.Contains(string(encoded), "\"raw_evidence\":") || !strings.Contains(string(encoded), "\"identifier\":518128728") || !strings.Contains(string(encoded), "\"dlc\":3") || !strings.Contains(string(encoded), "\"value\":222") {
 		t.Fatalf("unsafe result = %s", encoded)
+	}
+	if len(result.RawEvidence) != 1 || result.RawEvidence[0].Data[0] != 0xde || result.RawEvidence[0].Interface != "can0" || result.RawEvidence[0].DLC != 3 || result.RawEvidence[0].RawDLC != 3 {
+		t.Fatalf("raw evidence = %#v", result.RawEvidence)
 	}
 }
 

@@ -12,7 +12,13 @@ const (
 )
 
 type GrowattProtocolIIV1NativeIdentity struct {
-	Family string   `json:"family"`
+	Family string                                   `json:"family"`
+	UnitID byte                                     `json:"unit_id"`
+	Slices []GrowattProtocolIIV1NativeIdentitySlice `json:"slices"`
+}
+
+type GrowattProtocolIIV1NativeIdentitySlice struct {
+	Offset uint16   `json:"offset"`
 	Words  []uint16 `json:"words"`
 }
 

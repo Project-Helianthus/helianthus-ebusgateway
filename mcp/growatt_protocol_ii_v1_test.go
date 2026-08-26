@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -15,7 +16,7 @@ func (*growattProtocolIIV1FixtureProvider) GrowattProtocolIIV1(context.Context) 
 		Disposition:       "OFFLINE_IDENTITY_ADMITTED",
 		Family:            "MAX",
 		IdentityQualified: true,
-		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MAX", Words: []uint16{0x0102}},
+		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MAX", UnitID: 1, Slices: growattProtocolIITestSlices()},
 	}, nil
 }
 
@@ -41,7 +42,7 @@ func TestGrowattProtocolIIV1IdentityToolPreservesNativeIdentity(t *testing.T) {
 		t.Fatalf("observation invented operation authority: %#v", data)
 	}
 	native := msp06Map(t, data["native_identity"], "native_identity")
-	if native["family"] != "MAX" || len(msp06Slice(t, native["words"], "native words")) == 0 {
+	if native["family"] != "MAX" || native["unit_id"] != json.Number("1") || len(msp06Slice(t, native["slices"], "native slices")) != 5 {
 		t.Fatalf("native identity = %#v", native)
 	}
 }
@@ -54,8 +55,12 @@ func (*growattProtocolIIV1UnsafeProvider) GrowattProtocolIIV1(context.Context) (
 		Disposition:       "OFFLINE_IDENTITY_ADMITTED",
 		Family:            "MID",
 		IdentityQualified: true,
-		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MID", Words: []uint16{0x0102}},
+		NativeIdentity:    GrowattProtocolIIV1NativeIdentity{Family: "MID", UnitID: 2, Slices: growattProtocolIITestSlices()},
 	}, nil
+}
+
+func growattProtocolIITestSlices() []GrowattProtocolIIV1NativeIdentitySlice {
+	return []GrowattProtocolIIV1NativeIdentitySlice{{Offset: 9, Words: make([]uint16, 6)}, {Offset: 23, Words: make([]uint16, 5)}, {Offset: 43, Words: []uint16{1}}, {Offset: 82, Words: []uint16{2, 3}}, {Offset: 88, Words: []uint16{4}}}
 }
 
 func TestGrowattProtocolIIV1IdentityToolFailsClosedForProviderOutput(t *testing.T) {

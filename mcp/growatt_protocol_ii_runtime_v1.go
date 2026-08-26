@@ -17,7 +17,8 @@ type GrowattProtocolIIV1ProviderSnapshot struct {
 	Family                  string
 	OfflineIdentityAdmitted bool
 	OutboundAllowed         bool
-	RawIdentity             []uint16
+	UnitID                  byte
+	IdentitySlices          []GrowattProtocolIIV1NativeIdentitySlice
 }
 
 type GrowattProtocolIIV1SnapshotProvider interface {
@@ -46,10 +47,34 @@ func (runtime *GrowattProtocolIIV1Runtime) GrowattProtocolIIV1(ctx context.Conte
 	if snapshot.Profile != GrowattProtocolIIV1Profile || !validGrowattProtocolIIV1Family(snapshot.Family) || !snapshot.OfflineIdentityAdmitted {
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}
-	if len(snapshot.RawIdentity) == 0 {
+	if snapshot.UnitID == 0 || snapshot.UnitID > 247 || !validGrowattProtocolIISlices(snapshot.IdentitySlices) {
 		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
 	}
-	return GrowattProtocolIIV1Result{Profile: GrowattProtocolIIV1Profile, Disposition: "OFFLINE_IDENTITY_ADMITTED", Family: snapshot.Family, IdentityQualified: true, NativeIdentity: GrowattProtocolIIV1NativeIdentity{Family: snapshot.Family, Words: append([]uint16(nil), snapshot.RawIdentity...)}}, nil
+	return GrowattProtocolIIV1Result{Profile: GrowattProtocolIIV1Profile, Disposition: "OFFLINE_IDENTITY_ADMITTED", Family: snapshot.Family, IdentityQualified: true, NativeIdentity: GrowattProtocolIIV1NativeIdentity{Family: snapshot.Family, UnitID: snapshot.UnitID, Slices: cloneGrowattProtocolIISlices(snapshot.IdentitySlices)}}, nil
+}
+
+func validGrowattProtocolIISlices(slices []GrowattProtocolIIV1NativeIdentitySlice) bool {
+	want := [...]struct {
+		offset uint16
+		words  int
+	}{{9, 6}, {23, 5}, {43, 1}, {82, 2}, {88, 1}}
+	if len(slices) != len(want) {
+		return false
+	}
+	for i, expected := range want {
+		if slices[i].Offset != expected.offset || len(slices[i].Words) != expected.words {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneGrowattProtocolIISlices(slices []GrowattProtocolIIV1NativeIdentitySlice) []GrowattProtocolIIV1NativeIdentitySlice {
+	cloned := make([]GrowattProtocolIIV1NativeIdentitySlice, len(slices))
+	for i, slice := range slices {
+		cloned[i] = GrowattProtocolIIV1NativeIdentitySlice{Offset: slice.Offset, Words: append([]uint16(nil), slice.Words...)}
+	}
+	return cloned
 }
 
 func validGrowattProtocolIIV1Family(family string) bool {

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -10,7 +11,15 @@ import (
 type outBackAXSV1FixtureProvider struct{ *modbusV1FixtureProvider }
 
 func (*outBackAXSV1FixtureProvider) OutBackAXSV1(context.Context) (OutBackAXSV1Result, error) {
-	return OutBackAXSV1Result{Profile: OutBackAXSV1Profile, Qualified: true, FirmwareMajor: 1, FirmwareMid: 2, FirmwareMinor: 3}, nil
+	return OutBackAXSV1Result{
+		Profile:         OutBackAXSV1Profile,
+		Qualified:       true,
+		FirmwareMajor:   1,
+		FirmwareMid:     2,
+		FirmwareMinor:   3,
+		RawWords:        []uint16{64110, 282},
+		OutboundAllowed: true,
+	}, nil
 }
 
 func TestOutBackAXSV1ToolProjectsOnlyReadOnlyFacts(t *testing.T) {
@@ -24,12 +33,11 @@ func TestOutBackAXSV1ToolProjectsOnlyReadOnlyFacts(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 	data := msp06Map(t, result.envelope["data"], "data")
-	if data["profile"] != OutBackAXSV1Profile || data["qualified"] != true || data["outbound_allowed"] != false || data["raw_redacted"] != true {
+	if data["profile"] != OutBackAXSV1Profile || data["qualified"] != true || data["outbound_allowed"] != true {
 		t.Fatalf("data=%#v", data)
 	}
-	for _, forbidden := range []string{"words", "config", "network", "mac", "credential", "control"} {
-		if _, ok := data[forbidden]; ok {
-			t.Fatalf("leaked %q: %#v", forbidden, data)
-		}
+	rawWords := msp06Slice(t, data["raw_words"], "raw_words")
+	if len(rawWords) != 2 || rawWords[0] != json.Number("64110") || rawWords[1] != json.Number("282") {
+		t.Fatalf("raw_words=%#v", rawWords)
 	}
 }

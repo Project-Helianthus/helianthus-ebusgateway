@@ -90,9 +90,11 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 	}
 
 	cells := append([]GreeVRFCANCandidateV1OpaqueCell(nil), snapshot.OpaqueCells...)
-	rawEvidence := make([]GreeVRFCANCandidateV1RawEvidence, len(snapshot.RawEvidence))
-	for index, evidence := range snapshot.RawEvidence {
-		rawEvidence[index] = greeVRFCANCandidateV1BoundRawEvidence(evidence)
+	rawEvidence := make([]GreeVRFCANCandidateV1RawEvidence, 0, len(snapshot.RawEvidence))
+	for _, evidence := range snapshot.RawEvidence {
+		if greeVRFCANCandidateV1RawEvidenceValid(evidence) {
+			rawEvidence = append(rawEvidence, greeVRFCANCandidateV1BoundRawEvidence(evidence))
+		}
 	}
 	sort.Slice(cells, func(left, right int) bool {
 		if cells[left].Cell != cells[right].Cell {
@@ -127,11 +129,6 @@ func greeVRFCANCandidateV1Admitted(snapshot GreeVRFCANCandidateV1ProviderSnapsho
 			return false
 		}
 		seen[cell.Cell] = true
-	}
-	for _, evidence := range snapshot.RawEvidence {
-		if !greeVRFCANCandidateV1RawEvidenceValid(evidence) {
-			return false
-		}
 	}
 	return true
 }

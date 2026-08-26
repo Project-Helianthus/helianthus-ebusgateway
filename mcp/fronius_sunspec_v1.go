@@ -50,7 +50,7 @@ func registerFroniusSunSpecV1Tool(server *Server, provider ModbusV1Provider) {
 	froniusSunSpecV1Providers.Lock()
 	froniusSunSpecV1Providers.byServer[server] = p
 	froniusSunSpecV1Providers.Unlock()
-	server.tools = append(server.tools, Tool{Name: FroniusSunSpecV1StatusGetTool, Description: "Get the redacted, read-only Fronius SunSpec qualification and standard telemetry.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
+	server.tools = append(server.tools, Tool{Name: FroniusSunSpecV1StatusGetTool, Description: "Get the native Fronius SunSpec qualification and standard telemetry observation.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}})
 }
 
 func (server *Server) handleFroniusSunSpecV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -73,8 +73,6 @@ func (server *Server) handleFroniusSunSpecV1Call(ctx context.Context, name strin
 func normalizeFroniusSunSpecV1Result(result FroniusSunSpecV1Result, err error) FroniusSunSpecV1Result {
 	result.Profile = FroniusSunSpecV1Profile
 	result.Capability = modbusreg.SunSpecThreePhaseMonitoringCapabilityID
-	result.RawRedacted = true
-	result.OutboundAllowed = false
 	if err != nil || !result.Qualified || !validFroniusSunSpecV1Telemetry(result.Telemetry) {
 		result.Qualified = false
 		result.Qualification = "NOT_QUALIFIED"

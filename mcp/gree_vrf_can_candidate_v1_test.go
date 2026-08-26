@@ -17,7 +17,7 @@ func (provider greeVRFCANCandidateV1FixtureProvider) GreeVRFCANCandidateV1Snapsh
 	return provider.snapshot, provider.err
 }
 
-func TestGreeVRFCANCandidateV1SnapshotGetProjectsOnlyAdmittedRedactedMetadata(t *testing.T) {
+func TestGreeVRFCANCandidateV1SnapshotGetProjectsAdmittedOpaqueCellValues(t *testing.T) {
 	runtime, err := NewGreeVRFCANCandidateV1Runtime(greeVRFCANCandidateV1FixtureProvider{snapshot: greeVRFCANCandidateV1FixtureSnapshot()})
 	if err != nil {
 		t.Fatal(err)
@@ -30,12 +30,12 @@ func TestGreeVRFCANCandidateV1SnapshotGetProjectsOnlyAdmittedRedactedMetadata(t 
 	if result.Profile != GreeVRFCANCandidateV1Profile || !result.Admitted || result.OutboundAllowed || !result.RawEvidenceRedacted {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Class8 != 0xf7 || result.Opaque7 != 1 || result.Unit7 != 8 || result.Opcode7 != 0x58 || len(result.OpaqueCells) != 2 || result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[1].Cell != 0x14 {
+	if result.Class8 != 0xf7 || result.Opaque7 != 1 || result.Unit7 != 8 || result.Opcode7 != 0x58 || len(result.OpaqueCells) != 2 || result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[0].Value != 0xa4 || result.OpaqueCells[1].Cell != 0x14 || result.OpaqueCells[1].Value != 0xa5 {
 		t.Fatalf("metadata = %#v", result)
 	}
 }
 
-func TestGreeVRFCANCandidateV1SnapshotGetRedactsRawEvidenceAndCellValues(t *testing.T) {
+func TestGreeVRFCANCandidateV1SnapshotGetRedactsOnlyRawEvidence(t *testing.T) {
 	snapshot := greeVRFCANCandidateV1FixtureSnapshot()
 	snapshot.OutboundAllowed = true
 	snapshot.RawEvidence = []GreeVRFCANCandidateV1RawEvidence{{Identifier: 0x1ee04458, Data: [8]byte{0xde, 0xad, 0xbe, 0xef}}}
@@ -53,7 +53,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetRedactsRawEvidenceAndCellValues(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OutboundAllowed || strings.Contains(string(encoded), "\"raw_evidence\":") || strings.Contains(string(encoded), "deadbeef") || strings.Contains(string(encoded), "\"value\":") {
+	if result.OutboundAllowed || strings.Contains(string(encoded), "\"raw_evidence\":") || strings.Contains(string(encoded), "deadbeef") || !strings.Contains(string(encoded), "\"value\":222") {
 		t.Fatalf("unsafe result = %s", encoded)
 	}
 }
@@ -70,7 +70,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetOrdersOpaqueCellsDeterministically(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[1].Cell != 0x14 {
+	if result.OpaqueCells[0].Cell != 0x13 || result.OpaqueCells[0].Value != 0xa4 || result.OpaqueCells[1].Cell != 0x14 || result.OpaqueCells[1].Value != 0xa5 {
 		t.Fatalf("opaque cells = %#v", result.OpaqueCells)
 	}
 }
@@ -90,6 +90,7 @@ func TestGreeVRFCANCandidateV1SnapshotGetFailsClosed(t *testing.T) {
 		{name: "unsupported opcode", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x12, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "opaque field exceeds seven bits", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Opaque7: 0xff, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 		{name: "unknown cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x1c}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
+		{name: "duplicate cell", provider: greeVRFCANCandidateV1FixtureProvider{snapshot: GreeVRFCANCandidateV1ProviderSnapshot{Profile: GreeVRFCANCandidateV1Profile, Admitted: true, Class8: 0xf7, Unit7: 8, Opcode7: 0x58, OpaqueCells: []GreeVRFCANCandidateV1OpaqueCell{{Cell: 0x13}, {Cell: 0x13}}}}, want: ErrGreeVRFCANCandidateV1NotAdmitted},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			runtime, err := NewGreeVRFCANCandidateV1Runtime(testCase.provider)

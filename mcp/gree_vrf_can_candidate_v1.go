@@ -90,7 +90,10 @@ func (runtime *GreeVRFCANCandidateV1Runtime) SnapshotGet(ctx context.Context) (G
 	}
 
 	cells := append([]GreeVRFCANCandidateV1OpaqueCell(nil), snapshot.OpaqueCells...)
-	rawEvidence := append([]GreeVRFCANCandidateV1RawEvidence(nil), snapshot.RawEvidence...)
+	rawEvidence := make([]GreeVRFCANCandidateV1RawEvidence, len(snapshot.RawEvidence))
+	for index, evidence := range snapshot.RawEvidence {
+		rawEvidence[index] = greeVRFCANCandidateV1BoundRawEvidence(evidence)
+	}
 	sort.Slice(cells, func(left, right int) bool {
 		if cells[left].Cell != cells[right].Cell {
 			return cells[left].Cell < cells[right].Cell
@@ -125,7 +128,30 @@ func greeVRFCANCandidateV1Admitted(snapshot GreeVRFCANCandidateV1ProviderSnapsho
 		}
 		seen[cell.Cell] = true
 	}
+	for _, evidence := range snapshot.RawEvidence {
+		if !greeVRFCANCandidateV1RawEvidenceValid(evidence) {
+			return false
+		}
+	}
 	return true
+}
+
+func greeVRFCANCandidateV1RawEvidenceValid(evidence GreeVRFCANCandidateV1RawEvidence) bool {
+	if evidence.DLC > uint8(len(evidence.Data)) {
+		return false
+	}
+	if evidence.DLC < uint8(len(evidence.Data)) {
+		return evidence.RawDLC == evidence.DLC
+	}
+	return evidence.RawDLC >= uint8(len(evidence.Data)) && evidence.RawDLC <= 15
+}
+
+func greeVRFCANCandidateV1BoundRawEvidence(evidence GreeVRFCANCandidateV1RawEvidence) GreeVRFCANCandidateV1RawEvidence {
+	// Storage beyond DLC is not part of the native CAN payload.
+	for index := int(evidence.DLC); index < len(evidence.Data); index++ {
+		evidence.Data[index] = 0
+	}
+	return evidence
 }
 
 func greeVRFCANCandidateV1Opcode(opcode uint8) bool {

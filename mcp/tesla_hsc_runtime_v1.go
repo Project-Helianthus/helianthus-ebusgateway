@@ -82,7 +82,11 @@ func validTeslaHSCV1CorrelatedResponse(response TeslaHSCV1CorrelatedResponse) bo
 }
 
 func copyTeslaHSCV1NativeRecord(record TeslaHSCV1NativeRecord) TeslaHSCV1NativeRecord {
-	record.Payload = append([]byte(nil), record.Payload...)
+	if record.Payload != nil {
+		payload := make([]byte, len(record.Payload))
+		copy(payload, record.Payload)
+		record.Payload = payload
+	}
 	record.FieldNames = append([]string(nil), record.FieldNames...)
 	return record
 }

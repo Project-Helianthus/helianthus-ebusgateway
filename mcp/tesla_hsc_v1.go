@@ -8,7 +8,11 @@ import (
 
 const TeslaHSCV1StatusGetTool = "modbus.v1.tesla.hsc.status.get"
 
-const maxTeslaHSCV1NativeRecords = 8
+const (
+	maxTeslaHSCV1NativeRecords       = 8
+	maxTeslaHSCV1NativeMetadataBytes = 128
+	maxTeslaHSCV1NativeFieldNames    = 64
+)
 
 // TeslaHSCV1NativeRecord retains one native Tesla HSC message with the
 // firmware-scoped names and provenance supplied by the selected codec.
@@ -82,7 +86,9 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 }
 
 func validTeslaHSCV1Result(result TeslaHSCV1Result) bool {
-	if len(result.NativeRecords) > maxTeslaHSCV1NativeRecords {
+	if len(result.Disposition) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(result.Compatibility) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(result.NativeRecords) > maxTeslaHSCV1NativeRecords {
 		return false
 	}
 	for _, record := range result.NativeRecords {
@@ -94,8 +100,18 @@ func validTeslaHSCV1Result(result TeslaHSCV1Result) bool {
 }
 
 func validTeslaHSCV1NativeRecord(record TeslaHSCV1NativeRecord) bool {
-	if len(record.Payload) > 252 || record.Compatibility == "" || record.Provenance == "" {
+	if len(record.Payload) > 252 || record.Compatibility == "" || record.Provenance == "" ||
+		len(record.Compatibility) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(record.Provenance) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(record.RequestName) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(record.ResponseName) > maxTeslaHSCV1NativeMetadataBytes ||
+		len(record.FieldNames) > maxTeslaHSCV1NativeFieldNames {
 		return false
+	}
+	for _, fieldName := range record.FieldNames {
+		if len(fieldName) > maxTeslaHSCV1NativeMetadataBytes {
+			return false
+		}
 	}
 	switch record.Function {
 	case 100:

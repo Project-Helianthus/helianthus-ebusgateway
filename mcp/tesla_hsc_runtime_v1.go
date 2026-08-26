@@ -48,6 +48,9 @@ func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Res
 		if !validTeslaHSCV1CorrelatedResponse(response) {
 			return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response is invalid")
 		}
+		if len(result.NativeRecords)+len(response.Records) > maxTeslaHSCV1NativeRecords {
+			return TeslaHSCV1Result{}, errors.New("tesla HSC correlated response aggregate exceeds bound")
+		}
 		result.OutboundAllowed = result.OutboundAllowed || response.OutboundAllowed
 		for _, record := range response.Records {
 			result.NativeRecords = append(result.NativeRecords, copyTeslaHSCV1NativeRecord(record))

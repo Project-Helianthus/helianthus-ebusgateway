@@ -57,6 +57,22 @@ func TestTeslaHSCV1RuntimeRejectsInvalidCorrelatedRecords(t *testing.T) {
 	}
 }
 
+func TestTeslaHSCV1RuntimeRejectsOversizedAggregate(t *testing.T) {
+	responses := make([]TeslaHSCV1CorrelatedResponse, 0, 9)
+	for range 9 {
+		responses = append(responses, TeslaHSCV1CorrelatedResponse{Function: 101, Records: []TeslaHSCV1NativeRecord{{
+			Function: 101, Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+		}}})
+	}
+	runtime, err := NewTeslaHSCV1Runtime(&teslaHSCV1RuntimeFixture{responses: responses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.TeslaHSCV1(context.Background()); err == nil {
+		t.Fatal("oversized aggregate accepted")
+	}
+}
+
 type teslaHSCV1RuntimeFixture struct {
 	responses []TeslaHSCV1CorrelatedResponse
 }

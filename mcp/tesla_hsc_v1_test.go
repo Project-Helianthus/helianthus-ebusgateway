@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -116,6 +117,26 @@ func TestTeslaHSCV1StatusToolClearsNativeRecordsOnProviderError(t *testing.T) {
 	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
 	if !result.isError || result.envelope["data"] != nil {
 		t.Fatalf("provider-error result = %#v", result)
+	}
+}
+
+type teslaHSCV1OversizedMetadataFixtureProvider struct{ *modbusV1FixtureProvider }
+
+func (*teslaHSCV1OversizedMetadataFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {
+	return TeslaHSCV1Result{NativeRecords: []TeslaHSCV1NativeRecord{{
+		Function: 100, Payload: []byte{}, Compatibility: strings.Repeat("x", 129), Provenance: "synthetic-replay",
+	}}}, nil
+}
+
+func TestTeslaHSCV1StatusToolRejectsOversizedNativeMetadata(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &teslaHSCV1OversizedMetadataFixtureProvider{&modbusV1FixtureProvider{}})
+	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
+	if !result.isError || result.envelope["data"] != nil {
+		t.Fatalf("oversized metadata accepted: %#v", result)
 	}
 }
 

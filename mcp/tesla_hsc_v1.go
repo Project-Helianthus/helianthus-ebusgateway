@@ -8,6 +8,8 @@ import (
 
 const TeslaHSCV1StatusGetTool = "modbus.v1.tesla.hsc.status.get"
 
+const maxTeslaHSCV1NativeRecords = 8
+
 // TeslaHSCV1NativeRecord retains one native Tesla HSC message with the
 // firmware-scoped names and provenance supplied by the selected codec.
 type TeslaHSCV1NativeRecord struct {
@@ -67,5 +69,33 @@ func (server *Server) handleTeslaHSCV1Call(ctx context.Context, name string, arg
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("tesla HSC provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.TeslaHSCV1(ctx)
+	if err == nil && !validTeslaHSCV1Result(result) {
+		result = TeslaHSCV1Result{}
+		err = errors.New("tesla HSC native provider result is invalid")
+	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
+}
+
+func validTeslaHSCV1Result(result TeslaHSCV1Result) bool {
+	if len(result.NativeRecords) > maxTeslaHSCV1NativeRecords {
+		return false
+	}
+	for _, record := range result.NativeRecords {
+		if !validTeslaHSCV1NativeRecord(record) {
+			return false
+		}
+	}
+	return true
+}
+
+func validTeslaHSCV1NativeRecord(record TeslaHSCV1NativeRecord) bool {
+	if len(record.Payload) > 252 || record.Compatibility == "" || record.Provenance == "" {
+		return false
+	}
+	switch record.Function {
+	case 100, 101, 102:
+		return true
+	default:
+		return false
+	}
 }

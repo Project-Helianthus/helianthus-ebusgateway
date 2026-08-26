@@ -71,8 +71,7 @@ func validTeslaHSCV1CorrelatedResponse(response TeslaHSCV1CorrelatedResponse) bo
 		return false
 	}
 	for _, record := range response.Records {
-		if record.Function != response.Function || len(record.Payload) > 252 ||
-			record.Compatibility == "" || record.Provenance == "" {
+		if record.Function != response.Function || !validTeslaHSCV1NativeRecord(record) {
 			return false
 		}
 	}

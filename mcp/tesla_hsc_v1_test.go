@@ -78,6 +78,26 @@ func TestTeslaHSCV1StatusToolPreservesNativePayloadAndContext(t *testing.T) {
 	}
 }
 
+type teslaHSCV1InvalidNativeFixtureProvider struct{ *modbusV1FixtureProvider }
+
+func (*teslaHSCV1InvalidNativeFixtureProvider) TeslaHSCV1(context.Context) (TeslaHSCV1Result, error) {
+	return TeslaHSCV1Result{Compatibility: "fixture", NativeRecords: []TeslaHSCV1NativeRecord{{
+		Function: 101, Payload: make([]byte, 253), Compatibility: "wc3_24_44_3", Provenance: "synthetic-replay",
+	}}}, nil
+}
+
+func TestTeslaHSCV1StatusToolRejectsUnboundedNativeProviderRecord(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, &teslaHSCV1InvalidNativeFixtureProvider{&modbusV1FixtureProvider{}})
+	result := msp06Call(t, server.Handler(), TeslaHSCV1StatusGetTool, map[string]any{})
+	if !result.isError {
+		t.Fatalf("unbounded native record accepted: %#v", result)
+	}
+}
+
 type teslaHSCV1EmptyResponseProvider struct{}
 
 func (teslaHSCV1EmptyResponseProvider) TeslaHSCV1Responses(context.Context) ([]TeslaHSCV1CorrelatedResponse, error) {

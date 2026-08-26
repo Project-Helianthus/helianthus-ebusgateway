@@ -8,8 +8,8 @@ import (
 // TeslaHSCV1CorrelatedResponse is one inbound RTU exchange already correlated
 // by the transport. It has no request-construction or transmit capability.
 type TeslaHSCV1CorrelatedResponse struct {
-	Function byte
-	Payloads [][]byte
+	Function     byte
+	PayloadCount uint8
 }
 
 // TeslaHSCV1ResponseProvider supplies only completed correlated responses.
@@ -51,14 +51,14 @@ func (runtime *TeslaHSCV1Runtime) TeslaHSCV1(ctx context.Context) (TeslaHSCV1Res
 }
 
 func validTeslaHSCV1CorrelatedResponse(response TeslaHSCV1CorrelatedResponse) bool {
-	if len(response.Payloads) == 0 || len(response.Payloads) > 8 {
+	if response.PayloadCount == 0 || response.PayloadCount > 8 {
 		return false
 	}
 	switch response.Function {
 	case 100:
 		return true
 	case 101, 102:
-		return len(response.Payloads) == 1
+		return response.PayloadCount == 1
 	default:
 		return false
 	}

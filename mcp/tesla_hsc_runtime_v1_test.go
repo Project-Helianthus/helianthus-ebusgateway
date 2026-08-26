@@ -2,13 +2,20 @@ package mcp
 
 import (
 	"context"
+	"reflect"
 	"testing"
 )
 
 func TestTeslaHSCV1RuntimeInjectsOnlyRedactedCorrelatedResponses(t *testing.T) {
+	responseType := reflect.TypeOf(TeslaHSCV1CorrelatedResponse{})
+	for field := 0; field < responseType.NumField(); field++ {
+		if typeContainsBytes(responseType.Field(field).Type) {
+			t.Fatalf("correlated response accepts raw bytes through %s", responseType.Field(field).Name)
+		}
+	}
 	runtime, err := NewTeslaHSCV1Runtime(&teslaHSCV1RuntimeFixture{responses: []TeslaHSCV1CorrelatedResponse{
-		{Function: 100, Payloads: [][]byte{{0}, {1, 0xaa}}},
-		{Function: 101, Payloads: [][]byte{{1, 0}}},
+		{Function: 100, PayloadCount: 2},
+		{Function: 101, PayloadCount: 1},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -25,9 +32,16 @@ func TestTeslaHSCV1RuntimeInjectsOnlyRedactedCorrelatedResponses(t *testing.T) {
 	}
 }
 
+func typeContainsBytes(typ reflect.Type) bool {
+	if typ.Kind() == reflect.Array || typ.Kind() == reflect.Slice {
+		return typ.Elem().Kind() == reflect.Uint8 || typeContainsBytes(typ.Elem())
+	}
+	return false
+}
+
 func TestTeslaHSCV1RuntimeRejectsUncorrelatedOrOpaqueOutboundPaths(t *testing.T) {
 	for _, response := range []TeslaHSCV1CorrelatedResponse{
-		{Function: 101, Payloads: [][]byte{{1}, {2}}},
+		{Function: 101, PayloadCount: 2},
 		{Function: 102},
 	} {
 		runtime, err := NewTeslaHSCV1Runtime(&teslaHSCV1RuntimeFixture{responses: []TeslaHSCV1CorrelatedResponse{response}})

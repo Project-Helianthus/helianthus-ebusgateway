@@ -115,7 +115,7 @@ func TestIssue749GatewayCommandRouterUsesAdapterRuntime(t *testing.T) {
 // unrelated eBUS transport lifecycle.
 func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", nil, parser.ParseComments)
+	file, err := parser.ParseFile(fset, "gateway_http_server.go", nil, parser.ParseComments)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,23 +128,21 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch value := node.(type) {
 		case *ast.CallExpr:
-			selector, ok := value.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if selector.Sel.Name == "RegisterEEBusV1Provider" {
-				if registerPosition.IsValid() {
-					t.Fatal("RegisterEEBusV1Provider appears more than once in gateway bootstrap")
+			if selector, ok := value.Fun.(*ast.SelectorExpr); ok {
+				if selector.Sel.Name == "RegisterEEBusV1Provider" {
+					if registerPosition.IsValid() {
+						t.Fatal("RegisterEEBusV1Provider appears more than once in gateway bootstrap")
+					}
+					registerPosition = value.Pos()
 				}
-				registerPosition = value.Pos()
-			}
-			if selector.Sel.Name == "RegisterEEBusV1CommandRouter" {
-				if commandRegisterPosition.IsValid() {
-					t.Fatal("RegisterEEBusV1CommandRouter appears more than once in gateway bootstrap")
+				if selector.Sel.Name == "RegisterEEBusV1CommandRouter" {
+					if commandRegisterPosition.IsValid() {
+						t.Fatal("RegisterEEBusV1CommandRouter appears more than once in gateway bootstrap")
+					}
+					commandRegisterPosition = value.Pos()
 				}
-				commandRegisterPosition = value.Pos()
 			}
-			if selector.Sel.Name == "Handle" && len(value.Args) > 0 {
+			if selector, ok := value.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Handle" && len(value.Args) > 0 {
 				pathSelector, ok := value.Args[0].(*ast.SelectorExpr)
 				if ok && pathSelector.Sel.Name == "MCPPath" {
 					mountPosition = value.Pos()
@@ -361,7 +359,7 @@ func TestMSP06ProviderRegistrationDoesNotEscapeMCPBootstrap(t *testing.T) {
 		}
 		clean := filepath.Clean(relative)
 		allowedMCP := strings.HasPrefix(clean, filepath.Clean("../../mcp")+string(filepath.Separator))
-		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
+		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
 		if !allowedMCP && !allowedGateway {
 			t.Errorf("MSP-06 provider registration escaped MCP/bootstrap boundary into %s", relative)
 		}

@@ -217,6 +217,10 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	serverFile, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapterFile, err := parser.ParseFile(fset, "eebus_runtime_adapter.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +230,7 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 	typedCommandParameter := false
 	explicitArgument := false
 	explicitCommandArgument := false
-	for _, declaration := range mainFile.Decls {
+	for _, declaration := range serverFile.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
 		if !ok || function.Name.Name != "startHTTPServer" {
 			continue
@@ -287,6 +291,7 @@ func TestMSP06GatewayNormalizesTypedProviderBeforeHTTPBootstrap(t *testing.T) {
 
 	for filename, file := range map[string]*ast.File{
 		"main.go":                  mainFile,
+		"gateway_http_server.go":   serverFile,
 		"eebus_runtime_adapter.go": adapterFile,
 	} {
 		ast.Inspect(file, func(node ast.Node) bool {

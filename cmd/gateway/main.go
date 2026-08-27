@@ -24,7 +24,6 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
-	vaillantproviders "github.com/Project-Helianthus/helianthus-ebusreg/providers/vaillant"
 )
 
 func main() {
@@ -48,20 +47,9 @@ func main() {
 }
 
 func run(ctx context.Context, cfg ebusgateway.Config) (result error) {
-	resolvedBuildInfo, err := resolveGatewayBuildInfo(buildVersion, buildID)
+	resolvedBuildInfo, err := prepareGatewayRunConfig(&cfg)
 	if err != nil {
-		return fmt.Errorf("gateway build identity: %w", err)
-	}
-
-	applyTransportSourcePolicy(&cfg)
-	if err := cfg.ValidatePortalPV(); err != nil {
-		return fmt.Errorf("validate Portal PV configuration: %w", err)
-	}
-	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(cfg); err != nil {
-		return fmt.Errorf("validate synchronized evidence config: %w", err)
-	}
-	if len(cfg.Providers) == 0 {
-		cfg.Providers = vaillantproviders.Default()
+		return err
 	}
 
 	evidenceRuntime, err := openSynchronizedEvidenceRuntime(cfg.EvidenceRecorderConfig)

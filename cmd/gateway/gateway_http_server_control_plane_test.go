@@ -93,3 +93,28 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 		last = next
 	}
 }
+
+func TestRunOrchestrationKeepsConfigurationAndStartupSignalsDistinct(t *testing.T) {
+	mainSource, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainText := string(mainSource)
+	config := strings.Index(mainText, "prepareGatewayRunConfig(&cfg)")
+	firstSidecar := strings.Index(mainText, "openSynchronizedEvidenceRuntime")
+	if config < 0 || firstSidecar < 0 || config > firstSidecar {
+		t.Fatalf("configuration phase must remain before resource startup: config=%d sidecar=%d", config, firstSidecar)
+	}
+
+	signalSource, err := os.ReadFile("startup_scan.go")
+	if err != nil {
+		t.Fatalf("read startup_scan.go: %v", err)
+	}
+	for _, signal := range []string{
+		"firstPassDone", "semanticBootstrapReady", "activeProbePassed", "admissionFailed",
+	} {
+		if !strings.Contains(string(signalSource), signal) {
+			t.Fatalf("startup signal %q is not distinct", signal)
+		}
+	}
+}

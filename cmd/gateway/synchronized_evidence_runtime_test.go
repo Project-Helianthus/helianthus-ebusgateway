@@ -252,18 +252,14 @@ func TestIssue764GatewayRegistersPrivateCaptureExactlyOnceBeforeMCPMount(t *test
 		if !ok {
 			return true
 		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if selector.Sel.Name == "RegisterSynchronizedEvidenceCapture" {
-			count++
-			registration = call.Pos()
-		}
-		if selector.Sel.Name == "Handle" && len(call.Args) > 0 {
-			if path, ok := call.Args[0].(*ast.SelectorExpr); ok && path.Sel.Name == "MCPPath" {
-				mount = call.Pos()
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+			if selector.Sel.Name == "RegisterSynchronizedEvidenceCapture" {
+				count++
+				registration = call.Pos()
 			}
+		}
+		if function, ok := call.Fun.(*ast.Ident); ok && function.Name == "registerHTTPControlPlaneCoreRoutes" {
+			mount = call.Pos()
 		}
 		return true
 	})

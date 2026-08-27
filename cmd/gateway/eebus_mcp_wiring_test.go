@@ -142,11 +142,8 @@ func TestMSP06GatewayRegistersProviderConditionallyBeforeMCPMount(t *testing.T) 
 					commandRegisterPosition = value.Pos()
 				}
 			}
-			if selector, ok := value.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "Handle" && len(value.Args) > 0 {
-				pathSelector, ok := value.Args[0].(*ast.SelectorExpr)
-				if ok && pathSelector.Sel.Name == "MCPPath" {
-					mountPosition = value.Pos()
-				}
+			if function, ok := value.Fun.(*ast.Ident); ok && function.Name == "registerHTTPControlPlaneCoreRoutes" {
+				mountPosition = value.Pos()
 			}
 		case *ast.IfStmt:
 			containsRegistration := false
@@ -359,7 +356,7 @@ func TestMSP06ProviderRegistrationDoesNotEscapeMCPBootstrap(t *testing.T) {
 		}
 		clean := filepath.Clean(relative)
 		allowedMCP := strings.HasPrefix(clean, filepath.Clean("../../mcp")+string(filepath.Separator))
-		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
+		allowedGateway := clean == filepath.Clean("../../cmd/gateway/main.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_server.go") || clean == filepath.Clean("../../cmd/gateway/gateway_http_control_plane.go") || clean == filepath.Clean("../../cmd/gateway/eebus_runtime_adapter.go")
 		if !allowedMCP && !allowedGateway {
 			t.Errorf("MSP-06 provider registration escaped MCP/bootstrap boundary into %s", relative)
 		}

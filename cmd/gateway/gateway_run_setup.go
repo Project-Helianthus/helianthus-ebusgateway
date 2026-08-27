@@ -27,3 +27,23 @@ func prepareGatewayRunConfig(cfg *ebusgateway.Config) (gatewayBuildInfo, error) 
 	}
 	return resolvedBuildInfo, nil
 }
+
+// prepareGatewayEBusDriver preserves the driver configuration phase before
+// run installs its historical LIFO shutdown defer and starts the driver.
+func prepareGatewayEBusDriver(cfg *ebusgateway.Config) (*ebusDriverController, error) {
+	ebusDriver, err := newEBusDriverController(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("construct eBUS DriverManager: %w", err)
+	}
+	cfg.Transport = ebusDriver.active
+	if ebusDriver.passive != nil {
+		cfg.PassiveTransport = ebusDriver.passive
+		if configuredEBusDriverProtocol(*cfg) == ebusgateway.TransportAdapterDirect {
+			cfg.ObserveFirstWarmupCompletedTransactions = 0
+			cfg.ObserveFirstWarmupConnectedWindow = 0
+			cfg.ObserveFirstWarmupPostResetTransactions = 0
+			cfg.ObserveFirstWarmupPostResetWindow = 0
+		}
+	}
+	return ebusDriver, nil
+}

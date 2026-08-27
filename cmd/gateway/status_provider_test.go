@@ -299,9 +299,9 @@ func TestIssue851GraphQLAndExplorerRequireCurrentDriverWriteAdmission(t *testing
 }
 
 func TestIssue851MainWiresOneManagedSourceAuthorityToEveryEBusSurface(t *testing.T) {
-	source, err := os.ReadFile("main.go")
+	source, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
 	}
 	text := string(source)
 	staleWiring := []string{

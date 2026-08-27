@@ -89,7 +89,7 @@ func TestIssue817OperatorBoundaryFailureKeepsPublicEEBusRuntimeRunning(t *testin
 }
 
 func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.T) {
-	content, err := os.ReadFile("main.go")
+	content, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
 		t.Fatal(err)
 	}

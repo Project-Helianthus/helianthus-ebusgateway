@@ -65,9 +65,9 @@ func TestHTTPControlPlaneRouteManifestOmitsDisabledOptionalRoutes(t *testing.T) 
 }
 
 func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T) {
-	source, err := os.ReadFile("main.go")
+	source, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
 	}
 	text := string(source)
 
@@ -95,9 +95,9 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 }
 
 func TestRunOrchestrationKeepsConfigurationAndStartupSignalsDistinct(t *testing.T) {
-	mainSource, err := os.ReadFile("main.go")
+	mainSource, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
 	}
 	mainText := string(mainSource)
 	config := strings.Index(mainText, "prepareGatewayRunConfig(&cfg)")
@@ -116,5 +116,20 @@ func TestRunOrchestrationKeepsConfigurationAndStartupSignalsDistinct(t *testing.
 		if !strings.Contains(string(signalSource), signal) {
 			t.Fatalf("startup signal %q is not distinct", signal)
 		}
+	}
+}
+
+func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing.T) {
+	source, err := os.ReadFile("gateway_run_lifecycle.go")
+	if err != nil {
+		t.Fatalf("read gateway_run_lifecycle.go: %v", err)
+	}
+	text := string(source)
+
+	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg)")
+	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
+	start := strings.Index(text, "ebusDriver.Start(ctx)")
+	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start {
+		t.Fatalf("driver preparation, LIFO shutdown defer, and start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
 	}
 }

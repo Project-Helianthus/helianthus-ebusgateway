@@ -37,41 +37,76 @@ func newHTTPControlPlaneGraphQLHandlers(
 	return queryHandler, snapshotHandler, subscriptionHandler, nil
 }
 
-func httpControlPlaneRouteManifest(cfg ebusgateway.Config, hasBusObservability bool) []string {
-	routes := make([]string, 0, 13)
+type httpControlPlaneRoutePlan struct {
+	metricsPath      string
+	graphqlPath      string
+	snapshotPath     string
+	subscriptionPath string
+	mcpPath          string
+	dumpUploadPath   string
+	uiPath           string
+	portalPath       string
+}
+
+func newHTTPControlPlaneRoutePlan(cfg ebusgateway.Config, hasBusObservability bool) httpControlPlaneRoutePlan {
+	plan := httpControlPlaneRoutePlan{
+		graphqlPath:      cfg.GraphQLPath,
+		snapshotPath:     cfg.SnapshotPath,
+		subscriptionPath: cfg.SubscriptionPath,
+		mcpPath:          cfg.MCPPath,
+	}
 	if hasBusObservability {
-		routes = append(routes, normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath))
+		plan.metricsPath = normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath)
+	}
+	if cfg.DumpUploadPath != "" {
+		plan.dumpUploadPath = cfg.DumpUploadPath
+		if !strings.HasPrefix(plan.dumpUploadPath, "/") {
+			plan.dumpUploadPath = "/" + plan.dumpUploadPath
+		}
+	}
+	if cfg.UIPath != "" {
+		plan.uiPath = normalizeMountPath(cfg.UIPath, "/ui")
+	}
+	if cfg.PortalPath != "" {
+		plan.portalPath = normalizeMountPath(cfg.PortalPath, "/portal")
+	}
+	return plan
+}
+
+func (plan httpControlPlaneRoutePlan) manifest() []string {
+	routes := make([]string, 0, 13)
+	if plan.metricsPath != "" {
+		routes = append(routes, plan.metricsPath)
 	}
 	routes = append(routes,
 		"/debug/vars",
 		"/debug/v8/admin-events",
-		cfg.GraphQLPath,
-		cfg.SnapshotPath,
-		cfg.SubscriptionPath,
-		cfg.MCPPath,
+		plan.graphqlPath,
+		plan.snapshotPath,
+		plan.subscriptionPath,
+		plan.mcpPath,
 		"/admin/eebus/v1/",
 	)
-	if cfg.DumpUploadPath != "" {
-		uploadPath := cfg.DumpUploadPath
-		if !strings.HasPrefix(uploadPath, "/") {
-			uploadPath = "/" + uploadPath
-		}
-		routes = append(routes, uploadPath)
+	if plan.dumpUploadPath != "" {
+		routes = append(routes, plan.dumpUploadPath)
 	}
-	if cfg.UIPath != "" {
-		uiPath := normalizeMountPath(cfg.UIPath, "/ui")
-		routes = append(routes, uiPath+"/", uiPath)
+	if plan.uiPath != "" {
+		routes = append(routes, plan.uiPath+"/", plan.uiPath)
 	}
-	if cfg.PortalPath != "" {
-		portalPath := normalizeMountPath(cfg.PortalPath, "/portal")
-		routes = append(routes, portalPath+"/", portalPath)
+	if plan.portalPath != "" {
+		routes = append(routes, plan.portalPath+"/", plan.portalPath)
 	}
 	return routes
 }
 
+func httpControlPlaneRouteManifest(cfg ebusgateway.Config, hasBusObservability bool) []string {
+	return newHTTPControlPlaneRoutePlan(cfg, hasBusObservability).manifest()
+}
+
 func registerHTTPControlPlaneCoreRoutes(
 	mux *http.ServeMux,
-	cfg ebusgateway.Config,
+	plan httpControlPlaneRoutePlan,
+	dumpOutputDir string,
 	busObservability *ebusgateway.BusObservabilityStore,
 	queryHandler http.Handler,
 	snapshotHandler http.Handler,
@@ -79,31 +114,26 @@ func registerHTTPControlPlaneCoreRoutes(
 	mcpServer *mcp.Server,
 	eebusAdminHandler http.Handler,
 ) {
-	if busObservability != nil {
-		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
+	if plan.metricsPath != "" {
+		mux.Handle(plan.metricsPath, busObservability.MetricsHandler())
 	}
 	// The gateway owns its mux, so expvar's default-mux registration must be
 	// mounted explicitly.
 	mux.Handle("/debug/vars", expvar.Handler())
 	mux.HandleFunc("/debug/v8/admin-events", handleV8AdminEvents)
-	mux.Handle(cfg.GraphQLPath, queryHandler)
-	mux.Handle(cfg.SnapshotPath, snapshotHandler)
-	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
-	mux.Handle(cfg.MCPPath, mcpServer.Handler())
+	mux.Handle(plan.graphqlPath, queryHandler)
+	mux.Handle(plan.snapshotPath, snapshotHandler)
+	mux.Handle(plan.subscriptionPath, subscriptionHandler)
+	mux.Handle(plan.mcpPath, mcpServer.Handler())
 	mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
-	if cfg.DumpUploadPath != "" {
-		uploadPath := cfg.DumpUploadPath
-		if !strings.HasPrefix(uploadPath, "/") {
-			uploadPath = "/" + uploadPath
-		}
-		mux.Handle(uploadPath, ebusgateway.NewRegisterDumpUploadHandler(cfg.DumpOutputDir))
+	if plan.dumpUploadPath != "" {
+		mux.Handle(plan.dumpUploadPath, ebusgateway.NewRegisterDumpUploadHandler(dumpOutputDir))
 	}
-	if cfg.UIPath != "" {
-		uiPath := normalizeMountPath(cfg.UIPath, "/ui")
-		uiHandler := ui.NewHandler(cfg.GraphQLPath)
-		mux.Handle(uiPath+"/", http.StripPrefix(uiPath, uiHandler))
-		mux.HandleFunc(uiPath, func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, uiPath+"/", http.StatusMovedPermanently)
+	if plan.uiPath != "" {
+		uiHandler := ui.NewHandler(plan.graphqlPath)
+		mux.Handle(plan.uiPath+"/", http.StripPrefix(plan.uiPath, uiHandler))
+		mux.HandleFunc(plan.uiPath, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, plan.uiPath+"/", http.StatusMovedPermanently)
 		})
 	}
 }

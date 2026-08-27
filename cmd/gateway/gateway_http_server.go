@@ -180,11 +180,12 @@ func startHTTPServer(
 	}
 
 	mux := http.NewServeMux()
+	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
-		mux, cfg, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
+		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
-	if cfg.PortalPath != "" {
-		portalPath := normalizeMountPath(cfg.PortalPath, "/portal")
+	if routePlan.portalPath != "" {
+		portalPath := routePlan.portalPath
 		var getPortalBusObservability func() any
 		if busObservability != nil {
 			getPortalBusObservability = func() any {

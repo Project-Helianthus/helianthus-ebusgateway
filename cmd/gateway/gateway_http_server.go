@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"expvar"
 	"fmt"
-	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -17,7 +14,6 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/ui"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -65,15 +61,7 @@ func startHTTPServer(
 		return nil, nil, fmt.Errorf("portal PV configuration: %w", err)
 	}
 
-	queryHandler, err := graphql.NewInvokeHandler(builder, gateway.Registry, gateway.Router)
-	if err != nil {
-		return nil, nil, err
-	}
-	snapshotHandler, err := graphql.NewProjectionSnapshotHandler(builder)
-	if err != nil {
-		return nil, nil, err
-	}
-	subscriptionHandler, err := graphql.NewSubscriptionHandler(builder, gateway.Registry, gateway.Router, hub)
+	queryHandler, snapshotHandler, subscriptionHandler, err := newHTTPControlPlaneGraphQLHandlers(gateway, builder, hub)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -192,67 +180,9 @@ func startHTTPServer(
 	}
 
 	mux := http.NewServeMux()
-	if busObservability != nil {
-		mux.Handle(normalizeMountPath(cfg.MetricsPath, ebusgateway.DefaultMetricsPath), busObservability.MetricsHandler())
-	}
-	// Expose expvar surfaces (including the 11 startup_source_selection_* counters
-	// from M5) via /debug/vars. The expvar package's init registers the
-	// handler on http.DefaultServeMux, but the gateway uses its own mux so
-	// the handler must be wired explicitly. Resolves cruise-run #20
-	// validation finding: M5 expvars were defined + Publish()'d but not
-	// reachable over HTTP.
-	mux.Handle("/debug/vars", expvar.Handler())
-	// F-NEW-26 (2026-05-21): expose the v8 classifier's admin
-	// event ring buffer over HTTP so operators can introspect the
-	// byte-level detail behind the helianthus_v8_shadow_would_have_dropped_total
-	// counter. Without this endpoint the aggregate counter is a
-	// black box: an operator running v8 in shadow mode sees the
-	// count rising but cannot distinguish true-positive (real wire
-	// AA-injection that SHOULD be filtered when promoted to enforce)
-	// from false-positive (legitimate traffic v8 over-eagerly flags).
-	// The per-event detail (byte value + FSM state + escape
-	// provenance + timestamp) is the operator's evidence base for
-	// the shadow→enforce promotion gate documented in
-	// helianthus-docs-ebus/deployment/prometheus-alerts.md.
-	//
-	// Endpoint contract:
-	//   GET /debug/v8/admin-events
-	//   Response: application/json
-	//   Body: {"events": [<ClassifierAdminEvent>...], "dropped": <uint64>}
-	//
-	// DRAIN semantics: each successful GET returns the events
-	// accumulated since the last drain and EMPTIES the ring
-	// buffer. Operators MUST poll at a steady cadence (every
-	// few seconds in production); a stuck consumer drops the
-	// OLDEST events FIFO and the "dropped" field surfaces the
-	// saturation.
-	//
-	// Nil-safe: when the classifier is unset (non-adapter-direct
-	// transport, or run() not yet completed), the handler returns
-	// `{"events": [], "dropped": 0}` — the surface stays
-	// available so tooling that probes it unconditionally does
-	// not 404.
-	mux.HandleFunc("/debug/v8/admin-events", handleV8AdminEvents)
-	mux.Handle(cfg.GraphQLPath, queryHandler)
-	mux.Handle(cfg.SnapshotPath, snapshotHandler)
-	mux.Handle(cfg.SubscriptionPath, subscriptionHandler)
-	mux.Handle(cfg.MCPPath, mcpServer.Handler())
-	mux.Handle("/admin/eebus/v1/", eebusAdminHandler)
-	if cfg.DumpUploadPath != "" {
-		uploadPath := cfg.DumpUploadPath
-		if !strings.HasPrefix(uploadPath, "/") {
-			uploadPath = "/" + uploadPath
-		}
-		mux.Handle(uploadPath, ebusgateway.NewRegisterDumpUploadHandler(cfg.DumpOutputDir))
-	}
-	if cfg.UIPath != "" {
-		uiPath := normalizeMountPath(cfg.UIPath, "/ui")
-		uiHandler := ui.NewHandler(cfg.GraphQLPath)
-		mux.Handle(uiPath+"/", http.StripPrefix(uiPath, uiHandler))
-		mux.HandleFunc(uiPath, func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, uiPath+"/", http.StatusMovedPermanently)
-		})
-	}
+	registerHTTPControlPlaneCoreRoutes(
+		mux, cfg, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
+	)
 	if cfg.PortalPath != "" {
 		portalPath := normalizeMountPath(cfg.PortalPath, "/portal")
 		var getPortalBusObservability func() any
@@ -437,67 +367,5 @@ func startHTTPServer(
 		})
 	}
 
-	var operatorEndpoint io.Closer
-	if eebusProvider != nil {
-		operatorEndpoint, err = mcpServer.StartEEBusV1OperatorEndpoint(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("start eeBUS operator MCP endpoint: %w", err)
-		}
-	}
-
-	listener, err := net.Listen("tcp", cfg.HTTPAddr)
-	if err != nil {
-		if operatorEndpoint != nil {
-			_ = operatorEndpoint.Close()
-		}
-		return nil, nil, err
-	}
-
-	server := &http.Server{
-		Handler: mux,
-	}
-	if operatorEndpoint != nil {
-		server.RegisterOnShutdown(func() {
-			_ = operatorEndpoint.Close()
-		})
-	}
-
-	go func() {
-		defer func() {
-			if operatorEndpoint != nil {
-				_ = operatorEndpoint.Close()
-			}
-		}()
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("http server error: %v", err)
-		}
-	}()
-
-	var advertiser mdns.Advertiser
-	if cfg.MDNSAdvertise {
-		port := listener.Addr().(*net.TCPAddr).Port
-		advertiser, err = mdns.Advertise(ctx, mdns.Service{
-			Instance: cfg.MDNSInstance,
-			Service:  mdns.ServiceTypeGateway,
-			Port:     port,
-			Text:     gatewayMDNSText(cfg),
-		})
-		if err != nil {
-			_ = server.Close()
-			if operatorEndpoint != nil {
-				_ = operatorEndpoint.Close()
-			}
-			return nil, nil, err
-		}
-	}
-
-	go func() {
-		<-ctx.Done()
-		_ = server.Shutdown(context.Background())
-		if operatorEndpoint != nil {
-			_ = operatorEndpoint.Close()
-		}
-	}()
-
-	return server, advertiser, nil
+	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
 }

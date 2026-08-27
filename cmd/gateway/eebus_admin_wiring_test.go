@@ -97,11 +97,15 @@ func TestIssue817GatewayMountsOneCredentialFreeTypedOperatorBoundary(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	controlPlaneContent, err := os.ReadFile("gateway_http_control_plane.go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	configContent, err := os.ReadFile("eebus_admin_config.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := string(content) + "\n" + string(httpContent) + "\n" + string(configContent)
+	source := string(content) + "\n" + string(httpContent) + "\n" + string(controlPlaneContent) + "\n" + string(configContent)
 	for _, required := range []string{
 		`mux.Handle("/admin/eebus/v1/", eebusAdminHandler)`,
 		`eebusAdminHandler := eebusadmin.NewUnavailableHandler()`,

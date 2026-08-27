@@ -240,7 +240,7 @@ func TestIssue764GatewayOneShotRuntimeIsFixedReadOnlyAndSerialized(t *testing.T)
 // the unrelated eBUS transport lifecycle.
 func TestIssue764GatewayRegistersPrivateCaptureExactlyOnceBeforeMCPMount(t *testing.T) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "main.go", nil, 0)
+	file, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

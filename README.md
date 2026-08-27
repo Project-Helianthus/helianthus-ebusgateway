@@ -12,6 +12,21 @@
 - Optional UI mount and mDNS advertisement (`ui/`, `mdns/`).
 - Hardware-backed smoke entrypoint and unknown-device dump plumbing (`cmd/smoke`, `smoke*.go`, `register_dump*.go`).
 
+### Gateway command map
+
+`cmd/gateway/main.go` keeps process entry and runtime composition. Its same-package
+companions group the existing command declarations by responsibility:
+
+- `gateway_cli.go` -- flags, CLI parsing, and command-line normalization.
+- `gateway_admission.go` -- startup admission and observe-first helpers.
+- `gateway_adapter_direct.go` -- adapter-direct wiring and proxy callbacks.
+- `gateway_v8_admin_http.go` -- V8 diagnostic event surface.
+- `gateway_http_server.go` -- HTTP, GraphQL, MCP, UI, Portal, and mDNS assembly.
+- `gateway_portal_projection.go` -- Portal semantic projection helpers.
+- `gateway_responder_capability.go` -- responder capability projection.
+- `gateway_static_seed.go` -- static registry seed bootstrap.
+- `gateway_runtime_state.go` -- runtime-state bootstrap and readiness projection.
+
 ### What does not belong in this repository
 
 - Low-level transport framing and bus primitives (use `helianthus-ebusgo`).

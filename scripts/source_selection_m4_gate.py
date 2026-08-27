@@ -150,7 +150,7 @@ GO_STRING_PUBLIC_PATTERNS = [
 ]
 
 RETAINED_PUBLIC = {
-    pathlib.Path("cmd/gateway/main.go"): {
+    pathlib.Path("cmd/gateway/gateway_cli.go"): {
         "source-addr": "locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection",
         "-source-addr": "locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection",
     },

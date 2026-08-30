@@ -116,6 +116,48 @@ func TestTeslaGen3EVSECurrentLimitV1RetainsIndependentlyOptionalRecords(t *testi
 	}
 }
 
+func TestTeslaGen3EVSECurrentLimitV1RetainsValidSiblingOnInvalidRecord(t *testing.T) {
+	fullSource := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	for _, test := range []struct {
+		name            string
+		source          TeslaGen3EVSECurrentLimitV1Source
+		wantPersistent  bool
+		wantProvisional bool
+	}{
+		{
+			name:            "persistent survives invalid provisional",
+			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: fullSource.Persistent, Provisional: &modbusreg.TeslaGen3ProvisionalCurrentLimit{}},
+			wantPersistent:  true,
+			wantProvisional: false,
+		},
+		{
+			name:            "provisional survives invalid persistent",
+			source:          TeslaGen3EVSECurrentLimitV1Source{Persistent: &modbusreg.TeslaGen3PersistentCurrentLimit{}, Provisional: fullSource.Provisional},
+			wantPersistent:  false,
+			wantProvisional: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
+				modbusV1FixtureProvider: &modbusV1FixtureProvider{},
+				source:                  test.source,
+			})
+			result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
+			if !result.isError {
+				t.Fatalf("invalid sibling was not reported: %#v", result)
+			}
+			data := msp06Map(t, result.envelope["data"], "data")
+			if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
+				t.Fatalf("retained data = %#v", data)
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSECurrentLimitV1ToolListSchemaAndOrder(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
 	if err != nil {

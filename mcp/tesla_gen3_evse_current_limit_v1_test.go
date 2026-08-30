@@ -78,25 +78,41 @@ func TestTeslaGen3EVSECurrentLimitV1FailsClosedForAnInvalidRecord(t *testing.T) 
 	}
 }
 
-func TestTeslaGen3EVSECurrentLimitV1RetainsValidRecordsOnProviderError(t *testing.T) {
-	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+func TestTeslaGen3EVSECurrentLimitV1RetainsIndependentlyOptionalRecords(t *testing.T) {
+	fullSource := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 	providerErr := errors.New("one backing refresh failed")
-	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
-		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
-		source:                  source,
-		err:                     providerErr,
-	})
-	result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
-	if !result.isError {
-		t.Fatalf("provider error was not retained: %#v", result)
-	}
-	data := msp06Map(t, result.envelope["data"], "data")
-	if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || data["persistent"] == nil || data["provisional"] == nil {
-		t.Fatalf("retained data = %#v", data)
+	for _, test := range []struct {
+		name            string
+		source          TeslaGen3EVSECurrentLimitV1Source
+		err             error
+		wantError       bool
+		wantPersistent  bool
+		wantProvisional bool
+	}{
+		{name: "persistent only", source: TeslaGen3EVSECurrentLimitV1Source{Persistent: fullSource.Persistent}, wantPersistent: true},
+		{name: "provisional only", source: TeslaGen3EVSECurrentLimitV1Source{Provisional: fullSource.Provisional}, wantProvisional: true},
+		{name: "persistent only with provider error", source: TeslaGen3EVSECurrentLimitV1Source{Persistent: fullSource.Persistent}, err: providerErr, wantError: true, wantPersistent: true},
+		{name: "provisional only with provider error", source: TeslaGen3EVSECurrentLimitV1Source{Provisional: fullSource.Provisional}, err: providerErr, wantError: true, wantProvisional: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
+				modbusV1FixtureProvider: &modbusV1FixtureProvider{},
+				source:                  test.source,
+				err:                     test.err,
+			})
+			result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
+			if result.isError != test.wantError {
+				t.Fatalf("isError = %t, want %t: %#v", result.isError, test.wantError, result)
+			}
+			data := msp06Map(t, result.envelope["data"], "data")
+			if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || (data["persistent"] != nil) != test.wantPersistent || (data["provisional"] != nil) != test.wantProvisional {
+				t.Fatalf("retained data = %#v", data)
+			}
+		})
 	}
 }
 

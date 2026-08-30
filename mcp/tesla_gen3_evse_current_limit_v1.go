@@ -84,15 +84,12 @@ func (server *Server) handleTeslaGen3EVSECurrentLimitV1Call(ctx context.Context,
 	if provider == nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, ErrTeslaGen3EVSECurrentLimitV1ProviderUnavailable, false, "RETAINED_PROFILE", "")), true), true
 	}
-	source, err := provider.TeslaGen3EVSECurrentLimitV1(ctx)
-	if err != nil {
-		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
+	source, providerErr := provider.TeslaGen3EVSECurrentLimitV1(ctx)
+	result, validationErr := teslaGen3EVSECurrentLimitV1Result(source)
+	if validationErr != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, validationErr, true, "RETAINED_PROFILE", "")), true), true
 	}
-	result, err := teslaGen3EVSECurrentLimitV1Result(source)
-	if err != nil {
-		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
-	}
-	return callToolResultText(mustJSON(newModbusV1Envelope(result, nil, true, "RETAINED_PROFILE", "")), false), true
+	return callToolResultText(mustJSON(newModbusV1Envelope(result, providerErr, true, "RETAINED_PROFILE", "")), providerErr != nil), true
 }
 
 func teslaGen3EVSECurrentLimitV1Result(source TeslaGen3EVSECurrentLimitV1Source) (TeslaGen3EVSECurrentLimitV1Result, error) {

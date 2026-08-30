@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
@@ -74,6 +75,28 @@ func TestTeslaGen3EVSECurrentLimitV1FailsClosedForAnInvalidRecord(t *testing.T) 
 	result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
 	if !result.isError || result.envelope["data"] != nil {
 		t.Fatalf("invalid source accepted: %#v", result)
+	}
+}
+
+func TestTeslaGen3EVSECurrentLimitV1RetainsValidRecordsOnProviderError(t *testing.T) {
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	providerErr := errors.New("one backing refresh failed")
+	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
+		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
+		source:                  source,
+		err:                     providerErr,
+	})
+	result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
+	if !result.isError {
+		t.Fatalf("provider error was not retained: %#v", result)
+	}
+	data := msp06Map(t, result.envelope["data"], "data")
+	if data["operation_version"] != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || data["outbound_allowed"] != false || data["persistent"] == nil || data["provisional"] == nil {
+		t.Fatalf("retained data = %#v", data)
 	}
 }
 

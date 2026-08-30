@@ -74,6 +74,7 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"cmd/gateway/eebus_config_flags.go",
 		"cmd/gateway/eebus_runtime_adapter.go",
 		"cmd/gateway/eebus_runtime_config.go",
+		"cmd/gateway/gateway_run_lifecycle.go",
 		"cmd/gateway/main.go",
 		"config.go",
 	}

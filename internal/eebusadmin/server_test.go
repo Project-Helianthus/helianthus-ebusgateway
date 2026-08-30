@@ -714,6 +714,7 @@ func TestIssue850ConnectRejectsQueryBeforeAnyBackendOrSecretRetention(t *testing
 	selected := httptest.NewRecorder()
 	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-850", `{"state_revision":40,"expected_ski":"`+ski+`"}`))
 	selectionID := issue817DataString(t, selected, "selection_id")
+	audits = nil // The assertions below are scoped to the specialized Connect request.
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, issue817Mutation(http.MethodPost, "/admin/eebus/v1/selections/"+selectionID+":connect?unexpected=1", "connect-850", `{"state_revision":41,"pin":"`+pin+`"}`))
@@ -735,6 +736,9 @@ func TestIssue850ConnectRejectsQueryBeforeAnyBackendOrSecretRetention(t *testing
 	defer server.connectMu.Unlock()
 	if len(server.connectInFlight) != 0 || len(server.connectReplays) != 0 {
 		t.Fatalf("query-bearing Connect retained replay state: in_flight=%d replays=%d", len(server.connectInFlight), len(server.connectReplays))
+	}
+	if len(audits) != 0 {
+		t.Fatalf("query-bearing Connect emitted audit events: %#v", audits)
 	}
 	for _, event := range audits {
 		encoded, _ := json.Marshal(event)

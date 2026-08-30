@@ -86,54 +86,64 @@ func (server *Server) handleTeslaGen3EVSECurrentLimitV1Call(ctx context.Context,
 	}
 	source, providerErr := provider.TeslaGen3EVSECurrentLimitV1(ctx)
 	result, validationErr := teslaGen3EVSECurrentLimitV1Result(source)
-	if validationErr != nil {
-		return callToolResultText(mustJSON(newModbusV1Envelope(nil, validationErr, true, "RETAINED_PROFILE", "")), true), true
+	err := providerErr
+	if err == nil {
+		err = validationErr
 	}
-	return callToolResultText(mustJSON(newModbusV1Envelope(result, providerErr, true, "RETAINED_PROFILE", "")), providerErr != nil), true
+	var data any
+	if result.Persistent != nil || result.Provisional != nil {
+		data = result
+	}
+	return callToolResultText(mustJSON(newModbusV1Envelope(data, err, true, "RETAINED_PROFILE", "")), err != nil), true
 }
 
 func teslaGen3EVSECurrentLimitV1Result(source TeslaGen3EVSECurrentLimitV1Source) (TeslaGen3EVSECurrentLimitV1Result, error) {
-	if source.Persistent == nil && source.Provisional == nil {
-		return TeslaGen3EVSECurrentLimitV1Result{}, ErrTeslaGen3EVSECurrentLimitV1Invalid
-	}
 	result := TeslaGen3EVSECurrentLimitV1Result{
 		OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
 		OutboundAllowed:  false,
 	}
+	invalid := source.Persistent == nil && source.Provisional == nil
 	if source.Persistent != nil {
 		if source.Persistent.OperationVersion() != result.OperationVersion {
-			return TeslaGen3EVSECurrentLimitV1Result{}, ErrTeslaGen3EVSECurrentLimitV1Invalid
-		}
-		request, terminal := source.Persistent.RequestPayload(), source.Persistent.TerminalPayload()
-		if len(request) == 0 || len(terminal) == 0 {
-			return TeslaGen3EVSECurrentLimitV1Result{}, ErrTeslaGen3EVSECurrentLimitV1Invalid
-		}
-		result.Persistent = &TeslaGen3EVSECurrentLimitV1Persistent{
-			MaxOutputCurrentAmps: source.Persistent.MaxOutputCurrentAmps(),
-			RequestPayload:       request,
-			TerminalPayload:      terminal,
+			invalid = true
+		} else {
+			request, terminal := source.Persistent.RequestPayload(), source.Persistent.TerminalPayload()
+			if len(request) == 0 || len(terminal) == 0 {
+				invalid = true
+			} else {
+				result.Persistent = &TeslaGen3EVSECurrentLimitV1Persistent{
+					MaxOutputCurrentAmps: source.Persistent.MaxOutputCurrentAmps(),
+					RequestPayload:       request,
+					TerminalPayload:      terminal,
+				}
+			}
 		}
 	}
 	if source.Provisional != nil {
 		if source.Provisional.OperationVersion() != result.OperationVersion {
-			return TeslaGen3EVSECurrentLimitV1Result{}, ErrTeslaGen3EVSECurrentLimitV1Invalid
+			invalid = true
+		} else {
+			setRequest := source.Provisional.SetRequestPayload()
+			ack := source.Provisional.AckPayload()
+			readbackRequest := source.Provisional.ReadbackRequestPayload()
+			readbackTerminal := source.Provisional.ReadbackTerminalPayload()
+			if len(setRequest) == 0 || len(ack) == 0 || len(readbackRequest) == 0 || len(readbackTerminal) == 0 {
+				invalid = true
+			} else {
+				result.Provisional = &TeslaGen3EVSECurrentLimitV1Provisional{
+					LimitCurrentMaxAmps:     source.Provisional.LimitCurrentMaxAmps(),
+					LimitTimeoutSeconds:     source.Provisional.LimitTimeoutSeconds(),
+					InhibitCharging:         source.Provisional.InhibitCharging(),
+					SetRequestPayload:       setRequest,
+					AckPayload:              ack,
+					ReadbackRequestPayload:  readbackRequest,
+					ReadbackTerminalPayload: readbackTerminal,
+				}
+			}
 		}
-		setRequest := source.Provisional.SetRequestPayload()
-		ack := source.Provisional.AckPayload()
-		readbackRequest := source.Provisional.ReadbackRequestPayload()
-		readbackTerminal := source.Provisional.ReadbackTerminalPayload()
-		if len(setRequest) == 0 || len(ack) == 0 || len(readbackRequest) == 0 || len(readbackTerminal) == 0 {
-			return TeslaGen3EVSECurrentLimitV1Result{}, ErrTeslaGen3EVSECurrentLimitV1Invalid
-		}
-		result.Provisional = &TeslaGen3EVSECurrentLimitV1Provisional{
-			LimitCurrentMaxAmps:     source.Provisional.LimitCurrentMaxAmps(),
-			LimitTimeoutSeconds:     source.Provisional.LimitTimeoutSeconds(),
-			InhibitCharging:         source.Provisional.InhibitCharging(),
-			SetRequestPayload:       setRequest,
-			AckPayload:              ack,
-			ReadbackRequestPayload:  readbackRequest,
-			ReadbackTerminalPayload: readbackTerminal,
-		}
+	}
+	if invalid {
+		return result, ErrTeslaGen3EVSECurrentLimitV1Invalid
 	}
 	return result, nil
 }

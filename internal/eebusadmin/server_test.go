@@ -693,6 +693,61 @@ func TestIssue848ConnectPINIsSecretSafeAndReplayBound(t *testing.T) {
 	}
 }
 
+func TestIssue850ConnectRejectsQueryBeforeAnyBackendOrSecretRetention(t *testing.T) {
+	const (
+		ski = "0123456789abcdef0123456789abcdef01234567"
+		pin = "A1b2C3d4"
+	)
+	snapshot := testAdminSnapshot()
+	snapshot.StateRevision = 40
+	snapshot.Discovered = []eebusruntime.DiscoveredPartnerV1{{SKI: ski, Endpoint: "192.0.2.20:4712", ObservationRevision: 4}}
+	admin := &adminV1Stub{snapshot: snapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Discovered: snapshot}}
+	var audits []AuditEvent
+	handler, err := NewServer(Config{Admin: admin, Audit: func(event AuditEvent) { audits = append(audits, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed := httptest.NewRecorder()
+	handler.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners?view=discovered", nil))
+	observationID := issue817FirstOpaqueID(t, listed, "observation_id")
+	selected := httptest.NewRecorder()
+	handler.ServeHTTP(selected, issue817Mutation(http.MethodPost, "/admin/eebus/v1/observations/"+observationID+":select", "select-850", `{"state_revision":40,"expected_ski":"`+ski+`"}`))
+	selectionID := issue817DataString(t, selected, "selection_id")
+	audits = nil // The assertions below are scoped to the specialized Connect request.
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, issue817Mutation(http.MethodPost, "/admin/eebus/v1/selections/"+selectionID+":connect?unexpected=1", "connect-850", `{"state_revision":41,"pin":"`+pin+`"}`))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("query-bearing Connect status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertIssue817ErrorEnvelope(t, response.Body.String(), "invalid_request")
+	if strings.Contains(response.Body.String(), pin) {
+		t.Fatalf("query-bearing Connect leaked PIN in response: %s", response.Body.String())
+	}
+	admin.mu.Lock()
+	connectCalls := len(admin.connectCalls)
+	admin.mu.Unlock()
+	if connectCalls != 0 {
+		t.Fatalf("query-bearing Connect backend calls=%d, want 0", connectCalls)
+	}
+	server := handler.(*server)
+	server.connectMu.Lock()
+	defer server.connectMu.Unlock()
+	if len(server.connectInFlight) != 0 || len(server.connectReplays) != 0 {
+		t.Fatalf("query-bearing Connect retained replay state: in_flight=%d replays=%d", len(server.connectInFlight), len(server.connectReplays))
+	}
+	if len(audits) != 0 {
+		t.Fatalf("query-bearing Connect emitted audit events: %#v", audits)
+	}
+	for _, event := range audits {
+		encoded, _ := json.Marshal(event)
+		if strings.Contains(string(encoded), pin) {
+			t.Fatalf("query-bearing Connect leaked PIN in audit: %s", encoded)
+		}
+	}
+}
+
 func TestIssue848StatusPassesThroughIdentityFreeActiveAction(t *testing.T) {
 	outcome := eebusruntime.AdminOutcomeV1("pin_required")
 	snapshot := testAdminSnapshot()

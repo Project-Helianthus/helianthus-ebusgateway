@@ -537,6 +537,10 @@ func (server *server) selectObservation(w http.ResponseWriter, request *http.Req
 }
 
 func (server *server) connectSelection(w http.ResponseWriter, request *http.Request) {
+	if request.URL.RawQuery != "" {
+		server.writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
 	capture := &connectAuditCapture{ResponseWriter: w, disposition: "rejected"}
 	defer func() {
 		recovered := recover()

@@ -60,14 +60,33 @@ func TestTeslaGen3EVSECurrentLimitV1FailsClosedWithoutARecord(t *testing.T) {
 	}
 }
 
+func TestTeslaGen3EVSECurrentLimitV1FailsClosedForAnInvalidRecord(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{
+		modbusV1FixtureProvider: &modbusV1FixtureProvider{},
+		source: TeslaGen3EVSECurrentLimitV1Source{
+			Persistent: &modbusreg.TeslaGen3PersistentCurrentLimit{},
+		},
+	})
+	result := msp06Call(t, server.Handler(), TeslaGen3EVSECurrentLimitV1GetTool, map[string]any{})
+	if !result.isError || result.envelope["data"] != nil {
+		t.Fatalf("invalid source accepted: %#v", result)
+	}
+}
+
 func TestTeslaGen3EVSECurrentLimitV1ToolListSchemaAndOrder(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	baselineCount := len(server.tools)
 	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
-	if len(server.tools) != 4 || server.tools[0].Name != ModbusV1RawReadTool || server.tools[1].Name != ModbusV1ProfileObservationGetTool || server.tools[2].Name != ModbusV1CanonicalPVGetTool || server.tools[3].Name != TeslaGen3EVSECurrentLimitV1GetTool {
-		t.Fatalf("tool order = %#v", server.tools)
+	newTools := server.tools[baselineCount:]
+	if len(newTools) != 4 || newTools[0].Name != ModbusV1RawReadTool || newTools[1].Name != ModbusV1ProfileObservationGetTool || newTools[2].Name != ModbusV1CanonicalPVGetTool || newTools[3].Name != TeslaGen3EVSECurrentLimitV1GetTool {
+		t.Fatalf("new tool order = %#v", newTools)
 	}
 	response := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
 	result, ok := response.Result.(map[string]any)

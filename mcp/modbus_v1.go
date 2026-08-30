@@ -141,6 +141,7 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 	registerTeslaFC100SummaryV1Tool(server, provider)
 	registerTeslaHSCV1Tool(server, provider)
 	registerTeslaWCVitalsV1Tool(server, provider)
+	registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)
 	registerGrowattProtocolIIV1Tool(server, provider)
 	registerOutBackAXSV1Tool(server, provider)
 	registerHuaweiEMMAV1Tool(server, provider)
@@ -158,6 +159,9 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 		return result, true
 	}
 	if result, handled := server.handleTeslaWCVitalsV1Call(ctx, name, args); handled {
+		return result, true
+	}
+	if result, handled := server.handleTeslaGen3EVSECurrentLimitV1Call(ctx, name, args); handled {
 		return result, true
 	}
 	if result, handled := server.handleGrowattProtocolIIV1Call(ctx, name, args); handled {

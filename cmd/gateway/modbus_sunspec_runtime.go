@@ -72,9 +72,19 @@ type sunSpecLiveSmokeQualifier interface {
 	Qualify(context.Context, sunSpecLiveSmokeAttempt, sunSpecLiveSmokePollResult) sunSpecLiveSmokeQualification
 }
 
+type sunSpecLiveSmokeAdapter interface {
+	Snapshot() modbus.TCPEndpointSnapshot
+	Reconnect(context.Context) error
+}
+
+type sunSpecLiveSmokeProducer interface {
+	Qualify(context.Context, modbusadapter.SunSpecPollIdentity) (modbusadapter.SunSpecQualificationResult, error)
+	Refresh(context.Context, modbusadapter.SunSpecPollIdentity) (modbusadapter.SunSpecQualificationResult, error)
+}
+
 type modbusSunSpecLiveSmokeDriver struct {
-	adapter   *modbusadapter.Adapter
-	producer  *modbusadapter.SunSpecProducer
+	adapter   sunSpecLiveSmokeAdapter
+	producer  sunSpecLiveSmokeProducer
 	mu        sync.Mutex
 	qualified bool
 }

@@ -259,6 +259,35 @@ const (
     EpochTransitionBlocked  EpochTransitionState = "BLOCKED"
 )
 
+type GenerationReservationState string
+const (
+    ReservationControlOwned    GenerationReservationState = "CONTROL_OWNED"
+    ReservationAvailable       GenerationReservationState = "AVAILABLE"
+    ReservationProviderClaimed GenerationReservationState = "PROVIDER_CLAIMED"
+    ReservationConsumed        GenerationReservationState = "CONSUMED"
+    ReservationRetired         GenerationReservationState = "RETIRED"
+)
+
+type GenerationReservationOwner string
+const (
+    ReservationOwnerNone            GenerationReservationOwner = "NONE"
+    ReservationOwnerEpochBarrier    GenerationReservationOwner = "EPOCH_BARRIER"
+    ReservationOwnerSemanticCleanup GenerationReservationOwner = "SEMANTIC_CLEANUP"
+    ReservationOwnerRecovery        GenerationReservationOwner = "RECOVERY"
+    ReservationOwnerLifecycle       GenerationReservationOwner = "LIFECYCLE"
+)
+
+type GenerationReservation struct {
+    Key                     GenerationKey
+    State                   GenerationReservationState
+    Owner                   GenerationReservationOwner
+    LifecycleOperation      *LifecycleOperationID
+    CleanupFailedGeneration *GenerationKey
+    NextPublicationSequence uint64
+    ClaimedAtUTC            *time.Time
+    ConsumedAtUTC           *time.Time
+}
+
 type EpochAssetTransition struct {
     AssetID                  semv1.AssetID
     InputSnapshot            semv1.SnapshotID
@@ -271,18 +300,17 @@ type EpochAssetTransition struct {
 }
 
 type SourceEpochTransitionRecord struct {
-    DriverID                DriverID
-    SourceID                semv1.SourceID
-    NewSourceEpoch          semv1.SourceEpochID
-    ReservedGeneration      DriverGeneration
-    Assets                  []EpochAssetTransition
-    State                   EpochTransitionState
-    Attempt                 uint32
-    AttemptLimit            uint32
-    DeadlineUTC             time.Time
-    NextAttemptAtUTC        *time.Time
-    LastError               *semv1.ErrorID
-    NextPublicationSequence uint64
+    DriverID         DriverID
+    SourceID         semv1.SourceID
+    NewSourceEpoch   semv1.SourceEpochID
+    Reservation     GenerationReservation
+    Assets           []EpochAssetTransition
+    State            EpochTransitionState
+    Attempt          uint32
+    AttemptLimit     uint32
+    DeadlineUTC      time.Time
+    NextAttemptAtUTC *time.Time
+    LastError        *semv1.ErrorID
 }
 
 type DriverView struct {
@@ -460,16 +488,19 @@ startup authority.
 Creating a source epoch starts a manager-owned epoch-transition barrier before
 `Prepare` or `Activate`, even for a driver whose desired state is `STOPPED`.
 The manager first closes gateway admission for every older epoch of that exact
-`SourceID`, reserves the first generation and its publication sequence, and
-persists one `SourceEpochTransitionRecord`. The record's `Assets` is a bytewise
-`AssetID`-sorted materialization of every asset in the gateway's durable
-source-publication index, including assets carried forward from an incomplete
-prior transition. Before forwarding any adapter batch, the manager persists its
-canonical bytes and exact asset/source ownership as pending publication work;
-an accepted result updates the index with `SnapshotID`, semantic revision,
+`SourceID`, creates generation 1, and persists one
+`SourceEpochTransitionRecord`. Its reservation is
+`CONTROL_OWNED/EPOCH_BARRIER` with `NextPublicationSequence=1`; generation 0 is
+never used. The record's `Assets` is a bytewise `AssetID`-sorted materialization
+of every asset in the gateway's durable source-publication index, including
+assets carried forward from an incomplete prior transition or semantic-cleanup
+journal. Before forwarding any manager or adapter batch, the manager persists
+its canonical bytes and exact asset/source ownership as pending publication
+work; an accepted result updates the index with `SnapshotID`, semantic revision,
 epoch, generation, sequence, batch ID, and digest. Crash recovery therefore
-cannot omit an accepted or possibly submitted asset. The index is never rebuilt
-from a live provider, current discovery result, or compatibility alias.
+cannot omit an accepted, possibly submitted, or cleanup-incomplete asset. The
+index is never rebuilt from a live provider, current discovery result, or
+compatibility alias.
 
 For each recorded asset, the manager reads the exact immutable current
 `Snapshot`, verifies that its `SnapshotID` and semantic revision match the
@@ -486,15 +517,16 @@ registry evidence; it asserts source ownership only. It does not assert a
 provider observation, binding, activation, capability, or observed `RUNNING`.
 Only the gateway manager may construct this batch for its owned source.
 
-Only one asset batch is in flight. The first uses sequence 1; after acceptance,
-the manager durably records its result and assigns the next consecutive sequence
-to the next bytewise-sorted asset. A rejected revision-conflict batch did not
-advance the kernel cursor, so its rebuilt batch retains that unaccepted next
-sequence. The manager never preassigns one sequence to multiple assets, never
-uses generation 0, and never submits a later asset before persisting the prior
-accepted result. Later asset entries keep internal `Sequence=0` until assigned;
-zero is never sent on the semantic wire. An empty affected-asset set completes
-the barrier with `NextPublicationSequence=1`.
+Only one asset batch is in flight. The first uses the reservation's sequence 1;
+after acceptance, the manager durably records its result and advances
+`Reservation.NextPublicationSequence` before assigning the next consecutive
+sequence to the next bytewise-sorted asset. A rejected revision-conflict batch
+did not advance the kernel cursor, so its rebuilt batch retains that unaccepted
+next sequence. The manager never preassigns one sequence to multiple assets,
+never uses generation 0, and never submits a later asset before persisting the
+prior accepted result. Later asset entries keep internal `Sequence=0` until
+assigned; zero is never sent on the semantic wire. An empty affected-asset set
+completes the barrier with the reservation cursor still at 1.
 
 Each asset batch is one kernel-atomic transition. It retires old source and
 binding records, retains their irreversible tombstones and withdrawn
@@ -550,16 +582,29 @@ For the sole possibly submitted-but-unrecorded batch, it reads the exact kernel
 replay and accepted-snapshot readback, an unchanged cursor permits resubmission,
 and any incompatible cursor blocks the transition as `sequence_conflict`.
 
+After the last asset accepts, the manager atomically changes the same durable
+reservation to `AVAILABLE/NONE`; it does not allocate another generation. The
+reservation retains the exact next cursor, whether that is 1 for an empty
+barrier or `PublicationCursor.LastSequence+1` for a nonempty barrier. A driver
+left desired `STOPPED` therefore retains one inert available reservation. A
+later accepted lifecycle operation claims that exact key and cursor by changing
+it to `PROVIDER_CLAIMED/LIFECYCLE` and storing the operation ID in the same
+transaction. A repeated reconciler wake may only recover that claim for the
+same operation; another operation cannot claim it, increment its generation, or
+reset its cursor.
+
 A gateway process restart allocates a new source epoch as required above. Its
 new transition supersedes, rather than resumes, an incomplete prior-epoch
 record. The new record takes the union of that record's assets, all pending
-publication assets, and the durable index; rematerializes every current snapshot
-and revision; and starts its new epoch/generation cursor at sequence 1. This
-includes assets already transitioned to the prior inert epoch, which the new
-batch now retires. After the last asset is accepted, the manager persists
-`NextPublicationSequence=PublicationCursor.LastSequence+1` and passes exactly
-that value to the activation publisher. `Prepare`/`Activate` failure does not
-undo a completed retirement barrier or abandon incomplete retirement work.
+publication assets, every incomplete semantic-cleanup asset, and the durable
+index; rematerializes every current snapshot and revision; and starts its new
+epoch/generation-1 reservation at sequence 1. This includes assets already
+transitioned to the prior inert epoch, which the new batch now retires. The
+prior reservation becomes `RETIRED` and can never be claimed in the new epoch.
+After the last asset accepts, the manager exposes the new reservation as
+`AVAILABLE` at `PublicationCursor.LastSequence+1` and passes that exact cursor
+when it is claimed for activation. `Prepare`/`Activate` failure does not undo a
+completed retirement barrier or abandon incomplete retirement work.
 
 ## 6. Provider SPI
 
@@ -675,6 +720,7 @@ const (
     ActivationCommitting ActivationPromotionState = "COMMITTING"
     ActivationCleaning   ActivationPromotionState = "CLEANING"
     ActivationComplete   ActivationPromotionState = "COMPLETE"
+    ActivationFailed     ActivationPromotionState = "FAILED"
     ActivationBlocked    ActivationPromotionState = "BLOCKED"
 )
 
@@ -692,6 +738,57 @@ type NativeCloseWork struct {
     Proof       *CloseProof
 }
 
+type SemanticCleanupState string
+const (
+    SemanticCleanupPending    SemanticCleanupState = "PENDING"
+    SemanticCleanupActive     SemanticCleanupState = "ACTIVE"
+    SemanticCleanupComplete   SemanticCleanupState = "COMPLETE"
+    SemanticCleanupBlocked    SemanticCleanupState = "BLOCKED"
+    SemanticCleanupSuperseded SemanticCleanupState = "SUPERSEDED"
+)
+
+type SemanticCleanupAttemptResult string
+const (
+    CleanupPrepared          SemanticCleanupAttemptResult = "PREPARED"
+    CleanupSubmittedUnknown  SemanticCleanupAttemptResult = "SUBMITTED_UNKNOWN"
+    CleanupRejectedUnapplied SemanticCleanupAttemptResult = "REJECTED_UNAPPLIED"
+    CleanupAccepted          SemanticCleanupAttemptResult = "ACCEPTED"
+)
+
+type SemanticCleanupAttempt struct {
+    AttemptNumber            uint32
+    InputSnapshot            semv1.SnapshotID
+    ExpectedSemanticRevision uint64
+    Sequence                 uint64
+    BatchID                  semv1.BatchID
+    Digest                   semv1.Digest
+    CanonicalEnvelope        []byte
+    CanonicalBytes           uint64
+    Result                   SemanticCleanupAttemptResult
+    AcceptedSnapshot         *semv1.SnapshotID
+    AcceptedSemanticRevision *uint64
+    Error                    *semv1.ErrorID
+}
+
+type SemanticCleanupAsset struct {
+    AssetID  semv1.AssetID
+    Attempts []SemanticCleanupAttempt
+    Complete bool
+}
+
+type SemanticCleanupWork struct {
+    FailedGeneration GenerationKey
+    Reservation      GenerationReservation
+    Fence             FenceProof
+    Assets            []SemanticCleanupAsset
+    State             SemanticCleanupState
+    RetryCount        uint32
+    RetryLimit        uint32
+    DeadlineUTC       time.Time
+    NextAttemptAtUTC  *time.Time
+    LastError         *semv1.ErrorID
+}
+
 type ActivationBatchRecord struct {
     AssetID                  semv1.AssetID
     InputSnapshot            semv1.SnapshotID
@@ -704,14 +801,15 @@ type ActivationBatchRecord struct {
 }
 
 type ActivationPromotionRecord struct {
-    Generation        GenerationKey
-    FirstSequence     uint64
-    Batches           []ActivationBatchRecord
-    TotalBytes        uint64
-    DeadlineUTC       time.Time
-    State             ActivationPromotionState
-    CleanupGeneration *DriverGeneration
-    NativeClose       NativeCloseWork
+    Generation           GenerationKey
+    FirstSequence        uint64
+    Batches              []ActivationBatchRecord
+    TotalBytes           uint64
+    DeadlineUTC          time.Time
+    State                ActivationPromotionState
+    SuccessorReservation *GenerationReservation
+    SemanticCleanup      *SemanticCleanupWork
+    NativeClose          NativeCloseWork
 }
 
 type PublicationSink interface {
@@ -755,6 +853,41 @@ generation key. Construction completion and every asynchronous health callback
 must carry the correlation supplied by the manager. A callback for a superseded
 operation is rejected even if its native code reports a plausible generation.
 
+`GenerationReservation` is the single durable allocation and cursor authority
+for a generation. `CONTROL_OWNED` permits only the named epoch barrier or
+semantic cleanup to publish; `RECOVERY` owns no publication and only holds a
+successor unavailable until native close is resolved. `AVAILABLE` is inert and
+unclaimed.
+`PROVIDER_CLAIMED` binds exactly one lifecycle operation to the existing key and
+cursor before `Prepare`; recovery for that operation reuses the claim and no
+other operation may claim it. Immediately before the first call to `Activate`,
+the manager durably changes it to `CONSUMED`. Once consumed it cannot return to
+`AVAILABLE`, even when activation fails, a wake repeats, or the component loses
+memory. Cleanup then allocates the next generation as its own control-owned
+reservation. A new source epoch retires every reservation from the prior epoch.
+
+Every reservation has a non-zero generation and next sequence. Its key must
+match the containing driver/source epoch. `AVAILABLE` and `RETIRED` require
+owner `NONE`; `PROVIDER_CLAIMED` and provider-created `CONSUMED` require owner
+`LIFECYCLE` plus exactly one operation ID; epoch and cleanup control records
+require their matching owner, and cleanup/recovery records identify exactly one
+failed generation. A state/owner/key mismatch is corrupt persistent state: it
+closes admission and requires bounded reconciliation, never a guessed counter or
+cursor.
+
+A `Prepare` failure may release `PROVIDER_CLAIMED` back to `AVAILABLE` at the
+unchanged cursor only when the native owner proves that no prepared/native
+resource remains, no publication was staged, and `Activate` was never entered;
+the release and attempt result persist in one transaction. An uncertain result
+or surviving prepared object retains the claim for the same lifecycle operation
+until bounded recovery obtains an abort/close proof; it never allocates a
+replacement key merely because the wake repeats.
+When a currently consumed generation is replaced without an intervening cleanup
+reservation, the lifecycle transaction allocates and claims one strictly newer
+generation at sequence 1. Its first accepted provider batch must atomically fence
+every older unfenced generation. Allocation is never inferred from observed
+state or from a process-local counter.
+
 `Prepare` allocates native state while the manager-owned admission record for
 the reserved key is closed. It must not activate I/O, publish capabilities, or
 expose a `Generation`. `PreparedGeneration.Activate` runs behind that closed
@@ -762,6 +895,12 @@ gate, performs the native owner's activation, and returns both the activated
 `Generation` and its proof. The manager is the only caller allowed to open the
 gate, and does so only after validating the proof. `Abort` closes a prepared or
 activated-but-unpublished result on an independent bounded cleanup context.
+`Prepare` has only two clean return forms: `(prepared, nil)` transfers one
+abortable prepared object, while `(nil, error)` proves that the owner retained no
+native resource, staged publication, or activation side effect. An owner that
+cannot prove the latter returns its prepared object with the error so the
+manager retains the claim and calls `Abort`; it never hides partial native state
+behind a nil object.
 Adapters may implement this split as a thin wrapper: for example, an existing
 native `Start` that both constructs and activates runs inside `Activate`, while
 the gateway admission record remains closed.
@@ -788,10 +927,12 @@ same-asset batch from guessing the semantic revision that the uncommitted first
 batch would create. An adapter combines synchronous activation observations for
 one asset into that initial atomic batch; subsequent same-asset deltas use the
 live publisher after promotion. The manager persists an
-`ActivationPromotionRecord` containing the ordered canonical bytes, exact input
-snapshots/revisions, sequences/digests, total bytes, and deadline before
-`Activate` returns. This bounded set is initial publication state, not a general
-retry queue. Each `CanonicalEnvelope` is the complete immutable gateway-envelope
+empty `ActivationPromotionRecord{State:STAGING}` in the same transaction that
+consumes the reservation and before it calls `Activate`. Each publisher call
+appends its complete ordered canonical bytes, exact input snapshot/revision,
+sequence/digest, total bytes, and original deadline before returning to the
+provider. This bounded set is initial publication state, not a general retry
+queue. Each `CanonicalEnvelope` is the complete immutable gateway-envelope
 encoding, including generation, input snapshot, sequence, digest, and the full
 `PublicationBatch` with its `BatchID`, upserts, withdrawals, fences, and
 evidence. `CanonicalBytes` equals its exact length and the record's `TotalBytes`
@@ -823,53 +964,107 @@ and rebuild at the same still-next sequence. It is never blindly forwarded with
 the pre-promotion revision.
 
 If promotion fails before any staged batch commits, the manager persists
-`NativeCloseWork` and calls `Abort` on its independent bounded close context; it
-stores the returned close proof or quarantines an unconfirmed close, then
-discards the set with no provider semantic state. If a prefix commits, the
-controller permanently rejects generation callbacks. Under the same
-callback/admission boundary it invokes the installed generation's
-`FenceWithdrawal` and atomically persists the exact `FenceProof`, promotion
-state `CLEANING`, reserved cleanup `generation+1`, and
-`NativeCloseWork{State:PENDING}` with its separate finite deadline. Semantic
-cleanup and native close are then two durable obligations; neither completion
-is inferred from the other. Its exact
-affected assets are the union of epoch-transition and activation-prefix assets
-whose persisted accepted snapshot contains the failed generation's cursor,
-binding, or records. Staged or pending batches that never committed are
-discarded and never fabricated as cleanup state. In bytewise asset order,
-manager-owned cleanup batches use the cleanup generation's one global cursor at
-sequences 1..M and include a kernel `GenerationFence` for the failed generation
-plus the required withdrawal cascade; they contain no activated binding,
-observation, service, or capability upsert. Each asset cleanup is separately
-kernel-atomic, and the source-scoped visibility fence keeps the failed prefix
-non-public throughout.
+promotion state `CLEANING`, `NativeCloseWork`, and one strictly newer
+`SuccessorReservation` at sequence 1 in `CONTROL_OWNED/RECOVERY`, then calls
+`Abort` on its independent bounded close context. The failed consumed generation
+is never reused. If close is proven, the manager atomically records
+`ActivationFailed` and makes the successor `AVAILABLE/NONE`; its first provider
+batch must fence the failed generation even though that generation published no
+provider records. If close is unconfirmed, it records `ActivationBlocked`, keeps
+the successor held, and quarantines the source. The staged set is discarded
+because it created no provider semantic state; the existing inert source
+descriptor and immutable history remain. If a
+prefix commits, the controller permanently rejects generation callbacks. Under
+the same callback/admission boundary it invokes the installed generation's
+`FenceWithdrawal` and atomically persists promotion state `CLEANING`, one
+`SemanticCleanupWork`, and `NativeCloseWork{State:PENDING}`. The cleanup record
+contains the exact `FenceProof`, failed generation, a
+`CONTROL_OWNED/SEMANTIC_CLEANUP` reservation for `generation+1` at sequence 1,
+an independent finite deadline and retry budget, and its complete bytewise
+`AssetID`-ordered work set. Semantic cleanup and native close are two durable
+obligations; neither completion is inferred from the other.
+
+Recovery of a `CONSUMED/STAGING` record with no terminal activation result treats
+native activation as possible and never calls `Activate` again. Under the same
+record transaction it creates the recovery successor only when absent, closes
+callbacks, and schedules owner-specific abort/close reconciliation for the
+original lifecycle correlation. Repeated wakes and component recovery reuse that
+same successor and close work. Only proven close makes the successor available;
+uncertainty keeps it held and quarantines the source.
+
+The cleanup asset set is materialized once from the durable union of
+epoch-transition and accepted activation-prefix assets whose accepted snapshots
+contain the failed generation's cursor, binding, records, or direct/transitive
+derived closure. It remains the complete work set even after some assets accept.
+`Assets` contains unique bytewise-sorted IDs; each asset's attempts have
+consecutive `AttemptNumber` values in creation order, and `Complete` is true only
+when its final attempt is durably `ACCEPTED` with a snapshot and semantic
+revision.
+Staged or pending provider batches that never committed are discarded and never
+fabricated as cleanup state. In bytewise asset order, manager-owned cleanup
+batches use the cleanup reservation's one global cursor and include the accepted
+kernel `GenerationFence` for the failed generation plus the required withdrawal
+cascade. They contain no activated binding, observation, service, capability, or
+fact upsert. Each asset cleanup is separately kernel-atomic, and the
+source-scoped visibility fence keeps the failed prefix non-public throughout.
+
+For each asset attempt the manager reads one complete immutable snapshot,
+derives the exact withdrawal set, allocates only the reservation's current
+sequence, and persists a `SemanticCleanupAttempt` in `PREPARED` before
+submission. That write-ahead record contains the exact input snapshot and
+semantic revision, sequence, batch ID, digest, complete canonical cleanup
+envelope and byte length. Immediately before submission it persists
+`SUBMITTED_UNKNOWN`. A synchronous kernel rejection that proves no mutation is
+persisted as `REJECTED_UNAPPLIED`; an accepted result and accepted snapshot are
+persisted with the resulting semantic revision before the reservation cursor
+advances or the next asset begins. There is at most one uncertain cleanup
+attempt globally.
+
+Only a proven unaccepted `revision_conflict` may refresh the same asset. The
+manager appends a new attempt with the refreshed snapshot/revision and rebuilt
+canonical envelope at the same still-next sequence; it never overwrites the
+earlier attempt or reuses a sequence after acceptance. Every rejected retry
+charges the cleanup record's persisted `RetryCount`/`RetryLimit` and
+`DeadlineUTC`; `NextAttemptAtUTC` and `LastError` are cleanup state, independent
+of both the expired activation deadline and the native-close deadline.
 
 Immediately after that durable split, the manager schedules `Stop` with the
 stored fence proof outside the manager lock. It runs to its independent close
 deadline even when the semantic sink conflicts, times out, or marks cleanup
 `BLOCKED`. The manager persists `CloseProven` or `CloseUnconfirmed` separately;
-an unconfirmed close quarantines the source epoch and prohibits replacement. A
-proven close does not release the semantic visibility fence or erase unfinished
-cleanup.
+an unconfirmed close sets the parent promotion `BLOCKED`, quarantines the source
+epoch, and prohibits replacement. A proven close does not release the semantic
+visibility fence or erase unfinished cleanup.
 
-The manager persists each cleanup snapshot before advancing its cursor. A
-revision conflict refreshes and rebuilds the same unaccepted sequence within the
-bounded cleanup deadline. Component recovery loads both obligations: it
-reconciles the sole uncertain semantic batch by exact cleanup cursor/digest and
-reschedules any `PENDING`/`ACTIVE` native close within the original independent
-deadline. A process restart creates a new source epoch and lets its mandatory
-retirement barrier retire the incomplete old epoch; absent an exact persisted
-close proof, native close remains unconfirmed and the old source stays
-quarantined.
+Component recovery loads both obligations without resetting either budget. For
+the sole `SUBMITTED_UNKNOWN` cleanup attempt it reads the exact cleanup
+generation's `PublicationCursor`. An exact sequence/digest match triggers
+accepted-snapshot readback and records `ACCEPTED`; an unchanged predecessor
+cursor resubmits the stored canonical envelope byte-for-byte; an incompatible
+cursor blocks with `sequence_conflict`. A `PREPARED` attempt is submitted from
+its stored bytes. Accepted earlier assets and proven rejected attempt bytes are
+not replayed. Native `PENDING`/`ACTIVE` close work is rescheduled separately
+within its original independent deadline.
 
-After every cleanup asset accepts, the cleanup generation remains inert and is
-the next provider generation with its persisted next sequence; no publication
-returns to the fenced generation. Replacement is permitted only when semantic
-cleanup is complete and native close is proven. Exhausted cleanup remains
-`BLOCKED` with its work durable, source admission and affected-path visibility
-closed, and independent native close still completed or quarantined; unrelated
-sources stay visible. It never fabricates cross-asset atomicity or an
-observation.
+After every cleanup asset accepts, the manager persists the cleanup state
+`COMPLETE`, changes that same reservation to `AVAILABLE/NONE` at its exact next
+cursor, and retains the generation inert. The next provider must claim this
+reservation through the ordinary start procedure; it cannot allocate another
+generation or reset to sequence 1. No publication returns to the fenced
+generation. The parent promotion becomes `FAILED` only when semantic cleanup is
+complete and native close is proven; until then it remains `CLEANING`, and an
+available reservation cannot be claimed. Replacement is permitted only from the
+durable `FAILED` state.
+
+Exhausted cleanup and its parent promotion remain `BLOCKED` with every incomplete
+asset and attempt durable, source admission and affected-path visibility closed,
+and independent native close still completed or quarantined; unrelated sources
+stay visible. A
+new process epoch includes all incomplete cleanup assets in its epoch-transition
+barrier. Only after each carried asset is retired in the new epoch may the old
+cleanup record become `SUPERSEDED` and its reservation `RETIRED`; the old native
+close proof or quarantine remains independently durable. No path fabricates a
+cross-asset transaction or an observation.
 
 `ReplacementFactory` is optional. If absent, `restart` fences and proves close
 of the old generation before calling `Prepare` for the new generation. If close
@@ -887,23 +1082,32 @@ operation context.
 
 ### Start and activation
 
-1. Reserve the next non-zero `DriverGeneration` inside the current source epoch
-   and install the manager admission record closed for that exact generation
-   key.
-2. Complete or resume the source-epoch transition barrier for every recorded
-   affected asset. Persist the next publication sequence produced by those
-   manager batches; no provider method runs while the barrier is incomplete.
-3. Create the activation publisher with that exact next sequence, then call
-   `Prepare` outside the manager state lock. It returns only a
-   `PreparedGeneration`; no native I/O or capability may yet be public.
-4. If the lifecycle operation is still current, call
-   `PreparedGeneration.Activate` outside the lock while admission remains
-   closed. It returns the activated `Generation` and `ActivationProof`.
+1. Complete or resume the current source epoch's control-owned transition
+   barrier for every recorded affected asset. No provider method runs while the
+   barrier is incomplete.
+2. In one durable lifecycle transaction, claim the epoch barrier's or completed
+   cleanup's `AVAILABLE` reservation with its existing generation and next
+   cursor. Only when replacing a consumed live generation with no available
+   cleanup reservation may this transaction allocate and claim a strictly newer
+   generation at a new sequence-1 cursor. Install manager admission closed for
+   the claimed key.
+3. Create the activation publisher with the claim's exact next sequence, then
+   call `Prepare` outside the manager state lock. It returns only a
+   `PreparedGeneration`; no native I/O or capability may yet be public. A wake
+   or component recovery for the same operation loads this claim instead of
+   allocating another generation.
+4. If the lifecycle operation and claim are still current, persist the
+   reservation as `CONSUMED` together with its empty durable `STAGING` record,
+   then call `PreparedGeneration.Activate` outside the lock while admission
+   remains closed. It returns the activated `Generation` and `ActivationProof`.
 5. Validate the proof's exact source epoch, driver generation, native binding,
-   profile/version, and close owner. A mismatch fails closed and calls `Abort`.
+   profile/version, and close owner. A mismatch fails closed and calls `Abort`;
+   the consumed generation proceeds through fencing/cleanup and is not reused.
 6. Install the activated generation with admission still closed, then promote
    its activation publisher. The bounded staged set commits in global sequence
-   order before any waiting later publication can forward.
+   order before any waiting later publication can forward. The first provider
+   publication of an ordinary higher generation includes every required older
+   generation fence.
 7. In one externally consistent transition, open admission and publish observed
    `RUNNING`; any qualified available capability instances from the complete
    staged set become externally visible at this same gateway serialization
@@ -928,16 +1132,23 @@ admission both succeed. Static catalog entries may remain `candidate`,
 5. Publish `STOPPED` only for `CloseProven`. For timeout or unconfirmed close,
    publish `FAILED` with `CLOSE_UNCONFIRMED` and quarantine the driver for the
    source epoch.
-6. A restart may activate the next generation only after close is proven, unless
-   the native replacement seam itself proves non-overlap, fencing, drain, and
-   ownership transfer.
+6. A restart may claim an available cleanup reservation, or atomically allocate
+   and claim one strictly newer generation at cursor 1, only after close is
+   proven. Its first accepted batch supplies every older unfenced generation
+   fence. The sole exception is a native replacement seam that itself proves
+   non-overlap, fencing, drain, and ownership transfer; it still uses the same
+   durable reservation and cursor rules.
 
 Withdrawal hooks are bounded, non-blocking, and must not re-enter the manager.
 Drain and I/O occur outside a manager lock. A prepared or activated generation
 whose start operation was superseded is never installed or admitted; the
 manager calls `Abort`, or fences and stops an already activated result, on an
 independent bounded cleanup deadline. It never becomes effective, and an
-unconfirmed close quarantines the driver for the source epoch.
+unconfirmed close quarantines the driver for the source epoch. Before
+`Activate`, a proven abort with no staged publication releases the exact claimed
+reservation at its unchanged cursor; an uncertain abort retains the claim and
+quarantine. After the durable `CONSUMED` transition, supersession always uses a
+new cleanup reservation and never releases the consumed generation for reuse.
 
 ## 8. Upward flow
 
@@ -1363,11 +1574,16 @@ owning issue. The expected result is normative.
 | LIFE-17 | One epoch-transition asset batch omits an older non-retired epoch or loses its expected-revision race | Reject that asset batch; the transitioning source's affected paths and admission remain closed while the manager refreshes and rebuilds it within the bounded durable retry record |
 | LIFE-18 | `Prepare` or `Activate` fails before any provider publication in a new process epoch | The earlier manager barrier has already removed every old current candidate and derived path and retained retired/withdrawn tombstones plus immutable history; the inert new descriptor exposes no binding, capability, observation, or route, and admission stays closed |
 | LIFE-19 | The process exits after some, but not all, per-asset epoch transitions are accepted | Restart creates a new epoch/record, unions incomplete and indexed assets, rematerializes their current snapshots, and starts a new cursor at sequence 1; this also retires the prior inert epoch on already transitioned assets before provider work, with no cross-asset atomicity or old-snapshot fallback claim |
-| LIFE-20 | Two assets complete the new-epoch barrier at sequences 1 and 2; activation discovers two assets and stages sequences 3 and 4 while a callback publishes sequence 5 | The manager passes `NextPublicationSequence=3`, accepts both unique-asset batches within bounds, commits 3 then 4, persists cursor 4, and releases the callback at 5 with no collision, gap, cross-asset atomicity, or generation-0 convention |
+| LIFE-20 | Two assets complete the new-epoch generation-1 barrier at sequences 1 and 2; activation discovers two assets and stages sequences 3 and 4 while a callback publishes sequence 5 | The lifecycle operation claims that exact available generation-1 reservation and cursor 3, accepts both unique-asset batches within bounds, commits 3 then 4, persists cursor 4, and releases the callback at 5 with no collision, gap, second generation, cross-asset atomicity, or generation-0 convention |
 | LIFE-21 | Activation batch 1 of 2 commits, batch 2 loses its exact input revision, and a callback is waiting | The prefix remains source-fenced and non-admissible; cleanup generation `g+1` fences `g` in global sequence order across the complete generation-owned asset set, while native close runs independently, before a later provider can use inert `g+1` at its persisted next sequence |
 | LIFE-22 | Sources A and B share an asset; A's epoch retirement repeatedly conflicts and exhausts its budget | Old-A direct/transitive paths, selections, items, and routes remain unavailable/withheld, while scoped B reads/routes and B-only aggregate projection items remain visible with their unchanged snapshot-bound provenance; mixed items are withheld and no B fallback is silently selected |
 | LIFE-23 | The first staged activation batch commits, then component memory is lost before the second is submitted | Recovery loads the persisted complete `CanonicalEnvelope` suffix, confirms the exact accepted cursor/digest, and submits the original second envelope byte-for-byte at the same next sequence; it never regenerates provider evidence from a digest, count, or reread |
 | LIFE-24 | A committed activation prefix enters cleanup, but every semantic cleanup attempt conflicts until its budget expires | Callback/admission fencing first persists separate semantic and native-close obligations; `Stop`/`Abort` still runs within its independent deadline and records proven close or quarantine, unfinished semantic work remains durable and source-withheld, component recovery preserves both, and unrelated sources remain visible |
+| LIFE-25 | Process start leaves the driver desired `STOPPED`; two epoch-barrier assets accept at generation 1 sequences 1 and 2; a later `START` succeeds, then a later real replacement succeeds | `START` claims the still-inert generation-1 reservation and first provider publication uses sequence 3. The replacement allocates generation 2 with cursor 1, and its first accepted batch atomically fences generation 1; neither path resets or crosses a generation cursor |
+| LIFE-26 | An empty or nonempty epoch barrier completes, then `Prepare` fails or its reconciler wake/component loses memory before `Activate` | Every retry for that lifecycle record uses the same provider claim, generation, cursor, and correlation. Only proof that no prepared/native state or staged publication remains may release the claim unchanged; uncertainty retains the claim or quarantines it, and no wake allocates another generation or consumes the cursor |
+| LIFE-27 | Cleanup loses memory (a) after persisting an attempt but before submission, (b) after recording one accepted asset, or (c) after submission before recording its result | Recovery loads the original ordered asset set and unchanged budget. It submits stored bytes for (a), skips the durable accepted prefix for (b), and for (c) uses the cleanup cursor/digest to record accepted readback or replay the exact envelope. It never loses an asset, changes bytes at an accepted sequence, or reuses the failed generation |
+| LIFE-28 | Cleanup exhausts with native close already proven, then the gateway process restarts | The new epoch barrier carries every incomplete cleanup asset into its own generation-1 retirement work while the old cleanup journal remains durable; only accepted retirement of every carried asset supersedes and retires the old cleanup reservation. Close proof remains independent, source-owned paths stay withheld, and healthy source-B paths remain visible |
+| LIFE-29 | `Prepare` succeeds, the reservation is durably consumed, then `Activate` fails before its first provider batch commits and recovery repeats | The failed generation is never released or reused. The manager durably holds one generation+1 successor at cursor 1 while native close is unresolved; proven close makes it available, and a subsequent start claims it once and atomically fences the failed generation in its first accepted batch without inventing an observation |
 | UP-01 | Partial observation fails for one field | Only evidenced fields update; other candidates retain provenance and age normally |
 | UP-02 | Same publication sequence and digest repeats | No-op with no semantic revision bump |
 | UP-03 | Same sequence repeats with another digest | Reject that batch with `sequence_conflict` and no semantic mutation; then close admission and publish a separate atomic fenced withdrawal/degrade transition |

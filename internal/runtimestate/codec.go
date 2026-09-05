@@ -8,9 +8,11 @@
 package runtimestate
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
 
@@ -186,7 +188,45 @@ func dtoToState(dto fileDTO) (*State, error) {
 // order (struct-driven). Adds a trailing newline so editors don't fight us.
 func marshalState(s *State) ([]byte, error) {
 	dto := stateToDTO(s)
-	b, err := json.MarshalIndent(dto, "", "  ")
+	// Preserve the historical byte-for-byte current-v1 encoding when no
+	// future namespace was loaded. This keeps existing deterministic output
+	// and its snapshots stable.
+	if len(s.opaqueNamespaces) == 0 {
+		b, err := json.MarshalIndent(dto, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(b, '\n'), nil
+	}
+
+	// json.RawMessage keeps plugin values opaque. A map is deterministic under
+	// encoding/json (keys are sorted), while known namespaces are populated
+	// only by this package and cannot be overwritten by retained input.
+	root := make(map[string]json.RawMessage, len(s.opaqueNamespaces)+3)
+	schema, err := json.Marshal(dto.SchemaVersion)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := json.Marshal(dto.Meta)
+	if err != nil {
+		return nil, err
+	}
+	root["schema_version"] = schema
+	root["meta"] = meta
+	if dto.EBus != nil {
+		ebus, err := json.Marshal(dto.EBus)
+		if err != nil {
+			return nil, err
+		}
+		root["ebus"] = ebus
+	}
+	for name, raw := range s.opaqueNamespaces {
+		if name == "schema_version" || name == "meta" || name == "ebus" {
+			continue
+		}
+		root[name] = append(json.RawMessage(nil), raw...)
+	}
+	b, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return nil, err
 	}
@@ -197,19 +237,91 @@ func marshalState(s *State) ([]byte, error) {
 // errors. Returns errSchemaTopLevel for top-level schema_version mismatch
 // (treat as corrupt). For ebus.schema_version mismatch returns nil + an
 // EBus-stripped state per AD12.
-func unmarshalState(data []byte) (*State, error) {
+type namespaceVersionWarning struct {
+	namespace string
+	observed  int
+	expected  int
+}
+
+func unmarshalState(data []byte) (*State, []namespaceVersionWarning, error) {
+	rawNamespaces, err := decodeTopLevelNamespaces(data)
+	if err != nil {
+		return nil, nil, err
+	}
 	var dto fileDTO
 	if err := json.Unmarshal(data, &dto); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if dto.SchemaVersion != SchemaVersion {
-		return nil, errSchemaTopLevel
+		return nil, nil, errSchemaTopLevel
 	}
+	var warnings []namespaceVersionWarning
 	if dto.EBus != nil && dto.EBus.SchemaVersion != EBusSchemaVersion {
 		// AD12: ignore the namespace, keep the rest.
+		warnings = append(warnings, namespaceVersionWarning{
+			namespace: "ebus", observed: dto.EBus.SchemaVersion, expected: EBusSchemaVersion,
+		})
 		dto.EBus = nil
 	}
-	return dtoToState(dto)
+	state, err := dtoToState(dto)
+	if err != nil {
+		return nil, nil, err
+	}
+	state.opaqueNamespaces = make(map[string]json.RawMessage)
+	for name, raw := range rawNamespaces {
+		if name == "schema_version" || name == "meta" || name == "ebus" {
+			continue
+		}
+		state.opaqueNamespaces[name] = append(json.RawMessage(nil), raw...)
+	}
+	return state, warnings, nil
+}
+
+// decodeTopLevelNamespaces rejects duplicate top-level keys before decoding
+// typed state, while retaining every independent plugin value as opaque JSON.
+// Nested plugin data stays deliberately uninterpreted.
+func decodeTopLevelNamespaces(data []byte) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	token, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		return nil, errors.New("runtimestate: top-level JSON must be an object")
+	}
+	namespaces := make(map[string]json.RawMessage)
+	for dec.More() {
+		keyToken, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("runtimestate: invalid top-level key")
+		}
+		if _, duplicate := namespaces[key]; duplicate {
+			return nil, fmt.Errorf("runtimestate: duplicate top-level key %q", key)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+		namespaces[key] = append(json.RawMessage(nil), raw...)
+	}
+	if token, err = dec.Token(); err != nil {
+		return nil, err
+	} else if delim, ok = token.(json.Delim); !ok || delim != '}' {
+		return nil, errors.New("runtimestate: malformed top-level JSON object")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("runtimestate: trailing JSON value")
+		}
+		return nil, err
+	}
+	return namespaces, nil
 }
 
 var errSchemaTopLevel = errors.New("runtimestate: top-level schema_version mismatch")

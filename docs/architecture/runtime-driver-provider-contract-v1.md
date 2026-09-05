@@ -62,8 +62,8 @@ requires its own compatibility reconciliation before replacing this pin.
 
 | Semantic package | Types consumed here |
 |---|---|
-| `semreg/v1` | `ContractVersion`, `SemanticVersion`, `PackRef`, `DefinitionRef`, `DefinitionIndex`, `PredicateOp`, `ErrorID`, `AssetID`, `SourceID`, `SourceEpochID`, `SourceDescriptor`, `SourceState`, `NativeBindingID`, `NativeBinding`, `BindingState`, `OriginRef`, `ClockEpochID`, `SnapshotID`, `RevisionVector`, `FactKey`, `FactCandidate`, `FactEnvelope`, `SourcePathRef`, `DerivationInput`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `PolicyID`, `EvidenceRef`, `Digest`, `BatchID`, `GenerationFence`, `PublicationBatch`, `PublicationCursor`, `Snapshot`, `EvaluationContext`, `EvaluatedFact`, `EvaluationView`, `Selection`, `SelectionPolicy`, `PackValidator` |
-| `semreg/v1/operation` | `Intent`, `CapabilityRequirement`, `Precondition`, `ExpectedEffect`, `OperationPackValidator`, `Route`, `DispatchEvidence`, `Acknowledgement`, `Readback`, `ExecutionRecord`, `CausalContext` |
+| `semreg/v1` | `ContractVersion`, `SemanticVersion`, `PackRef`, `DefinitionRef`, `DefinitionIndex`, `PredicateOp`, `ErrorID`, `AssetID`, `SourceID`, `SourceEpochID`, `SourceDescriptor`, `SourceState`, `NativeBindingID`, `NativeBinding`, `BindingState`, `OriginRef`, `ClockEpochID`, `SnapshotID`, `RevisionVector`, `FactKey`, `FactCandidate`, `FactEnvelope`, `SourcePathRef`, `DerivationInput`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `PolicyID`, `EvidenceRef`, `Digest`, `BatchID`, `GenerationFence`, `PublicationBatch`, `PublicationCursor`, `Snapshot`, `EvaluationContext`, `EvaluatedFact`, `EvaluationView`, `Selection`, `SelectionPolicy`, `CausalContext`, `PackValidator` |
+| `semreg/v1/operation` | `Intent`, `CapabilityRequirement`, `Precondition`, `ExpectedEffect`, `OperationPackValidator`, `Route`, `DispatchEvidence`, `Acknowledgement`, `Readback`, `ExecutionRecord` |
 | `semreg/v1/projection` | versioned target manifest, projection result, and loss report |
 
 The dependency must preserve these distinct identities:
@@ -678,12 +678,27 @@ const (
     ActivationBlocked    ActivationPromotionState = "BLOCKED"
 )
 
+type NativeCloseState string
+const (
+    NativeClosePending     NativeCloseState = "PENDING"
+    NativeCloseActive      NativeCloseState = "ACTIVE"
+    NativeCloseProven      NativeCloseState = "PROVEN"
+    NativeCloseUnconfirmed NativeCloseState = "UNCONFIRMED"
+)
+
+type NativeCloseWork struct {
+    State       NativeCloseState
+    DeadlineUTC time.Time
+    Proof       *CloseProof
+}
+
 type ActivationBatchRecord struct {
     AssetID                  semv1.AssetID
     InputSnapshot            semv1.SnapshotID
     ExpectedSemanticRevision uint64
     Sequence                 uint64
     Digest                   semv1.Digest
+    CanonicalEnvelope        []byte
     CanonicalBytes           uint64
     AcceptedSnapshot         *semv1.SnapshotID
 }
@@ -696,6 +711,7 @@ type ActivationPromotionRecord struct {
     DeadlineUTC       time.Time
     State             ActivationPromotionState
     CleanupGeneration *DriverGeneration
+    NativeClose       NativeCloseWork
 }
 
 type PublicationSink interface {
@@ -775,7 +791,11 @@ live publisher after promotion. The manager persists an
 `ActivationPromotionRecord` containing the ordered canonical bytes, exact input
 snapshots/revisions, sequences/digests, total bytes, and deadline before
 `Activate` returns. This bounded set is initial publication state, not a general
-retry queue.
+retry queue. Each `CanonicalEnvelope` is the complete immutable gateway-envelope
+encoding, including generation, input snapshot, sequence, digest, and the full
+`PublicationBatch` with its `BatchID`, upserts, withdrawals, fences, and
+evidence. `CanonicalBytes` equals its exact length and the record's `TotalBytes`
+is their sum; neither count is a substitute for the stored payload.
 
 After activation proof validation and generation installation behind the closed
 admission gate, the manager alone calls `Promote`. Promotion serializes with
@@ -802,12 +822,17 @@ revalidated after the drain; a stale `InputSnapshot` or expected revision return
 and rebuild at the same still-next sequence. It is never blindly forwarded with
 the pre-promotion revision.
 
-If promotion fails before any staged batch commits, `Abort` closes and discards
-the set with no provider semantic state. If a prefix commits, the controller
-enters durable `CLEANING`, permanently rejects generation callbacks, and reserves
-`generation+1` as a cleanup generation. Under the same callback/admission
-boundary it invokes the installed generation's `FenceWithdrawal`, persists the
-exact `FenceProof`, and supplies its evidence to semantic cleanup. Its exact
+If promotion fails before any staged batch commits, the manager persists
+`NativeCloseWork` and calls `Abort` on its independent bounded close context; it
+stores the returned close proof or quarantines an unconfirmed close, then
+discards the set with no provider semantic state. If a prefix commits, the
+controller permanently rejects generation callbacks. Under the same
+callback/admission boundary it invokes the installed generation's
+`FenceWithdrawal` and atomically persists the exact `FenceProof`, promotion
+state `CLEANING`, reserved cleanup `generation+1`, and
+`NativeCloseWork{State:PENDING}` with its separate finite deadline. Semantic
+cleanup and native close are then two durable obligations; neither completion
+is inferred from the other. Its exact
 affected assets are the union of epoch-transition and activation-prefix assets
 whose persisted accepted snapshot contains the failed generation's cursor,
 binding, or records. Staged or pending batches that never committed are
@@ -819,18 +844,32 @@ observation, service, or capability upsert. Each asset cleanup is separately
 kernel-atomic, and the source-scoped visibility fence keeps the failed prefix
 non-public throughout.
 
+Immediately after that durable split, the manager schedules `Stop` with the
+stored fence proof outside the manager lock. It runs to its independent close
+deadline even when the semantic sink conflicts, times out, or marks cleanup
+`BLOCKED`. The manager persists `CloseProven` or `CloseUnconfirmed` separately;
+an unconfirmed close quarantines the source epoch and prohibits replacement. A
+proven close does not release the semantic visibility fence or erase unfinished
+cleanup.
+
 The manager persists each cleanup snapshot before advancing its cursor. A
 revision conflict refreshes and rebuilds the same unaccepted sequence within the
-bounded cleanup deadline. Component recovery reconciles the sole uncertain last
-batch by exact cleanup cursor/digest; a process restart creates a new source
-epoch and lets its mandatory retirement barrier retire the incomplete old epoch.
+bounded cleanup deadline. Component recovery loads both obligations: it
+reconciles the sole uncertain semantic batch by exact cleanup cursor/digest and
+reschedules any `PENDING`/`ACTIVE` native close within the original independent
+deadline. A process restart creates a new source epoch and lets its mandatory
+retirement barrier retire the incomplete old epoch; absent an exact persisted
+close proof, native close remains unconfirmed and the old source stays
+quarantined.
+
 After every cleanup asset accepts, the cleanup generation remains inert and is
 the next provider generation with its persisted next sequence; no publication
-returns to the fenced generation. The manager then calls `Stop` with the stored
-fence proof on an independent bounded close context; unconfirmed close
-quarantines the source epoch. Exhausted cleanup remains `BLOCKED` with source
-admission and affected-path visibility closed while unrelated sources stay
-visible. It never fabricates cross-asset atomicity or an observation.
+returns to the fenced generation. Replacement is permitted only when semantic
+cleanup is complete and native close is proven. Exhausted cleanup remains
+`BLOCKED` with its work durable, source admission and affected-path visibility
+closed, and independent native close still completed or quarantined; unrelated
+sources stay visible. It never fabricates cross-asset atomicity or an
+observation.
 
 `ReplacementFactory` is optional. If absent, `restart` fences and proves close
 of the old generation before calling `Prepare` for the new generation. If close
@@ -1325,8 +1364,10 @@ owning issue. The expected result is normative.
 | LIFE-18 | `Prepare` or `Activate` fails before any provider publication in a new process epoch | The earlier manager barrier has already removed every old current candidate and derived path and retained retired/withdrawn tombstones plus immutable history; the inert new descriptor exposes no binding, capability, observation, or route, and admission stays closed |
 | LIFE-19 | The process exits after some, but not all, per-asset epoch transitions are accepted | Restart creates a new epoch/record, unions incomplete and indexed assets, rematerializes their current snapshots, and starts a new cursor at sequence 1; this also retires the prior inert epoch on already transitioned assets before provider work, with no cross-asset atomicity or old-snapshot fallback claim |
 | LIFE-20 | Two assets complete the new-epoch barrier at sequences 1 and 2; activation discovers two assets and stages sequences 3 and 4 while a callback publishes sequence 5 | The manager passes `NextPublicationSequence=3`, accepts both unique-asset batches within bounds, commits 3 then 4, persists cursor 4, and releases the callback at 5 with no collision, gap, cross-asset atomicity, or generation-0 convention |
-| LIFE-21 | Activation batch 1 of 2 commits, batch 2 loses its exact input revision, and a callback is waiting | The prefix remains source-fenced and non-admissible; cleanup generation `g+1` fences `g` in global sequence order across the complete generation-owned asset set before any visibility release, and a later provider can use inert `g+1` only at its persisted next sequence |
+| LIFE-21 | Activation batch 1 of 2 commits, batch 2 loses its exact input revision, and a callback is waiting | The prefix remains source-fenced and non-admissible; cleanup generation `g+1` fences `g` in global sequence order across the complete generation-owned asset set, while native close runs independently, before a later provider can use inert `g+1` at its persisted next sequence |
 | LIFE-22 | Sources A and B share an asset; A's epoch retirement repeatedly conflicts and exhausts its budget | Old-A direct/transitive paths, selections, items, and routes remain unavailable/withheld, while scoped B reads/routes and B-only aggregate projection items remain visible with their unchanged snapshot-bound provenance; mixed items are withheld and no B fallback is silently selected |
+| LIFE-23 | The first staged activation batch commits, then component memory is lost before the second is submitted | Recovery loads the persisted complete `CanonicalEnvelope` suffix, confirms the exact accepted cursor/digest, and submits the original second envelope byte-for-byte at the same next sequence; it never regenerates provider evidence from a digest, count, or reread |
+| LIFE-24 | A committed activation prefix enters cleanup, but every semantic cleanup attempt conflicts until its budget expires | Callback/admission fencing first persists separate semantic and native-close obligations; `Stop`/`Abort` still runs within its independent deadline and records proven close or quarantine, unfinished semantic work remains durable and source-withheld, component recovery preserves both, and unrelated sources remain visible |
 | UP-01 | Partial observation fails for one field | Only evidenced fields update; other candidates retain provenance and age normally |
 | UP-02 | Same publication sequence and digest repeats | No-op with no semantic revision bump |
 | UP-03 | Same sequence repeats with another digest | Reject that batch with `sequence_conflict` and no semantic mutation; then close admission and publish a separate atomic fenced withdrawal/degrade transition |

@@ -500,11 +500,36 @@ Each asset batch is one kernel-atomic transition. It retires old source and
 binding records, retains their irreversible tombstones and withdrawn
 identity/service/capability history, and removes their observed candidates,
 conflict references, and derived closure from the new current snapshot. Assets
-commit separately because the kernel supplies no cross-asset transaction. The
-gateway therefore keeps the source-wide external visibility barrier and all
-admission closed until every recorded asset has an `AcceptedSnapshot`; while
-the barrier is incomplete, affected current snapshots are unavailable to public
-selection and projection rather than filtered or replaced by an older snapshot.
+commit separately because the kernel supplies no cross-asset transaction.
+
+The external visibility fence is exact to the transitioning source, not to the
+whole asset or immutable snapshot. For each asset awaiting retirement it covers
+the recorded older source epochs; their bindings and identity links; their
+services and capabilities; every observed candidate whose `SourcePathRef`
+matches one of those paths; and every inferred candidate whose direct or
+transitive `DerivationInput` includes a covered path. A projection item,
+selection, precondition, readback, or aggregate derived value is covered only
+when its exact lineage or chosen record intersects that set. The manager derives
+the set from the complete immutable `Snapshot` named by `InputSnapshot` and
+recomputes it after every revision-conflict refresh. It never matches a record
+whose complete native and derivation paths belong only to another source.
+
+Gateway admission is closed for every route owned by the transitioning source.
+Scoped read, evaluation, presentation selection, projection, and route admission
+still consume the complete matching `Snapshot` and `EvaluationView`. A result
+whose exact selected record or dependencies are covered is returned as
+unavailable/`withheld`; the gateway does not remove candidates, synthesize a
+filtered snapshot, rerun a policy, or silently select an uncovered alternative.
+An uncovered result from source B remains visible with its original candidate,
+revision, provenance, and freshness even when source A shares the asset or fact
+envelope. An aggregate public read or projection returns unaffected B-only
+items with their ordinary dispositions and marks only covered or
+mixed-dependency items `withheld`; a scoped B-only read returns normally, while
+a scoped covered read is unavailable. The complete internal
+`Snapshot`/`EvaluationView` remains unchanged and is never rewritten as a
+partial public snapshot. Once an asset's retirement batch is accepted, its new
+complete snapshot supplies the ordinary kernel view and the temporary source
+fence for that asset is removed.
 
 A revision conflict or changed old-epoch set rejects only that asset batch. The
 manager refreshes that asset's exact snapshot and revision, rebuilds the complete
@@ -513,9 +538,10 @@ epochs, batch ID, and digest before retrying the same not-yet-accepted sequence.
 Each rejection increments `Attempt` and retries only within the persisted limit
 and deadline. The manager never skips the asset, invents a successful
 observation, or claims cross-asset atomicity. An exhausted budget sets the
-transition to `BLOCKED` and the driver observation to `FAILED`, leaves admission
-and public-current visibility closed, and retains the remaining work for an
-explicit lifecycle retry. Recovery while the same process/source epoch remains
+transition to `BLOCKED` and the driver observation to `FAILED`, leaves that
+source's admission and affected-path visibility closed, and retains the
+remaining work for an explicit lifecycle retry. Uncovered paths from other
+sources remain public. Recovery while the same process/source epoch remains
 active loads the same record before allocating provider work. Completed assets
 are not replayed.
 
@@ -631,10 +657,45 @@ type ExecutionLease interface {
 }
 
 type PublicationEnvelope struct {
-    Generation GenerationKey
-    Sequence uint64
-    Digest   semv1.Digest
-    Batch    semv1.PublicationBatch
+    Generation    GenerationKey
+    InputSnapshot semv1.SnapshotID
+    Sequence      uint64
+    Digest        semv1.Digest
+    Batch         semv1.PublicationBatch
+}
+
+const (
+    MaxActivationPublicationBatches = 128
+    MaxActivationPublicationBytes   = 8 * 1024 * 1024
+)
+
+type ActivationPromotionState string
+const (
+    ActivationStaging    ActivationPromotionState = "STAGING"
+    ActivationCommitting ActivationPromotionState = "COMMITTING"
+    ActivationCleaning   ActivationPromotionState = "CLEANING"
+    ActivationComplete   ActivationPromotionState = "COMPLETE"
+    ActivationBlocked    ActivationPromotionState = "BLOCKED"
+)
+
+type ActivationBatchRecord struct {
+    AssetID                  semv1.AssetID
+    InputSnapshot            semv1.SnapshotID
+    ExpectedSemanticRevision uint64
+    Sequence                 uint64
+    Digest                   semv1.Digest
+    CanonicalBytes           uint64
+    AcceptedSnapshot         *semv1.SnapshotID
+}
+
+type ActivationPromotionRecord struct {
+    Generation        GenerationKey
+    FirstSequence     uint64
+    Batches           []ActivationBatchRecord
+    TotalBytes        uint64
+    DeadlineUTC       time.Time
+    State             ActivationPromotionState
+    CleanupGeneration *DriverGeneration
 }
 
 type PublicationSink interface {
@@ -693,25 +754,83 @@ the gateway admission record remains closed.
 activation. The manager creates one `ActivationPublicationController` for the
 reserved generation and passes only its publisher view. The preceding epoch
 transition may already have consumed publication sequences, so
-`NextPublicationSequence` is the exact next value persisted by the manager. In
-staging state the publisher accepts either no batch or one activation envelope
-at exactly that sequence for the reserved generation. An identical replay is a
-no-op. A different digest, another sequence, another generation, or a second
-distinct pre-promotion envelope poisons the staging buffer and makes activation
-fail closed. The buffer stores canonical immutable bytes and remains bounded to
-one kernel-valid publication batch; it cannot become a general retry queue.
+`NextPublicationSequence` is the exact next value persisted by the manager.
+
+While `Activate` runs, the publisher stages an ordered set of zero through 128
+canonical envelopes totaling at most 8 MiB, all before `StartContext.Deadline`.
+The first sequence equals `NextPublicationSequence`; each later distinct batch
+is exactly one greater, and every envelope names the reserved source, epoch, and
+generation. Each batch also supplies its exact `InputSnapshot`, whose asset and
+semantic revision match `Batch.AssetID` and
+`Batch.ExpectedSemanticRevision`. An identical replay of any staged
+sequence/digest is a no-op and does not count twice. Another digest at a staged
+sequence, a regression, gap, other generation, count/byte overflow, or arrival
+after the deadline poisons staging and fails activation closed.
+
+At most one distinct staged batch may name an `AssetID`. This prevents a later
+same-asset batch from guessing the semantic revision that the uncommitted first
+batch would create. An adapter combines synchronous activation observations for
+one asset into that initial atomic batch; subsequent same-asset deltas use the
+live publisher after promotion. The manager persists an
+`ActivationPromotionRecord` containing the ordered canonical bytes, exact input
+snapshots/revisions, sequences/digests, total bytes, and deadline before
+`Activate` returns. This bounded set is initial publication state, not a general
+retry queue.
 
 After activation proof validation and generation installation behind the closed
 admission gate, the manager alone calls `Promote`. Promotion serializes with
-publishers, commits the optional staged next-sequence batch atomically to the
-live semantic sink, and switches the same publisher object to live forwarding
-before releasing waiting callbacks. A callback that publishes the following
-sequence while promotion is in progress therefore waits at this publication
-boundary and cannot overtake or lose the staged batch. If no batch was staged,
-the first live publication must still use `NextPublicationSequence`. `Abort`
-permanently closes and discards an uncommitted staging buffer; after any
-committed activation publication, a failed manager transition must fence and
-withdraw it before the external visibility barrier is released.
+publishers, freezes the set, and submits each batch to the live semantic sink in
+global sequence order. Each batch is kernel-atomic; the set is not a cross-asset
+transaction. Before each submission the manager verifies the complete current
+snapshot ID and expected revision still match the staged input. It persists the
+accepted snapshot and updated cursor before submitting the next batch. The
+controller extends the source-scoped visibility fence to the reserved
+generation before the first submission, and admission remains closed through
+the whole set, so no accepted prefix becomes public or actionable. A callback
+for the following sequence waits at this boundary and cannot overtake the
+staged set.
+
+After the final staged batch is accepted, the manager persists the next global
+cursor, switches the same publisher object to live forwarding, releases waiting
+callbacks, and only then removes the source visibility fence and opens
+admission. If the set is empty, the first live publication must still use
+`NextPublicationSequence`. Recovery in `COMMITTING` uses the same one-uncertain-
+batch cursor/digest rule as the epoch barrier; accepted earlier batches are not
+replayed. A waiting callback for an asset already changed by the staged set is
+revalidated after the drain; a stale `InputSnapshot` or expected revision returns
+`revision_conflict` without advancing the cursor, and the adapter must refresh
+and rebuild at the same still-next sequence. It is never blindly forwarded with
+the pre-promotion revision.
+
+If promotion fails before any staged batch commits, `Abort` closes and discards
+the set with no provider semantic state. If a prefix commits, the controller
+enters durable `CLEANING`, permanently rejects generation callbacks, and reserves
+`generation+1` as a cleanup generation. Under the same callback/admission
+boundary it invokes the installed generation's `FenceWithdrawal`, persists the
+exact `FenceProof`, and supplies its evidence to semantic cleanup. Its exact
+affected assets are the union of epoch-transition and activation-prefix assets
+whose persisted accepted snapshot contains the failed generation's cursor,
+binding, or records. Staged or pending batches that never committed are
+discarded and never fabricated as cleanup state. In bytewise asset order,
+manager-owned cleanup batches use the cleanup generation's one global cursor at
+sequences 1..M and include a kernel `GenerationFence` for the failed generation
+plus the required withdrawal cascade; they contain no activated binding,
+observation, service, or capability upsert. Each asset cleanup is separately
+kernel-atomic, and the source-scoped visibility fence keeps the failed prefix
+non-public throughout.
+
+The manager persists each cleanup snapshot before advancing its cursor. A
+revision conflict refreshes and rebuilds the same unaccepted sequence within the
+bounded cleanup deadline. Component recovery reconciles the sole uncertain last
+batch by exact cleanup cursor/digest; a process restart creates a new source
+epoch and lets its mandatory retirement barrier retire the incomplete old epoch.
+After every cleanup asset accepts, the cleanup generation remains inert and is
+the next provider generation with its persisted next sequence; no publication
+returns to the fenced generation. The manager then calls `Stop` with the stored
+fence proof on an independent bounded close context; unconfirmed close
+quarantines the source epoch. Exhausted cleanup remains `BLOCKED` with source
+admission and affected-path visibility closed while unrelated sources stay
+visible. It never fabricates cross-asset atomicity or an observation.
 
 `ReplacementFactory` is optional. If absent, `restart` fences and proves close
 of the old generation before calling `Prepare` for the new generation. If close
@@ -744,11 +863,12 @@ operation context.
 5. Validate the proof's exact source epoch, driver generation, native binding,
    profile/version, and close owner. A mismatch fails closed and calls `Abort`.
 6. Install the activated generation with admission still closed, then promote
-   its activation publisher. The optional staged next-sequence batch commits
-   before any waiting later publication can forward.
+   its activation publisher. The bounded staged set commits in global sequence
+   order before any waiting later publication can forward.
 7. In one externally consistent transition, open admission and publish observed
-   `RUNNING`; any qualified available capability instances from the staged batch
-   become externally visible at this same gateway serialization boundary.
+   `RUNNING`; any qualified available capability instances from the complete
+   staged set become externally visible at this same gateway serialization
+   boundary.
 8. Continue asynchronous health and publication callbacks through the same
    exact generation correlation and now-live publisher; no callback may bypass
    that object.
@@ -1198,13 +1318,15 @@ owning issue. The expected result is normative.
 | LIFE-11 | Generation 8 publishes while generation 7 remains current but omits generation 7's `GenerationFence` | `generation_transition_incomplete`; reject the complete batch with no state change, and generation 8 does not become current or actionable |
 | LIFE-12 | Generation 8 atomically supersedes generation 7 | The same new snapshot fences and withdraws generation 7, invalidates its callback, removes its derived closure, and exposes only qualified generation-8 capabilities |
 | LIFE-13 | A post-supersession snapshot retains generation-7 withdrawal/fence tombstones | Full snapshot validation succeeds under the explicit historical-reference rule, while route admission and callbacks still reject generation 7 |
-| LIFE-14 | Native activation emits the exact next sequence after the epoch barrier and a following callback races promotion | The first activation batch remains staged until the generation is installed; the callback waits, then forwards only after atomic staged-batch commit and live-sink promotion; no loss or gap |
-| LIFE-15 | Activation publisher emits another generation, a gap, a conflicting next-sequence batch, or a second distinct staged batch | Staging is poisoned; activation fails closed, buffer aborts, and no provider generation, observation, capability, or admission becomes visible |
+| LIFE-14 | Native activation stages a valid bounded contiguous set and a following callback races promotion | Every staged batch commits in order behind closed source visibility/admission; the callback waits and forwards only at the next persisted sequence after the complete set |
+| LIFE-15 | Activation staging emits another generation, a regression/gap/conflict, a second distinct batch for one asset, exceeds 128 batches/8 MiB, or passes its deadline | Staging is poisoned and activation fails closed; no provider observation, capability, admission, or synthetic same-asset revision becomes public |
 | LIFE-16 | A new source epoch starts at generation 1 while an older non-retired epoch ended at generation 8 | Before provider preparation, the manager materializes every affected asset and its exact snapshot/revision, then its per-asset control batch names every older epoch in `SourceRetirements`; each accepted snapshot retires/withdraws old state without inventing provider evidence |
-| LIFE-17 | One epoch-transition asset batch omits an older non-retired epoch or loses its expected-revision race | Reject that asset batch; source-wide public-current visibility and admission remain closed while the manager refreshes and rebuilds it within the bounded durable retry record |
+| LIFE-17 | One epoch-transition asset batch omits an older non-retired epoch or loses its expected-revision race | Reject that asset batch; the transitioning source's affected paths and admission remain closed while the manager refreshes and rebuilds it within the bounded durable retry record |
 | LIFE-18 | `Prepare` or `Activate` fails before any provider publication in a new process epoch | The earlier manager barrier has already removed every old current candidate and derived path and retained retired/withdrawn tombstones plus immutable history; the inert new descriptor exposes no binding, capability, observation, or route, and admission stays closed |
 | LIFE-19 | The process exits after some, but not all, per-asset epoch transitions are accepted | Restart creates a new epoch/record, unions incomplete and indexed assets, rematerializes their current snapshots, and starts a new cursor at sequence 1; this also retires the prior inert epoch on already transitioned assets before provider work, with no cross-asset atomicity or old-snapshot fallback claim |
-| LIFE-20 | Two affected assets complete the new-epoch barrier at sequences 1 and 2, then activation publishes while a callback follows | The manager persists cursor 2 and passes `NextPublicationSequence=3`; activation stages sequence 3 and the callback forwards sequence 4 after promotion, with no collision, reuse, generation-0 convention, or gap |
+| LIFE-20 | Two assets complete the new-epoch barrier at sequences 1 and 2; activation discovers two assets and stages sequences 3 and 4 while a callback publishes sequence 5 | The manager passes `NextPublicationSequence=3`, accepts both unique-asset batches within bounds, commits 3 then 4, persists cursor 4, and releases the callback at 5 with no collision, gap, cross-asset atomicity, or generation-0 convention |
+| LIFE-21 | Activation batch 1 of 2 commits, batch 2 loses its exact input revision, and a callback is waiting | The prefix remains source-fenced and non-admissible; cleanup generation `g+1` fences `g` in global sequence order across the complete generation-owned asset set before any visibility release, and a later provider can use inert `g+1` only at its persisted next sequence |
+| LIFE-22 | Sources A and B share an asset; A's epoch retirement repeatedly conflicts and exhausts its budget | Old-A direct/transitive paths, selections, items, and routes remain unavailable/withheld, while scoped B reads/routes and B-only aggregate projection items remain visible with their unchanged snapshot-bound provenance; mixed items are withheld and no B fallback is silently selected |
 | UP-01 | Partial observation fails for one field | Only evidenced fields update; other candidates retain provenance and age normally |
 | UP-02 | Same publication sequence and digest repeats | No-op with no semantic revision bump |
 | UP-03 | Same sequence repeats with another digest | Reject that batch with `sequence_conflict` and no semantic mutation; then close admission and publish a separate atomic fenced withdrawal/degrade transition |
@@ -1220,7 +1342,8 @@ owning issue. The expected result is normative.
 | DOWN-02 | Zero or two current routes match after otherwise successful filtering | `ambiguous_route`, or one uniquely applicable qualification/availability error for zero routes; no I/O |
 | DOWN-03 | Route was resolved before generation withdrawal | Admission recheck rejects the stale generation key; no I/O |
 | DOWN-04 | Native optional mutation interface is absent | Capability cannot qualify; reject with `capability_not_qualified` and no synthesized success |
-| DOWN-05 | Deadline expires before dispatch | `failed_no_contact` only when native owner proves `not_sent` and no possible side effect |
+| DOWN-05 | Deadline expires before route admission or native dispatch | `rejected` with exact `deadline_expired`; no route, dispatch, acknowledgement, readback, or native I/O |
+| DOWN-05A | Route and execution lease were admitted, but the native dispatch attempt proves `not_sent` and `possible_side_effect=false` | `failed_no_contact` with the dispatch and outcome evidence; no acknowledgement or readback is invented |
 | DOWN-06 | Deadline expires after dispatch with no terminal proof | `indeterminate`; no fallback or automatic mutation retry |
 | DOWN-07 | Native ACK arrives without matching readback | `acknowledged_unverified`; projected state unchanged |
 | DOWN-08 | A later retrievable snapshot contains a newly revised observed candidate whose native path matches the admitted route and whose receipt is strictly after completed sent dispatch | A reproducibly eligible pack-confirmed readback may prove `applied`; facts update from readback evidence and the original execution stays immutable |

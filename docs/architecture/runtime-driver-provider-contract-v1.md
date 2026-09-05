@@ -49,21 +49,22 @@ and implemented by
 The exact active dependency candidate is docs-semantic
 [#3](https://github.com/Project-Helianthus/helianthus-docs-semantic/issues/3),
 PR [#5](https://github.com/Project-Helianthus/helianthus-docs-semantic/pull/5),
-full HEAD `cd3f30fba21bf1517984fcfb693ded6ffa5ae060`, specifically
-[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/cd3f30fba21bf1517984fcfb693ded6ffa5ae060/api/v1/kernel.md),
-[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/cd3f30fba21bf1517984fcfb693ded6ffa5ae060/api/v1/serialization.md),
-[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/cd3f30fba21bf1517984fcfb693ded6ffa5ae060/api/v1/acceptance.md),
+final corrected candidate HEAD `215d2a011d414996a5a188e8ab7e3c5111448b05`, specifically
+[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/kernel.md),
+[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/serialization.md),
+[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/acceptance.md),
 and
-[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/cd3f30fba21bf1517984fcfb693ded6ffa5ae060/api/v1/acceptance-vectors.json).
-That PR is a review candidate, not accepted current product. This gateway
-contract depends on those exact records being independently accepted and merged,
-or on a reviewed successor whose compatibility with every consumed name and
-invariant below is recorded before this contract merges.
+[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/acceptance-vectors.json).
+That corrected PR is a review candidate awaiting fresh independent review, not
+accepted current product. This gateway contract depends on those exact records
+being independently accepted and merged, or on a reviewed successor whose
+compatibility with every consumed name and invariant below is recorded before
+this contract merges.
 
 | Semantic package | Candidate types consumed here |
 |---|---|
-| `semreg/v1` | `ContractVersion`, `DefinitionRef`, `SourceID`, `SourceEpochID`, `NativeBindingID`, `ClockEpochID`, `RevisionVector`, `NativeBinding`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `EvidenceRef`, `Digest`, `GenerationFence`, `PublicationBatch`, `Snapshot` |
-| `semreg/v1/operation` | `Intent`, `CapabilityRequirement`, `Precondition`, `Route`, `DispatchEvidence`, `Acknowledgement`, `Readback`, `ExecutionRecord`, `CausalContext` |
+| `semreg/v1` | `ContractVersion`, `PackRef`, `DefinitionRef`, `DefinitionIndex`, `PredicateOp`, `ErrorID`, `SourceID`, `SourceEpochID`, `NativeBindingID`, `ClockEpochID`, `SnapshotID`, `RevisionVector`, `NativeBinding`, `SourcePathRef`, `DerivationInput`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `EvidenceRef`, `Digest`, `GenerationFence`, `PublicationBatch`, `Snapshot`, `EvaluationContext`, `EvaluatedFact`, `EvaluationView`, `PackValidator` |
+| `semreg/v1/operation` | `Intent`, `CapabilityRequirement`, `Precondition`, `ExpectedEffect`, `OperationPackValidator`, `Route`, `DispatchEvidence`, `Acknowledgement`, `Readback`, `ExecutionRecord`, `CausalContext` |
 | `semreg/v1/projection` | versioned target manifest, projection result, and loss report |
 
 The dependency must preserve these distinct identities:
@@ -79,6 +80,13 @@ The dependency must preserve these distinct identities:
 No counter substitutes for another. Presentation selection, projection choice,
 public alias, and compatibility identity never choose a native route.
 
+The accepted dependency must preserve `Precondition.CandidateID` and
+`CandidateRevision`, `Intent.ExpectedEffect`, `OperationPackValidator`,
+mandatory `GenerationFence` supersession of every older unfenced generation,
+and `PackRef`/`DefinitionIndex` ownership for every service, capability,
+operation, and effect definition. Until the corrected candidate is reviewed and
+merged with those shapes intact, this dependency is not satisfied.
+
 ## 3. Ownership
 
 | Owner | Required responsibility |
@@ -86,7 +94,7 @@ public alias, and compatibility identity never choose a native route.
 | Gateway runtime control | Driver catalog, desired-state persistence, lifecycle serialization, revision/idempotency decisions, per-driver isolation, admission coordination, composition, and public lifecycle projection |
 | Native driver/adapter | Native endpoint identity, connection and protocol lifecycle, discovery, qualification, decode, raw evidence, request construction, native retry/reconnect, native authorization, ACK/readback interpretation, and resource close proof |
 | Semantic kernel and packs | Protocol-neutral identities, facts, services, capabilities, operation intents/outcomes, provenance, validation, conflict, and projection-loss types |
-| Native-to-semantic binding | Exact profile/version mapping from qualified native evidence to semantic facts/capabilities and from a semantic operation to one typed native operation |
+| Native-to-semantic binding | Exact profile/version and unique `PackRef`/`DefinitionIndex` mapping from qualified native evidence to semantic facts/capabilities and from a semantic operation and typed `ExpectedEffect` to one typed native operation and pack-evaluated readback predicate |
 | Public output/consumer | Target projection and compatibility behavior; never upstream qualification or native route selection |
 
 Common lifecycle code must not switch on protocol, vendor, model, register,
@@ -109,7 +117,22 @@ type DriverRevision uint64    // revision of one persistent desired record
 type CatalogRevision uint64   // revision-consistent list view
 type DriverGeneration uint64  // starts at 1 inside one SourceEpochID
 type LifecycleOperationID string
+type LifecycleSequence uint64  // monotonic per DriverID, starts at 1
 type IdempotencyKey string
+
+type LifecycleOperationKind string
+const (
+    LifecycleStart   LifecycleOperationKind = "START"
+    LifecycleStop    LifecycleOperationKind = "STOP"
+    LifecycleRestart LifecycleOperationKind = "RESTART"
+)
+
+type LifecycleOperationState string
+const (
+    OperationPending   LifecycleOperationState = "PENDING"
+    OperationActive    LifecycleOperationState = "ACTIVE"
+    OperationCompleted LifecycleOperationState = "COMPLETED"
+)
 
 type ReasonCode string
 const (
@@ -200,6 +223,21 @@ type DesiredRecord struct {
     UpdatedAtUTC   time.Time
 }
 
+type LifecycleOperationRecord struct {
+    OperationID     LifecycleOperationID
+    DriverID        DriverID
+    Sequence        LifecycleSequence
+    Kind            LifecycleOperationKind
+    State           LifecycleOperationState
+    ExpectedRevision DriverRevision
+    DesiredRevision DriverRevision
+    RequestDigest   string
+    AcceptedAtUTC   time.Time
+    StartedAtUTC    *time.Time
+    CompletedAtUTC  *time.Time
+    TerminalReason  *Reason
+}
+
 type ObservedRecord struct {
     State                 ObservedState
     Reason                Reason
@@ -259,6 +297,28 @@ type ControlService interface {
 }
 ```
 
+`ControlErrorCode` is confined to gateway lifecycle transport and persistence.
+It does not rename a semantic rejection. Semantic validation, publication,
+evaluation, admission, execution-record, and projection operations return the
+kernel's `ErrorID` unchanged. The exhaustive v1 set is:
+`invalid_json`, `invalid_contract`, `missing_member`, `invalid_identifier`,
+`invalid_decimal`, `invalid_value`, `invalid_enum`, `bounds_exceeded`,
+`invalid_time`, `incomparable_clock_epoch`, `invalid_evidence`,
+`noncanonical_order`, `digest_mismatch`, `dangling_reference`,
+`derivation_cycle`, `identity_not_qualified`, `revision_conflict`,
+`sequence_conflict`, `stale_source_epoch`, `stale_driver_generation`,
+`capability_not_qualified`, `capability_unavailable`, `ambiguous_route`,
+`deadline_expired`, `precondition_failed`, `authority_missing`,
+`route_selection_forbidden`, `causal_budget_exceeded`, `echo_suppressed`,
+`retry_forbidden`, `projection_incomplete`, `alias_not_routable`,
+`invalid_outcome`, `duplicate_key`, `unknown_member`,
+`generation_transition_incomplete`, `definition_owner_conflict`, and
+`definition_owner_missing`. The gateway applies
+the exact eight-level precedence in the pinned semantic serialization contract
+when more than one rejection applies. It never mints a 39th semantic error,
+maps zero routes to an invented `NO_ROUTE`, or changes a semantic error into an
+uppercase lifecycle error.
+
 `DriverID` is stable across process restart and gateway rename. It is not a bus
 address, semantic asset ID, native binding ID, or public compatibility alias.
 IDs are canonical non-empty UTF-8 strings matching
@@ -288,11 +348,14 @@ For every mutation, the control service performs one atomic transaction:
    `IDEMPOTENCY_CONFLICT` without state change.
 4. Compare `ExpectedRevision` with the current persistent driver revision. A
    mismatch returns `REVISION_CONFLICT` with the current view.
-5. Resolve `ACCEPTED` or `NO_OP`. For `ACCEPTED`, commit the desired record,
-   non-empty lifecycle operation ID, request hash, and receipt together, then
-   wake the asynchronous reconciler. For `NO_OP`, persist only the request hash
-   and receipt against the unchanged desired record; its operation ID is empty
-   and no reconciler wakeup is required.
+5. Resolve `ACCEPTED` or `NO_OP`. For `ACCEPTED`, allocate the next per-driver
+   lifecycle sequence and commit the desired record, typed `PENDING`
+   `LifecycleOperationRecord`, request hash, and receipt together, then wake the
+   asynchronous reconciler. The operation record stores the exact `START`,
+   `STOP`, or `RESTART` kind; a digest is never decoded to recover it. For
+   `NO_OP`, persist only the request hash and receipt against the unchanged
+   desired record; its operation ID is empty and no operation record or
+   reconciler wakeup is required.
 
 The idempotency ledger survives process restart and remains at least as long as
 the desired-state schema's rollback window. Expiry cannot occur while the
@@ -307,12 +370,26 @@ Operation semantics are:
   `NO_OP`. A no-op does not assert that an unconfirmed native close succeeded;
   the observed view retains failure/quarantine.
 - `restart`: require desired state `RUNNING`, increment its revision, record a
-  new operation, fence the current generation, and reconcile a replacement. A
-  stopped driver returns `FAILED_PRECONDITION`.
+  new operation that makes the reconciler fence the current generation and
+  construct a replacement. A stopped driver returns `FAILED_PRECONDITION`.
 
 For accepted changes, the driver revision and catalog revision increment once.
-An idempotent replay and a no-op do not increment either revision. Two accepted
-operations for one driver are serialized in persistent operation order.
+An idempotent replay and a no-op do not increment either revision. The
+reconciler reads the lowest nonterminal lifecycle sequence for a driver and
+executes the stored kind and desired revision; it never infers an action from
+the final desired record or opaque digest. It does not coalesce accepted
+records, including `RESTART`, and it cannot begin the next sequence until the
+current record reaches `COMPLETED` with a terminal reason.
+
+The transition from `PENDING` to `ACTIVE` is durable. Successful or terminally
+failed reconciliation commits the operation's completion, terminal reason, and
+observed transition in one transaction. On process restart, any nonterminal
+record is requeued in sequence. An `ACTIVE` record belongs to the old source
+epoch and resumes as pending work under the new epoch; old callbacks and
+observations remain fenced. Replaying a `RESTART` with no surviving native
+generation starts exactly one new generation under the new epoch and completes
+that restart record; it is never lost merely because the final desired state is
+already `RUNNING`.
 
 At process start the HTTP/API/health shell becomes available before drivers are
 reconciled. The store loads every desired record independently. Corrupt or
@@ -322,8 +399,10 @@ it does not prevent other drivers or the control service from starting.
 Every configured source instance creates a new `SourceEpochID` on process start.
 No admission, callback, observation, capability, route, or close proof from an
 earlier source epoch is current. The reconciler starts or leaves stopped each
-driver from persistent desired state and records new observations. Persisted
-observed state is historical diagnostic evidence, never startup authority.
+driver from the ordered nonterminal operation journal first, then reconciles
+the latest persistent desired state when the journal is empty, and records new
+observations. Persisted observed state is historical diagnostic evidence, never
+startup authority.
 
 ## 6. Provider SPI
 
@@ -375,15 +454,20 @@ type CloseProof struct {
 
 type ProviderFactory interface {
     Descriptor() ProviderDescriptor
-    Start(context.Context, StartContext) (Generation, error)
+    Prepare(context.Context, StartContext) (PreparedGeneration, error)
 }
 
 type ReplacementFactory interface {
-    Replace(context.Context, StartContext, Generation) (Generation, error)
+    PrepareReplacement(context.Context, StartContext, Generation) (PreparedGeneration, error)
+}
+
+type PreparedGeneration interface {
+    Key() GenerationKey
+    Activate(context.Context) (Generation, ActivationProof, error)
+    Abort(context.Context) (CloseProof, error)
 }
 
 type Generation interface {
-    Activation(context.Context) (ActivationProof, error)
     Admit(context.Context, AdmissionRequest) (ExecutionLease, error)
     FenceWithdrawal(GenerationKey) FenceProof
     Stop(context.Context, FenceProof) (CloseProof, error)
@@ -451,9 +535,20 @@ generation key. Construction completion and every asynchronous health callback
 must carry the correlation supplied by the manager. A callback for a superseded
 operation is rejected even if its native code reports a plausible generation.
 
+`Prepare` allocates native state while the manager-owned admission record for
+the reserved key is closed. It must not activate I/O, publish capabilities, or
+expose a `Generation`. `PreparedGeneration.Activate` runs behind that closed
+gate, performs the native owner's activation, and returns both the activated
+`Generation` and its proof. The manager is the only caller allowed to open the
+gate, and does so only after validating the proof. `Abort` closes a prepared or
+activated-but-unpublished result on an independent bounded cleanup context.
+Adapters may implement this split as a thin wrapper: for example, an existing
+native `Start` that both constructs and activates runs inside `Activate`, while
+the gateway admission record remains closed.
+
 `ReplacementFactory` is optional. If absent, `restart` fences and proves close
-of the old generation before calling `Start` for the new generation. If close is
-unconfirmed, replacement is prohibited and the driver is quarantined for the
+of the old generation before calling `Prepare` for the new generation. If close
+is unconfirmed, replacement is prohibited and the driver is quarantined for the
 current process epoch.
 
 The gateway manager may retain its bounded lifecycle construction retry policy.
@@ -468,13 +563,18 @@ operation context.
 ### Start and activation
 
 1. Reserve the next non-zero `DriverGeneration` inside the current source epoch.
-2. Construct the native generation outside the manager state lock.
-3. Obtain and validate `ActivationProof`: exact source epoch, driver generation,
-   native binding, profile/version, and close owner.
-4. Install the admission gate closed, then activate the native generation.
-5. In one externally consistent transition, open admission, publish observed
+2. Install the manager admission record closed for that exact generation key.
+3. Call `Prepare` outside the manager state lock. It returns only a
+   `PreparedGeneration`; no native I/O or capability may yet be public.
+4. If the lifecycle operation is still current, call
+   `PreparedGeneration.Activate` outside the lock while admission remains
+   closed. It returns the activated `Generation` and `ActivationProof`.
+5. Validate the proof's exact source epoch, driver generation, native binding,
+   profile/version, and close owner. A mismatch fails closed and calls `Abort`.
+6. In one externally consistent transition, install the activated generation,
+   open admission, publish observed
    `RUNNING`, and publish qualified available capability instances.
-6. Bind asynchronous health and publication callbacks to the exact generation
+7. Bind asynchronous health and publication callbacks to the exact generation
    key.
 
 A capability cannot be externally available before native activation and live
@@ -498,9 +598,11 @@ admission both succeed. Static catalog entries may remain `candidate`,
    ownership transfer.
 
 Withdrawal hooks are bounded, non-blocking, and must not re-enter the manager.
-Drain and I/O occur outside a manager lock. A generation admitted after its
-start operation was superseded is fenced immediately and retired with an
-independent bounded cleanup deadline; it never becomes effective.
+Drain and I/O occur outside a manager lock. A prepared or activated generation
+whose start operation was superseded is never installed or admitted; the
+manager calls `Abort`, or fences and stops an already activated result, on an
+independent bounded cleanup deadline. It never becomes effective, and an
+unconfirmed close quarantines the driver for the source epoch.
 
 ## 8. Upward flow
 
@@ -530,27 +632,64 @@ Publication rules:
 
 - sequence starts at 1 for each generation and increases by exactly one;
 - replay of the same `(generation key, sequence, digest)` is a no-op;
-- reuse of `(generation key, sequence)` with another digest is a source conflict, rejects
-  the batch, withdraws effective capability, and degrades the driver;
+- reuse of `(generation key, sequence)` with another digest returns
+  `sequence_conflict` and rejects that batch without semantic mutation; the
+  gateway then closes admission and initiates a separate atomic fenced
+  withdrawal/degrade transition;
 - a sequence gap rejects later deltas until the adapter supplies a complete
   resynchronization batch;
 - batches from another source epoch, withdrawn generation, or future generation
   are rejected without mutating semantic state;
+- the first accepted publication for a higher driver generation must contain a
+  `GenerationFence` for every older unfenced generation; the same atomic
+  snapshot withdraws old bindings, identities, facts, services, capabilities,
+  and derived closure and invalidates guarded callbacks, while omission returns
+  `generation_transition_incomplete` without state change;
 - publication is atomic: facts, services, capabilities, withdrawals, conflicts,
   and the resulting revision vector become visible together; and
 - a partial read updates only evidenced fields. Retained fields keep their own
   provenance and age under their own freshness rules.
+
+An observed fact has one exact `SourcePathRef`. An inferred fact supplies
+`DerivationInput` records that bind every input candidate revision and the
+sorted union of all transitive source paths. The inferred candidate omits the
+single-path binding, source-epoch, and driver-generation fields rather than
+inventing a synthetic native binding. Before accepting a batch, semreg computes
+the transitive inferred closure affected by an input withdrawal, source
+retirement, generation fence, binding invalidation, or dependency revision
+change. The affected derived candidates and dependents withdraw atomically in
+the same snapshot and semantic revision change. The gateway cannot postpone
+that invalidation or repair it through a later publication.
+
+Passage of time does not publish or mutate semantic state. For reads and for
+operation admission, the gateway calls the kernel's pure
+`EvaluateSnapshot(snapshot, EvaluationContext)` with an explicit trusted wall
+estimate and monotonic point. The resulting
+`helianthus.semantic.evaluation/v1` `EvaluationView` has its own digest while
+the source snapshot bytes, `SnapshotID`, revision vector, candidates, and
+stored quality remain unchanged. Immediately before precondition checks and
+route selection, admission evaluates the admitted immutable snapshot again.
+Only `fresh` facts with effective availability `available` may satisfy a fact
+precondition. `Precondition.Fact`, `CandidateID`, and `CandidateRevision` bind
+one exact candidate, which must be qualified, promoted, validity `good`, and
+absent from every open conflict. The exact fact pack's
+`PackValidator.EvaluatePredicate` evaluates the typed `PredicateOp` and value;
+the kernel never searches another same-key candidate or presentation selection.
+Candidate, unpromoted, suspect/bad/unknown, stale, expired, conflicted,
+degraded, unavailable, missing, or revision-changed evidence returns
+`precondition_failed` before dispatch.
 
 Identity conflict is public conflict. Similar addresses, values, model strings,
 or topology positions cannot merge assets. Selection may choose a presentation
 candidate; it never removes alternatives or grants operation authority.
 
 Projection consumes one revision-consistent snapshot and a versioned target
-manifest. Every requested fact, relationship, capability, and operation receives
-the semantic contract's explicit `exact`, `transformed`, `withheld`,
-`unrepresentable`, `unsupported`, or `unknown` disposition, including structured
-loss where required. A projected or reflected value is still an observation and
-cannot create a fresh command.
+manifest. Every requested `(kind,item_id)` tuple receives exactly one disposition
+with the identical tuple and one of the semantic contract's `exact`,
+`transformed`, `withheld`, `unrepresentable`, `unsupported`, or `unknown`
+outcomes, including structured loss where required. Equal item IDs under two
+kinds are independent requests and require two dispositions. A projected or
+reflected value is still an observation and cannot create a fresh command.
 
 ## 9. Downward flow and outcome truth
 
@@ -570,13 +709,26 @@ typed intent
   -> execution record and public state
 ```
 
-Resolution returns exactly one semreg `Route`. Zero routes returns
-`NO_ROUTE`; more than one returns `AMBIGUOUS_ROUTE`. There is no priority-based
-silent selection. A cached route is a hint only; admission rechecks current
-authority, capability, binding, epoch, generation, preconditions, and deadline.
+Resolution returns exactly one semreg `Route`. Zero or more than one otherwise
+eligible route returns `ambiguous_route`; zero may return the more specific
+`capability_not_qualified` or `capability_unavailable` only when that cause is
+unique. There is no priority-based silent selection. A cached route is a hint
+only; admission rechecks current authority, capability, binding, epoch,
+generation, snapshot and object revisions, freshly evaluated preconditions,
+causal budget, and deadline.
 The accepted route must name the capability instance, service instance, native
 binding, source, source epoch, and driver generation. Gateway-only endpoint and
 typed native-operation details remain behind that exact binding.
+
+Every service, capability, operation, and expected-effect definition carries a
+`DefinitionRef` with an exact `PackRef`. The kernel's prebuilt
+`DefinitionIndex` establishes one owner by definition kind, ID, and version;
+`CapabilityRequirement.Pack` and `Intent.Kind.Pack` dispatch directly to that
+owner. Common gateway code never infers ownership from an ID prefix, probes
+validators in registration order, or consults a private definition map. A
+missing mapping or operation hook returns `definition_owner_missing`; a
+duplicate or mismatched owner returns `definition_owner_conflict`, before route
+admission.
 
 Before dispatch, cancellation, deadline, stale revision, withdrawal, missing
 native operation interface, failed authority, or failed precondition returns a
@@ -602,6 +754,26 @@ current-generation readback may append a linked reconciliation record proving
 `applied`, `no_effect`, or `conflict`; it does not rewrite the original immutable
 execution record or create a second native execution.
 
+A confirming semantic `Readback` is created only from a later retrievable
+immutable snapshot whose semantic revision is greater than the admitted
+revision. It names the exact `SnapshotID`, `RevisionVector`, observed
+`CandidateID` and `CandidateRevision`, `NativeBindingID`, `SourceID`,
+`SourceEpochID`, and driver generation. That candidate's complete path must
+resolve in the named snapshot and equal the admitted `Route`. A missing or
+revision-mismatched snapshot/candidate is `dangling_reference`; a retired epoch
+is `stale_source_epoch`; a mismatched or fenced generation is
+`stale_driver_generation`; and a different binding/source or inferred candidate
+is `invalid_outcome`. None can prove `applied`.
+
+Matching the admitted native path is necessary but insufficient.
+`Intent.ExpectedEffect` carries the exact pack-owned rule, fact,
+`PredicateOp`, and expected value. The operation owner's
+`OperationPackValidator.ValidateIntent` derives those fields and requires an
+exact match before admission. For outcome evaluation, its `EvaluateReadback`
+receives the unchanged admitted intent and exact resolved observed candidate;
+the serialized relation must equal the computed relation. An unrelated
+same-route observation returns `invalid_outcome` and cannot support `applied`.
+
 Native retry is allowed only when the exact native operation contract proves it
 safe and keeps all attempts inside the original route, generation, authority,
 idempotency identity, deadline, and retry quota. A mutation with indeterminate
@@ -611,10 +783,10 @@ separate from operation retry.
 ## 10. Causal loop and echo suppression
 
 Every intent and resulting observation/projection carries semreg
-`CausalContext`. Each output binding preserves origin, correlation ID, parent
-execution ID, and hop count.
+`CausalContext`. Each output binding preserves origin ID, correlation ID,
+optional parent correlation ID, and hop count.
 
-The accepted semantic context names `Origin`, `CorrelationID`, optional
+The accepted semantic context names `OriginID`, `CorrelationID`, optional
 `ParentCorrelationID`, `HopCount`, `MaxHops`, `FirstSeenAt`, `ExpiresAt`, and
 the traversed target `Path`. Output bindings append their stable target ID to
 `Path`; they do not replace the original correlation.
@@ -634,7 +806,7 @@ The v1 bounds are:
 An output rejects an intent when its causal ancestry already includes that
 output binding and operation definition inside the echo window, or when the
 same correlation/operation was already admitted. Rejection is recorded as
-`CAUSAL_ECHO_SUPPRESSED` with no I/O.
+`echo_suppressed` with no I/O.
 
 A separate, explicitly authorized intent with a new intent ID and causal
 correlation remains eligible even when its value equals a recent output. Value
@@ -779,7 +951,10 @@ owning issue. The expected result is normative.
 | CTL-05 | Reuse an idempotency key with another request hash | `IDEMPOTENCY_CONFLICT`; no state change |
 | CTL-06 | Start an already desired-running driver | `NO_OP`; no backoff reset, replacement, or revision bump |
 | CTL-07 | Restart a desired-stopped driver | `FAILED_PRECONDITION`; no state change |
-| LIFE-01 | Native start and activation succeed | Admission, `RUNNING`, and qualified capabilities become visible together for the new generation key |
+| CTL-08 | Accepted start, restart, and stop calls queue before the reconciler consumes its wake | Three typed records retain exact kinds and consecutive per-driver sequences; reconciliation executes them in order without coalescing |
+| CTL-09 | Process exits after a restart record becomes `ACTIVE` but before terminal completion | The new source epoch requeues that exact nonterminal restart in order and starts one new generation; final `RUNNING` desired state does not erase it |
+| CTL-10 | Idempotent replay of an accepted queued operation | Original receipt and operation sequence return; no duplicate journal record, revision bump, or native action |
+| LIFE-01 | Prepare returns behind a closed gate, then activation succeeds with a matching proof | Only the post-proof manager transition installs the generation and exposes admission, `RUNNING`, and qualified capabilities together |
 | LIFE-02 | One driver startup fails | That driver becomes `BACKOFF`/`FAILED`; API/health and unrelated drivers remain available |
 | LIFE-03 | Stop drains and native close is proven | Capabilities withdraw before further admission; final state `STOPPED` |
 | LIFE-04 | Stop deadline expires without close proof | `FAILED/CLOSE_UNCONFIRMED`, source-epoch quarantine, no replacement |
@@ -787,22 +962,35 @@ owning issue. The expected result is normative.
 | LIFE-06 | Gateway restarts with desired running and historical observed running | New source epoch reconciles a new generation; historical observation grants no admission |
 | LIFE-07 | Canceled start returns a provider late | Provider is never published, is fenced and retired on an independent deadline; unproven close quarantines |
 | LIFE-08 | Callback arrives from prior epoch/generation or superseded lifecycle operation | Rejected with no semantic or observed-state mutation |
+| LIFE-09 | Prepare or activation completes after its lifecycle operation was superseded | Result is never installed or admitted; `Abort`, or fence plus stop, runs on an independent cleanup deadline |
+| LIFE-10 | Activation returns a proof for another binding, epoch, or generation | Fail closed; no capability or `RUNNING` publication, and cleanup/quarantine follows close proof |
+| LIFE-11 | Generation 8 publishes while generation 7 remains current but omits generation 7's `GenerationFence` | `generation_transition_incomplete`; reject the complete batch with no state change, and generation 8 does not become current or actionable |
+| LIFE-12 | Generation 8 atomically supersedes generation 7 | The same new snapshot fences and withdraws generation 7, invalidates its callback, removes its derived closure, and exposes only qualified generation-8 capabilities |
 | UP-01 | Partial observation fails for one field | Only evidenced fields update; other candidates retain provenance and age normally |
 | UP-02 | Same publication sequence and digest repeats | No-op with no semantic revision bump |
-| UP-03 | Same sequence repeats with another digest | Reject, withdraw effective capability, and degrade source |
+| UP-03 | Same sequence repeats with another digest | Reject that batch with `sequence_conflict` and no semantic mutation; then close admission and publish a separate atomic fenced withdrawal/degrade transition |
 | UP-04 | Publication sequence has a gap | Reject deltas until complete resynchronization |
 | UP-05 | Similar native identities compete for one asset | Public identity conflict; no silent merge or route |
 | UP-06 | Catalog knows an operation but device evidence does not qualify it | Candidate/unknown/unsupported as justified; no available capability |
+| UP-07 | An immutable snapshot is evaluated before, at, and after one fact's fresh/stale/expired thresholds without publication | Evaluation views change deterministically while snapshot bytes, ID, revisions, candidates, and stored quality remain unchanged |
+| UP-08 | An inferred fact depends on two exact source paths and one source is fenced | The inferred fact and its transitive dependents withdraw in the same accepted snapshot/revision change; no synthetic binding or later cleanup |
+| PROJ-01 | One manifest requests the same item ID as both capability and operation | Two independent `(kind,item_id)` dispositions are required; missing, duplicate, or mismatched tuples return `projection_incomplete` |
 | DOWN-01 | Exactly one current route passes authority, capability, preconditions, and deadline | One live lease and one native dispatch path |
-| DOWN-02 | Zero or two current routes match | `NO_ROUTE` or `AMBIGUOUS_ROUTE`; no I/O |
+| DOWN-02 | Zero or two current routes match after otherwise successful filtering | `ambiguous_route`, or one uniquely applicable qualification/availability error for zero routes; no I/O |
 | DOWN-03 | Route was resolved before generation withdrawal | Admission recheck rejects the stale generation key; no I/O |
-| DOWN-04 | Native optional mutation interface is absent | `rejected/unsupported_operation`; no synthesized success |
+| DOWN-04 | Native optional mutation interface is absent | Capability cannot qualify; reject with `capability_not_qualified` and no synthesized success |
 | DOWN-05 | Deadline expires before dispatch | `failed_no_contact` only when native owner proves `not_sent` and no possible side effect |
 | DOWN-06 | Deadline expires after dispatch with no terminal proof | `indeterminate`; no fallback or automatic mutation retry |
 | DOWN-07 | Native ACK arrives without matching readback | `acknowledged_unverified`; projected state unchanged |
-| DOWN-08 | Current-generation readback satisfies success predicate | A linked reconciliation record proves `applied`; facts update from readback evidence and the original execution stays immutable |
+| DOWN-08 | A later retrievable snapshot contains the exact observed candidate revision and native path matching the admitted route | A linked reconciliation record may prove `applied`; facts update from readback evidence and the original execution stays immutable |
 | DOWN-09 | Native NACK plus current evidence proves no effect | `no_effect`; no success projection |
-| LOOP-01 | Matter/eeBUS output returns through another output with the same ancestry | `CAUSAL_ECHO_SUPPRESSED`; no I/O |
+| DOWN-10 | Readback names a missing snapshot/candidate, stale epoch/generation, different binding/source, or inferred candidate | Exact semantic `dangling_reference`, `stale_source_epoch`, `stale_driver_generation`, or `invalid_outcome`; never `applied` |
+| DOWN-11 | A fact was fresh in the admitted snapshot but is stale at the immediate pre-dispatch evaluation context | `precondition_failed`; no route admission or native I/O, and the immutable snapshot is unchanged |
+| DOWN-12 | `Precondition.CandidateID` names a fresh/available unqualified candidate, or a different same-key candidate is eligible | `precondition_failed`; no fallback candidate, presentation selection, or native I/O |
+| DOWN-13 | A later observed candidate matches the admitted route but not `Intent.ExpectedEffect.Fact` or its pack-evaluated predicate | `OperationPackValidator.EvaluateReadback` returns `invalid_outcome`; `applied` is forbidden |
+| DOWN-14 | Multiple packs are registered and a definition has missing or duplicate `DefinitionIndex` ownership | `definition_owner_missing` or `definition_owner_conflict`; no prefix inference, registration-order probing, route, or I/O |
+| ERR-01 | One semantic record violates several validation classes | Return the first of the pinned contract's exhaustive 38 IDs by its eight-level precedence; no state mutation or gateway-specific remapping |
+| LOOP-01 | Matter/eeBUS output returns through another output with the same ancestry | `echo_suppressed`; no I/O |
 | LOOP-02 | Hop count exceeds 8 or echo context expires | Observation may publish; derived intent is rejected |
 | LOOP-03 | Independent authorized intent requests the same value | It remains eligible with its own correlation, subject to ordinary checks |
 | MIG-01 | Old and semreg paths run on the same fixture | Comparator covers value, exact unit, dimensions, quality, time, provenance, identity, availability, and loss |

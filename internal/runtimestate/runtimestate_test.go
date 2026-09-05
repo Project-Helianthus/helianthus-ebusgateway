@@ -10,8 +10,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -142,6 +144,93 @@ func TestLoad_PluginSchemaVersionMismatch_IgnoresNamespace(t *testing.T) {
 	}
 	if got.EBus != nil {
 		t.Errorf("ebus.* with mismatched schema_version should be dropped; got non-nil EBus")
+	}
+}
+
+// Issue #936: a future plugin namespace is opaque gateway state. Loading an
+// unsupported known ebus version must not discard that independent namespace,
+// and every gateway-owned persistence trigger must carry it forward.
+func TestLoad_UnsupportedEBusVersionWarnsOnceAndPreservesOpaqueNamespaces(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+	fixture := `{
+  "schema_version": 1,
+  "meta": {"instance_guid": "8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b", "written_at": "2026-05-10T19:42:11Z"},
+  "ebus": {"schema_version": 99, "future_cache": ["must-not-load"]},
+  "gree": {"schema_version": 7, "opaque": {"vendor": "future", "values": [3, 1, 4]}}
+}`
+	if err := os.WriteFile(path, []byte(fixture), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var logs bytes.Buffer
+	mgr := New(Options{Path: path, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	loaded, err := mgr.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.EBus != nil {
+		t.Fatal("unsupported ebus namespace must not enter current in-memory state")
+	}
+	line := logs.String()
+	if strings.Count(line, "ignored unsupported namespace schema version") != 1 ||
+		!strings.Contains(line, "namespace=ebus") ||
+		!strings.Contains(line, "observed_version=99") ||
+		!strings.Contains(line, "expected_version=1") {
+		t.Fatalf("want exactly one structured ebus-version warning, got %q", line)
+	}
+
+	assertOpaqueGree := func(trigger string) {
+		t.Helper()
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s read: %v", trigger, err)
+		}
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(body, &root); err != nil {
+			t.Fatalf("%s parse: %v", trigger, err)
+		}
+		var got, want any
+		if err := json.Unmarshal(root["gree"], &got); err != nil {
+			t.Fatalf("%s gree parse: %v", trigger, err)
+		}
+		if err := json.Unmarshal([]byte(`{"schema_version":7,"opaque":{"vendor":"future","values":[3,1,4]}}`), &want); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s changed opaque gree namespace: got %#v want %#v", trigger, got, want)
+		}
+	}
+
+	if err := mgr.EagerPersistInstanceGUID(context.Background(), "8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b", IdentitySourceRuntimeState); err != nil {
+		t.Fatalf("eager persist: %v", err)
+	}
+	assertOpaqueGree("eager")
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF1, SelectionMethod: SelectionMethodWarmup})
+	if err := mgr.Flush(context.Background()); err != nil {
+		t.Fatalf("periodic flush: %v", err)
+	}
+	assertOpaqueGree("periodic")
+	mgr.UpdateSelf(Self{LastAdmittedSource: 0xF2, SelectionMethod: SelectionMethodWarmup})
+	if err := mgr.Stop(context.Background()); err != nil {
+		t.Fatalf("shutdown flush: %v", err)
+	}
+	assertOpaqueGree("shutdown")
+}
+
+func TestLoad_DuplicateTopLevelKeyQuarantines(t *testing.T) {
+	dir := freshTempDir(t)
+	path := filepath.Join(dir, "runtime_state.json")
+	duplicate := `{"schema_version":1,"schema_version":1,"meta":{"instance_guid":"8a3f2b9e-4d7c-4f1a-9b5e-2c1f3e7a9d5b","written_at":"2026-05-10T19:42:11Z"}}`
+	if err := os.WriteFile(path, []byte(duplicate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := New(Options{Path: path})
+	state, err := mgr.Load(context.Background())
+	if err != nil || state.Meta.InstanceGUID != "" {
+		t.Fatalf("duplicate top-level keys must start empty, state=%+v err=%v", state, err)
+	}
+	if matches, _ := filepath.Glob(path + ".corrupt-*"); len(matches) != 1 {
+		t.Fatalf("duplicate top-level JSON must quarantine once, got %v", matches)
 	}
 }
 

@@ -6,6 +6,7 @@ package runtimestate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -68,6 +69,10 @@ type State struct {
 	SchemaVersion int
 	Meta          Meta
 	EBus          *EBusNamespace
+	// opaqueNamespaces carries independent future plugin namespaces loaded
+	// from disk. It is intentionally private: this gateway neither interprets
+	// nor permits callers to promote their fields into meta or ebus ownership.
+	opaqueNamespaces map[string]json.RawMessage
 }
 
 // Meta holds the meta namespace.
@@ -256,7 +261,7 @@ func (m *Manager) Load(ctx context.Context) (*State, error) {
 		return m.State(), nil
 	}
 
-	state, err := unmarshalState(data)
+	state, namespaceWarnings, err := unmarshalState(data)
 	if err != nil {
 		// Corrupt or schema mismatch: quarantine and start empty per AD11.
 		quarantine := fmt.Sprintf("%s.corrupt-%s", m.opts.Path, time.Now().UTC().Format("20060102T150405Z"))
@@ -267,6 +272,13 @@ func (m *Manager) Load(ctx context.Context) (*State, error) {
 		}
 		m.replaceState(&State{SchemaVersion: SchemaVersion})
 		return m.State(), nil
+	}
+	for _, warning := range namespaceWarnings {
+		m.opts.Logger.Warn("runtime_state: ignored unsupported namespace schema version",
+			"namespace", warning.namespace,
+			"observed_version", warning.observed,
+			"expected_version", warning.expected,
+		)
 	}
 
 	m.replaceState(state)
@@ -547,6 +559,12 @@ func cloneState(s *State) *State {
 		}
 		ebusCopy.KnownBusMembers = members
 		cp.EBus = &ebusCopy
+	}
+	if len(s.opaqueNamespaces) != 0 {
+		cp.opaqueNamespaces = make(map[string]json.RawMessage, len(s.opaqueNamespaces))
+		for name, raw := range s.opaqueNamespaces {
+			cp.opaqueNamespaces[name] = append(json.RawMessage(nil), raw...)
+		}
 	}
 	return &cp
 }

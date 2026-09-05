@@ -46,24 +46,23 @@ repository. This contract depends on the accepted revision of
 and implemented by
 [`Project-Helianthus/helianthus-semreg`](https://github.com/Project-Helianthus/helianthus-semreg).
 
-The exact active dependency candidate is docs-semantic
+The accepted dependency is docs-semantic
 [#3](https://github.com/Project-Helianthus/helianthus-docs-semantic/issues/3),
-PR [#5](https://github.com/Project-Helianthus/helianthus-docs-semantic/pull/5),
-final corrected candidate HEAD `215d2a011d414996a5a188e8ab7e3c5111448b05`, specifically
-[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/kernel.md),
-[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/serialization.md),
-[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/acceptance.md),
+merged PR [#5](https://github.com/Project-Helianthus/helianthus-docs-semantic/pull/5),
+remote-main commit `b16667d719defc7b0fef0400ee3ad387469018ac`, specifically
+[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/kernel.md),
+[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/serialization.md),
+[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance.md),
 and
-[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/215d2a011d414996a5a188e8ab7e3c5111448b05/api/v1/acceptance-vectors.json).
-That corrected PR is a review candidate awaiting fresh independent review, not
-accepted current product. This gateway contract depends on those exact records
-being independently accepted and merged, or on a reviewed successor whose
-compatibility with every consumed name and invariant below is recorded before
-this contract merges.
+[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance-vectors.json).
+That squash commit has contract content identical to independently accepted PR
+HEAD `395733fd19c1e5d92a9d1fbc0afb79bddd107a22`. The complete exact-HEAD Astra
+audit returned `NO_BLOCKING_FINDINGS`; issue #3 is closed. A future successor
+requires its own compatibility reconciliation before replacing this pin.
 
-| Semantic package | Candidate types consumed here |
+| Semantic package | Types consumed here |
 |---|---|
-| `semreg/v1` | `ContractVersion`, `PackRef`, `DefinitionRef`, `DefinitionIndex`, `PredicateOp`, `ErrorID`, `SourceID`, `SourceEpochID`, `NativeBindingID`, `ClockEpochID`, `SnapshotID`, `RevisionVector`, `NativeBinding`, `SourcePathRef`, `DerivationInput`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `EvidenceRef`, `Digest`, `GenerationFence`, `PublicationBatch`, `Snapshot`, `EvaluationContext`, `EvaluatedFact`, `EvaluationView`, `PackValidator` |
+| `semreg/v1` | `ContractVersion`, `SemanticVersion`, `PackRef`, `DefinitionRef`, `DefinitionIndex`, `PredicateOp`, `ErrorID`, `SourceID`, `SourceEpochID`, `SourceDescriptor`, `SourceState`, `NativeBindingID`, `NativeBinding`, `BindingState`, `OriginRef`, `ClockEpochID`, `SnapshotID`, `RevisionVector`, `FactKey`, `FactCandidate`, `FactEnvelope`, `SourcePathRef`, `DerivationInput`, `ServiceInstance`, `CapabilityInstance`, `CapabilityInstanceID`, `PolicyID`, `EvidenceRef`, `Digest`, `GenerationFence`, `PublicationBatch`, `Snapshot`, `EvaluationContext`, `EvaluatedFact`, `EvaluationView`, `Selection`, `SelectionPolicy`, `PackValidator` |
 | `semreg/v1/operation` | `Intent`, `CapabilityRequirement`, `Precondition`, `ExpectedEffect`, `OperationPackValidator`, `Route`, `DispatchEvidence`, `Acknowledgement`, `Readback`, `ExecutionRecord`, `CausalContext` |
 | `semreg/v1/projection` | versioned target manifest, projection result, and loss report |
 
@@ -80,12 +79,15 @@ The dependency must preserve these distinct identities:
 No counter substitutes for another. Presentation selection, projection choice,
 public alias, and compatibility identity never choose a native route.
 
-The accepted dependency must preserve `Precondition.CandidateID` and
+The dependency preserves `Precondition.CandidateID` and
 `CandidateRevision`, `Intent.ExpectedEffect`, `OperationPackValidator`,
 mandatory `GenerationFence` supersession of every older unfenced generation,
-and `PackRef`/`DefinitionIndex` ownership for every service, capability,
-operation, and effect definition. Until the corrected candidate is reviewed and
-merged with those shapes intact, this dependency is not satisfied.
+`DispatchEvidence.Started`/`Completed` and `Readback.Evaluation` as complete
+`EvaluationContext` records, the entered-receiver `CausalContext.Path` order,
+pure `SelectPresentation(Snapshot, EvaluationView, FactKey, PolicyID,
+SemanticVersion)` with fully snapshot/evaluation-bound `Selection`, explicit
+`SourceState`/`BindingState` tombstones, and `PackRef`/`DefinitionIndex`
+ownership for every service, capability, operation, and effect definition.
 
 ## 3. Ownership
 
@@ -284,6 +286,7 @@ const (
 
 type LifecycleReceipt struct {
     OperationID LifecycleOperationID
+    Sequence    *LifecycleSequence
     Disposition LifecycleDisposition
     Desired     DesiredRecord
 }
@@ -315,9 +318,19 @@ kernel's `ErrorID` unchanged. The exhaustive v1 set is:
 `generation_transition_incomplete`, `definition_owner_conflict`, and
 `definition_owner_missing`. The gateway applies
 the exact eight-level precedence in the pinned semantic serialization contract
-when more than one rejection applies. It never mints a 39th semantic error,
-maps zero routes to an invented `NO_ROUTE`, or changes a semantic error into an
-uppercase lifecycle error.
+when more than one rejection applies. Semantic validators select the one exact
+error for overlapping evidence shape, qualification, activation, and reference
+failures; gateway composition preserves that result instead of independently
+reclassifying it. It never mints a 39th semantic error, maps zero routes to an
+invented `NO_ROUTE`, or changes a semantic error into an uppercase lifecycle
+error.
+
+An `ACCEPTED` receipt has a non-empty `OperationID` and a non-nil `Sequence`
+containing the exact per-driver sequence allocated in the same transaction as
+its operation record. A `NO_OP` receipt has an empty operation ID and nil
+sequence. The persisted idempotency receipt uses the same representation, so an
+identical replay returns the original operation ID and sequence and never
+allocates another record.
 
 `DriverID` is stable across process restart and gateway rename. It is not a bus
 address, semantic asset ID, native binding ID, or public compatibility alias.
@@ -404,6 +417,21 @@ the latest persistent desired state when the journal is empty, and records new
 observations. Persisted observed state is historical diagnostic evidence, never
 startup authority.
 
+Creating the new source epoch also closes gateway admission for every older
+epoch of that `SourceID` before any new-epoch provider starts. For each persisted
+semantic asset previously published by that source, the first accepted
+new-epoch batch must upsert the new current `SourceDescriptor` and include in
+`SourceRetirements` every older non-retired epoch for the same source, regardless
+of either epoch's driver-generation number. The accepted semantic transaction
+atomically retires those descriptors and bindings, withdraws their identity,
+service, and capability records, and removes their observed candidates and
+derived closure before new-epoch records become current. An omitted older epoch,
+stale expected revision, or partial retirement rejects the whole first batch;
+the gateway refreshes the snapshot and rebuilds the complete retirement set
+rather than publishing new-epoch state separately. Until all known affected
+assets accept that transition, the driver cannot publish an available
+capability, enter observed `RUNNING`, or admit a route.
+
 ## 6. Provider SPI
 
 The public SPI adapts the existing eBUS `Runtime`/`Admit`, eeBUS runtime slot,
@@ -420,7 +448,7 @@ type ProviderDescriptor struct {
 type StartContext struct {
     Correlation LifecycleCorrelation
     Deadline    time.Time
-    Publish     PublicationSink
+    Publish     ActivationPublisher
     Report      HealthReporter
 }
 
@@ -509,6 +537,17 @@ type PublicationSink interface {
     Publish(context.Context, PublicationEnvelope) error
 }
 
+type ActivationPublisher interface {
+    Publish(context.Context, PublicationEnvelope) error
+}
+
+// Owned only by the manager; the provider receives Publisher(), not this control.
+type ActivationPublicationController interface {
+    Publisher() ActivationPublisher
+    Promote(context.Context, GenerationKey, ActivationProof) error
+    Abort(GenerationKey)
+}
+
 type HealthReporter interface {
     ReportDegraded(context.Context, LifecycleCorrelation, Reason, []semv1.CapabilityInstanceID) bool
     ReportFailure(context.Context, LifecycleCorrelation, Reason) bool
@@ -546,6 +585,28 @@ Adapters may implement this split as a thin wrapper: for example, an existing
 native `Start` that both constructs and activates runs inside `Activate`, while
 the gateway admission record remains closed.
 
+`StartContext.Publish` is never the live semantic sink during preparation or
+activation. The manager creates one `ActivationPublicationController` for the
+reserved generation and passes only its publisher view. In staging state that
+publisher accepts either no batch or one exact sequence-1 activation envelope
+for the reserved generation. An identical sequence-1 replay is a no-op. A
+different digest, another sequence, another generation, or a second distinct
+pre-promotion envelope poisons the staging buffer and makes activation fail
+closed. The buffer stores canonical immutable bytes and remains bounded to one
+kernel-valid publication batch; it cannot become a general retry queue.
+
+After activation proof validation and generation installation behind the closed
+admission gate, the manager alone calls `Promote`. Promotion serializes with
+publishers, commits the optional staged sequence-1 batch atomically to the live
+semantic sink, and switches the same publisher object to live forwarding before
+releasing waiting callbacks. A callback that publishes sequence 2 while
+promotion is in progress therefore waits at this publication boundary and
+cannot overtake or lose sequence 1. If no batch was staged, the first live
+publication must still be sequence 1. `Abort` permanently closes and discards
+an uncommitted staging buffer; after any committed activation publication, a
+failed manager transition must fence and withdraw it before the external
+visibility barrier is released.
+
 `ReplacementFactory` is optional. If absent, `restart` fences and proves close
 of the old generation before calling `Prepare` for the new generation. If close
 is unconfirmed, replacement is prohibited and the driver is quarantined for the
@@ -571,11 +632,15 @@ operation context.
    closed. It returns the activated `Generation` and `ActivationProof`.
 5. Validate the proof's exact source epoch, driver generation, native binding,
    profile/version, and close owner. A mismatch fails closed and calls `Abort`.
-6. In one externally consistent transition, install the activated generation,
-   open admission, publish observed
-   `RUNNING`, and publish qualified available capability instances.
-7. Bind asynchronous health and publication callbacks to the exact generation
-   key.
+6. Install the activated generation with admission still closed, then promote
+   its activation publisher. The optional staged sequence-1 batch commits before
+   any waiting later publication can forward.
+7. In one externally consistent transition, open admission and publish observed
+   `RUNNING`; any qualified available capability instances from the staged batch
+   become externally visible at this same gateway serialization boundary.
+8. Continue asynchronous health and publication callbacks through the same
+   exact generation correlation and now-live publisher; no callback may bypass
+   that object.
 
 A capability cannot be externally available before native activation and live
 admission both succeed. Static catalog entries may remain `candidate`,
@@ -640,6 +705,9 @@ Publication rules:
   resynchronization batch;
 - batches from another source epoch, withdrawn generation, or future generation
   are rejected without mutating semantic state;
+- the first accepted batch of a new source epoch carries the complete
+  `SourceRetirements` set for all older non-retired epochs of the same source;
+  generation counters are scoped to an epoch and never suppress this rule;
 - the first accepted publication for a higher driver generation must contain a
   `GenerationFence` for every older unfenced generation; the same atomic
   snapshot withdraws old bindings, identities, facts, services, capabilities,
@@ -661,6 +729,27 @@ change. The affected derived candidates and dependents withdraw atomically in
 the same snapshot and semantic revision change. The gateway cannot postpone
 that invalidation or repair it through a later publication.
 
+Candidate withdrawal, generation fencing, and derived cascade also apply the
+kernel's deterministic atomic `FactEnvelope` conflict transition. After all
+candidate and dependency changes, the kernel recomputes one canonical open
+value conflict from the complete qualified/promoted candidate set or emits no
+current conflict. The gateway cannot publish, resolve, or select this metadata,
+retain a removed candidate reference, or fabricate resolution evidence.
+Immutable prior snapshots preserve the earlier candidates and conflict as
+history. `Selection` is a pure result and is never stored in `Snapshot` or
+`FactEnvelope`; a result bound to an older snapshot/evaluation is simply not
+valid for the new snapshot and must be recomputed.
+
+The kernel distinguishes retained withdrawal/fence tombstones from actionable
+current paths. Source retirement retains a `SourceDescriptor` with
+`SourceState=retired` and a `NativeBinding` with `BindingState=retired`.
+Generation fencing retains the current source descriptor and a binding with
+`BindingState=fenced`. Withdrawn identity, service, and capability records
+remain resolvable through those bindings, while observed candidates and derived
+closure are removed. These records are historical and non-actionable: gateway
+route validation requires a current source descriptor, current binding, and
+unfenced exact generation and cannot use a tombstone or withdrawn record.
+
 Passage of time does not publish or mutate semantic state. For reads and for
 operation admission, the gateway calls the kernel's pure
 `EvaluateSnapshot(snapshot, EvaluationContext)` with an explicit trusted wall
@@ -680,8 +769,15 @@ degraded, unavailable, missing, or revision-changed evidence returns
 `precondition_failed` before dispatch.
 
 Identity conflict is public conflict. Similar addresses, values, model strings,
-or topology positions cannot merge assets. Selection may choose a presentation
-candidate; it never removes alternatives or grants operation authority.
+or topology positions cannot merge assets. Presentation selection calls the
+pure `SelectPresentation` operation with the complete immutable `Snapshot`,
+matching complete `EvaluationView`, one `FactKey`, and exact policy ID/version.
+The kernel verifies view digest, snapshot ID, complete revision vector, context,
+and every evaluated candidate ID/revision before invoking the one registered
+`SelectionPolicy`. Its `Selection` repeats that binding plus the requested key
+and chosen candidate revision. It is valid only for that snapshot/evaluation,
+never removes alternatives or conflicts, and grants no operation authority or
+route.
 
 Projection consumes one revision-consistent snapshot and a versioned target
 manifest. Every requested `(kind,item_id)` tuple receives exactly one disposition
@@ -774,6 +870,22 @@ receives the unchanged admitted intent and exact resolved observed candidate;
 the serialized relation must equal the computed relation. An unrelated
 same-route observation returns `invalid_outcome` and cannot support `applied`.
 
+The confirming observed candidate must be a new post-dispatch observation, not
+a pre-dispatch candidate retained unchanged in a later snapshot. Its native and
+receipt timing must prove that the exact new candidate revision was observed
+strictly after `DispatchEvidence.Completed`. `DispatchEvidence.Started` and its
+optional `Completed` are complete `EvaluationContext` records. With matching
+monotonic epochs, `FactCandidate.Times.ReceiptMonotonic` must be strictly greater
+than completion; across epochs, the earliest plausible UTC receipt must be
+greater than the latest plausible UTC completion. `Readback.Evaluation` is the
+complete wall-plus-monotonic context passed to `EvaluateSnapshot` and must be at
+or after receipt under the same comparison rules. An unchanged matching
+candidate, absent completion, equality or overlapping uncertainty,
+incomparable timing, or ineligible evaluation returns `invalid_outcome` and
+cannot support `applied`. A value satisfied before dispatch requires a separate
+explicit pack-owned preflight contract that skips native dispatch; v1 does not
+record it as `applied`.
+
 Native retry is allowed only when the exact native operation contract proves it
 safe and keeps all attempts inside the original route, generation, authority,
 idempotency identity, deadline, and retry quota. A mutation with indeterminate
@@ -783,13 +895,19 @@ separate from operation retry.
 ## 10. Causal loop and echo suppression
 
 Every intent and resulting observation/projection carries semreg
-`CausalContext`. Each output binding preserves origin ID, correlation ID,
+`CausalContext`. Each output binding preserves the `OriginRef`, correlation ID,
 optional parent correlation ID, and hop count.
 
-The accepted semantic context names `OriginID`, `CorrelationID`, optional
+The accepted semantic context names `Origin`, `CorrelationID`, optional
 `ParentCorrelationID`, `HopCount`, `MaxHops`, `FirstSeenAt`, `ExpiresAt`, and
-the traversed target `Path`. Output bindings append their stable target ID to
-`Path`; they do not replace the original correlation.
+the traversed target `Path`. `Path` records target processors that have accepted
+ingress, in entry order. A context created inside target A starts as `[A]` with
+hop count 1; an external context before its first target starts empty at zero.
+Egress leaves both fields unchanged. On ingress, receiver `R` atomically
+validates incoming count/path/expiry, rejects `echo_suppressed` if `R` is
+already present, rejects `causal_budget_exceeded` if adding `R` would exceed
+`MaxHops`, then appends `R` and increments `HopCount` before processing. A
+rejection does not mutate the context or replace the original correlation.
 
 The v1 bounds are:
 
@@ -953,7 +1071,8 @@ owning issue. The expected result is normative.
 | CTL-07 | Restart a desired-stopped driver | `FAILED_PRECONDITION`; no state change |
 | CTL-08 | Accepted start, restart, and stop calls queue before the reconciler consumes its wake | Three typed records retain exact kinds and consecutive per-driver sequences; reconciliation executes them in order without coalescing |
 | CTL-09 | Process exits after a restart record becomes `ACTIVE` but before terminal completion | The new source epoch requeues that exact nonterminal restart in order and starts one new generation; final `RUNNING` desired state does not erase it |
-| CTL-10 | Idempotent replay of an accepted queued operation | Original receipt and operation sequence return; no duplicate journal record, revision bump, or native action |
+| CTL-10 | Idempotent replay of an accepted queued operation | Original receipt returns with the same non-nil operation sequence; no duplicate journal record, revision bump, or native action |
+| CTL-11 | Lifecycle request resolves as `NO_OP` | Receipt has empty operation ID and nil sequence; replay preserves both and allocates no journal record |
 | LIFE-01 | Prepare returns behind a closed gate, then activation succeeds with a matching proof | Only the post-proof manager transition installs the generation and exposes admission, `RUNNING`, and qualified capabilities together |
 | LIFE-02 | One driver startup fails | That driver becomes `BACKOFF`/`FAILED`; API/health and unrelated drivers remain available |
 | LIFE-03 | Stop drains and native close is proven | Capabilities withdraw before further admission; final state `STOPPED` |
@@ -966,6 +1085,11 @@ owning issue. The expected result is normative.
 | LIFE-10 | Activation returns a proof for another binding, epoch, or generation | Fail closed; no capability or `RUNNING` publication, and cleanup/quarantine follows close proof |
 | LIFE-11 | Generation 8 publishes while generation 7 remains current but omits generation 7's `GenerationFence` | `generation_transition_incomplete`; reject the complete batch with no state change, and generation 8 does not become current or actionable |
 | LIFE-12 | Generation 8 atomically supersedes generation 7 | The same new snapshot fences and withdraws generation 7, invalidates its callback, removes its derived closure, and exposes only qualified generation-8 capabilities |
+| LIFE-13 | A post-supersession snapshot retains generation-7 withdrawal/fence tombstones | Full snapshot validation succeeds under the explicit historical-reference rule, while route admission and callbacks still reject generation 7 |
+| LIFE-14 | Native activation emits sequence 1 and a sequence-2 callback races promotion | Sequence 1 remains staged until the generation is installed; sequence 2 waits, then forwards only after atomic sequence-1 commit and live-sink promotion; no loss or gap |
+| LIFE-15 | Activation publisher emits another generation, a gap, conflicting sequence 1, or a second distinct staged batch | Staging is poisoned; activation fails closed, buffer aborts, and no generation, semantic batch, capability, or admission becomes visible |
+| LIFE-16 | A new source epoch starts at generation 1 while an older non-retired epoch ended at generation 8 | Before `RUNNING`, its first accepted transition names every older epoch in `SourceRetirements`; the same semantic transaction retires/withdraws old state and exposes only new-epoch current state |
+| LIFE-17 | The first new-epoch transition omits one older non-retired source epoch or loses its expected-revision race | Reject the whole batch with no new-epoch publication or admission; refresh and rebuild the complete transition |
 | UP-01 | Partial observation fails for one field | Only evidenced fields update; other candidates retain provenance and age normally |
 | UP-02 | Same publication sequence and digest repeats | No-op with no semantic revision bump |
 | UP-03 | Same sequence repeats with another digest | Reject that batch with `sequence_conflict` and no semantic mutation; then close admission and publish a separate atomic fenced withdrawal/degrade transition |
@@ -974,6 +1098,8 @@ owning issue. The expected result is normative.
 | UP-06 | Catalog knows an operation but device evidence does not qualify it | Candidate/unknown/unsupported as justified; no available capability |
 | UP-07 | An immutable snapshot is evaluated before, at, and after one fact's fresh/stale/expired thresholds without publication | Evaluation views change deterministically while snapshot bytes, ID, revisions, candidates, and stored quality remain unchanged |
 | UP-08 | An inferred fact depends on two exact source paths and one source is fenced | The inferred fact and its transitive dependents withdraw in the same accepted snapshot/revision change; no synthetic binding or later cleanup |
+| UP-09 | A presentation-selected candidate in an open value conflict is withdrawn or fenced while another candidate remains | The new snapshot deterministically recomputes or removes current conflict metadata; the old immutable snapshot retains history, and its pure `Selection` remains bound only to that old snapshot/evaluation |
+| UP-10 | `SelectPresentation` receives a complete matching snapshot/view/key and exact policy, then repeats with one binding changed | Matching inputs return one deterministic fully bound presentation-only `Selection`; digest mismatch, snapshot/revision/context/candidate mismatch, or missing key/candidate returns the kernel's exact stable error without mutation |
 | PROJ-01 | One manifest requests the same item ID as both capability and operation | Two independent `(kind,item_id)` dispositions are required; missing, duplicate, or mismatched tuples return `projection_incomplete` |
 | DOWN-01 | Exactly one current route passes authority, capability, preconditions, and deadline | One live lease and one native dispatch path |
 | DOWN-02 | Zero or two current routes match after otherwise successful filtering | `ambiguous_route`, or one uniquely applicable qualification/availability error for zero routes; no I/O |
@@ -982,17 +1108,24 @@ owning issue. The expected result is normative.
 | DOWN-05 | Deadline expires before dispatch | `failed_no_contact` only when native owner proves `not_sent` and no possible side effect |
 | DOWN-06 | Deadline expires after dispatch with no terminal proof | `indeterminate`; no fallback or automatic mutation retry |
 | DOWN-07 | Native ACK arrives without matching readback | `acknowledged_unverified`; projected state unchanged |
-| DOWN-08 | A later retrievable snapshot contains the exact observed candidate revision and native path matching the admitted route | A linked reconciliation record may prove `applied`; facts update from readback evidence and the original execution stays immutable |
+| DOWN-08 | A later retrievable snapshot contains a newly revised observed candidate whose native path matches the admitted route and whose receipt is strictly after completed sent dispatch | A reproducibly eligible pack-confirmed readback may prove `applied`; facts update from readback evidence and the original execution stays immutable |
 | DOWN-09 | Native NACK plus current evidence proves no effect | `no_effect`; no success projection |
 | DOWN-10 | Readback names a missing snapshot/candidate, stale epoch/generation, different binding/source, or inferred candidate | Exact semantic `dangling_reference`, `stale_source_epoch`, `stale_driver_generation`, or `invalid_outcome`; never `applied` |
 | DOWN-11 | A fact was fresh in the admitted snapshot but is stale at the immediate pre-dispatch evaluation context | `precondition_failed`; no route admission or native I/O, and the immutable snapshot is unchanged |
 | DOWN-12 | `Precondition.CandidateID` names a fresh/available unqualified candidate, or a different same-key candidate is eligible | `precondition_failed`; no fallback candidate, presentation selection, or native I/O |
 | DOWN-13 | A later observed candidate matches the admitted route but not `Intent.ExpectedEffect.Fact` or its pack-evaluated predicate | `OperationPackValidator.EvaluateReadback` returns `invalid_outcome`; `applied` is forbidden |
 | DOWN-14 | Multiple packs are registered and a definition has missing or duplicate `DefinitionIndex` ownership | `definition_owner_missing` or `definition_owner_conflict`; no prefix inference, registration-order probing, route, or I/O |
+| DOWN-15 | A later unrelated snapshot retains the same matching candidate and revision that existed before dispatch | `invalid_outcome`; no newly revised post-completion observation proves the effect |
+| DOWN-16 | `Readback.Evaluation` is absent/invalid or its observation cannot be ordered strictly after `DispatchEvidence.Completed` under monotonic or uncertainty-aware UTC rules | `invalid_outcome`; no implicit process time or stored publication-time freshness is used |
 | ERR-01 | One semantic record violates several validation classes | Return the first of the pinned contract's exhaustive 38 IDs by its eight-level precedence; no state mutation or gateway-specific remapping |
+| ERR-02 | Empty `IdentityLink.basis`, empty capability activation evidence, or a decoded missing/revision-changed exact precondition candidate reaches semantic validation | Preserve `identity_not_qualified`, `capability_not_qualified`, or `precondition_failed`, respectively; malformed non-empty evidence remains `invalid_evidence` |
+| ERR-03 | A causal context exceeds a hard collection/count/lifetime bound or overlaps that defect with receiver re-entry | Preserve the accepted causal-domain error partition and ingress precedence; generic bounds/time classification cannot override it |
 | LOOP-01 | Matter/eeBUS output returns through another output with the same ancestry | `echo_suppressed`; no I/O |
 | LOOP-02 | Hop count exceeds 8 or echo context expires | Observation may publish; derived intent is rejected |
 | LOOP-03 | Independent authorized intent requests the same value | It remains eligible with its own correlation, subject to ordinary checks |
+| LOOP-04 | A emits `[A]/1` to B, then B emits onward to C | B ingress accepts `[A,B]/2`; B egress is unchanged; C ingress accepts `[A,B,C]/3` |
+| LOOP-05 | C attempts to reflect `[A,B,C]/3` back to A | A sees itself in the incoming path and returns `echo_suppressed` before mutating the context |
+| LOOP-06 | Receiver re-entry and exhausted hop capacity overlap | Ingress order returns `echo_suppressed` before `causal_budget_exceeded`; context remains unchanged |
 | MIG-01 | Old and semreg paths run on the same fixture | Comparator covers value, exact unit, dimensions, quality, time, provenance, identity, availability, and loss |
 | MIG-02 | Gateway rolls back within the supported state window | Previous compatible APIs and persisted state load without mixed contract versions |
 

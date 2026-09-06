@@ -65,8 +65,8 @@ func TestATRInserter_P8_SourceInsertStampsPassiveObservedLabel(t *testing.T) {
 // TestATRInserter_P8_AddressTableProjectsLiveRegistryLabel covers the
 // cache-coherence half of P8 (Codex P8 gateway review MINOR FINDING_1):
 // after a passive insertion lands the slot at "passive_observed", a
-// subsequent registry mutation (e.g. directed scan promoting the slot
-// to active_confirmed) MUST be visible through AddressTable.Lookup
+// subsequent registry mutation (e.g. directed scan advancing verification
+// to identity_confirmed) MUST be visible through AddressTable.Lookup
 // despite the cached AddressSlot in t.slots. Pre-fix the cached strings
 // were captured at insert time and went stale; post-fix Lookup
 // reprojects from slot.RegistrySlot's live enum.
@@ -86,7 +86,7 @@ func TestATRInserter_P8_AddressTableProjectsLiveRegistryLabel(t *testing.T) {
 		t.Fatalf("pre-condition: DiscoverySource = %q; want passive_observed", pre.DiscoverySource)
 	}
 
-	// Now the registry upgrades the slot via an active scan.
+	// Now active evidence advances verification while retaining passive origin.
 	reg.Register(registry.DeviceInfo{
 		Address:      0x99,
 		Manufacturer: "Vaillant",
@@ -94,14 +94,14 @@ func TestATRInserter_P8_AddressTableProjectsLiveRegistryLabel(t *testing.T) {
 		SerialNumber: "SN-99",
 	})
 
-	// AddressTable.Lookup MUST reflect the upgrade despite the cached
+	// AddressTable.Lookup MUST reflect the verification advance despite the cached
 	// AddressSlot still being in t.slots from the passive insertion.
 	post, ok := table.Lookup(0x99)
 	if !ok || post == nil {
 		t.Fatalf("post-upgrade Lookup(0x99) ok=%v slot=%v", ok, post)
 	}
-	if post.DiscoverySource != "active_confirmed" {
-		t.Errorf("post-upgrade DiscoverySource = %q; want active_confirmed (registry mutation must be visible through cached slot via RegistrySlot reprojection)", post.DiscoverySource)
+	if post.DiscoverySource != "passive_observed" {
+		t.Errorf("post-confirmation DiscoverySource = %q; want retained passive_observed", post.DiscoverySource)
 	}
 	if post.VerificationState != "identity_confirmed" {
 		t.Errorf("post-upgrade VerificationState = %q; want identity_confirmed", post.VerificationState)

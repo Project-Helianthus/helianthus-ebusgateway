@@ -1,15 +1,13 @@
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260821185245-872b442444f2 h1:+1wvyKlMgz93dRwmeVSkgkFqenp4CwyajdU4u7bwXbI=
 github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260821185245-872b442444f2/go.mod h1:thVkNAfYJ0Qv4jvdpr6xeCFokeUQAeuAbq510DXYXMU=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260817174811-f8b7082b3fa4 h1:ge2WrXGf7GFhFG1WgrigexSslw9G5rorl1VLcGq4yic=
-github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260817174811-f8b7082b3fa4/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260906140547-e24532a50caa h1:x85bKAKSrZJE1KFUBPM7l+SUSY0+d1tM9Hves+go4y0=
+github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260906140547-e24532a50caa/go.mod h1:MhgS/S+s+EJ4+8c9KXom+pAXLTRYcjLI8qVSVCvsQu4=
 github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.20 h1:dI+WdUfRsAtW86x3LwKdSZ3NRLf0xyOc7N/m61NeNbg=
 github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.20/go.mod h1:77PpbpS3qlV4YWEHMkdIw8mr43BywuNZJJhdF0l2sCE=
 github.com/Project-Helianthus/helianthus-eebusreg v0.1.35 h1:FDo4sFDstzVvX8WjhBj9ejdwI5Tes1la1Rx+/QqB27g=
 github.com/Project-Helianthus/helianthus-eebusreg v0.1.35/go.mod h1:+GjGePfl5rHaWVre2+S6Rs50TZsAFA3ix0oy4tVy9xw=
 github.com/Project-Helianthus/helianthus-modbus v0.3.0 h1:cmYb4WqaAl9DmDAfwnBJf5YIzXyYfnsZRcuZEk1d7/I=
 github.com/Project-Helianthus/helianthus-modbus v0.3.0/go.mod h1:Nr8SW7fE3SIjnp+rj8PCOtwk8JZ9wqafu1ZCgq3Zz+Q=
-github.com/Project-Helianthus/helianthus-modbusreg v0.6.6 h1:pitLktFngCkWjRNJVX8Iy6Zru9hXXR+1HHlk00LdPG8=
-github.com/Project-Helianthus/helianthus-modbusreg v0.6.6/go.mod h1:WCiu71+yv1FTZfAjOyO268sE4lVZm8KnY1tD3UPAMfQ=
 github.com/Project-Helianthus/helianthus-modbusreg v0.6.7 h1:M8+gOKMw/8n4mKN/el4yiKlWlfAEKAFKsPx2XR7zH3Y=
 github.com/Project-Helianthus/helianthus-modbusreg v0.6.7/go.mod h1:WCiu71+yv1FTZfAjOyO268sE4lVZm8KnY1tD3UPAMfQ=
 github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.18 h1:x/ZtvPZmGJa1dqfufL0cM36chRBMUXtQ0nW1gv3yfow=

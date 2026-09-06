@@ -391,10 +391,10 @@ func TestApplyStaticSeedTable_MCPDeviceGetProjectsQueriedAddressSlot(t *testing.
 	if got, gotV := queryAddress(0x04); got != "static_seed" || gotV != "candidate" {
 		t.Errorf("devices.get(0x04) discovery=%q, verification=%q; want static_seed, candidate", got, gotV)
 	}
-	// 0xF1 must reflect the ActiveConfirmed advance — not the
-	// primary's stamping.
-	if got, gotV := queryAddress(0xF1); got != "active_confirmed" || gotV != "identity_confirmed" {
-		t.Errorf("devices.get(0xF1) discovery=%q, verification=%q; want active_confirmed, identity_confirmed", got, gotV)
+	// 0xF1 retains its own static-seed origin while reflecting direct
+	// identity confirmation, independently of the primary face.
+	if got, gotV := queryAddress(0xF1); got != "static_seed" || gotV != "identity_confirmed" {
+		t.Errorf("devices.get(0xF1) discovery=%q, verification=%q; want static_seed, identity_confirmed", got, gotV)
 	}
 }
 
@@ -509,8 +509,8 @@ func TestApplyStaticSeedTable_MCPDeviceGetSnapshotPerAlias(t *testing.T) {
 	if got, gotV := queryAlias(0x04); got != "static_seed" || gotV != "candidate" {
 		t.Errorf("snapshot devices.get(0x04) discovery=%q, verification=%q; want static_seed, candidate", got, gotV)
 	}
-	if got, gotV := queryAlias(0xF1); got != "active_confirmed" || gotV != "identity_confirmed" {
-		t.Errorf("snapshot devices.get(0xF1) discovery=%q, verification=%q; want active_confirmed, identity_confirmed", got, gotV)
+	if got, gotV := queryAlias(0xF1); got != "static_seed" || gotV != "identity_confirmed" {
+		t.Errorf("snapshot devices.get(0xF1) discovery=%q, verification=%q; want static_seed, identity_confirmed", got, gotV)
 	}
 }
 

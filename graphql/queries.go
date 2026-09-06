@@ -61,6 +61,7 @@ func toAddress(value int) (byte, error) {
 func findDevice(devices []Device, address byte) (Device, bool) {
 	for _, device := range devices {
 		if deviceHasAddress(device, address) {
+			device.DiscoverySource, device.VerificationState = deviceProvenanceForAddress(device, address)
 			return device, true
 		}
 	}

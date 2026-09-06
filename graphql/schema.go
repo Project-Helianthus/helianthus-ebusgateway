@@ -16,21 +16,34 @@ type Schema struct {
 }
 
 type Device struct {
-	Address         byte
-	Addresses       []byte
-	Manufacturer    string
-	DeviceID        string
-	SerialNumber    string
-	MacAddress      string
-	SoftwareVersion string
-	HardwareVersion string
-	DisplayName     string
-	ProductFamily   string
-	ProductModel    string
-	PartNumber      string
-	Role            string
-	Planes          []Plane
-	Projections     []Projection
+	Address           byte
+	Addresses         []byte
+	DiscoverySource   string
+	VerificationState string
+	addressProvenance []deviceAddressProvenance
+	Manufacturer      string
+	DeviceID          string
+	SerialNumber      string
+	MacAddress        string
+	SoftwareVersion   string
+	HardwareVersion   string
+	DisplayName       string
+	ProductFamily     string
+	ProductModel      string
+	PartNumber        string
+	Role              string
+	Planes            []Plane
+	Projections       []Projection
+}
+
+// deviceAddressProvenance retains the registry-owned observation and
+// verification labels for one address face of a canonical device identity.
+// GraphQL's devices list projects the primary display face; device(address:)
+// projects the requested face while preserving the canonical identity fields.
+type deviceAddressProvenance struct {
+	Address           byte
+	DiscoverySource   string
+	VerificationState string
 }
 
 type Plane struct {
@@ -109,22 +122,24 @@ func BuildSchema(reg Registry) (Schema, error) {
 		}
 
 		device := Device{
-			Address:         snap.PrimaryDisplayAddress(),
-			Addresses:       normalizeDeviceAddresses(snap.PrimaryDisplayAddress(), snap.Addresses),
-			Manufacturer:    snap.Manufacturer,
-			DeviceID:        snap.DeviceID,
-			SerialNumber:    snap.SerialNumber,
-			MacAddress:      snap.MacAddress,
-			SoftwareVersion: snap.SoftwareVersion,
-			HardwareVersion: snap.HardwareVersion,
-			DisplayName:     displayName,
-			ProductFamily:   family,
-			ProductModel:    model,
-			PartNumber:      partNumber,
-			Role:            role,
-			Planes:          make([]Plane, 0),
-			Projections:     make([]Projection, 0),
+			Address:           snap.PrimaryDisplayAddress(),
+			Addresses:         normalizeDeviceAddresses(snap.PrimaryDisplayAddress(), snap.Addresses),
+			addressProvenance: projectDeviceAddressProvenance(snap.Faces),
+			Manufacturer:      snap.Manufacturer,
+			DeviceID:          snap.DeviceID,
+			SerialNumber:      snap.SerialNumber,
+			MacAddress:        snap.MacAddress,
+			SoftwareVersion:   snap.SoftwareVersion,
+			HardwareVersion:   snap.HardwareVersion,
+			DisplayName:       displayName,
+			ProductFamily:     family,
+			ProductModel:      model,
+			PartNumber:        partNumber,
+			Role:              role,
+			Planes:            make([]Plane, 0),
+			Projections:       make([]Projection, 0),
 		}
+		device.DiscoverySource, device.VerificationState = deviceProvenanceForAddress(device, device.Address)
 
 		for _, plane := range snap.Planes {
 			methods := make([]Method, 0, len(plane.Methods()))
@@ -354,6 +369,56 @@ func normalizeDeviceAddresses(primary byte, aliases []byte) []byte {
 	return out
 }
 
+func projectDeviceAddressProvenance(faces []registry.BusFace) []deviceAddressProvenance {
+	if len(faces) == 0 {
+		return nil
+	}
+	out := make([]deviceAddressProvenance, len(faces))
+	for index, face := range faces {
+		out[index] = deviceAddressProvenance{
+			Address:           face.Addr,
+			DiscoverySource:   projectGraphQLDiscoverySource(face.DiscoverySource),
+			VerificationState: projectGraphQLVerificationState(face.VerificationState),
+		}
+	}
+	return out
+}
+
+func deviceProvenanceForAddress(device Device, address byte) (string, string) {
+	for _, face := range device.addressProvenance {
+		if face.Address == address {
+			return face.DiscoverySource, face.VerificationState
+		}
+	}
+	return "", ""
+}
+
+func projectGraphQLDiscoverySource(source registry.DiscoverySource) string {
+	switch source {
+	case registry.DiscoverySourcePassiveObserved:
+		return "passive_observed"
+	case registry.DiscoverySourceStaticSeed:
+		return "static_seed"
+	case registry.DiscoverySourceActiveConfirmed:
+		return "active_confirmed"
+	default:
+		return ""
+	}
+}
+
+func projectGraphQLVerificationState(state registry.VerificationState) string {
+	switch state {
+	case registry.VerificationStateCandidate:
+		return "candidate"
+	case registry.VerificationStateCorroborated:
+		return "corroborated_pending"
+	case registry.VerificationStateIdentityConfirmed:
+		return "identity_confirmed"
+	default:
+		return ""
+	}
+}
+
 func isDigits(value string) bool {
 	if value == "" {
 		return false
@@ -449,21 +514,24 @@ func cloneSchema(schema Schema) Schema {
 			}
 		}
 		devices[i] = Device{
-			Address:         device.Address,
-			Addresses:       append([]byte(nil), device.Addresses...),
-			Manufacturer:    device.Manufacturer,
-			DeviceID:        device.DeviceID,
-			SerialNumber:    device.SerialNumber,
-			MacAddress:      device.MacAddress,
-			SoftwareVersion: device.SoftwareVersion,
-			HardwareVersion: device.HardwareVersion,
-			DisplayName:     device.DisplayName,
-			ProductFamily:   device.ProductFamily,
-			ProductModel:    device.ProductModel,
-			PartNumber:      device.PartNumber,
-			Role:            device.Role,
-			Planes:          planes,
-			Projections:     projections,
+			Address:           device.Address,
+			Addresses:         append([]byte(nil), device.Addresses...),
+			DiscoverySource:   device.DiscoverySource,
+			VerificationState: device.VerificationState,
+			addressProvenance: append([]deviceAddressProvenance(nil), device.addressProvenance...),
+			Manufacturer:      device.Manufacturer,
+			DeviceID:          device.DeviceID,
+			SerialNumber:      device.SerialNumber,
+			MacAddress:        device.MacAddress,
+			SoftwareVersion:   device.SoftwareVersion,
+			HardwareVersion:   device.HardwareVersion,
+			DisplayName:       device.DisplayName,
+			ProductFamily:     device.ProductFamily,
+			ProductModel:      device.ProductModel,
+			PartNumber:        device.PartNumber,
+			Role:              device.Role,
+			Planes:            planes,
+			Projections:       projections,
 		}
 	}
 	return Schema{Devices: devices}

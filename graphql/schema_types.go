@@ -3969,6 +3969,32 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return int(device.Address), nil
 				},
 			},
+			"discoverySource": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.DiscoverySource == "" {
+						return nil, nil
+					}
+					return device.DiscoverySource, nil
+				},
+			},
+			"verificationState": &graphqlgo.Field{
+				Type: graphqlgo.String,
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					device, ok := deviceFromSource(params)
+					if !ok {
+						return nil, nil
+					}
+					if device.VerificationState == "" {
+						return nil, nil
+					}
+					return device.VerificationState, nil
+				},
+			},
 			"addresses": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(graphqlgo.Int))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

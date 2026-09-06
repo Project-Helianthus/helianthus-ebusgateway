@@ -3452,8 +3452,8 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 // per-alias state for each address remains queryable via
 // `devices.get(address=alias)`.
 //
-// preferredAddr=0 is treated as "use the primary"; this keeps existing
-// internal callers that do not need per-alias precision working.
+// Every caller supplies an address explicitly. Address 0x00 is a valid eBUS
+// face and therefore cannot double as an omitted-value sentinel.
 //
 // Race-free counterpart of the legacy buildDeviceInfo (P9.1 — that
 // helper was removed because all known callers migrated). Identity
@@ -3469,9 +3469,6 @@ func cloneEnergySeries(series EnergySeries) EnergySeries {
 // surface — tracked as P9.2+ residual.
 func buildDeviceInfoFromSnapshot(snap registry.DeviceEntrySnapshot, reg Registry, preferredAddr byte) deviceInfo {
 	primary := snap.PrimaryDisplayAddress()
-	if preferredAddr == 0 {
-		preferredAddr = primary
-	}
 	all := snap.Addresses
 	var aliases []int
 	if len(all) > 0 {

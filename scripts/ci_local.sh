@@ -48,6 +48,12 @@ GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 echo "==> go test (race)"
 go test -race -count=1 ./...
 
+echo "==> canonical PV SemReg shadow"
+(
+  cd integrationtests/canonicalpvshadow
+  GOWORK=off go test -race -count=1 ./...
+)
+
 echo "==> validating source-selection artifact schema coverage"
 go test ./... -run "TestSourceSelectionArtifact_EmitValidatesAgainstSchema" -count=1
 

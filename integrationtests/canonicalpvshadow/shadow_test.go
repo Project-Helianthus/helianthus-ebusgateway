@@ -69,6 +69,8 @@ type donorFact struct {
 	Outcome             string              `json:"outcome"`
 	Loss                string              `json:"loss"`
 	FreshnessPolicy     semregPolicyFixture `json:"freshness_policy"`
+	WireWordHi          uint16              `json:"wire_word_hi"`
+	WireWordLo          uint16              `json:"wire_word_lo"`
 }
 type donorWithheld struct {
 	RequestRef      string `json:"request_ref"`

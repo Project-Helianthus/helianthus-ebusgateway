@@ -37,9 +37,9 @@
     "profile_version": "1.0.0",
     "validity": "terminal_verified",
     "registry_digest": "sha256:e21d5d4914fba2249c68cc147243c22f89cc9e1f2be71e4565a3950f31e94750",
-    "observation_digest": "sha256:4de6fce71217655d640db4be76001fc95da64b0105826b1b70e6f7a87447934f",
-    "shadow_digest": "sha256:ef9b1edbc20cb91326a8511c63ed27c8b1706c1869435c993da5a9013a2790eb",
-    "evidence_digest": "sha256:eb5df7901596d58031a767334a89f9403e0d083924ca18506275fefd70672f60",
+    "observation_digest": "sha256:c9263950411d7af1f46939f4f9685e57b80069ff3f6545d6dbf54cd3f8d0934d",
+    "shadow_digest": "sha256:9e2fc959a78623047fc0e0e7e409ac46d2ce8c62ea93f1a6aa598730e12c6828",
+    "evidence_digest": "sha256:db7f33fa37993a81d268e6e100f239f3023b28ab5e42dd7d9b98497adcc6a8e8",
     "energy_word_hi": 16936,
     "energy_word_lo": 0
   },
@@ -50,8 +50,8 @@
       "legacy_key": "pv.ac.power.active|scope=total",
       "legacy_id": "pv.ac.power.active",
       "scope": "total",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "-1235",
+      "scale": -1,
       "unit": "W",
       "target": "pv.ac.aggregate_active_power",
       "dimension": "pv.dimension.inverter",
@@ -64,7 +64,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 49911,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:e34f588ca08f204e256e3119ebad3aed024df427164f48410d5bece3ecfa9ebf",
@@ -72,8 +74,8 @@
       "legacy_key": "pv.ac.frequency|scope=total",
       "legacy_id": "pv.ac.frequency",
       "scope": "total",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "50125",
+      "scale": -3,
       "unit": "Hz",
       "target": "pv.ac.frequency",
       "dimension": "pv.dimension.inverter",
@@ -86,7 +88,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 16968,
+      "wire_word_lo": 32768
     },
     {
       "request_ref": "sha256:742dfd72dd7950dd6e6b51163652a6008685443b2cc01cdec79f82d5d735c75f",
@@ -111,7 +115,9 @@
         "fresh_for_ns": "900000000000",
         "retain_for_ns": "86400000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 16936,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:9152fde11def0bdd3703a8aec83dcc09fb112bfbc2a30dfceca2f4f3478e97dc",
@@ -119,8 +125,8 @@
       "legacy_key": "pv.temperature|sensor_id=cabinet",
       "legacy_id": "pv.temperature",
       "sensor_id": "cabinet",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "-725",
+      "scale": -2,
       "unit": "Cel",
       "target": "pv.temperature.inverter",
       "dimension": "pv.dimension.inverter",
@@ -134,7 +140,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 49384,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:6e05e76ac18312d255b87519294328d81329b947b6daba4049471a48230e7a1a",
@@ -164,8 +172,8 @@
       "legacy_key": "pv.ac.current|phase=L1",
       "legacy_id": "pv.ac.current",
       "phase": "L1",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "125",
+      "scale": -2,
       "unit": "A",
       "target": "pv.ac.current",
       "dimension": "pv.dimension.phase",
@@ -178,7 +186,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 16288,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:0d0472dbaeb980ee433afa2b7c5866f21369037307809126e4fa8266b180c4b1",
@@ -186,8 +196,8 @@
       "legacy_key": "pv.ac.current|phase=L2",
       "legacy_id": "pv.ac.current",
       "phase": "L2",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "25",
+      "scale": -1,
       "unit": "A",
       "target": "pv.ac.current",
       "dimension": "pv.dimension.phase",
@@ -200,7 +210,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 16416,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:debce5d518ab31f6740eb04e708c41f655e0932be7b8e34c0c9ca2264219c3b0",
@@ -208,8 +220,8 @@
       "legacy_key": "pv.ac.current|phase=L3",
       "legacy_id": "pv.ac.current",
       "phase": "L3",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "375",
+      "scale": -2,
       "unit": "A",
       "target": "pv.ac.current",
       "dimension": "pv.dimension.phase",
@@ -222,7 +234,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 16496,
+      "wire_word_lo": 0
     },
     {
       "request_ref": "sha256:6e985852c6f92a790a1c4a5f68ccf4f215db0bdfe0c9aa270672a7e6dc19ce7c",
@@ -230,8 +244,8 @@
       "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L1",
       "legacy_id": "pv.ac.voltage.line_to_neutral",
       "phase": "L1",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "2305",
+      "scale": -1,
       "unit": "V",
       "target": "pv.ac.voltage",
       "dimension": "pv.dimension.phase",
@@ -244,7 +258,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 17254,
+      "wire_word_lo": 32768
     },
     {
       "request_ref": "sha256:df41d1e3b7567131f3e22295b137bdcf0f634749c64c26450d8841255d2c6902",
@@ -252,8 +268,8 @@
       "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L2",
       "legacy_id": "pv.ac.voltage.line_to_neutral",
       "phase": "L2",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "23125",
+      "scale": -2,
       "unit": "V",
       "target": "pv.ac.voltage",
       "dimension": "pv.dimension.phase",
@@ -266,7 +282,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 17255,
+      "wire_word_lo": 16384
     },
     {
       "request_ref": "sha256:16ef0196f7b93d8963e2ba8b43239348600092ae669a1eda984a21a1954a565f",
@@ -274,8 +292,8 @@
       "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L3",
       "legacy_id": "pv.ac.voltage.line_to_neutral",
       "phase": "L3",
-      "coefficient": "0",
-      "scale": 0,
+      "coefficient": "23275",
+      "scale": -2,
       "unit": "V",
       "target": "pv.ac.voltage",
       "dimension": "pv.dimension.phase",
@@ -288,7 +306,9 @@
         "fresh_for_ns": "30000000000",
         "retain_for_ns": "300000000000",
         "max_wall_uncertainty_ns": "0"
-      }
+      },
+      "wire_word_hi": 17256,
+      "wire_word_lo": 49152
     }
   ],
   "withheld": [

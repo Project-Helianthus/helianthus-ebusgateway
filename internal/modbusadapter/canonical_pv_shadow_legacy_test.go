@@ -43,6 +43,8 @@ type canonicalPVShadowDonor struct {
 		Scale           int    `json:"scale"`
 		Symbol          string `json:"symbol"`
 		Unit            string `json:"unit"`
+		WireWordHi      uint16 `json:"wire_word_hi"`
+		WireWordLo      uint16 `json:"wire_word_lo"`
 		FreshnessPolicy struct {
 			ID                   string `json:"id"`
 			Version              string `json:"version"`
@@ -61,7 +63,7 @@ type canonicalPVShadowDonor struct {
 // canonicalPVShadowLegacySnapshot executes the retained canonical-PV mapper
 // against the existing deterministic Fronius/SunSpec fixture. It uses only
 // registry value objects; there is no socket, adapter startup, or native I/O.
-func canonicalPVShadowLegacySnapshot(t *testing.T, words []uint16) pv.Snapshot {
+func canonicalPVShadowLegacySnapshot(t *testing.T, words []uint16, evaluated pv.MonotonicNanos) pv.Snapshot {
 	t.Helper()
 	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
 	if err != nil {
@@ -124,7 +126,7 @@ func canonicalPVShadowLegacySnapshot(t *testing.T, words []uint16) pv.Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := mapper.Map(observation, encoded, 100)
+	snapshot, err := mapper.Map(observation, encoded, evaluated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,16 +135,52 @@ func canonicalPVShadowLegacySnapshot(t *testing.T, words []uint16) pv.Snapshot {
 
 func TestCanonicalPVShadowLegacyProducerFixture(t *testing.T) {
 	donor := canonicalPVShadowLoadDonor(t)
+	receiptNS, err := strconv.ParseInt(donor.Clock.ReceiptNS, 10, 64)
+	if err != nil {
+		t.Fatalf("invalid donor receipt %q: %v", donor.Clock.ReceiptNS, err)
+	}
+	receipt := pv.MonotonicNanos(receiptNS)
 	words := observedFroniusFloatControlsWords()
-	words[2+67+2+30], words[2+67+2+31] = donor.Provenance.EnergyWordHi, donor.Provenance.EnergyWordLo
-	snapshot := canonicalPVShadowLegacySnapshot(t, words)
+	payloadStart := 2 + 67 + 2
+	floatOffsets := map[string]int{
+		"inverter.ac.current.phase_a":  2,
+		"inverter.ac.current.phase_b":  4,
+		"inverter.ac.current.phase_c":  6,
+		"inverter.ac.voltage.phase_a":  14,
+		"inverter.ac.voltage.phase_b":  16,
+		"inverter.ac.voltage.phase_c":  18,
+		"inverter.ac.power.active":     20,
+		"inverter.ac.frequency":        22,
+		"inverter.ac.energy_lifetime":  30,
+		"inverter.temperature.cabinet": 38,
+	}
+	seenWire := make(map[uint32]string, len(floatOffsets))
+	for _, expected := range donor.Facts {
+		offset, numeric := floatOffsets[expected.RequestNativeID]
+		if !numeric {
+			continue
+		}
+		wire := uint32(expected.WireWordHi)<<16 | uint32(expected.WireWordLo)
+		if wire == 0 {
+			t.Fatalf("numeric donor %s has zero wire witness", expected.RequestNativeID)
+		}
+		if prior := seenWire[wire]; prior != "" {
+			t.Fatalf("numeric donor %s reuses %s wire witness", expected.RequestNativeID, prior)
+		}
+		seenWire[wire] = expected.RequestNativeID
+		words[payloadStart+offset], words[payloadStart+offset+1] = expected.WireWordHi, expected.WireWordLo
+	}
+	if len(seenWire) != len(floatOffsets) || donor.Provenance.EnergyWordHi != words[payloadStart+30] || donor.Provenance.EnergyWordLo != words[payloadStart+31] {
+		t.Fatalf("numeric donor witness accounting=%d want=%d", len(seenWire), len(floatOffsets))
+	}
+	snapshot := canonicalPVShadowLegacySnapshot(t, words, receipt)
 	if donor.Contract != "helianthus.semantic.compatibility.canonical-pv/v1" || donor.Status != "test_only_non_runtime" || len(donor.Facts) != 11 || len(donor.Withheld) != 3 {
 		t.Fatalf("invalid immutable donor fixture: %+v", donor)
 	}
 	if snapshot.ContractID != pv.ContractV1 || snapshot.AssetRef != donor.Provenance.AssetRef || len(snapshot.Facts) != 11 || len(snapshot.RequestedOutputs) != 14 || len(snapshot.ProjectionReport) != 14 {
 		t.Fatalf("legacy mapper accounting contract=%q facts=%d requested=%d projections=%d", snapshot.ContractID, len(snapshot.Facts), len(snapshot.RequestedOutputs), len(snapshot.ProjectionReport))
 	}
-	if snapshot.Evaluated != pv.MonotonicNanos(100) || snapshot.Source.Protocol != donor.Provenance.Protocol || snapshot.Source.ProfileID != donor.Provenance.ProfileID || snapshot.Source.ProfileVersion != donor.Provenance.ProfileVersion || snapshot.Source.Validity != pv.SourceTerminalVerified || donor.Provenance.Validity != string(pv.SourceTerminalVerified) || string(snapshot.Source.SourceRegistryRef) != donor.Provenance.RegistryDigest || string(snapshot.Source.SourceObservationRef) != donor.Provenance.ObservationDigest || string(snapshot.Source.SourceShadowRef) != donor.Provenance.ShadowDigest || string(snapshot.Source.EvidenceRef) != donor.Provenance.EvidenceDigest {
+	if snapshot.Evaluated != receipt || snapshot.Source.Protocol != donor.Provenance.Protocol || snapshot.Source.ProfileID != donor.Provenance.ProfileID || snapshot.Source.ProfileVersion != donor.Provenance.ProfileVersion || snapshot.Source.Validity != pv.SourceTerminalVerified || donor.Provenance.Validity != string(pv.SourceTerminalVerified) || string(snapshot.Source.SourceRegistryRef) != donor.Provenance.RegistryDigest || string(snapshot.Source.SourceObservationRef) != donor.Provenance.ObservationDigest || string(snapshot.Source.SourceShadowRef) != donor.Provenance.ShadowDigest || string(snapshot.Source.EvidenceRef) != donor.Provenance.EvidenceDigest {
 		t.Fatalf("legacy producer provenance/lifecycle drift: %+v", snapshot.Source)
 	}
 	type expectedProjection struct {
@@ -229,7 +267,7 @@ func TestCanonicalPVShadowLegacyProducerFixture(t *testing.T) {
 		freshFor, freshErr := strconv.ParseInt(expected.FreshnessPolicy.FreshForNS, 10, 64)
 		retainFor, retainErr := strconv.ParseInt(expected.FreshnessPolicy.RetainForNS, 10, 64)
 		policy, policyOK := pv.PolicyByID(pv.PolicyID(expected.FreshnessPolicy.ID))
-		if freshErr != nil || retainErr != nil || expected.FreshnessPolicy.Version != "1.0.0" || expected.FreshnessPolicy.MaxWallUncertaintyNS != "0" || !policyOK || policy.FreshFor != pv.MonotonicNanos(freshFor) || policy.RetainFor != pv.MonotonicNanos(retainFor) || fact.Temporal.Policy != policy.ID || fact.Temporal.FreshUntil != fact.Temporal.Receipt+policy.FreshFor || fact.Temporal.RetainUntil != fact.Temporal.Receipt+policy.RetainFor {
+		if freshErr != nil || retainErr != nil || expected.FreshnessPolicy.Version != "1.0.0" || expected.FreshnessPolicy.MaxWallUncertaintyNS != "0" || !policyOK || policy.FreshFor != pv.MonotonicNanos(freshFor) || policy.RetainFor != pv.MonotonicNanos(retainFor) || fact.Temporal.Receipt != receipt || fact.Temporal.Receipt != snapshot.Evaluated || fact.Temporal.Policy != policy.ID || fact.Temporal.FreshUntil != fact.Temporal.Receipt+policy.FreshFor || fact.Temporal.RetainUntil != fact.Temporal.Receipt+policy.RetainFor {
 			t.Fatalf("legacy fact %s lifecycle drifted: fact=%#v accepted=%+v", expected.LegacyKey, fact.Temporal, expected.FreshnessPolicy)
 		}
 		if expected.Symbol != "" {

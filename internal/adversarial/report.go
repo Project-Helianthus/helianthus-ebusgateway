@@ -28,9 +28,9 @@ func ValidateReportBytes(data []byte) error {
 		return errors.New("report validation unavailable")
 	}
 	path := temp.Name()
-	defer os.Remove(path)
+	defer func() { _ = os.Remove(path) }()
 	if _, err := temp.Write(data); err != nil {
-		temp.Close()
+		_ = temp.Close()
 		return errors.New("report validation unavailable")
 	}
 	if err := temp.Close(); err != nil {
@@ -49,13 +49,6 @@ func ValidateReportBytes(data []byte) error {
 	return nil
 }
 
-func decodedObject(data []byte) (map[string]any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var value map[string]any
-	err := decoder.Decode(&value)
-	return value, err
-}
 func uniqueJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := consumeJSONValue(decoder); err != nil {

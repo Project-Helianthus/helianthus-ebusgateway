@@ -32,6 +32,9 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 	if len(input) > maximumDriverBytes {
 		return nil, fmt.Errorf("fixture driver exceeds 1 MiB")
 	}
+	if err := uniqueJSONKeys(input); err != nil {
+		return nil, fmt.Errorf("invalid fixture driver")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.UseNumber()
 	var driver map[string]any
@@ -95,7 +98,10 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 		}
 		events, err := action.Events(definition.ScenarioID)
 		if err != nil {
-			return nil, fmt.Errorf("%s action: %w", definition.ScenarioID, err)
+			scenario := seamErrorScenario(definition, anchor.Add(time.Duration(i)*3*time.Minute), "trigger", "trigger_failed")
+			out = append(out, scenario)
+			failed++
+			continue
 		}
 		if terminal, _ := fixture["terminal_error"].(map[string]any); terminal != nil {
 			fixture = cloneFixture(fixture)
@@ -112,7 +118,10 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 		}
 		baseline, end, err := observer.Snapshots(definition.ScenarioID)
 		if err != nil {
-			return nil, fmt.Errorf("%s observer: %w", definition.ScenarioID, err)
+			scenario := seamErrorScenario(definition, anchor.Add(time.Duration(i)*3*time.Minute), "observer", "observer_failed")
+			out = append(out, scenario)
+			failed++
+			continue
 		}
 		fixture = cloneFixture(fixture)
 		fixture["events"] = eventMaps(events)
@@ -143,6 +152,10 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 		"provenance": fixtureProvenance(caseID), "scenarios": out,
 		"summary": map[string]any{"total": int64(4), "passed": int64(passed), "failed": int64(failed), "xfailed": int64(0), "blocked": int64(blocked), "unknown": int64(0), "verdict": verdict},
 	}, nil
+}
+
+func seamErrorScenario(d Definition, start time.Time, phase, code string) map[string]any {
+	return map[string]any{"definition": definitionMap(d), "action": map[string]any{"events": []any{}}, "timing": timing(start, 180000, nil, nil, nil, 0), "metrics": nullMetrics(), "evaluation": nil, "errors": []any{map[string]any{"phase": phase, "code": code}}, "infrastructure_reason": nil, "result_kind": "execution-error", "outcome": "fail"}
 }
 
 type driverAction struct{ fixture map[string]any }
@@ -197,9 +210,10 @@ func projectScenario(d Definition, fixture map[string]any, start time.Time) (map
 	if !ok {
 		return nil, "", fmt.Errorf("precondition missing")
 	}
-	base := map[string]any{"definition": definitionMap(d), "action": map[string]any{"events": []any{}}, "timing": timing(start, 0, nil, nil, nil, 0), "metrics": nullMetrics(), "evaluation": nil, "errors": []any{}, "infrastructure_reason": nil}
+	base := map[string]any{"definition": definitionMap(d), "action": map[string]any{"events": []any{}}, "timing": timing(start, 180000, nil, nil, nil, 0), "metrics": nullMetrics(), "evaluation": nil, "errors": []any{}, "infrastructure_reason": nil}
 	if available, ok := precondition["available"].(bool); !ok || !available {
 		base["result_kind"], base["outcome"], base["infrastructure_reason"] = "infrastructure-block", "blocked-infra", precondition["unavailable_reason"]
+		base["errors"] = []any{map[string]any{"phase": "precondition", "code": "precondition_unavailable"}}
 		return base, "blocked-infra", nil
 	}
 	events, err := actionEvents(fixture["events"], start)
@@ -268,7 +282,8 @@ func projectScenario(d Definition, fixture map[string]any, start time.Time) (map
 	dhwObserved, _ := end["semantic_dhw_present"].(bool)
 	dhwPass := !d.DHWRequired || dhwObserved
 	livePass, collisionPass := liveDelta >= 2, collisionDelta <= d.MaximumCollisionsDelta
-	pass := durationPass && recoveryPass && zonesPass && dhwPass && livePass && collisionPass
+	phasePass := baseline["semantic_startup_current_phase"] == d.BaselinePhase && end["semantic_startup_current_phase"] == d.EndPhase
+	pass := durationPass && recoveryPass && zonesPass && dhwPass && livePass && collisionPass && phasePass
 	base["timing"] = timing(start, 180000, anchor, recovery, recoveryMS, durationBound)
 	base["metrics"] = map[string]any{"baseline": baseline, "end": end, "delta": map[string]any{"semantic_live_epoch": liveDelta, "semantic_bus_collisions_total": collisionDelta}}
 	base["evaluation"] = map[string]any{

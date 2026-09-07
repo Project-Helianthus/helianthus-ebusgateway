@@ -97,11 +97,11 @@ func TestExecutor_RejectsWrongCatalogBeforeAction(t *testing.T) {
 
 func TestExecutor_UsesInjectedSeamsAndRejectsMissingPartitionInterval(t *testing.T) {
 	input := fixture(t, "inputs/offline-all-pass.json")
-	if _, err := (Executor{StartedAt: runner().StartedAt, Action: failingAction{}}).Run(input); err == nil {
-		t.Fatal("action seam failure was ignored")
+	if report, err := (Executor{StartedAt: runner().StartedAt, Action: failingAction{}}).Run(input); err != nil || report["summary"].(map[string]any)["failed"] != int64(4) {
+		t.Fatal("action seam failure was not materialized")
 	}
-	if _, err := (Executor{StartedAt: runner().StartedAt, Observer: failingObserver{}}).Run(input); err == nil {
-		t.Fatal("observer seam failure was ignored")
+	if report, err := (Executor{StartedAt: runner().StartedAt, Observer: failingObserver{}}).Run(input); err != nil || report["summary"].(map[string]any)["failed"] != int64(4) {
+		t.Fatal("observer seam failure was not materialized")
 	}
 	var driver map[string]any
 	if err := json.Unmarshal(input, &driver); err != nil {

@@ -20,9 +20,18 @@ type FixtureObserver interface {
 
 // Executor turns a deterministic offline driver into the public v1 artifact.
 // It is serial by construction: scenarios are projected in catalog order.
-type Executor struct{ StartedAt time.Time }
+type Executor struct {
+	StartedAt time.Time
+	Action    FixtureAction
+	Observer  FixtureObserver
+}
+
+const maximumDriverBytes = 1024 * 1024
 
 func (e Executor) Run(input []byte) (map[string]any, error) {
+	if len(input) > maximumDriverBytes {
+		return nil, fmt.Errorf("fixture driver exceeds 1 MiB")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.UseNumber()
 	var driver map[string]any
@@ -35,7 +44,11 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 	if driver["$schema"] != FixtureSchemaURL || integer(driver["schema_version"]) != 1 {
 		return nil, fmt.Errorf("unsupported fixture schema")
 	}
-	if driver["fixture_case_id"] == nil || driver["run_id"] == nil {
+	caseID, caseOK := driver["fixture_case_id"].(string)
+	if !caseOK || caseID == "" {
+		return nil, fmt.Errorf("fixture case id invalid")
+	}
+	if _, ok := driver["run_id"].(string); !ok {
 		return nil, fmt.Errorf("fixture identity missing")
 	}
 	rawScenarios, ok := driver["scenarios"].([]any)
@@ -57,6 +70,53 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 		if fixture["scenario_id"] != definition.ScenarioID || fixture["trigger_kind"] != definition.TriggerKind {
 			return nil, fmt.Errorf("fixture scenario %d catalog mismatch", i)
 		}
+		precondition, ok := fixture["precondition"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s precondition invalid", definition.ScenarioID)
+		}
+		if available, ok := precondition["available"].(bool); !ok || !available {
+			scenario, outcome, err := projectScenario(definition, fixture, anchor.Add(time.Duration(i)*3*time.Minute))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", definition.ScenarioID, err)
+			}
+			out = append(out, scenario)
+			if outcome == "blocked-infra" {
+				blocked++
+			}
+			continue
+		}
+		action := e.Action
+		if action == nil {
+			action = driverAction{fixture: fixture}
+		}
+		observer := e.Observer
+		if observer == nil {
+			observer = driverObserver{fixture: fixture}
+		}
+		events, err := action.Events(definition.ScenarioID)
+		if err != nil {
+			return nil, fmt.Errorf("%s action: %w", definition.ScenarioID, err)
+		}
+		if terminal, _ := fixture["terminal_error"].(map[string]any); terminal != nil {
+			fixture = cloneFixture(fixture)
+			fixture["events"] = eventMaps(events)
+			scenario, outcome, err := projectScenario(definition, fixture, anchor.Add(time.Duration(i)*3*time.Minute))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", definition.ScenarioID, err)
+			}
+			out = append(out, scenario)
+			if outcome == "fail" {
+				failed++
+			}
+			continue
+		}
+		baseline, end, err := observer.Snapshots(definition.ScenarioID)
+		if err != nil {
+			return nil, fmt.Errorf("%s observer: %w", definition.ScenarioID, err)
+		}
+		fixture = cloneFixture(fixture)
+		fixture["events"] = eventMaps(events)
+		fixture["observations"] = map[string]any{"baseline": baseline, "end": end}
 		scenario, outcome, err := projectScenario(definition, fixture, anchor.Add(time.Duration(i)*3*time.Minute))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", definition.ScenarioID, err)
@@ -80,9 +140,56 @@ func (e Executor) Run(input []byte) (map[string]any, error) {
 	return map[string]any{
 		"$schema": ReportSchemaURL, "schema_version": int64(1), "suite": map[string]any{"id": SuiteID, "version": int64(1)},
 		"execution":  map[string]any{"mode": "offline-fixture", "run_id": driver["run_id"], "started_at": stamp(anchor), "completed_at": stamp(anchor.Add(12 * time.Minute))},
-		"provenance": fixtureProvenance(driver["fixture_case_id"].(string)), "scenarios": out,
+		"provenance": fixtureProvenance(caseID), "scenarios": out,
 		"summary": map[string]any{"total": int64(4), "passed": int64(passed), "failed": int64(failed), "xfailed": int64(0), "blocked": int64(blocked), "unknown": int64(0), "verdict": verdict},
 	}, nil
+}
+
+type driverAction struct{ fixture map[string]any }
+
+func (d driverAction) Events(string) ([]map[string]any, error) {
+	raw, ok := d.fixture["events"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("events missing")
+	}
+	out := make([]map[string]any, len(raw))
+	for i, item := range raw {
+		event, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("event invalid")
+		}
+		out[i] = event
+	}
+	return out, nil
+}
+
+type driverObserver struct{ fixture map[string]any }
+
+func (d driverObserver) Snapshots(string) (map[string]any, map[string]any, error) {
+	raw, ok := d.fixture["observations"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("observations missing")
+	}
+	base, bok := raw["baseline"].(map[string]any)
+	end, eok := raw["end"].(map[string]any)
+	if !bok || !eok {
+		return nil, nil, fmt.Errorf("snapshots missing")
+	}
+	return base, end, nil
+}
+func cloneFixture(value map[string]any) map[string]any {
+	out := make(map[string]any, len(value))
+	for k, v := range value {
+		out[k] = v
+	}
+	return out
+}
+func eventMaps(values []map[string]any) []any {
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
 }
 
 func projectScenario(d Definition, fixture map[string]any, start time.Time) (map[string]any, string, error) {
@@ -101,6 +208,18 @@ func projectScenario(d Definition, fixture map[string]any, start time.Time) (map
 	}
 	base["action"] = map[string]any{"events": events}
 	byKind := eventIndex(events)
+	if !canonicalEvents(d, events) {
+		return nil, "", fmt.Errorf("action sequence invalid")
+	}
+	if activation := byKind[d.ExpectedEvents[1]]; activation == nil || integer(activation["offset_ms"])+integer(activation["error_bound_ms"]) > 1000 {
+		return nil, "", fmt.Errorf("action activation invalid")
+	}
+	if d.ScenarioID == "ADV-03" {
+		active, cleared := byKind["partition_active"], byKind["partition_cleared"]
+		if active == nil || cleared == nil || abs(integer(cleared["offset_ms"])-integer(active["offset_ms"])-60000)+integer(active["error_bound_ms"])+integer(cleared["error_bound_ms"]) > 1000 {
+			return nil, "", fmt.Errorf("partition interval invalid")
+		}
+	}
 	terminal, _ := fixture["terminal_error"].(map[string]any)
 	if terminal != nil {
 		base["result_kind"], base["outcome"] = "execution-error", "fail"
@@ -121,12 +240,20 @@ func projectScenario(d Definition, fixture map[string]any, start time.Time) (map
 		return nil, "", fmt.Errorf("end missing")
 	}
 	if baseline["counter_epoch"] != end["counter_epoch"] {
-		return nil, "", fmt.Errorf("counter epoch changed")
+		base["result_kind"], base["outcome"] = "execution-error", "fail"
+		base["timing"] = timing(start, 180000, byKind[d.RecoveryAnchor], byKind[d.RecoveryEvent], integer(byKind[d.RecoveryEvent]["offset_ms"])-integer(byKind[d.RecoveryAnchor]["offset_ms"]), maxBound(events))
+		base["metrics"] = map[string]any{"baseline": baseline, "end": end, "delta": nil}
+		base["errors"] = []any{map[string]any{"phase": "evaluation", "code": "counter_epoch_changed"}}
+		return base, "fail", nil
 	}
 	liveDelta := integer(end["semantic_live_epoch"]) - integer(baseline["semantic_live_epoch"])
 	collisionDelta := integer(end["semantic_bus_collisions_total"]) - integer(baseline["semantic_bus_collisions_total"])
 	if liveDelta < 0 || collisionDelta < 0 {
-		return nil, "", fmt.Errorf("negative counter delta")
+		base["result_kind"], base["outcome"] = "execution-error", "fail"
+		base["timing"] = timing(start, 180000, byKind[d.RecoveryAnchor], byKind[d.RecoveryEvent], integer(byKind[d.RecoveryEvent]["offset_ms"])-integer(byKind[d.RecoveryAnchor]["offset_ms"]), maxBound(events))
+		base["metrics"] = map[string]any{"baseline": baseline, "end": end, "delta": nil}
+		base["errors"] = []any{map[string]any{"phase": "evaluation", "code": "negative_counter_delta"}}
+		return base, "fail", nil
 	}
 	anchor, recovery := byKind[d.RecoveryAnchor], byKind[d.RecoveryEvent]
 	if anchor == nil || recovery == nil {
@@ -214,6 +341,24 @@ func eventIndex(events []any) map[string]map[string]any {
 		out[event["kind"].(string)] = event
 	}
 	return out
+}
+func canonicalEvents(d Definition, events []any) bool {
+	if len(events) != len(d.ExpectedEvents) {
+		return false
+	}
+	for i, raw := range events {
+		event, ok := raw.(map[string]any)
+		if !ok || event["kind"] != d.ExpectedEvents[i] || integer(event["error_bound_ms"]) > 1000 {
+			return false
+		}
+	}
+	return true
+}
+func abs(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 func maxBound(events []any) int64 {
 	var maximum int64

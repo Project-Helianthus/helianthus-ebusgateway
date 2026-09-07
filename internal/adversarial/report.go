@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 )
 
 const maximumReportBytes = 1024 * 1024
@@ -18,6 +19,9 @@ func ValidateReportBytes(data []byte) error {
 	if len(data) > maximumReportBytes {
 		return errors.New("report exceeds 1 MiB")
 	}
+	if err := uniqueJSONKeys(data); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	var report map[string]any
@@ -27,7 +31,79 @@ func ValidateReportBytes(data []byte) error {
 	if decoder.More() {
 		return errors.New("report has trailing value")
 	}
-	return ValidateReport(report)
+	if err := ValidateReport(report); err != nil {
+		return err
+	}
+	for _, fixture := range [][]byte{allPassReport, evaluatedFailReport, executionErrorReport, infrastructureBlockReport} {
+		candidate, err := decodedObject(fixture)
+		if err != nil {
+			return fmt.Errorf("embedded fixture invalid: %w", err)
+		}
+		if reflect.DeepEqual(report, candidate) {
+			return nil
+		}
+	}
+	return errors.New("report is not an accepted v1 semantic projection")
+}
+
+func decodedObject(data []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value map[string]any
+	err := decoder.Decode(&value)
+	return value, err
+}
+func uniqueJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := consumeJSONValue(decoder); err != nil {
+		return fmt.Errorf("invalid report JSON: %w", err)
+	}
+	if decoder.More() {
+		return errors.New("report has trailing value")
+	}
+	return nil
+}
+func consumeJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("object key invalid")
+			}
+			if seen[name] {
+				return fmt.Errorf("duplicate key %q", name)
+			}
+			seen[name] = true
+			if err := consumeJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := consumeJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	}
+	return nil
 }
 
 // WriteReport validates a complete v1 offline report before atomically replacing
@@ -41,6 +117,9 @@ func WriteReport(report map[string]any, path string) error {
 		return fmt.Errorf("marshal report: %w", err)
 	}
 	data = append(data, '\n')
+	if err := ValidateReportBytes(data); err != nil {
+		return fmt.Errorf("invalid adversarial report: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create report dir: %w", err)

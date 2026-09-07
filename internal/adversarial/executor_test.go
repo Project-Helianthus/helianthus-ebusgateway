@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+type failingAction struct{}
+
+func (failingAction) Events(string) ([]map[string]any, error) { return nil, os.ErrPermission }
+
+type failingObserver struct{}
+
+func (failingObserver) Snapshots(string) (map[string]any, map[string]any, error) {
+	return nil, nil, os.ErrNotExist
+}
+
 func fixture(t *testing.T, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "fixtures", path))
@@ -82,6 +92,65 @@ func TestExecutor_RejectsWrongCatalogBeforeAction(t *testing.T) {
 	b, _ := json.Marshal(driver)
 	if _, err := runner().Run(b); err == nil {
 		t.Fatal("Run accepted a non-catalog trigger")
+	}
+}
+
+func TestExecutor_UsesInjectedSeamsAndRejectsMissingPartitionInterval(t *testing.T) {
+	input := fixture(t, "inputs/offline-all-pass.json")
+	if _, err := (Executor{StartedAt: runner().StartedAt, Action: failingAction{}}).Run(input); err == nil {
+		t.Fatal("action seam failure was ignored")
+	}
+	if _, err := (Executor{StartedAt: runner().StartedAt, Observer: failingObserver{}}).Run(input); err == nil {
+		t.Fatal("observer seam failure was ignored")
+	}
+	var driver map[string]any
+	if err := json.Unmarshal(input, &driver); err != nil {
+		t.Fatal(err)
+	}
+	third := driver["scenarios"].([]any)[2].(map[string]any)
+	third["events"].([]any)[2].(map[string]any)["offset_ms"] = 0
+	third["events"].([]any)[3].(map[string]any)["offset_ms"] = 89000
+	changed, _ := json.Marshal(driver)
+	if _, err := runner().Run(changed); err == nil {
+		t.Fatal("invalid partition interval passed")
+	}
+}
+
+func TestExecutor_RejectsOversizeAndWrongIdentityType(t *testing.T) {
+	if _, err := runner().Run(make([]byte, maximumDriverBytes+1)); err == nil {
+		t.Fatal("oversize driver accepted")
+	}
+	var driver map[string]any
+	if err := json.Unmarshal(fixture(t, "inputs/offline-all-pass.json"), &driver); err != nil {
+		t.Fatal(err)
+	}
+	driver["fixture_case_id"] = 1
+	input, _ := json.Marshal(driver)
+	if _, err := runner().Run(input); err == nil {
+		t.Fatal("numeric case id accepted")
+	}
+}
+
+func TestExecutor_MaterializesContinuityFailures(t *testing.T) {
+	for _, mutation := range []func(map[string]any){
+		func(end map[string]any) { end["counter_epoch"] = "00000000-0000-4000-8000-000000000099" },
+		func(end map[string]any) { end["semantic_live_epoch"] = 0 },
+	} {
+		var driver map[string]any
+		if err := json.Unmarshal(fixture(t, "inputs/offline-all-pass.json"), &driver); err != nil {
+			t.Fatal(err)
+		}
+		first := driver["scenarios"].([]any)[0].(map[string]any)
+		mutation(first["observations"].(map[string]any)["end"].(map[string]any))
+		input, _ := json.Marshal(driver)
+		report, err := runner().Run(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scenario := report["scenarios"].([]any)[0].(map[string]any)
+		if scenario["result_kind"] != "execution-error" || scenario["metrics"].(map[string]any)["baseline"] == nil {
+			t.Fatalf("continuity report = %#v", scenario)
+		}
 	}
 }
 

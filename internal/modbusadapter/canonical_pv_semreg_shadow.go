@@ -76,9 +76,10 @@ func (record canonicalPVSemRegShadowRecord) detachedSnapshot() (CanonicalPVSemRe
 }
 
 type canonicalPVSemRegShadow struct {
-	byAsset map[string]*canonicalPVSemRegShadowAsset
-	records map[string]canonicalPVSemRegShadowRecord
-	compare func(pv.Snapshot, semreg.Snapshot, semreg.EvaluationView, projection.ProjectionReport) error
+	byAsset     map[string]*canonicalPVSemRegShadowAsset
+	records     map[string]canonicalPVSemRegShadowRecord
+	compare     func(pv.Snapshot, semreg.Snapshot, semreg.EvaluationView, projection.ProjectionReport) error
+	lastFailure string
 }
 
 type canonicalPVSemRegShadowAsset struct {
@@ -184,11 +185,21 @@ func canonicalPVSemRegHistory(asset *canonicalPVSemRegShadowAsset) ([]canonicalP
 	}
 	seed.BatchID = semreg.BatchID("batch:canonical-pv-shadow:reseed:" + string(last.batch.SourceID))
 	seed.Sequence, seed.ExpectedSemanticRevision = "1", "0"
+	seed.SourceEpochID = semreg.SourceEpochID(string(first.batch.SourceEpochID) + ":reseed:" + string(last.batch.Sequence))
+	seed.DriverGeneration = incrementSemReg(last.batch.DriverGeneration)
 	seed.SourceUpserts = append([]semreg.SourceDescriptor(nil), first.batch.SourceUpserts...)
 	seed.BindingUpserts = append([]semreg.NativeBinding(nil), first.batch.BindingUpserts...)
 	seed.IdentityLinkUpserts = append([]semreg.IdentityLink(nil), first.batch.IdentityLinkUpserts...)
+	seed.SourceUpserts[0].SourceEpochID, seed.SourceUpserts[0].Revision = seed.SourceEpochID, "1"
+	seed.BindingUpserts[0].BindingID, seed.BindingUpserts[0].SourceEpochID, seed.BindingUpserts[0].DriverGeneration, seed.BindingUpserts[0].Revision = semreg.NativeBindingID(string(first.batch.BindingUpserts[0].BindingID)+":reseed:"+string(last.batch.Sequence)), seed.SourceEpochID, seed.DriverGeneration, "1"
+	seed.IdentityLinkUpserts[0].BindingID, seed.IdentityLinkUpserts[0].Revision = seed.BindingUpserts[0].BindingID, "1"
 	for index := range seed.FactUpserts {
 		seed.FactUpserts[index].Revision = "1"
+		seed.FactUpserts[index].SourceEpochID = &seed.SourceEpochID
+		seed.FactUpserts[index].DriverGeneration = &seed.DriverGeneration
+		seed.FactUpserts[index].BindingID = &seed.BindingUpserts[0].BindingID
+		seed.FactUpserts[index].Origin.SourceEpochID = &seed.SourceEpochID
+		seed.FactUpserts[index].Origin.BindingID = &seed.BindingUpserts[0].BindingID
 	}
 	digest, err := seed.ComputedDigest()
 	if err != nil {
@@ -273,6 +284,13 @@ func canonicalPVSemRegBatch(observation modbusreg.SunSpecQualificationObservatio
 	current, _, exists := kernel.Current()
 	sequence, expected := semreg.Uint64("1"), semreg.Uint64("0")
 	if exists {
+		source, epoch, generation = current.Cursors[0].SourceID, current.Cursors[0].SourceEpochID, current.Cursors[0].DriverGeneration
+		for _, existingBinding := range current.Bindings {
+			if existingBinding.SourceID == source && existingBinding.SourceEpochID == epoch && existingBinding.DriverGeneration == generation {
+				binding = existingBinding.BindingID
+				break
+			}
+		}
 		sequence = incrementSemReg(current.Cursors[0].LastSequence)
 		expected = current.Revisions.Semantic
 	}
@@ -560,7 +578,7 @@ func compareCanonicalPVSemRegShadow(legacy pv.Snapshot, snapshot semreg.Snapshot
 	registryEvidence := canonicalPVSemRegEvidence(string(legacy.Source.SourceRegistryRef))
 	initialBindingMismatch := snapshot.Cursors[0].LastSequence == "1" && binding.NativeResource != canonicalPVSemRegEvidence(string(legacy.Source.SourceShadowRef))
 	initialLinkMismatch := snapshot.Cursors[0].LastSequence == "1" && (len(link.Basis) != 1 || link.Basis[0] != canonicalPVSemRegEvidence(string(legacy.Source.EvidenceRef)))
-	if source.ProtocolID != "sunspec_modbus" || source.ProfileID != "sunspec.inverter.three_phase.monitoring" || source.ProfileVersion != "1.0.0" || source.State != semreg.SourceCurrent || source.RegistryEvidence != registryEvidence || source.Revision != "1" || binding.AssetID != semreg.AssetID(legacy.AssetRef) || binding.SourceID != source.SourceID || binding.SourceEpochID != source.SourceEpochID || binding.DriverGeneration != "1" || binding.NativeResource.Validate() != nil || initialBindingMismatch || binding.State != semreg.BindingCurrent || binding.Revision != "1" || len(link.Basis) != 1 || link.Basis[0].Validate() != nil || initialLinkMismatch || link.AssetID != semreg.AssetID(legacy.AssetRef) || link.BindingID != binding.BindingID || link.State != semreg.LinkQualified || link.Revision != "1" {
+	if source.ProtocolID != "sunspec_modbus" || source.ProfileID != "sunspec.inverter.three_phase.monitoring" || source.ProfileVersion != "1.0.0" || source.State != semreg.SourceCurrent || source.RegistryEvidence != registryEvidence || binding.AssetID != semreg.AssetID(legacy.AssetRef) || binding.SourceID != source.SourceID || binding.SourceEpochID != source.SourceEpochID || binding.DriverGeneration != snapshot.Cursors[0].DriverGeneration || binding.NativeResource.Validate() != nil || initialBindingMismatch || binding.State != semreg.BindingCurrent || len(link.Basis) != 1 || link.Basis[0].Validate() != nil || initialLinkMismatch || link.AssetID != semreg.AssetID(legacy.AssetRef) || link.BindingID != binding.BindingID || link.State != semreg.LinkQualified {
 		return errors.New("SemReg source/binding/provenance references drifted")
 	}
 	legacyProjection := make(map[pv.Digest]pv.Projection, 14)

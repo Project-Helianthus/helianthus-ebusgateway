@@ -470,26 +470,20 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 		return errors.New("canonical PV mapper unavailable")
 	}
 	producedAt := time.Now().UTC()
-	if adapter.canonicalShadow != nil {
-		// Preflight with an isolated mapper. A shadow rejection must not mutate
-		// the retained mapper that powers legacy lifecycle re-evaluation.
-		preflightMapper, err := NewCanonicalPVMapper()
-		if err != nil {
-			return fmt.Errorf("construct current SemReg shadow preflight mapper: %w", err)
-		}
-		preflight, err := preflightMapper.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
-		if err != nil {
-			return fmt.Errorf("map current SemReg shadow preflight: %w", err)
-		}
-		if _, err := adapter.canonicalShadow.apply(observation, encoded, preflight, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds())); err != nil {
-			// Keep the prior legacy current slot and last-good shadow on a
-			// diagnostic divergence or SemReg rejection.
-			return nil
-		}
-	}
+	// The legacy mapper owns the public compatibility state. Map and retain its
+	// valid result before attempting the diagnostic-only SemReg shadow.
 	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
 	if err != nil {
 		return fmt.Errorf("map current canonical PV observation: %w", err)
+	}
+	if adapter.canonicalShadow != nil {
+		// Rejecting the shadow keeps its last accepted state, but never blocks a
+		// valid legacy public update.
+		if _, shadowErr := adapter.canonicalShadow.apply(observation, encoded, canonical, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds())); shadowErr != nil {
+			adapter.canonicalShadow.lastFailure = shadowErr.Error()
+		} else {
+			adapter.canonicalShadow.lastFailure = ""
+		}
 	}
 	if adapter.currentPV == nil {
 		adapter.currentPV = make(map[string]canonicalPVCurrentRecord)

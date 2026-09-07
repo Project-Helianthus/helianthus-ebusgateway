@@ -133,12 +133,15 @@ func TestCanonicalPVSemRegShadow_RejectionRetainsLastGoodLegacyAndShadow(t *test
 		t.Fatalf("refresh=%+v err=%v", refresh, err)
 	}
 	after, afterAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
-	if !ok || !afterAt.Equal(beforeAt) || after.Generation != before.Generation {
-		t.Fatalf("rejected shadow replaced legacy current: before=%d/%s after=%d/%s", before.Generation, beforeAt, after.Generation, afterAt)
+	if !ok || !afterAt.After(beforeAt) || after.Generation <= before.Generation {
+		t.Fatalf("diagnostic shadow rejection failed to advance legacy current: before=%d/%s after=%d/%s", before.Generation, beforeAt, after.Generation, afterAt)
 	}
 	shadowAfter, ok := adapter.CanonicalPVSemRegShadow(initial.CapabilityID, initial.SampleID)
 	if !ok || shadowAfter.Snapshot.SnapshotID != shadowBefore.Snapshot.SnapshotID {
 		t.Fatal("rejected shadow replaced last-good retained shadow")
+	}
+	if adapter.canonicalShadow.lastFailure == "" {
+		t.Fatal("diagnostic shadow rejection was not retained internally")
 	}
 }
 
@@ -220,8 +223,8 @@ func TestCanonicalPVSemRegShadow_ComparatorRejectionDoesNotAdvanceLiveState(t *t
 		t.Fatalf("refresh=%+v err=%v", refresh, err)
 	}
 	legacyAfter, legacyAfterAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
-	if !ok || legacyAfter.Generation != legacyBefore.Generation || !legacyAfterAt.Equal(legacyAt) {
-		t.Fatal("comparator rejection advanced legacy current")
+	if !ok || legacyAfter.Generation <= legacyBefore.Generation || !legacyAfterAt.After(legacyAt) {
+		t.Fatal("comparator rejection failed to advance legacy current")
 	}
 	shadowAfter, ok := adapter.CanonicalPVSemRegCurrentShadow(asset)
 	if !ok || shadowAfter.Snapshot.SnapshotID != shadowBefore.Snapshot.SnapshotID || shadowAfter.Snapshot.Cursors[0] != shadowBefore.Snapshot.Cursors[0] {
@@ -247,6 +250,10 @@ func TestCanonicalPVSemRegShadow_CompactsReplayHistoryAndContinuesPastDoubleBoun
 		t.Fatalf("initial=%+v err=%v", initial, err)
 	}
 	asset := mustCanonicalPVAsset(t, adapter, initial)
+	before, ok := adapter.CanonicalPVSemRegCurrentShadow(asset)
+	if !ok || len(before.Snapshot.Cursors) != 1 {
+		t.Fatal("missing initial cursor")
+	}
 	for n := 0; n < 2*maxRetainedProfileObservations+3; n++ {
 		result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: uint64(10 + n), DeadlineIdentity: uint64(100 + n)})
 		if err != nil || result.Outcome != SunSpecQualificationGO {
@@ -260,6 +267,9 @@ func TestCanonicalPVSemRegShadow_CompactsReplayHistoryAndContinuesPastDoubleBoun
 	stored := len(adapter.canonicalShadow.byAsset[asset].publications)
 	if stored > maxRetainedProfileObservations {
 		t.Fatalf("unbounded replay history=%d", stored)
+	}
+	if len(shadow.Snapshot.Cursors) != 1 || shadow.Snapshot.Cursors[0].SourceEpochID == before.Snapshot.Cursors[0].SourceEpochID || shadow.Snapshot.Cursors[0].DriverGeneration == before.Snapshot.Cursors[0].DriverGeneration || shadow.Snapshot.Cursors[0].LastSequence == "1" {
+		t.Fatalf("compaction reused publication cursor: before=%+v after=%+v failure=%s", before.Snapshot.Cursors, shadow.Snapshot.Cursors, adapter.canonicalShadow.lastFailure)
 	}
 }
 

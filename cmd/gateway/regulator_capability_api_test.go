@@ -131,6 +131,67 @@ func TestIssue946VaillantRegulatorCapabilityInvalidProviderValueFailsClosed(t *t
 	}
 }
 
+// issue946ExternalCapabilityProvider simulates an additive provider owned by a
+// consumer outside the live semantic publisher. Its value is deliberately not
+// pre-normalized, so the public GraphQL and MCP boundaries must each preserve
+// their documented fail-closed contract.
+type issue946ExternalCapabilityProvider struct {
+	graphql.SemanticProvider
+	capability graphql.VaillantRegulatorCapability
+}
+
+func (provider issue946ExternalCapabilityProvider) VaillantRegulatorCapability() graphql.VaillantRegulatorCapability {
+	return provider.capability
+}
+
+func TestIssue946VaillantRegulatorCapabilityMCPGraphQLParityForExternalProviderValues(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		capability graphql.VaillantRegulatorCapability
+		want       string
+	}{
+		{name: "unknown", capability: graphql.VaillantRegulatorCapabilityUnknown, want: "UNKNOWN"},
+		{name: "none", capability: graphql.VaillantRegulatorCapabilityNone, want: "NONE"},
+		{name: "present", capability: graphql.VaillantRegulatorCapabilityPresent, want: "PRESENT"},
+		{name: "zero value", capability: "", want: "UNKNOWN"},
+		{name: "unsupported", capability: "OTHER", want: "UNKNOWN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := issue946ExternalCapabilityProvider{
+				SemanticProvider: graphql.NewLiveSemanticProvider(),
+				capability:       tc.capability,
+			}
+			builder := graphql.NewBuilder(nil, nil)
+			builder.SetSemanticProvider(provider)
+			schema, err := graphql.NewQuerySchema(builder)
+			if err != nil {
+				t.Fatalf("NewQuerySchema() error: %v", err)
+			}
+			result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ vaillant_regulator_capability }`})
+			if len(result.Errors) != 0 {
+				t.Fatalf("GraphQL errors = %v", result.Errors)
+			}
+			graphQLCapability := result.Data.(map[string]any)["vaillant_regulator_capability"]
+			if graphQLCapability != tc.want {
+				t.Fatalf("GraphQL capability = %#v; want %q", graphQLCapability, tc.want)
+			}
+
+			server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+			if err != nil {
+				t.Fatalf("mcp.NewServer() error: %v", err)
+			}
+			server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
+			mcpCapability := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]
+			if mcpCapability != tc.want {
+				t.Fatalf("MCP capability = %#v; want %q", mcpCapability, tc.want)
+			}
+			if mcpCapability != graphQLCapability {
+				t.Fatalf("MCP capability = %#v; GraphQL = %#v", mcpCapability, graphQLCapability)
+			}
+		})
+	}
+}
+
 type issue946LegacySemanticProvider struct {
 	graphql.SemanticProvider
 }

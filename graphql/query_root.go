@@ -67,7 +67,7 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					if !ok {
 						return string(VaillantRegulatorCapabilityUnknown), nil
 					}
-					return string(provider.VaillantRegulatorCapability()), nil
+					return string(NormalizeVaillantRegulatorCapability(provider.VaillantRegulatorCapability())), nil
 				},
 			},
 			"zones": &graphqlgo.Field{

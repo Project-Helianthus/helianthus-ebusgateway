@@ -273,23 +273,14 @@ func (provider *LiveSemanticProvider) VaillantRegulatorCapability() VaillantRegu
 	}
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
-	switch provider.vaillantRegulatorCapability {
-	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent:
-		return provider.vaillantRegulatorCapability
-	default:
-		return VaillantRegulatorCapabilityUnknown
-	}
+	return NormalizeVaillantRegulatorCapability(provider.vaillantRegulatorCapability)
 }
 
 func (provider *LiveSemanticProvider) SetVaillantRegulatorCapability(capability VaillantRegulatorCapability) {
 	if provider == nil {
 		return
 	}
-	switch capability {
-	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent:
-	default:
-		capability = VaillantRegulatorCapabilityUnknown
-	}
+	capability = NormalizeVaillantRegulatorCapability(capability)
 	provider.mu.Lock()
 	provider.vaillantRegulatorCapability = capability
 	provider.mu.Unlock()

@@ -113,6 +113,19 @@ type VaillantRegulatorCapabilityProvider interface {
 	VaillantRegulatorCapability() VaillantRegulatorCapability
 }
 
+// NormalizeVaillantRegulatorCapability keeps every consumer boundary within
+// the public tri-state contract. Optional providers may be implemented outside
+// this package, so zero and unsupported values fail closed rather than reaching
+// a non-null GraphQL enum as an invalid value.
+func NormalizeVaillantRegulatorCapability(capability VaillantRegulatorCapability) VaillantRegulatorCapability {
+	switch capability {
+	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent, VaillantRegulatorCapabilityUnknown:
+		return capability
+	default:
+		return VaillantRegulatorCapabilityUnknown
+	}
+}
+
 type ManagingDevice struct {
 	Role     ManagingDeviceRole
 	DeviceID *string

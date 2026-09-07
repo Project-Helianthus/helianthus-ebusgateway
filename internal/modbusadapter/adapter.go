@@ -123,7 +123,10 @@ func Start(
 	}
 	var canonicalShadow *canonicalPVSemRegShadow
 	if config.CanonicalPVShadow.Mode == CanonicalPVShadowModeSemReg {
-		canonicalShadow = newCanonicalPVSemRegShadow()
+		canonicalShadow, err = newCanonicalPVSemRegShadow()
+		if err != nil {
+			return nil, fmt.Errorf("construct canonical PV SemReg shadow: %w", err)
+		}
 	}
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {

@@ -37,6 +37,75 @@ func TestCanonicalPVSemRegShadow_DefaultOffHasNoKernelOrShadowRecord(t *testing.
 	}
 }
 
+func TestCanonicalPVSemRegShadow_SourceEpochIsPerAdapterLifetime(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	config := integrationConfig(t, "tcp://"+listener.Addr().String())
+	config.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
+
+	first, err := Start(context.Background(), config, realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstProducer, err := NewSunSpecProducer(first, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:shadow-first-start", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResult, err := firstProducer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1, DeadlineIdentity: 1})
+	if err != nil || firstResult.Outcome != SunSpecQualificationGO {
+		t.Fatalf("first qualification=%+v err=%v", firstResult, err)
+	}
+	firstShadow, ok := first.CanonicalPVSemRegShadow(firstResult.CapabilityID, firstResult.SampleID)
+	if !ok || len(firstShadow.Snapshot.Cursors) != 1 {
+		t.Fatal("missing first shadow cursor")
+	}
+	firstCursor := firstShadow.Snapshot.Cursors[0]
+	if firstCursor.LastSequence != "1" || firstCursor.DriverGeneration != "1" || firstCursor.SourceEpochID != first.canonicalShadow.sourceEpochID {
+		t.Fatalf("first lifecycle=%+v epoch=%q", firstCursor, first.canonicalShadow.sourceEpochID)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondListener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	secondConfig := integrationConfig(t, "tcp://"+secondListener.Addr().String())
+	secondConfig.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
+	second, err := Start(context.Background(), secondConfig, realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	secondProducer, err := NewSunSpecProducer(second, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:shadow-second-start", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResult, err := secondProducer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1, DeadlineIdentity: 1})
+	if err != nil || secondResult.Outcome != SunSpecQualificationGO {
+		t.Fatalf("second qualification=%+v err=%v", secondResult, err)
+	}
+	secondShadow, ok := second.CanonicalPVSemRegShadow(secondResult.CapabilityID, secondResult.SampleID)
+	if !ok || len(secondShadow.Snapshot.Cursors) != 1 {
+		t.Fatal("missing second shadow cursor")
+	}
+	secondCursor := secondShadow.Snapshot.Cursors[0]
+	if secondCursor.LastSequence != "1" || secondCursor.DriverGeneration != "1" || secondCursor.SourceEpochID != second.canonicalShadow.sourceEpochID {
+		t.Fatalf("second lifecycle=%+v epoch=%q", secondCursor, second.canonicalShadow.sourceEpochID)
+	}
+	if firstCursor.SourceID != secondCursor.SourceID || firstCursor.SourceEpochID == secondCursor.SourceEpochID || firstCursor.LastBatchDigest == secondCursor.LastBatchDigest {
+		t.Fatalf("restart reused source lifecycle bytes: first=%+v second=%+v", firstCursor, secondCursor)
+	}
+	firstTuple := string(firstCursor.SourceID) + "\x00" + string(firstCursor.SourceEpochID) + "\x00" + string(firstCursor.DriverGeneration) + "\x00" + string(firstCursor.LastSequence)
+	secondTuple := string(secondCursor.SourceID) + "\x00" + string(secondCursor.SourceEpochID) + "\x00" + string(secondCursor.DriverGeneration) + "\x00" + string(secondCursor.LastSequence)
+	if firstTuple == secondTuple {
+		t.Fatalf("restart reused generation/sequence tuple with distinct digest: %q", firstTuple)
+	}
+}
+
+func TestCanonicalPVSemRegShadow_EntropyFailureFailsClosed(t *testing.T) {
+	if shadow, err := newCanonicalPVSemRegShadowWithReader(strings.NewReader("too-short")); err == nil || shadow != nil {
+		t.Fatalf("shadow=%+v err=%v; want entropy failure", shadow, err)
+	}
+}
+
 func TestCanonicalPVSemRegShadow_RepresentableNonGeneratingStatesAdvanceLegacyWhenShadowRejects(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string

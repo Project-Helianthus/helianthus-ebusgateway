@@ -2,9 +2,12 @@ package modbusadapter
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,10 +79,11 @@ func (record canonicalPVSemRegShadowRecord) detachedSnapshot() (CanonicalPVSemRe
 }
 
 type canonicalPVSemRegShadow struct {
-	byAsset     map[string]*canonicalPVSemRegShadowAsset
-	records     map[string]canonicalPVSemRegShadowRecord
-	compare     func(pv.Snapshot, semreg.Snapshot, semreg.EvaluationView, projection.ProjectionReport) error
-	lastFailure string
+	byAsset       map[string]*canonicalPVSemRegShadowAsset
+	records       map[string]canonicalPVSemRegShadowRecord
+	sourceEpochID semreg.SourceEpochID
+	compare       func(pv.Snapshot, semreg.Snapshot, semreg.EvaluationView, projection.ProjectionReport) error
+	lastFailure   string
 }
 
 type canonicalPVSemRegShadowAsset struct {
@@ -87,8 +91,23 @@ type canonicalPVSemRegShadowAsset struct {
 	current canonicalPVSemRegShadowRecord
 }
 
-func newCanonicalPVSemRegShadow() *canonicalPVSemRegShadow {
-	return &canonicalPVSemRegShadow{byAsset: make(map[string]*canonicalPVSemRegShadowAsset), records: make(map[string]canonicalPVSemRegShadowRecord), compare: compareCanonicalPVSemRegShadow}
+func newCanonicalPVSemRegShadow() (*canonicalPVSemRegShadow, error) {
+	return newCanonicalPVSemRegShadowWithReader(rand.Reader)
+}
+
+func newCanonicalPVSemRegShadowWithReader(reader io.Reader) (*canonicalPVSemRegShadow, error) {
+	if reader == nil {
+		return nil, errors.New("canonical PV SemReg shadow entropy is unavailable")
+	}
+	var entropy [16]byte
+	if _, err := io.ReadFull(reader, entropy[:]); err != nil {
+		return nil, fmt.Errorf("read canonical PV SemReg shadow entropy: %w", err)
+	}
+	epoch := semreg.SourceEpochID("source-epoch:canonical-pv-shadow:" + hex.EncodeToString(entropy[:]))
+	if err := epoch.Validate(); err != nil {
+		return nil, fmt.Errorf("construct canonical PV SemReg shadow source epoch: %w", err)
+	}
+	return &canonicalPVSemRegShadow{byAsset: make(map[string]*canonicalPVSemRegShadowAsset), records: make(map[string]canonicalPVSemRegShadowRecord), sourceEpochID: epoch, compare: compareCanonicalPVSemRegShadow}, nil
 }
 
 func (shadow *canonicalPVSemRegShadow) close() {
@@ -114,7 +133,7 @@ func (shadow *canonicalPVSemRegShadow) apply(
 	if err != nil {
 		return canonicalPVSemRegShadowRecord{}, err
 	}
-	batch, err := canonicalPVSemRegBatch(observation, encoded, legacy, producedAt, monotonic, staged)
+	batch, err := canonicalPVSemRegBatch(observation, encoded, legacy, producedAt, monotonic, staged, shadow.sourceEpochID)
 	if err != nil {
 		return canonicalPVSemRegShadowRecord{}, err
 	}
@@ -206,8 +225,8 @@ func canonicalPVSemRegMappingsForAsset(assetRef string) (map[string]canonicalPVS
 	return mappings, nil
 }
 
-func canonicalPVSemRegBatch(observation modbusreg.SunSpecQualificationObservation, encoded []byte, legacy pv.Snapshot, producedAt time.Time, monotonic pv.MonotonicNanos, kernel *semreg.PublicationKernel) (semreg.PublicationBatch, error) {
-	if kernel == nil {
+func canonicalPVSemRegBatch(observation modbusreg.SunSpecQualificationObservation, encoded []byte, legacy pv.Snapshot, producedAt time.Time, monotonic pv.MonotonicNanos, kernel *semreg.PublicationKernel, sourceEpochID semreg.SourceEpochID) (semreg.PublicationBatch, error) {
+	if kernel == nil || sourceEpochID == "" {
 		return semreg.PublicationBatch{}, errors.New("canonical PV SemReg shadow kernel is unavailable")
 	}
 	// This is an adapter generation identity, not an observation identity: a
@@ -217,7 +236,7 @@ func canonicalPVSemRegBatch(observation modbusreg.SunSpecQualificationObservatio
 		return semreg.PublicationBatch{}, errors.New("canonical PV asset identity is invalid")
 	}
 	source := semreg.SourceID("source:canonical-pv-shadow:" + id)
-	epoch := semreg.SourceEpochID("source-epoch:canonical-pv-shadow:" + id)
+	epoch := sourceEpochID
 	binding := semreg.NativeBindingID("binding:canonical-pv-shadow:" + id)
 	generation := semreg.Uint64("1")
 	current, _, exists := kernel.Current()

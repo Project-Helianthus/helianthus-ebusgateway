@@ -362,7 +362,7 @@ func TestCanonicalPVSemRegShadow_ComparatorRejectionDoesNotAdvanceLiveState(t *t
 	}
 }
 
-func TestCanonicalPVSemRegShadow_CompactsReplayHistoryAndContinuesPastDoubleBound(t *testing.T) {
+func TestCanonicalPVSemRegShadow_ForkStagingContinuesPastDoubleBoundWithoutGatewayHistory(t *testing.T) {
 	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
 	config := integrationConfig(t, "tcp://"+listener.Addr().String())
 	config.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
@@ -419,12 +419,12 @@ func TestCanonicalPVSemRegShadow_CompactsReplayHistoryAndContinuesPastDoubleBoun
 	if !ok || len(shadow.Snapshot.Facts) != 11 {
 		t.Fatal("compacted shadow lost current facts")
 	}
-	stored := len(adapter.canonicalShadow.byAsset[asset].publications)
-	if stored > maxRetainedProfileObservations {
-		t.Fatalf("unbounded replay history=%d", stored)
+	committed := adapter.canonicalShadow.byAsset[asset]
+	if committed == nil || committed.kernel == nil || len(adapter.canonicalShadow.byAsset) != 1 {
+		t.Fatalf("gateway retained more than one committed kernel for asset: %+v", committed)
 	}
-	if len(shadow.Snapshot.Cursors) != 1 || shadow.Snapshot.Cursors[0].SourceEpochID == before.Snapshot.Cursors[0].SourceEpochID || shadow.Snapshot.Cursors[0].DriverGeneration == before.Snapshot.Cursors[0].DriverGeneration || shadow.Snapshot.Cursors[0].LastSequence == "1" {
-		t.Fatalf("compaction reused publication cursor: before=%+v after=%+v failure=%s", before.Snapshot.Cursors, shadow.Snapshot.Cursors, adapter.canonicalShadow.lastFailure)
+	if len(shadow.Snapshot.Cursors) != 1 || shadow.Snapshot.Cursors[0].SourceID != before.Snapshot.Cursors[0].SourceID || shadow.Snapshot.Cursors[0].SourceEpochID != before.Snapshot.Cursors[0].SourceEpochID || shadow.Snapshot.Cursors[0].DriverGeneration != before.Snapshot.Cursors[0].DriverGeneration || shadow.Snapshot.Cursors[0].LastSequence == "1" {
+		t.Fatalf("fork staging changed publication lifecycle: before=%+v after=%+v failure=%s", before.Snapshot.Cursors, shadow.Snapshot.Cursors, adapter.canonicalShadow.lastFailure)
 	}
 }
 

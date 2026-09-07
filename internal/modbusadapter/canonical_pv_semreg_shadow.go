@@ -83,14 +83,8 @@ type canonicalPVSemRegShadow struct {
 }
 
 type canonicalPVSemRegShadowAsset struct {
-	kernel       *semreg.PublicationKernel
-	publications []canonicalPVSemRegPublication
-	current      canonicalPVSemRegShadowRecord
-}
-
-type canonicalPVSemRegPublication struct {
-	batch     semreg.PublicationBatch
-	monotonic pv.MonotonicNanos
+	kernel  *semreg.PublicationKernel
+	current canonicalPVSemRegShadowRecord
 }
 
 func newCanonicalPVSemRegShadow() *canonicalPVSemRegShadow {
@@ -116,14 +110,7 @@ func (shadow *canonicalPVSemRegShadow) apply(
 	if asset == nil && len(shadow.byAsset) >= maxRetainedProfileObservations {
 		return canonicalPVSemRegShadowRecord{}, errors.New("canonical PV SemReg shadow retention limit reached")
 	}
-	history, err := canonicalPVSemRegHistory(asset)
-	if err != nil {
-		return canonicalPVSemRegShadowRecord{}, err
-	}
-	// PublicationKernel has no restore API. Replaying the bounded accepted
-	// batches into a fresh kernel stages every mutation, so a failed build,
-	// Apply, evaluation, projection, or comparator never advances live state.
-	staged, err := canonicalPVSemRegStage(legacy.AssetRef, history)
+	staged, err := canonicalPVSemRegStage(legacy.AssetRef, asset)
 	if err != nil {
 		return canonicalPVSemRegShadowRecord{}, err
 	}
@@ -153,80 +140,32 @@ func (shadow *canonicalPVSemRegShadow) apply(
 	if err := shadow.compare(legacy, snapshot, evaluation, report); err != nil {
 		return canonicalPVSemRegShadowRecord{}, fmt.Errorf("compare canonical PV SemReg shadow: %w", err)
 	}
-	clonedBatch, err := cloneSemReg(batch)
-	if err != nil {
-		return canonicalPVSemRegShadowRecord{}, fmt.Errorf("copy SemReg shadow publication: %w", err)
-	}
 	if asset == nil {
 		asset = &canonicalPVSemRegShadowAsset{}
 	}
 	record := canonicalPVSemRegShadowRecord{assetRef: legacy.AssetRef, semregSnapshot: snapshot, canonical: canonical, evaluation: evaluation, projection: report}
 	asset.kernel = staged
-	asset.publications = append(history, canonicalPVSemRegPublication{batch: clonedBatch, monotonic: monotonic})
 	asset.current = record
 	shadow.byAsset[legacy.AssetRef] = asset
 	return record, nil
 }
 
-func canonicalPVSemRegHistory(asset *canonicalPVSemRegShadowAsset) ([]canonicalPVSemRegPublication, error) {
-	if asset == nil || len(asset.publications) < maxRetainedProfileObservations {
-		if asset == nil {
-			return nil, nil
+func canonicalPVSemRegStage(assetRef string, asset *canonicalPVSemRegShadowAsset) (*semreg.PublicationKernel, error) {
+	if asset == nil {
+		kernel, err := semreg.NewPublicationKernel(semreg.AssetID(assetRef), pvpack.New())
+		if err != nil {
+			return nil, fmt.Errorf("construct staged SemReg PV kernel: %w", err)
 		}
-		return append([]canonicalPVSemRegPublication(nil), asset.publications...), nil
-	}
-	// Compact to a seed containing the immutable source/binding identity and the
-	// latest complete fact set. The next accepted update continues publication
-	// without retaining unbounded replay history.
-	first, last := asset.publications[0], asset.publications[len(asset.publications)-1]
-	seed, err := cloneSemReg(last.batch)
-	if err != nil {
-		return nil, err
-	}
-	seed.BatchID = semreg.BatchID("batch:canonical-pv-shadow:reseed:" + string(last.batch.SourceID))
-	seed.Sequence, seed.ExpectedSemanticRevision = "1", "0"
-	seed.SourceEpochID = semreg.SourceEpochID(string(first.batch.SourceEpochID) + ":reseed:" + string(last.batch.Sequence))
-	seed.DriverGeneration = incrementSemReg(last.batch.DriverGeneration)
-	seed.SourceUpserts = append([]semreg.SourceDescriptor(nil), first.batch.SourceUpserts...)
-	seed.BindingUpserts = append([]semreg.NativeBinding(nil), first.batch.BindingUpserts...)
-	seed.IdentityLinkUpserts = append([]semreg.IdentityLink(nil), first.batch.IdentityLinkUpserts...)
-	seed.SourceUpserts[0].SourceEpochID, seed.SourceUpserts[0].Revision = seed.SourceEpochID, "1"
-	seed.BindingUpserts[0].BindingID, seed.BindingUpserts[0].SourceEpochID, seed.BindingUpserts[0].DriverGeneration, seed.BindingUpserts[0].Revision = semreg.NativeBindingID(string(first.batch.BindingUpserts[0].BindingID)+":reseed:"+string(last.batch.Sequence)), seed.SourceEpochID, seed.DriverGeneration, "1"
-	seed.IdentityLinkUpserts[0].BindingID, seed.IdentityLinkUpserts[0].Revision = seed.BindingUpserts[0].BindingID, "1"
-	for index := range seed.FactUpserts {
-		seed.FactUpserts[index].Revision = "1"
-		seed.FactUpserts[index].SourceEpochID = &seed.SourceEpochID
-		seed.FactUpserts[index].DriverGeneration = &seed.DriverGeneration
-		seed.FactUpserts[index].BindingID = &seed.BindingUpserts[0].BindingID
-		seed.FactUpserts[index].Origin.SourceEpochID = &seed.SourceEpochID
-		seed.FactUpserts[index].Origin.BindingID = &seed.BindingUpserts[0].BindingID
-	}
-	digest, err := seed.ComputedDigest()
-	if err != nil {
-		return nil, err
-	}
-	seed.BatchDigest = digest
-	return []canonicalPVSemRegPublication{{batch: seed, monotonic: last.monotonic}}, nil
-}
-
-func canonicalPVSemRegStage(assetRef string, accepted []canonicalPVSemRegPublication) (*semreg.PublicationKernel, error) {
-	kernel, err := semreg.NewPublicationKernel(semreg.AssetID(assetRef), pvpack.New())
-	if err != nil {
-		return nil, fmt.Errorf("construct staged SemReg PV kernel: %w", err)
-	}
-	if accepted == nil {
 		return kernel, nil
 	}
-	for _, publication := range accepted {
-		batch, err := cloneSemReg(publication.batch)
-		if err != nil {
-			return nil, fmt.Errorf("copy accepted SemReg shadow publication: %w", err)
-		}
-		if _, _, err := kernel.Apply(batch, canonicalPVSemRegMonotonic(publication.monotonic)); err != nil {
-			return nil, fmt.Errorf("replay accepted SemReg shadow publication: %w", err)
-		}
+	if asset.kernel == nil {
+		return nil, errors.New("committed SemReg PV kernel is unavailable")
 	}
-	return kernel, nil
+	staged, err := asset.kernel.Fork()
+	if err != nil {
+		return nil, fmt.Errorf("fork staged SemReg PV kernel: %w", err)
+	}
+	return staged, nil
 }
 
 type canonicalPVSemRegMapping struct {

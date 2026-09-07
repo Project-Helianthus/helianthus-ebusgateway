@@ -134,6 +134,12 @@ func TestCanonicalPVShadowPipeline(t *testing.T) {
 	if len(snapshot.Facts) != 11 || len(snapshot.Services) != 0 || len(snapshot.Capabilities) != 0 || len(snapshot.Bindings) != 1 || len(snapshot.IdentityLinks) != 1 {
 		t.Fatalf("runtime state facts=%d services=%d capabilities=%d", len(snapshot.Facts), len(snapshot.Services), len(snapshot.Capabilities))
 	}
+	for _, submitted := range batch.FactUpserts {
+		published := envelopeFor(t, snapshot, submitted.Key)
+		if len(published.Candidates) != 1 || !sameFactCandidate(t, published.Candidates[0], submitted) {
+			t.Fatalf("published candidate drifted for %s: got=%+v want=%+v", submitted.CandidateID, published, submitted)
+		}
+	}
 	if encoded, err := semreg.CanonicalJSON(snapshot); err != nil || !bytes.Equal(encoded, canonical) {
 		t.Fatalf("canonical snapshot: %v", err)
 	}

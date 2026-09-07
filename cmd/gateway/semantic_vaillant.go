@@ -671,11 +671,11 @@ func (p *vaillantSemanticPoller) publishRegulatorCapability(capability productid
 	}
 	switch capability {
 	case productids.ControllerPresent:
-		p.provider.SetRegulatorCapability(graphql.RegulatorCapabilityPresent)
+		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
 	case productids.ControllerNone:
-		p.provider.SetRegulatorCapability(graphql.RegulatorCapabilityNone)
+		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
 	default:
-		p.provider.SetRegulatorCapability(graphql.RegulatorCapabilityUnknown)
+		p.provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityUnknown)
 	}
 }
 

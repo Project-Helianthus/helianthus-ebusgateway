@@ -57,18 +57,18 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu                  sync.RWMutex
-	zones               []Zone
-	dhw                 *DhwStatus
-	circuits            []CircuitStatus
-	radio               []RadioDevice
-	fm5Mode             Fm5SemanticMode
-	fm5Verdict          Fm5Interpretation
-	solar               *SolarStatus
-	cylinders           []CylinderStatus
-	energy              *EnergyTotals
-	boiler              *BoilerStatus
-	regulatorCapability RegulatorCapability
+	mu                          sync.RWMutex
+	zones                       []Zone
+	dhw                         *DhwStatus
+	circuits                    []CircuitStatus
+	radio                       []RadioDevice
+	fm5Mode                     Fm5SemanticMode
+	fm5Verdict                  Fm5Interpretation
+	solar                       *SolarStatus
+	cylinders                   []CylinderStatus
+	energy                      *EnergyTotals
+	boiler                      *BoilerStatus
+	vaillantRegulatorCapability VaillantRegulatorCapability
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
@@ -99,11 +99,11 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 	semanticLiveEpoch.Set(0)
 
 	return &LiveSemanticProvider{
-		phase:               SemanticStartupPhaseBootInit,
-		startupUpdatedAt:    time.Now().UTC(),
-		fm5Mode:             Fm5SemanticModeAbsent,
-		regulatorCapability: RegulatorCapabilityUnknown,
-		energyMerge:         newEnergyMergeStore(),
+		phase:                       SemanticStartupPhaseBootInit,
+		startupUpdatedAt:            time.Now().UTC(),
+		fm5Mode:                     Fm5SemanticModeAbsent,
+		vaillantRegulatorCapability: VaillantRegulatorCapabilityUnknown,
+		energyMerge:                 newEnergyMergeStore(),
 	}
 }
 
@@ -267,31 +267,31 @@ func (provider *LiveSemanticProvider) FM5Interpretation() Fm5Interpretation {
 	return provider.fm5Verdict
 }
 
-func (provider *LiveSemanticProvider) RegulatorCapability() RegulatorCapability {
+func (provider *LiveSemanticProvider) VaillantRegulatorCapability() VaillantRegulatorCapability {
 	if provider == nil {
-		return RegulatorCapabilityUnknown
+		return VaillantRegulatorCapabilityUnknown
 	}
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
-	switch provider.regulatorCapability {
-	case RegulatorCapabilityNone, RegulatorCapabilityPresent:
-		return provider.regulatorCapability
+	switch provider.vaillantRegulatorCapability {
+	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent:
+		return provider.vaillantRegulatorCapability
 	default:
-		return RegulatorCapabilityUnknown
+		return VaillantRegulatorCapabilityUnknown
 	}
 }
 
-func (provider *LiveSemanticProvider) SetRegulatorCapability(capability RegulatorCapability) {
+func (provider *LiveSemanticProvider) SetVaillantRegulatorCapability(capability VaillantRegulatorCapability) {
 	if provider == nil {
 		return
 	}
 	switch capability {
-	case RegulatorCapabilityNone, RegulatorCapabilityPresent:
+	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent:
 	default:
-		capability = RegulatorCapabilityUnknown
+		capability = VaillantRegulatorCapabilityUnknown
 	}
 	provider.mu.Lock()
-	provider.regulatorCapability = capability
+	provider.vaillantRegulatorCapability = capability
 	provider.mu.Unlock()
 }
 

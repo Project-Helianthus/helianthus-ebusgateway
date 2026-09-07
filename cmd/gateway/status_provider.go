@@ -80,11 +80,15 @@ func (p runtimeMCPStatusProvider) AdapterStatus() mcp.ServiceStatus {
 	}
 }
 
-func (p runtimeMCPStatusProvider) RegulatorCapability() string {
+func (p runtimeMCPStatusProvider) VaillantRegulatorCapability() string {
 	if p.semantic == nil {
-		return string(graphql.RegulatorCapabilityUnknown)
+		return string(graphql.VaillantRegulatorCapabilityUnknown)
 	}
-	return string(p.semantic.RegulatorCapability())
+	provider, ok := p.semantic.(graphql.VaillantRegulatorCapabilityProvider)
+	if !ok {
+		return string(graphql.VaillantRegulatorCapabilityUnknown)
+	}
+	return string(provider.VaillantRegulatorCapability())
 }
 
 func newMCPRuntimeStatusProvider(semantic graphql.SemanticProvider, admittedSource func() (byte, bool)) mcp.StatusProvider {

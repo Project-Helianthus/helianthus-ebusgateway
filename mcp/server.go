@@ -2507,16 +2507,16 @@ func (s *Server) runtimeStatus(snapshot *snapshotState) map[string]any {
 		return cloneMap(snapshot.runtime)
 	}
 	capability := "UNKNOWN"
-	if provider, ok := s.statusProvider.(interface{ RegulatorCapability() string }); ok {
-		switch value := provider.RegulatorCapability(); value {
+	if provider, ok := s.statusProvider.(interface{ VaillantRegulatorCapability() string }); ok {
+		switch value := provider.VaillantRegulatorCapability(); value {
 		case "NONE", "PRESENT":
 			capability = value
 		}
 	}
 	return map[string]any{
-		"daemon_status":        s.statusProvider.DaemonStatus(),
-		"adapter_status":       s.statusProvider.AdapterStatus(),
-		"regulator_capability": capability,
+		"daemon_status":                 s.statusProvider.DaemonStatus(),
+		"adapter_status":                s.statusProvider.AdapterStatus(),
+		"vaillant_regulator_capability": capability,
 	}
 }
 

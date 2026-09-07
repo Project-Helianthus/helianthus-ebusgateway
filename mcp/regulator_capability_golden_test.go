@@ -19,7 +19,7 @@ func (provider regulatorCapabilityStatusProvider) AdapterStatus() ServiceStatus 
 	return ServiceStatus{Status: "unknown"}
 }
 
-func (provider regulatorCapabilityStatusProvider) RegulatorCapability() string {
+func (provider regulatorCapabilityStatusProvider) VaillantRegulatorCapability() string {
 	return provider.capability
 }
 
@@ -30,7 +30,22 @@ func TestRuntimeStatusRegulatorCapabilityGoldenAndFailClosed(t *testing.T) {
 	}
 	server.SetStatusProvider(regulatorCapabilityStatusProvider{capability: "PRESENT"})
 
-	got, err := json.MarshalIndent(server.runtimeStatus(nil), "", "  ")
+	envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+	}))
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("envelope meta = %T; want object", envelope["meta"])
+	}
+	if timestamp, _ := meta["data_timestamp"].(string); timestamp == "" {
+		t.Fatal("runtime status envelope data_timestamp is empty")
+	}
+	meta["data_timestamp"] = "<runtime>"
+
+	got, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		t.Fatalf("Marshal runtime status: %v", err)
 	}
@@ -43,7 +58,13 @@ func TestRuntimeStatusRegulatorCapabilityGoldenAndFailClosed(t *testing.T) {
 	}
 
 	server.SetStatusProvider(regulatorCapabilityStatusProvider{capability: "invalid"})
-	if got := server.runtimeStatus(nil)["regulator_capability"]; got != "UNKNOWN" {
+	invalid := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      2,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.runtime.status.get","arguments":{}}`),
+	}))
+	if got := invalid["data"].(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
 		t.Fatalf("invalid capability = %#v; want UNKNOWN", got)
 	}
 }

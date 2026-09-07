@@ -3,35 +3,35 @@ package graphql
 import graphqlgo "github.com/graphql-go/graphql"
 
 type graphqlSchemaTypes struct {
-	fieldType               *graphqlgo.Object
-	responseType            *graphqlgo.Object
-	methodType              *graphqlgo.Object
-	projectionNodeType      *graphqlgo.Object
-	projectionEdgeType      *graphqlgo.Object
-	projectionType          *graphqlgo.Object
-	planeType               *graphqlgo.Object
-	deviceType              *graphqlgo.Object
-	broadcastType           *graphqlgo.Object
-	statusType              *graphqlgo.Object
-	gatewayIdentityType     *graphqlgo.Object
-	zoneType                *graphqlgo.Object
-	dhwType                 *graphqlgo.Object
-	circuitStatusType       *graphqlgo.Object
-	radioDeviceType         *graphqlgo.Object
-	fm5SemanticMode         *graphqlgo.Enum
-	regulatorCapability     *graphqlgo.Enum
-	fm5Interpretation       *graphqlgo.Object
-	solarStatusType         *graphqlgo.Object
-	cylinderStatusType      *graphqlgo.Object
-	energyTotals            *graphqlgo.Object
-	boilerStatusType        *graphqlgo.Object
-	systemStatusType        *graphqlgo.Object
-	scheduleStatusType      *graphqlgo.Object
-	adapterHardwareInfoType *graphqlgo.Object
-	busSummaryType          *graphqlgo.Object
-	busMessagesType         *graphqlgo.Object
-	busPeriodicityType      *graphqlgo.Object
-	watchSummaryType        *graphqlgo.Object
+	fieldType                   *graphqlgo.Object
+	responseType                *graphqlgo.Object
+	methodType                  *graphqlgo.Object
+	projectionNodeType          *graphqlgo.Object
+	projectionEdgeType          *graphqlgo.Object
+	projectionType              *graphqlgo.Object
+	planeType                   *graphqlgo.Object
+	deviceType                  *graphqlgo.Object
+	broadcastType               *graphqlgo.Object
+	statusType                  *graphqlgo.Object
+	gatewayIdentityType         *graphqlgo.Object
+	zoneType                    *graphqlgo.Object
+	dhwType                     *graphqlgo.Object
+	circuitStatusType           *graphqlgo.Object
+	radioDeviceType             *graphqlgo.Object
+	fm5SemanticMode             *graphqlgo.Enum
+	vaillantRegulatorCapability *graphqlgo.Enum
+	fm5Interpretation           *graphqlgo.Object
+	solarStatusType             *graphqlgo.Object
+	cylinderStatusType          *graphqlgo.Object
+	energyTotals                *graphqlgo.Object
+	boilerStatusType            *graphqlgo.Object
+	systemStatusType            *graphqlgo.Object
+	scheduleStatusType          *graphqlgo.Object
+	adapterHardwareInfoType     *graphqlgo.Object
+	busSummaryType              *graphqlgo.Object
+	busMessagesType             *graphqlgo.Object
+	busPeriodicityType          *graphqlgo.Object
+	watchSummaryType            *graphqlgo.Object
 }
 
 func buildSchemaTypes() graphqlSchemaTypes {
@@ -1517,12 +1517,12 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		},
 	})
 
-	regulatorCapabilityType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
-		Name: "RegulatorCapability",
+	vaillantRegulatorCapabilityType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+		Name: "VaillantRegulatorCapability",
 		Values: graphqlgo.EnumValueConfigMap{
-			"UNKNOWN": &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityUnknown)},
-			"NONE":    &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityNone)},
-			"PRESENT": &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityPresent)},
+			"UNKNOWN": &graphqlgo.EnumValueConfig{Value: string(VaillantRegulatorCapabilityUnknown)},
+			"NONE":    &graphqlgo.EnumValueConfig{Value: string(VaillantRegulatorCapabilityNone)},
+			"PRESENT": &graphqlgo.EnumValueConfig{Value: string(VaillantRegulatorCapabilityPresent)},
 		},
 	})
 
@@ -4998,34 +4998,34 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	watchSummaryType := buildWatchSummaryType()
 
 	return graphqlSchemaTypes{
-		fieldType:               fieldType,
-		responseType:            responseType,
-		methodType:              methodType,
-		projectionNodeType:      projectionNodeType,
-		projectionEdgeType:      projectionEdgeType,
-		projectionType:          projectionType,
-		planeType:               planeType,
-		deviceType:              deviceType,
-		broadcastType:           buildBroadcastType(),
-		statusType:              statusType,
-		gatewayIdentityType:     gatewayIdentityType,
-		zoneType:                zoneType,
-		dhwType:                 dhwType,
-		circuitStatusType:       circuitStatusType,
-		radioDeviceType:         radioDeviceType,
-		fm5SemanticMode:         fm5SemanticModeType,
-		regulatorCapability:     regulatorCapabilityType,
-		fm5Interpretation:       fm5InterpretationType,
-		solarStatusType:         solarStatusType,
-		cylinderStatusType:      cylinderStatusType,
-		energyTotals:            energyTotalsType,
-		boilerStatusType:        boilerStatusType,
-		systemStatusType:        systemStatusType,
-		scheduleStatusType:      scheduleStatusType,
-		adapterHardwareInfoType: adapterHardwareInfoType,
-		busSummaryType:          busSummaryType,
-		busMessagesType:         busMessagesType,
-		busPeriodicityType:      busPeriodicityType,
-		watchSummaryType:        watchSummaryType,
+		fieldType:                   fieldType,
+		responseType:                responseType,
+		methodType:                  methodType,
+		projectionNodeType:          projectionNodeType,
+		projectionEdgeType:          projectionEdgeType,
+		projectionType:              projectionType,
+		planeType:                   planeType,
+		deviceType:                  deviceType,
+		broadcastType:               buildBroadcastType(),
+		statusType:                  statusType,
+		gatewayIdentityType:         gatewayIdentityType,
+		zoneType:                    zoneType,
+		dhwType:                     dhwType,
+		circuitStatusType:           circuitStatusType,
+		radioDeviceType:             radioDeviceType,
+		fm5SemanticMode:             fm5SemanticModeType,
+		vaillantRegulatorCapability: vaillantRegulatorCapabilityType,
+		fm5Interpretation:           fm5InterpretationType,
+		solarStatusType:             solarStatusType,
+		cylinderStatusType:          cylinderStatusType,
+		energyTotals:                energyTotalsType,
+		boilerStatusType:            boilerStatusType,
+		systemStatusType:            systemStatusType,
+		scheduleStatusType:          scheduleStatusType,
+		adapterHardwareInfoType:     adapterHardwareInfoType,
+		busSummaryType:              busSummaryType,
+		busMessagesType:             busMessagesType,
+		busPeriodicityType:          busPeriodicityType,
+		watchSummaryType:            watchSummaryType,
 	}
 }

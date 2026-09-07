@@ -96,6 +96,36 @@ const (
 	ManagingDeviceRoleUnknown        ManagingDeviceRole = "UNKNOWN"
 )
 
+// VaillantRegulatorCapability is the catalog-qualified answer to whether the observed
+// Vaillant inventory contains a regulator. It deliberately does not describe
+// reachability or the regulator-absence grace FSM.
+type VaillantRegulatorCapability string
+
+const (
+	VaillantRegulatorCapabilityUnknown VaillantRegulatorCapability = "UNKNOWN"
+	VaillantRegulatorCapabilityNone    VaillantRegulatorCapability = "NONE"
+	VaillantRegulatorCapabilityPresent VaillantRegulatorCapability = "PRESENT"
+)
+
+// VaillantRegulatorCapabilityProvider is an additive optional projection for
+// consumers that need the catalog-qualified Vaillant regulator result.
+type VaillantRegulatorCapabilityProvider interface {
+	VaillantRegulatorCapability() VaillantRegulatorCapability
+}
+
+// NormalizeVaillantRegulatorCapability keeps every consumer boundary within
+// the public tri-state contract. Optional providers may be implemented outside
+// this package, so zero and unsupported values fail closed rather than reaching
+// a non-null GraphQL enum as an invalid value.
+func NormalizeVaillantRegulatorCapability(capability VaillantRegulatorCapability) VaillantRegulatorCapability {
+	switch capability {
+	case VaillantRegulatorCapabilityNone, VaillantRegulatorCapabilityPresent, VaillantRegulatorCapabilityUnknown:
+		return capability
+	default:
+		return VaillantRegulatorCapabilityUnknown
+	}
+}
+
 type ManagingDevice struct {
 	Role     ManagingDeviceRole
 	DeviceID *string
@@ -522,6 +552,10 @@ func (staticSemanticProvider) Schedules() *ScheduleStatus {
 
 func (staticSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return nil
+}
+
+func (staticSemanticProvider) VaillantRegulatorCapability() VaillantRegulatorCapability {
+	return VaillantRegulatorCapabilityUnknown
 }
 
 var liveSystemSnapshots sync.Map

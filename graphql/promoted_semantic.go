@@ -142,6 +142,12 @@ func (p promotedSemanticProvider) Schedules() *ScheduleStatus  { return p.base.S
 func (p promotedSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return p.base.AdapterHardwareInfo()
 }
+func (p promotedSemanticProvider) VaillantRegulatorCapability() VaillantRegulatorCapability {
+	if provider, ok := p.base.(VaillantRegulatorCapabilityProvider); ok {
+		return provider.VaillantRegulatorCapability()
+	}
+	return VaillantRegulatorCapabilityUnknown
+}
 
 // BaseSemanticProvider returns the owner-local provider beneath this public
 // projection. Owner-only consumers such as stable eBUS MCP tools must unwrap

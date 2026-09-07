@@ -57,17 +57,18 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu         sync.RWMutex
-	zones      []Zone
-	dhw        *DhwStatus
-	circuits   []CircuitStatus
-	radio      []RadioDevice
-	fm5Mode    Fm5SemanticMode
-	fm5Verdict Fm5Interpretation
-	solar      *SolarStatus
-	cylinders  []CylinderStatus
-	energy     *EnergyTotals
-	boiler     *BoilerStatus
+	mu                          sync.RWMutex
+	zones                       []Zone
+	dhw                         *DhwStatus
+	circuits                    []CircuitStatus
+	radio                       []RadioDevice
+	fm5Mode                     Fm5SemanticMode
+	fm5Verdict                  Fm5Interpretation
+	solar                       *SolarStatus
+	cylinders                   []CylinderStatus
+	energy                      *EnergyTotals
+	boiler                      *BoilerStatus
+	vaillantRegulatorCapability VaillantRegulatorCapability
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
@@ -98,10 +99,11 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 	semanticLiveEpoch.Set(0)
 
 	return &LiveSemanticProvider{
-		phase:            SemanticStartupPhaseBootInit,
-		startupUpdatedAt: time.Now().UTC(),
-		fm5Mode:          Fm5SemanticModeAbsent,
-		energyMerge:      newEnergyMergeStore(),
+		phase:                       SemanticStartupPhaseBootInit,
+		startupUpdatedAt:            time.Now().UTC(),
+		fm5Mode:                     Fm5SemanticModeAbsent,
+		vaillantRegulatorCapability: VaillantRegulatorCapabilityUnknown,
+		energyMerge:                 newEnergyMergeStore(),
 	}
 }
 
@@ -263,6 +265,25 @@ func (provider *LiveSemanticProvider) FM5Interpretation() Fm5Interpretation {
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	return provider.fm5Verdict
+}
+
+func (provider *LiveSemanticProvider) VaillantRegulatorCapability() VaillantRegulatorCapability {
+	if provider == nil {
+		return VaillantRegulatorCapabilityUnknown
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	return NormalizeVaillantRegulatorCapability(provider.vaillantRegulatorCapability)
+}
+
+func (provider *LiveSemanticProvider) SetVaillantRegulatorCapability(capability VaillantRegulatorCapability) {
+	if provider == nil {
+		return
+	}
+	capability = NormalizeVaillantRegulatorCapability(capability)
+	provider.mu.Lock()
+	provider.vaillantRegulatorCapability = capability
+	provider.mu.Unlock()
 }
 
 func (provider *LiveSemanticProvider) Solar() *SolarStatus {

@@ -27,6 +27,7 @@ var canonicalQueryRootFields = []string{
 	"circuits",
 	"radioDevices",
 	"fm5SemanticMode",
+	"vaillant_regulator_capability",
 	"solar",
 	"cylinders",
 	"boilerStatus",

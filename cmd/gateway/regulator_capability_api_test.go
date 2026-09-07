@@ -1,0 +1,222 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/vaillant/productids"
+	graphqlgo "github.com/graphql-go/graphql"
+)
+
+func TestIssue946CatalogAggregateProjectsVaillantRegulatorCapability(t *testing.T) {
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		devices    []registry.DeviceInfo
+		catalogErr error
+		want       graphql.VaillantRegulatorCapability
+	}{
+		{
+			name: "present wins over unknown",
+			devices: []registry.DeviceInfo{
+				{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: "21-22-09-0020028521-0082-005409-N4"},
+				{Address: 0x60, Manufacturer: "Vaillant"},
+			},
+			want: graphql.VaillantRegulatorCapabilityPresent,
+		},
+		{
+			name: "none requires catalog-known non-regulators",
+			devices: []registry.DeviceInfo{
+				{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: "21-22-09-0010002315-0082-005409-N4"},
+			},
+			want: graphql.VaillantRegulatorCapabilityNone,
+		},
+		{
+			name: "mixed known and unknown is unknown",
+			devices: []registry.DeviceInfo{
+				{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: "21-22-09-0010002315-0082-005409-N4"},
+				{Address: 0x60, Manufacturer: "Vaillant"},
+			},
+			want: graphql.VaillantRegulatorCapabilityUnknown,
+		},
+		{
+			name:       "catalog failure is unknown",
+			devices:    []registry.DeviceInfo{{Address: 0x15, Manufacturer: "Vaillant", SerialNumber: "21-22-09-0020028521-0082-005409-N4"}},
+			catalogErr: fmt.Errorf("catalog unavailable"),
+			want:       graphql.VaillantRegulatorCapabilityUnknown,
+		},
+		{
+			name: "no vaillant identity is unknown",
+			devices: []registry.DeviceInfo{
+				{Address: 0x15, Manufacturer: "other", DeviceID: "BASV"},
+			},
+			want: graphql.VaillantRegulatorCapabilityUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := graphql.NewLiveSemanticProvider()
+			poller := &vaillantSemanticPoller{
+				reg:        newTestRegistry(tc.devices...),
+				catalog:    catalog,
+				catalogErr: tc.catalogErr,
+				provider:   provider,
+			}
+			poller.refreshRegulatorCapability(context.Background())
+			if got := provider.VaillantRegulatorCapability(); got != tc.want {
+				t.Fatalf("published regulator capability = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIssue946VaillantRegulatorCapabilityMCPGraphQLParityAndSnapshot(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityPresent)
+
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetSemanticProvider(provider)
+	schema, err := graphql.NewQuerySchema(builder)
+	if err != nil {
+		t.Fatalf("NewQuerySchema() error: %v", err)
+	}
+	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ vaillant_regulator_capability }`})
+	if len(result.Errors) != 0 {
+		t.Fatalf("GraphQL errors = %v", result.Errors)
+	}
+	graphQLCapability := result.Data.(map[string]any)["vaillant_regulator_capability"]
+
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error: %v", err)
+	}
+	server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
+	live := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	liveData := live["data"].(map[string]any)
+	if got := liveData["vaillant_regulator_capability"]; got != graphQLCapability {
+		t.Fatalf("MCP capability = %#v; GraphQL = %#v", got, graphQLCapability)
+	}
+
+	captured := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.snapshot.capture", `{}`)
+	snapshotID := captured["data"].(map[string]any)["snapshot_id"].(string)
+	provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapabilityNone)
+	snapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
+	if got := snapshot["data"].(map[string]any)["vaillant_regulator_capability"]; got != "PRESENT" {
+		t.Fatalf("snapshot regulator capability = %#v; want PRESENT", got)
+	}
+	semanticSnapshot := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.semantic.snapshot.get", `{"planes":["runtime_status"],"consistency":{"mode":"SNAPSHOT","snapshot_id":"`+snapshotID+`"}}`)
+	semanticRuntime := semanticSnapshot["data"].(map[string]any)["planes"].(map[string]any)["runtime_status"].(map[string]any)
+	if got := semanticRuntime["vaillant_regulator_capability"]; got != "PRESENT" {
+		t.Fatalf("semantic snapshot regulator capability = %#v; want PRESENT", got)
+	}
+	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "NONE" {
+		t.Fatalf("live regulator capability after update = %#v; want NONE", got)
+	}
+}
+
+func TestIssue946VaillantRegulatorCapabilityInvalidProviderValueFailsClosed(t *testing.T) {
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetVaillantRegulatorCapability(graphql.VaillantRegulatorCapability("invalid"))
+	if got := provider.VaillantRegulatorCapability(); got != graphql.VaillantRegulatorCapabilityUnknown {
+		t.Fatalf("invalid provider capability = %q; want UNKNOWN", got)
+	}
+}
+
+// issue946ExternalCapabilityProvider simulates an additive provider owned by a
+// consumer outside the live semantic publisher. Its value is deliberately not
+// pre-normalized, so the public GraphQL and MCP boundaries must each preserve
+// their documented fail-closed contract.
+type issue946ExternalCapabilityProvider struct {
+	graphql.SemanticProvider
+	capability graphql.VaillantRegulatorCapability
+}
+
+func (provider issue946ExternalCapabilityProvider) VaillantRegulatorCapability() graphql.VaillantRegulatorCapability {
+	return provider.capability
+}
+
+func TestIssue946VaillantRegulatorCapabilityMCPGraphQLParityForExternalProviderValues(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		capability graphql.VaillantRegulatorCapability
+		want       string
+	}{
+		{name: "unknown", capability: graphql.VaillantRegulatorCapabilityUnknown, want: "UNKNOWN"},
+		{name: "none", capability: graphql.VaillantRegulatorCapabilityNone, want: "NONE"},
+		{name: "present", capability: graphql.VaillantRegulatorCapabilityPresent, want: "PRESENT"},
+		{name: "zero value", capability: "", want: "UNKNOWN"},
+		{name: "unsupported", capability: "OTHER", want: "UNKNOWN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := issue946ExternalCapabilityProvider{
+				SemanticProvider: graphql.NewLiveSemanticProvider(),
+				capability:       tc.capability,
+			}
+			builder := graphql.NewBuilder(nil, nil)
+			builder.SetSemanticProvider(provider)
+			schema, err := graphql.NewQuerySchema(builder)
+			if err != nil {
+				t.Fatalf("NewQuerySchema() error: %v", err)
+			}
+			result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ vaillant_regulator_capability }`})
+			if len(result.Errors) != 0 {
+				t.Fatalf("GraphQL errors = %v", result.Errors)
+			}
+			graphQLCapability := result.Data.(map[string]any)["vaillant_regulator_capability"]
+			if graphQLCapability != tc.want {
+				t.Fatalf("GraphQL capability = %#v; want %q", graphQLCapability, tc.want)
+			}
+
+			server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+			if err != nil {
+				t.Fatalf("mcp.NewServer() error: %v", err)
+			}
+			server.SetStatusProvider(newMCPRuntimeStatusProvider(provider, nil))
+			mcpCapability := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]
+			if mcpCapability != tc.want {
+				t.Fatalf("MCP capability = %#v; want %q", mcpCapability, tc.want)
+			}
+			if mcpCapability != graphQLCapability {
+				t.Fatalf("MCP capability = %#v; GraphQL = %#v", mcpCapability, graphQLCapability)
+			}
+		})
+	}
+}
+
+type issue946LegacySemanticProvider struct {
+	graphql.SemanticProvider
+}
+
+func TestIssue946VaillantRegulatorCapabilityOptionalProviderFailsClosed(t *testing.T) {
+	legacy := issue946LegacySemanticProvider{SemanticProvider: graphql.NewLiveSemanticProvider()}
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetSemanticProvider(legacy)
+	schema, err := graphql.NewQuerySchema(builder)
+	if err != nil {
+		t.Fatalf("NewQuerySchema() error: %v", err)
+	}
+	result := graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: `{ vaillant_regulator_capability }`})
+	if len(result.Errors) != 0 {
+		t.Fatalf("GraphQL errors = %v", result.Errors)
+	}
+	if got := result.Data.(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
+		t.Fatalf("legacy GraphQL capability = %#v; want UNKNOWN", got)
+	}
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error: %v", err)
+	}
+	server.SetStatusProvider(newMCPRuntimeStatusProvider(legacy, nil))
+	if got := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)["data"].(map[string]any)["vaillant_regulator_capability"]; got != "UNKNOWN" {
+		t.Fatalf("legacy MCP capability = %#v; want UNKNOWN", got)
+	}
+}

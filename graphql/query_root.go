@@ -60,6 +60,16 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.statusProvider().AdapterStatus(), nil
 				},
 			},
+			"vaillant_regulator_capability": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.vaillantRegulatorCapability),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					provider, ok := builder.semanticProvider().(VaillantRegulatorCapabilityProvider)
+					if !ok {
+						return string(VaillantRegulatorCapabilityUnknown), nil
+					}
+					return string(NormalizeVaillantRegulatorCapability(provider.VaillantRegulatorCapability())), nil
+				},
+			},
 			"zones": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.zoneType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

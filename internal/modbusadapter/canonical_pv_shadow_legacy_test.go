@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
@@ -42,6 +43,13 @@ type canonicalPVShadowDonor struct {
 		Scale           int    `json:"scale"`
 		Symbol          string `json:"symbol"`
 		Unit            string `json:"unit"`
+		FreshnessPolicy struct {
+			ID                   string `json:"id"`
+			Version              string `json:"version"`
+			FreshForNS           string `json:"fresh_for_ns"`
+			RetainForNS          string `json:"retain_for_ns"`
+			MaxWallUncertaintyNS string `json:"max_wall_uncertainty_ns"`
+		} `json:"freshness_policy"`
 	} `json:"facts"`
 	Withheld []struct {
 		RequestRef      string `json:"request_ref"`
@@ -217,6 +225,12 @@ func TestCanonicalPVShadowLegacyProducerFixture(t *testing.T) {
 		fact, ok := snapshot.Facts[key]
 		if !ok || string(fact.Unit) != expected.Unit || fact.Quality != pv.QualityGood || fact.Availability != pv.AvailabilityAvailable || fact.Freshness != pv.FreshnessFresh || fact.OriginRef != snapshot.Source.SourceObservationRef {
 			t.Fatalf("legacy fact %s drifted: %#v", expected.LegacyKey, fact)
+		}
+		freshFor, freshErr := strconv.ParseInt(expected.FreshnessPolicy.FreshForNS, 10, 64)
+		retainFor, retainErr := strconv.ParseInt(expected.FreshnessPolicy.RetainForNS, 10, 64)
+		policy, policyOK := pv.PolicyByID(pv.PolicyID(expected.FreshnessPolicy.ID))
+		if freshErr != nil || retainErr != nil || expected.FreshnessPolicy.Version != "1.0.0" || expected.FreshnessPolicy.MaxWallUncertaintyNS != "0" || !policyOK || policy.FreshFor != pv.MonotonicNanos(freshFor) || policy.RetainFor != pv.MonotonicNanos(retainFor) || fact.Temporal.Policy != policy.ID || fact.Temporal.FreshUntil != fact.Temporal.Receipt+policy.FreshFor || fact.Temporal.RetainUntil != fact.Temporal.Receipt+policy.RetainFor {
+			t.Fatalf("legacy fact %s lifecycle drifted: fact=%#v accepted=%+v", expected.LegacyKey, fact.Temporal, expected.FreshnessPolicy)
 		}
 		if expected.Symbol != "" {
 			if fact.Value.Symbol != expected.Symbol {

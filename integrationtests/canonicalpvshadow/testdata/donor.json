@@ -57,7 +57,14 @@
       "dimension": "pv.dimension.inverter",
       "dimension_value": "inverter:fixture",
       "semantic_unit": "unit.watt",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:e34f588ca08f204e256e3119ebad3aed024df427164f48410d5bece3ecfa9ebf",
@@ -72,7 +79,14 @@
       "dimension": "pv.dimension.inverter",
       "dimension_value": "inverter:fixture",
       "semantic_unit": "unit.hertz",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:742dfd72dd7950dd6e6b51163652a6008685443b2cc01cdec79f82d5d735c75f",
@@ -90,7 +104,14 @@
       "semantic_coefficient": "42",
       "semantic_exponent10": -3,
       "outcome": "transformed",
-      "loss": "unit: Wh_to_kWh_factor_1000"
+      "loss": "unit: Wh_to_kWh_factor_1000",
+      "freshness_policy": {
+        "id": "pv.accumulator.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "900000000000",
+        "retain_for_ns": "86400000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:9152fde11def0bdd3703a8aec83dcc09fb112bfbc2a30dfceca2f4f3478e97dc",
@@ -106,7 +127,14 @@
       "dimension_value": "inverter:fixture",
       "semantic_unit": "unit.celsius",
       "outcome": "transformed",
-      "loss": "provenance: sensor_id_cabinet_to_inverter"
+      "loss": "provenance: sensor_id_cabinet_to_inverter",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:6e05e76ac18312d255b87519294328d81329b947b6daba4049471a48230e7a1a",
@@ -121,7 +149,14 @@
       "dimension_value": "inverter:fixture",
       "semantic_symbol": "generating",
       "outcome": "transformed",
-      "loss": "symbol: OPERATING_to_generating"
+      "loss": "symbol: OPERATING_to_generating",
+      "freshness_policy": {
+        "id": "pv.status.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "60000000000",
+        "retain_for_ns": "600000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:e31201e9e3097df8d9c58511b057d9b744ad5191f6734dcbf81a5a9634ca6a94",
@@ -136,7 +171,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L1",
       "semantic_unit": "unit.ampere",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:0d0472dbaeb980ee433afa2b7c5866f21369037307809126e4fa8266b180c4b1",
@@ -151,7 +193,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L2",
       "semantic_unit": "unit.ampere",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:debce5d518ab31f6740eb04e708c41f655e0932be7b8e34c0c9ca2264219c3b0",
@@ -166,7 +215,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L3",
       "semantic_unit": "unit.ampere",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:6e985852c6f92a790a1c4a5f68ccf4f215db0bdfe0c9aa270672a7e6dc19ce7c",
@@ -181,7 +237,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L1",
       "semantic_unit": "unit.volt",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:df41d1e3b7567131f3e22295b137bdcf0f634749c64c26450d8841255d2c6902",
@@ -196,7 +259,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L2",
       "semantic_unit": "unit.volt",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     },
     {
       "request_ref": "sha256:16ef0196f7b93d8963e2ba8b43239348600092ae669a1eda984a21a1954a565f",
@@ -211,7 +281,14 @@
       "dimension": "pv.dimension.phase",
       "dimension_value": "phase:L3",
       "semantic_unit": "unit.volt",
-      "outcome": "exact"
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
     }
   ],
   "withheld": [

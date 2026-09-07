@@ -53,21 +53,22 @@ type donorSource struct {
 	SHA256     string `json:"sha256"`
 }
 type donorFact struct {
-	RequestRef          string `json:"request_ref"`
-	RequestNativeID     string `json:"request_native_id"`
-	LegacyKey           string `json:"legacy_key"`
-	Target              string `json:"target"`
-	Dimension           string `json:"dimension"`
-	DimensionValue      string `json:"dimension_value"`
-	Coefficient         string `json:"coefficient"`
-	Scale               int32  `json:"scale"`
-	Symbol              string `json:"symbol"`
-	SemanticUnit        string `json:"semantic_unit"`
-	SemanticCoefficient string `json:"semantic_coefficient"`
-	SemanticExponent    int32  `json:"semantic_exponent10"`
-	SemanticSymbol      string `json:"semantic_symbol"`
-	Outcome             string `json:"outcome"`
-	Loss                string `json:"loss"`
+	RequestRef          string              `json:"request_ref"`
+	RequestNativeID     string              `json:"request_native_id"`
+	LegacyKey           string              `json:"legacy_key"`
+	Target              string              `json:"target"`
+	Dimension           string              `json:"dimension"`
+	DimensionValue      string              `json:"dimension_value"`
+	Coefficient         string              `json:"coefficient"`
+	Scale               int32               `json:"scale"`
+	Symbol              string              `json:"symbol"`
+	SemanticUnit        string              `json:"semantic_unit"`
+	SemanticCoefficient string              `json:"semantic_coefficient"`
+	SemanticExponent    int32               `json:"semantic_exponent10"`
+	SemanticSymbol      string              `json:"semantic_symbol"`
+	Outcome             string              `json:"outcome"`
+	Loss                string              `json:"loss"`
+	FreshnessPolicy     semregPolicyFixture `json:"freshness_policy"`
 }
 type donorWithheld struct {
 	RequestRef      string `json:"request_ref"`
@@ -190,6 +191,7 @@ func TestCanonicalPVShadowComparatorBindingRejectsSemanticMutation(t *testing.T)
 		"target":                func(d *donor) { d.Facts[0].Target = "pv.ac.frequency" },
 		"dimension":             func(d *donor) { d.Facts[0].DimensionValue = "inverter:mutated" },
 		"disposition":           func(d *donor) { d.Facts[0].Outcome = "transformed" },
+		"freshness_policy":      func(d *donor) { d.Facts[0].FreshnessPolicy.ID = "pv.accumulator.v1" },
 		"operating_state_token": func(d *donor) { d.Facts[4].SemanticSymbol = "standby" },
 		"request_identity": func(d *donor) {
 			d.Facts[0].RequestNativeID = d.Facts[1].RequestNativeID
@@ -495,7 +497,7 @@ func comparatorBindingError(d donor, vector semregComparator, dispositions semre
 	for _, fact := range d.Facts {
 		accepted, ok := facts[fact.RequestNativeID]
 		acceptedPolicy, policyOK := d.policies[fact.RequestNativeID]
-		if fact.RequestNativeID == "" || fact.RequestRef != canonicalPVRequestRef(fact.RequestNativeID) || !ok || !policyOK || accepted.policy != acceptedPolicy || fact.Target != accepted.target || fact.Dimension != accepted.dimension || fact.DimensionValue != accepted.dimensionValue || (fact.RequestNativeID == "inverter.operating_state" && (fact.Symbol != "OPERATING" || fact.SemanticSymbol != accepted.symbol || accepted.symbol != "generating")) {
+		if fact.RequestNativeID == "" || fact.RequestRef != canonicalPVRequestRef(fact.RequestNativeID) || !ok || !policyOK || accepted.policy != acceptedPolicy || fact.FreshnessPolicy != accepted.policy || fact.Target != accepted.target || fact.Dimension != accepted.dimension || fact.DimensionValue != accepted.dimensionValue || (fact.RequestNativeID == "inverter.operating_state" && (fact.Symbol != "OPERATING" || fact.SemanticSymbol != accepted.symbol || accepted.symbol != "generating")) {
 			return fmt.Errorf("donor semantic target or dimensions drifted for %s", fact.LegacyKey)
 		}
 		outcome, ok := outcomes[fact.RequestNativeID]

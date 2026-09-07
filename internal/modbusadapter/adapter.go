@@ -439,6 +439,9 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 			// A shadow is diagnostic-only. It cannot prevent the established
 			// legacy retention path from retaining a qualified observation.
 			shadow = canonicalPVSemRegShadowRecord{}
+			adapter.canonicalShadow.lastFailure = err.Error()
+		} else {
+			adapter.canonicalShadow.lastFailure = ""
 		}
 	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{

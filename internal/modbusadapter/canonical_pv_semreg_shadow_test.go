@@ -3,6 +3,7 @@ package modbusadapter
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,61 @@ func TestCanonicalPVSemRegShadow_DefaultOffHasNoKernelOrShadowRecord(t *testing.
 	if _, ok := adapter.CanonicalPVSemRegShadow(result.CapabilityID, result.SampleID); ok {
 		t.Fatal("default-off adapter retained a SemReg shadow record")
 	}
+}
+
+func TestCanonicalPVSemRegShadow_RepresentableNonGeneratingStatesAdvanceLegacyWhenShadowRejects(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		state uint16
+		want  string
+	}{
+		{"off", 1, pv.OperatingStateOff},
+		{"standby", 8, pv.OperatingStateStandby},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			listener, _ := serveSunSpecChain(t, shadowFixtureWordsWithState(testCase.state))
+			config := integrationConfig(t, "tcp://"+listener.Addr().String())
+			config.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
+			adapter, err := Start(context.Background(), config, realDialer, realFactory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = adapter.Close() }()
+			producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:shadow-non-generating", ReadTimeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1, DeadlineIdentity: 1})
+			if err != nil || initial.Outcome != SunSpecQualificationGO {
+				t.Fatalf("qualification=%+v err=%v", initial, err)
+			}
+			legacy, _, ok := adapter.CanonicalPVSnapshot(initial.CapabilityID, initial.SampleID)
+			if !ok || legacy.Facts[pv.NewFactKey(pv.FactOperatingState, pv.Dimensions{Scope: pv.ScopeTotal})].Value.Symbol != testCase.want {
+				t.Fatalf("legacy state=%+v", legacy)
+			}
+			asset := legacy.AssetRef
+			before, beforeAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
+			if !ok || adapter.canonicalShadow.lastFailure == "" {
+				t.Fatal("qualification shadow rejection was not retained")
+			}
+			refresh, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 2, DeadlineIdentity: 2})
+			if err != nil || refresh.Outcome != SunSpecQualificationGO {
+				t.Fatalf("refresh=%+v err=%v", refresh, err)
+			}
+			after, afterAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
+			if !ok || after.Generation <= before.Generation || !afterAt.After(beforeAt) || after.Facts[pv.NewFactKey(pv.FactOperatingState, pv.Dimensions{Scope: pv.ScopeTotal})].Value.Symbol != testCase.want || adapter.canonicalShadow.lastFailure == "" {
+				t.Fatalf("legacy did not advance through shadow rejection")
+			}
+		})
+	}
+}
+
+func shadowFixtureWordsWithState(state uint16) []uint16 {
+	words := observedFroniusFloatControlsWords()
+	// Signature (2) + Common model header/payload (67) + model-113 header (2)
+	// + model-113 status payload index (46).
+	words[117] = state
+	return words
 }
 
 func TestCanonicalPVSemRegShadow_QualifiedObservationPublishesOneReadParityAndDetachment(t *testing.T) {
@@ -254,11 +310,36 @@ func TestCanonicalPVSemRegShadow_CompactsReplayHistoryAndContinuesPastDoubleBoun
 	if !ok || len(before.Snapshot.Cursors) != 1 {
 		t.Fatal("missing initial cursor")
 	}
+	seen := map[string]bool{}
+	lastByCursor := map[string]uint64{}
+	recordCursor := func(snapshot CanonicalPVSemRegShadowSnapshot) {
+		cursor := snapshot.Snapshot.Cursors[0]
+		base := string(cursor.SourceID) + "\x00" + string(cursor.SourceEpochID) + "\x00" + string(cursor.DriverGeneration)
+		tuple := base + "\x00" + string(cursor.LastSequence)
+		if seen[tuple] {
+			t.Fatalf("reused cursor tuple %s", tuple)
+		}
+		seen[tuple] = true
+		sequence, err := strconv.ParseUint(string(cursor.LastSequence), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prior, ok := lastByCursor[base]; ok && sequence <= prior {
+			t.Fatalf("non-monotonic cursor sequence %d <= %d", sequence, prior)
+		}
+		lastByCursor[base] = sequence
+	}
+	recordCursor(before)
 	for n := 0; n < 2*maxRetainedProfileObservations+3; n++ {
 		result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: uint64(10 + n), DeadlineIdentity: uint64(100 + n)})
 		if err != nil || result.Outcome != SunSpecQualificationGO {
 			t.Fatalf("refresh %d=%+v err=%v", n, result, err)
 		}
+		current, ok := adapter.CanonicalPVSemRegCurrentShadow(asset)
+		if !ok || len(current.Snapshot.Cursors) != 1 {
+			t.Fatal("missing current cursor")
+		}
+		recordCursor(current)
 	}
 	shadow, ok := adapter.CanonicalPVSemRegCurrentShadow(asset)
 	if !ok || len(shadow.Snapshot.Facts) != 11 {

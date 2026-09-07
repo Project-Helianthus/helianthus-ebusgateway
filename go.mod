@@ -8,13 +8,14 @@ require (
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.35
 	github.com/Project-Helianthus/helianthus-modbus v0.3.0
 	github.com/Project-Helianthus/helianthus-modbusreg v0.6.7
+	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260907015800-eafda7454349
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
 	github.com/graphql-go/handler v0.2.4
 	github.com/machinebox/graphql v0.2.2
 	golang.org/x/mod v0.21.0
 	golang.org/x/sys v0.25.0
-	golang.org/x/text v0.18.0
+	golang.org/x/text v0.22.0
 )
 
 require (
@@ -31,7 +32,7 @@ require (
 	github.com/rickb777/date v1.21.1 // indirect
 	github.com/rickb777/plural v1.4.2 // indirect
 	gitlab.com/c0b/go-ordered-json v0.0.0-20201030195603-febf46534d5a // indirect
-	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/tools v0.25.0 // indirect
 )
 

@@ -37,9 +37,10 @@ type Dialer func(context.Context, string, string) (net.Conn, error)
 
 // Config contains the already-validated bounded runtime configuration.
 type Config struct {
-	Enabled     bool
-	Endpoint    modbus.TCPEndpointConfig
-	DialTimeout time.Duration
+	Enabled           bool
+	Endpoint          modbus.TCPEndpointConfig
+	DialTimeout       time.Duration
+	CanonicalPVShadow CanonicalPVShadowConfig
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -61,18 +62,19 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce      sync.Once
-	closeErr       error
-	executeMu      sync.Mutex
-	connectionMu   sync.RWMutex
-	closed         bool
-	lastRequest    modbus.TCPRequestHandle
-	profileMu      sync.RWMutex
-	profiles       map[string]ProfileObservationRecord
-	qualifications map[string]sunSpecQualificationRecord
-	currentPV      map[string]canonicalPVCurrentRecord
-	canonicalPV    *CanonicalPVMapper
-	started        time.Time
+	closeOnce       sync.Once
+	closeErr        error
+	executeMu       sync.Mutex
+	connectionMu    sync.RWMutex
+	closed          bool
+	lastRequest     modbus.TCPRequestHandle
+	profileMu       sync.RWMutex
+	profiles        map[string]ProfileObservationRecord
+	qualifications  map[string]sunSpecQualificationRecord
+	currentPV       map[string]canonicalPVCurrentRecord
+	canonicalPV     *CanonicalPVMapper
+	canonicalShadow *canonicalPVSemRegShadow
+	started         time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -112,9 +114,16 @@ func Start(
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
 	}
+	if err := config.CanonicalPVShadow.Validate(); err != nil {
+		return nil, err
+	}
 	canonicalMapper, err := NewCanonicalPVMapper()
 	if err != nil {
 		return nil, fmt.Errorf("construct canonical PV mapper: %w", err)
+	}
+	var canonicalShadow *canonicalPVSemRegShadow
+	if config.CanonicalPVShadow.Mode == CanonicalPVShadowModeSemReg {
+		canonicalShadow = newCanonicalPVSemRegShadow()
 	}
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {
@@ -146,16 +155,17 @@ func Start(
 		)
 	}
 	return &Adapter{
-		endpoint:       endpoint,
-		connection:     handle,
-		source:         config.Endpoint.RuntimeAcquisitionSource,
-		config:         config,
-		dial:           dial,
-		profiles:       make(map[string]ProfileObservationRecord),
-		qualifications: make(map[string]sunSpecQualificationRecord),
-		currentPV:      make(map[string]canonicalPVCurrentRecord),
-		canonicalPV:    canonicalMapper,
-		started:        time.Now(),
+		endpoint:        endpoint,
+		connection:      handle,
+		source:          config.Endpoint.RuntimeAcquisitionSource,
+		config:          config,
+		dial:            dial,
+		profiles:        make(map[string]ProfileObservationRecord),
+		qualifications:  make(map[string]sunSpecQualificationRecord),
+		currentPV:       make(map[string]canonicalPVCurrentRecord),
+		canonicalPV:     canonicalMapper,
+		canonicalShadow: canonicalShadow,
+		started:         time.Now(),
 	}, nil
 }
 
@@ -422,11 +432,26 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 		return fmt.Errorf("map canonical PV observation: %w", err)
 	}
 	producedAt := time.Now().UTC()
+	var shadow canonicalPVSemRegShadowRecord
+	if adapter.canonicalShadow != nil {
+		shadow, err = adapter.canonicalShadow.apply(observation, encoded, canonical, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds()))
+		if err != nil {
+			// A shadow is diagnostic-only. It cannot prevent the established
+			// legacy retention path from retaining a qualified observation.
+			shadow = canonicalPVSemRegShadowRecord{}
+			adapter.canonicalShadow.lastFailure = err.Error()
+		} else {
+			adapter.canonicalShadow.lastFailure = ""
+		}
+	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{
 		observation: observation, encoded: append([]byte(nil), encoded...), canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
 	}
 	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
 		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
+	}
+	if shadow.assetRef != "" {
+		adapter.canonicalShadow.records[key] = shadow
 	}
 	return nil
 }
@@ -447,15 +472,27 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 	if evaluated < 0 || adapter.canonicalPV == nil {
 		return errors.New("canonical PV mapper unavailable")
 	}
+	producedAt := time.Now().UTC()
+	// The legacy mapper owns the public compatibility state. Map and retain its
+	// valid result before attempting the diagnostic-only SemReg shadow.
 	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
 	if err != nil {
 		return fmt.Errorf("map current canonical PV observation: %w", err)
+	}
+	if adapter.canonicalShadow != nil {
+		// Rejecting the shadow keeps its last accepted state, but never blocks a
+		// valid legacy public update.
+		if _, shadowErr := adapter.canonicalShadow.apply(observation, encoded, canonical, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds())); shadowErr != nil {
+			adapter.canonicalShadow.lastFailure = shadowErr.Error()
+		} else {
+			adapter.canonicalShadow.lastFailure = ""
+		}
 	}
 	if adapter.currentPV == nil {
 		adapter.currentPV = make(map[string]canonicalPVCurrentRecord)
 	}
 	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
-		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: time.Now().UTC(),
+		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
 	}
 	return nil
 }
@@ -583,6 +620,44 @@ func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID stri
 	return record.observation, append([]byte(nil), record.encoded...), true
 }
 
+// CanonicalPVSemRegShadow returns a detached internal comparison record. No
+// public output or consumer reads this diagnostic-only shadow state.
+func (adapter *Adapter) CanonicalPVSemRegShadow(profileID, sampleID string) (CanonicalPVSemRegShadowSnapshot, bool) {
+	if adapter == nil {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	if adapter.canonicalShadow == nil {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	record, ok := adapter.canonicalShadow.records[profileID+"\x00"+sampleID]
+	if !ok {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	snapshot, err := record.detachedSnapshot()
+	return snapshot, err == nil
+}
+
+// CanonicalPVSemRegCurrentShadow returns the detached latest internal shadow
+// for an asset. It cannot select or alter a public consumer output.
+func (adapter *Adapter) CanonicalPVSemRegCurrentShadow(assetRef string) (CanonicalPVSemRegShadowSnapshot, bool) {
+	if adapter == nil || assetRef == "" {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	adapter.profileMu.RLock()
+	defer adapter.profileMu.RUnlock()
+	if adapter.canonicalShadow == nil || adapter.canonicalShadow.byAsset == nil {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	asset := adapter.canonicalShadow.byAsset[assetRef]
+	if asset == nil || asset.current.assetRef == "" {
+		return CanonicalPVSemRegShadowSnapshot{}, false
+	}
+	snapshot, err := asset.current.detachedSnapshot()
+	return snapshot, err == nil
+}
+
 // Cancel delegates cancellation to the endpoint owner.
 func (adapter *Adapter) Cancel(handle modbus.TCPRequestHandle) error {
 	if adapter == nil || adapter.endpoint == nil {
@@ -616,6 +691,11 @@ func (adapter *Adapter) Close() error {
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
+		adapter.profileMu.Lock()
+		if adapter.canonicalShadow != nil {
+			adapter.canonicalShadow.close()
+		}
+		adapter.profileMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
 	})
 	return adapter.closeErr

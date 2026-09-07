@@ -10,7 +10,7 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-const querySchemaShapeSHA256 = "215d330014864b9b20523cb1977ce7c45ab141a078e5cda1f5e626116d4850bc"
+const querySchemaShapeSHA256 = "10a409e2d1d1eb5904a4e74324bb867a9e6b7426aa14c322553b58ee66b2f1b3"
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()
@@ -45,7 +45,7 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 		"circuits", "cylinders", "daemonStatus", "daemon_status", "device", "devices", "dhw",
 		"energyTotals", "energy_totals", "fm5Interpretation", "fm5SemanticMode", "fm5_semantic_mode",
 		"gatewayIdentity", "gateway_identity", "methods", "planes", "radioDevices", "radio_devices",
-		"schedules", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors",
+		"regulator_capability", "schedules", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors",
 		"vaillantLiveMonitor", "vaillantServiceCurrent", "vaillantServiceHistory", "watchSummary", "zones",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

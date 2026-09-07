@@ -1,0 +1,13 @@
+{
+  "adapter_status": {
+    "status": "unknown",
+    "firmware_version": "",
+    "updates_available": false
+  },
+  "daemon_status": {
+    "status": "running",
+    "firmware_version": "",
+    "updates_available": false
+  },
+  "regulator_capability": "PRESENT"
+}

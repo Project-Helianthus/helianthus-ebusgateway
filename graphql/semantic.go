@@ -96,6 +96,17 @@ const (
 	ManagingDeviceRoleUnknown        ManagingDeviceRole = "UNKNOWN"
 )
 
+// RegulatorCapability is the catalog-qualified answer to whether the observed
+// Vaillant inventory contains a regulator. It deliberately does not describe
+// reachability or the regulator-absence grace FSM.
+type RegulatorCapability string
+
+const (
+	RegulatorCapabilityUnknown RegulatorCapability = "UNKNOWN"
+	RegulatorCapabilityNone    RegulatorCapability = "NONE"
+	RegulatorCapabilityPresent RegulatorCapability = "PRESENT"
+)
+
 type ManagingDevice struct {
 	Role     ManagingDeviceRole
 	DeviceID *string
@@ -472,6 +483,7 @@ type SemanticProvider interface {
 	System() *SystemStatus
 	Schedules() *ScheduleStatus
 	AdapterHardwareInfo() *AdapterHardwareInfo
+	RegulatorCapability() RegulatorCapability
 }
 
 type staticSemanticProvider struct{}
@@ -522,6 +534,10 @@ func (staticSemanticProvider) Schedules() *ScheduleStatus {
 
 func (staticSemanticProvider) AdapterHardwareInfo() *AdapterHardwareInfo {
 	return nil
+}
+
+func (staticSemanticProvider) RegulatorCapability() RegulatorCapability {
+	return RegulatorCapabilityUnknown
 }
 
 var liveSystemSnapshots sync.Map

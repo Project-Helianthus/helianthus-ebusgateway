@@ -57,17 +57,18 @@ var (
 
 // LiveSemanticProvider maintains semantic snapshots derived from bus data.
 type LiveSemanticProvider struct {
-	mu         sync.RWMutex
-	zones      []Zone
-	dhw        *DhwStatus
-	circuits   []CircuitStatus
-	radio      []RadioDevice
-	fm5Mode    Fm5SemanticMode
-	fm5Verdict Fm5Interpretation
-	solar      *SolarStatus
-	cylinders  []CylinderStatus
-	energy     *EnergyTotals
-	boiler     *BoilerStatus
+	mu                  sync.RWMutex
+	zones               []Zone
+	dhw                 *DhwStatus
+	circuits            []CircuitStatus
+	radio               []RadioDevice
+	fm5Mode             Fm5SemanticMode
+	fm5Verdict          Fm5Interpretation
+	solar               *SolarStatus
+	cylinders           []CylinderStatus
+	energy              *EnergyTotals
+	boiler              *BoilerStatus
+	regulatorCapability RegulatorCapability
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
@@ -98,10 +99,11 @@ func NewLiveSemanticProvider() *LiveSemanticProvider {
 	semanticLiveEpoch.Set(0)
 
 	return &LiveSemanticProvider{
-		phase:            SemanticStartupPhaseBootInit,
-		startupUpdatedAt: time.Now().UTC(),
-		fm5Mode:          Fm5SemanticModeAbsent,
-		energyMerge:      newEnergyMergeStore(),
+		phase:               SemanticStartupPhaseBootInit,
+		startupUpdatedAt:    time.Now().UTC(),
+		fm5Mode:             Fm5SemanticModeAbsent,
+		regulatorCapability: RegulatorCapabilityUnknown,
+		energyMerge:         newEnergyMergeStore(),
 	}
 }
 
@@ -263,6 +265,34 @@ func (provider *LiveSemanticProvider) FM5Interpretation() Fm5Interpretation {
 	provider.mu.RLock()
 	defer provider.mu.RUnlock()
 	return provider.fm5Verdict
+}
+
+func (provider *LiveSemanticProvider) RegulatorCapability() RegulatorCapability {
+	if provider == nil {
+		return RegulatorCapabilityUnknown
+	}
+	provider.mu.RLock()
+	defer provider.mu.RUnlock()
+	switch provider.regulatorCapability {
+	case RegulatorCapabilityNone, RegulatorCapabilityPresent:
+		return provider.regulatorCapability
+	default:
+		return RegulatorCapabilityUnknown
+	}
+}
+
+func (provider *LiveSemanticProvider) SetRegulatorCapability(capability RegulatorCapability) {
+	if provider == nil {
+		return
+	}
+	switch capability {
+	case RegulatorCapabilityNone, RegulatorCapabilityPresent:
+	default:
+		capability = RegulatorCapabilityUnknown
+	}
+	provider.mu.Lock()
+	provider.regulatorCapability = capability
+	provider.mu.Unlock()
 }
 
 func (provider *LiveSemanticProvider) Solar() *SolarStatus {

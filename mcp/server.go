@@ -2506,9 +2506,17 @@ func (s *Server) runtimeStatus(snapshot *snapshotState) map[string]any {
 	if snapshot != nil {
 		return cloneMap(snapshot.runtime)
 	}
+	capability := "UNKNOWN"
+	if provider, ok := s.statusProvider.(interface{ RegulatorCapability() string }); ok {
+		switch value := provider.RegulatorCapability(); value {
+		case "NONE", "PRESENT":
+			capability = value
+		}
+	}
 	return map[string]any{
-		"daemon_status":  s.statusProvider.DaemonStatus(),
-		"adapter_status": s.statusProvider.AdapterStatus(),
+		"daemon_status":        s.statusProvider.DaemonStatus(),
+		"adapter_status":       s.statusProvider.AdapterStatus(),
+		"regulator_capability": capability,
 	}
 }
 

@@ -19,6 +19,7 @@ type graphqlSchemaTypes struct {
 	circuitStatusType       *graphqlgo.Object
 	radioDeviceType         *graphqlgo.Object
 	fm5SemanticMode         *graphqlgo.Enum
+	regulatorCapability     *graphqlgo.Enum
 	fm5Interpretation       *graphqlgo.Object
 	solarStatusType         *graphqlgo.Object
 	cylinderStatusType      *graphqlgo.Object
@@ -1513,6 +1514,15 @@ func buildSchemaTypes() graphqlSchemaTypes {
 			"REGULATOR":       &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleRegulator)},
 			"FUNCTION_MODULE": &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleFunctionModule)},
 			"UNKNOWN":         &graphqlgo.EnumValueConfig{Value: string(ManagingDeviceRoleUnknown)},
+		},
+	})
+
+	regulatorCapabilityType := graphqlgo.NewEnum(graphqlgo.EnumConfig{
+		Name: "RegulatorCapability",
+		Values: graphqlgo.EnumValueConfigMap{
+			"UNKNOWN": &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityUnknown)},
+			"NONE":    &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityNone)},
+			"PRESENT": &graphqlgo.EnumValueConfig{Value: string(RegulatorCapabilityPresent)},
 		},
 	})
 
@@ -5004,6 +5014,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		circuitStatusType:       circuitStatusType,
 		radioDeviceType:         radioDeviceType,
 		fm5SemanticMode:         fm5SemanticModeType,
+		regulatorCapability:     regulatorCapabilityType,
 		fm5Interpretation:       fm5InterpretationType,
 		solarStatusType:         solarStatusType,
 		cylinderStatusType:      cylinderStatusType,

@@ -60,6 +60,12 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return builder.statusProvider().AdapterStatus(), nil
 				},
 			},
+			"regulator_capability": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.regulatorCapability),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					return string(builder.semanticProvider().RegulatorCapability()), nil
+				},
+			},
 			"zones": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(types.zoneType))),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

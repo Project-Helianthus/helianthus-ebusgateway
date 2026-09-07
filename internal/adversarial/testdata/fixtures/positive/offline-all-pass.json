@@ -1,0 +1,540 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json",
+  "schema_version": 1,
+  "suite": {
+    "id": "helianthus.adversarial.ADV01-04",
+    "version": 1
+  },
+  "execution": {
+    "mode": "offline-fixture",
+    "run_id": "00000000-0000-4000-8000-000000000001",
+    "started_at": "2026-09-07T12:00:00.000Z",
+    "completed_at": "2026-09-07T12:12:00.000Z"
+  },
+  "provenance": {
+    "subject": {
+      "repository": "Project-Helianthus/helianthus-ebusgateway",
+      "commit": "ae85c5d91bd8e9dc1c9fe122de7eaa05dcd6c532",
+      "source_tree": "clean",
+      "artifact_kind": "gateway-fixture-set",
+      "artifact_sha256": "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a"
+    },
+    "producer": {
+      "repository": "Project-Helianthus/helianthus-ebusgateway",
+      "commit": "ae85c5d91bd8e9dc1c9fe122de7eaa05dcd6c532",
+      "component": "internal/adversarial",
+      "build_kind": "go-test-binary",
+      "build_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "input_gateway_report_sha256": null
+    },
+    "fixture_set_sha256": "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a",
+    "fixture_case_id": "offline-all-pass"
+  },
+  "scenarios": [
+    {
+      "definition": {
+        "scenario_id": "ADV-01",
+        "name": "HA Core/integration consumer restart while gateway stays stable",
+        "duration_limit_ms": 180000,
+        "trigger_kind": "ha_consumer_restart",
+        "recovery_target": "ha_consumer_synchronized",
+        "minimum_live_epoch_delta": 2,
+        "zones_required": true,
+        "dhw_required": true,
+        "maximum_collisions_delta": 5,
+        "maximum_recovery_ms": 90000
+      },
+      "action": {
+        "events": [
+          {
+            "kind": "restart_requested",
+            "source": "fixture",
+            "at": "2026-09-07T12:00:00.000Z",
+            "offset_ms": 0,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "consumer_stopped",
+            "source": "fixture",
+            "at": "2026-09-07T12:00:01.000Z",
+            "offset_ms": 1000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "consumer_started",
+            "source": "fixture",
+            "at": "2026-09-07T12:00:02.000Z",
+            "offset_ms": 2000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "ha_consumer_synchronized",
+            "source": "fixture",
+            "at": "2026-09-07T12:01:29.000Z",
+            "offset_ms": 89000,
+            "error_bound_ms": 0
+          }
+        ]
+      },
+      "timing": {
+        "scenario_started_at": "2026-09-07T12:00:00.000Z",
+        "scenario_ended_at": "2026-09-07T12:03:00.000Z",
+        "elapsed_ms": 180000,
+        "recovery_anchor": "consumer_stopped",
+        "recovery_observed": "ha_consumer_synchronized",
+        "recovery_ms": 88000,
+        "error_bound_ms": 0
+      },
+      "metrics": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000001",
+          "captured_at": "2026-09-07T12:00:00.000Z",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 10,
+          "semantic_bus_collisions_total": 100,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000001",
+          "captured_at": "2026-09-07T12:03:00.000Z",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 12,
+          "semantic_bus_collisions_total": 101,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        },
+        "delta": {
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 1
+        }
+      },
+      "evaluation": {
+        "duration": {
+          "expected_ms": 180000,
+          "observed_ms": 180000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "action": {
+          "expected_kind": "ha_consumer_restart",
+          "observed_kind": "ha_consumer_restart",
+          "passed": true
+        },
+        "recovery": {
+          "maximum_ms": 90000,
+          "observed_ms": 88000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "live_epoch": {
+          "minimum": 2,
+          "observed": 2,
+          "passed": true
+        },
+        "zones": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "dhw": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "collisions": {
+          "maximum": 5,
+          "observed": 1,
+          "passed": true
+        }
+      },
+      "errors": [],
+      "infrastructure_reason": null,
+      "result_kind": "evaluated",
+      "outcome": "pass"
+    },
+    {
+      "definition": {
+        "scenario_id": "ADV-02",
+        "name": "eBUS adapter reset while polling",
+        "duration_limit_ms": 180000,
+        "trigger_kind": "adapter_reset",
+        "recovery_target": "gateway_live_ready",
+        "minimum_live_epoch_delta": 2,
+        "zones_required": true,
+        "dhw_required": false,
+        "maximum_collisions_delta": 20,
+        "maximum_recovery_ms": 120000
+      },
+      "action": {
+        "events": [
+          {
+            "kind": "reset_requested",
+            "source": "fixture",
+            "at": "2026-09-07T12:03:00.000Z",
+            "offset_ms": 0,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "reset_started",
+            "source": "fixture",
+            "at": "2026-09-07T12:03:01.000Z",
+            "offset_ms": 1000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "transport_unavailable",
+            "source": "fixture",
+            "at": "2026-09-07T12:03:02.000Z",
+            "offset_ms": 2000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "transport_available",
+            "source": "fixture",
+            "at": "2026-09-07T12:03:10.000Z",
+            "offset_ms": 10000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "gateway_live_ready",
+            "source": "fixture",
+            "at": "2026-09-07T12:04:59.000Z",
+            "offset_ms": 119000,
+            "error_bound_ms": 0
+          }
+        ]
+      },
+      "timing": {
+        "scenario_started_at": "2026-09-07T12:03:00.000Z",
+        "scenario_ended_at": "2026-09-07T12:06:00.000Z",
+        "elapsed_ms": 180000,
+        "recovery_anchor": "reset_started",
+        "recovery_observed": "gateway_live_ready",
+        "recovery_ms": 118000,
+        "error_bound_ms": 0
+      },
+      "metrics": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000002",
+          "captured_at": "2026-09-07T12:03:00.000Z",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 20,
+          "semantic_bus_collisions_total": 200,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000002",
+          "captured_at": "2026-09-07T12:06:00.000Z",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 22,
+          "semantic_bus_collisions_total": 220,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "delta": {
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 20
+        }
+      },
+      "evaluation": {
+        "duration": {
+          "expected_ms": 180000,
+          "observed_ms": 180000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "action": {
+          "expected_kind": "adapter_reset",
+          "observed_kind": "adapter_reset",
+          "passed": true
+        },
+        "recovery": {
+          "maximum_ms": 120000,
+          "observed_ms": 118000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "live_epoch": {
+          "minimum": 2,
+          "observed": 2,
+          "passed": true
+        },
+        "zones": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "dhw": {
+          "required": false,
+          "observed": false,
+          "passed": true
+        },
+        "collisions": {
+          "maximum": 20,
+          "observed": 20,
+          "passed": true
+        }
+      },
+      "errors": [],
+      "infrastructure_reason": null,
+      "result_kind": "evaluated",
+      "outcome": "pass"
+    },
+    {
+      "definition": {
+        "scenario_id": "ADV-03",
+        "name": "60 second gateway-to-adapter transport partition and recovery",
+        "duration_limit_ms": 180000,
+        "trigger_kind": "transport_partition",
+        "recovery_target": "gateway_live_ready",
+        "minimum_live_epoch_delta": 2,
+        "zones_required": true,
+        "dhw_required": false,
+        "maximum_collisions_delta": 10,
+        "maximum_recovery_ms": 90000
+      },
+      "action": {
+        "events": [
+          {
+            "kind": "partition_requested",
+            "source": "fixture",
+            "at": "2026-09-07T12:06:00.000Z",
+            "offset_ms": 0,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "partition_active",
+            "source": "fixture",
+            "at": "2026-09-07T12:06:00.000Z",
+            "offset_ms": 0,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "partition_cleared",
+            "source": "fixture",
+            "at": "2026-09-07T12:07:00.000Z",
+            "offset_ms": 60000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "gateway_live_ready",
+            "source": "fixture",
+            "at": "2026-09-07T12:08:29.000Z",
+            "offset_ms": 149000,
+            "error_bound_ms": 0
+          }
+        ]
+      },
+      "timing": {
+        "scenario_started_at": "2026-09-07T12:06:00.000Z",
+        "scenario_ended_at": "2026-09-07T12:09:00.000Z",
+        "elapsed_ms": 180000,
+        "recovery_anchor": "partition_cleared",
+        "recovery_observed": "gateway_live_ready",
+        "recovery_ms": 89000,
+        "error_bound_ms": 0
+      },
+      "metrics": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000003",
+          "captured_at": "2026-09-07T12:06:00.000Z",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 30,
+          "semantic_bus_collisions_total": 300,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000003",
+          "captured_at": "2026-09-07T12:09:00.000Z",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 32,
+          "semantic_bus_collisions_total": 310,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "delta": {
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 10
+        }
+      },
+      "evaluation": {
+        "duration": {
+          "expected_ms": 180000,
+          "observed_ms": 180000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "action": {
+          "expected_kind": "transport_partition",
+          "observed_kind": "transport_partition",
+          "passed": true
+        },
+        "recovery": {
+          "maximum_ms": 90000,
+          "observed_ms": 89000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "live_epoch": {
+          "minimum": 2,
+          "observed": 2,
+          "passed": true
+        },
+        "zones": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "dhw": {
+          "required": false,
+          "observed": false,
+          "passed": true
+        },
+        "collisions": {
+          "maximum": 10,
+          "observed": 10,
+          "passed": true
+        }
+      },
+      "errors": [],
+      "infrastructure_reason": null,
+      "result_kind": "evaluated",
+      "outcome": "pass"
+    },
+    {
+      "definition": {
+        "scenario_id": "ADV-04",
+        "name": "fresh isolated gateway boot with corrupted cache fixture",
+        "duration_limit_ms": 180000,
+        "trigger_kind": "isolated_corrupt_cache_boot",
+        "recovery_target": "gateway_live_ready",
+        "minimum_live_epoch_delta": 2,
+        "zones_required": true,
+        "dhw_required": true,
+        "maximum_collisions_delta": 5,
+        "maximum_recovery_ms": 120000
+      },
+      "action": {
+        "events": [
+          {
+            "kind": "isolated_cache_staged",
+            "source": "fixture",
+            "at": "2026-09-07T12:09:00.000Z",
+            "offset_ms": 0,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "runtime_started",
+            "source": "fixture",
+            "at": "2026-09-07T12:09:01.000Z",
+            "offset_ms": 1000,
+            "error_bound_ms": 0
+          },
+          {
+            "kind": "gateway_live_ready",
+            "source": "fixture",
+            "at": "2026-09-07T12:10:59.000Z",
+            "offset_ms": 119000,
+            "error_bound_ms": 0
+          }
+        ]
+      },
+      "timing": {
+        "scenario_started_at": "2026-09-07T12:09:00.000Z",
+        "scenario_ended_at": "2026-09-07T12:12:00.000Z",
+        "elapsed_ms": 180000,
+        "recovery_anchor": "runtime_started",
+        "recovery_observed": "gateway_live_ready",
+        "recovery_ms": 118000,
+        "error_bound_ms": 0
+      },
+      "metrics": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000004",
+          "captured_at": "2026-09-07T12:09:00.000Z",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "BOOT_INIT",
+          "semantic_live_epoch": 0,
+          "semantic_bus_collisions_total": 0,
+          "semantic_zone_count": 0,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000004",
+          "captured_at": "2026-09-07T12:12:00.000Z",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 5,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        },
+        "delta": {
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 5
+        }
+      },
+      "evaluation": {
+        "duration": {
+          "expected_ms": 180000,
+          "observed_ms": 180000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "action": {
+          "expected_kind": "isolated_corrupt_cache_boot",
+          "observed_kind": "isolated_corrupt_cache_boot",
+          "passed": true
+        },
+        "recovery": {
+          "maximum_ms": 120000,
+          "observed_ms": 118000,
+          "error_bound_ms": 0,
+          "passed": true
+        },
+        "live_epoch": {
+          "minimum": 2,
+          "observed": 2,
+          "passed": true
+        },
+        "zones": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "dhw": {
+          "required": true,
+          "observed": true,
+          "passed": true
+        },
+        "collisions": {
+          "maximum": 5,
+          "observed": 5,
+          "passed": true
+        }
+      },
+      "errors": [],
+      "infrastructure_reason": null,
+      "result_kind": "evaluated",
+      "outcome": "pass"
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "passed": 4,
+    "failed": 0,
+    "xfailed": 0,
+    "blocked": 0,
+    "unknown": 0,
+    "verdict": "pass"
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json",
+  "schema_version": 1,
+  "suite": {
+    "id": "helianthus.adversarial.ADV01-04",
+    "version": 1
+  },
+  "fixture_case_id": "offline-all-pass",
+  "run_id": "00000000-0000-4000-8000-000000000001",
+  "scenarios": [
+    {
+      "scenario_id": "ADV-01",
+      "trigger_kind": "ha_consumer_restart",
+      "precondition": {
+        "available": true,
+        "unavailable_reason": null
+      },
+      "events": [
+        {
+          "kind": "restart_requested",
+          "offset_ms": 0,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "consumer_stopped",
+          "offset_ms": 1000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "consumer_started",
+          "offset_ms": 2000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "ha_consumer_synchronized",
+          "offset_ms": 89000,
+          "error_bound_ms": 0
+        }
+      ],
+      "observations": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000001",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 10,
+          "semantic_bus_collisions_total": 100,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000001",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 12,
+          "semantic_bus_collisions_total": 101,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        }
+      },
+      "terminal_error": null,
+      "resource_artifact_ids": []
+    },
+    {
+      "scenario_id": "ADV-02",
+      "trigger_kind": "adapter_reset",
+      "precondition": {
+        "available": true,
+        "unavailable_reason": null
+      },
+      "events": [
+        {
+          "kind": "reset_requested",
+          "offset_ms": 0,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "reset_started",
+          "offset_ms": 1000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "transport_unavailable",
+          "offset_ms": 2000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "transport_available",
+          "offset_ms": 10000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "gateway_live_ready",
+          "offset_ms": 119000,
+          "error_bound_ms": 0
+        }
+      ],
+      "observations": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000002",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 20,
+          "semantic_bus_collisions_total": 200,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000002",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 22,
+          "semantic_bus_collisions_total": 220,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        }
+      },
+      "terminal_error": null,
+      "resource_artifact_ids": []
+    },
+    {
+      "scenario_id": "ADV-03",
+      "trigger_kind": "transport_partition",
+      "precondition": {
+        "available": true,
+        "unavailable_reason": null
+      },
+      "events": [
+        {
+          "kind": "partition_requested",
+          "offset_ms": 0,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "partition_active",
+          "offset_ms": 0,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "partition_cleared",
+          "offset_ms": 60000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "gateway_live_ready",
+          "offset_ms": 149000,
+          "error_bound_ms": 0
+        }
+      ],
+      "observations": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000003",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 30,
+          "semantic_bus_collisions_total": 300,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000003",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 32,
+          "semantic_bus_collisions_total": 310,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": false
+        }
+      },
+      "terminal_error": null,
+      "resource_artifact_ids": []
+    },
+    {
+      "scenario_id": "ADV-04",
+      "trigger_kind": "isolated_corrupt_cache_boot",
+      "precondition": {
+        "available": true,
+        "unavailable_reason": null
+      },
+      "events": [
+        {
+          "kind": "isolated_cache_staged",
+          "offset_ms": 0,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "runtime_started",
+          "offset_ms": 1000,
+          "error_bound_ms": 0
+        },
+        {
+          "kind": "gateway_live_ready",
+          "offset_ms": 119000,
+          "error_bound_ms": 0
+        }
+      ],
+      "observations": {
+        "baseline": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000004",
+          "offset_ms": 0,
+          "semantic_startup_current_phase": "BOOT_INIT",
+          "semantic_live_epoch": 0,
+          "semantic_bus_collisions_total": 0,
+          "semantic_zone_count": 0,
+          "semantic_dhw_present": false
+        },
+        "end": {
+          "counter_epoch": "00000000-0000-4000-8000-000000000004",
+          "offset_ms": 180000,
+          "semantic_startup_current_phase": "LIVE_READY",
+          "semantic_live_epoch": 2,
+          "semantic_bus_collisions_total": 5,
+          "semantic_zone_count": 3,
+          "semantic_dhw_present": true
+        }
+      },
+      "terminal_error": null,
+      "resource_artifact_ids": [
+        "cache-offline-all-pass-adv04"
+      ]
+    }
+  ]
+}

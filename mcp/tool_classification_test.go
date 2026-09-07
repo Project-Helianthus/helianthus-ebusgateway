@@ -72,6 +72,7 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolVaillantB503ServiceCurrentGetName: toolClassCoreStable,
 		toolVaillantB503ServiceHistoryGetName: toolClassCoreStable,
 		toolVaillantB503LiveMonitorName:       toolClassCoreStable,
+		GrowattProtocolIIV1IdentityGetTool:    toolClassCoreStable,
 	}
 }
 
@@ -110,6 +111,7 @@ func TestToolClassificationPolicy(t *testing.T) {
 	// Install production-wired dynamic tools so the policy check covers the
 	// registered operator inventory, not only the default NewServer tools.
 	testInstallB503ForClassification(server)
+	registerGrowattProtocolIIV1Tool(server, &growattProtocolIIV1FixtureProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
 	if err := server.RegisterEEBusV1CommandRouter(&issue749TypedRouter{}); err != nil {
 		t.Fatalf("RegisterEEBusV1CommandRouter error = %v", err)
 	}

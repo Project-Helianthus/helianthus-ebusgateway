@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
 
 const (
@@ -12,9 +14,14 @@ const (
 )
 
 type GrowattProtocolIIV1NativeIdentity struct {
-	Family string                                   `json:"family"`
-	UnitID byte                                     `json:"unit_id"`
-	Slices []GrowattProtocolIIV1NativeIdentitySlice `json:"slices"`
+	Family          string                                   `json:"family"`
+	UnitID          byte                                     `json:"unit_id"`
+	Firmware        string                                   `json:"firmware"`
+	Serial          string                                   `json:"serial"`
+	DeviceType      uint16                                   `json:"device_type"`
+	ModelBuild      [2]uint16                                `json:"model_build"`
+	ProtocolVersion uint16                                   `json:"protocol_version"`
+	Slices          []GrowattProtocolIIV1NativeIdentitySlice `json:"slices"`
 }
 
 type GrowattProtocolIIV1NativeIdentitySlice struct {
@@ -66,5 +73,75 @@ func (server *Server) handleGrowattProtocolIIV1Call(ctx context.Context, name st
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("growatt Protocol II provider unavailable"), false, "RETAINED_PROFILE", "")), true), true
 	}
 	result, err := provider.GrowattProtocolIIV1(ctx)
+	if err != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
+	}
+	result, err = validateGrowattProtocolIIV1Result(result)
+	if err != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
+	}
 	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
+}
+
+// validateGrowattProtocolIIV1Result is the final admission boundary for a
+// directly registered provider. It replays the exact offline tuple through
+// modbusreg instead of trusting an implementation of the optional interface.
+func validateGrowattProtocolIIV1Result(result GrowattProtocolIIV1Result) (GrowattProtocolIIV1Result, error) {
+	native := result.NativeIdentity
+	if result.Profile != GrowattProtocolIIV1Profile || result.Disposition != "OFFLINE_IDENTITY_ADMITTED" ||
+		!result.IdentityQualified || result.Family != native.Family {
+		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
+	}
+
+	slices := make([]modbusreg.GrowattProtocolIIIdentitySlice, len(native.Slices))
+	for index, slice := range native.Slices {
+		slices[index] = modbusreg.GrowattProtocolIIIdentitySlice{
+			Offset: slice.Offset,
+			Words:  append([]uint16(nil), slice.Words...),
+		}
+	}
+	observation, err := modbusreg.DecodeGrowattProtocolIIIdentity(modbusreg.GrowattProtocolIIIdentityInput{
+		UnitID:   native.UnitID,
+		Function: modbusreg.FunctionReadHoldingRegisters,
+		Profile: modbusreg.GrowattProtocolIIIdentityProfile{
+			Schema:          "Protocol II v1.24 TL3-X",
+			Family:          native.Family,
+			DeviceType:      native.DeviceType,
+			ModelBuild:      native.ModelBuild,
+			ProtocolVersion: native.ProtocolVersion,
+		},
+		Slices: slices,
+	})
+	if err != nil || observation.FirmwareText() != native.Firmware || observation.SerialText() != native.Serial {
+		return GrowattProtocolIIV1Result{}, ErrGrowattProtocolIIV1NotAdmitted
+	}
+	return growattProtocolIIV1ResultFromObservation(observation), nil
+}
+
+func growattProtocolIIV1ResultFromObservation(observation modbusreg.GrowattProtocolIIIdentityObservation) GrowattProtocolIIV1Result {
+	profile := observation.Profile()
+	slices := observation.Slices()
+	nativeSlices := make([]GrowattProtocolIIV1NativeIdentitySlice, len(slices))
+	for index, slice := range slices {
+		nativeSlices[index] = GrowattProtocolIIV1NativeIdentitySlice{
+			Offset: slice.Offset,
+			Words:  append([]uint16(nil), slice.Words...),
+		}
+	}
+	return GrowattProtocolIIV1Result{
+		Profile:           GrowattProtocolIIV1Profile,
+		Disposition:       "OFFLINE_IDENTITY_ADMITTED",
+		Family:            profile.Family,
+		IdentityQualified: true,
+		NativeIdentity: GrowattProtocolIIV1NativeIdentity{
+			Family:          profile.Family,
+			UnitID:          observation.UnitID(),
+			Firmware:        observation.FirmwareText(),
+			Serial:          observation.SerialText(),
+			DeviceType:      observation.DeviceType(),
+			ModelBuild:      observation.ModelBuild(),
+			ProtocolVersion: observation.ProtocolVersion(),
+			Slices:          nativeSlices,
+		},
+	}
 }

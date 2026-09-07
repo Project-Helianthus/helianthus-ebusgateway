@@ -1,0 +1,407 @@
+{
+  "contract": "helianthus.semantic.compatibility.canonical-pv/v1",
+  "status": "test_only_non_runtime",
+  "sources": [
+    {
+      "repository": "Project-Helianthus/helianthus-ebusgateway",
+      "commit": "f5cd9c51c60bdf422e8fc1b5690fbde52a393be3",
+      "path": "internal/modbusadapter/canonical_pv.go",
+      "blob_sha1": "4171468c974468a82b645077f2b54359213d4841",
+      "sha256": "608aa647e22e63009a9e52bf427d3e14dcdd685aa5286af85fbf462e1a3688fd"
+    },
+    {
+      "repository": "Project-Helianthus/helianthus-semreg",
+      "commit": "eafda745434971ea05f658322b7e64c04888d1c2",
+      "path": "fixtures/v1/compatibility/canonical-pv-v1/comparator-vectors.json",
+      "blob_sha1": "bc98eb1ff37b5b0e8f0ddddd1b39f48e19688869",
+      "sha256": "607041924bdd24b1b4b4d331c01780ece19600869cc4dcc2de9acece531a3f0b"
+    },
+    {
+      "repository": "Project-Helianthus/helianthus-semreg",
+      "commit": "eafda745434971ea05f658322b7e64c04888d1c2",
+      "path": "fixtures/v1/compatibility/canonical-pv-v1/dispositions.json",
+      "blob_sha1": "1aacbf5cd5dde10956f159147a4cebd870dc9274",
+      "sha256": "13b6fbf4e913ea6cd4f8ee8ea604e2e5858e490f1a755400e73b9f4574c3007c"
+    }
+  ],
+  "clock": {
+    "receipt_ns": "100",
+    "fresh_for_ns": "30000000000",
+    "retain_for_ns": "300000000000"
+  },
+  "provenance": {
+    "asset_ref": "pv-asset-5c57adba3ad8a529617c1f8627ae32f1",
+    "protocol": "sunspec_modbus",
+    "profile_id": "sunspec.inverter.three_phase.monitoring@1.0.0",
+    "semantic_profile_id": "sunspec.inverter.three_phase.monitoring",
+    "profile_version": "1.0.0",
+    "validity": "terminal_verified",
+    "registry_digest": "sha256:e21d5d4914fba2249c68cc147243c22f89cc9e1f2be71e4565a3950f31e94750",
+    "observation_digest": "sha256:c9263950411d7af1f46939f4f9685e57b80069ff3f6545d6dbf54cd3f8d0934d",
+    "shadow_digest": "sha256:9e2fc959a78623047fc0e0e7e409ac46d2ce8c62ea93f1a6aa598730e12c6828",
+    "evidence_digest": "sha256:db7f33fa37993a81d268e6e100f239f3023b28ab5e42dd7d9b98497adcc6a8e8",
+    "energy_word_hi": 16936,
+    "energy_word_lo": 0
+  },
+  "facts": [
+    {
+      "request_ref": "sha256:b0285580e46e4f9541651367e0592f1c8c21b884cd5d3ea8c1cdeed7ce780e59",
+      "request_native_id": "inverter.ac.power.active",
+      "legacy_key": "pv.ac.power.active|scope=total",
+      "legacy_id": "pv.ac.power.active",
+      "scope": "total",
+      "coefficient": "-1235",
+      "scale": -1,
+      "unit": "W",
+      "target": "pv.ac.aggregate_active_power",
+      "dimension": "pv.dimension.inverter",
+      "dimension_value": "inverter:fixture",
+      "semantic_unit": "unit.watt",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 49911,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:e34f588ca08f204e256e3119ebad3aed024df427164f48410d5bece3ecfa9ebf",
+      "request_native_id": "inverter.ac.frequency",
+      "legacy_key": "pv.ac.frequency|scope=total",
+      "legacy_id": "pv.ac.frequency",
+      "scope": "total",
+      "coefficient": "50125",
+      "scale": -3,
+      "unit": "Hz",
+      "target": "pv.ac.frequency",
+      "dimension": "pv.dimension.inverter",
+      "dimension_value": "inverter:fixture",
+      "semantic_unit": "unit.hertz",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 16968,
+      "wire_word_lo": 32768
+    },
+    {
+      "request_ref": "sha256:742dfd72dd7950dd6e6b51163652a6008685443b2cc01cdec79f82d5d735c75f",
+      "request_native_id": "inverter.ac.energy_lifetime",
+      "legacy_key": "pv.energy.active_export_total|scope=total",
+      "legacy_id": "pv.energy.active_export_total",
+      "scope": "total",
+      "coefficient": "42",
+      "scale": 0,
+      "unit": "Wh",
+      "target": "pv.energy.generated",
+      "dimension": "pv.dimension.system",
+      "dimension_value": "system:fixture",
+      "semantic_unit": "unit.kilowatt_hour",
+      "semantic_coefficient": "42",
+      "semantic_exponent10": -3,
+      "outcome": "transformed",
+      "loss": "unit: Wh_to_kWh_factor_1000",
+      "freshness_policy": {
+        "id": "pv.accumulator.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "900000000000",
+        "retain_for_ns": "86400000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 16936,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:9152fde11def0bdd3703a8aec83dcc09fb112bfbc2a30dfceca2f4f3478e97dc",
+      "request_native_id": "inverter.temperature.cabinet",
+      "legacy_key": "pv.temperature|sensor_id=cabinet",
+      "legacy_id": "pv.temperature",
+      "sensor_id": "cabinet",
+      "coefficient": "-725",
+      "scale": -2,
+      "unit": "Cel",
+      "target": "pv.temperature.inverter",
+      "dimension": "pv.dimension.inverter",
+      "dimension_value": "inverter:fixture",
+      "semantic_unit": "unit.celsius",
+      "outcome": "transformed",
+      "loss": "provenance: sensor_id_cabinet_to_inverter",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 49384,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:6e05e76ac18312d255b87519294328d81329b947b6daba4049471a48230e7a1a",
+      "request_native_id": "inverter.operating_state",
+      "legacy_key": "pv.operating.state|scope=total",
+      "legacy_id": "pv.operating.state",
+      "scope": "total",
+      "symbol": "OPERATING",
+      "unit": "1",
+      "target": "pv.status.operating",
+      "dimension": "pv.dimension.inverter",
+      "dimension_value": "inverter:fixture",
+      "semantic_symbol": "generating",
+      "outcome": "transformed",
+      "loss": "symbol: OPERATING_to_generating",
+      "freshness_policy": {
+        "id": "pv.status.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "60000000000",
+        "retain_for_ns": "600000000000",
+        "max_wall_uncertainty_ns": "0"
+      }
+    },
+    {
+      "request_ref": "sha256:e31201e9e3097df8d9c58511b057d9b744ad5191f6734dcbf81a5a9634ca6a94",
+      "request_native_id": "inverter.ac.current.phase_a",
+      "legacy_key": "pv.ac.current|phase=L1",
+      "legacy_id": "pv.ac.current",
+      "phase": "L1",
+      "coefficient": "125",
+      "scale": -2,
+      "unit": "A",
+      "target": "pv.ac.current",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L1",
+      "semantic_unit": "unit.ampere",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 16288,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:0d0472dbaeb980ee433afa2b7c5866f21369037307809126e4fa8266b180c4b1",
+      "request_native_id": "inverter.ac.current.phase_b",
+      "legacy_key": "pv.ac.current|phase=L2",
+      "legacy_id": "pv.ac.current",
+      "phase": "L2",
+      "coefficient": "25",
+      "scale": -1,
+      "unit": "A",
+      "target": "pv.ac.current",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L2",
+      "semantic_unit": "unit.ampere",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 16416,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:debce5d518ab31f6740eb04e708c41f655e0932be7b8e34c0c9ca2264219c3b0",
+      "request_native_id": "inverter.ac.current.phase_c",
+      "legacy_key": "pv.ac.current|phase=L3",
+      "legacy_id": "pv.ac.current",
+      "phase": "L3",
+      "coefficient": "375",
+      "scale": -2,
+      "unit": "A",
+      "target": "pv.ac.current",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L3",
+      "semantic_unit": "unit.ampere",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 16496,
+      "wire_word_lo": 0
+    },
+    {
+      "request_ref": "sha256:6e985852c6f92a790a1c4a5f68ccf4f215db0bdfe0c9aa270672a7e6dc19ce7c",
+      "request_native_id": "inverter.ac.voltage.phase_a",
+      "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L1",
+      "legacy_id": "pv.ac.voltage.line_to_neutral",
+      "phase": "L1",
+      "coefficient": "2305",
+      "scale": -1,
+      "unit": "V",
+      "target": "pv.ac.voltage",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L1",
+      "semantic_unit": "unit.volt",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 17254,
+      "wire_word_lo": 32768
+    },
+    {
+      "request_ref": "sha256:df41d1e3b7567131f3e22295b137bdcf0f634749c64c26450d8841255d2c6902",
+      "request_native_id": "inverter.ac.voltage.phase_b",
+      "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L2",
+      "legacy_id": "pv.ac.voltage.line_to_neutral",
+      "phase": "L2",
+      "coefficient": "23125",
+      "scale": -2,
+      "unit": "V",
+      "target": "pv.ac.voltage",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L2",
+      "semantic_unit": "unit.volt",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 17255,
+      "wire_word_lo": 16384
+    },
+    {
+      "request_ref": "sha256:16ef0196f7b93d8963e2ba8b43239348600092ae669a1eda984a21a1954a565f",
+      "request_native_id": "inverter.ac.voltage.phase_c",
+      "legacy_key": "pv.ac.voltage.line_to_neutral|phase=L3",
+      "legacy_id": "pv.ac.voltage.line_to_neutral",
+      "phase": "L3",
+      "coefficient": "23275",
+      "scale": -2,
+      "unit": "V",
+      "target": "pv.ac.voltage",
+      "dimension": "pv.dimension.phase",
+      "dimension_value": "phase:L3",
+      "semantic_unit": "unit.volt",
+      "outcome": "exact",
+      "freshness_policy": {
+        "id": "pv.telemetry.fast.v1",
+        "version": "1.0.0",
+        "fresh_for_ns": "30000000000",
+        "retain_for_ns": "300000000000",
+        "max_wall_uncertainty_ns": "0"
+      },
+      "wire_word_hi": 17256,
+      "wire_word_lo": 49152
+    }
+  ],
+  "withheld": [
+    {
+      "request_ref": "sha256:038c7606e2a72596d005754a459927439b04751d2a3790e00091020549406c4f",
+      "request_native_id": "inverter.ac.current.total",
+      "outcome": "withheld"
+    },
+    {
+      "request_ref": "sha256:1b02b46807946a80d112321e3af4c28146c37eb5f68d6c18d5b6d9b8bf8f5eaa",
+      "request_native_id": "inverter.events.2",
+      "outcome": "withheld"
+    },
+    {
+      "request_ref": "sha256:426cd70347e2153707ca7ded8dc324591d3cdeaa778feb905cc9f80a1a30613b",
+      "request_native_id": "inverter.events.1",
+      "outcome": "withheld"
+    }
+  ],
+  "counters": [
+    {
+      "id": "baseline",
+      "current": "42",
+      "event": "none",
+      "want": "baseline"
+    },
+    {
+      "id": "contiguous",
+      "previous": "42",
+      "current": "43",
+      "event": "none",
+      "want": "contiguous"
+    },
+    {
+      "id": "reset",
+      "previous": "43",
+      "current": "1",
+      "event": "reset",
+      "evidence_digest": "sha256:f111111111111111111111111111111111111111111111111111111111111111",
+      "want": "reset"
+    },
+    {
+      "id": "reset_nondecreasing",
+      "previous": "1",
+      "current": "43",
+      "event": "reset",
+      "evidence_digest": "sha256:f444444444444444444444444444444444444444444444444444444444444444",
+      "want": "reset"
+    },
+    {
+      "id": "rollover",
+      "previous": "99",
+      "current": "1",
+      "event": "rollover",
+      "modulus": "100",
+      "boundary_verified": true,
+      "evidence_digest": "sha256:f222222222222222222222222222222222222222222222222222222222222222",
+      "want": "rollover"
+    },
+    {
+      "id": "decrease",
+      "previous": "43",
+      "current": "1",
+      "event": "none",
+      "want": "discontinuity"
+    }
+  ],
+  "counter_negatives": [
+    {
+      "id": "reset_missing_evidence",
+      "previous": "43",
+      "current": "1",
+      "event": "reset",
+      "want_error": "invalid_evidence"
+    },
+    {
+      "id": "rollover_malformed_evidence",
+      "previous": "99",
+      "current": "1",
+      "event": "rollover",
+      "modulus": "100",
+      "boundary_verified": true,
+      "evidence_digest": "sha256:not-a-digest",
+      "want_error": "invalid_evidence"
+    },
+    {
+      "id": "reset_substituted_evidence",
+      "previous": "43",
+      "current": "1",
+      "event": "reset",
+      "evidence_digest": "sha256:f333333333333333333333333333333333333333333333333333333333333333",
+      "expected_evidence_digest": "sha256:f111111111111111111111111111111111111111111111111111111111111111",
+      "want_error": "digest_mismatch"
+    }
+  ]
+}

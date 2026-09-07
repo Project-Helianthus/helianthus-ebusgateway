@@ -1,0 +1,4 @@
+github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260907015800-eafda7454349 h1:LP0VCUmR87xoH9p9EtXFYLGXpXBMrBDRH7LBWm58vaY=
+github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260907015800-eafda7454349/go.mod h1:Nk9VAXLA7iJBXbWPRL6s5+DWqc2OJkUzg8zdlDdUdes=
+golang.org/x/text v0.22.0 h1:bofq7m3/HAFvbF51jz3Q9wLg3jkvSPuiZu/pD1XwgtM=
+golang.org/x/text v0.22.0/go.mod h1:YRoo4H8PVmsu+E3Ou7cqLVH8oXWIHVoX0jqUWALQhfY=

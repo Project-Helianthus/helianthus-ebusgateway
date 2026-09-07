@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"reflect"
+	"runtime"
 )
 
 const maximumReportBytes = 1024 * 1024
@@ -22,28 +23,30 @@ func ValidateReportBytes(data []byte) error {
 	if err := uniqueJSONKeys(data); err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var report map[string]any
-	if err := decoder.Decode(&report); err != nil {
-		return fmt.Errorf("decode report: %w", err)
+	temp, err := os.CreateTemp("", "helianthus-adversarial-report-*.json")
+	if err != nil {
+		return errors.New("report validation unavailable")
 	}
-	if decoder.More() {
-		return errors.New("report has trailing value")
+	path := temp.Name()
+	defer os.Remove(path)
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return errors.New("report validation unavailable")
 	}
-	if err := ValidateReport(report); err != nil {
-		return err
+	if err := temp.Close(); err != nil {
+		return errors.New("report validation unavailable")
 	}
-	for _, fixture := range [][]byte{allPassReport, evaluatedFailReport, executionErrorReport, infrastructureBlockReport} {
-		candidate, err := decodedObject(fixture)
-		if err != nil {
-			return fmt.Errorf("embedded fixture invalid: %w", err)
-		}
-		if reflect.DeepEqual(report, candidate) {
-			return nil
-		}
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		return errors.New("report validation unavailable")
 	}
-	return errors.New("report is not an accepted v1 semantic projection")
+	root := filepath.Join(filepath.Dir(source), "contract")
+	command := exec.Command("python3", filepath.Join(root, "scripts", "validate_adversarial_runtime_report_v1.py"), path)
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("adversarial_runtime_report_v1_ok")) {
+		return errors.New("report violates adversarial runtime v1 contract")
+	}
+	return nil
 }
 
 func decodedObject(data []byte) (map[string]any, error) {
@@ -157,50 +160,9 @@ func ValidateReport(report map[string]any) error {
 	if report == nil {
 		return errors.New("report is nil")
 	}
-	if report["$schema"] != ReportSchemaURL || integer(report["schema_version"]) != 1 {
-		return errors.New("unsupported report schema")
+	data, err := json.Marshal(report)
+	if err != nil {
+		return errors.New("report is invalid")
 	}
-	suite, ok := report["suite"].(map[string]any)
-	if !ok || suite["id"] != SuiteID || integer(suite["version"]) != 1 {
-		return errors.New("unsupported suite")
-	}
-	scenarios, ok := report["scenarios"].([]any)
-	if !ok || len(scenarios) != 4 {
-		return errors.New("report must contain exactly four scenarios")
-	}
-	passed, failed, blocked := 0, 0, 0
-	for index, raw := range scenarios {
-		s, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("scenario %d is not an object", index)
-		}
-		definition, ok := s["definition"].(map[string]any)
-		if !ok || definition["scenario_id"] != Catalog()[index].ScenarioID {
-			return fmt.Errorf("scenario %d catalog mismatch", index)
-		}
-		switch s["outcome"] {
-		case "pass":
-			passed++
-		case "fail":
-			failed++
-		case "blocked-infra":
-			blocked++
-		default:
-			return fmt.Errorf("scenario %d has invalid outcome", index)
-		}
-	}
-	summary, ok := report["summary"].(map[string]any)
-	if !ok || integer(summary["total"]) != 4 || integer(summary["passed"]) != int64(passed) || integer(summary["failed"]) != int64(failed) || integer(summary["blocked"]) != int64(blocked) || integer(summary["xfailed"]) != 0 || integer(summary["unknown"]) != 0 {
-		return errors.New("report summary mismatch")
-	}
-	wantVerdict := "pass"
-	if failed > 0 {
-		wantVerdict = "fail"
-	} else if blocked > 0 {
-		wantVerdict = "blocked-infra"
-	}
-	if summary["verdict"] != wantVerdict {
-		return errors.New("report verdict mismatch")
-	}
-	return nil
+	return ValidateReportBytes(data)
 }

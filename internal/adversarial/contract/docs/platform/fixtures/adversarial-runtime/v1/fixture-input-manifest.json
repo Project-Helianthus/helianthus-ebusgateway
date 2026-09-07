@@ -1,0 +1,104 @@
+{
+  "fixture_contract": "helianthus.adversarial-runtime.fixture-set/v1",
+  "suite": {
+    "id": "helianthus.adversarial.ADV01-04",
+    "version": 1
+  },
+  "purpose": "deterministic synthetic offline executor inputs; not live evidence",
+  "artifacts": [
+    {
+      "artifact_id": "cache-evaluated-fail-adv04",
+      "role": "cache-image",
+      "path": "inputs/evaluated-fail-adv04-cache.bin",
+      "media_type": "application/octet-stream",
+      "size_bytes": 83,
+      "sha256": "68b3ccd881de140d1c00198af705ca7f722de5d85a23edb9105dbee8e91cd89c"
+    },
+    {
+      "artifact_id": "cache-execution-error-adv04",
+      "role": "cache-image",
+      "path": "inputs/execution-error-adv04-cache.bin",
+      "media_type": "application/octet-stream",
+      "size_bytes": 84,
+      "sha256": "e9acecfd899930cdbaa267dfcc783762239a4f0eaa195abec86b7042c8db2abf"
+    },
+    {
+      "artifact_id": "cache-infrastructure-block-adv04",
+      "role": "cache-image",
+      "path": "inputs/infrastructure-block-adv04-cache.bin",
+      "media_type": "application/octet-stream",
+      "size_bytes": 89,
+      "sha256": "e6f8a3ad4f44adaf4df0e348894728dfdd6b822acda1309983157e6f5781f14a"
+    },
+    {
+      "artifact_id": "cache-offline-all-pass-adv04",
+      "role": "cache-image",
+      "path": "inputs/offline-all-pass-adv04-cache.bin",
+      "media_type": "application/octet-stream",
+      "size_bytes": 85,
+      "sha256": "4aa3eb024bff097ce908ab427ab188b660cd7a7944e56937ca492e24103cce52"
+    },
+    {
+      "artifact_id": "driver-evaluated-fail",
+      "role": "scenario-driver",
+      "path": "inputs/evaluated-fail.json",
+      "media_type": "application/json",
+      "size_bytes": 6315,
+      "sha256": "44a936a6a3f1c52a06c821d68ed40a20e6e78ee7d3245eecf822a9885e8c08b8"
+    },
+    {
+      "artifact_id": "driver-execution-error",
+      "role": "scenario-driver",
+      "path": "inputs/execution-error.json",
+      "media_type": "application/json",
+      "size_bytes": 5744,
+      "sha256": "7c6b53f18aa0951393beec6f509552a1d20bd0a95b04e60bb042fdcdc5704e9c"
+    },
+    {
+      "artifact_id": "driver-infrastructure-block",
+      "role": "scenario-driver",
+      "path": "inputs/infrastructure-block.json",
+      "media_type": "application/json",
+      "size_bytes": 5222,
+      "sha256": "402a39e3a352433552ec9764074fe4e09d02074516d82452639fb10334e8a630"
+    },
+    {
+      "artifact_id": "driver-offline-all-pass",
+      "role": "scenario-driver",
+      "path": "inputs/offline-all-pass.json",
+      "media_type": "application/json",
+      "size_bytes": 6319,
+      "sha256": "1db07eb7c2ca7f59574192ea9d6bb8e5e280408e330a64a3b0b18a4e383127d0"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "evaluated-fail",
+      "driver_artifact_id": "driver-evaluated-fail",
+      "resource_artifact_ids": [
+        "cache-evaluated-fail-adv04"
+      ]
+    },
+    {
+      "case_id": "execution-error",
+      "driver_artifact_id": "driver-execution-error",
+      "resource_artifact_ids": [
+        "cache-execution-error-adv04"
+      ]
+    },
+    {
+      "case_id": "infrastructure-block",
+      "driver_artifact_id": "driver-infrastructure-block",
+      "resource_artifact_ids": [
+        "cache-infrastructure-block-adv04"
+      ]
+    },
+    {
+      "case_id": "offline-all-pass",
+      "driver_artifact_id": "driver-offline-all-pass",
+      "resource_artifact_ids": [
+        "cache-offline-all-pass-adv04"
+      ]
+    }
+  ]
+}

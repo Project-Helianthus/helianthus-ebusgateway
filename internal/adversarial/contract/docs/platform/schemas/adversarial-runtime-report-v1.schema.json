@@ -1,0 +1,1001 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json",
+  "title": "Helianthus adversarial runtime report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "suite",
+    "execution",
+    "provenance",
+    "scenarios",
+    "summary"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "suite": {
+      "$ref": "#/$defs/Suite"
+    },
+    "execution": {
+      "$ref": "#/$defs/Execution"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/Scenario"
+      }
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    }
+  },
+  "$defs": {
+    "SafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Milliseconds": {
+      "$ref": "#/$defs/SafeInteger"
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
+      "maxLength": 24
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "maxLength": 64
+    },
+    "NullableMilliseconds": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "Suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "const": "helianthus.adversarial.ADV01-04"
+        },
+        "version": {
+          "const": 1
+        }
+      }
+    },
+    "Execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "run_id",
+        "started_at",
+        "completed_at"
+      ],
+      "properties": {
+        "mode": {
+          "const": "offline-fixture"
+        },
+        "run_id": {
+          "description": "Deterministic case-scoped synthetic fixture identity; reuse denotes the same fixture evidence, not an independent runtime run.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "maxLength": 36
+        },
+        "started_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "completed_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "producer",
+        "fixture_set_sha256",
+        "fixture_case_id"
+      ],
+      "properties": {
+        "subject": {
+          "$ref": "#/$defs/Subject"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "fixture_set_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "fixture_case_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "minLength": 1,
+          "maxLength": 48
+        }
+      }
+    },
+    "Definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_id",
+        "name",
+        "duration_limit_ms",
+        "trigger_kind",
+        "recovery_target",
+        "maximum_recovery_ms",
+        "minimum_live_epoch_delta",
+        "zones_required",
+        "dhw_required",
+        "maximum_collisions_delta"
+      ],
+      "properties": {
+        "scenario_id": {
+          "enum": [
+            "ADV-01",
+            "ADV-02",
+            "ADV-03",
+            "ADV-04"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "duration_limit_ms": {
+          "const": 180000
+        },
+        "trigger_kind": {
+          "enum": [
+            "ha_consumer_restart",
+            "adapter_reset",
+            "transport_partition",
+            "isolated_corrupt_cache_boot"
+          ]
+        },
+        "recovery_target": {
+          "enum": [
+            "ha_consumer_synchronized",
+            "gateway_live_ready"
+          ]
+        },
+        "minimum_live_epoch_delta": {
+          "const": 2
+        },
+        "zones_required": {
+          "type": "boolean"
+        },
+        "dhw_required": {
+          "type": "boolean"
+        },
+        "maximum_collisions_delta": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "maximum_recovery_ms": {
+          "enum": [
+            90000,
+            120000
+          ]
+        }
+      }
+    },
+    "ActionEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "at",
+        "offset_ms",
+        "error_bound_ms"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "restart_requested",
+            "consumer_stopped",
+            "consumer_started",
+            "ha_consumer_synchronized",
+            "reset_requested",
+            "reset_started",
+            "transport_unavailable",
+            "transport_available",
+            "gateway_live_ready",
+            "partition_requested",
+            "partition_active",
+            "partition_cleared",
+            "isolated_cache_staged",
+            "runtime_started"
+          ]
+        },
+        "source": {
+          "const": "fixture"
+        },
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "offset_ms": {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        "error_bound_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/ActionEvent"
+          }
+        }
+      }
+    },
+    "Timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario_started_at",
+        "scenario_ended_at",
+        "elapsed_ms",
+        "recovery_anchor",
+        "recovery_observed",
+        "recovery_ms",
+        "error_bound_ms"
+      ],
+      "properties": {
+        "scenario_started_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "scenario_ended_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "elapsed_ms": {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        "recovery_anchor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 48
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_observed": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 48
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recovery_ms": {
+          "$ref": "#/$defs/NullableMilliseconds"
+        },
+        "error_bound_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        }
+      }
+    },
+    "Snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "counter_epoch",
+        "captured_at",
+        "offset_ms",
+        "semantic_startup_current_phase",
+        "semantic_live_epoch",
+        "semantic_bus_collisions_total",
+        "semantic_zone_count",
+        "semantic_dhw_present"
+      ],
+      "properties": {
+        "counter_epoch": {
+          "description": "Deterministic case-scoped synthetic counter identity; meaningful only within this fixture scenario and not across reports.",
+          "$ref": "#/$defs/UuidV4"
+        },
+        "captured_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "offset_ms": {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        "semantic_startup_current_phase": {
+          "enum": [
+            "BOOT_INIT",
+            "CACHE_LOADED_STALE",
+            "LIVE_WARMUP",
+            "LIVE_READY",
+            "DEGRADED"
+          ]
+        },
+        "semantic_live_epoch": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "semantic_bus_collisions_total": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "semantic_zone_count": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "semantic_dhw_present": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_live_epoch",
+        "semantic_bus_collisions_total"
+      ],
+      "properties": {
+        "semantic_live_epoch": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "semantic_bus_collisions_total": {
+          "$ref": "#/$defs/SafeInteger"
+        }
+      }
+    },
+    "Metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline",
+        "end",
+        "delta"
+      ],
+      "properties": {
+        "baseline": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Snapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Snapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delta": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Delta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration",
+        "action",
+        "recovery",
+        "live_epoch",
+        "zones",
+        "dhw",
+        "collisions"
+      ],
+      "properties": {
+        "duration": {
+          "$ref": "#/$defs/DurationDecision"
+        },
+        "action": {
+          "$ref": "#/$defs/ActionDecision"
+        },
+        "recovery": {
+          "$ref": "#/$defs/RecoveryDecision"
+        },
+        "live_epoch": {
+          "$ref": "#/$defs/MinimumDecision"
+        },
+        "zones": {
+          "$ref": "#/$defs/BooleanDecision"
+        },
+        "dhw": {
+          "$ref": "#/$defs/BooleanDecision"
+        },
+        "collisions": {
+          "$ref": "#/$defs/MaximumDecision"
+        }
+      }
+    },
+    "DurationDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_ms",
+        "observed_ms",
+        "error_bound_ms",
+        "passed"
+      ],
+      "properties": {
+        "expected_ms": {
+          "const": 180000
+        },
+        "observed_ms": {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        "error_bound_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ActionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_kind",
+        "observed_kind",
+        "passed"
+      ],
+      "properties": {
+        "expected_kind": {
+          "type": "string",
+          "maxLength": 48
+        },
+        "observed_kind": {
+          "type": "string",
+          "maxLength": 48
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RecoveryDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_ms",
+        "observed_ms",
+        "error_bound_ms",
+        "passed"
+      ],
+      "properties": {
+        "maximum_ms": {
+          "enum": [
+            90000,
+            120000
+          ]
+        },
+        "observed_ms": {
+          "$ref": "#/$defs/Milliseconds"
+        },
+        "error_bound_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "MinimumDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum",
+        "observed",
+        "passed"
+      ],
+      "properties": {
+        "minimum": {
+          "const": 2
+        },
+        "observed": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "MaximumDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum",
+        "observed",
+        "passed"
+      ],
+      "properties": {
+        "maximum": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "observed": {
+          "$ref": "#/$defs/SafeInteger"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "BooleanDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "observed",
+        "passed"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "code"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "precondition",
+            "trigger",
+            "observer",
+            "evaluation",
+            "artifact"
+          ]
+        },
+        "code": {
+          "enum": [
+            "precondition_unavailable",
+            "trigger_rejected",
+            "trigger_timeout",
+            "trigger_failed",
+            "observer_timeout",
+            "observer_failed",
+            "counter_epoch_changed",
+            "negative_counter_delta",
+            "action_duration_out_of_bounds",
+            "evidence_incomplete"
+          ]
+        }
+      }
+    },
+    "Scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition",
+        "action",
+        "timing",
+        "metrics",
+        "evaluation",
+        "errors",
+        "infrastructure_reason",
+        "result_kind",
+        "outcome"
+      ],
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/Definition"
+        },
+        "action": {
+          "$ref": "#/$defs/Action"
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing"
+        },
+        "metrics": {
+          "$ref": "#/$defs/Metrics"
+        },
+        "evaluation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Evaluation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errors": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/Error"
+          }
+        },
+        "infrastructure_reason": {
+          "oneOf": [
+            {
+              "enum": [
+                "ha_harness_unavailable",
+                "adapter_control_unavailable",
+                "network_fault_injector_unavailable",
+                "isolated_cache_sandbox_unavailable",
+                "observer_unavailable"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result_kind": {
+          "enum": [
+            "evaluated",
+            "execution-error",
+            "infrastructure-block"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked-infra"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result_kind": {
+                "const": "evaluated"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "enum": [
+                  "pass",
+                  "fail"
+                ]
+              },
+              "metrics": {
+                "properties": {
+                  "baseline": {
+                    "$ref": "#/$defs/Snapshot"
+                  },
+                  "end": {
+                    "$ref": "#/$defs/Snapshot"
+                  },
+                  "delta": {
+                    "$ref": "#/$defs/Delta"
+                  }
+                }
+              },
+              "evaluation": {
+                "$ref": "#/$defs/Evaluation"
+              },
+              "errors": {
+                "maxItems": 0
+              },
+              "infrastructure_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result_kind": {
+                "const": "execution-error"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "fail"
+              },
+              "metrics": {
+                "properties": {
+                  "delta": {
+                    "type": "null"
+                  }
+                }
+              },
+              "evaluation": {
+                "type": "null"
+              },
+              "infrastructure_reason": {
+                "type": "null"
+              },
+              "errors": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result_kind": {
+                "const": "infrastructure-block"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "outcome": {
+                "const": "blocked-infra"
+              },
+              "action": {
+                "properties": {
+                  "events": {
+                    "maxItems": 0
+                  }
+                }
+              },
+              "timing": {
+                "properties": {
+                  "recovery_anchor": {
+                    "type": "null"
+                  },
+                  "recovery_observed": {
+                    "type": "null"
+                  },
+                  "recovery_ms": {
+                    "type": "null"
+                  }
+                }
+              },
+              "metrics": {
+                "properties": {
+                  "baseline": {
+                    "type": "null"
+                  },
+                  "end": {
+                    "type": "null"
+                  },
+                  "delta": {
+                    "type": "null"
+                  }
+                }
+              },
+              "evaluation": {
+                "type": "null"
+              },
+              "infrastructure_reason": {
+                "enum": [
+                  "ha_harness_unavailable",
+                  "adapter_control_unavailable",
+                  "network_fault_injector_unavailable",
+                  "isolated_cache_sandbox_unavailable",
+                  "observer_unavailable"
+                ]
+              },
+              "errors": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "prefixItems": [
+                  {
+                    "const": {
+                      "phase": "precondition",
+                      "code": "precondition_unavailable"
+                    }
+                  }
+                ],
+                "items": false
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "xfailed",
+        "blocked",
+        "unknown",
+        "verdict"
+      ],
+      "properties": {
+        "total": {
+          "const": 4
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "xfailed": {
+          "const": 0
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "unknown": {
+          "const": 0
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "fail",
+            "blocked-infra"
+          ]
+        }
+      }
+    },
+    "Subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit",
+        "source_tree",
+        "artifact_kind",
+        "artifact_sha256"
+      ],
+      "properties": {
+        "repository": {
+          "const": "Project-Helianthus/helianthus-ebusgateway"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "maxLength": 40
+        },
+        "source_tree": {
+          "enum": [
+            "clean",
+            "dirty"
+          ]
+        },
+        "artifact_kind": {
+          "const": "gateway-fixture-set"
+        },
+        "artifact_sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      }
+    },
+    "Producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit",
+        "component",
+        "build_kind",
+        "build_sha256",
+        "input_gateway_report_sha256"
+      ],
+      "properties": {
+        "repository": {
+          "enum": [
+            "Project-Helianthus/helianthus-ebusgateway",
+            "Project-Helianthus/helianthus-ha-integration"
+          ]
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "maxLength": 40
+        },
+        "component": {
+          "enum": [
+            "internal/adversarial",
+            "ha-adversarial-harness"
+          ]
+        },
+        "build_kind": {
+          "enum": [
+            "go-test-binary",
+            "ha-harness"
+          ]
+        },
+        "build_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "input_gateway_report_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "UuidV4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "maxLength": 36
+    }
+  }
+}

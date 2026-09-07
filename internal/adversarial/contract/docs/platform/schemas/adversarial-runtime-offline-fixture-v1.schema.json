@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json",
+  "title": "Helianthus adversarial runtime offline fixture v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "suite",
+    "fixture_case_id",
+    "run_id",
+    "scenarios"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "const": "helianthus.adversarial.ADV01-04"
+        },
+        "version": {
+          "const": 1
+        }
+      }
+    },
+    "fixture_case_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "minLength": 1,
+      "maxLength": 48
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scenario_id",
+          "trigger_kind",
+          "precondition",
+          "events",
+          "observations",
+          "terminal_error",
+          "resource_artifact_ids"
+        ],
+        "properties": {
+          "scenario_id": {
+            "enum": [
+              "ADV-01",
+              "ADV-02",
+              "ADV-03",
+              "ADV-04"
+            ]
+          },
+          "trigger_kind": {
+            "type": "string",
+            "maxLength": 48
+          },
+          "precondition": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "available",
+              "unavailable_reason"
+            ],
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "unavailable_reason": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "offset_ms",
+                "error_bound_ms"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "maxLength": 48
+                },
+                "offset_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "error_bound_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          },
+          "observations": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "baseline",
+              "end"
+            ],
+            "properties": {
+              "baseline": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "counter_epoch",
+                      "offset_ms",
+                      "semantic_startup_current_phase",
+                      "semantic_live_epoch",
+                      "semantic_bus_collisions_total",
+                      "semantic_zone_count",
+                      "semantic_dhw_present"
+                    ],
+                    "properties": {
+                      "counter_epoch": {
+                        "description": "Deterministic case-scoped synthetic counter identity; meaningful only within this fixture scenario and not across reports.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "maxLength": 36
+                      },
+                      "offset_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_startup_current_phase": {
+                        "enum": [
+                          "BOOT_INIT",
+                          "CACHE_LOADED_STALE",
+                          "LIVE_WARMUP",
+                          "LIVE_READY",
+                          "DEGRADED"
+                        ]
+                      },
+                      "semantic_live_epoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_bus_collisions_total": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_zone_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_dhw_present": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "end": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "counter_epoch",
+                      "offset_ms",
+                      "semantic_startup_current_phase",
+                      "semantic_live_epoch",
+                      "semantic_bus_collisions_total",
+                      "semantic_zone_count",
+                      "semantic_dhw_present"
+                    ],
+                    "properties": {
+                      "counter_epoch": {
+                        "description": "Deterministic case-scoped synthetic counter identity; meaningful only within this fixture scenario and not across reports.",
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "maxLength": 36
+                      },
+                      "offset_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_startup_current_phase": {
+                        "enum": [
+                          "BOOT_INIT",
+                          "CACHE_LOADED_STALE",
+                          "LIVE_WARMUP",
+                          "LIVE_READY",
+                          "DEGRADED"
+                        ]
+                      },
+                      "semantic_live_epoch": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_bus_collisions_total": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_zone_count": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "semantic_dhw_present": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "terminal_error": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "phase",
+                  "code"
+                ],
+                "properties": {
+                  "phase": {
+                    "enum": [
+                      "precondition",
+                      "trigger",
+                      "observer",
+                      "evaluation",
+                      "artifact"
+                    ]
+                  },
+                  "code": {
+                    "enum": [
+                      "precondition_unavailable",
+                      "trigger_rejected",
+                      "trigger_timeout",
+                      "trigger_failed",
+                      "observer_timeout",
+                      "observer_failed",
+                      "counter_epoch_changed",
+                      "negative_counter_delta",
+                      "action_duration_out_of_bounds",
+                      "evidence_incomplete"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resource_artifact_ids": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "maxLength": 64
+            }
+          }
+        }
+      }
+    },
+    "run_id": {
+      "description": "Deterministic case-scoped synthetic fixture identity; reuse denotes the same fixture evidence, not an independent runtime run.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "maxLength": 36
+    }
+  }
+}

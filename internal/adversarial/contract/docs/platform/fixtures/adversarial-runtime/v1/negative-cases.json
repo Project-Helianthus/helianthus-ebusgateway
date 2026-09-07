@@ -1,0 +1,431 @@
+{
+  "fixture_contract": "helianthus.adversarial-runtime-report.negative-cases/v1",
+  "base": "positive/offline-all-pass.json",
+  "cases": [
+    {
+      "id": "unknown_schema_version",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/schema_version",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "id": "unknown_suite_version",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/suite/version",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "id": "forbidden_top_level_field",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "add",
+          "path": "/endpoint",
+          "value": "example.invalid"
+        }
+      ]
+    },
+    {
+      "id": "missing_scenario",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "remove",
+          "path": "/scenarios/3"
+        }
+      ]
+    },
+    {
+      "id": "duplicate_scenario",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/1/definition/scenario_id",
+          "value": "ADV-01"
+        }
+      ]
+    },
+    {
+      "id": "changed_canonical_threshold",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/definition/maximum_collisions_delta",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "id": "action_event_order_changed",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/action/events/1/offset_ms",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "wall_monotonic_timestamp_mismatch",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/action/events/1/at",
+          "value": "2026-09-07T12:00:02.000Z"
+        }
+      ]
+    },
+    {
+      "id": "negative_live_epoch_delta",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/metrics/end/semantic_live_epoch",
+          "value": 9
+        }
+      ]
+    },
+    {
+      "id": "counter_epoch_reset",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/metrics/end/counter_epoch",
+          "value": "00000000-0000-4000-8000-000000000099"
+        }
+      ]
+    },
+    {
+      "id": "timing_uncertainty_over_bound",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/timing/error_bound_ms",
+          "value": 1001
+        }
+      ]
+    },
+    {
+      "id": "forged_recovery_decision",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/evaluation/recovery/passed",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "partial_evaluated_evidence",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/metrics/end",
+          "value": null
+        }
+      ]
+    },
+    {
+      "id": "action_started_downgraded_to_infrastructure",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/result_kind",
+          "value": "infrastructure-block"
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/outcome",
+          "value": "blocked-infra"
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/evaluation",
+          "value": null
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/infrastructure_reason",
+          "value": "ha_harness_unavailable"
+        },
+        {
+          "op": "add",
+          "path": "/scenarios/0/errors/-",
+          "value": {
+            "phase": "observer",
+            "code": "observer_failed"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/summary",
+          "value": {
+            "total": 4,
+            "passed": 3,
+            "failed": 0,
+            "xfailed": 0,
+            "blocked": 1,
+            "unknown": 0,
+            "verdict": "blocked-infra"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unauthorized_xfail",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/summary/xfailed",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "forged_summary",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/summary/passed",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "id": "dirty_provenance_pass",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/provenance/subject/source_tree",
+          "value": "dirty"
+        }
+      ]
+    },
+    {
+      "id": "forbidden_nested_field",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "add",
+          "path": "/scenarios/0/metrics/baseline/address",
+          "value": "example.invalid"
+        }
+      ]
+    },
+    {
+      "id": "operator_live_with_fixture_digest",
+      "expect": "schema",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/execution/mode",
+          "value": "operator-live"
+        }
+      ]
+    },
+    {
+      "id": "partition_shortened",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/2/action/events/2/offset_ms",
+          "value": 59000
+        }
+      ]
+    },
+    {
+      "id": "serial_overlap",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/1/timing/scenario_started_at",
+          "value": "2026-09-07T12:02:59.000Z"
+        }
+      ]
+    },
+    {
+      "id": "serial_gap",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/1/timing/scenario_started_at",
+          "value": "2026-09-07T12:03:01.000Z"
+        }
+      ]
+    },
+    {
+      "id": "forged_run_boundary",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/execution/completed_at",
+          "value": "2026-09-07T12:11:59.000Z"
+        }
+      ]
+    },
+    {
+      "id": "understated_recovery_error_bound",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/2/action/events/3/offset_ms",
+          "value": 150000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/action/events/3/at",
+          "value": "2026-09-07T12:08:30.000Z"
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/action/events/3/error_bound_ms",
+          "value": 1000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/timing/recovery_ms",
+          "value": 90000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/timing/error_bound_ms",
+          "value": 1000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/evaluation/recovery/observed_ms",
+          "value": 90000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/2/evaluation/recovery/error_bound_ms",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "event_after_scenario_end",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/action/events/3/offset_ms",
+          "value": 180001
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/action/events/3/at",
+          "value": "2026-09-07T12:03:00.001Z"
+        }
+      ]
+    },
+    {
+      "id": "execution_error_wrong_scenario_prefix",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/result_kind",
+          "value": "execution-error"
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/outcome",
+          "value": "fail"
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/evaluation",
+          "value": null
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/metrics",
+          "value": {
+            "baseline": null,
+            "end": null,
+            "delta": null
+          }
+        },
+        {
+          "op": "add",
+          "path": "/scenarios/0/errors/-",
+          "value": {
+            "phase": "observer",
+            "code": "observer_failed"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/action/events",
+          "value": [
+            {
+              "kind": "reset_requested",
+              "source": "fixture",
+              "at": "2026-09-07T12:00:00.000Z",
+              "offset_ms": 0,
+              "error_bound_ms": 0
+            }
+          ]
+        },
+        {
+          "op": "replace",
+          "path": "/summary",
+          "value": {
+            "total": 4,
+            "passed": 3,
+            "failed": 1,
+            "xfailed": 0,
+            "blocked": 0,
+            "unknown": 0,
+            "verdict": "fail"
+          }
+        }
+      ]
+    },
+    {
+      "id": "forged_definition_maximum_recovery",
+      "expect": "semantic",
+      "mutations": [
+        {
+          "op": "replace",
+          "path": "/scenarios/0/definition/maximum_recovery_ms",
+          "value": 120000
+        },
+        {
+          "op": "replace",
+          "path": "/scenarios/0/evaluation/recovery/maximum_ms",
+          "value": 120000
+        }
+      ]
+    }
+  ]
+}

@@ -403,6 +403,11 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
 	}
+	adapter.connectionMu.RLock()
+	defer adapter.connectionMu.RUnlock()
+	if adapter.closed {
+		return errors.New("modbus TCP adapter is closed")
+	}
 	encoded, err := json.Marshal(observation)
 	if err != nil {
 		return fmt.Errorf("serialize SunSpec qualification observation: %w", err)
@@ -461,6 +466,11 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
+	}
+	adapter.connectionMu.RLock()
+	defer adapter.connectionMu.RUnlock()
+	if adapter.closed {
+		return errors.New("modbus TCP adapter is closed")
 	}
 	encoded, err := json.Marshal(observation)
 	if err != nil {

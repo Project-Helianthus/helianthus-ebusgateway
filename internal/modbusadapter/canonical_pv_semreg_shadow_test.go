@@ -84,6 +84,80 @@ func TestCanonicalPVSemRegShadow_RepresentableNonGeneratingStatesAdvanceLegacyWh
 	}
 }
 
+func TestCanonicalPVSemRegShadow_PostClosePublicationIsRejectedWithoutMutation(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	config := integrationConfig(t, "tcp://"+listener.Addr().String())
+	config.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
+	adapter, err := Start(context.Background(), config, realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:shadow-close", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1, DeadlineIdentity: 1})
+	if err != nil || result.Outcome != SunSpecQualificationGO {
+		t.Fatalf("qualification=%+v err=%v", result, err)
+	}
+	observation, _, ok := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID)
+	if !ok {
+		t.Fatal("missing retained observation")
+	}
+	asset := mustCanonicalPVAsset(t, adapter, result)
+	before, beforeAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
+	if !ok {
+		t.Fatal("missing current before close")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.PublishSunSpecCurrent(observation); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("post-close publish=%v", err)
+	}
+	if err := adapter.RecordSunSpecQualificationObservation(observation); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("post-close record=%v", err)
+	}
+	after, afterAt, ok := adapter.CanonicalPVSnapshotByAsset(asset)
+	if !ok || after.Generation != before.Generation || !afterAt.Equal(beforeAt) || adapter.canonicalShadow.byAsset != nil || adapter.canonicalShadow.records != nil {
+		t.Fatal("post-close publication mutated retired state")
+	}
+}
+
+func TestCanonicalPVSemRegShadow_OverlappingCloseAndPublicationIsLinearizable(t *testing.T) {
+	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
+	config := integrationConfig(t, "tcp://"+listener.Addr().String())
+	config.CanonicalPVShadow.Mode = CanonicalPVShadowModeSemReg
+	adapter, err := Start(context.Background(), config, realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "test:shadow-close-overlap", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 1, DeadlineIdentity: 1})
+	if err != nil || result.Outcome != SunSpecQualificationGO {
+		t.Fatalf("qualification=%+v err=%v", result, err)
+	}
+	observation, _, ok := adapter.SunSpecQualificationObservation(result.CapabilityID, result.SampleID)
+	if !ok {
+		t.Fatal("missing observation")
+	}
+	var workers sync.WaitGroup
+	for range 16 {
+		workers.Add(1)
+		go func() { defer workers.Done(); _ = adapter.PublishSunSpecCurrent(observation) }()
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workers.Wait()
+	if adapter.canonicalShadow.byAsset != nil || adapter.canonicalShadow.records != nil {
+		t.Fatal("close allowed overlapping publication to repopulate shadow")
+	}
+}
+
 func shadowFixtureWordsWithState(state uint16) []uint16 {
 	words := observedFroniusFloatControlsWords()
 	// Signature (2) + Common model header/payload (67) + model-113 header (2)

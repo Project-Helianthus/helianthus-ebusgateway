@@ -21,6 +21,25 @@ func NewPublisher() (Publisher, error) {
 	return newPublisher(debug.ReadBuildInfo, currentExecutableSHA256)
 }
 
+func PublishReport(rawDriver []byte, startedAt time.Time, path string) (ReportV1, error) {
+	return publishReportWithResolver(debug.ReadBuildInfo, currentExecutableSHA256, rawDriver, startedAt, path)
+}
+
+func publishReportWithResolver(readBuildInfo buildInfoReader, hashExecutable executableDigest, rawDriver []byte, startedAt time.Time, path string) (ReportV1, error) {
+	publisher, err := newPublisher(readBuildInfo, hashExecutable)
+	if err != nil {
+		return ReportV1{}, err
+	}
+	report, err := publisher.NewExecutor(startedAt, nil, nil).Run(rawDriver)
+	if err != nil {
+		return ReportV1{}, err
+	}
+	if err := publisher.WriteReport(report, path); err != nil {
+		return ReportV1{}, err
+	}
+	return report, nil
+}
+
 func newPublisher(readBuildInfo buildInfoReader, hashExecutable executableDigest) (Publisher, error) {
 	identity, err := resolveProducerIdentity(readBuildInfo, hashExecutable)
 	if err != nil {
@@ -63,9 +82,12 @@ func currentExecutableSHA256() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil

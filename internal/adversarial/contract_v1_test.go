@@ -27,8 +27,8 @@ func fixtureBytes(t *testing.T, kind, name string) []byte {
 }
 func canonicalRunner() Executor {
 	publisher, err := newPublisher(func() (*debug.BuildInfo, bool) {
-		return &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: strings.Repeat("a", 40)}, {Key: "vcs.modified", Value: "false"}}}, true
-	}, func() (string, error) { return strings.Repeat("1", 64), nil })
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: publishedProducerCommit}, {Key: "vcs.modified", Value: "false"}}}, true
+	}, func() (string, error) { return publishedProducerSHA256, nil })
 	if err != nil {
 		panic(err)
 	}

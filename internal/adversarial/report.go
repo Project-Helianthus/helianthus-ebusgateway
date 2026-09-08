@@ -5,72 +5,56 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
 
-// AdversarialReport is the top-level machine-readable artifact produced
-// by an adversarial scenario run. It is written as JSON and consumed by
-// the tester gate in CI.
-type AdversarialReport struct {
-	GeneratedAt string            `json:"generated_at"`
-	Scenarios   []ScenarioVerdict `json:"scenarios"`
-	Summary     ReportSummary     `json:"summary"`
+func ValidateReport(report ReportV1) error { return ValidateRuntimeReportV1(report) }
+
+func ValidateReportBytes(raw []byte) error {
+	_, err := ParseReportV1(raw)
+	return err
 }
 
-// ReportSummary aggregates the outcome counts across all scenarios in a
-// single adversarial run. The invariant Total == Passed+Failed+XFailed+Blocked+Unknown
-// always holds.
-type ReportSummary struct {
-	Total   int `json:"total"`
-	Passed  int `json:"passed"`
-	Failed  int `json:"failed"`
-	XFailed int `json:"xfailed"`
-	Blocked int `json:"blocked"`
-	Unknown int `json:"unknown"`
-}
-
-// GenerateReport builds an AdversarialReport from a slice of verdicts,
-// computing the summary counts and stamping the generation time.
-func GenerateReport(verdicts []ScenarioVerdict) AdversarialReport {
-	summary := ReportSummary{Total: len(verdicts)}
-	for _, verdict := range verdicts {
-		switch verdict.Outcome {
-		case OutcomePass:
-			summary.Passed++
-		case OutcomeFail:
-			summary.Failed++
-		case OutcomeXFail:
-			summary.XFailed++
-		case OutcomeBlockedInfra:
-			summary.Blocked++
-		default:
-			summary.Unknown++
-		}
+// writeReport validates before creating any destination and atomically replaces
+// the file only after a complete write and fsync.
+func writeReport(report ReportV1, path string) error {
+	if err := ValidateRuntimeReportV1(report); err != nil {
+		return err
 	}
-
-	return AdversarialReport{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Scenarios:   verdicts,
-		Summary:     summary,
+	raw, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal report: %w", err)
 	}
-}
-
-// WriteReport serialises the report as indented JSON and writes it to
-// the given path. Parent directories are created as needed.
-func WriteReport(report AdversarialReport, path string) error {
+	raw = append(raw, '\n')
+	if err := ValidateReportBytes(raw); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create report dir: %w", err)
 	}
-
-	data, err := json.MarshalIndent(report, "", "  ")
+	f, err := os.CreateTemp(dir, ".adversarial-report-*")
 	if err != nil {
-		return fmt.Errorf("marshal report: %w", err)
+		return fmt.Errorf("create report temp: %w", err)
 	}
-	data = append(data, '\n')
-
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write report: %w", err)
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("chmod report temp: %w", err)
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write report temp: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync report temp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close report temp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replace report: %w", err)
 	}
 	return nil
 }

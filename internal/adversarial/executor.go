@@ -33,11 +33,7 @@ type Executor struct {
 	StartedAt time.Time
 	Action    FixtureAction
 	Observer  FixtureObserver
-	Producer  ProducerIdentity
-}
-
-func PublishedSyntheticProducerIdentity() ProducerIdentity {
-	return ProducerIdentity{Repository: subjectRepository, Commit: subjectCommit, Component: "internal/adversarial", BuildKind: "go-test-binary", BuildSHA256: "1111111111111111111111111111111111111111111111111111111111111111"}
+	producer  producerIdentity
 }
 
 func (e Executor) Run(rawDriver []byte) (ReportV1, error) {
@@ -48,7 +44,7 @@ func (e Executor) Run(rawDriver []byte) (ReportV1, error) {
 	if e.StartedAt.IsZero() || !e.StartedAt.Equal(e.StartedAt.UTC()) || e.StartedAt.Nanosecond()%int(time.Millisecond) != 0 {
 		return ReportV1{}, fmt.Errorf("%w: execution_time", ErrInvalidFixture)
 	}
-	producer := e.Producer.wire()
+	producer := e.producer.wire()
 	p := Provenance{Subject: Subject{Repository: subjectRepository, Commit: subjectCommit, SourceTree: "clean", ArtifactKind: "gateway-fixture-set", ArtifactSHA256: fixtureSetDigest}, Producer: producer, FixtureSetSHA256: fixtureSetDigest, FixtureCaseID: bound.CaseID()}
 	if !validProvenance(p) {
 		return ReportV1{}, fmt.Errorf("%w: producer_identity", ErrInvalidFixture)

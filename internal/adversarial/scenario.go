@@ -5,7 +5,7 @@ const (
 	FixtureSchemaURL  = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json"
 	SuiteID           = "helianthus.adversarial.ADV01-04"
 	subjectRepository = "Project-Helianthus/helianthus-ebusgateway"
-	subjectCommit     = "ae85c5d91bd8e9dc1c9fe122de7eaa05dcd6c532"
+	subjectCommit     = "eaa5b890871a74b1d01cbe0cd90449fb86c28ce9"
 	fixtureSetDigest  = "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a"
 )
 

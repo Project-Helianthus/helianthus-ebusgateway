@@ -48,7 +48,7 @@ type Producer struct {
 	InputGatewayReportSHA256 *string `json:"input_gateway_report_sha256"`
 }
 
-type ProducerIdentity struct {
+type producerIdentity struct {
 	Repository               string
 	Commit                   string
 	Component                string
@@ -57,7 +57,7 @@ type ProducerIdentity struct {
 	InputGatewayReportSHA256 *string
 }
 
-func (p ProducerIdentity) wire() Producer {
+func (p producerIdentity) wire() Producer {
 	return Producer{p.Repository, p.Commit, p.Component, p.BuildKind, p.BuildSHA256, cloneString(p.InputGatewayReportSHA256)}
 }
 

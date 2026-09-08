@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +26,13 @@ func fixtureBytes(t *testing.T, kind, name string) []byte {
 	return b
 }
 func canonicalRunner() Executor {
-	return Executor{StartedAt: time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), Producer: PublishedSyntheticProducerIdentity()}
+	publisher, err := newPublisher(func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: strings.Repeat("a", 40)}, {Key: "vcs.modified", Value: "false"}}}, true
+	}, func() (string, error) { return strings.Repeat("1", 64), nil })
+	if err != nil {
+		panic(err)
+	}
+	return publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil)
 }
 
 func TestPublishedCorpusParsesBindsExecutesAndProjects(t *testing.T) {
@@ -454,8 +461,7 @@ func TestTypedSeamEvidenceAndResourceImmutability(t *testing.T) {
 }
 
 func TestProducerIdentityIsRequired(t *testing.T) {
-	r := canonicalRunner()
-	r.Producer = ProducerIdentity{}
+	r := Executor{StartedAt: time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)}
 	if _, e := r.Run(fixtureBytes(t, "inputs", "offline-all-pass")); !errors.Is(e, ErrInvalidFixture) {
 		t.Fatal(e)
 	}

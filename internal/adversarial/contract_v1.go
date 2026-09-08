@@ -281,7 +281,7 @@ func validateRuntime(r ReportV1) string {
 }
 
 func validProvenance(p Provenance) bool {
-	if p.Subject.Repository != subjectRepository || !hex40.MatchString(p.Subject.Commit) || p.Subject.Commit != p.Producer.Commit || !oneOf(p.Subject.SourceTree, "clean", "dirty") || p.Subject.ArtifactKind != "gateway-fixture-set" || !hex64.MatchString(p.Subject.ArtifactSHA256) || p.Subject.ArtifactSHA256 != p.FixtureSetSHA256 || p.FixtureSetSHA256 != fixtureSetDigest {
+	if p.Subject.Repository != subjectRepository || p.Subject.Commit != fixtureSubjectCommit || !oneOf(p.Subject.SourceTree, "clean", "dirty") || p.Subject.ArtifactKind != "gateway-fixture-set" || !hex64.MatchString(p.Subject.ArtifactSHA256) || p.Subject.ArtifactSHA256 != p.FixtureSetSHA256 || p.FixtureSetSHA256 != fixtureSetDigest {
 		return false
 	}
 	if !oneOf(p.FixtureCaseID, "evaluated-fail", "execution-error", "infrastructure-block", "offline-all-pass") {

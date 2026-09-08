@@ -1,0 +1,123 @@
+{
+  "schema": "helianthus.gateway.adversarial-producer-build/v1",
+  "source": {
+    "repository": "Project-Helianthus/helianthus-ebusgateway",
+    "commit": "936edbe873f35a8bad3763223dba9566154574d6",
+    "tree": "d59bdfe02b9ad1168fe8d7ba2aff275f87ef06fd",
+    "state": "clean"
+  },
+  "source_preparation": {
+    "clone": "full",
+    "tags_required": true,
+    "checkout": "detached exact source commit"
+  },
+  "build": {
+    "command": [
+      "go",
+      "test",
+      "-c",
+      "-trimpath",
+      "-buildvcs=true",
+      "-o",
+      "${ARTIFACT_ROOT}/producer.test",
+      "./internal/adversarial"
+    ],
+    "environment": {
+      "GOWORK": "off"
+    },
+    "working_directory": "${SOURCE_ROOT}",
+    "working_package": "./internal/adversarial",
+    "toolchain": "go1.26.2",
+    "goos": "darwin",
+    "goarch": "arm64",
+    "goarm64": "v8.0",
+    "cgo_enabled": true,
+    "module_path": "github.com/Project-Helianthus/helianthus-ebusgateway",
+    "module_version": "v0.6.33-0.20260908103742-936edbe873f3",
+    "vcs_time": "2026-09-08T10:37:42Z",
+    "vcs_revision": "936edbe873f35a8bad3763223dba9566154574d6",
+    "vcs_modified": false,
+    "trimpath": true,
+    "build_kind": "go-test-binary",
+    "build_id": "UTM8sZqduP_tJrptJhHe/dWf71Xywt3sqkqTnGk3B/hFmKt63ZZPtvXsk-d_n5/kpJN19ggggM0B3p3S6QO",
+    "artifact_path": "docs/platform/fixtures/adversarial-runtime/v1/producer/gateway-adversarial-darwin-arm64-go1.26.2.test",
+    "size_bytes": 6059426,
+    "sha256": "fc8993b6b0532a219534e557dfd8c7ee0974fe1402e14c8e7787f9cdb488d4d1"
+  },
+  "reproduction": {
+    "clean_clone_count": 2,
+    "byte_identical": true,
+    "binary_sha256": [
+      "fc8993b6b0532a219534e557dfd8c7ee0974fe1402e14c8e7787f9cdb488d4d1",
+      "fc8993b6b0532a219534e557dfd8c7ee0974fe1402e14c8e7787f9cdb488d4d1"
+    ]
+  },
+  "generation": {
+    "base_directories": {
+      "SOURCE_ROOT": "absolute full clean clone at source.commit with tags fetched",
+      "ARTIFACT_ROOT": "absolute new artifact directory outside SOURCE_ROOT",
+      "RUN_ROOT": "absolute new working directory outside SOURCE_ROOT",
+      "EMPTY_PATH_ROOT": "absolute empty directory"
+    },
+    "environment_overrides": {
+      "PATH": "${EMPTY_PATH_ROOT}"
+    },
+    "working_directory": "${RUN_ROOT}",
+    "cases": [
+      {
+        "case_id": "evaluated-fail",
+        "argv": [
+          "${ARTIFACT_ROOT}/producer.test",
+          "-test.run=^TestCompiledPublisherHelper$",
+          "--",
+          "${SOURCE_ROOT}/internal/adversarial/fixtures/v1/inputs/evaluated-fail.json",
+          "${ARTIFACT_ROOT}/reports/evaluated-fail.json"
+        ],
+        "published_output": "docs/platform/fixtures/adversarial-runtime/v1/positive/evaluated-fail.json",
+        "output_sha256": "1e4981bcf5e5b0b645365e7dbb1c1aa9e724de90024af997122a16184583126f"
+      },
+      {
+        "case_id": "execution-error",
+        "argv": [
+          "${ARTIFACT_ROOT}/producer.test",
+          "-test.run=^TestCompiledPublisherHelper$",
+          "--",
+          "${SOURCE_ROOT}/internal/adversarial/fixtures/v1/inputs/execution-error.json",
+          "${ARTIFACT_ROOT}/reports/execution-error.json"
+        ],
+        "published_output": "docs/platform/fixtures/adversarial-runtime/v1/positive/execution-error.json",
+        "output_sha256": "76efea7d94d912c03a78cacc9518176590e0d696eaa01f23b52fb88a237ae34c"
+      },
+      {
+        "case_id": "infrastructure-block",
+        "argv": [
+          "${ARTIFACT_ROOT}/producer.test",
+          "-test.run=^TestCompiledPublisherHelper$",
+          "--",
+          "${SOURCE_ROOT}/internal/adversarial/fixtures/v1/inputs/infrastructure-block.json",
+          "${ARTIFACT_ROOT}/reports/infrastructure-block.json"
+        ],
+        "published_output": "docs/platform/fixtures/adversarial-runtime/v1/positive/infrastructure-block.json",
+        "output_sha256": "d48f81a8844bf3b7ed76b54aff80aa155e56308eeecffa0b1cac3645ca376f6a"
+      },
+      {
+        "case_id": "offline-all-pass",
+        "argv": [
+          "${ARTIFACT_ROOT}/producer.test",
+          "-test.run=^TestCompiledPublisherHelper$",
+          "--",
+          "${SOURCE_ROOT}/internal/adversarial/fixtures/v1/inputs/offline-all-pass.json",
+          "${ARTIFACT_ROOT}/reports/offline-all-pass.json"
+        ],
+        "published_output": "docs/platform/fixtures/adversarial-runtime/v1/positive/offline-all-pass.json",
+        "output_sha256": "a9e556de71473a716dbce8c6e462cdb314bf92b91d1cbf9a13fc1cf1511a547d"
+      }
+    ]
+  },
+  "reports": {
+    "evaluated-fail.json": "1e4981bcf5e5b0b645365e7dbb1c1aa9e724de90024af997122a16184583126f",
+    "execution-error.json": "76efea7d94d912c03a78cacc9518176590e0d696eaa01f23b52fb88a237ae34c",
+    "infrastructure-block.json": "d48f81a8844bf3b7ed76b54aff80aa155e56308eeecffa0b1cac3645ca376f6a",
+    "offline-all-pass.json": "a9e556de71473a716dbce8c6e462cdb314bf92b91d1cbf9a13fc1cf1511a547d"
+  }
+}

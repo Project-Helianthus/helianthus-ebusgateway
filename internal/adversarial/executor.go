@@ -116,6 +116,7 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 			return ScenarioResult{}, fmt.Errorf("%w: trigger_failure_progress", ErrInvalidSeamEvidence)
 		}
 		r.Action.Events = []ActionEvent{reportEvent(first, start)}
+		r.Timing.ErrorBoundMS = first.ErrorBoundMS
 		r.ResultKind = "execution-error"
 		r.Outcome = "fail"
 		r.Errors = []ScenarioError{{"trigger", ar.Failure.Code}}

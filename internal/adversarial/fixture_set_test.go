@@ -129,6 +129,34 @@ func TestFixtureResourceIdentifiersAndScenarioBinding(t *testing.T) {
 	}
 }
 
+func TestTerminalFixtureValidatesEveryPresentSnapshot(t *testing.T) {
+	terminal, err := ParseFixtureV1(fixtureBytes(t, "inputs", "execution-error"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	positive, err := ParseFixtureV1(fixtureBytes(t, "inputs", "offline-all-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := *positive.Scenarios[0].Observations.Baseline
+	mutations := []struct {
+		name   string
+		mutate func(*FixtureSnapshot)
+	}{{"malformed_uuid", func(s *FixtureSnapshot) { s.CounterEpoch = "not-a-uuid" }}, {"negative_offset", func(s *FixtureSnapshot) { s.OffsetMS = -1 }}, {"invalid_counter", func(s *FixtureSnapshot) { s.SemanticBusCollisionsTotal = -1 }}}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cloneFixtureV1(terminal)
+			s := baseline
+			tc.mutate(&s)
+			f.Scenarios[0].Observations.Baseline = &s
+			raw, _ := json.Marshal(f)
+			if _, err := ParseFixtureV1(raw); !errors.Is(err, ErrInvalidFixture) {
+				t.Fatalf("terminal fixture accepted malformed snapshot: %v", err)
+			}
+		})
+	}
+}
+
 func freshManifest(t *testing.T) (manifestV1, map[string][]byte) {
 	t.Helper()
 	raw, e := fixtureFiles.ReadFile("fixtures/v1/fixture-input-manifest.json")

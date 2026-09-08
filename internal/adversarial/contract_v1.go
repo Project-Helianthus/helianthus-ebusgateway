@@ -92,6 +92,9 @@ func validateFixture(f FixtureV1) string {
 				return "action_duration"
 			}
 		}
+		if (s.Observations.Baseline != nil && !validFixtureSnapshot(*s.Observations.Baseline)) || (s.Observations.End != nil && !validFixtureSnapshot(*s.Observations.End)) {
+			return "observation_value"
+		}
 		if s.TerminalError != nil {
 			if !validTerminal(*s.TerminalError) {
 				return "terminal_error"
@@ -100,9 +103,6 @@ func validateFixture(f FixtureV1) string {
 		}
 		if s.Observations.Baseline == nil || s.Observations.End == nil {
 			return "observation_shape"
-		}
-		if !validFixtureSnapshot(*s.Observations.Baseline) || !validFixtureSnapshot(*s.Observations.End) {
-			return "observation_value"
 		}
 	}
 	return ""
@@ -302,6 +302,9 @@ func validateExecutionError(s ScenarioResult, d Definition) string {
 		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || s.Metrics.Delta != nil || !validRecovery(s, d) {
 			return "evidence_error"
 		}
+		if !validPresentSnapshots(s) {
+			return "evidence_snapshot"
+		}
 		if validSnapshots(s, d) {
 			return "evidence_error"
 		}
@@ -373,6 +376,25 @@ func validSnapshots(s ScenarioResult, d Definition) bool {
 	ns, _ := validStamp(n.CapturedAt)
 	ss, _ := validStamp(s.Timing.ScenarioStartedAt)
 	return bs.Equal(ss.Add(time.Duration(b.OffsetMS)*time.Millisecond)) && ns.Equal(ss.Add(time.Duration(n.OffsetMS)*time.Millisecond))
+}
+func validPresentSnapshots(s ScenarioResult) bool {
+	start, ok := validStamp(s.Timing.ScenarioStartedAt)
+	if !ok {
+		return false
+	}
+	for _, snapshot := range []*Snapshot{s.Metrics.Baseline, s.Metrics.End} {
+		if snapshot == nil {
+			continue
+		}
+		if !validSnapshot(*snapshot) {
+			return false
+		}
+		captured, ok := validStamp(snapshot.CapturedAt)
+		if !ok || !captured.Equal(start.Add(time.Duration(snapshot.OffsetMS)*time.Millisecond)) {
+			return false
+		}
+	}
+	return true
 }
 func validSnapshot(s Snapshot) bool {
 	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && s.SemanticZoneCount >= 0 && s.SemanticZoneCount <= 20

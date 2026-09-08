@@ -93,10 +93,13 @@ func TestRuntimeReportAllowsDynamicTimestamp(t *testing.T) {
 	}
 }
 
-type actionFailure struct{ code string }
+type actionFailure struct {
+	code          string
+	offset, bound int64
+}
 
 func (a actionFailure) Execute(_ FixtureContext, spec ScenarioSpec) ActionResult {
-	return ActionResult{Events: []FixtureEvent{{Kind: spec.ExpectedEvents[0], OffsetMS: 0, ErrorBoundMS: 0}}, Failure: &SeamFailure{a.code}}
+	return ActionResult{Events: []FixtureEvent{{Kind: spec.ExpectedEvents[0], OffsetMS: a.offset, ErrorBoundMS: a.bound}}, Failure: &SeamFailure{a.code}}
 }
 
 type observerFailure struct{ code string }
@@ -107,19 +110,21 @@ func (a observerFailure) Observe(FixtureContext, ScenarioSpec, []FixtureEvent) O
 
 func TestSeamFailuresAreWritable(t *testing.T) {
 	for _, code := range []string{"trigger_rejected", "trigger_timeout", "trigger_failed"} {
-		r := canonicalRunner()
-		r.Action = actionFailure{code}
-		report, e := r.Run(fixtureBytes(t, "inputs", "offline-all-pass"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		for _, s := range report.Scenarios {
-			if len(s.Action.Events) != 1 || s.Errors[0].Code != code {
-				t.Fatalf("%s: %#v", code, s)
+		for _, uncertainty := range []struct{ offset, bound int64 }{{0, 0}, {900, 100}} {
+			r := canonicalRunner()
+			r.Action = actionFailure{code: code, offset: uncertainty.offset, bound: uncertainty.bound}
+			report, e := r.Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+			if e != nil {
+				t.Fatal(e)
 			}
-		}
-		if e = WriteReport(report, filepath.Join(t.TempDir(), code+".json")); e != nil {
-			t.Fatal(e)
+			for _, s := range report.Scenarios {
+				if len(s.Action.Events) != 1 || s.Errors[0].Code != code || s.Timing.ErrorBoundMS != uncertainty.bound {
+					t.Fatalf("%s/%d: %#v", code, uncertainty.bound, s)
+				}
+			}
+			if e = WriteReport(report, filepath.Join(t.TempDir(), fmt.Sprintf("%s-%d.json", code, uncertainty.bound))); e != nil {
+				t.Fatal(e)
+			}
 		}
 	}
 	for _, code := range []string{"observer_timeout", "observer_failed"} {
@@ -353,6 +358,54 @@ func TestReportMutationsFailClosed(t *testing.T) {
 	for _, bad := range [][]byte{bytes.Replace(raw, []byte(`"summary":`), []byte(`"extra":1,"summary":`), 1), bytes.Replace(raw, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1)} {
 		if e := ValidateReportBytes(bad); !errors.Is(e, ErrInvalidReport) {
 			t.Fatal(e)
+		}
+	}
+}
+
+func TestIncompleteEvidenceRejectsMalformedPresentSnapshotBeforeWrite(t *testing.T) {
+	report, _ := canonicalRunner().Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+	s := &report.Scenarios[0]
+	s.ResultKind = "execution-error"
+	s.Outcome = "fail"
+	s.Evaluation = nil
+	s.Metrics.Delta = nil
+	s.Metrics.End = nil
+	s.Metrics.Baseline.CounterEpoch = "not-a-uuid"
+	s.Errors = []ScenarioError{{Phase: "evaluation", Code: "evidence_incomplete"}}
+	report.Summary = Summary{Total: 4, Passed: 3, Failed: 1, Verdict: "fail"}
+	if err := ValidateReport(report); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("ValidateReport accepted malformed partial snapshot: %v", err)
+	}
+	raw, _ := json.Marshal(report)
+	if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("ValidateReportBytes accepted malformed partial snapshot: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "malformed-incomplete.json")
+	if err := WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("WriteReport accepted malformed partial snapshot: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination created: %v", err)
+	}
+}
+
+func TestIncompleteEvidenceAcceptsAbsentOrValidInsufficientSnapshots(t *testing.T) {
+	base, _ := canonicalRunner().Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+	for _, mode := range []string{"absent", "valid_partial"} {
+		report := cloneReport(base)
+		s := &report.Scenarios[0]
+		s.ResultKind = "execution-error"
+		s.Outcome = "fail"
+		s.Evaluation = nil
+		s.Metrics.Delta = nil
+		s.Metrics.End = nil
+		if mode == "absent" {
+			s.Metrics.Baseline = nil
+		}
+		s.Errors = []ScenarioError{{Phase: "evaluation", Code: "evidence_incomplete"}}
+		report.Summary = Summary{Total: 4, Passed: 3, Failed: 1, Verdict: "fail"}
+		if err := ValidateReport(report); err != nil {
+			t.Fatalf("%s: %v", mode, err)
 		}
 	}
 }

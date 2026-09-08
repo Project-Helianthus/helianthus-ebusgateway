@@ -273,11 +273,11 @@ func validateExecutionError(s ScenarioResult, d Definition) string {
 			return "trigger_error_evidence"
 		}
 	case "observer_timeout", "observer_failed":
-		if e.Phase != "observer" || len(s.Action.Events) != len(d.ExpectedEvents) || !validRecovery(s, d) || s.Metrics.Baseline != nil || s.Metrics.End != nil || s.Metrics.Delta != nil {
+		if e.Phase != "observer" || len(s.Action.Events) != len(d.ExpectedEvents) || !validActionDuration(s, d) || !validRecovery(s, d) || s.Metrics.Baseline != nil || s.Metrics.End != nil || s.Metrics.Delta != nil {
 			return "observer_error_evidence"
 		}
 	case "counter_epoch_changed", "negative_counter_delta":
-		if e.Phase != "evaluation" || len(s.Action.Events) != len(d.ExpectedEvents) || !validRecovery(s, d) || s.Metrics.Baseline == nil || s.Metrics.End == nil || s.Metrics.Delta != nil {
+		if e.Phase != "evaluation" || len(s.Action.Events) != len(d.ExpectedEvents) || !validActionDuration(s, d) || !validRecovery(s, d) || s.Metrics.Baseline == nil || s.Metrics.End == nil || s.Metrics.Delta != nil {
 			return "continuity_error_evidence"
 		}
 		if !validSnapshots(s, d) {
@@ -294,12 +294,11 @@ func validateExecutionError(s ScenarioResult, d Definition) string {
 		if e.Phase != "evaluation" || d.ScenarioID != "ADV-03" || len(s.Action.Events) != len(d.ExpectedEvents) || !validRecovery(s, d) || s.Metrics.Baseline != nil || s.Metrics.End != nil || s.Metrics.Delta != nil {
 			return "action_duration_error"
 		}
-		a, c := s.Action.Events[1], s.Action.Events[2]
-		if abs64(c.OffsetMS-a.OffsetMS-60000)+a.ErrorBoundMS+c.ErrorBoundMS <= 1000 {
+		if validActionDuration(s, d) {
 			return "action_duration_error"
 		}
 	case "evidence_incomplete":
-		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || !validRecovery(s, d) {
+		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || !validActionDuration(s, d) || !validRecovery(s, d) {
 			return "evidence_error"
 		}
 		if !validPresentSnapshots(s) {
@@ -321,11 +320,8 @@ func validateEvaluated(s ScenarioResult, d Definition) string {
 	if len(s.Action.Events) != len(d.ExpectedEvents) || s.Evaluation == nil || s.InfrastructureReason != nil || len(s.Errors) != 0 || s.Metrics.Baseline == nil || s.Metrics.End == nil || s.Metrics.Delta == nil {
 		return "evaluated_shape"
 	}
-	if d.ScenarioID == "ADV-03" {
-		a, c := s.Action.Events[1], s.Action.Events[2]
-		if abs64(c.OffsetMS-a.OffsetMS-60000)+a.ErrorBoundMS+c.ErrorBoundMS > 1000 {
-			return "action_duration"
-		}
+	if !validActionDuration(s, d) {
+		return "action_duration"
 	}
 	if !validRecovery(s, d) || !validSnapshots(s, d) {
 		return "evaluated_evidence"
@@ -425,6 +421,16 @@ func validRecovery(s ScenarioResult, d Definition) bool {
 		return false
 	}
 	return *s.Timing.RecoveryAnchor == d.RecoveryAnchor && *s.Timing.RecoveryObserved == d.RecoveryEvent && *s.Timing.RecoveryMS == r.OffsetMS-a.OffsetMS && s.Timing.ErrorBoundMS == bounds(s.Action.Events)
+}
+func validActionDuration(s ScenarioResult, d Definition) bool {
+	if d.ScenarioID != "ADV-03" {
+		return true
+	}
+	if len(s.Action.Events) != len(d.ExpectedEvents) {
+		return false
+	}
+	a, c := s.Action.Events[1], s.Action.Events[2]
+	return abs64(c.OffsetMS-a.OffsetMS-60000)+a.ErrorBoundMS+c.ErrorBoundMS <= 1000
 }
 func abs64(v int64) int64 {
 	if v < 0 {

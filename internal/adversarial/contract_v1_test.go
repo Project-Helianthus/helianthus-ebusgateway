@@ -145,6 +145,62 @@ func TestSeamFailuresAreWritable(t *testing.T) {
 	}
 }
 
+func TestADV03ObserverErrorsRequireValidPartitionDuration(t *testing.T) {
+	for _, code := range []string{"observer_timeout", "observer_failed"} {
+		t.Run(code, func(t *testing.T) {
+			runner := canonicalRunner()
+			runner.Observer = observerFailure{code}
+			base, err := runner.Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			inclusive := cloneReport(base)
+			setADV03PartitionClearedOffset(t, &inclusive, 59000)
+			if err := ValidateReport(inclusive); err != nil {
+				t.Fatalf("inclusive 1000 ms bound rejected: %v", err)
+			}
+
+			invalid := cloneReport(base)
+			setADV03PartitionClearedOffset(t, &invalid, 58000)
+			if err := ValidateReport(invalid); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("ValidateReport accepted 58-second partition: %v", err)
+			}
+			raw, _ := json.Marshal(invalid)
+			if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("ValidateReportBytes accepted 58-second partition: %v", err)
+			}
+			path := filepath.Join(t.TempDir(), code+"-invalid-duration.json")
+			if err := WriteReport(invalid, path); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("WriteReport accepted 58-second partition: %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("destination created: %v", err)
+			}
+
+			durationError := cloneReport(invalid)
+			s := &durationError.Scenarios[2]
+			s.Errors = []ScenarioError{{Phase: "evaluation", Code: "action_duration_out_of_bounds"}}
+			if err := ValidateReport(durationError); err != nil {
+				t.Fatalf("duration error rejected: %v", err)
+			}
+		})
+	}
+}
+
+func setADV03PartitionClearedOffset(t *testing.T, report *ReportV1, offset int64) {
+	t.Helper()
+	s := &report.Scenarios[2]
+	start, ok := validStamp(s.Timing.ScenarioStartedAt)
+	if !ok {
+		t.Fatal("invalid scenario start")
+	}
+	s.Action.Events[2].OffsetMS = offset
+	s.Action.Events[2].At = stamp(start.Add(time.Duration(offset) * time.Millisecond))
+	recovery := s.Action.Events[3].OffsetMS - offset
+	s.Timing.RecoveryMS = &recovery
+}
+
 type invalidTriggerFailure struct{ mode string }
 
 func (a invalidTriggerFailure) Execute(_ FixtureContext, s ScenarioSpec) ActionResult {

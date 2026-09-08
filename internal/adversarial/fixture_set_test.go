@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManifestRejectsBindingMutations(t *testing.T) {
@@ -182,6 +183,92 @@ func TestFixtureSemanticZoneCountUsesSafeIntegerRange(t *testing.T) {
 			raw, _ := json.Marshal(fixture)
 			if _, err := ParseFixtureV1(raw); !errors.Is(err, ErrInvalidFixture) {
 				t.Fatalf("ParseFixtureV1 accepted %d: %v", tc.value, err)
+			}
+		})
+	}
+}
+
+func TestFixtureTerminalErrorAdmissionMatchesExecution(t *testing.T) {
+	base, err := ParseFixtureV1(fixtureBytes(t, "inputs", "offline-all-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	negative := []struct {
+		name   string
+		mutate func(*FixtureV1)
+	}{
+		{"trigger_observer_code", func(f *FixtureV1) { f.Scenarios[0].TerminalError = &TerminalError{"trigger", "observer_failed"} }},
+		{"observer_trigger_code", func(f *FixtureV1) { f.Scenarios[0].TerminalError = &TerminalError{"observer", "trigger_failed"} }},
+		{"evaluation_observer_code", func(f *FixtureV1) { f.Scenarios[0].TerminalError = &TerminalError{"evaluation", "observer_timeout"} }},
+		{"artifact_continuity_code", func(f *FixtureV1) { f.Scenarios[0].TerminalError = &TerminalError{"artifact", "counter_epoch_changed"} }},
+		{"available_precondition_error", func(f *FixtureV1) {
+			f.Scenarios[0].TerminalError = &TerminalError{"precondition", "precondition_unavailable"}
+		}},
+		{"unavailable_precondition_error", func(f *FixtureV1) {
+			reason := "ha_harness_unavailable"
+			s := &f.Scenarios[0]
+			s.Precondition = Precondition{Available: false, UnavailableReason: &reason}
+			s.Events = []FixtureEvent{}
+			s.Observations = FixtureObservations{}
+			s.TerminalError = &TerminalError{"precondition", "precondition_unavailable"}
+		}},
+		{"duration_error_wrong_scenario", func(f *FixtureV1) {
+			f.Scenarios[0].TerminalError = &TerminalError{"evaluation", "action_duration_out_of_bounds"}
+		}},
+		{"duration_error_with_valid_partition", func(f *FixtureV1) {
+			f.Scenarios[2].TerminalError = &TerminalError{"evaluation", "action_duration_out_of_bounds"}
+		}},
+	}
+	for _, tc := range negative {
+		t.Run("reject_"+tc.name, func(t *testing.T) {
+			fixture := cloneFixtureV1(base)
+			tc.mutate(&fixture)
+			raw, _ := json.Marshal(fixture)
+			if _, err := ParseFixtureV1(raw); !errors.Is(err, ErrInvalidFixture) {
+				t.Fatalf("ParseFixtureV1 accepted terminal mismatch: %v", err)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name       string
+		scenario   int
+		terminal   TerminalError
+		mutateData func(*FixtureScenario)
+	}{
+		{"trigger_rejected", 0, TerminalError{"trigger", "trigger_rejected"}, nil},
+		{"trigger_timeout", 0, TerminalError{"trigger", "trigger_timeout"}, nil},
+		{"trigger_failed", 0, TerminalError{"trigger", "trigger_failed"}, nil},
+		{"observer_timeout", 0, TerminalError{"observer", "observer_timeout"}, nil},
+		{"observer_failed", 0, TerminalError{"observer", "observer_failed"}, nil},
+		{"counter_epoch_changed", 0, TerminalError{"evaluation", "counter_epoch_changed"}, func(s *FixtureScenario) { s.Observations.End.CounterEpoch = "00000000-0000-4000-8000-000000000099" }},
+		{"negative_counter_delta", 0, TerminalError{"evaluation", "negative_counter_delta"}, func(s *FixtureScenario) {
+			s.Observations.End.SemanticLiveEpoch = s.Observations.Baseline.SemanticLiveEpoch - 1
+		}},
+		{"evaluation_evidence_incomplete", 0, TerminalError{"evaluation", "evidence_incomplete"}, func(s *FixtureScenario) { s.Observations.End = nil }},
+		{"artifact_evidence_incomplete", 0, TerminalError{"artifact", "evidence_incomplete"}, func(s *FixtureScenario) { s.Observations.Baseline, s.Observations.End = nil, nil }},
+		{"action_duration_out_of_bounds", 2, TerminalError{"evaluation", "action_duration_out_of_bounds"}, func(s *FixtureScenario) { s.Events[2].OffsetMS = 58000 }},
+	}
+	for _, tc := range accepted {
+		t.Run("accept_"+tc.name, func(t *testing.T) {
+			fixture := cloneFixtureV1(base)
+			scenario := &fixture.Scenarios[tc.scenario]
+			scenario.TerminalError = &TerminalError{tc.terminal.Phase, tc.terminal.Code}
+			if tc.mutateData != nil {
+				tc.mutateData(scenario)
+			}
+			raw, _ := json.Marshal(fixture)
+			parsed, err := ParseFixtureV1(raw)
+			if err != nil {
+				t.Fatalf("ParseFixtureV1 rejected supported terminal: %v", err)
+			}
+			result, err := canonicalRunner().runScenario(FixtureContext{}, catalogV1[tc.scenario], parsed.Scenarios[tc.scenario], canonicalRunner().StartedAt.Add(time.Duration(tc.scenario)*3*time.Minute))
+			if err != nil {
+				t.Fatalf("supported terminal not executable: %v", err)
+			}
+			if len(result.Errors) != 1 || result.Errors[0] != (ScenarioError{tc.terminal.Phase, tc.terminal.Code}) {
+				t.Fatalf("terminal projection mismatch: %#v", result.Errors)
 			}
 		})
 	}

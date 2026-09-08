@@ -139,6 +139,12 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 			return r, nil
 		}
 	}
+	if f.TerminalError != nil && f.TerminalError.Phase == "artifact" {
+		r.ResultKind = "execution-error"
+		r.Outcome = "fail"
+		r.Errors = []ScenarioError{{f.TerminalError.Phase, f.TerminalError.Code}}
+		return r, nil
+	}
 	observer := e.Observer
 	if observer == nil {
 		observer = driverObserver{scenario: f}
@@ -242,7 +248,7 @@ func (d driverAction) Execute(_ FixtureContext, _ ScenarioSpec) ActionResult {
 type driverObserver struct{ scenario FixtureScenario }
 
 func (d driverObserver) Observe(_ FixtureContext, _ ScenarioSpec, _ []FixtureEvent) ObservationResult {
-	if d.scenario.TerminalError != nil {
+	if d.scenario.TerminalError != nil && d.scenario.TerminalError.Phase == "observer" {
 		return ObservationResult{Failure: &SeamFailure{d.scenario.TerminalError.Code}}
 	}
 	var b, n *FixtureSnapshot

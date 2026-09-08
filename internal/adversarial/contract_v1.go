@@ -86,20 +86,17 @@ func validateFixture(f FixtureV1) string {
 		if len(s.Events) != len(d.ExpectedEvents) {
 			return "event_sequence"
 		}
-		if s.ScenarioID == "ADV-03" {
-			a, c := s.Events[1], s.Events[2]
-			if abs64(c.OffsetMS-a.OffsetMS-60000)+a.ErrorBoundMS+c.ErrorBoundMS > 1000 {
-				return "action_duration"
-			}
-		}
 		if (s.Observations.Baseline != nil && !validFixtureSnapshot(*s.Observations.Baseline)) || (s.Observations.End != nil && !validFixtureSnapshot(*s.Observations.End)) {
 			return "observation_value"
 		}
 		if s.TerminalError != nil {
-			if !validTerminal(*s.TerminalError) {
+			if !validFixtureTerminal(s, d) {
 				return "terminal_error"
 			}
 			continue
+		}
+		if !validFixtureActionDuration(s, d) {
+			return "action_duration"
 		}
 		if s.Observations.Baseline == nil || s.Observations.End == nil {
 			return "observation_shape"
@@ -128,7 +125,75 @@ func validInfraReasonFor(id, s string) bool {
 	return false
 }
 func validTerminal(e TerminalError) bool {
-	return oneOf(e.Phase, "precondition", "trigger", "observer", "evaluation", "artifact") && oneOf(e.Code, "precondition_unavailable", "trigger_rejected", "trigger_timeout", "trigger_failed", "observer_timeout", "observer_failed", "counter_epoch_changed", "negative_counter_delta", "action_duration_out_of_bounds", "evidence_incomplete")
+	switch e.Phase {
+	case "precondition":
+		return e.Code == "precondition_unavailable"
+	case "trigger":
+		return oneOf(e.Code, "trigger_rejected", "trigger_timeout", "trigger_failed")
+	case "observer":
+		return oneOf(e.Code, "observer_timeout", "observer_failed")
+	case "evaluation":
+		return oneOf(e.Code, "counter_epoch_changed", "negative_counter_delta", "action_duration_out_of_bounds", "evidence_incomplete")
+	case "artifact":
+		return e.Code == "evidence_incomplete"
+	default:
+		return false
+	}
+}
+
+func validFixtureTerminal(s FixtureScenario, d Definition) bool {
+	e := *s.TerminalError
+	if !validTerminal(e) || e.Code == "precondition_unavailable" {
+		return false
+	}
+	durationValid := validFixtureActionDuration(s, d)
+	switch e.Code {
+	case "trigger_rejected", "trigger_timeout", "trigger_failed":
+		return true
+	case "observer_timeout", "observer_failed":
+		return durationValid
+	case "counter_epoch_changed":
+		return durationValid && validFixtureObservations(s, d) && s.Observations.Baseline.CounterEpoch != s.Observations.End.CounterEpoch
+	case "negative_counter_delta":
+		return durationValid && validFixtureObservations(s, d) && s.Observations.Baseline.CounterEpoch == s.Observations.End.CounterEpoch && (s.Observations.End.SemanticLiveEpoch < s.Observations.Baseline.SemanticLiveEpoch || s.Observations.End.SemanticBusCollisionsTotal < s.Observations.Baseline.SemanticBusCollisionsTotal)
+	case "action_duration_out_of_bounds":
+		return d.ScenarioID == "ADV-03" && !durationValid
+	case "evidence_incomplete":
+		if !durationValid {
+			return false
+		}
+		if e.Phase == "artifact" {
+			return s.Observations.Baseline == nil && s.Observations.End == nil
+		}
+		return !validFixtureObservations(s, d)
+	default:
+		return false
+	}
+}
+
+func validFixtureActionDuration(s FixtureScenario, d Definition) bool {
+	if d.ScenarioID != "ADV-03" {
+		return true
+	}
+	if len(s.Events) != len(d.ExpectedEvents) {
+		return false
+	}
+	a, c := s.Events[1], s.Events[2]
+	return abs64(c.OffsetMS-a.OffsetMS-60000)+a.ErrorBoundMS+c.ErrorBoundMS <= 1000
+}
+
+func validFixtureObservations(s FixtureScenario, d Definition) bool {
+	b, n := s.Observations.Baseline, s.Observations.End
+	if b == nil || n == nil || !validFixtureSnapshot(*b) || !validFixtureSnapshot(*n) || b.SemanticStartupCurrentPhase != d.BaselinePhase || n.SemanticStartupCurrentPhase != d.EndPhase {
+		return false
+	}
+	bound := int64(0)
+	for _, event := range s.Events {
+		if event.ErrorBoundMS > bound {
+			bound = event.ErrorBoundMS
+		}
+	}
+	return b.OffsetMS-bound <= 0 && n.OffsetMS+bound >= d.DurationLimitMS
 }
 
 func ValidateRuntimeReportV1(r ReportV1) error {

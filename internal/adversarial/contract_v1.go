@@ -89,6 +89,9 @@ func validateFixture(f FixtureV1) string {
 		if (s.Observations.Baseline != nil && !validFixtureSnapshot(*s.Observations.Baseline)) || (s.Observations.End != nil && !validFixtureSnapshot(*s.Observations.End)) {
 			return "observation_value"
 		}
+		if !validFixturePresentObservations(s, d) {
+			return "observation_evidence"
+		}
 		if s.TerminalError != nil {
 			if !validFixtureTerminal(s, d) {
 				return "terminal_error"
@@ -165,7 +168,7 @@ func validFixtureTerminal(s FixtureScenario, d Definition) bool {
 		if e.Phase == "artifact" {
 			return s.Observations.Baseline == nil && s.Observations.End == nil
 		}
-		return !validFixtureObservations(s, d)
+		return s.Observations.Baseline == nil || s.Observations.End == nil
 	default:
 		return false
 	}
@@ -184,16 +187,30 @@ func validFixtureActionDuration(s FixtureScenario, d Definition) bool {
 
 func validFixtureObservations(s FixtureScenario, d Definition) bool {
 	b, n := s.Observations.Baseline, s.Observations.End
-	if b == nil || n == nil || !validFixtureSnapshot(*b) || !validFixtureSnapshot(*n) || b.SemanticStartupCurrentPhase != d.BaselinePhase || n.SemanticStartupCurrentPhase != d.EndPhase {
-		return false
-	}
+	return b != nil && n != nil && validFixturePresentObservations(s, d)
+}
+
+func validFixturePresentObservations(s FixtureScenario, d Definition) bool {
 	bound := int64(0)
 	for _, event := range s.Events {
 		if event.ErrorBoundMS > bound {
 			bound = event.ErrorBoundMS
 		}
 	}
-	return b.OffsetMS-bound <= 0 && n.OffsetMS+bound >= d.DurationLimitMS
+	return validFixtureSnapshotRole(s.Observations.Baseline, d.BaselinePhase, true, bound, d.DurationLimitMS) && validFixtureSnapshotRole(s.Observations.End, d.EndPhase, false, bound, d.DurationLimitMS)
+}
+
+func validFixtureSnapshotRole(snapshot *FixtureSnapshot, phase string, baseline bool, bound, duration int64) bool {
+	if snapshot == nil {
+		return true
+	}
+	if !validFixtureSnapshot(*snapshot) || snapshot.SemanticStartupCurrentPhase != phase {
+		return false
+	}
+	if baseline {
+		return snapshot.OffsetMS <= bound
+	}
+	return snapshot.OffsetMS+bound >= duration
 }
 
 func ValidateRuntimeReportV1(r ReportV1) error {

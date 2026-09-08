@@ -150,6 +150,9 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 		observer = driverObserver{scenario: f}
 	}
 	or := observer.Observe(ctx, spec, append([]FixtureEvent(nil), ar.Events...))
+	if !validObservationResult(or, d, bounds(r.Action.Events)) {
+		return ScenarioResult{}, fmt.Errorf("%w: observer_snapshot", ErrInvalidSeamEvidence)
+	}
 	if or.Failure != nil {
 		if !oneOf(or.Failure.Code, "observer_timeout", "observer_failed") {
 			return ScenarioResult{}, fmt.Errorf("%w: observer_failure", ErrInvalidSeamEvidence)
@@ -159,7 +162,7 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 		r.Errors = []ScenarioError{{"observer", or.Failure.Code}}
 		return r, nil
 	}
-	if or.Baseline == nil || or.End == nil || !validFixtureSnapshot(*or.Baseline) || !validFixtureSnapshot(*or.End) || or.Baseline.SemanticStartupCurrentPhase != d.BaselinePhase || or.End.SemanticStartupCurrentPhase != d.EndPhase || or.Baseline.OffsetMS-bounds(r.Action.Events) > 0 || or.End.OffsetMS+bounds(r.Action.Events) < 180000 {
+	if or.Baseline == nil || or.End == nil {
 		r.ResultKind = "execution-error"
 		r.Outcome = "fail"
 		r.Errors = []ScenarioError{{"evaluation", "evidence_incomplete"}}
@@ -197,6 +200,10 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 		r.Outcome = "pass"
 	}
 	return r, nil
+}
+
+func validObservationResult(result ObservationResult, d Definition, bound int64) bool {
+	return validFixtureSnapshotRole(result.Baseline, d.BaselinePhase, true, bound, d.DurationLimitMS) && validFixtureSnapshotRole(result.End, d.EndPhase, false, bound, d.DurationLimitMS)
 }
 
 func baseScenario(d Definition, start time.Time) ScenarioResult {

@@ -251,6 +251,127 @@ func (m mutateObserver) Observe(_ FixtureContext, s ScenarioSpec, _ []FixtureEve
 	}
 	return ObservationResult{Baseline: &b, End: &n}
 }
+
+type scenarioObserver struct {
+	driver     FixtureV1
+	scenarioID string
+	result     ObservationResult
+}
+
+func (o scenarioObserver) Observe(_ FixtureContext, spec ScenarioSpec, _ []FixtureEvent) ObservationResult {
+	if spec.ScenarioID == o.scenarioID {
+		result := o.result
+		if result.Baseline != nil {
+			baseline := *result.Baseline
+			result.Baseline = &baseline
+		}
+		if result.End != nil {
+			end := *result.End
+			result.End = &end
+		}
+		if result.Failure != nil {
+			failure := *result.Failure
+			result.Failure = &failure
+		}
+		return result
+	}
+	for _, scenario := range o.driver.Scenarios {
+		if scenario.ScenarioID == spec.ScenarioID {
+			baseline, end := *scenario.Observations.Baseline, *scenario.Observations.End
+			return ObservationResult{Baseline: &baseline, End: &end}
+		}
+	}
+	return ObservationResult{}
+}
+
+func TestObserverSeamRejectsMalformedSnapshotsBeforeCompleteness(t *testing.T) {
+	driver := fixtureBytes(t, "inputs", "offline-all-pass")
+	fixture, err := ParseFixtureV1(driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := *fixture.Scenarios[0].Observations.Baseline
+	end := *fixture.Scenarios[0].Observations.End
+	cases := []struct {
+		name    string
+		failure bool
+		mutate  func(*FixtureSnapshot, *FixtureSnapshot)
+	}{
+		{"baseline_uuid", false, func(b, _ *FixtureSnapshot) { b.CounterEpoch = "not-a-uuid" }},
+		{"end_uuid", false, func(_, n *FixtureSnapshot) { n.CounterEpoch = "not-a-uuid" }},
+		{"negative_offset", false, func(b, _ *FixtureSnapshot) { b.OffsetMS = -1 }},
+		{"offset_above_scenario", false, func(_, n *FixtureSnapshot) { n.OffsetMS = 180001 }},
+		{"baseline_offset_role", false, func(b, _ *FixtureSnapshot) { b.OffsetMS = 1 }},
+		{"end_offset_role", false, func(_, n *FixtureSnapshot) { n.OffsetMS = 179999 }},
+		{"unknown_phase", false, func(b, _ *FixtureSnapshot) { b.SemanticStartupCurrentPhase = "UNKNOWN" }},
+		{"wrong_scenario_phase", false, func(b, _ *FixtureSnapshot) { b.SemanticStartupCurrentPhase = "BOOT_INIT" }},
+		{"negative_live_counter", false, func(b, _ *FixtureSnapshot) { b.SemanticLiveEpoch = -1 }},
+		{"unsafe_collision_counter", false, func(_, n *FixtureSnapshot) { n.SemanticBusCollisionsTotal = safeInteger + 1 }},
+		{"negative_zone_count", false, func(_, n *FixtureSnapshot) { n.SemanticZoneCount = -1 }},
+		{"malformed_with_observer_failure", true, func(b, _ *FixtureSnapshot) { b.CounterEpoch = "not-a-uuid" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, n := baseline, end
+			tc.mutate(&b, &n)
+			result := ObservationResult{Baseline: &b, End: &n}
+			if tc.failure {
+				result.Failure = &SeamFailure{Code: "observer_failed"}
+			}
+			runner := canonicalRunner()
+			runner.Observer = scenarioObserver{driver: fixture, scenarioID: "ADV-01", result: result}
+			report, err := runner.Run(driver)
+			if !errors.Is(err, ErrInvalidSeamEvidence) || !reflect.DeepEqual(report, ReportV1{}) {
+				t.Fatalf("report=%#v err=%v", report, err)
+			}
+			path := filepath.Join(t.TempDir(), "malformed-observer.json")
+			if err := WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("zero report write: %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("destination created: %v", err)
+			}
+		})
+	}
+}
+
+func TestObserverSeamValidPartialAndAbsentRemainAllNullErrors(t *testing.T) {
+	driver := fixtureBytes(t, "inputs", "offline-all-pass")
+	fixture, err := ParseFixtureV1(driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := *fixture.Scenarios[0].Observations.Baseline
+	end := *fixture.Scenarios[0].Observations.End
+	cases := []struct {
+		name   string
+		result ObservationResult
+		code   string
+	}{
+		{"baseline_only", ObservationResult{Baseline: &baseline}, "evidence_incomplete"},
+		{"end_only", ObservationResult{End: &end}, "evidence_incomplete"},
+		{"absent", ObservationResult{}, "evidence_incomplete"},
+		{"failure_with_valid_baseline", ObservationResult{Baseline: &baseline, Failure: &SeamFailure{Code: "observer_failed"}}, "observer_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := canonicalRunner()
+			runner.Observer = scenarioObserver{driver: fixture, scenarioID: "ADV-01", result: tc.result}
+			report, err := runner.Run(driver)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scenario := report.Scenarios[0]
+			if scenario.ResultKind != "execution-error" || len(scenario.Errors) != 1 || scenario.Errors[0].Code != tc.code || scenario.Metrics.Baseline != nil || scenario.Metrics.End != nil || scenario.Metrics.Delta != nil {
+				t.Fatalf("unexpected projection: %#v", scenario)
+			}
+			if err := WriteReport(report, filepath.Join(t.TempDir(), tc.name+".json")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestContinuityFailuresAreWritable(t *testing.T) {
 	driver := fixtureBytes(t, "inputs", "offline-all-pass")
 	f, _ := ParseFixtureV1(driver)

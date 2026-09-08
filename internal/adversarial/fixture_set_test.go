@@ -157,6 +157,36 @@ func TestTerminalFixtureValidatesEveryPresentSnapshot(t *testing.T) {
 	}
 }
 
+func TestFixtureSemanticZoneCountUsesSafeIntegerRange(t *testing.T) {
+	base, err := ParseFixtureV1(fixtureBytes(t, "inputs", "offline-all-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zone21 := cloneFixtureV1(base)
+	zone21.Scenarios[0].Observations.Baseline.SemanticZoneCount = 21
+	zone21.Scenarios[0].Observations.End.SemanticZoneCount = 21
+	if raw, err := json.Marshal(zone21); err != nil {
+		t.Fatal(err)
+	} else if _, err := ParseFixtureV1(raw); err != nil {
+		t.Fatalf("zone count 21 rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value int64
+	}{{"negative", -1}, {"above_safe_integer", safeInteger + 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := cloneFixtureV1(base)
+			fixture.Scenarios[0].Observations.End.SemanticZoneCount = tc.value
+			raw, _ := json.Marshal(fixture)
+			if _, err := ParseFixtureV1(raw); !errors.Is(err, ErrInvalidFixture) {
+				t.Fatalf("ParseFixtureV1 accepted %d: %v", tc.value, err)
+			}
+		})
+	}
+}
+
 func freshManifest(t *testing.T) (manifestV1, map[string][]byte) {
 	t.Helper()
 	raw, e := fixtureFiles.ReadFile("fixtures/v1/fixture-input-manifest.json")

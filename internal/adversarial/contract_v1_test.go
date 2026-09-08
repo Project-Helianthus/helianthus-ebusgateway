@@ -389,24 +389,74 @@ func TestIncompleteEvidenceRejectsMalformedPresentSnapshotBeforeWrite(t *testing
 	}
 }
 
-func TestIncompleteEvidenceAcceptsAbsentOrValidInsufficientSnapshots(t *testing.T) {
+func TestIncompleteEvidenceRequiresAllMetricsAbsent(t *testing.T) {
 	base, _ := canonicalRunner().Run(fixtureBytes(t, "inputs", "offline-all-pass"))
-	for _, mode := range []string{"absent", "valid_partial"} {
-		report := cloneReport(base)
-		s := &report.Scenarios[0]
-		s.ResultKind = "execution-error"
-		s.Outcome = "fail"
-		s.Evaluation = nil
-		s.Metrics.Delta = nil
-		s.Metrics.End = nil
-		if mode == "absent" {
-			s.Metrics.Baseline = nil
-		}
-		s.Errors = []ScenarioError{{Phase: "evaluation", Code: "evidence_incomplete"}}
-		report.Summary = Summary{Total: 4, Passed: 3, Failed: 1, Verdict: "fail"}
-		if err := ValidateReport(report); err != nil {
-			t.Fatalf("%s: %v", mode, err)
-		}
+	report := cloneReport(base)
+	s := &report.Scenarios[0]
+	s.ResultKind = "execution-error"
+	s.Outcome = "fail"
+	s.Evaluation = nil
+	s.Metrics.Delta = nil
+	s.Metrics.End = nil
+	s.Errors = []ScenarioError{{Phase: "evaluation", Code: "evidence_incomplete"}}
+	report.Summary = Summary{Total: 4, Passed: 3, Failed: 1, Verdict: "fail"}
+
+	if err := ValidateReport(report); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("ValidateReport accepted structurally valid partial baseline: %v", err)
+	}
+	raw, _ := json.Marshal(report)
+	if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("ValidateReportBytes accepted structurally valid partial baseline: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "partial-incomplete.json")
+	if err := WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+		t.Fatalf("WriteReport accepted structurally valid partial baseline: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination created: %v", err)
+	}
+
+	s.Metrics.Baseline = nil
+	if err := ValidateReport(report); err != nil {
+		t.Fatalf("all-null evidence_incomplete rejected: %v", err)
+	}
+	if raw, err := json.Marshal(report); err != nil {
+		t.Fatal(err)
+	} else if err := ValidateReportBytes(raw); err != nil {
+		t.Fatalf("all-null evidence_incomplete bytes rejected: %v", err)
+	}
+}
+
+func TestReportSemanticZoneCountUsesSafeIntegerRange(t *testing.T) {
+	base, _ := canonicalRunner().Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+
+	zone21 := cloneReport(base)
+	zone21.Scenarios[0].Metrics.Baseline.SemanticZoneCount = 21
+	zone21.Scenarios[0].Metrics.End.SemanticZoneCount = 21
+	if err := ValidateReport(zone21); err != nil {
+		t.Fatalf("zone count 21 rejected: %v", err)
+	}
+	if raw, err := json.Marshal(zone21); err != nil {
+		t.Fatal(err)
+	} else if err := ValidateReportBytes(raw); err != nil {
+		t.Fatalf("zone count 21 bytes rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value int64
+	}{{"negative", -1}, {"above_safe_integer", safeInteger + 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := cloneReport(base)
+			report.Scenarios[0].Metrics.End.SemanticZoneCount = tc.value
+			if err := ValidateReport(report); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("ValidateReport accepted %d: %v", tc.value, err)
+			}
+			raw, _ := json.Marshal(report)
+			if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("ValidateReportBytes accepted %d: %v", tc.value, err)
+			}
+		})
 	}
 }
 

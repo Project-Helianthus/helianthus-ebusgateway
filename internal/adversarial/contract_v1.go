@@ -109,7 +109,7 @@ func validateFixture(f FixtureV1) string {
 }
 
 func validFixtureSnapshot(s FixtureSnapshot) bool {
-	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && s.SemanticZoneCount >= 0 && s.SemanticZoneCount <= 20
+	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
 }
 func validInfraReasonFor(id, s string) bool {
 	if s == "observer_unavailable" {
@@ -299,13 +299,13 @@ func validateExecutionError(s ScenarioResult, d Definition) string {
 			return "action_duration_error"
 		}
 	case "evidence_incomplete":
-		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || s.Metrics.Delta != nil || !validRecovery(s, d) {
+		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || !validRecovery(s, d) {
 			return "evidence_error"
 		}
 		if !validPresentSnapshots(s) {
 			return "evidence_snapshot"
 		}
-		if validSnapshots(s, d) {
+		if s.Metrics.Baseline != nil || s.Metrics.End != nil || s.Metrics.Delta != nil {
 			return "evidence_error"
 		}
 	default:
@@ -397,7 +397,7 @@ func validPresentSnapshots(s ScenarioResult) bool {
 	return true
 }
 func validSnapshot(s Snapshot) bool {
-	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && s.SemanticZoneCount >= 0 && s.SemanticZoneCount <= 20
+	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
 }
 func bounds(e []ActionEvent) int64 {
 	m := int64(0)

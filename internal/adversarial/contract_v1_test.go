@@ -516,6 +516,73 @@ func TestReportSemanticZoneCountUsesSafeIntegerRange(t *testing.T) {
 	}
 }
 
+func TestReportFixtureCaseRunIdentityBinding(t *testing.T) {
+	type fixtureIdentity struct {
+		caseID string
+		runID  string
+		report ReportV1
+	}
+	identities := make([]fixtureIdentity, 0, len(fixtureCases))
+	for _, name := range fixtureCases {
+		raw := fixtureBytes(t, "positive", name)
+		report, err := ParseReportV1(raw)
+		if err != nil {
+			t.Fatalf("%s parse: %v", name, err)
+		}
+		if err := ValidateReport(report); err != nil {
+			t.Fatalf("%s ValidateReport: %v", name, err)
+		}
+		if err := ValidateReportBytes(raw); err != nil {
+			t.Fatalf("%s ValidateReportBytes: %v", name, err)
+		}
+		if err := WriteReport(report, filepath.Join(t.TempDir(), name+".json")); err != nil {
+			t.Fatalf("%s WriteReport: %v", name, err)
+		}
+		identities = append(identities, fixtureIdentity{name, report.Execution.RunID, report})
+	}
+
+	assertRejected := func(t *testing.T, report ReportV1) {
+		t.Helper()
+		if err := ValidateReport(report); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("ValidateReport accepted identity mismatch: %v", err)
+		}
+		raw, _ := json.Marshal(report)
+		if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("ValidateReportBytes accepted identity mismatch: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "identity-mismatch.json")
+		if err := WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("WriteReport accepted identity mismatch: %v", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination created: %v", err)
+		}
+	}
+
+	for i, identity := range identities {
+		for j, other := range identities {
+			if i == j {
+				continue
+			}
+			t.Run(identity.caseID+"_relabeled_"+other.caseID, func(t *testing.T) {
+				report := cloneReport(identity.report)
+				report.Provenance.FixtureCaseID = other.caseID
+				assertRejected(t, report)
+			})
+		}
+		t.Run(identity.caseID+"_known_run_mismatch", func(t *testing.T) {
+			report := cloneReport(identity.report)
+			report.Execution.RunID = identities[(i+1)%len(identities)].runID
+			assertRejected(t, report)
+		})
+		t.Run(identity.caseID+"_unknown_run_mismatch", func(t *testing.T) {
+			report := cloneReport(identity.report)
+			report.Execution.RunID = "00000000-0000-4000-8000-000000000099"
+			assertRejected(t, report)
+		})
+	}
+}
+
 func TestPublishedNegativeCorpusFailsClosed(t *testing.T) {
 	raw, err := fixtureFiles.ReadFile("fixtures/v1/negative-cases.json")
 	if err != nil {

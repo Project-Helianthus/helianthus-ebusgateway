@@ -75,6 +75,15 @@ func loadFixtureSetV1() (*fixtureSetV1, error) {
 	return fixtureSet, fixtureSetErr
 }
 
+func validReportFixtureIdentity(caseID, runID string) bool {
+	set, err := loadFixtureSetV1()
+	if err != nil {
+		return false
+	}
+	driver, ok := set.drivers[caseID]
+	return ok && driver.RunID == runID
+}
+
 func buildFixtureSetV1() (*fixtureSetV1, error) {
 	raw, err := fixtureFiles.ReadFile("fixtures/v1/fixture-input-manifest.json")
 	if err != nil {

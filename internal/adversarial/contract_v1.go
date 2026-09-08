@@ -221,6 +221,9 @@ func validateRuntime(r ReportV1) string {
 	if !validProvenance(r.Provenance) {
 		return "provenance"
 	}
+	if !validReportFixtureIdentity(r.Provenance.FixtureCaseID, r.Execution.RunID) {
+		return "fixture_identity"
+	}
 	if len(r.Scenarios) != 4 {
 		return "scenario_sequence"
 	}

@@ -108,7 +108,13 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 		if !oneOf(ar.Failure.Code, "trigger_rejected", "trigger_timeout", "trigger_failed") {
 			return ScenarioResult{}, fmt.Errorf("%w: action_failure", ErrInvalidSeamEvidence)
 		}
-		first := f.Events[0]
+		if len(ar.Events) != 1 {
+			return ScenarioResult{}, fmt.Errorf("%w: trigger_failure_progress", ErrInvalidSeamEvidence)
+		}
+		first := ar.Events[0]
+		if first.Kind != d.ExpectedEvents[0] || first.OffsetMS < 0 || first.OffsetMS > d.DurationLimitMS || first.ErrorBoundMS < 0 || first.ErrorBoundMS > 1000 || first.OffsetMS+first.ErrorBoundMS > 1000 {
+			return ScenarioResult{}, fmt.Errorf("%w: trigger_failure_progress", ErrInvalidSeamEvidence)
+		}
 		r.Action.Events = []ActionEvent{reportEvent(first, start)}
 		r.ResultKind = "execution-error"
 		r.Outcome = "fail"
@@ -227,7 +233,7 @@ type driverAction struct{ scenario FixtureScenario }
 
 func (d driverAction) Execute(_ FixtureContext, _ ScenarioSpec) ActionResult {
 	if d.scenario.TerminalError != nil && d.scenario.TerminalError.Phase == "trigger" {
-		return ActionResult{Failure: &SeamFailure{d.scenario.TerminalError.Code}}
+		return ActionResult{Events: append([]FixtureEvent(nil), d.scenario.Events[:1]...), Failure: &SeamFailure{d.scenario.TerminalError.Code}}
 	}
 	return ActionResult{Events: append([]FixtureEvent(nil), d.scenario.Events...)}
 }

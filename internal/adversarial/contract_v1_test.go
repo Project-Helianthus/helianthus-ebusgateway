@@ -95,8 +95,8 @@ func TestRuntimeReportAllowsDynamicTimestamp(t *testing.T) {
 
 type actionFailure struct{ code string }
 
-func (a actionFailure) Execute(FixtureContext, ScenarioSpec) ActionResult {
-	return ActionResult{Failure: &SeamFailure{a.code}}
+func (a actionFailure) Execute(_ FixtureContext, spec ScenarioSpec) ActionResult {
+	return ActionResult{Events: []FixtureEvent{{Kind: spec.ExpectedEvents[0], OffsetMS: 0, ErrorBoundMS: 0}}, Failure: &SeamFailure{a.code}}
 }
 
 type observerFailure struct{ code string }
@@ -136,6 +136,30 @@ func TestSeamFailuresAreWritable(t *testing.T) {
 		}
 		if e = WriteReport(report, filepath.Join(t.TempDir(), code+".json")); e != nil {
 			t.Fatal(e)
+		}
+	}
+}
+
+type invalidTriggerFailure struct{ mode string }
+
+func (a invalidTriggerFailure) Execute(_ FixtureContext, s ScenarioSpec) ActionResult {
+	events := []FixtureEvent{}
+	switch a.mode {
+	case "wrong":
+		events = []FixtureEvent{{Kind: "not_the_request", OffsetMS: 0, ErrorBoundMS: 0}}
+	case "multiple":
+		events = []FixtureEvent{{Kind: s.ExpectedEvents[0], OffsetMS: 0, ErrorBoundMS: 0}, {Kind: s.ExpectedEvents[1], OffsetMS: 1, ErrorBoundMS: 0}}
+	}
+	return ActionResult{Events: events, Failure: &SeamFailure{Code: "trigger_failed"}}
+}
+
+func TestTriggerFailureRequiresSeamSuppliedProgress(t *testing.T) {
+	for _, mode := range []string{"none", "wrong", "multiple"} {
+		r := canonicalRunner()
+		r.Action = invalidTriggerFailure{mode}
+		report, err := r.Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+		if !errors.Is(err, ErrInvalidSeamEvidence) || !reflect.DeepEqual(report, ReportV1{}) {
+			t.Fatalf("%s: report=%#v err=%v", mode, report, err)
 		}
 	}
 }
@@ -252,6 +276,28 @@ func TestProducerIdentityIsRequired(t *testing.T) {
 	r.Producer = ProducerIdentity{}
 	if _, e := r.Run(fixtureBytes(t, "inputs", "offline-all-pass")); !errors.Is(e, ErrInvalidFixture) {
 		t.Fatal(e)
+	}
+}
+
+func TestGatewayValidatorsRejectHAProducerClaims(t *testing.T) {
+	base, _ := canonicalRunner().Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+	for _, inputDigest := range []string{strings.Repeat("0", 64), strings.Repeat("1", 64)} {
+		r := cloneReport(base)
+		r.Provenance.Producer = Producer{Repository: "Project-Helianthus/helianthus-ha-integration", Commit: strings.Repeat("a", 40), Component: "ha-adversarial-harness", BuildKind: "ha-harness", BuildSHA256: strings.Repeat("b", 64), InputGatewayReportSHA256: &inputDigest}
+		if err := ValidateReport(r); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("ValidateReport accepted HA producer: %v", err)
+		}
+		raw, _ := json.Marshal(r)
+		if err := ValidateReportBytes(raw); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("ValidateReportBytes accepted HA producer: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "ha-report.json")
+		if err := WriteReport(r, path); !errors.Is(err, ErrInvalidReport) {
+			t.Fatalf("WriteReport accepted HA producer: %v", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination created: %v", err)
+		}
 	}
 }
 func TestRawAdmissionPrecedesSeams(t *testing.T) {

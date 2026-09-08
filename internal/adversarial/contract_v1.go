@@ -188,13 +188,10 @@ func validProvenance(p Provenance) bool {
 		return false
 	}
 	q := p.Producer
-	if !oneOf(q.Repository, subjectRepository, "Project-Helianthus/helianthus-ha-integration") || !hex40.MatchString(q.Commit) || !hex64.MatchString(q.BuildSHA256) {
+	if q.Repository != subjectRepository || !hex40.MatchString(q.Commit) || !hex64.MatchString(q.BuildSHA256) {
 		return false
 	}
-	if q.InputGatewayReportSHA256 != nil && !hex64.MatchString(*q.InputGatewayReportSHA256) {
-		return false
-	}
-	return (q.Component == "internal/adversarial" && q.BuildKind == "go-test-binary" && q.Repository == subjectRepository && q.InputGatewayReportSHA256 == nil) || (q.Component == "ha-adversarial-harness" && q.BuildKind == "ha-harness" && q.Repository == "Project-Helianthus/helianthus-ha-integration" && q.InputGatewayReportSHA256 != nil)
+	return q.Component == "internal/adversarial" && q.BuildKind == "go-test-binary" && q.InputGatewayReportSHA256 == nil
 }
 
 func publicDefinition(d Definition) Definition {

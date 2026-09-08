@@ -44,6 +44,15 @@ func canonicalRunner() Executor {
 	return canonicalPublisher().NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil)
 }
 
+func authenticatedWrite(t *testing.T, report ReportV1, path string) error {
+	t.Helper()
+	caseID := report.Provenance.FixtureCaseID
+	if !oneOf(caseID, fixtureCases...) {
+		caseID = "offline-all-pass"
+	}
+	return canonicalPublisher().WriteReport(fixtureBytes(t, "inputs", caseID), report, path)
+}
+
 func TestFixtureCorpusParsesBindsExecutesAndProjects(t *testing.T) {
 	for _, name := range fixtureCases {
 		t.Run(name, func(t *testing.T) {
@@ -88,7 +97,7 @@ func TestRuntimeReportAllowsDynamicTimestamp(t *testing.T) {
 		t.Fatal(e)
 	}
 	path := filepath.Join(t.TempDir(), "nested", "report.json")
-	if e = canonicalPublisher().WriteReport(report, path); e != nil {
+	if e = authenticatedWrite(t, report, path); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = os.Stat(path); e != nil {
@@ -126,17 +135,22 @@ func TestDurationDecisionUsesDefinition(t *testing.T) {
 	}
 	definition := catalogV1[0]
 	definition.DurationLimitMS = 120000
-	result, err := canonicalRunner().runScenario(FixtureContext{}, definition, fixture.Scenarios[0], canonicalRunner().StartedAt)
+	fixture.Scenarios[0].Observations.End.OffsetMS = definition.DurationLimitMS
+	startTime := canonicalRunner().StartedAt
+	result, err := canonicalRunner().runScenario(FixtureContext{}, definition, fixture.Scenarios[0], startTime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Evaluation == nil || result.Evaluation.Duration != (DurationDecision{ExpectedMS: 120000, ObservedMS: 180000, ErrorBoundMS: 0, Passed: false}) || result.Outcome != "fail" {
+	if result.Timing.ElapsedMS != definition.DurationLimitMS || result.Timing.ScenarioEndedAt != stamp(startTime.Add(120*time.Second)) {
+		t.Fatalf("timing = %#v", result.Timing)
+	}
+	if result.Evaluation == nil || result.Evaluation.Duration != (DurationDecision{ExpectedMS: 120000, ObservedMS: 120000, ErrorBoundMS: 0, Passed: true}) || result.Outcome != "pass" {
 		t.Fatalf("duration decision = %#v, outcome = %q", result.Evaluation, result.Outcome)
 	}
 	if rule := validateEvaluated(result, definition); rule != "" {
 		t.Fatalf("definition-derived duration rejected by validator: %s", rule)
 	}
-	if rule := validateScenario(result, definition, canonicalRunner().StartedAt); rule != "" {
+	if rule := validateScenario(result, definition, startTime); rule != "" {
 		t.Fatalf("definition-derived scenario rejected by validator: %s", rule)
 	}
 }
@@ -170,7 +184,7 @@ func TestSeamFailuresAreWritable(t *testing.T) {
 					t.Fatalf("%s/%d: %#v", code, uncertainty.bound, s)
 				}
 			}
-			if e = canonicalPublisher().WriteReport(report, filepath.Join(t.TempDir(), fmt.Sprintf("%s-%d.json", code, uncertainty.bound))); e != nil {
+			if e = writeReport(report, filepath.Join(t.TempDir(), fmt.Sprintf("%s-%d.json", code, uncertainty.bound))); e != nil {
 				t.Fatal(e)
 			}
 		}
@@ -187,7 +201,7 @@ func TestSeamFailuresAreWritable(t *testing.T) {
 				t.Fatalf("%s: %#v", code, s)
 			}
 		}
-		if e = canonicalPublisher().WriteReport(report, filepath.Join(t.TempDir(), code+".json")); e != nil {
+		if e = writeReport(report, filepath.Join(t.TempDir(), code+".json")); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -219,7 +233,7 @@ func TestADV03ObserverErrorsRequireValidPartitionDuration(t *testing.T) {
 				t.Fatalf("ValidateReportBytes accepted 58-second partition: %v", err)
 			}
 			path := filepath.Join(t.TempDir(), code+"-invalid-duration.json")
-			if err := canonicalPublisher().WriteReport(invalid, path); !errors.Is(err, ErrInvalidReport) {
+			if err := authenticatedWrite(t, invalid, path); !errors.Is(err, ErrInvalidReport) {
 				t.Fatalf("WriteReport accepted 58-second partition: %v", err)
 			}
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -373,7 +387,7 @@ func TestObserverSeamRejectsMalformedSnapshotsBeforeCompleteness(t *testing.T) {
 				t.Fatalf("report=%#v err=%v", report, err)
 			}
 			path := filepath.Join(t.TempDir(), "malformed-observer.json")
-			if err := canonicalPublisher().WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+			if err := authenticatedWrite(t, report, path); !errors.Is(err, ErrInvalidReport) {
 				t.Fatalf("zero report write: %v", err)
 			}
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -413,7 +427,7 @@ func TestObserverSeamValidPartialAndAbsentRemainAllNullErrors(t *testing.T) {
 			if scenario.ResultKind != "execution-error" || len(scenario.Errors) != 1 || scenario.Errors[0].Code != tc.code || scenario.Metrics.Baseline != nil || scenario.Metrics.End != nil || scenario.Metrics.Delta != nil {
 				t.Fatalf("unexpected projection: %#v", scenario)
 			}
-			if err := canonicalPublisher().WriteReport(report, filepath.Join(t.TempDir(), tc.name+".json")); err != nil {
+			if err := writeReport(report, filepath.Join(t.TempDir(), tc.name+".json")); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -438,7 +452,7 @@ func TestContinuityFailuresAreWritable(t *testing.T) {
 		if len(s.Errors) != 1 || s.Errors[0].Code != want || s.Metrics.Baseline == nil || s.Metrics.Delta != nil {
 			t.Fatalf("%s: %#v", mode, s)
 		}
-		if e = canonicalPublisher().WriteReport(report, filepath.Join(t.TempDir(), mode+".json")); e != nil {
+		if e = writeReport(report, filepath.Join(t.TempDir(), mode+".json")); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -521,7 +535,7 @@ func TestGatewayValidatorsRejectHAProducerClaims(t *testing.T) {
 			t.Fatalf("ValidateReportBytes accepted HA producer: %v", err)
 		}
 		path := filepath.Join(t.TempDir(), "ha-report.json")
-		if err := canonicalPublisher().WriteReport(r, path); !errors.Is(err, ErrInvalidReport) {
+		if err := authenticatedWrite(t, r, path); !errors.Is(err, ErrInvalidReport) {
 			t.Fatalf("WriteReport accepted HA producer: %v", err)
 		}
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -605,7 +619,7 @@ func TestIncompleteEvidenceRejectsMalformedPresentSnapshotBeforeWrite(t *testing
 		t.Fatalf("ValidateReportBytes accepted malformed partial snapshot: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "malformed-incomplete.json")
-	if err := canonicalPublisher().WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+	if err := authenticatedWrite(t, report, path); !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("WriteReport accepted malformed partial snapshot: %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -633,7 +647,7 @@ func TestIncompleteEvidenceRequiresAllMetricsAbsent(t *testing.T) {
 		t.Fatalf("ValidateReportBytes accepted structurally valid partial baseline: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "partial-incomplete.json")
-	if err := canonicalPublisher().WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+	if err := authenticatedWrite(t, report, path); !errors.Is(err, ErrInvalidReport) {
 		t.Fatalf("WriteReport accepted structurally valid partial baseline: %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -706,7 +720,7 @@ func TestReportFixtureCaseRunIdentityBinding(t *testing.T) {
 		if err := ValidateReportBytes(raw); err != nil {
 			t.Fatalf("%s ValidateReportBytes: %v", name, err)
 		}
-		if err := canonicalPublisher().WriteReport(report, filepath.Join(t.TempDir(), name+".json")); err != nil {
+		if err := authenticatedWrite(t, report, filepath.Join(t.TempDir(), name+".json")); err != nil {
 			t.Fatalf("%s WriteReport: %v", name, err)
 		}
 		identities = append(identities, fixtureIdentity{name, report.Execution.RunID, report})
@@ -722,7 +736,7 @@ func TestReportFixtureCaseRunIdentityBinding(t *testing.T) {
 			t.Fatalf("ValidateReportBytes accepted identity mismatch: %v", err)
 		}
 		path := filepath.Join(t.TempDir(), "identity-mismatch.json")
-		if err := canonicalPublisher().WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+		if err := authenticatedWrite(t, report, path); !errors.Is(err, ErrInvalidReport) {
 			t.Fatalf("WriteReport accepted identity mismatch: %v", err)
 		}
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -888,7 +902,7 @@ func TestConcurrentAtomicWrite(t *testing.T) {
 			if i%2 == 1 {
 				r = b
 			}
-			errs <- canonicalPublisher().WriteReport(r, path)
+			errs <- authenticatedWrite(t, r, path)
 		}(i)
 	}
 	wg.Wait()

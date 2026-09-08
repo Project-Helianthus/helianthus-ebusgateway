@@ -32,7 +32,8 @@ func TestPublisherBindsResolvedSubjectAndProducer(t *testing.T) {
 	}
 	for _, name := range fixtureCases {
 		t.Run(name, func(t *testing.T) {
-			report, err := publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil).Run(fixtureBytes(t, "inputs", name))
+			driver := fixtureBytes(t, "inputs", name)
+			report, err := publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil).Run(driver)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +50,7 @@ func TestPublisherBindsResolvedSubjectAndProducer(t *testing.T) {
 			if err := ValidateReportBytes(raw); err != nil {
 				t.Fatal(err)
 			}
-			if err := publisher.WriteReport(report, filepath.Join(t.TempDir(), name+".json")); err != nil {
+			if err := publisher.WriteReport(driver, report, filepath.Join(t.TempDir(), name+".json")); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -98,7 +99,8 @@ func TestPublisherResolutionFailsBeforeWriting(t *testing.T) {
 
 func TestPublisherRejectsTamperedProvenanceBeforeWriting(t *testing.T) {
 	publisher := canonicalPublisher()
-	base, err := publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil).Run(fixtureBytes(t, "inputs", "offline-all-pass"))
+	driver := fixtureBytes(t, "inputs", "offline-all-pass")
+	base, err := publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil).Run(driver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +112,47 @@ func TestPublisherRejectsTamperedProvenanceBeforeWriting(t *testing.T) {
 		report := cloneReport(base)
 		mutate(&report)
 		path := filepath.Join(t.TempDir(), "tampered.json")
-		if err := publisher.WriteReport(report, path); !errors.Is(err, ErrInvalidReport) {
+		if err := publisher.WriteReport(driver, report, path); !errors.Is(err, ErrInvalidReport) {
 			t.Fatalf("tampered provenance accepted: %v", err)
 		}
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("destination created: %v", err)
 		}
+	}
+}
+
+func TestPublisherRejectsTamperedFixtureProjectionBeforeWriting(t *testing.T) {
+	publisher := canonicalPublisher()
+	driver := fixtureBytes(t, "inputs", "evaluated-fail")
+	report, err := publisher.NewExecutor(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), nil, nil).Run(driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scenario := &report.Scenarios[0]
+	scenario.Metrics.End.SemanticBusCollisionsTotal--
+	scenario.Metrics.Delta.SemanticBusCollisionsTotal--
+	scenario.Evaluation.Collisions.Observed--
+	scenario.Evaluation.Collisions.Passed = true
+	scenario.Outcome = "pass"
+	report.Summary.Passed++
+	report.Summary.Failed--
+	report.Summary.Verdict = "pass"
+	if err := ValidateReport(report); err != nil {
+		t.Fatalf("mutation must remain structurally valid: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"matching_driver": driver,
+		"wrong_driver":    fixtureBytes(t, "inputs", "offline-all-pass"),
+		"unbound_driver":  []byte(`{"schema_version":1}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "forged-pass.json")
+			if err := publisher.WriteReport(raw, report, path); !errors.Is(err, ErrInvalidReport) {
+				t.Fatalf("tampered fixture projection accepted: %v", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("destination created: %v", err)
+			}
+		})
 	}
 }

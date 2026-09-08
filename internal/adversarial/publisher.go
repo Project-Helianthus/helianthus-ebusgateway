@@ -34,7 +34,7 @@ func publishReportWithResolver(readBuildInfo buildInfoReader, hashExecutable exe
 	if err != nil {
 		return ReportV1{}, err
 	}
-	if err := publisher.WriteReport(report, path); err != nil {
+	if err := publisher.WriteReport(rawDriver, report, path); err != nil {
 		return ReportV1{}, err
 	}
 	return report, nil
@@ -97,9 +97,16 @@ func (p Publisher) NewExecutor(startedAt time.Time, action FixtureAction, observ
 	return Executor{StartedAt: startedAt, Action: action, Observer: observer, producer: p.producer, subject: p.producer.Commit}
 }
 
-func (p Publisher) WriteReport(report ReportV1, path string) error {
-	if p.producer != (producerIdentity{}) && report.Provenance.Producer == p.producer.wire() && report.Provenance.Subject.Commit == p.producer.Commit {
-		return writeReport(report, path)
+func (p Publisher) WriteReport(rawDriver []byte, report ReportV1, path string) error {
+	if p.producer == (producerIdentity{}) || report.Provenance.Producer != p.producer.wire() || report.Provenance.Subject.Commit != p.producer.Commit {
+		return fmt.Errorf("%w: publisher_identity", ErrInvalidReport)
 	}
-	return fmt.Errorf("%w: publisher_identity", ErrInvalidReport)
+	bound, err := BindFixtureDriverV1(rawDriver)
+	if err != nil {
+		return fmt.Errorf("%w: publisher_fixture", ErrInvalidReport)
+	}
+	if err := ValidateFixtureProjectionV1(report, bound); err != nil {
+		return err
+	}
+	return writeReport(report, path)
 }

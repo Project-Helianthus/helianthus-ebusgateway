@@ -86,7 +86,7 @@ func validateFixture(f FixtureV1) string {
 		if len(s.Events) != len(d.ExpectedEvents) {
 			return "event_sequence"
 		}
-		if (s.Observations.Baseline != nil && !validFixtureSnapshot(*s.Observations.Baseline)) || (s.Observations.End != nil && !validFixtureSnapshot(*s.Observations.End)) {
+		if (s.Observations.Baseline != nil && !validFixtureSnapshot(*s.Observations.Baseline, d.DurationLimitMS)) || (s.Observations.End != nil && !validFixtureSnapshot(*s.Observations.End, d.DurationLimitMS)) {
 			return "observation_value"
 		}
 		if !validFixturePresentObservations(s, d) {
@@ -108,8 +108,8 @@ func validateFixture(f FixtureV1) string {
 	return ""
 }
 
-func validFixtureSnapshot(s FixtureSnapshot) bool {
-	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
+func validFixtureSnapshot(s FixtureSnapshot, durationLimitMS int64) bool {
+	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= durationLimitMS && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
 }
 func validInfraReasonFor(id, s string) bool {
 	if s == "observer_unavailable" {
@@ -204,7 +204,7 @@ func validFixtureSnapshotRole(snapshot *FixtureSnapshot, phase string, baseline 
 	if snapshot == nil {
 		return true
 	}
-	if !validFixtureSnapshot(*snapshot) || snapshot.SemanticStartupCurrentPhase != phase {
+	if !validFixtureSnapshot(*snapshot, duration) || snapshot.SemanticStartupCurrentPhase != phase {
 		return false
 	}
 	if baseline {
@@ -232,7 +232,7 @@ func validateRuntime(r ReportV1) string {
 		return "execution_time"
 	}
 	complete, ok := validStamp(r.Execution.CompletedAt)
-	if !ok || !complete.Equal(start.Add(12*time.Minute)) {
+	if !ok {
 		return "execution_time"
 	}
 	if !validProvenance(r.Provenance) {
@@ -245,11 +245,12 @@ func validateRuntime(r ReportV1) string {
 		return "scenario_sequence"
 	}
 	counts := Summary{Total: 4}
+	expectedStart := start
 	for i := range r.Scenarios {
-		expectedStart := start.Add(time.Duration(i) * 3 * time.Minute)
 		if rule := validateScenario(r.Scenarios[i], catalogV1[i], expectedStart); rule != "" {
 			return rule
 		}
+		expectedStart = expectedStart.Add(time.Duration(catalogV1[i].DurationLimitMS) * time.Millisecond)
 		switch r.Scenarios[i].Outcome {
 		case "pass":
 			counts.Passed++
@@ -260,6 +261,9 @@ func validateRuntime(r ReportV1) string {
 		default:
 			return "outcome"
 		}
+	}
+	if !complete.Equal(expectedStart) {
+		return "execution_time"
 	}
 	counts.Verdict = "pass"
 	if counts.Failed > 0 {
@@ -307,7 +311,7 @@ func validateScenario(s ScenarioResult, d Definition, start time.Time) string {
 		return "serial_timing"
 	}
 	se, ok := validStamp(s.Timing.ScenarioEndedAt)
-	if !ok || !se.Equal(start.Add(3*time.Minute)) || s.Timing.ElapsedMS != 180000 || s.Timing.ErrorBoundMS < 0 || s.Timing.ErrorBoundMS > 1000 {
+	if !ok || !se.Equal(start.Add(time.Duration(d.DurationLimitMS)*time.Millisecond)) || s.Timing.ElapsedMS != d.DurationLimitMS || s.Timing.ErrorBoundMS < 0 || s.Timing.ErrorBoundMS > 1000 {
 		return "serial_timing"
 	}
 	if s.Action.Events == nil || s.Errors == nil {
@@ -386,7 +390,7 @@ func validateExecutionError(s ScenarioResult, d Definition) string {
 		if !oneOf(e.Phase, "evaluation", "artifact") || len(s.Action.Events) != len(d.ExpectedEvents) || !validActionDuration(s, d) || !validRecovery(s, d) {
 			return "evidence_error"
 		}
-		if !validPresentSnapshots(s) {
+		if !validPresentSnapshots(s, d) {
 			return "evidence_snapshot"
 		}
 		if s.Metrics.Baseline != nil || s.Metrics.End != nil || s.Metrics.Delta != nil {
@@ -447,7 +451,7 @@ func validSnapshots(s ScenarioResult, d Definition) bool {
 	if b == nil || n == nil {
 		return false
 	}
-	if !validSnapshot(*b) || !validSnapshot(*n) || b.SemanticStartupCurrentPhase != d.BaselinePhase || n.SemanticStartupCurrentPhase != d.EndPhase {
+	if !validSnapshot(*b, d.DurationLimitMS) || !validSnapshot(*n, d.DurationLimitMS) || b.SemanticStartupCurrentPhase != d.BaselinePhase || n.SemanticStartupCurrentPhase != d.EndPhase {
 		return false
 	}
 	if b.OffsetMS-bounds(s.Action.Events) > 0 || n.OffsetMS+bounds(s.Action.Events) < s.Timing.ElapsedMS {
@@ -458,16 +462,23 @@ func validSnapshots(s ScenarioResult, d Definition) bool {
 	ss, _ := validStamp(s.Timing.ScenarioStartedAt)
 	return bs.Equal(ss.Add(time.Duration(b.OffsetMS)*time.Millisecond)) && ns.Equal(ss.Add(time.Duration(n.OffsetMS)*time.Millisecond))
 }
-func validPresentSnapshots(s ScenarioResult) bool {
+func validPresentSnapshots(s ScenarioResult, d Definition) bool {
 	start, ok := validStamp(s.Timing.ScenarioStartedAt)
 	if !ok {
 		return false
 	}
-	for _, snapshot := range []*Snapshot{s.Metrics.Baseline, s.Metrics.End} {
+	for i, snapshot := range []*Snapshot{s.Metrics.Baseline, s.Metrics.End} {
 		if snapshot == nil {
 			continue
 		}
-		if !validSnapshot(*snapshot) {
+		if !validSnapshot(*snapshot, d.DurationLimitMS) {
+			return false
+		}
+		expectedPhase := d.BaselinePhase
+		if i == 1 {
+			expectedPhase = d.EndPhase
+		}
+		if snapshot.SemanticStartupCurrentPhase != expectedPhase {
 			return false
 		}
 		captured, ok := validStamp(snapshot.CapturedAt)
@@ -477,8 +488,8 @@ func validPresentSnapshots(s ScenarioResult) bool {
 	}
 	return true
 }
-func validSnapshot(s Snapshot) bool {
-	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= 180000 && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
+func validSnapshot(s Snapshot, durationLimitMS int64) bool {
+	return uuidV4.MatchString(s.CounterEpoch) && validInt(s.OffsetMS) && s.OffsetMS <= durationLimitMS && oneOf(s.SemanticStartupCurrentPhase, "BOOT_INIT", "CACHE_LOADED_STALE", "LIVE_WARMUP", "LIVE_READY", "DEGRADED") && validInt(s.SemanticLiveEpoch) && validInt(s.SemanticBusCollisionsTotal) && validInt(s.SemanticZoneCount)
 }
 func bounds(e []ActionEvent) int64 {
 	m := int64(0)

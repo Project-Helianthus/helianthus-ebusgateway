@@ -58,10 +58,10 @@ func (e Executor) runBound(bound BoundFixture) (ReportV1, error) {
 	results := make([]ScenarioResult, 0, 4)
 	counts := Summary{Total: 4}
 	ctx := FixtureContext{bound: bound}
+	start := e.StartedAt
 	for i := range driver.Scenarios {
 		d := catalogV1[i]
 		f := driver.Scenarios[i]
-		start := e.StartedAt.Add(time.Duration(i) * 3 * time.Minute)
 		r, err := e.runScenario(ctx, d, f, start)
 		if err != nil {
 			return ReportV1{}, err
@@ -75,6 +75,7 @@ func (e Executor) runBound(bound BoundFixture) (ReportV1, error) {
 		case "blocked-infra":
 			counts.Blocked++
 		}
+		start = start.Add(time.Duration(d.DurationLimitMS) * time.Millisecond)
 	}
 	counts.Verdict = "pass"
 	if counts.Failed > 0 {
@@ -82,7 +83,7 @@ func (e Executor) runBound(bound BoundFixture) (ReportV1, error) {
 	} else if counts.Blocked > 0 {
 		counts.Verdict = "blocked-infra"
 	}
-	r := ReportV1{Schema: ReportSchemaURL, SchemaVersion: 1, Suite: Suite{SuiteID, 1}, Execution: Execution{Mode: "offline-fixture", RunID: driver.RunID, StartedAt: stamp(e.StartedAt), CompletedAt: stamp(e.StartedAt.Add(12 * time.Minute))}, Provenance: p, Scenarios: results, Summary: counts}
+	r := ReportV1{Schema: ReportSchemaURL, SchemaVersion: 1, Suite: Suite{SuiteID, 1}, Execution: Execution{Mode: "offline-fixture", RunID: driver.RunID, StartedAt: stamp(e.StartedAt), CompletedAt: stamp(start)}, Provenance: p, Scenarios: results, Summary: counts}
 	if err := ValidateRuntimeReportV1(r); err != nil {
 		return ReportV1{}, fmt.Errorf("%w: projected_report", ErrInvalidSeamEvidence)
 	}
@@ -208,7 +209,8 @@ func validObservationResult(result ObservationResult, d Definition, bound int64)
 }
 
 func baseScenario(d Definition, start time.Time) ScenarioResult {
-	return ScenarioResult{Definition: publicDefinition(d), Action: Action{Events: []ActionEvent{}}, Timing: Timing{ScenarioStartedAt: stamp(start), ScenarioEndedAt: stamp(start.Add(3 * time.Minute)), ElapsedMS: 180000, ErrorBoundMS: 0}, Metrics: Metrics{}, Errors: []ScenarioError{}}
+	duration := time.Duration(d.DurationLimitMS) * time.Millisecond
+	return ScenarioResult{Definition: publicDefinition(d), Action: Action{Events: []ActionEvent{}}, Timing: Timing{ScenarioStartedAt: stamp(start), ScenarioEndedAt: stamp(start.Add(duration)), ElapsedMS: d.DurationLimitMS, ErrorBoundMS: 0}, Metrics: Metrics{}, Errors: []ScenarioError{}}
 }
 func setRecovery(r *ScenarioResult, d Definition) {
 	a, b := eventByKind(r.Action.Events, d.RecoveryAnchor), eventByKind(r.Action.Events, d.RecoveryEvent)

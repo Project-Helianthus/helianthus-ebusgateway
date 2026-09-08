@@ -2,11 +2,13 @@ package adversarialpackaging
 
 import (
 	"crypto/sha256"
+	"debug/buildinfo"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -26,12 +28,17 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 		t.Fatal("runtime package imports os/exec")
 	}
 
-	for _, trimpath := range []bool{false, true} {
-		name := "normal"
-		if trimpath {
-			name = "trimpath"
-		}
-		t.Run(name, func(t *testing.T) {
+	cases := []struct {
+		name     string
+		trimpath bool
+		buildVCS bool
+	}{
+		{name: "normal", buildVCS: true},
+		{name: "trimpath", trimpath: true, buildVCS: true},
+		{name: "metadata-omitted-control", buildVCS: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			source := filepath.Join(root, "source")
 			clone := exec.Command("git", "clone", "--quiet", "--no-hardlinks", repo, source)
@@ -43,9 +50,10 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 			if out, err := checkout.CombinedOutput(); err != nil {
 				t.Fatalf("checkout: %v: %s", err, out)
 			}
+
 			binary := filepath.Join(root, "adversarial.test")
-			args := []string{"test", "-c", "-buildvcs=true", "-o", binary}
-			if trimpath {
+			args := []string{"test", "-c", fmt.Sprintf("-buildvcs=%t", tc.buildVCS), "-o", binary}
+			if tc.trimpath {
 				args = append(args, "-trimpath")
 			}
 			args = append(args, "./internal/adversarial")
@@ -54,6 +62,7 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 			if out, err := build.CombinedOutput(); err != nil {
 				t.Fatalf("build: %v: %s", err, out)
 			}
+
 			headCommand := exec.Command("git", "rev-parse", "HEAD")
 			headCommand.Dir = source
 			headRaw, err := headCommand.Output()
@@ -66,6 +75,18 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 				t.Fatal(err)
 			}
 			expectedDigest := fmt.Sprintf("%x", sha256.Sum256(binaryRaw))
+			info, err := buildinfo.ReadFile(binary)
+			if err != nil {
+				t.Fatalf("read build info: %v", err)
+			}
+			revision, modified, revisionCount, modifiedCount := vcsSettings(info)
+			hasVCSSettings := revisionCount != 0 || modifiedCount != 0
+			if !tc.buildVCS && hasVCSSettings {
+				t.Fatalf("-buildvcs=false emitted VCS settings: revision=%q modified=%q", revision, modified)
+			}
+			if hasVCSSettings && (revisionCount != 1 || modifiedCount != 1 || revision != expectedRevision || modified != "false") {
+				t.Fatalf("unexpected VCS settings: revision=%q count=%d modified=%q count=%d", revision, revisionCount, modified, modifiedCount)
+			}
 
 			run := filepath.Join(root, "run")
 			if err := os.Mkdir(run, 0o755); err != nil {
@@ -87,8 +108,20 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 			cmd := exec.Command(binary, "-test.run=^TestCompiledPublisherHelper$", "--", inputPath, outputPath)
 			cmd.Dir = run
 			cmd.Env = append(os.Environ(), "PATH="+emptyPath)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("outside-checkout run: %v: %s", err, out)
+			output, runErr := cmd.CombinedOutput()
+			if !hasVCSSettings {
+				t.Logf("%s omitted VCS settings; requiring fail-closed publication", info.GoVersion)
+				if runErr == nil || !strings.Contains(string(output), "producer_build_info") {
+					t.Fatalf("metadata-free binary result: err=%v output=%s", runErr, output)
+				}
+				if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+					t.Fatalf("metadata-free binary created destination: %v", err)
+				}
+				return
+			}
+			t.Logf("%s emitted clean VCS settings; requiring authenticated publication", info.GoVersion)
+			if runErr != nil {
+				t.Fatalf("outside-checkout run: %v: %s", runErr, output)
 			}
 			written, err := os.ReadFile(outputPath)
 			if err != nil || len(written) == 0 {
@@ -113,4 +146,18 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 			}
 		})
 	}
+}
+
+func vcsSettings(info *debug.BuildInfo) (revision, modified string, revisionCount, modifiedCount int) {
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+			revisionCount++
+		case "vcs.modified":
+			modified = setting.Value
+			modifiedCount++
+		}
+	}
+	return revision, modified, revisionCount, modifiedCount
 }

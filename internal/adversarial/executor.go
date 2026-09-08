@@ -193,7 +193,7 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 	mb := bounds(r.Action.Events)
 	zones := n.SemanticZoneCount > 0
 	dhw := n.SemanticDHWPresent
-	ev := Evaluation{Duration: DurationDecision{180000, 180000, mb, 180000+mb <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{2, live, live >= 2}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
+	ev := Evaluation{Duration: DurationDecision{180000, 180000, mb, 180000+mb <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
 	r.Evaluation = &ev
 	r.ResultKind = "evaluated"
 	r.Outcome = "fail"

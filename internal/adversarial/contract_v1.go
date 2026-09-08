@@ -431,7 +431,7 @@ func validateEvaluated(s ScenarioResult, d Definition) string {
 	recoveryBound := anchor.ErrorBoundMS + recovery.ErrorBoundMS
 	zones := n.SemanticZoneCount > 0
 	dhw := n.SemanticDHWPresent
-	expected := Evaluation{Duration: DurationDecision{180000, 180000, maxBound, 180000+maxBound <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{2, live, live >= 2}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
+	expected := Evaluation{Duration: DurationDecision{180000, 180000, maxBound, 180000+maxBound <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
 	if !reflect.DeepEqual(*s.Evaluation, expected) {
 		return "evaluation"
 	}

@@ -100,6 +100,25 @@ func TestRuntimeReportAllowsDynamicTimestamp(t *testing.T) {
 	}
 }
 
+func TestMinimumLiveEpochDecisionUsesDefinition(t *testing.T) {
+	fixture, err := ParseFixtureV1(fixtureBytes(t, "inputs", "offline-all-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := catalogV1[0]
+	definition.MinimumLiveEpochDelta = 3
+	result, err := canonicalRunner().runScenario(FixtureContext{}, definition, fixture.Scenarios[0], canonicalRunner().StartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evaluation == nil || result.Evaluation.LiveEpoch != (MinimumDecision{Minimum: 3, Observed: 2, Passed: false}) || result.Outcome != "fail" {
+		t.Fatalf("live epoch decision = %#v, outcome = %q", result.Evaluation, result.Outcome)
+	}
+	if rule := validateEvaluated(result, definition); rule != "" {
+		t.Fatalf("definition-derived result rejected by validator: %s", rule)
+	}
+}
+
 type actionFailure struct {
 	code          string
 	offset, bound int64

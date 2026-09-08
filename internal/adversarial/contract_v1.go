@@ -314,7 +314,7 @@ func validateScenario(s ScenarioResult, d Definition, start time.Time) string {
 		return "required_array"
 	}
 	for i, e := range s.Action.Events {
-		if i >= len(d.ExpectedEvents) || e.Kind != d.ExpectedEvents[i] || e.Source != "fixture" || e.OffsetMS < 0 || e.OffsetMS > 180000 || e.ErrorBoundMS < 0 || e.ErrorBoundMS > 1000 || (i > 0 && e.OffsetMS < s.Action.Events[i-1].OffsetMS) {
+		if i >= len(d.ExpectedEvents) || e.Kind != d.ExpectedEvents[i] || e.Source != "fixture" || e.OffsetMS < 0 || e.OffsetMS > d.DurationLimitMS || e.ErrorBoundMS < 0 || e.ErrorBoundMS > 1000 || (i > 0 && e.OffsetMS < s.Action.Events[i-1].OffsetMS) {
 			return "action_evidence"
 		}
 		at, ok := validStamp(e.At)
@@ -431,7 +431,7 @@ func validateEvaluated(s ScenarioResult, d Definition) string {
 	recoveryBound := anchor.ErrorBoundMS + recovery.ErrorBoundMS
 	zones := n.SemanticZoneCount > 0
 	dhw := n.SemanticDHWPresent
-	expected := Evaluation{Duration: DurationDecision{180000, 180000, maxBound, 180000+maxBound <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
+	expected := Evaluation{Duration: DurationDecision{d.DurationLimitMS, s.Timing.ElapsedMS, maxBound, s.Timing.ElapsedMS+maxBound <= d.DurationLimitMS+1000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
 	if !reflect.DeepEqual(*s.Evaluation, expected) {
 		return "evaluation"
 	}

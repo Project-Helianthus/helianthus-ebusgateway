@@ -119,6 +119,28 @@ func TestMinimumLiveEpochDecisionUsesDefinition(t *testing.T) {
 	}
 }
 
+func TestDurationDecisionUsesDefinition(t *testing.T) {
+	fixture, err := ParseFixtureV1(fixtureBytes(t, "inputs", "offline-all-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := catalogV1[0]
+	definition.DurationLimitMS = 120000
+	result, err := canonicalRunner().runScenario(FixtureContext{}, definition, fixture.Scenarios[0], canonicalRunner().StartedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evaluation == nil || result.Evaluation.Duration != (DurationDecision{ExpectedMS: 120000, ObservedMS: 180000, ErrorBoundMS: 0, Passed: false}) || result.Outcome != "fail" {
+		t.Fatalf("duration decision = %#v, outcome = %q", result.Evaluation, result.Outcome)
+	}
+	if rule := validateEvaluated(result, definition); rule != "" {
+		t.Fatalf("definition-derived duration rejected by validator: %s", rule)
+	}
+	if rule := validateScenario(result, definition, canonicalRunner().StartedAt); rule != "" {
+		t.Fatalf("definition-derived scenario rejected by validator: %s", rule)
+	}
+}
+
 type actionFailure struct {
 	code          string
 	offset, bound int64

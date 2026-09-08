@@ -193,7 +193,7 @@ func (e Executor) runScenario(ctx FixtureContext, d Definition, f FixtureScenari
 	mb := bounds(r.Action.Events)
 	zones := n.SemanticZoneCount > 0
 	dhw := n.SemanticDHWPresent
-	ev := Evaluation{Duration: DurationDecision{180000, 180000, mb, 180000+mb <= 181000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
+	ev := Evaluation{Duration: DurationDecision{d.DurationLimitMS, r.Timing.ElapsedMS, mb, r.Timing.ElapsedMS+mb <= d.DurationLimitMS+1000}, Action: ActionDecision{d.TriggerKind, d.TriggerKind, true}, Recovery: RecoveryDecision{d.MaximumRecoveryMS, recoveryMS, recoveryBound, recoveryMS+recoveryBound <= d.MaximumRecoveryMS}, LiveEpoch: MinimumDecision{d.MinimumLiveEpochDelta, live, live >= d.MinimumLiveEpochDelta}, Zones: RequiredDecision{d.ZonesRequired, zones, !d.ZonesRequired || zones}, DHW: RequiredDecision{d.DHWRequired, dhw, !d.DHWRequired || dhw}, Collisions: MaximumDecision{d.MaximumCollisionsDelta, coll, coll <= d.MaximumCollisionsDelta}}
 	r.Evaluation = &ev
 	r.ResultKind = "evaluated"
 	r.Outcome = "fail"
@@ -227,7 +227,7 @@ func validSeamEvents(es []FixtureEvent, d Definition) error {
 		return fmt.Errorf("%w: event_count", ErrInvalidSeamEvidence)
 	}
 	for i, v := range es {
-		if v.Kind != d.ExpectedEvents[i] || v.OffsetMS < 0 || v.OffsetMS > 180000 || v.ErrorBoundMS < 0 || v.ErrorBoundMS > 1000 || (i > 0 && v.OffsetMS < es[i-1].OffsetMS) {
+		if v.Kind != d.ExpectedEvents[i] || v.OffsetMS < 0 || v.OffsetMS > d.DurationLimitMS || v.ErrorBoundMS < 0 || v.ErrorBoundMS > 1000 || (i > 0 && v.OffsetMS < es[i-1].OffsetMS) {
 			return fmt.Errorf("%w: event_sequence", ErrInvalidSeamEvidence)
 		}
 	}

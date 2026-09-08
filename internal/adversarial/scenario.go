@@ -1,70 +1,26 @@
 package adversarial
 
-import "time"
-
-// Scenario defines an adversarial runtime test scenario with explicit
-// duration and pass/fail thresholds. Scenarios are executed against a
-// live gateway+HA stack during smoke testing; the framework itself is
-// standalone and testable without hardware.
-type Scenario struct {
-	ID          string             `json:"id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Duration    time.Duration      `json:"duration"`
-	Thresholds  ScenarioThresholds `json:"thresholds"`
-}
-
-// ScenarioThresholds contains the pass/fail criteria that are evaluated
-// after an adverse event has been injected and the gateway attempts
-// recovery.
-//
-// All counter-based thresholds (MinLiveEpoch, MaxCollisions) are evaluated
-// as deltas from a baseline snapshot taken at scenario start. The runner
-// must capture expvar values before injecting the adverse event and compute
-// the delta at evaluation time. This prevents monotonic counter accumulation
-// across scenarios from producing false passes or fails.
-type ScenarioThresholds struct {
-	// MaxRecoveryTime is the maximum wall-clock time allowed to reach
-	// LIVE_READY after the adverse event is injected.
-	MaxRecoveryTime time.Duration `json:"max_recovery_time"`
-
-	// MinLiveEpoch is the minimum delta in the semantic_live_epoch
-	// expvar counter during this scenario. A value of 2 means the
-	// gateway must have incremented live_epoch at least twice since
-	// the baseline snapshot (i.e. recovered and resumed live data).
-	MinLiveEpoch int `json:"min_live_epoch"`
-
-	// RequireZones indicates whether heating zone data must be present
-	// (non-empty) after recovery.
-	RequireZones bool `json:"require_zones"`
-
-	// RequireDHW indicates whether domestic hot water data must be
-	// present after recovery. Some adverse events (bus outage) may
-	// cause DHW to expire, so this is not always required.
-	RequireDHW bool `json:"require_dhw"`
-
-	// MaxCollisions is the maximum delta in the
-	// semantic_bus_collisions_total expvar counter allowed during
-	// this scenario's duration.
-	MaxCollisions int `json:"max_collisions"`
-}
-
-// ScenarioVerdict is the machine-readable result of executing a single
-// adversarial scenario against the live stack.
-type ScenarioVerdict struct {
-	ScenarioID  string         `json:"scenario_id"`
-	Name        string         `json:"name"`
-	Outcome     string         `json:"outcome"` // "pass", "fail", "xfail", "blocked-infra"
-	InfraReason string         `json:"infra_reason,omitempty"`
-	Duration    string         `json:"duration"`
-	Error       string         `json:"error,omitempty"`
-	Metrics     map[string]any `json:"metrics,omitempty"`
-}
-
-// Outcome constants for ScenarioVerdict.Outcome.
 const (
-	OutcomePass         = "pass"
-	OutcomeFail         = "fail"
-	OutcomeXFail        = "xfail"
-	OutcomeBlockedInfra = "blocked-infra"
+	ReportSchemaURL   = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json"
+	FixtureSchemaURL  = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json"
+	SuiteID           = "helianthus.adversarial.ADV01-04"
+	subjectRepository = "Project-Helianthus/helianthus-ebusgateway"
+	fixtureSetDigest  = "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a"
 )
+
+var catalogV1 = []Definition{
+	{ScenarioID: "ADV-01", Name: "HA Core/integration consumer restart while gateway stays stable", DurationLimitMS: 180000, TriggerKind: "ha_consumer_restart", RecoveryTarget: "ha_consumer_synchronized", MinimumLiveEpochDelta: 2, ZonesRequired: true, DHWRequired: true, MaximumCollisionsDelta: 5, MaximumRecoveryMS: 90000, RecoveryAnchor: "consumer_stopped", RecoveryEvent: "ha_consumer_synchronized", ExpectedEvents: []string{"restart_requested", "consumer_stopped", "consumer_started", "ha_consumer_synchronized"}, BaselinePhase: "LIVE_READY", EndPhase: "LIVE_READY"},
+	{ScenarioID: "ADV-02", Name: "eBUS adapter reset while polling", DurationLimitMS: 180000, TriggerKind: "adapter_reset", RecoveryTarget: "gateway_live_ready", MinimumLiveEpochDelta: 2, ZonesRequired: true, DHWRequired: false, MaximumCollisionsDelta: 20, MaximumRecoveryMS: 120000, RecoveryAnchor: "reset_started", RecoveryEvent: "gateway_live_ready", ExpectedEvents: []string{"reset_requested", "reset_started", "transport_unavailable", "transport_available", "gateway_live_ready"}, BaselinePhase: "LIVE_READY", EndPhase: "LIVE_READY"},
+	{ScenarioID: "ADV-03", Name: "60 second gateway-to-adapter transport partition and recovery", DurationLimitMS: 180000, TriggerKind: "transport_partition", RecoveryTarget: "gateway_live_ready", MinimumLiveEpochDelta: 2, ZonesRequired: true, DHWRequired: false, MaximumCollisionsDelta: 10, MaximumRecoveryMS: 90000, RecoveryAnchor: "partition_cleared", RecoveryEvent: "gateway_live_ready", ExpectedEvents: []string{"partition_requested", "partition_active", "partition_cleared", "gateway_live_ready"}, BaselinePhase: "LIVE_READY", EndPhase: "LIVE_READY"},
+	{ScenarioID: "ADV-04", Name: "fresh isolated gateway boot with corrupted cache fixture", DurationLimitMS: 180000, TriggerKind: "isolated_corrupt_cache_boot", RecoveryTarget: "gateway_live_ready", MinimumLiveEpochDelta: 2, ZonesRequired: true, DHWRequired: true, MaximumCollisionsDelta: 5, MaximumRecoveryMS: 120000, RecoveryAnchor: "runtime_started", RecoveryEvent: "gateway_live_ready", ExpectedEvents: []string{"isolated_cache_staged", "runtime_started", "gateway_live_ready"}, BaselinePhase: "BOOT_INIT", EndPhase: "LIVE_READY"},
+}
+
+// Catalog returns a deep copy so callers cannot alter the contract.
+func Catalog() []Definition {
+	out := make([]Definition, len(catalogV1))
+	copy(out, catalogV1)
+	for i := range out {
+		out[i].ExpectedEvents = append([]string(nil), catalogV1[i].ExpectedEvents...)
+	}
+	return out
+}

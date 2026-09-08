@@ -55,11 +55,22 @@ func validateFixture(f FixtureV1) string {
 		if s.Events == nil || s.ResourceArtifactIDs == nil {
 			return "required_array"
 		}
+		if len(s.ResourceArtifactIDs) > 1 {
+			return "resource_cardinality"
+		}
+		for _, id := range s.ResourceArtifactIDs {
+			if len(id) > 64 || !caseIDPattern.MatchString(id) {
+				return "resource_identifier"
+			}
+		}
 		if !s.Precondition.Available {
-			if len(s.Events) != 0 || s.Observations.Baseline != nil || s.Observations.End != nil || s.TerminalError != nil {
+			if len(s.Events) != 0 || s.Observations.Baseline != nil || s.Observations.End != nil || s.TerminalError != nil || len(s.ResourceArtifactIDs) != 0 {
 				return "precondition_precedence"
 			}
 			continue
+		}
+		if (i < 3 && len(s.ResourceArtifactIDs) != 0) || (i == 3 && len(s.ResourceArtifactIDs) != 1) {
+			return "resource_scenario"
 		}
 		if len(s.Events) == 0 {
 			return "event_sequence"

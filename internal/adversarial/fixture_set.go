@@ -301,7 +301,8 @@ func cloneFixtureV1(v FixtureV1) FixtureV1 {
 	out.Scenarios = append([]FixtureScenario(nil), v.Scenarios...)
 	for i := range out.Scenarios {
 		out.Scenarios[i].Events = append([]FixtureEvent(nil), v.Scenarios[i].Events...)
-		out.Scenarios[i].ResourceArtifactIDs = append([]string(nil), v.Scenarios[i].ResourceArtifactIDs...)
+		out.Scenarios[i].ResourceArtifactIDs = make([]string, len(v.Scenarios[i].ResourceArtifactIDs))
+		copy(out.Scenarios[i].ResourceArtifactIDs, v.Scenarios[i].ResourceArtifactIDs)
 		if v.Scenarios[i].Precondition.UnavailableReason != nil {
 			out.Scenarios[i].Precondition.UnavailableReason = cloneString(v.Scenarios[i].Precondition.UnavailableReason)
 		}

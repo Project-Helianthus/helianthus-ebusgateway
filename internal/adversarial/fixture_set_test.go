@@ -80,6 +80,55 @@ func TestManifestRejectsBindingMutations(t *testing.T) {
 	}
 }
 
+func TestFixtureResourceIdentifiersAndScenarioBinding(t *testing.T) {
+	raw := fixtureBytes(t, "inputs", "offline-all-pass")
+	base, err := ParseFixtureV1(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*FixtureV1)
+	}{
+		{"two_ids", func(f *FixtureV1) {
+			f.Scenarios[3].ResourceArtifactIDs = []string{"cache-offline-all-pass-adv04", "cache-evaluated-fail-adv04"}
+		}},
+		{"malformed", func(f *FixtureV1) { f.Scenarios[3].ResourceArtifactIDs = []string{"Bad_ID"} }},
+		{"overlong", func(f *FixtureV1) { f.Scenarios[3].ResourceArtifactIDs = []string{strings.Repeat("a", 65)} }},
+		{"wrong_scenario", func(f *FixtureV1) { f.Scenarios[0].ResourceArtifactIDs = []string{"cache-offline-all-pass-adv04"} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := cloneFixtureV1(base)
+			tc.mutate(&f)
+			changed, _ := json.Marshal(f)
+			if _, err := ParseFixtureV1(changed); !errors.Is(err, ErrInvalidFixture) {
+				t.Fatalf("ParseFixtureV1 accepted mutation: %v", err)
+			}
+			if _, err := BindFixtureDriverV1(changed); !errors.Is(err, ErrInvalidFixture) {
+				t.Fatalf("BindFixtureDriverV1 accepted mutation: %v", err)
+			}
+		})
+	}
+
+	t.Run("wrong_bound_case_resource", func(t *testing.T) {
+		f := cloneFixtureV1(base)
+		f.Scenarios[3].ResourceArtifactIDs = []string{"cache-evaluated-fail-adv04"}
+		changed, _ := json.Marshal(f)
+		if _, err := ParseFixtureV1(changed); err != nil {
+			t.Fatalf("structurally valid resource rejected: %v", err)
+		}
+		if _, err := BindFixtureDriverV1(changed); !errors.Is(err, ErrInvalidFixture) {
+			t.Fatalf("manifest binding accepted wrong case resource: %v", err)
+		}
+	})
+	for _, name := range fixtureCases {
+		if _, err := ParseFixtureV1(fixtureBytes(t, "inputs", name)); err != nil {
+			t.Fatalf("positive %s: %v", name, err)
+		}
+	}
+}
+
 func freshManifest(t *testing.T) (manifestV1, map[string][]byte) {
 	t.Helper()
 	raw, e := fixtureFiles.ReadFile("fixtures/v1/fixture-input-manifest.json")

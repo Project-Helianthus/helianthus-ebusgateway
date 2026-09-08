@@ -37,7 +37,7 @@ func TestPublisherBindsResolvedSubjectAndProducer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if report.Provenance.Subject.Commit != testProducerCommit || report.Provenance.Producer.Commit != testProducerCommit || report.Provenance.Producer.BuildSHA256 != testProducerSHA256 {
+			if report.Provenance.Subject.Commit != fixtureSubjectCommit || report.Provenance.Producer.Commit != testProducerCommit || report.Provenance.Producer.BuildSHA256 != testProducerSHA256 {
 				t.Fatalf("provenance: %#v", report.Provenance)
 			}
 			if report.Provenance.Subject.ArtifactSHA256 != fixtureSetDigest || report.Provenance.FixtureSetSHA256 != fixtureSetDigest {

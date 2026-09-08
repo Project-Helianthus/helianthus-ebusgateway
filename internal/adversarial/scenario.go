@@ -1,11 +1,12 @@
 package adversarial
 
 const (
-	ReportSchemaURL   = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json"
-	FixtureSchemaURL  = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json"
-	SuiteID           = "helianthus.adversarial.ADV01-04"
-	subjectRepository = "Project-Helianthus/helianthus-ebusgateway"
-	fixtureSetDigest  = "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a"
+	ReportSchemaURL      = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-report-v1.schema.json"
+	FixtureSchemaURL     = "https://raw.githubusercontent.com/Project-Helianthus/helianthus-docs-ebus/main/docs/platform/schemas/adversarial-runtime-offline-fixture-v1.schema.json"
+	SuiteID              = "helianthus.adversarial.ADV01-04"
+	subjectRepository    = "Project-Helianthus/helianthus-ebusgateway"
+	fixtureSubjectCommit = "936edbe873f35a8bad3763223dba9566154574d6"
+	fixtureSetDigest     = "d7fbe89d068b1b5c0d41fe51176d9e9263a441ee0ed752c9e8cae794f5a8346a"
 )
 
 var catalogV1 = []Definition{

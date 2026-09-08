@@ -12,7 +12,7 @@ import (
 	"sync"
 )
 
-//go:embed fixtures/v1/fixture-input-manifest.json fixtures/v1/inputs/* fixtures/v1/negative-cases.json
+//go:embed fixtures/v1/fixture-input-manifest.json fixtures/v1/inputs/* fixtures/v1/positive/* fixtures/v1/producer-build-evidence.json fixtures/v1/negative-cases.json
 var fixtureFiles embed.FS
 
 type manifestV1 struct {

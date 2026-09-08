@@ -94,11 +94,11 @@ func currentExecutableSHA256() (string, error) {
 }
 
 func (p Publisher) NewExecutor(startedAt time.Time, action FixtureAction, observer FixtureObserver) Executor {
-	return Executor{StartedAt: startedAt, Action: action, Observer: observer, producer: p.producer, subject: p.producer.Commit}
+	return Executor{StartedAt: startedAt, Action: action, Observer: observer, producer: p.producer, subject: fixtureSubjectCommit}
 }
 
 func (p Publisher) WriteReport(rawDriver []byte, report ReportV1, path string) error {
-	if p.producer == (producerIdentity{}) || report.Provenance.Producer != p.producer.wire() || report.Provenance.Subject.Commit != p.producer.Commit {
+	if p.producer == (producerIdentity{}) || report.Provenance.Producer != p.producer.wire() || report.Provenance.Subject.Commit != fixtureSubjectCommit {
 		return fmt.Errorf("%w: publisher_identity", ErrInvalidReport)
 	}
 	bound, err := BindFixtureDriverV1(rawDriver)

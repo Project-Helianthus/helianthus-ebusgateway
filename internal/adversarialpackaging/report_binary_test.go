@@ -141,7 +141,19 @@ func TestCompiledPublisherRunsOutsideCheckoutWithoutPython(t *testing.T) {
 			if err := json.Unmarshal(written, &report); err != nil {
 				t.Fatal(err)
 			}
-			if report.Provenance.Subject.Commit != expectedRevision || report.Provenance.Producer.Commit != expectedRevision || report.Provenance.Producer.BuildSHA256 != expectedDigest {
+			recordRaw, err := os.ReadFile(filepath.Join(source, "internal", "adversarial", "fixtures", "v1", "producer-build-evidence.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var record struct {
+				Source struct {
+					Commit string `json:"commit"`
+				} `json:"source"`
+			}
+			if err := json.Unmarshal(recordRaw, &record); err != nil {
+				t.Fatal(err)
+			}
+			if report.Provenance.Subject.Commit != record.Source.Commit || report.Provenance.Producer.Commit != expectedRevision || report.Provenance.Producer.BuildSHA256 != expectedDigest {
 				t.Fatalf("provenance = %#v", report.Provenance)
 			}
 		})

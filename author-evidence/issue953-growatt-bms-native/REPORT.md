@@ -74,6 +74,9 @@ the provider lifecycle. The optional-provider matrix proves fully disabled,
 TCP-only, BMS-only, and TCP+BMS paths expose Growatt only when a runtime exists.
 They also assert the exact registration/invocation matrix: disabled registers no
 Modbus tool; TCP-only core tools only; BMS-only Growatt only; TCP+BMS both.
+The lifecycle-shaped test supplies an explicit disabled concrete runtime pointer
+to the factory for both fully-disabled and TCP-only paths, proving no typed-nil
+interface can register Growatt.
 
 Final configured CI passed:
 
@@ -87,7 +90,7 @@ It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `6`, `11`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), and both declared
 gates. Transport and passive smoke were `not triggered`: this changes no eBUS
 transport topology, adapter-mux, scan, or passive runtime. CI log SHA-256:
-`7f17b2b277c6d5f6cb89877a00ea8c3dfec1ae543e4ba1de3d3ade5fdf728711`.
+`3e24b530b2db22b59e340e64e3d9b6c5799d56519092ec4b2a8d058d9bf9e99e`.
 
 ## Boundary
 

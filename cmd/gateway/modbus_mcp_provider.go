@@ -43,7 +43,10 @@ func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Pro
 	return newGatewayModbusMCPProviderWithGrowatt(adapter, nil)
 }
 
-func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, growatt mcp.GrowattBMSRS485V202Provider) mcp.ModbusV1Provider {
+// newGatewayModbusMCPProviderWithGrowatt accepts the concrete lifecycle result
+// so a disabled (*growattBMSRS485ProductionProvider)(nil) is checked before it
+// can become a non-nil optional-provider interface.
+func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider) mcp.ModbusV1Provider {
 	if adapter == nil && growatt == nil {
 		return nil
 	}

@@ -1605,6 +1605,9 @@ runtime exists. Its wrapper explicitly delegates core availability from the
 concrete TCP provider, so the four states remain disjoint: disabled registers no
 Modbus tool; TCP-only registers only core tools; BMS-only registers only the
 Growatt native tool; TCP+BMS registers both sets.
+The lifecycle factory receives the concrete runtime pointer and checks it before
+any optional-interface conversion, so a disabled typed-nil runtime cannot
+advertise the Growatt tool.
 
 The gateway exposes no public driver lifecycle `list/get/start/stop/restart`
 operation at this baseline. The control service in section 4 is the contract

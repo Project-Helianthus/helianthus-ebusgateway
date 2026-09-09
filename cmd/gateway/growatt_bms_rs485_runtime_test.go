@@ -145,10 +145,14 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 }
 
 func TestGatewayModbusMCPProviderGrowattOptionalInterfaceMatrix(t *testing.T) {
-	if provider := newGatewayModbusMCPProviderWithGrowatt(nil, nil); provider != nil {
+	// This matches runGatewayLifecycle: startGrowattBMSRS485Runtime returns a
+	// concrete nil pointer when disabled, which must not become a non-nil MCP
+	// optional-provider interface.
+	var disabledRuntime *growattBMSRS485ProductionProvider
+	if provider := newGatewayModbusMCPProviderWithGrowatt(nil, disabledRuntime); provider != nil {
 		t.Fatalf("disabled provider=%T", provider)
 	}
-	tcpOnly := newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, nil)
+	tcpOnly := newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, disabledRuntime)
 	if _, ok := tcpOnly.(mcp.GrowattBMSRS485V202Provider); ok {
 		t.Fatalf("TCP-only provider unexpectedly implements Growatt optional interface: %T", tcpOnly)
 	}

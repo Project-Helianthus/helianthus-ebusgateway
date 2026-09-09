@@ -43,6 +43,10 @@ incorrect.
   `cmd/gateway/testdata/issue469_runtime_status.golden.json`: server-level MCP
   serialization coverage for the non-empty daemon release and cached update
   result, including the deterministic `data_hash`.
+- `cmd/gateway/status_provider_test.go` and
+  `cmd/gateway/testdata/issue469_graphql_daemon_status.golden.json`: executable
+  GraphQL queries for both daemon-status aliases and field-level parity against
+  the MCP runtime-status serialization from the same fixture.
 - `docs/daemon-update-status.md`: source, cache, failure, and adapter boundary.
 
 ## Validation
@@ -51,7 +55,7 @@ Focused normal and race tests:
 
 ```text
 GOWORK=off go test -race ./internal/releasecheck ./cmd/gateway \
-  -run 'TestChecker|TestIssue469(DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison|MCPRuntimeStatusSerializesCachedDaemonReleaseGolden)' -count=1
+  -run 'TestChecker|TestIssue469(DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison|MCPRuntimeStatusSerializesCachedDaemonReleaseGolden|GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus)' -count=1
 PASS
 ```
 
@@ -61,6 +65,14 @@ RED-first run failed because the intentional golden did not yet exist; the
 GREEN run pins `firmware_version: "0.6.56"`, `updates_available: true`,
 `initiator_address: "auto"`, and data hash
 `c7c819c9732585417ab480a19b08bb4628c1c156f1a178289ea10780c3decb22`.
+
+The independent exact-HEAD review then identified the remaining GraphQL parity
+gap. The RED-first executable alias test failed while its expected public
+response was absent; the GREEN test fixes both `daemonStatus` and
+`daemon_status` at `firmwareVersion`/`firmware_version` `"0.6.56"` and
+`updatesAvailable`/`updates_available` `true`, and compares both field pairs to
+the MCP runtime-status payload from the same cached-release fixture. The MCP
+golden and its data hash are unchanged.
 
 Full repository gate, finalized implementation tree:
 

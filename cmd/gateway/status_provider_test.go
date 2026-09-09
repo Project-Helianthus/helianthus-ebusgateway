@@ -398,6 +398,85 @@ func TestIssue469MCPRuntimeStatusSerializesCachedDaemonReleaseGolden(t *testing.
 	}
 }
 
+func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
+	buildInfo := gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"}
+	updatesAvailable := func() bool { return true }
+
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetStatusProvider(newRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable))
+	graphQLHandler, err := graphql.NewHandler(builder)
+	if err != nil {
+		t.Fatalf("graphql.NewHandler() error = %v", err)
+	}
+	graphQLRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemonStatus { firmwareVersion updatesAvailable } daemon_status { firmware_version updates_available } }"}`))
+	graphQLRequest.Header.Set("Content-Type", "application/json")
+	graphQLResponse := httptest.NewRecorder()
+	graphQLHandler.ServeHTTP(graphQLResponse, graphQLRequest)
+	if graphQLResponse.Code != http.StatusOK {
+		t.Fatalf("GraphQL status = %d; want %d body=%s", graphQLResponse.Code, http.StatusOK, graphQLResponse.Body.String())
+	}
+
+	var graphQLPayload map[string]any
+	if err := json.Unmarshal(graphQLResponse.Body.Bytes(), &graphQLPayload); err != nil {
+		t.Fatalf("unmarshal GraphQL response: %v body=%s", err, graphQLResponse.Body.String())
+	}
+	if errorsValue, exists := graphQLPayload["errors"]; exists && errorsValue != nil {
+		t.Fatalf("GraphQL errors = %#v", errorsValue)
+	}
+	gotGolden, err := json.MarshalIndent(graphQLPayload, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal GraphQL response: %v", err)
+	}
+	wantGolden, err := os.ReadFile(filepath.Join("testdata", "issue469_graphql_daemon_status.golden.json"))
+	if err != nil {
+		t.Fatalf("read GraphQL daemon status golden: %v", err)
+	}
+	if string(gotGolden)+"\n" != string(wantGolden) {
+		t.Fatalf("GraphQL daemon status golden mismatch\nwant:\n%s\ngot:\n%s", wantGolden, gotGolden)
+	}
+
+	data, ok := graphQLPayload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL data = %T; want object", graphQLPayload["data"])
+	}
+	camel, ok := data["daemonStatus"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL daemonStatus = %T; want object", data["daemonStatus"])
+	}
+	snake, ok := data["daemon_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL daemon_status = %T; want object", data["daemon_status"])
+	}
+
+	mcpServer, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable))
+	mcpEnvelope := mcpCallToolEnvelope(t, mcpServer.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	mcpData, ok := mcpEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP runtime data = %T; want object", mcpEnvelope["data"])
+	}
+	mcpDaemon, ok := mcpData["daemon_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP daemon_status = %T; want object", mcpData["daemon_status"])
+	}
+
+	if got, want := camel["firmwareVersion"], mcpDaemon["firmware_version"]; got != want {
+		t.Fatalf("GraphQL daemonStatus firmwareVersion = %#v; MCP firmware_version = %#v", got, want)
+	}
+	if got, want := camel["updatesAvailable"], mcpDaemon["updates_available"]; got != want {
+		t.Fatalf("GraphQL daemonStatus updatesAvailable = %#v; MCP updates_available = %#v", got, want)
+	}
+	if got, want := snake["firmware_version"], mcpDaemon["firmware_version"]; got != want {
+		t.Fatalf("GraphQL daemon_status firmware_version = %#v; MCP firmware_version = %#v", got, want)
+	}
+	if got, want := snake["updates_available"], mcpDaemon["updates_available"]; got != want {
+		t.Fatalf("GraphQL daemon_status updates_available = %#v; MCP updates_available = %#v", got, want)
+	}
+}
+
 func TestRuntimeGatewayIdentityProviderExposesConfiguredGUID(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.InstanceGUID = "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"

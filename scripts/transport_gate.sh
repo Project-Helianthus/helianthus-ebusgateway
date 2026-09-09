@@ -56,6 +56,16 @@ requires_ebus_transport_gate() {
 # matrix. It covers the gateway's explicit RTU composition boundary and the
 # exact pinned upstream endpoint contract, without pretending an ENH/ENS/ebusd
 # result proves an unrelated serial RTU path.
+modbus_rtu_dependency_changed() {
+  local changes
+  changes="$({
+    git diff --unified=0 "${base_ref}...HEAD" -- go.mod
+    git diff --cached --unified=0 -- go.mod
+    git diff --unified=0 -- go.mod
+  } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-modbus[[:space:]]+' <<< "${changes}"
+}
+
 requires_modbus_rtu_transport_gate() {
   local file="$1"
   case "${file}" in
@@ -64,8 +74,12 @@ requires_modbus_rtu_transport_gate() {
       ;;
   esac
   case "${file}" in
-    modbus_config.go|cmd/gateway/growatt_bms_rs485_runtime.go)
+    modbus_config.go|cmd/gateway/growatt_bms_rs485_runtime.go|cmd/gateway/gateway_run_lifecycle.go)
       return 0
+      ;;
+    go.mod)
+      modbus_rtu_dependency_changed
+      return
       ;;
   esac
   return 1

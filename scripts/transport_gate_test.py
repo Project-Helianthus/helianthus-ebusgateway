@@ -124,10 +124,22 @@ class TransportGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
-    def test_modbus_rtu_gate_triggers_for_runtime_and_config(self) -> None:
-        for changed_file in ("modbus_config.go", "cmd/gateway/growatt_bms_rs485_runtime.go"):
+    def test_modbus_rtu_gate_triggers_for_composition_inputs(self) -> None:
+        go_mod_base = (
+            "module test\n\n"
+            "go 1.22\n\n"
+            "require github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+        )
+        go_mod_modified = go_mod_base.replace("v0.3.0", "v0.3.1")
+        cases = (
+            ("modbus_config.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
+            ("go.mod", go_mod_base, go_mod_modified),
+        )
+        for changed_file, base_text, modified_text in cases:
             with self.subTest(changed_file=changed_file):
-                repo_path, _ = self._create_temp_repo(changed_file)
+                repo_path, _ = self._create_temp_repo(changed_file, base_text, modified_text)
                 result = subprocess.run(
                     ["bash", "scripts/transport_gate.sh"],
                     cwd=repo_path,
@@ -140,18 +152,39 @@ class TransportGateTests(unittest.TestCase):
                 self.assertIn("Modbus RTU production conformance", result.stdout)
                 self.assertIn("Modbus RTU production composition and pinned endpoint conformance", result.stdout)
 
-    def test_modbus_rtu_gate_fails_closed_when_composition_command_fails(self) -> None:
-        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+    def test_modbus_rtu_gate_fails_closed_for_lifecycle_and_dependency_changes(self) -> None:
+        go_mod_base = "module test\n\ngo 1.22\n\nrequire github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+        cases = (
+            ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
+            ("go.mod", go_mod_base, go_mod_base.replace("v0.3.0", "v0.3.1")),
+        )
+        for changed_file, base_text, modified_text in cases:
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(changed_file, base_text, modified_text)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"],
+                    cwd=repo_path,
+                    env=self._fake_go_env(repo_path, 1),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
+
+    def test_modbus_rtu_gate_skips_unrelated_go_mod_change(self) -> None:
+        base_text = "module test\n\ngo 1.22\n\nrequire example.com/other v1.0.0\n"
+        repo_path, _ = self._create_temp_repo("go.mod", base_text, base_text.replace("v1.0.0", "v1.0.1"))
         result = subprocess.run(
             ["bash", "scripts/transport_gate.sh"],
             cwd=repo_path,
-            env=self._fake_go_env(repo_path, 1),
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
             text=True,
             capture_output=True,
             check=False,
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("transport gate: not triggered.", result.stdout)
 
     def test_transport_gate_fails_when_matrix_contains_xpass(self) -> None:
         repo_path, report_path = self._create_temp_repo(

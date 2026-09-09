@@ -84,12 +84,15 @@ disabled and BMS-only advertise no raw Modbus capability and return `404` for
 the raw route; TCP-only and TCP+BMS advertise it and route into the existing
 request validation.
 
-The repository transport gate classifies this RTU runtime/configuration path
-separately from eBUS M6a. It runs the gateway's deterministic composition
-fixtures, then the exact pinned `helianthus-modbus` RTU production tests for
-immutable correlated evidence, fault fencing/recovery, four bounded reads, and
-old-generation rejection. The gate tests prove both RTU files trigger this path
-and that a failed gateway conformance command fails closed. T01..T88 remains the
+The repository transport gate classifies this RTU production-composition path
+separately from eBUS M6a. It triggers on the RTU configuration/runtime,
+lifecycle composition wiring, and a diff that changes the exact direct
+`helianthus-modbus` selection in `go.mod`; unrelated module bumps do not
+trigger it. It runs the gateway's deterministic composition fixtures, then the
+exact pinned `helianthus-modbus` RTU production tests for immutable correlated
+evidence, fault fencing/recovery, four bounded reads, and old-generation
+rejection. The gate tests prove every composition input triggers and that failed
+lifecycle/dependency conformance commands fail closed. T01..T88 remains the
 required gate for eBUS transport/topology changes.
 
 Final configured CI passed:
@@ -101,10 +104,10 @@ PASS
 
 It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
-`6`, `13`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
+`6`, `14`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
 composition/pinned-endpoint transport gate, and the passive smoke gate. The
-Modbus RTU gate passed; passive smoke was not triggered. CI log SHA-256:
-`6f5a7459a16f0fc266dd87a3e1a70468e5f118c3633187b3812f178430fec2cb`.
+Modbus RTU gate passed; passive smoke was not triggered. Exact final CI log
+SHA-256: `ca03e307d4f1e7915c26aaa9be6370f83a1f1d3e58e2e146e6ad60a3c7db0033`.
 
 ## Boundary
 

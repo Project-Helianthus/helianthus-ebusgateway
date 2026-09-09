@@ -6,10 +6,13 @@
 - Branch: `issue/958-growatt-storage-semreg-cutover`
 - Base commit: `32244901c4c8337266cd348bdad90fb9e8eb0a61`
 - Base tree: `0a850d5646d46f5782b1396d72a3d93bffa6974e`
+- Implementation HEAD: `df1d96b18bcb30fa6b92426c359d5aa762a21869`
+- Implementation tree: `08a88a50950044b4defd056ff25dbdb2457aa4d3`
 - Dependency pins: SemReg `f3f761bc67e10d6a65eba6c13cb4dc51002d6955`; docs-semantic mapping `f830ace6c2b9dd1af0e87ce808fa545662578418`.
 
-The final local commit is the branch head returned with this report. Its exact
-tree is recorded by Git in the commit object; no remote mutation was performed.
+This report is committed immediately after the implementation commit so it can
+record its exact immutable HEAD and tree without a self-reference. No remote
+mutation was performed.
 
 ## Delivered behavior
 

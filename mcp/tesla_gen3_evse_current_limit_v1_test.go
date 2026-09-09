@@ -166,7 +166,7 @@ func TestTeslaGen3EVSECurrentLimitV1ToolListSchemaAndOrder(t *testing.T) {
 	baselineCount := len(server.tools)
 	RegisterModbusV1Tools(server, teslaGen3EVSECurrentLimitV1Fixture{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
 	newTools := server.tools[baselineCount:]
-	if len(newTools) != 4 || newTools[0].Name != ModbusV1RawReadTool || newTools[1].Name != ModbusV1ProfileObservationGetTool || newTools[2].Name != ModbusV1CanonicalPVGetTool || newTools[3].Name != TeslaGen3EVSECurrentLimitV1GetTool {
+	if len(newTools) != 4 || newTools[0].Name != ModbusV1RawReadTool || newTools[1].Name != ModbusV1ProfileObservationGetTool || newTools[2].Name != SemanticV1PVCurrentGetTool || newTools[3].Name != TeslaGen3EVSECurrentLimitV1GetTool {
 		t.Fatalf("new tool order = %#v", newTools)
 	}
 	response := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})

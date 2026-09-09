@@ -29,11 +29,6 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 		sort.Strings(cfg.M2MGraphQL.AllowedAssets)
 		return nil
 	})
-	fs.Func("m2m-graphql-known-assets", "comma-separated assets known independently of retained snapshots", func(value string) error {
-		cfg.M2MGraphQL.KnownAssets = normalizeEEBusList(value, false)
-		sort.Strings(cfg.M2MGraphQL.KnownAssets)
-		return nil
-	})
 	fs.Func("m2m-graphql-denied-principals", "comma-separated SHA-256 client certificate fingerprints", func(value string) error {
 		cfg.M2MGraphQL.DeniedPrincipalFingerprints = normalizeEEBusList(value, true)
 		sort.Strings(cfg.M2MGraphQL.DeniedPrincipalFingerprints)
@@ -46,5 +41,5 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.PortalPV.M2MCAFile, "portal-pv-m2m-ca", cfg.PortalPV.M2MCAFile, "M2M GraphQL CA file for Portal PV")
 	fs.StringVar(&cfg.PortalPV.M2MClientCert, "portal-pv-m2m-client-cert", cfg.PortalPV.M2MClientCert, "M2M GraphQL client certificate for Portal PV")
 	fs.StringVar(&cfg.PortalPV.M2MClientKey, "portal-pv-m2m-client-key", cfg.PortalPV.M2MClientKey, "M2M GraphQL client private key for Portal PV")
-	fs.StringVar(&cfg.PortalPV.AssetRef, "portal-pv-asset-ref", cfg.PortalPV.AssetRef, "fixed canonical PV asset reference for Portal PV")
+	fs.StringVar(&cfg.PortalPV.AssetRef, "portal-pv-asset-ref", cfg.PortalPV.AssetRef, "fixed SemReg PV asset reference for Portal PV")
 }

@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 )
 
 type portalRawReadProvider struct {
@@ -37,10 +36,6 @@ func (provider *portalRawReadProvider) RawRead(_ context.Context, request mcp.Mo
 func (*portalRawReadProvider) ProfileObservation(context.Context, string, string) (mcp.ModbusProfileObservationResult, error) {
 	return mcp.ModbusProfileObservationResult{}, errors.New("not used")
 }
-func (*portalRawReadProvider) CanonicalPV(context.Context, string, string) (mcp.ModbusCanonicalPVResult, error) {
-	return mcp.ModbusCanonicalPVResult{Snapshot: pv.Snapshot{}}, errors.New("not used")
-}
-
 func TestPortalPVAndRawModbusRoutesAreClosedAndDisabledByDefault(t *testing.T) {
 	handler := NewHandler(Options{})
 	for _, request := range []*http.Request{
@@ -61,7 +56,7 @@ func TestPortalPVForwardsClosedM2MEnvelopeAndRawReadUsesMCPEnvelope(t *testing.T
 	handler := NewHandler(Options{
 		SemanticPVEnabled: true,
 		SemanticPV: func(context.Context) (ForwardedResponse, error) {
-			return ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: []byte(`{"data":{"m2mCurrentSnapshot":{"contractId":"PUBLIC_GRAPHQL_M2M_V1"}}}`)}, nil
+			return ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: []byte(`{"data":{"semanticPVCurrent":{"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"}}}}}`)}, nil
 		},
 		RawModbusEnabled: true,
 		ModbusProvider:   provider,
@@ -72,7 +67,7 @@ func TestPortalPVForwardsClosedM2MEnvelopeAndRawReadUsesMCPEnvelope(t *testing.T
 
 	pvResponse := httptest.NewRecorder()
 	handler.ServeHTTP(pvResponse, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/pv/current", nil))
-	if pvResponse.Code != http.StatusOK || pvResponse.Body.String() != `{"data":{"m2mCurrentSnapshot":{"contractId":"PUBLIC_GRAPHQL_M2M_V1"}}}` {
+	if pvResponse.Code != http.StatusOK || pvResponse.Body.String() != `{"data":{"semanticPVCurrent":{"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"}}}}}` {
 		t.Fatalf("semantic PV response=%d %s", pvResponse.Code, pvResponse.Body.String())
 	}
 

@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -19,7 +20,6 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
-	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 )
 
 type m2mGraphQLRuntime struct {
@@ -84,27 +84,18 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	for _, asset := range config.M2MGraphQL.AllowedAssets {
 		allowed[asset] = struct{}{}
 	}
-	known := make(map[string]struct{}, len(config.M2MGraphQL.KnownAssets))
-	for _, asset := range config.M2MGraphQL.KnownAssets {
-		known[asset] = struct{}{}
-	}
 	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
 		AllowedAssets: allowed,
-		AssetExists: func(asset string) bool {
-			if _, ok := known[asset]; ok {
-				return true
-			}
+		SemanticPVCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
 			if adapter == nil {
-				return false
+				return nil, false
 			}
-			_, _, ok := adapter.CanonicalPVSnapshotByAsset(asset)
-			return ok
-		},
-		SnapshotByAssetAt: func(_ context.Context, asset string) (pv.Snapshot, time.Time, bool) {
-			if adapter == nil {
-				return pv.Snapshot{}, time.Time{}, false
+			current, ok := adapter.SemanticPVCurrentByAsset(asset)
+			if !ok {
+				return nil, false
 			}
-			return adapter.CanonicalPVSnapshotByAsset(asset)
+			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+			return encoded, err == nil
 		},
 	})
 	if err != nil {

@@ -1546,7 +1546,7 @@ code that is not connected to that composition stays unavailable.
 |---|---|---|
 | eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`; B503 adds five read-only evidence/session views. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
-| Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, qualified canonical PV read, and the existing qualify/refresh worker. | Read-only. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
+| Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, and one qualified/promoted `helianthus.pack.pv@1.0.0` SemReg projection through the existing qualify/refresh worker. | Read-only. The projection preserves admitted native observation and counter continuity evidence; generated energy is exact Wh-to-kWh with `counter_continuity_unavailable` as a declared projection loss. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
 | Huawei SmartLogger/EMMA/S-Dongle, Growatt Protocol II and BMS RS485, OutBack AXS, Fronius-specific status, Tesla FC100/WC/current-limit optional tools | Typed read/injected-provider contracts exist in the repository, but the production `gatewayModbusMCPProvider` does not implement their optional provider interfaces. | `unavailable` or `uncomposed` at this baseline. Later INT-07 composition must use exact qualified profile/version evidence. No write is inferred from a decoder, fixture, or provisional ACK/readback record. |
 | Gree CAN and Growatt CAN | No production provider is composed by this gateway baseline. | `unavailable` here. Receive-only registry readiness remains native evidence, not a gateway operation or transmit grant. |
@@ -1591,7 +1591,7 @@ contract are:
   remain unavailable without the exact write authorization, mutation-lab
   profile, and optional native mutation interface.
 - Modbus production composition: `modbus.v1.raw.read`,
-  `modbus.v1.profile.observation.get`, `modbus.v1.semantic.pv.get`, and
+  `modbus.v1.profile.observation.get`, `semantic.v1.pv.current.get`, and
   `modbus.v1.tesla.hsc.status.get`. Only FC03/FC04 raw reads are admitted; the
   Tesla status is an inert disabled-profile report with outbound disabled.
 
@@ -1641,9 +1641,11 @@ Exact public source anchors for these statements:
    accounting, and persistent runtime-state behavior at their owning revisions.
 2. Add the runtime control service internally. Adapt only `ebus.primary` first,
    preserving current `DriverManager` behavior and stable public APIs.
-3. Publish semreg facts/capabilities in shadow mode beside current eBUS and PV
-   donors. Compare value, unit, dimensions, quality, freshness, provenance,
-   identity, availability, and explicit loss over the same fixtures/replays.
+3. The migrated Modbus PV capability publishes one evaluated
+   `helianthus.pack.pv@1.0.0` SemReg projection to MCP, dedicated M2M GraphQL,
+   and Portal. Its fixture/replay evidence covers value, unit, dimensions,
+   quality, freshness, provenance, identity, availability, and explicit loss;
+   it has no shadow, comparator, fallback, or dual-publication path.
 4. Adapt eeBUS without weakening the runtime-slot drain/close boundary or pairing
    state. Adapt Modbus without adding a second scheduler/reconnect owner.
 5. Connect each remaining native family only after its provider issue supplies an

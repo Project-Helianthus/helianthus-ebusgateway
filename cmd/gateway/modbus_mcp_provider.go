@@ -15,7 +15,6 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -33,7 +32,10 @@ type modbusMCPAdapter interface {
 	ExecuteReadWithReconnect(context.Context, modbusadapter.ReadPlan) (modbus.TCPReadBatch, error)
 	ProfileObservation(string, string) (modbusadapter.ProfileObservationRecord, bool)
 	SunSpecQualificationObservation(string, string) (modbusreg.SunSpecQualificationObservation, []byte, bool)
-	CanonicalPVSnapshot(string, string) (pv.Snapshot, time.Time, bool)
+}
+
+type semanticPVAdapter interface {
+	SemanticPVCurrent(string, string) (modbusadapter.SemanticPVCurrent, bool)
 }
 
 func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Provider {
@@ -131,15 +133,19 @@ func (provider *gatewayModbusMCPProvider) ProfileObservation(_ context.Context, 
 	return sunSpecQualificationObservationResult(qualification, encoded)
 }
 
-func (provider *gatewayModbusMCPProvider) CanonicalPV(_ context.Context, profileID, sampleID string) (mcp.ModbusCanonicalPVResult, error) {
+func (provider *gatewayModbusMCPProvider) SemanticPVCurrent(_ context.Context, profileID, sampleID string) (mcp.SemanticPVCurrentResult, error) {
 	if provider == nil || provider.adapter == nil || profileID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
-		return mcp.ModbusCanonicalPVResult{}, errors.New("canonical PV observation unavailable")
+		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
 	}
-	snapshot, producedAt, ok := provider.adapter.CanonicalPVSnapshot(profileID, sampleID)
+	adapter, supported := provider.adapter.(semanticPVAdapter)
+	if !supported {
+		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV adapter unavailable")
+	}
+	current, ok := adapter.SemanticPVCurrent(profileID, sampleID)
 	if !ok {
-		return mcp.ModbusCanonicalPVResult{}, errors.New("canonical PV observation unavailable")
+		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
 	}
-	return mcp.ModbusCanonicalPVResult{Snapshot: snapshot, ProducedAt: producedAt.Format(time.RFC3339Nano)}, nil
+	return mcp.SemanticPVCurrentResult{Data: map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection}, Evaluated: string(current.Evaluation.Context.EvaluatedAt.UnixNanoseconds)}, nil
 }
 
 // TeslaHSCV1 exposes only the disabled-by-default profile state. It does not

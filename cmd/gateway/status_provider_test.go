@@ -335,6 +335,32 @@ func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
 	}
 }
 
+func TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison(t *testing.T) {
+	var cacheReads atomic.Int32
+	updatesAvailable := func() bool {
+		cacheReads.Add(1)
+		return true
+	}
+	buildInfo := gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"}
+	graphQLProvider := newRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable)
+	mcpProvider := newMCPRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable)
+
+	graphQLDaemon := graphQLProvider.DaemonStatus()
+	mcpDaemon := mcpProvider.DaemonStatus()
+	if graphQLDaemon.FirmwareVersion != buildInfo.ReleaseVersion || mcpDaemon.FirmwareVersion != buildInfo.ReleaseVersion {
+		t.Fatalf("daemon firmware GraphQL/MCP = %q/%q; want embedded release %q", graphQLDaemon.FirmwareVersion, mcpDaemon.FirmwareVersion, buildInfo.ReleaseVersion)
+	}
+	if !graphQLDaemon.UpdatesAvailable || !mcpDaemon.UpdatesAvailable {
+		t.Fatalf("daemon updates GraphQL/MCP = %v/%v; want cached true", graphQLDaemon.UpdatesAvailable, mcpDaemon.UpdatesAvailable)
+	}
+	if cacheReads.Load() != 2 {
+		t.Fatalf("cached comparison reads = %d; want one per status provider call", cacheReads.Load())
+	}
+	if got := graphQLProvider.AdapterStatus().UpdatesAvailable; got {
+		t.Fatal("adapter updatesAvailable changed without an authoritative adapter catalogue")
+	}
+}
+
 func TestRuntimeGatewayIdentityProviderExposesConfiguredGUID(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.InstanceGUID = "4d9336aa-f125-4f12-8b07-fcd18dbfcb10"

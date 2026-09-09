@@ -16,6 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -26,6 +27,13 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	resolvedBuildInfo, err := prepareGatewayRunConfig(&cfg)
 	if err != nil {
 		return err
+	}
+	// Release discovery is a public, read-only background task. Both status
+	// APIs receive the same cache-only reader below; their request handlers do
+	// not trigger or wait for this network operation.
+	daemonReleaseChecker := releasecheck.New(releasecheck.Options{CurrentVersion: resolvedBuildInfo.ReleaseVersion})
+	if cfg.HTTPAddr != "" {
+		daemonReleaseChecker.Start(ctx)
 	}
 
 	evidenceRuntime, err := openSynchronizedEvidenceRuntime(cfg.EvidenceRecorderConfig)
@@ -449,7 +457,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 
 	semanticRuntime := graphql.WireSemantic(builder, gateway.Router, hub)
 	portalSemanticProvider := wireEEBusPromotedSemanticGraphQL(ctx, builder, semanticRuntime.Provider(), eebusAdapter)
-	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
+	builder.SetStatusProvider(newRuntimeStatusProviderForBuild(semanticRuntime.Provider(), liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable))
 	semanticRuntime.SetBootLiveTimeout(cfg.BootLiveTimeout)
 	semanticRuntime.Start(ctx)
 	if busObservability != nil && semanticRuntime.Provider() != nil {
@@ -516,7 +524,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, ebusDriver,
+			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -789,7 +797,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		cfg.ScanSource = overrideSource
 		cfg.ScanSourceAuto = false
 	}
-	builder.SetStatusProvider(newRuntimeStatusProvider(semanticRuntime.Provider(), liveAdmittedEBusSource))
+	builder.SetStatusProvider(newRuntimeStatusProviderForBuild(semanticRuntime.Provider(), liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable))
 	syncStaticAdmittedSource, syncStaticAdmitted := admittedMutationSourceForGateway(cfg, admissionPath, overrideSet)
 	if syncStaticAdmitted {
 		builder.SetAdmittedMutationSource(syncStaticAdmittedSource)

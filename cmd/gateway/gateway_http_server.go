@@ -36,6 +36,7 @@ func startHTTPServer(
 	ebusProxyReadiness func() string,
 	ebusSourceProvider func() (byte, bool),
 	buildInfo gatewayBuildInfo,
+	daemonUpdatesAvailable func() bool,
 	ebusDriver *ebusDriverController,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
@@ -105,7 +106,7 @@ func startHTTPServer(
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProvider(semanticProvider, ebusSourceProvider))
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}

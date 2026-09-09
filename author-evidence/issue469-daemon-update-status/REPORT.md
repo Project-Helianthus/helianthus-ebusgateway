@@ -1,0 +1,85 @@
+# Issue #469 author checkpoint: daemon update status
+
+## Scope and base
+
+- Repository: `Project-Helianthus/helianthus-ebusgateway`
+- Issue: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/469
+- Exact base: `008023cdf1c290067c5bd9f058dc10785608c3f5`
+- Branch: `issue/469-daemon-update-status`
+
+## Delivered daemon contract
+
+GraphQL daemon status (including the existing camelCase and snake_case aliases)
+and `ebus.v1.runtime.status.get` now expose the already validated embedded
+`gatewayBuildInfo.ReleaseVersion` as `firmwareVersion`.
+
+`internal/releasecheck` is a bounded, injectable background cache. It requests
+the newest successful public `push` workflow run on add-on `main` for
+`build.yml`, validates that run, and reads `helianthus/config.json` through the
+GitHub contents API at that exact immutable `head_sha`. It compares versions
+with `golang.org/x/mod/semver`. It does not consult a moving `main` file or a
+GitHub Release tag.
+
+The HTTP client, clock, refresh interval, response size, and request timeout
+are injectable. Refresh is single-flight and rate-limited. Before a successful
+comparison the status fails closed to `false`; a failed later refresh retains
+the previous successful result. GraphQL and MCP status calls only read that
+cache and never issue network requests.
+
+The adapter result remains `updatesAvailable=false`. There is no public
+adapter catalogue proving a latest compatible firmware for its model, hardware
+revision, and bootloader, so comparing it to the add-on version would be
+incorrect.
+
+## Files
+
+- `internal/releasecheck/checker.go`: public-build discovery, exact-SHA config
+  retrieval, semantic comparison, cache, and bounded background refresh.
+- `internal/releasecheck/checker_test.go`: fake HTTP/clock semantic, exact-SHA,
+  failure-retention, request-free status, and concurrency coverage.
+- `cmd/gateway/status_provider.go` and composition: shared cached release state
+  in GraphQL and MCP providers.
+- `docs/daemon-update-status.md`: source, cache, failure, and adapter boundary.
+
+## Validation
+
+Focused normal and race tests:
+
+```text
+GOWORK=off go test -race ./internal/releasecheck ./cmd/gateway \
+  -run 'TestChecker|TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison' -count=1
+PASS
+```
+
+Full repository gate, finalized implementation tree:
+
+```text
+GOWORK=off ./scripts/ci_local.sh
+PASS
+```
+
+The complete local CI passed terminology and source-selection gates, gofmt,
+portal Node tests (93 passed), asset verification, vet, native and Linux 32-bit
+builds, full Go race tests, canonical PV SemReg shadow, schema coverage, Python
+script tests, golangci-lint (0 issues), and the non-applicable transport and
+passive-smoke gates.
+
+## Gates and residual risk
+
+- Documentation gate: satisfied by `docs/daemon-update-status.md`.
+- Transport gate: not triggered; no transport or protocol behavior changed.
+- Runtime/smoke gate: not triggered; this is public read-only release metadata
+  and no device or add-on action was performed.
+- Hosted checks and fresh independent review: pending the linked PR.
+
+The remaining risk is the availability or contract stability of GitHub's public
+API. The checker is bounded, fails closed before its first valid result, and
+preserves a previously valid comparison during a refresh failure.
+
+## Author return boundary
+
+No credentials, downloads, installations, deployments, add-on edits, or device
+actions were performed. The adapter catalogue criterion remains open. This
+checkpoint stops after commit, push, linked PR creation, and local evidence;
+review, feedback resolution, merge, and issue closure remain with the Delivery
+Lead.

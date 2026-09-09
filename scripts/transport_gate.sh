@@ -51,6 +51,42 @@ requires_transport_gate() {
   return 1
 }
 
+# M2M SemReg PV listener configuration does not alter a protocol transport,
+# topology, acquisition, or runtime admission. Keep the 88-case transport gate
+# for all other config.go changes.
+semreg_pv_config_only() {
+  local changes line trimmed
+  changes="$({
+    git diff --unified=0 "${base_ref}...HEAD" -- config.go
+    git diff --cached --unified=0 -- config.go
+    git diff --unified=0 -- config.go
+  } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+  [[ -n "${changes}" ]] || return 1
+	while IFS= read -r line; do
+		trimmed="${line#"${line%%[![:space:]]*}"}"
+		trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+		if [[ "${trimmed}" == "}" ]]; then
+			continue
+		fi
+		case "${trimmed}" in
+			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
+			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
+			"KnownAssets                 []string"|\
+			"len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0"|\
+			"len(config.DeniedPrincipalFingerprints) == 0"|\
+			"known := make(map[string]struct{}, len(config.KnownAssets))"|\
+			"for _, asset := range config.KnownAssets {"|\
+			"if _, allowed := assets[asset]; !allowed {"|\
+			"return errors.New(\"M2M GraphQL configuration contains a known asset outside the allowlist\")"|\
+			"if _, duplicate := known[asset]; duplicate {"|\
+			"return errors.New(\"M2M GraphQL configuration contains a duplicate known asset\")"|\
+			"known[asset] = struct{}{}") ;;
+      *) return 1 ;;
+    esac
+  done <<< "${changes}"
+  return 0
+}
+
 cmd_gateway_main_requires_transport_gate() {
   python3 - "$base_ref" <<'PY'
 from __future__ import annotations
@@ -170,6 +206,9 @@ while IFS= read -r file; do
     fi
     requires_gate=1
     break
+  fi
+  if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
+    continue
   fi
   if requires_transport_gate "${file}"; then
     requires_gate=1

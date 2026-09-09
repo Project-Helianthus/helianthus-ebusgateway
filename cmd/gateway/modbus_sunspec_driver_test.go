@@ -59,8 +59,8 @@ func TestModbusSunSpecDriverRefreshesOnlyAfterSuccessfulQualification(t *testing
 			producer.result = modbusadapter.SunSpecQualificationResult{Outcome: modbusadapter.SunSpecQualificationGO}
 			producer.err = nil
 			poll(2)
-			// The producer's real retention test proves Refresh is non-retaining;
-			// this checks that the concrete driver always selects that operation.
+			// The producer's real retention test proves Refresh retains bounded
+			// current evidence; this checks that the concrete driver selects it.
 			poll(3)
 			producer.err = transportErr
 			poll(4)

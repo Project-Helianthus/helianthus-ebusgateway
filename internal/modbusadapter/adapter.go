@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
-	pv "github.com/Project-Helianthus/helianthus-ebusreg/pv"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
 // Endpoint is the public Modbus TCP runtime surface used by the gateway.
@@ -37,10 +39,9 @@ type Dialer func(context.Context, string, string) (net.Conn, error)
 
 // Config contains the already-validated bounded runtime configuration.
 type Config struct {
-	Enabled           bool
-	Endpoint          modbus.TCPEndpointConfig
-	DialTimeout       time.Duration
-	CanonicalPVShadow CanonicalPVShadowConfig
+	Enabled     bool
+	Endpoint    modbus.TCPEndpointConfig
+	DialTimeout time.Duration
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -71,13 +72,21 @@ type Adapter struct {
 	profileMu       sync.RWMutex
 	profiles        map[string]ProfileObservationRecord
 	qualifications  map[string]sunSpecQualificationRecord
-	currentPV       map[string]canonicalPVCurrentRecord
-	canonicalPV     *CanonicalPVMapper
-	canonicalShadow *canonicalPVSemRegShadow
-	started         time.Time
+	refreshEvidence map[string]sunSpecQualificationRecord
+	refreshOrder    []string
+	semanticPV      *pvPublicationCore
+	pvSourceEpoch   semreg.SourceEpochID
+	startedWall     time.Time
+	startedMono     time.Time
+	wallNow         func() time.Time
+	monotonicNow    func() time.Time
 }
 
 const maxRetainedProfileObservations = 32
+
+// Refresh evidence has its own bounded lifecycle. Terminal qualification
+// observations retain their existing capacity and identity contract.
+const maxRetainedSunSpecRefreshEvidence = 32
 
 // ProfileObservationRecord retains one exact registry-owned observation and
 // the evidence labels supplied by its future detector/poller owner.
@@ -90,15 +99,16 @@ type ProfileObservationRecord struct {
 type sunSpecQualificationRecord struct {
 	observation modbusreg.SunSpecQualificationObservation
 	encoded     []byte
-	canonical   pv.Snapshot
-	producedAt  time.Time
 }
 
-// canonicalPVCurrentRecord is the replaceable semantic publication for one
-// asset. It is deliberately independent from retained qualification evidence.
-type canonicalPVCurrentRecord struct {
-	canonical  pv.Snapshot
-	producedAt time.Time
+// SemanticPVCurrent is the immutable, evaluated SemReg projection shared by
+// every enabled consumer. It contains no transport operation authority.
+type SemanticPVCurrent struct {
+	Snapshot   semreg.Snapshot
+	Canonical  []byte
+	Evaluation semreg.EvaluationView
+	Selections []semreg.Selection
+	Projection projection.ProjectionReport
 }
 
 // Start constructs and connects one endpoint. Disabled configuration is inert.
@@ -114,19 +124,9 @@ func Start(
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
 	}
-	if err := config.CanonicalPVShadow.Validate(); err != nil {
-		return nil, err
-	}
-	canonicalMapper, err := NewCanonicalPVMapper()
+	semanticPV, err := newPVPublicationCore()
 	if err != nil {
-		return nil, fmt.Errorf("construct canonical PV mapper: %w", err)
-	}
-	var canonicalShadow *canonicalPVSemRegShadow
-	if config.CanonicalPVShadow.Mode == CanonicalPVShadowModeSemReg {
-		canonicalShadow, err = newCanonicalPVSemRegShadow()
-		if err != nil {
-			return nil, fmt.Errorf("construct canonical PV SemReg shadow: %w", err)
-		}
+		return nil, fmt.Errorf("construct SemReg PV publication: %w", err)
 	}
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {
@@ -157,6 +157,9 @@ func Start(
 			endpoint.Close(),
 		)
 	}
+	processStarted := time.Now()
+	startedWall := processStarted.UTC()
+	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+startedWall.Format(time.RFC3339Nano)))
 	return &Adapter{
 		endpoint:        endpoint,
 		connection:      handle,
@@ -165,10 +168,13 @@ func Start(
 		dial:            dial,
 		profiles:        make(map[string]ProfileObservationRecord),
 		qualifications:  make(map[string]sunSpecQualificationRecord),
-		currentPV:       make(map[string]canonicalPVCurrentRecord),
-		canonicalPV:     canonicalMapper,
-		canonicalShadow: canonicalShadow,
-		started:         time.Now(),
+		refreshEvidence: make(map[string]sunSpecQualificationRecord),
+		semanticPV:      semanticPV,
+		pvSourceEpoch:   semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
+		startedWall:     startedWall,
+		startedMono:     processStarted,
+		wallNow:         time.Now,
+		monotonicNow:    time.Now,
 	}, nil
 }
 
@@ -400,8 +406,9 @@ func (adapter *Adapter) RecordProfileObservation(record ProfileObservationRecord
 }
 
 // RecordSunSpecQualificationObservation first proves deterministic
-// serialization, then retains one immutable terminal registry observation.
-// The shared bound covers legacy profile observations as well.
+// serialization, then stages one immutable terminal registry observation before
+// publishing the snapshot that cites it. The shared bound covers legacy profile
+// observations as well.
 func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbusreg.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
@@ -431,35 +438,12 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	if len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
-	evaluated := time.Since(adapter.started)
-	if evaluated < 0 || adapter.canonicalPV == nil {
-		return errors.New("canonical PV mapper unavailable")
-	}
-	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
-	if err != nil {
-		return fmt.Errorf("map canonical PV observation: %w", err)
-	}
-	producedAt := time.Now().UTC()
-	var shadow canonicalPVSemRegShadowRecord
-	if adapter.canonicalShadow != nil {
-		shadow, err = adapter.canonicalShadow.apply(observation, encoded, canonical, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds()))
-		if err != nil {
-			// A shadow is diagnostic-only. It cannot prevent the established
-			// legacy retention path from retaining a qualified observation.
-			shadow = canonicalPVSemRegShadowRecord{}
-			adapter.canonicalShadow.lastFailure = err.Error()
-		} else {
-			adapter.canonicalShadow.lastFailure = ""
-		}
-	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{
-		observation: observation, encoded: append([]byte(nil), encoded...), canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
+		observation: observation, encoded: append([]byte(nil), encoded...),
 	}
-	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
-		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
-	}
-	if shadow.assetRef != "" {
-		adapter.canonicalShadow.records[key] = shadow
+	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
+		delete(adapter.qualifications, key)
+		return err
 	}
 	return nil
 }
@@ -475,131 +459,224 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 	if adapter.closed {
 		return errors.New("modbus TCP adapter is closed")
 	}
-	encoded, err := json.Marshal(observation)
-	if err != nil {
-		return fmt.Errorf("serialize current SunSpec observation: %w", err)
-	}
 	adapter.profileMu.Lock()
 	defer adapter.profileMu.Unlock()
-	evaluated := time.Since(adapter.started)
-	if evaluated < 0 || adapter.canonicalPV == nil {
-		return errors.New("canonical PV mapper unavailable")
+	return adapter.publishSemanticPV(observation)
+}
+
+// RecordSunSpecCurrentObservation retains immutable native evidence for a
+// publishable refresh. It commits the evidence only with a successful SemReg
+// publication. Capacity is validated against the prospective global SemReg
+// state, so a replacement may release its superseded evidence atomically.
+func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.SunSpecQualificationObservation) error {
+	if adapter == nil {
+		return errors.New("modbus TCP adapter unavailable")
 	}
-	producedAt := time.Now().UTC()
-	// The legacy mapper owns the public compatibility state. Map and retain its
-	// valid result before attempting the diagnostic-only SemReg shadow.
-	canonical, err := adapter.canonicalPV.Map(observation, encoded, pv.MonotonicNanos(evaluated.Nanoseconds()))
+	adapter.connectionMu.RLock()
+	defer adapter.connectionMu.RUnlock()
+	if adapter.closed {
+		return errors.New("modbus TCP adapter is closed")
+	}
+	encoded, err := json.Marshal(observation)
 	if err != nil {
-		return fmt.Errorf("map current canonical PV observation: %w", err)
+		return fmt.Errorf("serialize SunSpec current observation: %w", err)
 	}
-	if adapter.canonicalShadow != nil {
-		// Rejecting the shadow keeps its last accepted state, but never blocks a
-		// valid legacy public update.
-		if _, shadowErr := adapter.canonicalShadow.apply(observation, encoded, canonical, producedAt, pv.MonotonicNanos(evaluated.Nanoseconds())); shadowErr != nil {
-			adapter.canonicalShadow.lastFailure = shadowErr.Error()
+	capability, sampleID := observation.Capability().ProfileID(), observation.SampleID()
+	if capability == "" || sampleID == "" {
+		return errors.New("SunSpec current observation identity is incomplete")
+	}
+	key := capability + "\x00" + sampleID
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
+	if existing, ok := adapter.refreshEvidence[key]; ok {
+		if !bytes.Equal(existing.encoded, encoded) {
+			return errors.New("SunSpec current observation identity collision")
+		}
+		return adapter.publishSemanticPV(observation)
+	}
+	// Install the exact record before building the SemReg candidate. The core
+	// validates its prospective all-asset reference set before it publishes; a
+	// rejected candidate rolls this provisional record back without a revision.
+	adapter.refreshEvidence[key] = sunSpecQualificationRecord{
+		observation: observation,
+		encoded:     append([]byte(nil), encoded...),
+	}
+	adapter.refreshOrder = append(adapter.refreshOrder, key)
+	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
+		delete(adapter.refreshEvidence, key)
+		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
+		return err
+	}
+	// A successful replacement can retire old candidate evidence. Pruning only
+	// after commit preserves every digest referenced by the newly public view.
+	adapter.pruneSunSpecRefreshEvidenceLocked(adapter.semanticPV.currentSunSpecObservationDigests())
+	return nil
+}
+
+func sunSpecObservationDigest(encoded []byte) string {
+	return "sha256:" + pvCoreHash("pv-observation", encoded)
+}
+
+func (adapter *Adapter) pruneSunSpecRefreshEvidenceLocked(referenced map[string]bool) {
+	kept := adapter.refreshOrder[:0]
+	for _, key := range adapter.refreshOrder {
+		record := adapter.refreshEvidence[key]
+		if referenced[sunSpecObservationDigest(record.encoded)] {
+			kept = append(kept, key)
 		} else {
-			adapter.canonicalShadow.lastFailure = ""
+			delete(adapter.refreshEvidence, key)
 		}
 	}
-	if adapter.currentPV == nil {
-		adapter.currentPV = make(map[string]canonicalPVCurrentRecord)
+	adapter.refreshOrder = kept
+}
+
+// validateSunSpecRefreshEvidenceLocked verifies the prospective public
+// references before the publication core assigns its staged kernel/current
+// pair. profileMu must be held by the caller.
+func (adapter *Adapter) validateSunSpecRefreshEvidenceLocked(referenced map[string]bool) error {
+	available := make(map[string]bool, len(adapter.qualifications)+len(adapter.refreshEvidence))
+	for _, record := range adapter.qualifications {
+		available[sunSpecObservationDigest(record.encoded)] = true
 	}
-	adapter.currentPV[canonical.AssetRef] = canonicalPVCurrentRecord{
-		canonical: cloneCanonicalPVSnapshot(canonical), producedAt: producedAt,
+	for _, record := range adapter.refreshEvidence {
+		available[sunSpecObservationDigest(record.encoded)] = true
+	}
+	for digest := range referenced {
+		if !available[digest] {
+			return errors.New("SunSpec current evidence reference is unavailable")
+		}
+	}
+	protected := 0
+	for _, record := range adapter.refreshEvidence {
+		if referenced[sunSpecObservationDigest(record.encoded)] {
+			protected++
+		}
+	}
+	if protected > maxRetainedSunSpecRefreshEvidence {
+		return errors.New("SunSpec current evidence retention capacity would exceed bound")
 	}
 	return nil
 }
 
-func (adapter *Adapter) CanonicalPVSnapshot(profileID, sampleID string) (pv.Snapshot, time.Time, bool) {
-	if adapter == nil {
-		return pv.Snapshot{}, time.Time{}, false
+func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {
+	return adapter.publishSemanticPVWithValidation(observation, nil)
+}
+
+func (adapter *Adapter) publishSemanticPVWithEvidenceValidation(observation modbusreg.SunSpecQualificationObservation) error {
+	return adapter.publishSemanticPVWithValidation(observation, func(assetID semreg.AssetID, snapshot semreg.Snapshot) error {
+		referenced := adapter.semanticPV.currentSunSpecObservationDigestsLocked(assetID, &snapshot)
+		return adapter.validateSunSpecRefreshEvidenceLocked(referenced)
+	})
+}
+
+func (adapter *Adapter) publishSemanticPVWithValidation(observation modbusreg.SunSpecQualificationObservation, validate pvPublicationValidator) error {
+	if adapter.semanticPV == nil {
+		return errors.New("SemReg PV publication unavailable")
 	}
-	adapter.profileMu.RLock()
-	defer adapter.profileMu.RUnlock()
-	record, ok := adapter.qualifications[profileID+"\x00"+sampleID]
+	context, err := adapter.semanticPVReadContext()
+	if err != nil {
+		return err
+	}
+	lifecycle := pvPublicationLifecycle{
+		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: "1",
+		sourceStartedAt: pvPublicationWall(adapter.startedWall), receivedAt: context.EvaluatedAt,
+		receiptMonotonic: context.EvaluateMonotonic, evaluatedAt: context.EvaluatedAt,
+		evaluateMonotonic: context.EvaluateMonotonic,
+	}
+	draft, err := buildPVPublicationDraft(observation, lifecycle)
+	if err != nil {
+		return fmt.Errorf("build SemReg PV publication: %w", err)
+	}
+	if _, err := adapter.semanticPV.ingestWithValidation(draft, validate); err != nil {
+		return fmt.Errorf("publish SemReg PV observation: %w", err)
+	}
+	return nil
+}
+
+// SemanticPVCurrentByAsset returns the one evaluated SemReg projection. It
+// never triggers Modbus I/O, republishes, or exposes write authority.
+func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCurrent, bool) {
+	if adapter == nil || assetRef == "" || adapter.semanticPV == nil {
+		return SemanticPVCurrent{}, false
+	}
+	// Detach one exact published snapshot first. Capturing the read context
+	// before this point would allow a concurrent refresh to install a receipt
+	// later than that context, making an otherwise healthy read unavailable.
+	view, err := adapter.semanticPV.publicView(semreg.AssetID(assetRef))
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err := adapter.semanticPVReadContext()
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err = clampSemanticPVReadWall(context, view.wallFloor)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	view, err = adapter.semanticPV.evaluatePublicView(view, context)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+// clampSemanticPVReadWall prevents a rolled-back wall clock from preceding
+// the immutable snapshot selected for this read. It changes only the wall
+// coordinate; monotonic elapsed time remains the current trusted read clock.
+func clampSemanticPVReadWall(context semreg.EvaluationContext, floor semreg.TimePoint) (semreg.EvaluationContext, error) {
+	if err := floor.Validate(); err != nil {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall floor is invalid")
+	}
+	if context.EvaluatedAt.ClockID != floor.ClockID {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall clock is incompatible")
+	}
+	current, currentErr := strconv.ParseInt(string(context.EvaluatedAt.UnixNanoseconds), 10, 64)
+	minimum, minimumErr := strconv.ParseInt(string(floor.UnixNanoseconds), 10, 64)
+	if currentErr != nil || minimumErr != nil {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall clock is invalid")
+	}
+	if current < minimum {
+		context.EvaluatedAt = floor
+	}
+	return context, nil
+}
+
+func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error) {
+	if adapter == nil || adapter.startedWall.IsZero() || adapter.startedMono.IsZero() {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is unavailable")
+	}
+	wallClock, monotonicClock := time.Now, time.Now
+	if adapter.wallNow != nil {
+		wallClock = adapter.wallNow
+	}
+	if adapter.monotonicNow != nil {
+		monotonicClock = adapter.monotonicNow
+	}
+	wall := wallClock().UTC()
+	if wall.Before(adapter.startedWall) {
+		wall = adapter.startedWall
+	}
+	elapsed := monotonicClock().Sub(adapter.startedMono)
+	if elapsed < 0 {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
+	}
+	return semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(wall), EvaluateMonotonic: pvPublicationMonotonic(elapsed)}, nil
+}
+
+func (adapter *Adapter) SemanticPVCurrent(profileID, sampleID string) (SemanticPVCurrent, bool) {
+	if adapter == nil || profileID != modbusreg.SunSpecThreePhaseMonitoringCapabilityID {
+		return SemanticPVCurrent{}, false
+	}
+	observation, _, ok := adapter.SunSpecQualificationObservation(profileID, sampleID)
 	if !ok {
-		return pv.Snapshot{}, time.Time{}, false
+		return SemanticPVCurrent{}, false
 	}
-	return cloneCanonicalPVSnapshot(record.canonical), record.producedAt, true
-}
-
-// CanonicalPVSnapshotByAsset returns the retained canonical snapshot selected
-// by its public asset reference. It deliberately exposes no source transport
-// or qualification identity and always returns a detached value.
-func (adapter *Adapter) CanonicalPVSnapshotByAsset(assetRef string) (pv.Snapshot, time.Time, bool) {
-	if adapter == nil || assetRef == "" {
-		return pv.Snapshot{}, time.Time{}, false
+	identity, _, err := resolvePVPublicationIdentity(observation)
+	if err != nil {
+		return SemanticPVCurrent{}, false
 	}
-	adapter.profileMu.RLock()
-	defer adapter.profileMu.RUnlock()
-	var match *sunSpecQualificationRecord
-	for _, record := range adapter.qualifications {
-		if record.canonical.AssetRef == assetRef {
-			if match != nil {
-				return pv.Snapshot{}, time.Time{}, false
-			}
-			copy := record
-			match = &copy
-		}
-	}
-	if match != nil {
-		current, currentOK := adapter.currentPV[assetRef]
-		if !currentOK {
-			return cloneCanonicalPVSnapshot(match.canonical), match.producedAt, true
-		}
-		if adapter.canonicalPV == nil {
-			return cloneCanonicalPVSnapshot(current.canonical), current.producedAt, true
-		}
-		evaluated := time.Since(adapter.started)
-		if evaluated < 0 {
-			return pv.Snapshot{}, time.Time{}, false
-		}
-		snapshot, err := adapter.canonicalPV.Snapshot(assetRef, pv.MonotonicNanos(evaluated.Nanoseconds()))
-		if err != nil {
-			return pv.Snapshot{}, time.Time{}, false
-		}
-		return cloneCanonicalPVSnapshot(snapshot), current.producedAt, true
-	}
-	return pv.Snapshot{}, time.Time{}, false
-}
-
-func cloneCanonicalPVSnapshot(source pv.Snapshot) pv.Snapshot {
-	clone := source
-	clone.Facts = make(map[pv.FactKey]pv.Fact, len(source.Facts))
-	for key, fact := range source.Facts {
-		if fact.Value.Decimal != nil {
-			value := *fact.Value.Decimal
-			fact.Value.Decimal = &value
-		}
-		fact.Value.Symbols = append([]string(nil), fact.Value.Symbols...)
-		if fact.Continuity != nil {
-			continuity := *fact.Continuity
-			if continuity.Delta != nil {
-				value := *continuity.Delta
-				continuity.Delta = &value
-			}
-			if continuity.Modulus != nil {
-				value := *continuity.Modulus
-				continuity.Modulus = &value
-			}
-			fact.Continuity = &continuity
-		}
-		clone.Facts[key] = fact
-	}
-	clone.Origins = make(map[pv.Digest]pv.Provenance, len(source.Origins))
-	for key, value := range source.Origins {
-		clone.Origins[key] = value
-	}
-	clone.RequestedOutputs = append([]pv.RequestedOutput(nil), source.RequestedOutputs...)
-	clone.ProjectionReport = make([]pv.Projection, len(source.ProjectionReport))
-	for index, projection := range source.ProjectionReport {
-		if projection.Dimensions != nil {
-			dimensions := *projection.Dimensions
-			projection.Dimensions = &dimensions
-		}
-		clone.ProjectionReport[index] = projection
-	}
-	return clone
+	return adapter.SemanticPVCurrentByAsset("pv-asset-" + pvCoreRawHash(identity)[:32])
 }
 
 // ProfileObservation returns one immutable retained sample by exact identity.
@@ -628,47 +705,12 @@ func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID stri
 	defer adapter.profileMu.RUnlock()
 	record, ok := adapter.qualifications[profileID+"\x00"+sampleID]
 	if !ok {
+		record, ok = adapter.refreshEvidence[profileID+"\x00"+sampleID]
+	}
+	if !ok {
 		return modbusreg.SunSpecQualificationObservation{}, nil, false
 	}
 	return record.observation, append([]byte(nil), record.encoded...), true
-}
-
-// CanonicalPVSemRegShadow returns a detached internal comparison record. No
-// public output or consumer reads this diagnostic-only shadow state.
-func (adapter *Adapter) CanonicalPVSemRegShadow(profileID, sampleID string) (CanonicalPVSemRegShadowSnapshot, bool) {
-	if adapter == nil {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	adapter.profileMu.RLock()
-	defer adapter.profileMu.RUnlock()
-	if adapter.canonicalShadow == nil {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	record, ok := adapter.canonicalShadow.records[profileID+"\x00"+sampleID]
-	if !ok {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	snapshot, err := record.detachedSnapshot()
-	return snapshot, err == nil
-}
-
-// CanonicalPVSemRegCurrentShadow returns the detached latest internal shadow
-// for an asset. It cannot select or alter a public consumer output.
-func (adapter *Adapter) CanonicalPVSemRegCurrentShadow(assetRef string) (CanonicalPVSemRegShadowSnapshot, bool) {
-	if adapter == nil || assetRef == "" {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	adapter.profileMu.RLock()
-	defer adapter.profileMu.RUnlock()
-	if adapter.canonicalShadow == nil || adapter.canonicalShadow.byAsset == nil {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	asset := adapter.canonicalShadow.byAsset[assetRef]
-	if asset == nil || asset.current.assetRef == "" {
-		return CanonicalPVSemRegShadowSnapshot{}, false
-	}
-	snapshot, err := asset.current.detachedSnapshot()
-	return snapshot, err == nil
 }
 
 // Cancel delegates cancellation to the endpoint owner.
@@ -704,11 +746,6 @@ func (adapter *Adapter) Close() error {
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
-		adapter.profileMu.Lock()
-		if adapter.canonicalShadow != nil {
-			adapter.canonicalShadow.close()
-		}
-		adapter.profileMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
 	})
 	return adapter.closeErr

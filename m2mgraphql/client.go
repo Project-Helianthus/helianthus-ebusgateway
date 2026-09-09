@@ -71,9 +71,10 @@ func (client *Client) Current(ctx context.Context) (Response, error) {
 	if client == nil || client.http == nil {
 		return Response{}, errors.New("M2M GraphQL client unavailable")
 	}
+	operation, query, contract := "SemanticPVCurrent", semanticPVFixedQuery, semanticPVContractID
 	body, err := json.Marshal(map[string]any{
-		"operationName": "M2MCurrentSnapshot", "query": fixedQuery,
-		"variables": map[string]any{"request": map[string]string{"contractId": contractID, "assetRef": client.asset}},
+		"operationName": operation, "query": query,
+		"variables": map[string]any{"request": map[string]string{"contractId": contract, "assetRef": client.asset}},
 	})
 	if err != nil {
 		return Response{}, err

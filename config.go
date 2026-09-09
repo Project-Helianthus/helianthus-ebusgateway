@@ -96,7 +96,7 @@ type EEBusConfig struct {
 	PairingWindowMode  EEBusPairingWindowMode
 }
 
-// M2MGraphQLConfig configures the dedicated public canonical-PV listener.
+// M2MGraphQLConfig configures the dedicated public SemReg PV listener.
 // An all-zero value is disabled. Any partially populated value is rejected by
 // the command runtime rather than being silently enabled.
 type M2MGraphQLConfig struct {
@@ -106,7 +106,6 @@ type M2MGraphQLConfig struct {
 	ServerCertFile              string
 	ServerKeyFile               string
 	AllowedAssets               []string
-	KnownAssets                 []string
 	DeniedPrincipalFingerprints []string
 }
 
@@ -188,7 +187,7 @@ func (cfg Config) ValidatePortalPV() error {
 func (config M2MGraphQLConfig) Disabled() bool {
 	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
 		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
-		len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0
+		len(config.DeniedPrincipalFingerprints) == 0
 }
 
 func (config M2MGraphQLConfig) Validate() error {
@@ -209,16 +208,6 @@ func (config M2MGraphQLConfig) Validate() error {
 			return errors.New("M2M GraphQL configuration contains a duplicate allowed asset")
 		}
 		assets[asset] = struct{}{}
-	}
-	known := make(map[string]struct{}, len(config.KnownAssets))
-	for _, asset := range config.KnownAssets {
-		if _, allowed := assets[asset]; !allowed {
-			return errors.New("M2M GraphQL configuration contains a known asset outside the allowlist")
-		}
-		if _, duplicate := known[asset]; duplicate {
-			return errors.New("M2M GraphQL configuration contains a duplicate known asset")
-		}
-		known[asset] = struct{}{}
 	}
 	for _, fingerprint := range config.DeniedPrincipalFingerprints {
 		decoded, err := hex.DecodeString(fingerprint)

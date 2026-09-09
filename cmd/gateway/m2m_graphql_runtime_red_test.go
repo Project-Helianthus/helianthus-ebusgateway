@@ -132,7 +132,6 @@ func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
 		"-m2m-graphql-server-cert=/run/secrets/server.pem",
 		"-m2m-graphql-server-key=/run/secrets/server-key.pem",
 		"-m2m-graphql-allowed-assets=pv-b,pv-a",
-		"-m2m-graphql-known-assets=pv-a",
 		"-m2m-graphql-denied-principals=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	})
 	if err != nil {
@@ -141,31 +140,27 @@ func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
 	got := cfg.M2MGraphQL
 	if got.ListenAddr != "127.0.0.1:8443" || got.ServerName != "m2m.gateway.test" ||
 		got.ClientCAFile != "/run/secrets/client-ca.pem" || got.ServerCertFile != "/run/secrets/server.pem" ||
-		got.ServerKeyFile != "/run/secrets/server-key.pem" || len(got.AllowedAssets) != 2 || got.AllowedAssets[0] != "pv-a" || len(got.KnownAssets) != 1 || got.KnownAssets[0] != "pv-a" ||
+		got.ServerKeyFile != "/run/secrets/server-key.pem" || len(got.AllowedAssets) != 2 || got.AllowedAssets[0] != "pv-a" ||
 		len(got.DeniedPrincipalFingerprints) != 1 || got.DeniedPrincipalFingerprints[0] != strings.Repeat("a", 64) {
 		t.Fatalf("M2M GraphQL flag config=%+v", got)
 	}
 }
 
-func TestM2MGraphQLRuntime_KnownAssetWithoutSnapshotReturnsSourceUnavailable(t *testing.T) {
+func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailable(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
 		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
-		AllowedAssets: []string{"pv-asset-known"}, KnownAssets: []string{"pv-asset-known"},
+		AllowedAssets: []string{"pv-asset-known"},
 	}}
 	runtime, err := newM2MGraphQLRuntime(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	query, err := os.ReadFile("../../m2mgraphql/testdata/public-graphql-m2m-v1.query.graphql")
-	if err != nil {
-		t.Fatal(err)
-	}
 	body, err := json.Marshal(map[string]any{
-		"operationName": "M2MCurrentSnapshot", "query": string(query),
-		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_M2M_V1", "assetRef": "pv-asset-known"}},
+		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }",
+		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "assetRef": "pv-asset-known"}},
 	})
 	if err != nil {
 		t.Fatal(err)

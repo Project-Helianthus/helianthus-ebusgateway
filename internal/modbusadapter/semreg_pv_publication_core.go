@@ -533,29 +533,10 @@ func (c *pvPublicationCore) ingestWithOrder(draft pvPublicationDraft, order *pvP
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
-	selections := make([]semreg.Selection, 0, len(snapshot.Facts))
-	for _, envelope := range snapshot.Facts {
-		selectable, err := pvHasSelectableCandidate(envelope, evaluation)
-		if err != nil {
-			return pvPublicationReceipt{}, err
-		}
-		if !selectable {
-			// The immutable evaluation remains part of the public view, but a
-			// stale/unavailable retained field has no presentation selection.
-			// It must not abort fresh fields from the same qualified poll.
-			continue
-		}
-		selection, err := c.selection.SelectPresentation(snapshot, evaluation, envelope.Key, pvSelectionPolicyID, pvSelectionPolicyVersion)
-		if err != nil {
-			return pvPublicationReceipt{}, err
-		}
-		selections = append(selections, selection)
+	selections, err := pvPresentationSelections(c.selection, snapshot, evaluation)
+	if err != nil {
+		return pvPublicationReceipt{}, err
 	}
-	sort.Slice(selections, func(i, j int) bool {
-		left, _ := semreg.CanonicalJSON(selections[i].Key)
-		right, _ := semreg.CanonicalJSON(selections[j].Key)
-		return bytes.Compare(left, right) < 0
-	})
 	report, err := projection.Project(snapshot, detached.manifest, detached.requested, detached.dispositions, nil)
 	if err != nil {
 		return pvPublicationReceipt{}, err
@@ -586,6 +567,32 @@ func pvHasSelectableCandidate(envelope semreg.FactEnvelope, evaluation semreg.Ev
 	return false, nil
 }
 
+func pvPresentationSelections(selection *semreg.SelectionKernel, snapshot semreg.Snapshot, evaluation semreg.EvaluationView) ([]semreg.Selection, error) {
+	selections := make([]semreg.Selection, 0, len(snapshot.Facts))
+	for _, envelope := range snapshot.Facts {
+		selectable, err := pvHasSelectableCandidate(envelope, evaluation)
+		if err != nil {
+			return nil, err
+		}
+		if !selectable {
+			// The immutable evaluation remains public, but a stale/unavailable
+			// field has no current presentation selection.
+			continue
+		}
+		selected, err := selection.SelectPresentation(snapshot, evaluation, envelope.Key, pvSelectionPolicyID, pvSelectionPolicyVersion)
+		if err != nil {
+			return nil, err
+		}
+		selections = append(selections, selected)
+	}
+	sort.Slice(selections, func(i, j int) bool {
+		left, _ := semreg.CanonicalJSON(selections[i].Key)
+		right, _ := semreg.CanonicalJSON(selections[j].Key)
+		return bytes.Compare(left, right) < 0
+	})
+	return selections, nil
+}
+
 func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationView, error) {
 	if c == nil {
 		return pvPublicationView{}, errors.New("PV publication core is unavailable")
@@ -597,6 +604,25 @@ func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationVie
 		return pvPublicationView{}, errors.New("PV publication state is unavailable")
 	}
 	return asset.current.detached()
+}
+
+// publicViewAt keeps the persisted snapshot byte-identical while recomputing
+// read-time freshness and its presentation selections at the supplied clock.
+func (c *pvPublicationCore) publicViewAt(assetID semreg.AssetID, context semreg.EvaluationContext) (pvPublicationView, error) {
+	view, err := c.publicView(assetID)
+	if err != nil {
+		return pvPublicationView{}, err
+	}
+	evaluation, err := semreg.EvaluateSnapshot(view.snapshot, context)
+	if err != nil {
+		return pvPublicationView{}, err
+	}
+	selections, err := pvPresentationSelections(c.selection, view.snapshot, evaluation)
+	if err != nil {
+		return pvPublicationView{}, err
+	}
+	view.evaluation, view.selections = evaluation, selections
+	return view, nil
 }
 
 func (c *pvPublicationCore) currentForValidation(assetID semreg.AssetID) (pvPublicationView, error) {

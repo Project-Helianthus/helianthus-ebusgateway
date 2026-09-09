@@ -73,7 +73,10 @@ type Adapter struct {
 	qualifications map[string]sunSpecQualificationRecord
 	semanticPV     *pvPublicationCore
 	pvSourceEpoch  semreg.SourceEpochID
-	started        time.Time
+	startedWall    time.Time
+	startedMono    time.Time
+	wallNow        func() time.Time
+	monotonicNow   func() time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -147,8 +150,9 @@ func Start(
 			endpoint.Close(),
 		)
 	}
-	started := time.Now().UTC()
-	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+started.Format(time.RFC3339Nano)))
+	processStarted := time.Now()
+	startedWall := processStarted.UTC()
+	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+startedWall.Format(time.RFC3339Nano)))
 	return &Adapter{
 		endpoint:       endpoint,
 		connection:     handle,
@@ -159,7 +163,10 @@ func Start(
 		qualifications: make(map[string]sunSpecQualificationRecord),
 		semanticPV:     semanticPV,
 		pvSourceEpoch:  semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
-		started:        started,
+		startedWall:    startedWall,
+		startedMono:    processStarted,
+		wallNow:        time.Now,
+		monotonicNow:   time.Now,
 	}, nil
 }
 
@@ -451,16 +458,15 @@ func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualifica
 	if adapter.semanticPV == nil {
 		return errors.New("SemReg PV publication unavailable")
 	}
-	now := time.Now().UTC()
-	elapsed := time.Since(adapter.started)
-	if elapsed < 0 {
-		return errors.New("SemReg PV publication clock is invalid")
+	context, err := adapter.semanticPVReadContext()
+	if err != nil {
+		return err
 	}
 	lifecycle := pvPublicationLifecycle{
 		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: "1",
-		sourceStartedAt: pvPublicationWall(adapter.started), receivedAt: pvPublicationWall(now),
-		receiptMonotonic: pvPublicationMonotonic(elapsed), evaluatedAt: pvPublicationWall(now),
-		evaluateMonotonic: pvPublicationMonotonic(elapsed),
+		sourceStartedAt: pvPublicationWall(adapter.startedWall), receivedAt: context.EvaluatedAt,
+		receiptMonotonic: context.EvaluateMonotonic, evaluatedAt: context.EvaluatedAt,
+		evaluateMonotonic: context.EvaluateMonotonic,
 	}
 	draft, err := buildPVPublicationDraft(observation, lifecycle)
 	if err != nil {
@@ -478,11 +484,37 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	if adapter == nil || assetRef == "" || adapter.semanticPV == nil {
 		return SemanticPVCurrent{}, false
 	}
-	view, err := adapter.semanticPV.publicView(semreg.AssetID(assetRef))
+	context, err := adapter.semanticPVReadContext()
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	view, err := adapter.semanticPV.publicViewAt(semreg.AssetID(assetRef), context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error) {
+	if adapter == nil || adapter.startedWall.IsZero() || adapter.startedMono.IsZero() {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is unavailable")
+	}
+	wallClock, monotonicClock := time.Now, time.Now
+	if adapter.wallNow != nil {
+		wallClock = adapter.wallNow
+	}
+	if adapter.monotonicNow != nil {
+		monotonicClock = adapter.monotonicNow
+	}
+	wall := wallClock().UTC()
+	if wall.Before(adapter.startedWall) {
+		wall = adapter.startedWall
+	}
+	elapsed := monotonicClock().Sub(adapter.startedMono)
+	if elapsed < 0 {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
+	}
+	return semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(wall), EvaluateMonotonic: pvPublicationMonotonic(elapsed)}, nil
 }
 
 func (adapter *Adapter) SemanticPVCurrent(profileID, sampleID string) (SemanticPVCurrent, bool) {

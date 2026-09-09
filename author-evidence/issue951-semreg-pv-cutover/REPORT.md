@@ -122,6 +122,28 @@ PASS
 The remediation CI log SHA-256 is
 `6a25722cd88b5f84aa6fd23170311af906d9387654d3f20bbec8267ce5bf2cd4`.
 
+## Read-time freshness and clock remediation
+
+The subsequent review found that the immutable snapshot was being served with
+its ingestion-time evaluation. Public `SemanticPVCurrent` reads now construct a
+trusted read-time wall/monotonic evaluation context, run SemReg
+`EvaluateSnapshot` again, and rebuild presentation selections without mutating
+the snapshot bytes, ID, revisions, candidates, or projection report. MCP and
+M2M GraphQL both obtain this re-evaluated view through the same adapter getter.
+
+The adapter retains a private monotonic-bearing process start separately from
+the UTC wall start. Publication and read contexts use elapsed monotonic time;
+wall time is converted to a UTC `TimePoint` separately and is not allowed to
+precede the recorded source start. The wall-adjustment regression proves a
+backward wall correction cannot invalidate a monotonic-valid publication.
+
+Deterministic adapter coverage proves a single immutable PV snapshot is
+observed as fresh, then stale, then expired at successive public reads, and
+that stale/expired candidates have no presentation selection. It also proves
+the canonical bytes and SnapshotID remain unchanged. Focused normal/race tests
+and final configured CI passed; the final log SHA-256 is
+`779a356df4fdc85fb884c89a3fa19acfe691a390dd2c9b2262897880804f9145`.
+
 The implementation commit is `a2bab01ae713caf2225625bf1d150f20755c5a37`;
 the current branch includes this report and is open as
 https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/956. No merge

@@ -395,12 +395,67 @@ func TestAdapterPublishesOneSemRegPVProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:adapter-test", started: time.Now().Add(-time.Second)}
+	started := time.Now().Add(-time.Second)
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:adapter-test", startedWall: started.UTC(), startedMono: started, wallNow: time.Now, monotonicNow: time.Now}
 	if err := adapter.publishSemanticPV(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := adapter.SemanticPVCurrentByAsset("pv-asset-5c57adba3ad8a529617c1f8627ae32f1"); !ok {
 		t.Fatal("missing public SemReg projection")
+	}
+}
+
+func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, current := time.Now(), time.Now()
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:read-time", startedWall: started.UTC(), startedMono: started}
+	adapter.wallNow = func() time.Time { return current }
+	adapter.monotonicNow = func() time.Time { return current }
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	asset := "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+	fresh, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok || pvCoreCurrentFreshness(t, fresh.Snapshot, fresh.Evaluation, "pv.ac.frequency") != semreg.FreshnessFresh {
+		t.Fatalf("initial current view=%+v ok=%t", fresh.Evaluation, ok)
+	}
+	current = started.Add(31 * time.Second)
+	stale, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok || pvCoreCurrentFreshness(t, stale.Snapshot, stale.Evaluation, "pv.ac.frequency") != semreg.FreshnessStale || pvCoreHasSelection(stale.Selections, pvCoreEnvelope(t, stale.Snapshot, "pv.ac.frequency").Key) {
+		t.Fatalf("stale read view=%+v selections=%+v ok=%t", stale.Evaluation, stale.Selections, ok)
+	}
+	current = started.Add(301 * time.Second)
+	expired, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok || pvCoreCurrentFreshness(t, expired.Snapshot, expired.Evaluation, "pv.ac.frequency") != semreg.FreshnessExpired || pvCoreHasSelection(expired.Selections, pvCoreEnvelope(t, expired.Snapshot, "pv.ac.frequency").Key) {
+		t.Fatalf("expired read view=%+v selections=%+v ok=%t", expired.Evaluation, expired.Selections, ok)
+	}
+	if !bytes.Equal(fresh.Canonical, stale.Canonical) || !bytes.Equal(stale.Canonical, expired.Canonical) || fresh.Snapshot.SnapshotID != expired.Snapshot.SnapshotID {
+		t.Fatal("read-time freshness mutated the immutable SemReg snapshot")
+	}
+}
+
+func TestAdapterPVClockUsesMonotonicElapsedAcrossWallAdjustment(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	wallAdjusted := time.Unix(started.Unix()-3600, 0)
+	monotonicAdvanced := started.Add(time.Minute)
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:clock", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return wallAdjusted }, monotonicNow: func() time.Time { return monotonicAdvanced }}
+	context, err := adapter.semanticPVReadContext()
+	if err != nil {
+		t.Fatalf("wall adjustment invalidated monotonic context: %v", err)
+	}
+	if context.EvaluatedAt.UnixNanoseconds != semreg.Int64(strconv.FormatInt(started.UTC().UnixNano(), 10)) || context.EvaluateMonotonic.Nanoseconds != "60000000000" {
+		t.Fatalf("wall-adjusted context=%+v", context)
+	}
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
+		t.Fatalf("wall adjustment blocked valid publication: %v", err)
 	}
 }
 
@@ -538,6 +593,19 @@ func pvCoreEnvelope(t *testing.T, snapshot semreg.Snapshot, factID semreg.Defini
 	}
 	t.Fatalf("missing fact envelope %s", factID)
 	return semreg.FactEnvelope{}
+}
+
+func pvCoreCurrentFreshness(t *testing.T, snapshot semreg.Snapshot, view semreg.EvaluationView, factID semreg.DefinitionID) semreg.Freshness {
+	t.Helper()
+	envelope := pvCoreEnvelope(t, snapshot, factID)
+	if len(envelope.Candidates) != 1 {
+		t.Fatalf("fact %s candidates=%d", factID, len(envelope.Candidates))
+	}
+	freshness, ok := pvCoreEvaluatedFreshness(view, envelope.Candidates[0].CandidateID)
+	if !ok {
+		t.Fatalf("fact %s has no evaluated candidate", factID)
+	}
+	return freshness
 }
 
 func pvCoreEvaluatedFreshness(view semreg.EvaluationView, candidateID semreg.CandidateID) (semreg.Freshness, bool) {

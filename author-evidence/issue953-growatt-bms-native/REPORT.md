@@ -110,7 +110,10 @@ gateway failures, and endpoint conformance failures fail closed. The gate tests
 prove every composition input triggers, every such trigger fails closed for a
 failed command, a `main.go` runtime change runs both the eBUS and RTU gates,
 and a partial endpoint inventory is rejected. T01..T88 remains the required
-gate for eBUS transport/topology changes.
+gate for eBUS transport/topology changes. The documented owner override requires
+both its exact token and a scope/residual-risk reason; when present, it clears
+every active gate in that invocation, including both gates activated by
+`main.go`. No override was used for this issue's CI evidence.
 
 Final configured CI passed:
 
@@ -133,8 +136,9 @@ and independent review log SHA-256 is
 The isolated `GOWORK=off go test -race -count=1 ./internal/adaptermux` rerun
 passed in `114.416s`; no causal claim is made. A temporary diagnostic test
 patch was saved outside this repository and restored before the clean run; it
-is not part of this PR. The fresh non-concurrent full CI run passed with log
-SHA-256 `c2be033d199d457f77789ecd32105b87ddff6714da397aede6e5e4a14d7c5466`.
+is not part of this PR. The latest fresh non-concurrent full CI run, with no
+owner override, passed with log SHA-256
+`ca2b0d7ae495fc66a1a30c128e3fa91d913f13a54cf2e52ae55e37f5e458f02e`.
 
 ## Boundary
 

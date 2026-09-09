@@ -312,13 +312,17 @@ if [[ "${requires_ebus_gate}" -eq 0 && "${requires_modbus_rtu_gate}" -eq 0 ]]; t
   exit 0
 fi
 
-if [[ "${requires_ebus_gate}" -eq 1 && "${TRANSPORT_GATE_OWNER_OVERRIDE:-}" == "OVERRIDE_TRANSPORT_GATE_BY_OWNER" ]]; then
+if [[ "${TRANSPORT_GATE_OWNER_OVERRIDE:-}" == "OVERRIDE_TRANSPORT_GATE_BY_OWNER" ]]; then
   if [[ -z "${TRANSPORT_GATE_OWNER_REASON:-}" ]]; then
     echo "transport gate override requires TRANSPORT_GATE_OWNER_REASON."
     exit 1
   fi
   echo "transport gate: owner override active (${TRANSPORT_GATE_OWNER_REASON})."
+  # A documented owner override is scope-specific but applies to the current
+  # gate invocation as a whole: main.go can activate both eBUS and RTU gates.
   requires_ebus_gate=0
+  requires_modbus_rtu_gate=0
+  exit 0
 fi
 
 if [[ "${requires_ebus_gate}" -eq 1 ]]; then

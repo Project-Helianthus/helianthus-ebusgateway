@@ -139,6 +139,54 @@ class TransportGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
+    def test_modbus_rtu_only_owner_override_clears_gate(self) -> None:
+        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(
+                TRANSPORT_GATE_BASE_REF="HEAD",
+                TRANSPORT_GATE_OWNER_OVERRIDE="OVERRIDE_TRANSPORT_GATE_BY_OWNER",
+                TRANSPORT_GATE_OWNER_REASON="test RTU scope and residual risk",
+            ),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("owner override active (test RTU scope and residual risk)", result.stdout)
+
+    def test_combined_main_owner_override_clears_both_gates(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
+            modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
+        )
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(
+                TRANSPORT_GATE_BASE_REF="HEAD",
+                TRANSPORT_GATE_OWNER_OVERRIDE="OVERRIDE_TRANSPORT_GATE_BY_OWNER",
+                TRANSPORT_GATE_OWNER_REASON="test combined scope and residual risk",
+            ),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("owner override active (test combined scope and residual risk)", result.stdout)
+
+    def test_modbus_rtu_owner_override_requires_reason(self) -> None:
+        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(
+                TRANSPORT_GATE_BASE_REF="HEAD",
+                TRANSPORT_GATE_OWNER_OVERRIDE="OVERRIDE_TRANSPORT_GATE_BY_OWNER",
+            ),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("override requires TRANSPORT_GATE_OWNER_REASON", result.stdout)
+
     def test_transport_gate_fails_for_cmd_gateway_main_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

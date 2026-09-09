@@ -174,27 +174,27 @@ type growattBMSRS485ProductionProvider struct {
 	have    bool
 }
 
-func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
+func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
 	if provider == nil || provider.runtime == nil || provider.session == nil {
-		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, errors.New("growatt BMS RTU production provider unavailable")
+		return mcp.GrowattBMSRS485V202Observation{}, errors.New("growatt BMS RTU production provider unavailable")
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	if err := provider.session.recover(ctx); err != nil {
-		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, err
+		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
 	provider.session.begin()
 	status, err := provider.runtime.GrowattBMSRS485V202(ctx)
 	if err != nil {
-		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, err
+		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
 	provider.next++
 	evidence, err := provider.session.complete(fmt.Sprintf("%s:%s:%d:%d", provider.session.sourceID, provider.session.sourceEpoch, provider.session.driverGeneration, provider.next), provider.next)
 	if err != nil {
-		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, err
+		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
 	provider.last, provider.have = evidence, true
-	return status, nil
+	return mcp.GrowattBMSRS485V202Observation{Status: status, ReceiptWall: evidence.ReceiptWall}, nil
 }
 
 func (provider *growattBMSRS485ProductionProvider) LastObservationEvidence() (GrowattBMSRS485ObservationEvidence, bool) {

@@ -110,19 +110,34 @@ class TransportGateTests(unittest.TestCase):
             base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
             modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
         )
+        env = self._fake_go_env(repo_path, 0)
+        env["TRANSPORT_MATRIX_REPORT"] = str(report_path)
         result = subprocess.run(
             ["bash", "scripts/transport_gate.sh"],
             cwd=repo_path,
-            env=self._script_env(
-                TRANSPORT_GATE_BASE_REF="HEAD",
-                TRANSPORT_MATRIX_REPORT=str(report_path),
-            ),
+            env=env,
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("transport gate: PASS", result.stdout)
+        self.assertIn("Modbus RTU production conformance", result.stdout)
+
+    def test_transport_gate_main_fails_closed_for_rtu_conformance(self) -> None:
+        repo_path, report_path = self._create_temp_repo(
+            "cmd/gateway/main.go",
+            base_text="package main\n\nfunc main() {\n\ttransportProtocol := \"ens\"\n\t_ = transportProtocol\n}\n",
+            modified_text="package main\n\nfunc main() {\n\ttransportProtocol := \"udp-plain\"\n\t_ = transportProtocol\n}\n",
+        )
+        env = self._fake_go_env(repo_path, 1)
+        env["TRANSPORT_MATRIX_REPORT"] = str(report_path)
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=env,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
     def test_transport_gate_fails_for_cmd_gateway_main_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(
@@ -419,6 +434,26 @@ class TransportGateTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("transport gate: not triggered.", result.stdout)
+
+    def test_modbus_rtu_gate_ignores_test_only_adaptermux_change(self) -> None:
+        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+        adapter_test = repo_path / "internal" / "adaptermux" / "connection_health_test.go"
+        adapter_test.parent.mkdir(parents=True)
+        adapter_test.write_text("package adaptermux\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(adapter_test.relative_to(repo_path))], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "adapter test base"], cwd=repo_path, check=True, capture_output=True, text=True)
+        adapter_test.write_text("package adaptermux\n// deterministic test only\n", encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._fake_go_env(repo_path, 0),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Modbus RTU production conformance", result.stdout)
+        self.assertNotIn("AD01..AD12", result.stdout)
 
     def test_config_only_exemption_rejects_nonstructural_brace_line(self) -> None:
         repo_path, _ = self._create_temp_repo(

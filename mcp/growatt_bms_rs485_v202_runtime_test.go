@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -70,6 +71,10 @@ func TestGrowattBMSRS485V202RuntimeFailsClosedAtMCPBoundary(t *testing.T) {
 	r := msp06Call(t, s.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{})
 	if !r.isError || r.envelope["data"] != nil || len(session.calls) != 2 {
 		t.Fatalf("result/calls=%#v/%#v", r, session.calls)
+	}
+	meta := msp06Map(t, r.envelope["meta"], "meta")
+	if consistency := msp06Map(t, meta["consistency"], "consistency"); consistency["mode"] != "RETAINED_PROFILE" || meta["data_timestamp"] != "" {
+		t.Fatalf("failure meta=%#v", meta)
 	}
 }
 
@@ -163,8 +168,12 @@ type growattBMSRS485CorelessProvider struct{ growattBMSRS485RuntimeProvider }
 
 func (growattBMSRS485CorelessProvider) ModbusV1CoreAvailable() bool { return false }
 
-func (provider growattBMSRS485RuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
-	return provider.runtime.GrowattBMSRS485V202(ctx)
+func (provider growattBMSRS485RuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (GrowattBMSRS485V202Observation, error) {
+	status, err := provider.runtime.GrowattBMSRS485V202(ctx)
+	if err != nil {
+		return GrowattBMSRS485V202Observation{}, err
+	}
+	return GrowattBMSRS485V202Observation{Status: status, ReceiptWall: time.Unix(1_800_000_000, 456).UTC()}, nil
 }
 
 type growattBMSRS485RuntimeSessionFake struct {

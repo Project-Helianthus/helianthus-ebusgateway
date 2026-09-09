@@ -293,6 +293,7 @@ while IFS= read -r file; do
       continue
     fi
     requires_ebus_gate=1
+    requires_modbus_rtu_gate=1
     continue
   fi
   if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
@@ -356,6 +357,9 @@ adapter_direct_touched=0
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
   case "${file}" in
+    internal/adaptermux/*_test.go)
+      continue
+      ;;
     internal/adaptermux/*.go)
       adapter_direct_touched=1
       break

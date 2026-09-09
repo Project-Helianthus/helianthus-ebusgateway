@@ -1639,6 +1639,12 @@ qualified the typed status. A partial read, malformed or mismatched response,
 stale/fenced endpoint, mixed transport generation, or changed clock epoch
 returns no status and commits no envelope. `outbound_allowed` remains false.
 
+A successful on-demand `modbus.v1.growatt.bms.rs485.status.get` call is `LIVE`.
+Its MCP `data_timestamp` is the completed envelope's final receipt wall time,
+formatted as RFC3339Nano; it is never synthesized at the handler. The provider
+must carry that receipt with the qualified status. Missing receipt metadata
+fails closed with the existing unavailable envelope semantics and no timestamp.
+
 A terminal upstream `write_fault` or `transport_fault` marks the endpoint for
 recovery but does not retry the failed sample. Before one later poll, the
 serialized provider calls only the upstream bounded `Recover`; recovery failure

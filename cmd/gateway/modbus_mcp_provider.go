@@ -75,9 +75,9 @@ func (provider *gatewayModbusMCPProvider) ModbusV1CoreAvailable() bool {
 	return provider != nil && provider.adapter != nil
 }
 
-func (provider gatewayGrowattBMSMCPProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
+func (provider gatewayGrowattBMSMCPProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
 	if provider.growatt == nil {
-		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
+		return mcp.GrowattBMSRS485V202Observation{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
 	}
 	return provider.growatt.GrowattBMSRS485V202(ctx)
 }

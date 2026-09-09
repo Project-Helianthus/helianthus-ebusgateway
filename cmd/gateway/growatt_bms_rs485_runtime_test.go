@@ -159,9 +159,9 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 	if _, ok := provider.(mcp.GrowattBMSRS485V202Provider); !ok {
 		t.Fatalf("provider %T does not compose Growatt runtime", provider)
 	}
-	status, err := provider.(mcp.GrowattBMSRS485V202Provider).GrowattBMSRS485V202(context.Background())
-	if err != nil || status.OutboundAllowed() {
-		t.Fatalf("status/error/outbound=%#v/%v/%t", status, err, status.OutboundAllowed())
+	observation, err := provider.(mcp.GrowattBMSRS485V202Provider).GrowattBMSRS485V202(context.Background())
+	if err != nil || observation.Status.OutboundAllowed() || observation.ReceiptWall.IsZero() {
+		t.Fatalf("observation/error=%#v/%v", observation, err)
 	}
 	want := [][2]uint16{{0x0001, 7}, {0x000d, 29}, {0x0100, 12}, {0x010d, 2}}
 	if !reflect.DeepEqual(fake.calls, want) || len(fake.unitIDs) != 4 {
@@ -170,6 +170,9 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 	evidence, ok := runtime.LastObservationEvidence()
 	if !ok || evidence.SourceEpoch != "source-epoch-1" || evidence.DriverGeneration != 1 || evidence.Qualification != "qualified" || evidence.OutboundAllowed || len(evidence.Slices) != 4 {
 		t.Fatalf("evidence=%#v/%t", evidence, ok)
+	}
+	if !observation.ReceiptWall.Equal(evidence.ReceiptWall) {
+		t.Fatalf("observation receipt=%s evidence receipt=%s", observation.ReceiptWall, evidence.ReceiptWall)
 	}
 	if evidence.Slices[0].TransportGeneration != 4 || evidence.Slices[0].RequestADUHex == "" || evidence.Slices[0].ResponseADUHex == "" {
 		t.Fatalf("slice evidence=%#v", evidence.Slices[0])

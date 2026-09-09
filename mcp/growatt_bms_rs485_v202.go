@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"sync"
+	"time"
 
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -81,7 +82,14 @@ type GrowattBMSRS485V202Result struct {
 // GrowattBMSRS485V202Provider supplies a previously decoded typed status with
 // its validated native observation.
 type GrowattBMSRS485V202Provider interface {
-	GrowattBMSRS485V202(context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error)
+	GrowattBMSRS485V202(context.Context) (GrowattBMSRS485V202Observation, error)
+}
+
+// GrowattBMSRS485V202Observation binds a successful on-demand status to the
+// immutable completed RTU observation receipt that produced it.
+type GrowattBMSRS485V202Observation struct {
+	Status      modbusreg.GrowattBMSTypedReadOnlyStatus
+	ReceiptWall time.Time
 }
 
 var growattBMSRS485V202Providers = struct {
@@ -113,15 +121,18 @@ func (server *Server) handleGrowattBMSRS485V202Call(ctx context.Context, name st
 	if p == nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, ErrGrowattBMSRS485V202ProviderUnavailable, false, "RETAINED_PROFILE", "")), true), true
 	}
-	status, err := p.GrowattBMSRS485V202(ctx)
+	observation, err := p.GrowattBMSRS485V202(ctx)
 	if err != nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
 	}
-	result, err := growattBMSRS485V202Result(status)
+	if observation.ReceiptWall.IsZero() {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, errors.New("growatt BMS RS485 observation receipt is unavailable"), true, "RETAINED_PROFILE", "")), true), true
+	}
+	result, err := growattBMSRS485V202Result(observation.Status)
 	if err != nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "RETAINED_PROFILE", "")), true), true
 	}
-	return callToolResultText(mustJSON(newModbusV1Envelope(result, err, true, "RETAINED_PROFILE", "")), err != nil), true
+	return callToolResultText(mustJSON(newModbusV1Envelope(result, nil, true, "LIVE", observation.ReceiptWall.UTC().Format(time.RFC3339Nano))), false), true
 }
 
 func growattBMSRS485V202Result(status modbusreg.GrowattBMSTypedReadOnlyStatus) (GrowattBMSRS485V202Result, error) {

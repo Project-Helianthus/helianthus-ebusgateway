@@ -47,6 +47,12 @@ for disabled and BMS-only composition, while TCP-only and TCP+BMS retain it.
 No SemReg, GraphQL, Home Assistant, Matter, eeBUS, Prometheus, or control
 surface was added.
 
+Each successful on-demand Growatt MCP call reports `LIVE` consistency and the
+RFC3339Nano `ReceiptWall` of its completed immutable four-read envelope as
+`data_timestamp`. The production provider carries this receipt with the typed
+status; a missing receipt fails closed with the existing unavailable
+`RETAINED_PROFILE` envelope and an empty timestamp.
+
 ## Validation
 
 Focused normal tests passed:
@@ -102,8 +108,9 @@ is `ReadRetainsImmutableCorrelatedEvidence`, `ExceptionDoesNotFenceButShortWrite
 `RejectsRecoveryBoundsAndNoByteTimeout`. Missing or duplicate expected names,
 gateway failures, and endpoint conformance failures fail closed. The gate tests
 prove every composition input triggers, every such trigger fails closed for a
-failed command, and a partial endpoint inventory is rejected. T01..T88 remains
-the required gate for eBUS transport/topology changes.
+failed command, a `main.go` runtime change runs both the eBUS and RTU gates,
+and a partial endpoint inventory is rejected. T01..T88 remains the required
+gate for eBUS transport/topology changes.
 
 Final configured CI passed:
 
@@ -114,16 +121,20 @@ PASS
 
 It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
-`6`, `15`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
+`6`, `17`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
 composition/pinned-endpoint transport gate, and the passive smoke gate. The
-Modbus RTU gate passed; passive smoke was not triggered. One prior full CI run
+Modbus RTU gate passed; passive smoke was not triggered. Two prior full CI runs
 failed in unchanged `internal/adaptermux` at
 `TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse/blocked_write_drains_before_BACKOFF_publication`
-(`36fdf34009b3984c60c07201cb6c8c47d464d8d7b80b803826fe48bdcb3c6669`).
+or `blocked_request_start_drains_before_BACKOFF_publication`; retained author
+log SHA-256 is `36fdf34009b3984c60c07201cb6c8c47d464d8d7b80b803826fe48bdcb3c6669`
+and independent review log SHA-256 is
+`7a75aadc412f34801e9c68e92c380adc3df6f278d6151a75dd8f03ac0bb02746`.
 The isolated `GOWORK=off go test -race -count=1 ./internal/adaptermux` rerun
-passed in `114.416s`; a single subsequent complete CI rerun also passed. No
-cause is claimed for the retained adaptermux failure. The green complete CI log
-SHA-256 is `3b24b399d01415789b7c8cf243f4f6bf98cefb6dccd22192d599e30493e9343d`.
+passed in `114.416s`; no causal claim is made. A temporary diagnostic test
+patch was saved outside this repository and restored before the clean run; it
+is not part of this PR. The fresh non-concurrent full CI run passed with log
+SHA-256 `c2be033d199d457f77789ecd32105b87ddff6714da397aede6e5e4a14d7c5466`.
 
 ## Boundary
 

@@ -61,8 +61,19 @@ semreg_pv_config_only() {
 		if [[ "${trimmed}" == "}" ]]; then
 			continue
 		fi
-		case "${line}" in
-			*M2MGraphQL*|*KnownAssets*|*DeniedPrincipalFingerprints*|*"known asset"*|*"known :="*|*"known[asset]"*|*"for _, asset :="*|*"if _, allowed :="*|*"if _, duplicate :="*) ;;
+		case "${trimmed}" in
+			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
+			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
+			"KnownAssets                 []string"|\
+			"len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0"|\
+			"len(config.DeniedPrincipalFingerprints) == 0"|\
+			"known := make(map[string]struct{}, len(config.KnownAssets))"|\
+			"for _, asset := range config.KnownAssets {"|\
+			"if _, allowed := assets[asset]; !allowed {"|\
+			"return errors.New(\"M2M GraphQL configuration contains a known asset outside the allowlist\")"|\
+			"if _, duplicate := known[asset]; duplicate {"|\
+			"return errors.New(\"M2M GraphQL configuration contains a duplicate known asset\")"|\
+			"known[asset] = struct{}{}") ;;
       *) return 1 ;;
     esac
   done <<< "${changes}"

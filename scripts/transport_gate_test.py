@@ -289,7 +289,7 @@ class TransportGateTests(unittest.TestCase):
         repo_path, _ = self._create_temp_repo(
             "config.go",
             base_text="package gateway\n",
-            modified_text="package gateway\nfunc openTransport() { openSerial() }\n",
+            modified_text="package gateway\nfunc openM2MGraphQLTransport() { openSerial() }\n",
         )
         result = subprocess.run(
             ["bash", "scripts/transport_gate.sh"],

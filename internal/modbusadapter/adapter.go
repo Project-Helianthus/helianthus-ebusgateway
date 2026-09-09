@@ -493,10 +493,7 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 	var evictedKey string
 	var evicted sunSpecQualificationRecord
 	if len(adapter.refreshOrder) == maxRetainedSunSpecRefreshEvidence {
-		referenced, err := adapter.currentSunSpecObservationDigestsLocked(observation)
-		if err != nil {
-			return err
-		}
+		referenced := adapter.semanticPV.currentSunSpecObservationDigests()
 		for _, candidate := range adapter.refreshOrder {
 			record := adapter.refreshEvidence[candidate]
 			if !referenced[sunSpecObservationDigest(record.encoded)] {
@@ -526,9 +523,7 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 	}
 	// A successful replacement can retire old candidate evidence. Pruning only
 	// after commit preserves every digest referenced by the newly public view.
-	if referenced, err := adapter.currentSunSpecObservationDigestsLocked(observation); err == nil {
-		adapter.pruneSunSpecRefreshEvidenceLocked(referenced)
-	}
+	adapter.pruneSunSpecRefreshEvidenceLocked(adapter.semanticPV.currentSunSpecObservationDigests())
 	return nil
 }
 
@@ -558,42 +553,6 @@ func (adapter *Adapter) pruneSunSpecRefreshEvidenceLocked(referenced map[string]
 		}
 	}
 	adapter.refreshOrder = kept
-}
-
-func (adapter *Adapter) currentSunSpecObservationDigestsLocked(observation modbusreg.SunSpecQualificationObservation) (map[string]bool, error) {
-	identity, _, err := resolvePVPublicationIdentity(observation)
-	if err != nil {
-		return nil, err
-	}
-	view, err := adapter.semanticPV.currentForValidation(semreg.AssetID("pv-asset-" + pvCoreRawHash(identity)[:32]))
-	if err != nil {
-		return map[string]bool{}, nil
-	}
-	refs := make(map[string]bool)
-	collect := func(evidence []semreg.EvidenceRef) {
-		for _, ref := range evidence {
-			if ref.Kind == "sunspec.qualification_observation" {
-				refs[string(ref.Digest)] = true
-			}
-		}
-	}
-	for _, envelope := range view.snapshot.Facts {
-		for _, candidate := range envelope.Candidates {
-			collect(candidate.Evidence)
-			collect(candidate.Origin.Evidence)
-		}
-	}
-	for _, retained := range view.snapshot.Retained {
-		collect(retained.Candidate.Evidence)
-		collect(retained.Candidate.Origin.Evidence)
-	}
-	for _, capability := range view.snapshot.Capabilities {
-		collect(capability.ActivationEvidence)
-	}
-	for _, fence := range view.snapshot.Fences {
-		collect(fence.Evidence)
-	}
-	return refs, nil
 }
 
 func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {

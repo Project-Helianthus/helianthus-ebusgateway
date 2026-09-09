@@ -150,3 +150,37 @@ https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/956. No merge
 was attempted. Residual risk is limited to ordinary integration review of the
 broad deletion of legacy PV compatibility code and of the SemReg public
 projection contract; no live smoke claim is made.
+
+## Current-asset refresh-evidence retention remediation
+
+The bounded refresh-evidence store now determines referenced qualification
+observation digests from every current SemReg PV asset snapshot while holding
+one publication-core read lock. Preflight eviction rejects the update before
+publication when all 32 retained records remain referenced; post-commit pruning
+removes only records that no current asset references. The observation is staged
+before publication, rolled back on a failed publication, and copied at both
+storage and lookup boundaries.
+
+The regression qualifies an initial identity, then refreshes distinct serial
+identities A and B so both A and B observations are owned by the bounded refresh
+store. It verifies both current public asset views retain matching immutable,
+replayable MCP evidence. The test would fail with the former incoming-asset-only
+reference set because B publication would prune A's refresh record. A separate
+partial-refresh regression verifies that accumulator evidence remains retrievable
+across more than 32 later withheld-energy refreshes until it is replaced.
+
+Focused race coverage passed:
+
+```text
+GOWORK=off go test -race ./internal/modbusadapter -run 'TestSunSpecProducer(RetainsEvidenceForEveryCurrentIdentity|RetainsReferencedAccumulatorEvidenceAcrossPartialRefreshes|RefreshRetainsCurrentSemRegEvidenceWithBoundedEviction)' -count=1 -v
+PASS (3 tests)
+```
+
+Focused log SHA-256:
+`080490a4a5d10b8e18ac758028f36c5731923fe099ef8531e935fe3522e541f7`.
+
+The full configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
+`93/93`; all Go race packages; Python `168 + 6 + 11 + 8 + 6 + 2`; and
+`golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
+triggered. Final CI log SHA-256:
+`766b7fdc4f6b9ab1d6195a725bd328587f0ed3ee970207f3a99456399b7415b3`.

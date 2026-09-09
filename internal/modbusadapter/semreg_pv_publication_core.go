@@ -641,6 +641,46 @@ func (c *pvPublicationCore) currentForValidation(assetID semreg.AssetID) (pvPubl
 	return asset.current.detached()
 }
 
+// currentSunSpecObservationDigests reads every current asset under one core
+// read lock so adapter evidence pruning cannot orphan a still-public identity.
+func (c *pvPublicationCore) currentSunSpecObservationDigests() map[string]bool {
+	refs := make(map[string]bool)
+	if c == nil {
+		return refs
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	collect := func(evidence []semreg.EvidenceRef) {
+		for _, ref := range evidence {
+			if ref.Kind == "sunspec.qualification_observation" {
+				refs[string(ref.Digest)] = true
+			}
+		}
+	}
+	for _, asset := range c.assets {
+		if asset == nil || asset.current == nil {
+			continue
+		}
+		for _, envelope := range asset.current.snapshot.Facts {
+			for _, candidate := range envelope.Candidates {
+				collect(candidate.Evidence)
+				collect(candidate.Origin.Evidence)
+			}
+		}
+		for _, retained := range asset.current.snapshot.Retained {
+			collect(retained.Candidate.Evidence)
+			collect(retained.Candidate.Origin.Evidence)
+		}
+		for _, capability := range asset.current.snapshot.Capabilities {
+			collect(capability.ActivationEvidence)
+		}
+		for _, fence := range asset.current.snapshot.Fences {
+			collect(fence.Evidence)
+		}
+	}
+	return refs
+}
+
 func (v *pvPublicationView) detached() (pvPublicationView, error) {
 	if v == nil {
 		return pvPublicationView{}, errors.New("PV publication view is unavailable")

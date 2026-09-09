@@ -240,6 +240,38 @@ func TestSunSpecProducerRetainsReferencedAccumulatorEvidenceAcrossPartialRefresh
 	}
 }
 
+func TestSunSpecProducerRetainsEvidenceForEveryCurrentIdentity(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	listener, _ := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 401, DeadlineIdentity: 501})
+	if err != nil || baseline.Outcome != SunSpecQualificationGO {
+		t.Fatalf("baseline=%+v err=%v", baseline, err)
+	}
+	b := append([]uint16(nil), words...)
+	putSunSpecString(b[52:68], "synthetic-a")
+	copy(words, b)
+	a, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 402, DeadlineIdentity: 502})
+	if err != nil || a.Outcome != SunSpecQualificationGO {
+		t.Fatalf("A=%+v err=%v", a, err)
+	}
+	putSunSpecString(words[52:68], "synthetic-b")
+	bResult, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 403, DeadlineIdentity: 503})
+	if err != nil || bResult.Outcome != SunSpecQualificationGO {
+		t.Fatalf("B=%+v err=%v", bResult, err)
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, a, a)
+	assertCurrentSunSpecEvidenceRetained(t, adapter, bResult, bResult)
+}
+
 func assertCurrentSunSpecEvidenceRetained(t *testing.T, adapter *Adapter, initial, refresh SunSpecQualificationResult) {
 	t.Helper()
 	current, ok := adapter.SemanticPVCurrent(initial.CapabilityID, initial.SampleID)

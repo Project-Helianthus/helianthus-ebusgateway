@@ -493,12 +493,22 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 	var evictedKey string
 	var evicted sunSpecQualificationRecord
 	if len(adapter.refreshOrder) == maxRetainedSunSpecRefreshEvidence {
-		evictedKey = adapter.refreshOrder[0]
-		evicted = adapter.refreshEvidence[evictedKey]
+		referenced, err := adapter.currentSunSpecObservationDigestsLocked(observation)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range adapter.refreshOrder {
+			record := adapter.refreshEvidence[candidate]
+			if !referenced[sunSpecObservationDigest(record.encoded)] {
+				evictedKey, evicted = candidate, record
+				break
+			}
+		}
+		if evictedKey == "" {
+			return errors.New("SunSpec current evidence retention capacity would exceed bound")
+		}
 		delete(adapter.refreshEvidence, evictedKey)
-		copy(adapter.refreshOrder, adapter.refreshOrder[1:])
-		adapter.refreshOrder[len(adapter.refreshOrder)-1] = ""
-		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
+		adapter.refreshOrder = removeSunSpecRefreshKey(adapter.refreshOrder, evictedKey)
 	}
 	adapter.refreshEvidence[key] = sunSpecQualificationRecord{
 		observation: observation,
@@ -514,7 +524,76 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 		}
 		return err
 	}
+	// A successful replacement can retire old candidate evidence. Pruning only
+	// after commit preserves every digest referenced by the newly public view.
+	if referenced, err := adapter.currentSunSpecObservationDigestsLocked(observation); err == nil {
+		adapter.pruneSunSpecRefreshEvidenceLocked(referenced)
+	}
 	return nil
+}
+
+func sunSpecObservationDigest(encoded []byte) string {
+	return "sha256:" + pvCoreHash("pv-observation", encoded)
+}
+
+func removeSunSpecRefreshKey(order []string, key string) []string {
+	for index, candidate := range order {
+		if candidate == key {
+			copy(order[index:], order[index+1:])
+			order[len(order)-1] = ""
+			return order[:len(order)-1]
+		}
+	}
+	return order
+}
+
+func (adapter *Adapter) pruneSunSpecRefreshEvidenceLocked(referenced map[string]bool) {
+	kept := adapter.refreshOrder[:0]
+	for _, key := range adapter.refreshOrder {
+		record := adapter.refreshEvidence[key]
+		if referenced[sunSpecObservationDigest(record.encoded)] {
+			kept = append(kept, key)
+		} else {
+			delete(adapter.refreshEvidence, key)
+		}
+	}
+	adapter.refreshOrder = kept
+}
+
+func (adapter *Adapter) currentSunSpecObservationDigestsLocked(observation modbusreg.SunSpecQualificationObservation) (map[string]bool, error) {
+	identity, _, err := resolvePVPublicationIdentity(observation)
+	if err != nil {
+		return nil, err
+	}
+	view, err := adapter.semanticPV.currentForValidation(semreg.AssetID("pv-asset-" + pvCoreRawHash(identity)[:32]))
+	if err != nil {
+		return map[string]bool{}, nil
+	}
+	refs := make(map[string]bool)
+	collect := func(evidence []semreg.EvidenceRef) {
+		for _, ref := range evidence {
+			if ref.Kind == "sunspec.qualification_observation" {
+				refs[string(ref.Digest)] = true
+			}
+		}
+	}
+	for _, envelope := range view.snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			collect(candidate.Evidence)
+			collect(candidate.Origin.Evidence)
+		}
+	}
+	for _, retained := range view.snapshot.Retained {
+		collect(retained.Candidate.Evidence)
+		collect(retained.Candidate.Origin.Evidence)
+	}
+	for _, capability := range view.snapshot.Capabilities {
+		collect(capability.ActivationEvidence)
+	}
+	for _, fence := range view.snapshot.Fences {
+		collect(fence.Evidence)
+	}
+	return refs, nil
 }
 
 func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {

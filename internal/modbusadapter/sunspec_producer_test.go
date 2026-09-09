@@ -190,6 +190,56 @@ func TestSunSpecProducerRefreshRetainsCurrentSemRegEvidenceWithBoundedEviction(t
 	assertCurrentSunSpecEvidenceRetained(t, adapter, initial, lastRefresh)
 }
 
+func TestSunSpecProducerRetainsReferencedAccumulatorEvidenceAcrossPartialRefreshes(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	listener, _ := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	now := adapter.startedMono
+	adapter.wallNow = func() time.Time { return now }
+	adapter.monotonicNow = func() time.Time { return now }
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 201, DeadlineIdentity: 301})
+	if err != nil || initial.Outcome != SunSpecQualificationGO {
+		t.Fatalf("initial=%+v err=%v", initial, err)
+	}
+	pvCoreSetFloat(words, 30, 100)
+	now = now.Add(15 * time.Second)
+	energyA, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 202, DeadlineIdentity: 302})
+	if err != nil || energyA.Outcome != SunSpecQualificationGO {
+		t.Fatalf("energy A=%+v err=%v", energyA, err)
+	}
+	pvCoreSetFloat(words, 30, -1)
+	for poll := uint64(203); poll <= 236; poll++ {
+		now = now.Add(15 * time.Second)
+		if result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: poll, DeadlineIdentity: poll + 100}); err != nil || result.Outcome != SunSpecQualificationGO {
+			t.Fatalf("partial refresh %d=%+v err=%v", poll, result, err)
+		}
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, initial, energyA)
+	if observation, _, ok := adapter.SunSpecQualificationObservation(energyA.CapabilityID, energyA.SampleID); !ok {
+		t.Fatal("retained accumulator evidence was evicted")
+	} else if replay, err := observation.Replay(); err != nil || len(replay.SourceViews()) == 0 {
+		t.Fatalf("retained accumulator evidence is not replayable: %v", err)
+	}
+	pvCoreSetFloat(words, 30, 101)
+	now = now.Add(15 * time.Second)
+	replacement, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 237, DeadlineIdentity: 337})
+	if err != nil || replacement.Outcome != SunSpecQualificationGO {
+		t.Fatalf("replacement=%+v err=%v", replacement, err)
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, initial, replacement)
+	if _, _, ok := adapter.SunSpecQualificationObservation(energyA.CapabilityID, energyA.SampleID); ok {
+		t.Fatal("unreferenced accumulator evidence was not pruned")
+	}
+}
+
 func assertCurrentSunSpecEvidenceRetained(t *testing.T, adapter *Adapter, initial, refresh SunSpecQualificationResult) {
 	t.Helper()
 	current, ok := adapter.SemanticPVCurrent(initial.CapabilityID, initial.SampleID)

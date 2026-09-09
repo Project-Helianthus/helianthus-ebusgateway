@@ -84,7 +84,43 @@ change transport, topology, passive acquisition, or runtime admission. Their
 classifiers are covered by their repository Python tests. Documentation is
 updated in `docs/architecture/runtime-driver-provider-contract-v1.md`.
 
-## Review boundary
+## Review remediation at PR #956 head `56cee40`
+
+The independent review identified four blockers and one orphaned golden. This
+follow-up patch corrects each without restoring a compatibility path:
+
+- Hosted CI replaces the deleted `canonicalpvshadow` directory step with the
+  race-tested SemReg public-integration set.
+- A stale retained field is preserved in the evaluated view and has no
+  presentation selection; other fields from the same qualified refresh commit.
+  The regression proves a stale invalid frequency is withheld while aggregate
+  active power advances to candidate revision 2.
+- The fixed GraphQL operation and response now use the same exact four fields:
+  `snapshot`, `evaluation`, `selections`, and `projection`. The handler rejects
+  an object with undeclared fields, and an exact response golden covers the
+  accepted shape.
+- MCP converts SemReg evaluated nanoseconds to RFC3339Nano before assigning
+  `meta.data_timestamp`; success parsing and existing error precedence are
+  covered.
+- `mcp/testdata/modbus_v1_canonical_pv.golden.json` was unreferenced and
+  compatibility-only, so it is removed and its absence is covered by the
+  legacy-tool/public-contract searches and MCP replacement test.
+
+Focused normal and race regressions passed:
+
+```text
+GOWORK=off go test ./internal/modbusadapter ./m2mgraphql ./mcp ./portal ./cmd/gateway -run 'TestPVPublication|TestAdapterPublishesOneSemRegPVProjection|TestSemanticPV|TestPortalPV|TestM2MGraphQLRuntime|TestGatewaySemanticPVProvider' -count=1
+PASS
+
+GOWORK=off go test -race ./internal/modbusadapter ./m2mgraphql ./mcp ./portal ./cmd/gateway -run 'TestPVPublication|TestAdapterPublishesOneSemRegPVProjection|TestSemanticPV|TestPortalPV|TestM2MGraphQLRuntime|TestGatewaySemanticPVProvider' -count=1
+PASS
+
+GOWORK=off ./scripts/ci_local.sh
+PASS
+```
+
+The remediation CI log SHA-256 is
+`6a25722cd88b5f84aa6fd23170311af906d9387654d3f20bbec8267ce5bf2cd4`.
 
 The implementation commit is `a2bab01ae713caf2225625bf1d150f20755c5a37`;
 the current branch includes this report and is open as

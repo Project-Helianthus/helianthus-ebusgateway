@@ -159,7 +159,7 @@ func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailabl
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
 	body, err := json.Marshal(map[string]any{
-		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshotId } }",
+		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }",
 		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "assetRef": "pv-asset-known"}},
 	})
 	if err != nil {

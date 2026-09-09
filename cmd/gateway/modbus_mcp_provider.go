@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,7 +146,19 @@ func (provider *gatewayModbusMCPProvider) SemanticPVCurrent(_ context.Context, p
 	if !ok {
 		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
 	}
-	return mcp.SemanticPVCurrentResult{Data: map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection}, Evaluated: string(current.Evaluation.Context.EvaluatedAt.UnixNanoseconds)}, nil
+	timestamp, err := semanticPVDataTimestamp(string(current.Evaluation.Context.EvaluatedAt.UnixNanoseconds))
+	if err != nil {
+		return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV evaluation time unavailable")
+	}
+	return mcp.SemanticPVCurrentResult{Data: map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection}, Evaluated: timestamp}, nil
+}
+
+func semanticPVDataTimestamp(nanoseconds string) (string, error) {
+	value, err := strconv.ParseInt(nanoseconds, 10, 64)
+	if err != nil {
+		return "", err
+	}
+	return time.Unix(0, value).UTC().Format(time.RFC3339Nano), nil
 }
 
 // TeslaHSCV1 exposes only the disabled-by-default profile state. It does not

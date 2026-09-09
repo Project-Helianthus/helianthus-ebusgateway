@@ -28,7 +28,7 @@ const (
 )
 
 const semanticPVFixedQuery = `query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) {
-  semanticPVCurrent(request: $request) { snapshotId }
+  semanticPVCurrent(request: $request) { snapshot evaluation selections projection }
 }`
 
 // Config supplies the one immutable SemReg evaluation used by every public PV
@@ -136,7 +136,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SOURCE_UNAVAILABLE")
 		return
 	}
-	encoded, err := json.Marshal(map[string]any{"data": map[string]json.RawMessage{"semanticPVCurrent": data}})
+	var projection map[string]json.RawMessage
+	if err := json.Unmarshal(data, &projection); err != nil || !hasExactKeys(projection, "snapshot", "evaluation", "selections", "projection") {
+		writeError(w, "SOURCE_UNAVAILABLE")
+		return
+	}
+	encoded, err := json.Marshal(map[string]any{"data": map[string]any{"semanticPVCurrent": map[string]json.RawMessage{
+		"snapshot": projection["snapshot"], "evaluation": projection["evaluation"], "selections": projection["selections"], "projection": projection["projection"],
+	}}})
 	if err != nil || len(encoded) > maxResponseBytes {
 		writeError(w, "REQUEST_LIMIT_EXCEEDED")
 		return

@@ -535,6 +535,16 @@ func (c *pvPublicationCore) ingestWithOrder(draft pvPublicationDraft, order *pvP
 	}
 	selections := make([]semreg.Selection, 0, len(snapshot.Facts))
 	for _, envelope := range snapshot.Facts {
+		selectable, err := pvHasSelectableCandidate(envelope, evaluation)
+		if err != nil {
+			return pvPublicationReceipt{}, err
+		}
+		if !selectable {
+			// The immutable evaluation remains part of the public view, but a
+			// stale/unavailable retained field has no presentation selection.
+			// It must not abort fresh fields from the same qualified poll.
+			continue
+		}
 		selection, err := c.selection.SelectPresentation(snapshot, evaluation, envelope.Key, pvSelectionPolicyID, pvSelectionPolicyVersion)
 		if err != nil {
 			return pvPublicationReceipt{}, err
@@ -554,6 +564,26 @@ func (c *pvPublicationCore) ingestWithOrder(draft pvPublicationDraft, order *pvP
 	asset.kernel, asset.current = staged, view
 	c.assets[detached.assetID] = asset
 	return pvPublicationReceipt{assetID: detached.assetID, snapshotID: snapshot.SnapshotID, revisions: snapshot.Revisions}, nil
+}
+
+func pvHasSelectableCandidate(envelope semreg.FactEnvelope, evaluation semreg.EvaluationView) (bool, error) {
+	if len(envelope.Conflicts) != 0 {
+		return false, errors.New("PV fact is conflicted")
+	}
+	byID := make(map[semreg.CandidateID]semreg.EvaluatedFact, len(evaluation.Facts))
+	for _, fact := range evaluation.Facts {
+		byID[fact.CandidateID] = fact
+	}
+	for _, candidate := range envelope.Candidates {
+		fact, found := byID[candidate.CandidateID]
+		if !found {
+			return false, errors.New("PV candidate evaluation is missing")
+		}
+		if candidate.Quality.Qualification == semreg.QualificationQualified && candidate.Quality.Promotion == semreg.PromotionPromoted && fact.EffectiveAvailability == semreg.AvailabilityAvailable && fact.Freshness == semreg.FreshnessFresh {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationView, error) {

@@ -16,6 +16,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 type countingModbusMCPAdapter struct {
@@ -26,6 +27,8 @@ type countingModbusMCPAdapter struct {
 	reconnectWait     bool
 	readErrors        []error
 	plans             []modbusadapter.ReadPlan
+	semantic          modbusadapter.SemanticPVCurrent
+	semanticOK        bool
 }
 
 func (adapter *countingModbusMCPAdapter) ExecuteRead(_ context.Context, plan modbusadapter.ReadPlan) (modbus.TCPReadBatch, error) {
@@ -70,9 +73,39 @@ func (*countingModbusMCPAdapter) SunSpecQualificationObservation(string, string)
 	return modbusreg.SunSpecQualificationObservation{}, nil, false
 }
 
+func (adapter *countingModbusMCPAdapter) SemanticPVCurrent(string, string) (modbusadapter.SemanticPVCurrent, bool) {
+	return adapter.semantic, adapter.semanticOK
+}
+
 func TestNewGatewayModbusMCPProviderDisabledIsInert(t *testing.T) {
 	if provider := newGatewayModbusMCPProvider(nil); provider != nil {
 		t.Fatalf("nil adapter produced provider %T", provider)
+	}
+}
+
+func TestSemanticPVDataTimestampUsesRFC3339Nano(t *testing.T) {
+	timestamp, err := semanticPVDataTimestamp("1")
+	if err != nil || timestamp != "1970-01-01T00:00:00.000000001Z" {
+		t.Fatalf("semantic timestamp=%q err=%v", timestamp, err)
+	}
+	if _, err := semanticPVDataTimestamp("not-a-time"); err == nil {
+		t.Fatal("invalid semantic timestamp was accepted")
+	}
+}
+
+func TestGatewaySemanticPVProviderUsesRFC3339TimestampAndStableErrors(t *testing.T) {
+	adapter := &countingModbusMCPAdapter{semanticOK: true, semantic: modbusadapter.SemanticPVCurrent{Evaluation: semreg.EvaluationView{Context: semreg.EvaluationContext{EvaluatedAt: semreg.TimePoint{UnixNanoseconds: "1"}}}}}
+	provider := &gatewayModbusMCPProvider{adapter: adapter}
+	result, err := provider.SemanticPVCurrent(context.Background(), modbusreg.SunSpecThreePhaseMonitoringCapabilityID, "sample:1")
+	if err != nil || result.Evaluated != "1970-01-01T00:00:00.000000001Z" {
+		t.Fatalf("successful semantic PV result=%+v err=%v", result, err)
+	}
+	adapter.semantic.Evaluation.Context.EvaluatedAt.UnixNanoseconds = "not-a-time"
+	if _, err := provider.SemanticPVCurrent(context.Background(), modbusreg.SunSpecThreePhaseMonitoringCapabilityID, "sample:1"); err == nil || err.Error() != "semantic PV evaluation time unavailable" {
+		t.Fatalf("invalid semantic time error=%v", err)
+	}
+	if _, err := provider.SemanticPVCurrent(context.Background(), "wrong-profile", "sample:1"); err == nil || err.Error() != "semantic PV observation unavailable" {
+		t.Fatalf("profile error precedence=%v", err)
 	}
 }
 

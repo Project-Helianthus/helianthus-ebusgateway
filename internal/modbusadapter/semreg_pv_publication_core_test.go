@@ -303,6 +303,53 @@ func TestPVPublicationCorePublishesGeneratedEnergyAndKeepsCompleteProjection(t *
 	}
 }
 
+func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := pvCoreDraft(t, observedFroniusFloatControlsWords(), "source-epoch:pv:test-a", 1, 2_000)
+	if _, err := core.ingest(first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := core.currentForValidation(first.assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := observedFroniusFloatControlsWords()
+	pvCoreSetFloat(words, 20, 4_321.5)
+	pvCoreSetFloat(words, 22, 2_000) // invalid frequency; retain the prior candidate.
+	second := pvCoreDraft(t, words, "source-epoch:pv:test-a", 1, 31_000_000_000)
+	if _, err := core.ingest(second); err != nil {
+		t.Fatalf("healthy refresh with one stale retained field: %v", err)
+	}
+	after, err := core.currentForValidation(first.assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.snapshot.SnapshotID == before.snapshot.SnapshotID {
+		t.Fatal("healthy refresh did not advance the immutable snapshot")
+	}
+	frequency := pvCoreEnvelope(t, after.snapshot, "pv.ac.frequency")
+	if len(frequency.Candidates) != 1 {
+		t.Fatalf("retained frequency candidates=%d", len(frequency.Candidates))
+	}
+	if freshness, ok := pvCoreEvaluatedFreshness(after.evaluation, frequency.Candidates[0].CandidateID); !ok || freshness != semreg.FreshnessStale {
+		t.Fatalf("retained frequency freshness=%s found=%t", freshness, ok)
+	}
+	if pvCoreHasSelection(after.selections, frequency.Key) {
+		t.Fatal("stale retained frequency received a presentation selection")
+	}
+	frequencyProjection := pvCoreDispositionReport(t, after.projection, "inverter.ac.frequency")
+	if frequencyProjection.Outcome != projection.ProjectionWithheld || frequencyProjection.Reason == nil || *frequencyProjection.Reason != pvReasonFieldInvalid {
+		t.Fatalf("stale retained frequency projection=%+v", frequencyProjection)
+	}
+	activePower := pvCoreEnvelope(t, after.snapshot, "pv.ac.aggregate_active_power")
+	if len(activePower.Candidates) != 1 || activePower.Candidates[0].Revision != "2" || !pvCoreHasSelection(after.selections, activePower.Key) {
+		t.Fatalf("healthy active-power field was not refreshed: %+v", activePower)
+	}
+}
+
 func TestPVPublicationCoreReturnsDeterministicImmutableReadback(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {
@@ -476,6 +523,35 @@ func pvCoreDispositionReport(t *testing.T, report projection.ProjectionReport, n
 func pvCoreHasFact(facts []semreg.FactCandidate, factID semreg.DefinitionID) bool {
 	for _, fact := range facts {
 		if fact.Key.FactID == factID {
+			return true
+		}
+	}
+	return false
+}
+
+func pvCoreEnvelope(t *testing.T, snapshot semreg.Snapshot, factID semreg.DefinitionID) semreg.FactEnvelope {
+	t.Helper()
+	for _, envelope := range snapshot.Facts {
+		if envelope.Key.FactID == factID {
+			return envelope
+		}
+	}
+	t.Fatalf("missing fact envelope %s", factID)
+	return semreg.FactEnvelope{}
+}
+
+func pvCoreEvaluatedFreshness(view semreg.EvaluationView, candidateID semreg.CandidateID) (semreg.Freshness, bool) {
+	for _, fact := range view.Facts {
+		if fact.CandidateID == candidateID {
+			return fact.Freshness, true
+		}
+	}
+	return "", false
+}
+
+func pvCoreHasSelection(selections []semreg.Selection, key semreg.FactKey) bool {
+	for _, selection := range selections {
+		if selection.Key.FactID == key.FactID && string(selection.Key.PackID) == string(key.PackID) && string(selection.Key.PackVersion) == string(key.PackVersion) {
 			return true
 		}
 	}

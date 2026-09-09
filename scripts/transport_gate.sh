@@ -299,6 +299,11 @@ while IFS= read -r file; do
   if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
     continue
   fi
+  if [[ "${file}" == "config.go" ]]; then
+    requires_ebus_gate=1
+    requires_modbus_rtu_gate=1
+    continue
+  fi
   if requires_ebus_transport_gate "${file}"; then
     requires_ebus_gate=1
   fi

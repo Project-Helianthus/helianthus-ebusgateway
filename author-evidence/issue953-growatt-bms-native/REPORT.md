@@ -109,8 +109,10 @@ is `ReadRetainsImmutableCorrelatedEvidence`, `ExceptionDoesNotFenceButShortWrite
 gateway failures, and endpoint conformance failures fail closed. The gate tests
 prove every composition input triggers, every such trigger fails closed for a
 failed command, a `main.go` runtime change runs both the eBUS and RTU gates,
-and a partial endpoint inventory is rejected. T01..T88 remains the required
-gate for eBUS transport/topology changes. The documented owner override requires
+and a non-exempt `config.go` change (including `DefaultConfig` RTU input) runs
+both gates; the exact SemReg-PV-only config exemption remains outside both. A
+partial endpoint inventory is rejected. T01..T88 remains the required gate for
+eBUS transport/topology changes. The documented owner override requires
 both its exact token and a scope/residual-risk reason; when present, it clears
 every active gate in that invocation, including both gates activated by
 `main.go`. No override was used for this issue's CI evidence.
@@ -124,7 +126,7 @@ PASS
 
 It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
-`6`, `17`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
+`6`, `22`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
 composition/pinned-endpoint transport gate, and the passive smoke gate. The
 Modbus RTU gate passed; passive smoke was not triggered. Two prior full CI runs
 failed in unchanged `internal/adaptermux` at
@@ -138,7 +140,7 @@ passed in `114.416s`; no causal claim is made. A temporary diagnostic test
 patch was saved outside this repository and restored before the clean run; it
 is not part of this PR. The latest fresh non-concurrent full CI run, with no
 owner override, passed with log SHA-256
-`ca2b0d7ae495fc66a1a30c128e3fa91d913f13a54cf2e52ae55e37f5e458f02e`.
+`d04a6a16a103d829939a5d356759e4fe4d0096d414ea102f4933588c347e6369`.
 
 ## Boundary
 

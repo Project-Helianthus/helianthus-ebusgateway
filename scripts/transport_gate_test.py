@@ -187,6 +187,33 @@ class TransportGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("override requires TRANSPORT_GATE_OWNER_REASON", result.stdout)
 
+    def test_config_change_triggers_ebus_and_modbus_rtu_gates(self) -> None:
+        repo_path, report_path = self._create_temp_repo(
+            "config.go", "package gateway\n", "package gateway\nvar growattRTUEnabled = true\n"
+        )
+        env = self._fake_go_env(repo_path, 0)
+        env["TRANSPORT_MATRIX_REPORT"] = str(report_path)
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=env,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("transport gate: PASS (pass=88", result.stdout)
+        self.assertIn("Modbus RTU production conformance", result.stdout)
+
+    def test_config_change_fails_closed_when_modbus_rtu_conformance_fails(self) -> None:
+        repo_path, report_path = self._create_temp_repo(
+            "config.go", "package gateway\n", "package gateway\nvar growattRTUEnabled = true\n"
+        )
+        env = self._fake_go_env(repo_path, 1)
+        env["TRANSPORT_MATRIX_REPORT"] = str(report_path)
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=env,
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
+
     def test_transport_gate_fails_for_cmd_gateway_main_without_report(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

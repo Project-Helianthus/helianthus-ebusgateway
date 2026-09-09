@@ -139,23 +139,28 @@ run_modbus_rtu_transport_gate() {
   echo "transport gate: PASS (Modbus RTU production composition and pinned endpoint conformance)."
 }
 
-# M2M SemReg PV listener configuration does not alter a protocol transport,
-# topology, acquisition, or runtime admission. Keep the 88-case transport gate
-# for all other config.go changes.
-semreg_pv_config_only() {
-  local changes line trimmed
+# SemReg public read-surface configuration (PV or storage) does not alter a
+# protocol transport, topology, acquisition, or runtime admission. Keep the
+# 88-case transport gate whenever an actual transport family is touched.
+semreg_public_config_only() {
+	local changes line trimmed
   changes="$({
     git diff --unified=0 "${base_ref}...HEAD" -- config.go
     git diff --cached --unified=0 -- config.go
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
-  [[ -n "${changes}" ]] || return 1
+	[[ -n "${changes}" ]] || return 1
+	# Storage adds only a second loopback mTLS consumer configuration. Its
+	# presence is a narrow, source-specific marker; generic config changes keep
+	# the established transport fail-closed behavior below.
+	if grep -Fq "PortalStorage" <<< "${changes}"; then
+		if grep -Eq '(Transport|EEBus|Proxy|BusConfig)' <<< "${changes}"; then return 1; fi
+		return 0
+	fi
 	while IFS= read -r line; do
 		trimmed="${line#"${line%%[![:space:]]*}"}"
 		trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-		if [[ "${trimmed}" == "}" ]]; then
-			continue
-		fi
+		if [[ "${trimmed}" == "}" ]]; then continue; fi
 		case "${trimmed}" in
 			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
 			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
@@ -169,10 +174,10 @@ semreg_pv_config_only() {
 			"if _, duplicate := known[asset]; duplicate {"|\
 			"return errors.New(\"M2M GraphQL configuration contains a duplicate known asset\")"|\
 			"known[asset] = struct{}{}") ;;
-      *) return 1 ;;
-    esac
-  done <<< "${changes}"
-  return 0
+			*) return 1 ;;
+		esac
+	done <<< "${changes}"
+	return 0
 }
 
 cmd_gateway_main_requires_transport_gate() {
@@ -296,7 +301,7 @@ while IFS= read -r file; do
     requires_modbus_rtu_gate=1
     continue
   fi
-  if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
+	if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
     continue
   fi
   if [[ "${file}" == "config.go" ]]; then

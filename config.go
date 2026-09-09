@@ -122,6 +122,11 @@ type PortalPVConfig struct {
 	AssetRef        string
 }
 
+// PortalStorageConfig is an independently disabled, read-only BFF for the
+// versioned SemReg storage projection. It deliberately does not expose any
+// operation or native fallback fields.
+type PortalStorageConfig = PortalPVConfig
+
 func (config PortalPVConfig) Validate() error {
 	fields := []string{config.M2MURL, config.M2MServerName, config.M2MCAFile, config.M2MClientCert, config.M2MClientKey, config.AssetRef}
 	if !config.SemanticEnabled {
@@ -182,6 +187,12 @@ func (cfg Config) ValidatePortalPV() error {
 		}
 	}
 	return errors.New("portal PV semantic BFF asset is not admitted by the dedicated M2M listener")
+}
+
+func (cfg Config) ValidatePortalStorage() error {
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	return copy.ValidatePortalPV()
 }
 
 func (config M2MGraphQLConfig) Disabled() bool {
@@ -256,6 +267,7 @@ type Config struct {
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig
+	PortalStorage            PortalStorageConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

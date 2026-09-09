@@ -160,6 +160,7 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		registerFroniusSunSpecV1Tool(server, provider)
 	}
 	registerGrowattBMSRS485V202Tool(server, provider)
+	registerGrowattStorageSemanticTool(server, provider)
 }
 
 func (server *Server) handleModbusV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {
@@ -194,6 +195,9 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 		return result, true
 	}
 	if result, handled := server.handleGrowattBMSRS485V202Call(ctx, name, args); handled {
+		return result, true
+	}
+	if result, handled := server.handleGrowattStorageSemanticCall(ctx, name, args); handled {
 		return result, true
 	}
 	modbusV1Providers.RLock()

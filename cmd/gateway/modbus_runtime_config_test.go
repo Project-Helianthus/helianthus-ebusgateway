@@ -40,6 +40,7 @@ func TestBindFlagsGrowattBMSRS485KeepsLifecycleIdentityExplicit(t *testing.T) {
 	bindFlags(fs, &cfg)
 	if err := fs.Parse([]string{
 		"-growatt-bms-rs485-enabled",
+		"-growatt-bms-rs485-asset-id", "asset:growatt-bms-a",
 		"-growatt-bms-rs485-source-id", "growatt-bms-a",
 		"-growatt-bms-rs485-source-epoch", "epoch-7",
 		"-growatt-bms-rs485-driver-generation", "3",
@@ -55,7 +56,7 @@ func TestBindFlagsGrowattBMSRS485KeepsLifecycleIdentityExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := cfg.ModbusTCPConfig.GrowattBMSRS485
-	if !config.Enabled || config.SourceID != "growatt-bms-a" || config.SourceEpoch != "epoch-7" ||
+	if !config.Enabled || config.AssetID != "asset:growatt-bms-a" || config.SourceID != "growatt-bms-a" || config.SourceEpoch != "epoch-7" ||
 		config.DriverGeneration != 3 || config.UnitID != 7 || config.Baud != 9600 || config.Parity != "even" || config.StopBits != 1 {
 		t.Fatalf("Growatt BMS config = %+v", config)
 	}

@@ -82,7 +82,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 		}()
 	}
-	m2mRuntime, err := newM2MGraphQLRuntime(cfg, modbusAdapter)
+	m2mRuntime, err := newM2MGraphQLRuntime(cfg, modbusAdapter, growattBMSRuntime)
 	if err != nil {
 		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
 	}

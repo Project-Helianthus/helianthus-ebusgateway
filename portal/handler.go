@@ -77,13 +77,15 @@ type Options struct {
 	// by the M5_PORTAL read-only consumer UI. Nil disables the
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
 	// capability in /api/v1/bootstrap.
-	EbusStandardServer PortalEbusStandardServer
-	SemanticPVEnabled  bool
-	RawModbusEnabled   bool
-	SemanticPV         func(context.Context) (ForwardedResponse, error)
-	ModbusProvider     mcp.ModbusV1Provider
-	RawModbusAudit     func(RawModbusAuditEvent)
-	Readiness          func() RuntimeReadiness
+	EbusStandardServer     PortalEbusStandardServer
+	SemanticPVEnabled      bool
+	SemanticStorageEnabled bool
+	RawModbusEnabled       bool
+	SemanticPV             func(context.Context) (ForwardedResponse, error)
+	SemanticStorage        func(context.Context) (ForwardedResponse, error)
+	ModbusProvider         mcp.ModbusV1Provider
+	RawModbusAudit         func(RawModbusAuditEvent)
+	Readiness              func() RuntimeReadiness
 }
 
 type RuntimeReadiness struct {
@@ -956,6 +958,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSemanticPV(w, r)
 		return
 	}
+	if trimmed == "semantic/storage/current" {
+		h.handleSemanticStorage(w, r)
+		return
+	}
 	if trimmed == "explorer/modbus/raw-read" {
 		h.handleRawModbusRead(w, r)
 		return
@@ -1017,10 +1023,11 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				// must then disable the nav button and skip auto-activation
 				// of section-l7-catalog, otherwise the bootstrap fetch
 				// surfaces a broken section. Codex P2 on PR #507.
-				"ebus_standard":   h.opts.EbusStandardServer != nil,
-				"eebus_admin":     eebusAdminAvailable,
-				"semantic_pv":     h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
-				"modbus_raw_read": h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
+				"ebus_standard":    h.opts.EbusStandardServer != nil,
+				"eebus_admin":      eebusAdminAvailable,
+				"semantic_pv":      h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
+				"semantic_storage": h.opts.SemanticStorageEnabled && h.opts.SemanticStorage != nil,
+				"modbus_raw_read":  h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
 				"graphql":               h.opts.GraphQLPath,
@@ -1119,6 +1126,34 @@ func (h *handler) handleSemanticPV(w http.ResponseWriter, r *http.Request) {
 	response, err := h.opts.SemanticPV(r.Context())
 	if err != nil {
 		http.Error(w, "semantic PV unavailable", http.StatusBadGateway)
+		return
+	}
+	if response.ContentType != "" {
+		w.Header().Set("Content-Type", response.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(response.Status)
+	_, _ = w.Write(response.Body)
+}
+
+func (h *handler) handleSemanticStorage(w http.ResponseWriter, r *http.Request) {
+	if !h.opts.SemanticStorageEnabled || h.opts.SemanticStorage == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	response, err := h.opts.SemanticStorage(r.Context())
+	if err != nil {
+		http.Error(w, "semantic storage unavailable", http.StatusBadGateway)
 		return
 	}
 	if response.ContentType != "" {

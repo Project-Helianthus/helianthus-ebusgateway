@@ -57,3 +57,25 @@ func TestSemanticPVCurrentRejectsUndeclaredProviderFields(t *testing.T) {
 		t.Fatalf("undeclared provider field response=%d %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestSemanticStorageCurrentUsesOneEvaluatedProjection(t *testing.T) {
+	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) {
+		return json.RawMessage(`{"snapshot":{"snapshot_id":"snapshot:storage"},"evaluation":{"evaluation_digest":"sha256:test"},"selections":[],"projection":{"manifest":{"target_id":"target:gateway-semantic-storage"}}}`), true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
+	if response.Code != http.StatusOK {
+		t.Fatalf("storage status=%d body=%s", response.Code, response.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["data"].(map[string]any)["semanticStorageCurrent"]; !ok {
+		t.Fatalf("storage GraphQL response=%s", response.Body.String())
+	}
+}

@@ -16,7 +16,11 @@ type ModbusTCPConfig struct {
 // lifecycle identity are supplied by configuration; decoded register values
 // never establish either identity.
 type GrowattBMSRS485Config struct {
-	Enabled          bool
+	Enabled bool
+	// AssetID is the stable, operator-configured semantic asset identity. It is
+	// deliberately separate from SourceID: no native tuple, unit, version or
+	// decoded observation is allowed to manufacture an asset identity.
+	AssetID          string
 	SourceID         string
 	SourceEpoch      string
 	DriverGeneration uint64

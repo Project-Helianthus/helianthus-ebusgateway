@@ -18,32 +18,39 @@ import (
 )
 
 const (
-	route                = "/graphql/m2m/v1"
-	semanticPVContractID = "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"
-	maxRequestBytes      = 16 << 10
-	maxResponseBytes     = 1 << 20
-	maxJSONDepth         = 64
-	maxQueryDepth        = 8
-	maxSelectedFields    = 256
+	route                     = "/graphql/m2m/v1"
+	semanticPVContractID      = "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"
+	semanticStorageContractID = "PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1"
+	maxRequestBytes           = 16 << 10
+	maxResponseBytes          = 1 << 20
+	maxJSONDepth              = 64
+	maxQueryDepth             = 8
+	maxSelectedFields         = 256
 )
 
 const semanticPVFixedQuery = `query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) {
   semanticPVCurrent(request: $request) { snapshot evaluation selections projection }
 }`
 
+const semanticStorageFixedQuery = `query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) {
+  semanticStorageCurrent(request: $request) { snapshot evaluation selections projection }
+}`
+
 // Config supplies the one immutable SemReg evaluation used by every public PV
 // consumer. The legacy canonical-PV provider is deliberately absent.
 type Config struct {
-	AllowedAssets         map[string]struct{}
-	MonotonicMilliseconds func() int64
-	SemanticPVCurrent     func(context.Context, string) (json.RawMessage, bool)
+	AllowedAssets          map[string]struct{}
+	MonotonicMilliseconds  func() int64
+	SemanticPVCurrent      func(context.Context, string) (json.RawMessage, bool)
+	SemanticStorageCurrent func(context.Context, string) (json.RawMessage, bool)
 }
 
 type handler struct {
-	cfg        Config
-	queryShape string
-	mu         sync.Mutex
-	principals map[string]*principalLimit
+	cfg               Config
+	queryShape        string
+	storageQueryShape string
+	mu                sync.Mutex
+	principals        map[string]*principalLimit
 }
 
 type principalLimit struct {
@@ -59,8 +66,8 @@ func WithMTLSPrincipal(ctx context.Context, fingerprint string) context.Context 
 }
 
 func NewHandler(cfg Config) (http.Handler, error) {
-	if cfg.SemanticPVCurrent == nil {
-		return nil, errors.New("authoritative SemReg PV projection provider is required")
+	if cfg.SemanticPVCurrent == nil && cfg.SemanticStorageCurrent == nil {
+		return nil, errors.New("an authoritative SemReg projection provider is required")
 	}
 	if cfg.AllowedAssets == nil {
 		cfg.AllowedAssets = map[string]struct{}{}
@@ -73,7 +80,11 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("invalid embedded SemReg PV query")
 	}
-	return &handler{cfg: cfg, queryShape: shape, principals: make(map[string]*principalLimit)}, nil
+	storageShape, _, _, err := queryDocumentShape(semanticStorageFixedQuery)
+	if err != nil {
+		return nil, errors.New("invalid embedded SemReg storage query")
+	}
+	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, principals: make(map[string]*principalLimit)}, nil
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -113,11 +124,25 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
-	if err != nil || request.OperationName != "SemanticPVCurrent" || queryShape != h.queryShape {
+	if err != nil {
 		writeError(w, "QUERY_REJECTED")
 		return
 	}
-	if request.Variables.Request.ContractID != semanticPVContractID {
+	root, contract, provider := "", "", (func(context.Context, string) (json.RawMessage, bool))(nil)
+	switch request.OperationName {
+	case "SemanticPVCurrent":
+		root, contract, provider = "semanticPVCurrent", semanticPVContractID, h.cfg.SemanticPVCurrent
+	case "SemanticStorageCurrent":
+		root, contract, provider = "semanticStorageCurrent", semanticStorageContractID, h.cfg.SemanticStorageCurrent
+	default:
+		writeError(w, "QUERY_REJECTED")
+		return
+	}
+	if (request.OperationName == "SemanticPVCurrent" && queryShape != h.queryShape) || (request.OperationName == "SemanticStorageCurrent" && queryShape != h.storageQueryShape) || provider == nil {
+		writeError(w, "QUERY_REJECTED")
+		return
+	}
+	if request.Variables.Request.ContractID != contract {
 		writeError(w, "CONTRACT_INCOMPATIBLE")
 		return
 	}
@@ -131,7 +156,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.release(principal)
-	data, ok := h.cfg.SemanticPVCurrent(r.Context(), asset)
+	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
 		writeError(w, "SOURCE_UNAVAILABLE")
 		return
@@ -141,7 +166,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SOURCE_UNAVAILABLE")
 		return
 	}
-	encoded, err := json.Marshal(map[string]any{"data": map[string]any{"semanticPVCurrent": map[string]json.RawMessage{
+	encoded, err := json.Marshal(map[string]any{"data": map[string]any{root: map[string]json.RawMessage{
 		"snapshot": projection["snapshot"], "evaluation": projection["evaluation"], "selections": projection["selections"], "projection": projection["projection"],
 	}}})
 	if err != nil || len(encoded) > maxResponseBytes {

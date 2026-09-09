@@ -69,7 +69,7 @@ func (connection *boundedM2MConnection) Close() error {
 	return err
 }
 
-func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter) (*m2mGraphQLRuntime, error) {
+func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt ...*growattBMSRS485ProductionProvider) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
@@ -96,6 +96,12 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 			}
 			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
 			return encoded, err == nil
+		},
+		SemanticStorageCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
+			if len(growatt) != 1 || growatt[0] == nil || growatt[0].storage == nil {
+				return nil, false
+			}
+			return growatt[0].storage.Current(asset)
 		},
 	})
 	if err != nil {

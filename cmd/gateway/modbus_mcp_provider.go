@@ -57,12 +57,13 @@ func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, grow
 	if growatt == nil {
 		return core
 	}
-	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt}
+	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt, storage: growatt}
 }
 
 type gatewayGrowattBMSMCPProvider struct {
 	*gatewayModbusMCPProvider
 	growatt mcp.GrowattBMSRS485V202Provider
+	storage mcp.GrowattStorageSemanticProvider
 }
 
 func (provider gatewayGrowattBMSMCPProvider) ModbusV1CoreAvailable() bool {
@@ -80,6 +81,13 @@ func (provider gatewayGrowattBMSMCPProvider) GrowattBMSRS485V202(ctx context.Con
 		return mcp.GrowattBMSRS485V202Observation{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
 	}
 	return provider.growatt.GrowattBMSRS485V202(ctx)
+}
+
+func (provider gatewayGrowattBMSMCPProvider) GrowattStorageSemanticCurrent(ctx context.Context) (any, error) {
+	if provider.storage == nil {
+		return nil, mcp.ErrGrowattStorageSemanticProviderUnavailable
+	}
+	return provider.storage.GrowattStorageSemanticCurrent(ctx)
 }
 
 func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request mcp.ModbusRawReadRequest) (mcp.ModbusRawReadResult, error) {

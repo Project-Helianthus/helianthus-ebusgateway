@@ -68,10 +68,17 @@ func NewClient(config ClientConfig) (*Client, error) {
 }
 
 func (client *Client) Current(ctx context.Context) (Response, error) {
+	return client.current(ctx, "SemanticPVCurrent", semanticPVFixedQuery, semanticPVContractID)
+}
+
+func (client *Client) StorageCurrent(ctx context.Context) (Response, error) {
+	return client.current(ctx, "SemanticStorageCurrent", semanticStorageFixedQuery, semanticStorageContractID)
+}
+
+func (client *Client) current(ctx context.Context, operation, query, contract string) (Response, error) {
 	if client == nil || client.http == nil {
 		return Response{}, errors.New("M2M GraphQL client unavailable")
 	}
-	operation, query, contract := "SemanticPVCurrent", semanticPVFixedQuery, semanticPVContractID
 	body, err := json.Marshal(map[string]any{
 		"operationName": operation, "query": query,
 		"variables": map[string]any{"request": map[string]string{"contractId": contract, "assetRef": client.asset}},

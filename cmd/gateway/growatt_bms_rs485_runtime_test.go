@@ -134,7 +134,7 @@ func (fake *growattEndpointFake) Close() error {
 
 func growattProductionConfig() ebusgateway.GrowattBMSRS485Config {
 	return ebusgateway.GrowattBMSRS485Config{
-		Enabled: true, SourceID: "growatt-bms-a", SourceEpoch: "source-epoch-1", DriverGeneration: 1, UnitID: 7,
+		Enabled: true, AssetID: "asset:growatt-bms-a", SourceID: "growatt-bms-a", SourceEpoch: "source-epoch-1", DriverGeneration: 1, UnitID: 7,
 		SerialPath: "/dev/fixture", Baud: 9600, Parity: "even", StopBits: 1,
 		ResponseTimeout: time.Second, MaxResponseDelay: 100 * time.Millisecond, MaxQuiescence: 200 * time.Millisecond,
 	}
@@ -184,6 +184,56 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 	}
 	if err := runtime.Close(); err != nil || fake.closed != 1 {
 		t.Fatalf("close/error=%d/%v", fake.closed, err)
+	}
+}
+
+func TestGrowattBMSRS485SemanticStoragePublishesOneAtomicSemRegView(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	view, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+	if err != nil {
+		t.Fatalf("semantic storage publish: %v", err)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public map[string]any
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"snapshot", "evaluation", "selections", "projection"} {
+		if _, ok := public[key]; !ok {
+			t.Fatalf("semantic storage view lacks %s: %s", key, encoded)
+		}
+	}
+	if _, ok := runtime.storage.Current("asset:growatt-bms-a"); !ok {
+		t.Fatal("published storage asset is not available through its configured asset ID")
+	}
+}
+
+func TestGrowattBMSRS485SemanticStorageSerializesConcurrentObservations(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	var group sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+			errs <- err
+		}()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent semantic storage publish: %v", err)
+		}
+	}
+	if _, ok := runtime.storage.Current("asset:growatt-bms-a"); !ok {
+		t.Fatal("concurrent publication lost configured asset view")
 	}
 }
 

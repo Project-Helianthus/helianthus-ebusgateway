@@ -10,8 +10,8 @@ import (
 
 var errSourceSelectionNotActive = errors.New("source selection not active")
 
-// enforceRPCSourceParam is the rpc.invoke call-site guard enforcing the
-// admitted-source invariant. If params omits "source", the startup-admitted
+// enforceRPCSourceParam is the rpc.invoke call-site guard for default-source
+// injection and explicit-source validation. If params omits "source", the startup-admitted
 // source is injected. If params carries an explicit "source", it is treated as
 // a user-requested override and only validated as a byte-shaped source.
 //
@@ -44,7 +44,7 @@ func enforceRPCSourceParam(params map[string]any, admittedSource byte, admitted 
 	return nil
 }
 
-// enforceRPCSourceOnArgs enforces the admitted-source invariant on the
+// enforceRPCSourceOnArgs applies default-source injection and explicit-source validation on the
 // enclosing rpc.invoke args envelope. Unlike enforceRPCSourceParam it
 // handles the case where args["params"] is absent, nil, or not a map —
 // in which case a fresh params map is materialised with the admitted source.

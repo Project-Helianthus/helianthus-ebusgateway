@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -460,6 +463,253 @@ func TestServer_InitializeAndTools(t *testing.T) {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("invoke v1 properties missing %q", key)
 		}
+	}
+	if got := invokeV1["description"]; got != "Discover a device with ebus.v1.registry.devices.list, then select its plane with ebus.v1.registry.planes.list and method with ebus.v1.registry.methods.list before invoking it." {
+		t.Fatalf("invoke v1 description = %q", got)
+	}
+	for _, tc := range []struct {
+		property    string
+		description string
+	}{
+		{"plane", "Plane name returned by ebus.v1.registry.planes.list for this address."},
+		{"method", "Method name returned by ebus.v1.registry.methods.list for this address and plane."},
+		{"params", "Method-specific parameters. Omit source to use the startup-admitted source; an explicit source overrides it when supplied as a nonzero byte."},
+	} {
+		property, ok := properties[tc.property].(map[string]any)
+		if !ok {
+			t.Fatalf("invoke v1 property %q = %T; want map", tc.property, properties[tc.property])
+		}
+		if got := property["description"]; got != tc.description {
+			t.Fatalf("invoke v1 property %q description = %q", tc.property, got)
+		}
+	}
+}
+
+func TestServer_InvokeV1SafetyErrorsNameInvalidParameter(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	_, err = server.enforceInvokeV1Safety(map[string]any{
+		"address":         "eight",
+		"plane":           "heating",
+		"method":          "get_status",
+		"intent":          "READ_ONLY",
+		"allow_dangerous": false,
+	})
+	if err == nil || err.Error() != "invalid address: expected integer in range [0,255]: ebus: payload does not match expected schema" {
+		t.Fatalf("invalid address error = %v", err)
+	}
+
+	_, err = server.enforceInvokeV1Safety(map[string]any{
+		"address":         8,
+		"plane":           1,
+		"method":          "get_status",
+		"intent":          "READ_ONLY",
+		"allow_dangerous": false,
+	})
+	if err == nil || err.Error() != "invalid plane: expected non-empty string: ebus: payload does not match expected schema" {
+		t.Fatalf("invalid plane error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{
+			name: "method",
+			args: map[string]any{"address": 8, "plane": "heating", "method": false, "intent": "READ_ONLY", "allow_dangerous": false},
+			want: "invalid method: expected non-empty string: ebus: payload does not match expected schema",
+		},
+		{
+			name: "intent",
+			args: map[string]any{"address": 8, "plane": "heating", "method": "get_status", "intent": false, "allow_dangerous": false},
+			want: "invalid intent: expected READ_ONLY or MUTATE: ebus: payload does not match expected schema",
+		},
+		{
+			name: "allow_dangerous",
+			args: map[string]any{"address": 8, "plane": "heating", "method": "get_status", "intent": "READ_ONLY", "allow_dangerous": "false"},
+			want: "invalid allow_dangerous: expected boolean: ebus: payload does not match expected schema",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := server.enforceInvokeV1Safety(tc.args); err == nil || err.Error() != tc.want {
+				t.Fatalf("error = %v; want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestServer_InvokeV1SafetyPreservesExactPlaneNameForLookup(t *testing.T) {
+	plane := &testPlane{name: "heating", methods: []registry.Method{
+		testMethod{name: "get_status", readOnly: true, template: testTemplate{primary: 0xB5, secondary: 0x04}},
+	}}
+	reg := &testRegistry{
+		entries: map[byte]registry.DeviceEntry{0x08: testEntry{
+			info:   registry.DeviceInfo{Address: 0x08},
+			planes: []registry.Plane{plane},
+		}},
+		order: []byte{0x08},
+	}
+	server, err := NewServer(reg, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	_, err = server.enforceInvokeV1Safety(map[string]any{
+		"address":         8,
+		"plane":           " heating ",
+		"method":          "get_status",
+		"intent":          "READ_ONLY",
+		"allow_dangerous": false,
+	})
+	if err == nil || err.Error() != "unknown plane \" heating \": ebus: payload does not match expected schema" {
+		t.Fatalf("exact plane lookup error = %v", err)
+	}
+}
+
+func TestServer_ToolsCallInvokeV1MalformedArgumentReturnsStableEnvelope(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":"false"}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("tools/call returned rpc error = %+v", res.Error)
+	}
+	result, ok := res.Result.(map[string]any)
+	if !ok || result["isError"] != true {
+		t.Fatalf("tools/call result = %#v; want content-level error", res.Result)
+	}
+	envelope := envelopeFromResult(t, res)
+	errorPayload, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("error payload = %#v; want map", envelope["error"])
+	}
+	if got, _ := errorPayload["code"].(string); got != "INVALID_ARGUMENT" {
+		t.Fatalf("error code = %q; want INVALID_ARGUMENT", got)
+	}
+	if got, _ := errorPayload["message"].(string); got != "invalid allow_dangerous: expected boolean: ebus: payload does not match expected schema" {
+		t.Fatalf("error message = %q", got)
+	}
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok || meta["data_timestamp"] == "" {
+		t.Fatalf("envelope meta = %#v; want data_timestamp", envelope["meta"])
+	}
+	// The timestamp is intentionally live; normalize only that volatile field so
+	// the golden captures the complete stable error envelope.
+	meta["data_timestamp"] = "<runtime>"
+	compareRPCInvokeGolden(t, "rpc_invoke_malformed_allow_dangerous.golden.json", map[string]any{
+		"is_error": result["isError"],
+		"envelope": envelope,
+	})
+}
+
+func TestServer_ToolsCallInvokeV1InvalidIntentPrecedesRouteLookup(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+
+	res := doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"ebus.v1.rpc.invoke","arguments":{"address":254,"plane":"stale","method":"missing","intent":"DELETE","allow_dangerous":false}}`),
+	})
+	if res.Error != nil {
+		t.Fatalf("tools/call returned rpc error = %+v", res.Error)
+	}
+	result, ok := res.Result.(map[string]any)
+	if !ok || result["isError"] != true {
+		t.Fatalf("tools/call result = %#v; want content-level error", res.Result)
+	}
+	envelope := envelopeFromResult(t, res)
+	errorPayload, ok := envelope["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("error payload = %#v; want map", envelope["error"])
+	}
+	if got, _ := errorPayload["message"].(string); got != "invalid intent: expected READ_ONLY or MUTATE: ebus: payload does not match expected schema" {
+		t.Fatalf("error message = %q", got)
+	}
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok || meta["data_timestamp"] == "" {
+		t.Fatalf("envelope meta = %#v; want data_timestamp", envelope["meta"])
+	}
+	meta["data_timestamp"] = "<runtime>"
+	compareRPCInvokeGolden(t, "rpc_invoke_invalid_intent_precedes_lookup.golden.json", map[string]any{
+		"is_error": result["isError"],
+		"envelope": envelope,
+	})
+}
+
+func TestServer_ToolsCallChangedArgumentErrorsHaveStableEnvelopes(t *testing.T) {
+	server, err := NewServer(&testRegistry{entries: make(map[byte]registry.DeviceEntry)}, &testInvoker{})
+	if err != nil {
+		t.Fatalf("NewServer error = %v", err)
+	}
+	cases := []struct{ name, request, golden string }{
+		{"devices address", `{"name":"ebus.v1.registry.devices.get","arguments":{"address":"bad"}}`, "registry_devices_get_invalid_address.golden.json"},
+		{"devices address out of range", `{"name":"ebus.v1.registry.devices.get","arguments":{"address":256}}`, "registry_devices_get_out_of_range_address.golden.json"},
+		{"planes address", `{"name":"ebus.v1.registry.planes.list","arguments":{"address":"bad"}}`, "registry_planes_list_invalid_address.golden.json"},
+		{"planes address out of range", `{"name":"ebus.v1.registry.planes.list","arguments":{"address":256}}`, "registry_planes_list_out_of_range_address.golden.json"},
+		{"methods address", `{"name":"ebus.v1.registry.methods.list","arguments":{"address":"bad","plane":"heating"}}`, "registry_methods_list_invalid_address.golden.json"},
+		{"methods address out of range", `{"name":"ebus.v1.registry.methods.list","arguments":{"address":256,"plane":"heating"}}`, "registry_methods_list_out_of_range_address.golden.json"},
+		{"invoke address", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":"bad","plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_address.golden.json"},
+		{"invoke address out of range", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":256,"plane":"heating","method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_out_of_range_address.golden.json"},
+		{"legacy invoke address", `{"name":"ebus.invoke","arguments":{"address":"bad","plane":"heating","method":"get_status"}}`, "legacy_invoke_invalid_address.golden.json"},
+		{"legacy invoke address out of range", `{"name":"ebus.invoke","arguments":{"address":256,"plane":"heating","method":"get_status"}}`, "legacy_invoke_out_of_range_address.golden.json"},
+		{"invoke plane", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":false,"method":"get_status","intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_plane.golden.json"},
+		{"invoke method", `{"name":"ebus.v1.rpc.invoke","arguments":{"address":8,"plane":"heating","method":false,"intent":"READ_ONLY","allow_dangerous":false}}`, "rpc_invoke_invalid_method.golden.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: json.RawMessage(tc.request)})
+			if res.Error != nil {
+				t.Fatalf("rpc error = %+v", res.Error)
+			}
+			result, ok := res.Result.(map[string]any)
+			if !ok || result["isError"] != true {
+				t.Fatalf("result = %#v", res.Result)
+			}
+			envelope := envelopeFromResult(t, res)
+			meta, ok := envelope["meta"].(map[string]any)
+			if !ok || meta["data_timestamp"] == "" {
+				t.Fatalf("meta = %#v", envelope["meta"])
+			}
+			meta["data_timestamp"] = "<runtime>"
+			compareRPCInvokeGolden(t, tc.golden, map[string]any{"is_error": result["isError"], "envelope": envelope})
+		})
+	}
+}
+
+func compareRPCInvokeGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	actual, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal golden %s: %v", name, err)
+	}
+	path := filepath.Join("testdata", name)
+	if os.Getenv("UPDATE") == "1" {
+		if err := os.WriteFile(path, append(actual, '\n'), 0o644); err != nil {
+			t.Fatalf("write golden %s: %v", name, err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden %s: %v", name, err)
+	}
+	if got := string(actual); got != strings.TrimSpace(string(want)) {
+		t.Fatalf("golden mismatch for %s:\nwant: %s\ngot:  %s", name, strings.TrimSpace(string(want)), got)
 	}
 }
 

@@ -76,7 +76,7 @@ func TestToolInventoryGoldenSignatures(t *testing.T) {
 		{Name: "ebus.v1.registry.devices.list", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.registry.methods.list", SchemaHash: "97aa07b78405c1f77e2c3845a083b088db13019ca0a3ea83dba4206088d3bcf8"},
 		{Name: "ebus.v1.registry.planes.list", SchemaHash: "da78278884d60ad8b0f1d272acde9ea9aa0d407993039a2b39dbf584d95f0757"},
-		{Name: "ebus.v1.rpc.invoke", SchemaHash: "163d33b397ffcb2e1374d6d7dc388352d7b565726577c3d0e710b4c2dc78cdb9"},
+		{Name: "ebus.v1.rpc.invoke", SchemaHash: "2fd0b7f73114101025e127ceafcfca4de2f8ea864236b5f211184f0cef7c6326"},
 		{Name: "ebus.v1.runtime.status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.adapter_info.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},
 		{Name: "ebus.v1.semantic.boiler_status.get", SchemaHash: "c88e6ce24faaf24f31d9f934af950368a2dd0561e547df2089c7c44195d76389"},

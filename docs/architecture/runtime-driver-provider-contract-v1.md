@@ -1544,7 +1544,7 @@ code that is not connected to that composition stays unavailable.
 
 | Runtime/profile | Current reachable operations | Current boundary and INT-06 disposition |
 |---|---|---|
-| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`; B503 adds five read-only evidence/session views. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and source admission still decide. |
+| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`; B503 adds five read-only evidence/session views. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
 | Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, qualified canonical PV read, and the existing qualify/refresh worker. | Read-only. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
@@ -1557,10 +1557,14 @@ contract are:
 
 - eBUS registry and generic route: `ebus.v1.registry.devices.list`,
   `ebus.v1.registry.devices.get`, `ebus.v1.registry.planes.list`,
-  `ebus.v1.registry.methods.list`, and `ebus.v1.rpc.invoke`. Invoke permits
-  `READ_ONLY` only for a known read-only registry method. `MUTATE` requires the
-  current registry route, dangerous-operation acknowledgement, idempotency key,
-  deadline, and admitted source.
+  `ebus.v1.registry.methods.list`, and `ebus.v1.rpc.invoke`. Discover the
+  address, then plane, then method through those list operations before invoking.
+  The invoke schema describes those canonical names; method-specific `params`
+  remain native to the selected method. Omitting `params.source` uses the
+  startup-admitted source, while an explicit nonzero byte source overrides it.
+  Invoke permits `READ_ONLY` only for a known read-only
+  registry method. `MUTATE` requires the current registry route, dangerous-
+  operation acknowledgement, idempotency key, deadline, and a nonzero source.
 - eBUS named semantic mutation surfaces:
   `ebus.v1.semantic.schedules.set_zone_time_program`,
   `ebus.v1.semantic.schedules.set_dhw_time_program`,

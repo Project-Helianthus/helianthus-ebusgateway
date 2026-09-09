@@ -459,6 +459,7 @@ type pvPublicationAsset struct {
 type pvPublicationView struct {
 	snapshot   semreg.Snapshot
 	canonical  []byte
+	wallFloor  semreg.TimePoint
 	evaluation semreg.EvaluationView
 	selections []semreg.Selection
 	projection projection.ProjectionReport
@@ -563,10 +564,52 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 			return pvPublicationReceipt{}, err
 		}
 	}
-	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, evaluation: evaluation, selections: selections, projection: report}
+	floor, err := nextPVPublicationWallFloor(asset.current, detached.lifecycle.receivedAt, detached.lifecycle.evaluatedAt)
+	if err != nil {
+		return pvPublicationReceipt{}, err
+	}
+	// A detached public view carries the wall coordinate at which its immutable
+	// snapshot was committed. Read-time wall clocks may roll back, but cannot be
+	// allowed to precede this snapshot's receipt/evaluation coordinate.
+	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
 	asset.kernel, asset.current = staged, view
 	c.assets[detached.assetID] = asset
 	return pvPublicationReceipt{assetID: detached.assetID, snapshotID: snapshot.SnapshotID, revisions: snapshot.Revisions}, nil
+}
+
+// nextPVPublicationWallFloor preserves one comparable, nondecreasing trusted
+// floor for the current asset view. The lifecycle contract has already ordered
+// receipt before evaluation; retaining the prior floor also covers a process
+// wall rollback between successive publications.
+func nextPVPublicationWallFloor(current *pvPublicationView, received, evaluated semreg.TimePoint) (semreg.TimePoint, error) {
+	if err := received.Validate(); err != nil {
+		return semreg.TimePoint{}, errors.New("PV receipt wall floor is invalid")
+	}
+	if err := evaluated.Validate(); err != nil {
+		return semreg.TimePoint{}, errors.New("PV evaluation wall floor is invalid")
+	}
+	if received.ClockID != evaluated.ClockID {
+		return semreg.TimePoint{}, errors.New("PV lifecycle wall floors are incompatible")
+	}
+	floor := evaluated
+	if current == nil {
+		return floor, nil
+	}
+	if err := current.wallFloor.Validate(); err != nil {
+		return semreg.TimePoint{}, errors.New("PV current wall floor is invalid")
+	}
+	if current.wallFloor.ClockID != floor.ClockID {
+		return semreg.TimePoint{}, errors.New("PV current wall floor is incompatible")
+	}
+	previous, previousErr := strconv.ParseInt(string(current.wallFloor.UnixNanoseconds), 10, 64)
+	next, nextErr := strconv.ParseInt(string(floor.UnixNanoseconds), 10, 64)
+	if previousErr != nil || nextErr != nil {
+		return semreg.TimePoint{}, errors.New("PV wall floor is invalid")
+	}
+	if previous > next {
+		floor = current.wallFloor
+	}
+	return floor, nil
 }
 
 func pvHasSelectableCandidate(envelope semreg.FactEnvelope, evaluation semreg.EvaluationView) (bool, error) {

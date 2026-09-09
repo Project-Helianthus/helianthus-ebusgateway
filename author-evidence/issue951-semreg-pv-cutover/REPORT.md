@@ -271,3 +271,30 @@ The final configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
 `golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
 triggered. CI log SHA-256:
 `1ee04b2f02d50c24c0a8890c96af49322091c4d77884bac60ee08f45a320db05`.
+
+## Per-view wall-floor remediation
+
+Each committed PV publication view now retains a detached, nondecreasing wall
+floor derived from its lifecycle receipt/evaluation coordinate and the prior
+current view. Public reads still detach a single immutable snapshot before
+capturing current wall/monotonic context. The read then clamps only its wall
+coordinate to that selected view's same-clock floor; monotonic elapsed remains
+the current value and retains its invalid-rollback rejection. Canonical snapshot
+bytes and selection ownership are never mutated.
+
+Deterministic coverage publishes at T1, rolls the wall clock back to T0, and
+proves the original snapshot remains available and byte-identical with an
+evaluation wall at T1. A refresh while the wall remains at T0 carries the T1
+floor forward, and a later forward wall is used normally. Concurrent refresh
+and public-read coverage proves every read remains available under `-race`.
+
+Focused normal and race coverage passed for wall rollback, concurrent
+refresh/read, detach-before-context, qualification staging, and bounded
+evidence cases. Race log SHA-256:
+`39e7a5daf957336b685d34be7173eb4d768768ebd00f96a03756d9e4dd8777b7`.
+
+The final configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
+`93/93`; all Go race packages; Python `168 + 6 + 11 + 8 + 6 + 2`; and
+`golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
+triggered. CI log SHA-256:
+`8bd31ef1feddcdb2462de94058a62942c46df5a43f003fd502e1a1efbab51b48`.

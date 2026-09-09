@@ -3,6 +3,7 @@ package modbusadapter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"sync"
@@ -474,6 +475,126 @@ func TestAdapterPVClockUsesMonotonicElapsedAcrossWallAdjustment(t *testing.T) {
 	}
 	if err := adapter.publishSemanticPV(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
 		t.Fatalf("wall adjustment blocked valid publication: %v", err)
+	}
+}
+
+func TestAdapterPVReadClampsWallRollbackToDetachedSnapshotFloor(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	firstWall := started.Add(10 * time.Second)
+	rollbackWall := started.Add(5 * time.Second)
+	forwardWall := firstWall.Add(20 * time.Second)
+	currentWall, currentMono := firstWall, firstWall
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:read-wall-floor", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return currentWall }, monotonicNow: func() time.Time { return currentMono }}
+	observation := pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)
+	if err := adapter.publishSemanticPV(observation); err != nil {
+		t.Fatal(err)
+	}
+	identity, _, err := resolvePVPublicationIdentity(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := "pv-asset-" + pvCoreRawHash(identity)[:32]
+	published, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok {
+		t.Fatal("published public view unavailable")
+	}
+	canonical := append([]byte(nil), published.Canonical...)
+
+	// The process wall clock rolls back after T1, while monotonic time remains
+	// valid. The selected snapshot's committed T1 floor keeps evaluation valid.
+	currentWall = rollbackWall
+	rolledBack, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok {
+		t.Fatal("wall rollback made the detached public snapshot unavailable")
+	}
+	if rolledBack.Evaluation.Context.EvaluatedAt.UnixNanoseconds != semreg.Int64(strconv.FormatInt(firstWall.UTC().UnixNano(), 10)) {
+		t.Fatalf("rollback read wall=%s; want committed floor %d", rolledBack.Evaluation.Context.EvaluatedAt.UnixNanoseconds, firstWall.UTC().UnixNano())
+	}
+	if rolledBack.Snapshot.SnapshotID != published.Snapshot.SnapshotID || !bytes.Equal(rolledBack.Canonical, canonical) {
+		t.Fatal("wall-floor read changed the selected immutable snapshot")
+	}
+
+	// A later refresh while the wall is still rolled back must carry the prior
+	// T1 floor forward rather than making the per-view floor regress to T0.
+	updatedWords := append([]uint16(nil), observedFroniusFloatControlsWords()...)
+	pvCoreSetFloat(updatedWords, 20, 4_321.5)
+	currentMono = firstWall.Add(time.Second)
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, updatedWords, 3, 4)); err != nil {
+		t.Fatalf("rollback-time refresh: %v", err)
+	}
+	rollbackRefresh, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok || rollbackRefresh.Evaluation.Context.EvaluatedAt.UnixNanoseconds != semreg.Int64(strconv.FormatInt(firstWall.UTC().UnixNano(), 10)) {
+		t.Fatalf("rollback refresh floor=%+v ok=%t", rollbackRefresh.Evaluation.Context, ok)
+	}
+	if rollbackRefresh.Snapshot.SnapshotID == published.Snapshot.SnapshotID {
+		t.Fatal("rollback-time refresh did not publish its distinct immutable snapshot")
+	}
+	refreshCanonical := append([]byte(nil), rollbackRefresh.Canonical...)
+
+	currentWall, currentMono = forwardWall, forwardWall
+	forward, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok || forward.Evaluation.Context.EvaluatedAt.UnixNanoseconds != semreg.Int64(strconv.FormatInt(forwardWall.UTC().UnixNano(), 10)) {
+		t.Fatalf("forward wall read=%+v ok=%t", forward.Evaluation.Context, ok)
+	}
+	if forward.Snapshot.SnapshotID != rollbackRefresh.Snapshot.SnapshotID || !bytes.Equal(forward.Canonical, refreshCanonical) {
+		t.Fatal("forward read changed the selected immutable snapshot")
+	}
+}
+
+func TestAdapterPVConcurrentRefreshAndReadKeepsPublicViewAvailable(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:concurrent-read-floor", startedWall: started.UTC(), startedMono: started,
+		profiles: make(map[string]ProfileObservationRecord), qualifications: make(map[string]sunSpecQualificationRecord), refreshEvidence: make(map[string]sunSpecQualificationRecord),
+		wallNow: time.Now, monotonicNow: time.Now}
+	words := observedFroniusFloatControlsWords()
+	initial := pvCoreObservation(t, words, 1, 2)
+	if err := adapter.RecordSunSpecQualificationObservation(initial); err != nil {
+		t.Fatal(err)
+	}
+	identity, _, err := resolvePVPublicationIdentity(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := "pv-asset-" + pvCoreRawHash(identity)[:32]
+	errCh := make(chan error, 1)
+	var readers sync.WaitGroup
+	for reader := 0; reader < 4; reader++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for attempt := 0; attempt < 64; attempt++ {
+				view, ok := adapter.SemanticPVCurrentByAsset(asset)
+				if !ok || len(view.Canonical) == 0 {
+					select {
+					case errCh <- errors.New("concurrent public PV read became unavailable"):
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	for refresh := 0; refresh < 16; refresh++ {
+		updated := append([]uint16(nil), words...)
+		pvCoreSetFloat(updated, 20, float32(4_000+refresh))
+		if err := adapter.RecordSunSpecCurrentObservation(pvCoreObservation(t, updated, uint64(10+refresh), uint64(20+refresh))); err != nil {
+			t.Fatalf("refresh %d: %v", refresh, err)
+		}
+	}
+	readers.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
 	}
 }
 

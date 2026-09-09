@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -609,11 +610,36 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
+	context, err = clampSemanticPVReadWall(context, view.wallFloor)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
 	view, err = adapter.semanticPV.evaluatePublicView(view, context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+// clampSemanticPVReadWall prevents a rolled-back wall clock from preceding
+// the immutable snapshot selected for this read. It changes only the wall
+// coordinate; monotonic elapsed time remains the current trusted read clock.
+func clampSemanticPVReadWall(context semreg.EvaluationContext, floor semreg.TimePoint) (semreg.EvaluationContext, error) {
+	if err := floor.Validate(); err != nil {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall floor is invalid")
+	}
+	if context.EvaluatedAt.ClockID != floor.ClockID {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall clock is incompatible")
+	}
+	current, currentErr := strconv.ParseInt(string(context.EvaluatedAt.UnixNanoseconds), 10, 64)
+	minimum, minimumErr := strconv.ParseInt(string(floor.UnixNanoseconds), 10, 64)
+	if currentErr != nil || minimumErr != nil {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication wall clock is invalid")
+	}
+	if current < minimum {
+		context.EvaluatedAt = floor
+	}
+	return context, nil
 }
 
 func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error) {

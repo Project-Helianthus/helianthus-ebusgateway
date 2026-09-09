@@ -9,6 +9,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
@@ -22,6 +23,8 @@ type growattEndpointFake struct {
 	mismatch   int
 	generation uint64
 	closed     int
+	recovers   int
+	recoverErr error
 }
 
 func growattBMSProductionWords() map[uint16][]uint16 {
@@ -52,7 +55,7 @@ func (fake *growattEndpointFake) Read(_ context.Context, unit byte, request modb
 	fake.calls = append(fake.calls, [2]uint16{request.Offset(), request.Quantity()})
 	index := len(fake.calls) - 1
 	if index == fake.failAt {
-		return modbus.ReadRegistersResponse{}, modbus.RTUReadEvidence{}, errors.New("fixture transport fault")
+		return modbus.ReadRegistersResponse{}, modbus.RTUReadEvidence{TerminalOutcome: "transport_fault"}, errors.New("fixture transport fault")
 	}
 	response, err := modbus.DecodeReadRegistersResponse(request, growattBMSProductionReadPDU(fake.words[request.Offset()]))
 	if err != nil {
@@ -69,6 +72,17 @@ func (fake *growattEndpointFake) Read(_ context.Context, unit byte, request modb
 		Current: true, IntegrityValid: true, TerminalOutcome: "success", ReceiptWall: time.Unix(1_800_000_000, int64(index)),
 		ReceivedAt: time.Duration(index+1) * time.Millisecond, ClockEpoch: growattBMSRS485ClockEpoch,
 	}, nil
+}
+
+func (fake *growattEndpointFake) Recover(context.Context) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.recovers++
+	if fake.recoverErr != nil {
+		return fake.recoverErr
+	}
+	fake.generation++
+	return nil
 }
 
 func (fake *growattEndpointFake) Close() error {
@@ -130,6 +144,32 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 	}
 }
 
+func TestGatewayModbusMCPProviderGrowattOptionalInterfaceMatrix(t *testing.T) {
+	if provider := newGatewayModbusMCPProviderWithGrowatt(nil, nil); provider != nil {
+		t.Fatalf("disabled provider=%T", provider)
+	}
+	tcpOnly := newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, nil)
+	if _, ok := tcpOnly.(mcp.GrowattBMSRS485V202Provider); ok {
+		t.Fatalf("TCP-only provider unexpectedly implements Growatt optional interface: %T", tcpOnly)
+	}
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	for name, provider := range map[string]mcp.ModbusV1Provider{
+		"bms-only": newGatewayModbusMCPProviderWithGrowatt(nil, runtime),
+		"tcp-bms":  newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, runtime),
+	} {
+		t.Run(name, func(t *testing.T) {
+			growatt, ok := provider.(mcp.GrowattBMSRS485V202Provider)
+			if !ok {
+				t.Fatalf("provider %T omits Growatt optional interface", provider)
+			}
+			if _, err := growatt.GrowattBMSRS485V202(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestGrowattBMSRS485ProductionCompositionFailsClosed(t *testing.T) {
 	for name, config := range map[string]ebusgateway.GrowattBMSRS485Config{
 		"disabled-active": {SourceID: "retained"},
@@ -161,6 +201,67 @@ func TestGrowattBMSRS485ProductionCompositionFailsClosed(t *testing.T) {
 	}
 	if _, ok := runtime.LastObservationEvidence(); ok {
 		t.Fatal("stale generation retained a qualified observation")
+	}
+}
+
+func TestGrowattBMSRS485ProductionCompositionRecoversOnlyBeforeLaterSample(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: 1, mismatch: -1, generation: 1}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err == nil || len(fake.calls) != 2 || fake.recovers != 0 {
+		t.Fatalf("failed sample calls/recover=%#v/%d", fake.calls, fake.recovers)
+	}
+	fake.mu.Lock()
+	fake.failAt = -1
+	fake.mu.Unlock()
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 6 || fake.recovers != 1 {
+		t.Fatalf("later sample calls/recover=%#v/%d", fake.calls, fake.recovers)
+	}
+	evidence, ok := runtime.LastObservationEvidence()
+	if !ok || evidence.Slices[0].TransportGeneration != 2 || len(evidence.Slices) != 4 {
+		t.Fatalf("recovered evidence=%#v/%t", evidence, ok)
+	}
+}
+
+func TestGrowattBMSRS485ProductionCompositionFailedRecoverFailsClosed(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: 0, mismatch: -1, generation: 1, recoverErr: errors.New("recovery unavailable")}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err == nil {
+		t.Fatal("failed sample unexpectedly succeeded")
+	}
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); !errors.Is(err, fake.recoverErr) || len(fake.calls) != 1 || fake.recovers != 1 {
+		t.Fatalf("recover error/calls/attempts=%v/%#v/%d", err, fake.calls, fake.recovers)
+	}
+}
+
+func TestGrowattBMSRS485ProductionCompositionSerializesPollRecoveryAndClose(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: 0, mismatch: -1, generation: 1}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	_, _ = runtime.GrowattBMSRS485V202(context.Background())
+	fake.mu.Lock()
+	fake.failAt = -1
+	fake.mu.Unlock()
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var wait sync.WaitGroup
+	for range 4 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, _ = runtime.GrowattBMSRS485V202(context.Background())
+		}()
+	}
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		_ = runtime.Close()
+	}()
+	wait.Wait()
+	if fake.recovers != 1 || fake.closed != 1 {
+		t.Fatalf("recover/close=%d/%d", fake.recovers, fake.closed)
 	}
 }
 

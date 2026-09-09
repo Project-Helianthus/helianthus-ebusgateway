@@ -22,7 +22,6 @@ import (
 
 type gatewayModbusMCPProvider struct {
 	adapter modbusMCPAdapter
-	growatt mcp.GrowattBMSRS485V202Provider
 	nextID  atomic.Uint64
 	rateMu  sync.Mutex
 	rateAt  time.Time
@@ -48,7 +47,16 @@ func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, grow
 	if adapter == nil && growatt == nil {
 		return nil
 	}
-	return &gatewayModbusMCPProvider{adapter: adapter, growatt: growatt, now: time.Now}
+	core := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	if growatt == nil {
+		return core
+	}
+	return gatewayGrowattBMSMCPProvider{ModbusV1Provider: core, growatt: growatt}
+}
+
+type gatewayGrowattBMSMCPProvider struct {
+	mcp.ModbusV1Provider
+	growatt mcp.GrowattBMSRS485V202Provider
 }
 
 // ModbusV1CoreAvailable keeps the independent RTU observer from advertising
@@ -57,8 +65,8 @@ func (provider *gatewayModbusMCPProvider) ModbusV1CoreAvailable() bool {
 	return provider != nil && provider.adapter != nil
 }
 
-func (provider *gatewayModbusMCPProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
-	if provider == nil || provider.growatt == nil {
+func (provider gatewayGrowattBMSMCPProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
+	if provider.growatt == nil {
 		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
 	}
 	return provider.growatt.GrowattBMSRS485V202(ctx)

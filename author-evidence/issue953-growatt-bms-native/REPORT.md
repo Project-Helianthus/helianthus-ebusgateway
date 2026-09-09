@@ -33,6 +33,12 @@ responses, stale/mixed generations, clock changes, disabled/invalid input, or
 qualification failure return no status and commit no envelope.
 `outbound_allowed` is always false.
 
+Upstream terminal `write_fault` and `transport_fault` mark recovery required;
+the failed sample is never retried. Before only a later poll, the serialized
+provider invokes the upstream bounded `Recover`, then starts a fresh four-read
+sample at its successor transport generation. Exception/admission/qualification
+failure does not request recovery; failed recovery stays unavailable.
+
 Without Modbus TCP, the RTU path registers only
 `modbus.v1.growatt.bms.rs485.status.get`; it adds no TCP raw/profile, Tesla, or
 SemReg PV tool. No SemReg, GraphQL, Portal, Home Assistant, Matter, eeBUS,
@@ -61,6 +67,12 @@ disabled/partial/invalid-unit/stale-generation rejection, response binding,
 source epoch/driver/transport generation replacement, and native-only
 registration.
 
+The correction additionally proves a failed partial fault commits no envelope;
+the next call performs exactly one recovery and exactly four fresh FC03 reads;
+failed recovery fails closed; and concurrent polls and close serialize through
+the provider lifecycle. The optional-provider matrix proves fully disabled,
+TCP-only, BMS-only, and TCP+BMS paths expose Growatt only when a runtime exists.
+
 Final configured CI passed:
 
 ```text
@@ -73,7 +85,7 @@ It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `6`, `11`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), and both declared
 gates. Transport and passive smoke were `not triggered`: this changes no eBUS
 transport topology, adapter-mux, scan, or passive runtime. CI log SHA-256:
-`4dc119d21bb10babcf36c5e3b427a370a81b9f9dfd358b15468e5c49a67905ae`.
+`8828e2057a846eb2e689f1c294e5cc15fd246713c1213b67a887428e8fa76c2a`.
 
 ## Boundary
 

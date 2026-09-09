@@ -59,6 +59,7 @@ func (e GrowattBMSRS485ObservationEvidence) clone() GrowattBMSRS485ObservationEv
 
 type growattBMSRTUEndpoint interface {
 	Read(context.Context, byte, modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error)
+	Recover(context.Context) error
 	Close() error
 }
 
@@ -73,6 +74,7 @@ type growattBMSRTUSession struct {
 	lastReceipt      time.Time
 	lastMonotonic    time.Duration
 	clockEpoch       string
+	recoveryNeeded   bool
 }
 
 func (session *growattBMSRTUSession) begin() {
@@ -94,6 +96,11 @@ func (session *growattBMSRTUSession) ReadHolding(ctx context.Context, unitID byt
 	}
 	response, receipt, err := session.endpoint.Read(ctx, unitID, request)
 	if err != nil {
+		if receipt.TerminalOutcome == "write_fault" || receipt.TerminalOutcome == "transport_fault" {
+			session.mu.Lock()
+			session.recoveryNeeded = true
+			session.mu.Unlock()
+		}
 		return modbus.ReadRegistersResponse{}, err
 	}
 	if !receipt.Current || !receipt.IntegrityValid || receipt.TerminalOutcome != "success" ||
@@ -121,6 +128,25 @@ func (session *growattBMSRTUSession) ReadHolding(ctx context.Context, unitID byt
 		Words: append([]uint16(nil), receipt.Words...),
 	})
 	return response, nil
+}
+
+func (session *growattBMSRTUSession) recover(ctx context.Context) error {
+	if session == nil || session.endpoint == nil {
+		return errors.New("growatt BMS RTU session unavailable")
+	}
+	session.mu.Lock()
+	needed := session.recoveryNeeded
+	session.mu.Unlock()
+	if !needed {
+		return nil
+	}
+	if err := session.endpoint.Recover(ctx); err != nil {
+		return err
+	}
+	session.mu.Lock()
+	session.recoveryNeeded = false
+	session.mu.Unlock()
+	return nil
 }
 
 func (session *growattBMSRTUSession) complete(observationID string, revision uint64) (GrowattBMSRS485ObservationEvidence, error) {
@@ -154,6 +180,9 @@ func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx conte
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	if err := provider.session.recover(ctx); err != nil {
+		return modbusreg.GrowattBMSTypedReadOnlyStatus{}, err
+	}
 	provider.session.begin()
 	status, err := provider.runtime.GrowattBMSRS485V202(ctx)
 	if err != nil {
@@ -181,6 +210,8 @@ func (provider *growattBMSRS485ProductionProvider) Close() error {
 	if provider == nil || provider.session == nil || provider.session.endpoint == nil {
 		return nil
 	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
 	return provider.session.endpoint.Close()
 }
 

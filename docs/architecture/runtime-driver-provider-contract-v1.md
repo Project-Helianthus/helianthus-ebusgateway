@@ -1625,6 +1625,14 @@ qualified the typed status. A partial read, malformed or mismatched response,
 stale/fenced endpoint, mixed transport generation, or changed clock epoch
 returns no status and commits no envelope. `outbound_allowed` remains false.
 
+A terminal upstream `write_fault` or `transport_fault` marks the endpoint for
+recovery but does not retry the failed sample. Before one later poll, the
+serialized provider calls only the upstream bounded `Recover`; recovery failure
+remains unavailable and fail-closed. Modbus exceptions, admission denial, and
+native qualification/semantic failures do not request recovery. A successful
+recovery creates the upstream successor transport generation, then the later
+poll starts a new normal four-slice sample.
+
 `helianthus-modbus` owns serial lifecycle, request correlation, immutable ADU
 evidence, recovery, and transport generation. The gateway does not reopen,
 decode, correlate, or retry around that endpoint; it supplies only exact

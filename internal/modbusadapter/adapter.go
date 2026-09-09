@@ -62,24 +62,30 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce      sync.Once
-	closeErr       error
-	executeMu      sync.Mutex
-	connectionMu   sync.RWMutex
-	closed         bool
-	lastRequest    modbus.TCPRequestHandle
-	profileMu      sync.RWMutex
-	profiles       map[string]ProfileObservationRecord
-	qualifications map[string]sunSpecQualificationRecord
-	semanticPV     *pvPublicationCore
-	pvSourceEpoch  semreg.SourceEpochID
-	startedWall    time.Time
-	startedMono    time.Time
-	wallNow        func() time.Time
-	monotonicNow   func() time.Time
+	closeOnce       sync.Once
+	closeErr        error
+	executeMu       sync.Mutex
+	connectionMu    sync.RWMutex
+	closed          bool
+	lastRequest     modbus.TCPRequestHandle
+	profileMu       sync.RWMutex
+	profiles        map[string]ProfileObservationRecord
+	qualifications  map[string]sunSpecQualificationRecord
+	refreshEvidence map[string]sunSpecQualificationRecord
+	refreshOrder    []string
+	semanticPV      *pvPublicationCore
+	pvSourceEpoch   semreg.SourceEpochID
+	startedWall     time.Time
+	startedMono     time.Time
+	wallNow         func() time.Time
+	monotonicNow    func() time.Time
 }
 
 const maxRetainedProfileObservations = 32
+
+// Refresh evidence has its own bounded lifecycle. Terminal qualification
+// observations retain their existing capacity and identity contract.
+const maxRetainedSunSpecRefreshEvidence = 32
 
 // ProfileObservationRecord retains one exact registry-owned observation and
 // the evidence labels supplied by its future detector/poller owner.
@@ -154,19 +160,20 @@ func Start(
 	startedWall := processStarted.UTC()
 	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+startedWall.Format(time.RFC3339Nano)))
 	return &Adapter{
-		endpoint:       endpoint,
-		connection:     handle,
-		source:         config.Endpoint.RuntimeAcquisitionSource,
-		config:         config,
-		dial:           dial,
-		profiles:       make(map[string]ProfileObservationRecord),
-		qualifications: make(map[string]sunSpecQualificationRecord),
-		semanticPV:     semanticPV,
-		pvSourceEpoch:  semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
-		startedWall:    startedWall,
-		startedMono:    processStarted,
-		wallNow:        time.Now,
-		monotonicNow:   time.Now,
+		endpoint:        endpoint,
+		connection:      handle,
+		source:          config.Endpoint.RuntimeAcquisitionSource,
+		config:          config,
+		dial:            dial,
+		profiles:        make(map[string]ProfileObservationRecord),
+		qualifications:  make(map[string]sunSpecQualificationRecord),
+		refreshEvidence: make(map[string]sunSpecQualificationRecord),
+		semanticPV:      semanticPV,
+		pvSourceEpoch:   semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
+		startedWall:     startedWall,
+		startedMono:     processStarted,
+		wallNow:         time.Now,
+		monotonicNow:    time.Now,
 	}, nil
 }
 
@@ -454,6 +461,62 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 	return adapter.publishSemanticPV(observation)
 }
 
+// RecordSunSpecCurrentObservation retains immutable native evidence for a
+// publishable refresh. It commits the evidence only with a successful SemReg
+// publication and evicts the oldest refresh evidence deterministically.
+func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.SunSpecQualificationObservation) error {
+	if adapter == nil {
+		return errors.New("modbus TCP adapter unavailable")
+	}
+	adapter.connectionMu.RLock()
+	defer adapter.connectionMu.RUnlock()
+	if adapter.closed {
+		return errors.New("modbus TCP adapter is closed")
+	}
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		return fmt.Errorf("serialize SunSpec current observation: %w", err)
+	}
+	capability, sampleID := observation.Capability().ProfileID(), observation.SampleID()
+	if capability == "" || sampleID == "" {
+		return errors.New("SunSpec current observation identity is incomplete")
+	}
+	key := capability + "\x00" + sampleID
+	adapter.profileMu.Lock()
+	defer adapter.profileMu.Unlock()
+	if existing, ok := adapter.refreshEvidence[key]; ok {
+		if !bytes.Equal(existing.encoded, encoded) {
+			return errors.New("SunSpec current observation identity collision")
+		}
+		return adapter.publishSemanticPV(observation)
+	}
+	var evictedKey string
+	var evicted sunSpecQualificationRecord
+	if len(adapter.refreshOrder) == maxRetainedSunSpecRefreshEvidence {
+		evictedKey = adapter.refreshOrder[0]
+		evicted = adapter.refreshEvidence[evictedKey]
+		delete(adapter.refreshEvidence, evictedKey)
+		copy(adapter.refreshOrder, adapter.refreshOrder[1:])
+		adapter.refreshOrder[len(adapter.refreshOrder)-1] = ""
+		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
+	}
+	adapter.refreshEvidence[key] = sunSpecQualificationRecord{
+		observation: observation,
+		encoded:     append([]byte(nil), encoded...),
+	}
+	adapter.refreshOrder = append(adapter.refreshOrder, key)
+	if err := adapter.publishSemanticPV(observation); err != nil {
+		delete(adapter.refreshEvidence, key)
+		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
+		if evictedKey != "" {
+			adapter.refreshEvidence[evictedKey] = evicted
+			adapter.refreshOrder = append([]string{evictedKey}, adapter.refreshOrder...)
+		}
+		return err
+	}
+	return nil
+}
+
 func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {
 	if adapter.semanticPV == nil {
 		return errors.New("SemReg PV publication unavailable")
@@ -557,6 +620,9 @@ func (adapter *Adapter) SunSpecQualificationObservation(profileID, sampleID stri
 	adapter.profileMu.RLock()
 	defer adapter.profileMu.RUnlock()
 	record, ok := adapter.qualifications[profileID+"\x00"+sampleID]
+	if !ok {
+		record, ok = adapter.refreshEvidence[profileID+"\x00"+sampleID]
+	}
 	if !ok {
 		return modbusreg.SunSpecQualificationObservation{}, nil, false
 	}

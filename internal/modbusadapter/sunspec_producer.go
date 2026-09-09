@@ -90,8 +90,8 @@ func (producer *SunSpecProducer) Qualify(ctx context.Context, identity SunSpecPo
 	return producer.qualify(ctx, identity, false, true)
 }
 
-// Refresh acquires and publishes a newer canonical state without consuming the
-// immutable qualification-observation retention budget.
+// Refresh acquires and publishes a newer canonical state with bounded,
+// retrievable native evidence for every public SemReg evidence reference.
 func (producer *SunSpecProducer) Refresh(ctx context.Context, identity SunSpecPollIdentity) (SunSpecQualificationResult, error) {
 	return producer.qualify(ctx, identity, false, false)
 }
@@ -236,7 +236,7 @@ func (producer *SunSpecProducer) classify(identity SunSpecPollIdentity, snapshot
 				result.Outcome = SunSpecQualificationStop
 				return result
 			}
-		} else if err := producer.adapter.PublishSunSpecCurrent(observation); err != nil {
+		} else if err := producer.adapter.RecordSunSpecCurrentObservation(observation); err != nil {
 			result.Outcome = SunSpecQualificationStop
 			return result
 		}

@@ -147,6 +147,84 @@ func TestSunSpecProducerQualifiesExactObservedFroniusControlsChainThroughRegistr
 	}
 }
 
+func TestSunSpecProducerRefreshRetainsCurrentSemRegEvidenceWithBoundedEviction(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	listener, _ := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{
+		UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSunSpecProducer: %v", err)
+	}
+	initial, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 71, DeadlineIdentity: 171})
+	if err != nil || initial.Outcome != SunSpecQualificationGO {
+		t.Fatalf("initial qualification=%+v err=%v", initial, err)
+	}
+
+	pvCoreSetFloat(words, 20, 4_321.5)
+	firstRefresh, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 72, DeadlineIdentity: 172})
+	if err != nil || firstRefresh.Outcome != SunSpecQualificationGO {
+		t.Fatalf("first refresh=%+v err=%v", firstRefresh, err)
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, initial, firstRefresh)
+
+	// Refresh evidence is insertion-ordered and bounded. Every later poll keeps
+	// its current digest retrievable while eviction makes the oldest refresh
+	// explicitly unavailable.
+	lastRefresh := firstRefresh
+	for poll := uint64(73); poll <= 73+maxRetainedSunSpecRefreshEvidence; poll++ {
+		pvCoreSetFloat(words, 20, float32(poll))
+		lastRefresh, err = producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: poll, DeadlineIdentity: poll + 100})
+		if err != nil || lastRefresh.Outcome != SunSpecQualificationGO {
+			t.Fatalf("refresh %d=%+v err=%v", poll, lastRefresh, err)
+		}
+	}
+	if _, _, ok := adapter.SunSpecQualificationObservation(firstRefresh.CapabilityID, firstRefresh.SampleID); ok {
+		t.Fatal("oldest refresh evidence remained after deterministic bounded eviction")
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, initial, lastRefresh)
+}
+
+func assertCurrentSunSpecEvidenceRetained(t *testing.T, adapter *Adapter, initial, refresh SunSpecQualificationResult) {
+	t.Helper()
+	current, ok := adapter.SemanticPVCurrent(initial.CapabilityID, initial.SampleID)
+	if !ok {
+		t.Fatal("current SemReg PV view unavailable")
+	}
+	observation, encoded, ok := adapter.SunSpecQualificationObservation(refresh.CapabilityID, refresh.SampleID)
+	if !ok || len(encoded) == 0 {
+		t.Fatalf("current refresh sample %q is unavailable through MCP evidence lookup", refresh.SampleID)
+	}
+	replay, err := observation.Replay()
+	if err != nil || len(replay.SourceViews()) == 0 {
+		t.Fatalf("current refresh sample %q has no replayable source evidence: %v", refresh.SampleID, err)
+	}
+	wantDigest := "sha256:" + pvCoreHash("pv-observation", encoded)
+	found := false
+	for _, envelope := range current.Snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			for _, evidence := range candidate.Evidence {
+				if string(evidence.Kind) == "sunspec.qualification_observation" && string(evidence.Digest) == wantDigest {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("current SemReg evidence digest does not resolve refresh sample %q", refresh.SampleID)
+	}
+	encoded[0] ^= 0xff
+	_, again, ok := adapter.SunSpecQualificationObservation(refresh.CapabilityID, refresh.SampleID)
+	if !ok || len(again) == 0 || again[0] == encoded[0] {
+		t.Fatal("MCP evidence lookup leaked mutable retained bytes")
+	}
+}
+
 func TestSunSpecProducerStopsWhenQualificationRetentionCapacityIsExhausted(t *testing.T) {
 	listener, _ := serveSunSpecChain(t, observedFroniusFloatControlsWords())
 	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)

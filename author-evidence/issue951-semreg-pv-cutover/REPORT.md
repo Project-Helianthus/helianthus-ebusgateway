@@ -218,3 +218,31 @@ The final configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
 `golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
 triggered. CI log SHA-256:
 `12c5831c5d842283feb7d3953359c58d6abd04d04b85325c04ef976543bf7f4e`.
+
+## Public-read and qualification-publication ordering remediation
+
+`SemanticPVCurrentByAsset` now detaches the exact current snapshot while the
+publication core read lock is held, then captures wall and monotonic context,
+and evaluates only that detached snapshot. A deterministic interleaving test
+blocks context capture, commits a later receipt, and proves the read returns
+the already-detached healthy snapshot instead of transiently becoming
+unavailable because a pre-captured context precedes the later receipt.
+
+Initial qualification observations are now staged as detached records under
+`profileMu` before their SemReg publication. The prospective evidence validator
+observes that staged record before assigning the publication-core state; any
+build or publication error removes it. The regression proves a blocked
+publication writes neither a qualification record nor a semantic asset, then
+races a public reader with a successful qualification and verifies every
+observed public snapshot has its exact replayable evidence available.
+
+Focused normal and race coverage passed for read ordering, qualification
+rollback/evidence following, bounded evidence retention, retained accumulator,
+all-current identities, and prospective capacity. Race log SHA-256:
+`7ee7b72ea702c01b6c6e30503049fc9d415be7b7a478b7a2420366dc6c738172`.
+
+The final configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
+`93/93`; all Go race packages; Python `168 + 6 + 11 + 8 + 6 + 2`; and
+`golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
+triggered. CI log SHA-256:
+`9d1802e466f70f3c53448391b2efdeee8412874efa394d8a13378f8cb00c729b`.

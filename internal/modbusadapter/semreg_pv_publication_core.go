@@ -628,12 +628,13 @@ func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationVie
 	return asset.current.detached()
 }
 
-// publicViewAt keeps the persisted snapshot byte-identical while recomputing
-// read-time freshness and its presentation selections at the supplied clock.
-func (c *pvPublicationCore) publicViewAt(assetID semreg.AssetID, context semreg.EvaluationContext) (pvPublicationView, error) {
-	view, err := c.publicView(assetID)
-	if err != nil {
-		return pvPublicationView{}, err
+// evaluatePublicView evaluates an already detached snapshot. Callers that
+// need a current clock must detach first, then obtain that clock, so a later
+// concurrent publication cannot make the context precede this snapshot's
+// receipt time.
+func (c *pvPublicationCore) evaluatePublicView(view pvPublicationView, context semreg.EvaluationContext) (pvPublicationView, error) {
+	if c == nil {
+		return pvPublicationView{}, errors.New("PV publication core is unavailable")
 	}
 	evaluation, err := semreg.EvaluateSnapshot(view.snapshot, context)
 	if err != nil {

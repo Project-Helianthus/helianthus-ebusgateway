@@ -405,8 +405,9 @@ func (adapter *Adapter) RecordProfileObservation(record ProfileObservationRecord
 }
 
 // RecordSunSpecQualificationObservation first proves deterministic
-// serialization, then retains one immutable terminal registry observation.
-// The shared bound covers legacy profile observations as well.
+// serialization, then stages one immutable terminal registry observation before
+// publishing the snapshot that cites it. The shared bound covers legacy profile
+// observations as well.
 func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbusreg.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
@@ -436,11 +437,12 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	if len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
-	if err := adapter.publishSemanticPV(observation); err != nil {
-		return err
-	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{
 		observation: observation, encoded: append([]byte(nil), encoded...),
+	}
+	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
+		delete(adapter.qualifications, key)
+		return err
 	}
 	return nil
 }
@@ -596,11 +598,18 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	if adapter == nil || assetRef == "" || adapter.semanticPV == nil {
 		return SemanticPVCurrent{}, false
 	}
+	// Detach one exact published snapshot first. Capturing the read context
+	// before this point would allow a concurrent refresh to install a receipt
+	// later than that context, making an otherwise healthy read unavailable.
+	view, err := adapter.semanticPV.publicView(semreg.AssetID(assetRef))
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
 	context, err := adapter.semanticPVReadContext()
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
-	view, err := adapter.semanticPV.publicViewAt(semreg.AssetID(assetRef), context)
+	view, err = adapter.semanticPV.evaluatePublicView(view, context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}

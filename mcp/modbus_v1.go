@@ -72,9 +72,6 @@ type ModbusProfileObservationResult struct {
 type ModbusV1Provider interface {
 	RawRead(context.Context, ModbusRawReadRequest) (ModbusRawReadResult, error)
 	ProfileObservation(context.Context, string, string) (ModbusProfileObservationResult, error)
-}
-
-type semanticPVProvider interface {
 	SemanticPVCurrent(context.Context, string, string) (SemanticPVCurrentResult, error)
 }
 
@@ -218,13 +215,8 @@ func (server *Server) handleModbusV1Call(ctx context.Context, name string, args 
 		profileID, sampleID, err = parseModbusProfileRequest(args)
 		if err == nil {
 			providerCalled = true
-			var result SemanticPVCurrentResult
-			semantic, ok := provider.(semanticPVProvider)
-			if !ok {
-				err = errors.New("semantic PV provider unavailable")
-				break
-			}
-			result, err = semantic.SemanticPVCurrent(ctx, profileID, sampleID)
+			result, callErr := provider.SemanticPVCurrent(ctx, profileID, sampleID)
+			err = callErr
 			if err == nil {
 				dataTimestamp = result.Evaluated
 				data = result.Data

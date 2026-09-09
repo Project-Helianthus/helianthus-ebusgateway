@@ -14,6 +14,16 @@ func (*semanticPVFixtureProvider) SemanticPVCurrent(context.Context, string, str
 	return SemanticPVCurrentResult{Evaluated: "2026-09-09T10:00:00.123456789Z", Data: map[string]any{"snapshot": map[string]any{"snapshot_id": "snapshot:semantic-pv"}, "projection": map[string]any{"manifest": map[string]any{"target_id": "target:gateway-semantic-pv"}}}}, nil
 }
 
+type missingSemanticPVFixtureProvider struct{}
+
+func (*missingSemanticPVFixtureProvider) RawRead(context.Context, ModbusRawReadRequest) (ModbusRawReadResult, error) {
+	return ModbusRawReadResult{}, nil
+}
+
+func (*missingSemanticPVFixtureProvider) ProfileObservation(context.Context, string, string) (ModbusProfileObservationResult, error) {
+	return ModbusProfileObservationResult{}, nil
+}
+
 func TestSemanticPVToolReplacesLegacyCanonicalPVTool(t *testing.T) {
 	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
 	if err != nil {
@@ -32,5 +42,26 @@ func TestSemanticPVToolReplacesLegacyCanonicalPVTool(t *testing.T) {
 		t.Fatalf("semantic PV timestamp=%#v", meta["data_timestamp"])
 	} else if _, err := time.Parse(time.RFC3339Nano, timestamp); err != nil {
 		t.Fatalf("semantic PV timestamp parse: %v", err)
+	}
+}
+
+func TestModbusV1CompositionRequiresCallableSemanticPVProvider(t *testing.T) {
+	missing := &missingSemanticPVFixtureProvider{}
+	if _, ok := any(missing).(ModbusV1Provider); ok {
+		t.Fatal("provider without SemanticPVCurrent satisfies the migrated Modbus V1 contract")
+	}
+
+	var provider ModbusV1Provider = &semanticPVFixtureProvider{&modbusV1FixtureProvider{}}
+	server, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(server, provider)
+	if !server.hasToolNamed(SemanticV1PVCurrentGetTool) {
+		t.Fatal("composed provider did not advertise mandatory semantic PV tool")
+	}
+	result := msp06Call(t, server.Handler(), SemanticV1PVCurrentGetTool, map[string]any{"profile_id": "sunspec.inverter.three_phase.monitoring@1.0.0", "sample_id": "sample:1"})
+	if result.isError {
+		t.Fatalf("advertised semantic PV tool was not callable: %#v", result)
 	}
 }

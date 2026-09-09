@@ -1,6 +1,9 @@
 package mcp
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Shared native-profile fixture; semantic PV tests use the SemReg provider.
 type modbusV1FixtureProvider struct {
@@ -18,4 +21,8 @@ func (provider *modbusV1FixtureProvider) RawRead(_ context.Context, request Modb
 
 func (*modbusV1FixtureProvider) ProfileObservation(_ context.Context, profileID, sampleID string) (ModbusProfileObservationResult, error) {
 	return ModbusProfileObservationResult{ProfileID: profileID, SampleID: sampleID, SourceValidity: "fixture", DetectionEvidence: []string{}, ActivationEvidence: []string{}, Replay: []ModbusReplayView{}}, nil
+}
+
+func (*modbusV1FixtureProvider) SemanticPVCurrent(context.Context, string, string) (SemanticPVCurrentResult, error) {
+	return SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
 }

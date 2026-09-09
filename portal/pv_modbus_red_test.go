@@ -36,6 +36,11 @@ func (provider *portalRawReadProvider) RawRead(_ context.Context, request mcp.Mo
 func (*portalRawReadProvider) ProfileObservation(context.Context, string, string) (mcp.ModbusProfileObservationResult, error) {
 	return mcp.ModbusProfileObservationResult{}, errors.New("not used")
 }
+
+func (*portalRawReadProvider) SemanticPVCurrent(context.Context, string, string) (mcp.SemanticPVCurrentResult, error) {
+	return mcp.SemanticPVCurrentResult{}, errors.New("semantic PV observation unavailable")
+}
+
 func TestPortalPVAndRawModbusRoutesAreClosedAndDisabledByDefault(t *testing.T) {
 	handler := NewHandler(Options{})
 	for _, request := range []*http.Request{

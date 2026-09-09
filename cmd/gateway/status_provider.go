@@ -9,9 +9,10 @@ import (
 )
 
 type runtimeStatusProvider struct {
-	daemon         graphql.ServiceStatus
-	semantic       graphql.SemanticProvider
-	admittedSource func() (byte, bool)
+	daemon                 graphql.ServiceStatus
+	daemonUpdatesAvailable func() bool
+	semantic               graphql.SemanticProvider
+	admittedSource         func() (byte, bool)
 }
 
 type runtimeGatewayIdentityProvider struct {
@@ -20,6 +21,9 @@ type runtimeGatewayIdentityProvider struct {
 
 func (p runtimeStatusProvider) DaemonStatus() graphql.ServiceStatus {
 	status := p.daemon
+	if p.daemonUpdatesAvailable != nil {
+		status.UpdatesAvailable = p.daemonUpdatesAvailable()
+	}
 	status.InitiatorAddress = ""
 	if p.admittedSource != nil {
 		if source, ok := p.admittedSource(); ok && source != 0 {
@@ -38,14 +42,22 @@ func (p runtimeGatewayIdentityProvider) GatewayIdentity() graphql.GatewayIdentit
 }
 
 func newRuntimeStatusProvider(semantic graphql.SemanticProvider, admittedSource func() (byte, bool)) graphql.StatusProvider {
+	return newRuntimeStatusProviderForBuild(semantic, admittedSource, gatewayBuildInfo{}, nil)
+}
+
+// newRuntimeStatusProviderForBuild exposes the already-validated process
+// release and only reads a cached release comparison. It must never perform
+// network I/O because GraphQL calls this provider in its request path.
+func newRuntimeStatusProviderForBuild(semantic graphql.SemanticProvider, admittedSource func() (byte, bool), buildInfo gatewayBuildInfo, updatesAvailable func() bool) graphql.StatusProvider {
 	return runtimeStatusProvider{
 		daemon: graphql.ServiceStatus{
 			Status:           "running",
-			FirmwareVersion:  "",
+			FirmwareVersion:  buildInfo.ReleaseVersion,
 			UpdatesAvailable: false,
 		},
-		semantic:       semantic,
-		admittedSource: admittedSource,
+		daemonUpdatesAvailable: updatesAvailable,
+		semantic:               semantic,
+		admittedSource:         admittedSource,
 	}
 }
 
@@ -54,13 +66,17 @@ func newRuntimeGatewayIdentityProvider(cfg ebusgateway.Config) graphql.GatewayId
 }
 
 type runtimeMCPStatusProvider struct {
-	daemon         mcp.ServiceStatus
-	semantic       graphql.SemanticProvider
-	admittedSource func() (byte, bool)
+	daemon                 mcp.ServiceStatus
+	daemonUpdatesAvailable func() bool
+	semantic               graphql.SemanticProvider
+	admittedSource         func() (byte, bool)
 }
 
 func (p runtimeMCPStatusProvider) DaemonStatus() mcp.ServiceStatus {
 	status := p.daemon
+	if p.daemonUpdatesAvailable != nil {
+		status.UpdatesAvailable = p.daemonUpdatesAvailable()
+	}
 	status.InitiatorAddress = "auto"
 	if p.admittedSource != nil {
 		if source, ok := p.admittedSource(); ok && source != 0 {
@@ -92,14 +108,21 @@ func (p runtimeMCPStatusProvider) VaillantRegulatorCapability() string {
 }
 
 func newMCPRuntimeStatusProvider(semantic graphql.SemanticProvider, admittedSource func() (byte, bool)) mcp.StatusProvider {
+	return newMCPRuntimeStatusProviderForBuild(semantic, admittedSource, gatewayBuildInfo{}, nil)
+}
+
+// newMCPRuntimeStatusProviderForBuild shares the GraphQL provider's cached
+// release comparison so MCP and GraphQL retain identical daemon status values.
+func newMCPRuntimeStatusProviderForBuild(semantic graphql.SemanticProvider, admittedSource func() (byte, bool), buildInfo gatewayBuildInfo, updatesAvailable func() bool) mcp.StatusProvider {
 	return runtimeMCPStatusProvider{
 		daemon: mcp.ServiceStatus{
 			Status:           "running",
-			FirmwareVersion:  "",
+			FirmwareVersion:  buildInfo.ReleaseVersion,
 			UpdatesAvailable: false,
 		},
-		semantic:       semantic,
-		admittedSource: admittedSource,
+		daemonUpdatesAvailable: updatesAvailable,
+		semantic:               semantic,
+		admittedSource:         admittedSource,
 	}
 }
 

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "daemonStatus": {
+      "firmwareVersion": "0.6.56",
+      "updatesAvailable": true
+    },
+    "daemon_status": {
+      "firmware_version": "0.6.56",
+      "updates_available": true
+    }
+  }
+}

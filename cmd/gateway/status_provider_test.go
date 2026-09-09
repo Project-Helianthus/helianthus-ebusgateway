@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -332,6 +334,146 @@ func TestRuntimeStatusProviderReflectsAdapterFirmwareVersion(t *testing.T) {
 	}
 	if adapter.FirmwareVersion != "0x31" {
 		t.Fatalf("adapter firmwareVersion = %q; want 0x31", adapter.FirmwareVersion)
+	}
+}
+
+func TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison(t *testing.T) {
+	var cacheReads atomic.Int32
+	updatesAvailable := func() bool {
+		cacheReads.Add(1)
+		return true
+	}
+	buildInfo := gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"}
+	graphQLProvider := newRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable)
+	mcpProvider := newMCPRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable)
+
+	graphQLDaemon := graphQLProvider.DaemonStatus()
+	mcpDaemon := mcpProvider.DaemonStatus()
+	if graphQLDaemon.FirmwareVersion != buildInfo.ReleaseVersion || mcpDaemon.FirmwareVersion != buildInfo.ReleaseVersion {
+		t.Fatalf("daemon firmware GraphQL/MCP = %q/%q; want embedded release %q", graphQLDaemon.FirmwareVersion, mcpDaemon.FirmwareVersion, buildInfo.ReleaseVersion)
+	}
+	if !graphQLDaemon.UpdatesAvailable || !mcpDaemon.UpdatesAvailable {
+		t.Fatalf("daemon updates GraphQL/MCP = %v/%v; want cached true", graphQLDaemon.UpdatesAvailable, mcpDaemon.UpdatesAvailable)
+	}
+	if cacheReads.Load() != 2 {
+		t.Fatalf("cached comparison reads = %d; want one per status provider call", cacheReads.Load())
+	}
+	if got := graphQLProvider.AdapterStatus().UpdatesAvailable; got {
+		t.Fatal("adapter updatesAvailable changed without an authoritative adapter catalogue")
+	}
+}
+
+func TestIssue469MCPRuntimeStatusSerializesCachedDaemonReleaseGolden(t *testing.T) {
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	server.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(
+		nil,
+		nil,
+		gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"},
+		func() bool { return true },
+	))
+
+	envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime status meta = %T; want object", envelope["meta"])
+	}
+	if timestamp, _ := meta["data_timestamp"].(string); timestamp == "" {
+		t.Fatal("runtime status data_timestamp is empty")
+	}
+	meta["data_timestamp"] = "<runtime>"
+
+	got, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal runtime status envelope: %v", err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "issue469_runtime_status.golden.json"))
+	if err != nil {
+		t.Fatalf("read runtime status golden: %v", err)
+	}
+	if string(got)+"\n" != string(want) {
+		t.Fatalf("runtime status golden mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestIssue469GraphQLDaemonStatusAliasesMatchMCPRuntimeStatus(t *testing.T) {
+	buildInfo := gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"}
+	updatesAvailable := func() bool { return true }
+
+	builder := graphql.NewBuilder(nil, nil)
+	builder.SetStatusProvider(newRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable))
+	graphQLHandler, err := graphql.NewHandler(builder)
+	if err != nil {
+		t.Fatalf("graphql.NewHandler() error = %v", err)
+	}
+	graphQLRequest := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ daemonStatus { firmwareVersion updatesAvailable } daemon_status { firmware_version updates_available } }"}`))
+	graphQLRequest.Header.Set("Content-Type", "application/json")
+	graphQLResponse := httptest.NewRecorder()
+	graphQLHandler.ServeHTTP(graphQLResponse, graphQLRequest)
+	if graphQLResponse.Code != http.StatusOK {
+		t.Fatalf("GraphQL status = %d; want %d body=%s", graphQLResponse.Code, http.StatusOK, graphQLResponse.Body.String())
+	}
+
+	var graphQLPayload map[string]any
+	if err := json.Unmarshal(graphQLResponse.Body.Bytes(), &graphQLPayload); err != nil {
+		t.Fatalf("unmarshal GraphQL response: %v body=%s", err, graphQLResponse.Body.String())
+	}
+	if errorsValue, exists := graphQLPayload["errors"]; exists && errorsValue != nil {
+		t.Fatalf("GraphQL errors = %#v", errorsValue)
+	}
+	gotGolden, err := json.MarshalIndent(graphQLPayload, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal GraphQL response: %v", err)
+	}
+	wantGolden, err := os.ReadFile(filepath.Join("testdata", "issue469_graphql_daemon_status.golden.json"))
+	if err != nil {
+		t.Fatalf("read GraphQL daemon status golden: %v", err)
+	}
+	if string(gotGolden)+"\n" != string(wantGolden) {
+		t.Fatalf("GraphQL daemon status golden mismatch\nwant:\n%s\ngot:\n%s", wantGolden, gotGolden)
+	}
+
+	data, ok := graphQLPayload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL data = %T; want object", graphQLPayload["data"])
+	}
+	camel, ok := data["daemonStatus"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL daemonStatus = %T; want object", data["daemonStatus"])
+	}
+	snake, ok := data["daemon_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("GraphQL daemon_status = %T; want object", data["daemon_status"])
+	}
+
+	mcpServer, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(nil, nil, buildInfo, updatesAvailable))
+	mcpEnvelope := mcpCallToolEnvelope(t, mcpServer.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	mcpData, ok := mcpEnvelope["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP runtime data = %T; want object", mcpEnvelope["data"])
+	}
+	mcpDaemon, ok := mcpData["daemon_status"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP daemon_status = %T; want object", mcpData["daemon_status"])
+	}
+
+	if got, want := camel["firmwareVersion"], mcpDaemon["firmware_version"]; got != want {
+		t.Fatalf("GraphQL daemonStatus firmwareVersion = %#v; MCP firmware_version = %#v", got, want)
+	}
+	if got, want := camel["updatesAvailable"], mcpDaemon["updates_available"]; got != want {
+		t.Fatalf("GraphQL daemonStatus updatesAvailable = %#v; MCP updates_available = %#v", got, want)
+	}
+	if got, want := snake["firmware_version"], mcpDaemon["firmware_version"]; got != want {
+		t.Fatalf("GraphQL daemon_status firmware_version = %#v; MCP firmware_version = %#v", got, want)
+	}
+	if got, want := snake["updates_available"], mcpDaemon["updates_available"]; got != want {
+		t.Fatalf("GraphQL daemon_status updates_available = %#v; MCP updates_available = %#v", got, want)
 	}
 }
 

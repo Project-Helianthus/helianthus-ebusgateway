@@ -1548,7 +1548,8 @@ code that is not connected to that composition stays unavailable.
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
 | Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, and one qualified/promoted `helianthus.pack.pv@1.0.0` SemReg projection through the existing qualify/refresh worker. | Read-only. The projection preserves admitted native observation and counter continuity evidence; generated energy is exact Wh-to-kWh with `counter_continuity_unavailable` as a declared projection loss. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
-| Huawei SmartLogger/EMMA/S-Dongle, Growatt Protocol II and BMS RS485, OutBack AXS, Fronius-specific status, Tesla FC100/WC/current-limit optional tools | Typed read/injected-provider contracts exist in the repository, but the production `gatewayModbusMCPProvider` does not implement their optional provider interfaces. | `unavailable` or `uncomposed` at this baseline. Later INT-07 composition must use exact qualified profile/version evidence. No write is inferred from a decoder, fixture, or provisional ACK/readback record. |
+| Growatt BMS RS-485 1xSxxP ESS V2.02 | When every `growatt-bms-rs485-*` configuration value is explicit and valid, `modbus.v1.growatt.bms.rs485.status.get` performs the four fixed FC03 reads through `helianthus-modbus` `RTUProductionEndpoint`, then exposes the existing qualified native status. | The endpoint owns serial opening, FC03 correlation, framing, immutable request/response ADU receipts, recovery, transport generation, and close. Gateway owns exact tuple/unit admission and source/driver identity; `helianthus-modbusreg` owns the four-slice observer and decoder. No TCP dependency, scan, broadcast, retry loop, write, or semantic projection is introduced. |
+| Huawei SmartLogger/EMMA/S-Dongle, Growatt Protocol II, OutBack AXS, Fronius-specific status, Tesla FC100/WC/current-limit optional tools | Typed read/injected-provider contracts exist in the repository, but the production `gatewayModbusMCPProvider` does not implement their optional provider interfaces. | `unavailable` or `uncomposed` at this baseline. Later INT-07 composition must use exact qualified profile/version evidence. No write is inferred from a decoder, fixture, or provisional ACK/readback record. |
 | Gree CAN and Growatt CAN | No production provider is composed by this gateway baseline. | `unavailable` here. Receive-only registry readiness remains native evidence, not a gateway operation or transmit grant. |
 | Matter output | No production output binding is composed. | No read, write, or conformance claim. INT-13 owns the later versioned target mapping. |
 
@@ -1590,14 +1591,76 @@ contract are:
   `eebus.v1.mutations.get`, and `eebus.v1.mutations.rollback`. Set and rollback
   remain unavailable without the exact write authorization, mutation-lab
   profile, and optional native mutation interface.
-- Modbus production composition: `modbus.v1.raw.read`,
+- Modbus TCP production composition: `modbus.v1.raw.read`,
   `modbus.v1.profile.observation.get`, `semantic.v1.pv.current.get`, and
   `modbus.v1.tesla.hsc.status.get`. Only FC03/FC04 raw reads are admitted; the
   Tesla status is an inert disabled-profile report with outbound disabled.
+- Independent Growatt BMS RTU composition: only
+  `modbus.v1.growatt.bms.rs485.status.get`, and only when its own explicit RTU
+configuration has been admitted. Enabling it without Modbus TCP does not
+advertise the TCP raw, profile, Tesla, or SemReg PV tools.
+
+The gateway constructs the Growatt optional MCP provider only when the RTU
+runtime exists. Its wrapper explicitly delegates core availability from the
+concrete TCP provider, so the four states remain disjoint: disabled registers no
+Modbus tool; TCP-only registers only core tools; BMS-only registers only the
+Growatt native tool; TCP+BMS registers both sets.
+The lifecycle factory receives the concrete runtime pointer and checks it before
+any optional-interface conversion, so a disabled typed-nil runtime cannot
+advertise the Growatt tool.
+
+Portal raw Modbus is a TCP-core diagnostic surface. Its bootstrap capability
+and raw-read route are absent for disabled and BMS-only composition even when
+the Portal raw-read setting is enabled; TCP-only and TCP+BMS composition retain
+the route.
 
 The gateway exposes no public driver lifecycle `list/get/start/stop/restart`
 operation at this baseline. The control service in section 4 is the contract
 for that later implementation.
+
+### 11.1 Growatt BMS RS-485 V2.02 native composition
+
+The Growatt BMS observer is disabled unless all of the following are explicitly
+configured: `growatt-bms-rs485-enabled`, source ID, source epoch, nonzero driver
+generation, unicast unit ID, serial path, baud/parity/stop bits, response
+timeout, maximum response delay, and maximum quiescence. The selected protocol
+tuple is fixed in the gateway binary to `1xSxxP ESS`, `Rev2.01`, `V2.0`, and
+`2.02`; configuration cannot select another family or revision. Absent,
+disabled, partial, invalid, broadcast/reserved-unit, or invalid-timing input
+never opens a serial endpoint.
+
+For each successful poll, the gateway retains one immutable native envelope
+with its owner-assigned observation ID/revision, configured source ID/source
+epoch/driver generation, upstream clock and transport-generation receipts, last
+receipt wall and monotonic coordinates, and all four FC03 request/response ADUs
+and words. The envelope is committed only after every ordered slice is bound to
+its exact unit/function/offset/quantity and the existing registry observer has
+qualified the typed status. A partial read, malformed or mismatched response,
+stale/fenced endpoint, mixed transport generation, or changed clock epoch
+returns no status and commits no envelope. `outbound_allowed` remains false.
+
+A successful on-demand `modbus.v1.growatt.bms.rs485.status.get` call is `LIVE`.
+Its MCP `data_timestamp` is the completed envelope's final receipt wall time,
+formatted as RFC3339Nano; it is never synthesized at the handler. The provider
+must carry that receipt with the qualified status. Missing receipt metadata
+fails closed with the existing unavailable envelope semantics and no timestamp.
+
+A terminal upstream `write_fault` or `transport_fault` marks the endpoint for
+recovery but does not retry the failed sample. Before one later poll, the
+serialized provider calls only the upstream bounded `Recover`; recovery failure
+remains unavailable and fail-closed. Modbus exceptions, admission denial, and
+native qualification/semantic failures do not request recovery. A successful
+recovery creates the upstream successor transport generation, then the later
+poll starts a new normal four-slice sample.
+
+`helianthus-modbus` owns serial lifecycle, request correlation, immutable ADU
+evidence, recovery, and transport generation. The gateway does not reopen,
+decode, correlate, or retry around that endpoint; it supplies only exact
+admission for the four read slices. `helianthus-modbusreg` owns the fixed slice
+contract and typed decoding. This issue makes no SemReg, GraphQL, Portal, Home
+Assistant, Matter, eeBUS, Prometheus, or control publication. A later semantic
+successor must consume the retained qualified native envelope as an explicit
+separate cutover.
 
 Exact public source anchors for these statements:
 

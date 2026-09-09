@@ -75,6 +75,12 @@ type ModbusV1Provider interface {
 	SemanticPVCurrent(context.Context, string, string) (SemanticPVCurrentResult, error)
 }
 
+// modbusV1CoreAvailability permits a production composition to add a native
+// optional provider without silently advertising the unrelated TCP core.
+type modbusV1CoreAvailability interface {
+	ModbusV1CoreAvailable() bool
+}
+
 type SemanticPVCurrentResult struct {
 	Data      any
 	Evaluated string
@@ -89,62 +95,70 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 	if server == nil || provider == nil {
 		return
 	}
-	modbusV1Providers.Lock()
-	modbusV1Providers.byServer[server] = provider
-	modbusV1Providers.Unlock()
-	server.tools = append(server.tools,
-		Tool{
-			Name:        ModbusV1RawReadTool,
-			Description: "Read one bounded FC03 or FC04 Modbus range with exact sanitized provenance.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"unit_id":  map[string]any{"type": "integer", "minimum": 1, "maximum": 247},
-					"function": map[string]any{"type": "integer", "enum": []int{3, 4}},
-					"offset":   map[string]any{"type": "integer", "minimum": 0, "maximum": 65535},
-					"quantity": map[string]any{"type": "integer", "minimum": 1, "maximum": modbusV1MaxReadWords},
+	coreAvailable := true
+	if availability, ok := provider.(modbusV1CoreAvailability); ok {
+		coreAvailable = availability.ModbusV1CoreAvailable()
+	}
+	if coreAvailable {
+		modbusV1Providers.Lock()
+		modbusV1Providers.byServer[server] = provider
+		modbusV1Providers.Unlock()
+		server.tools = append(server.tools,
+			Tool{
+				Name:        ModbusV1RawReadTool,
+				Description: "Read one bounded FC03 or FC04 Modbus range with exact sanitized provenance.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"unit_id":  map[string]any{"type": "integer", "minimum": 1, "maximum": 247},
+						"function": map[string]any{"type": "integer", "enum": []int{3, 4}},
+						"offset":   map[string]any{"type": "integer", "minimum": 0, "maximum": 65535},
+						"quantity": map[string]any{"type": "integer", "minimum": 1, "maximum": modbusV1MaxReadWords},
+					},
+					"required":             []string{"unit_id", "function", "offset", "quantity"},
+					"additionalProperties": false,
 				},
-				"required":             []string{"unit_id", "function", "offset", "quantity"},
-				"additionalProperties": false,
 			},
-		},
-		Tool{
-			Name:        ModbusV1ProfileObservationGetTool,
-			Description: "Get one retained profile observation with detector, activation, and exact replay evidence.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"profile_id": map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
-					"sample_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+			Tool{
+				Name:        ModbusV1ProfileObservationGetTool,
+				Description: "Get one retained profile observation with detector, activation, and exact replay evidence.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"profile_id": map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+						"sample_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+					},
+					"required":             []string{"profile_id", "sample_id"},
+					"additionalProperties": false,
 				},
-				"required":             []string{"profile_id", "sample_id"},
-				"additionalProperties": false,
 			},
-		},
-		Tool{
-			Name:        SemanticV1PVCurrentGetTool,
-			Description: "Get one immutable evaluated SemReg PV projection from an admitted SunSpec observation.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"profile_id": map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
-					"sample_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+			Tool{
+				Name:        SemanticV1PVCurrentGetTool,
+				Description: "Get one immutable evaluated SemReg PV projection from an admitted SunSpec observation.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"profile_id": map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+						"sample_id":  map[string]any{"type": "string", "minLength": 1, "maxLength": modbusV1MaxIdentityBytes},
+					},
+					"required":             []string{"profile_id", "sample_id"},
+					"additionalProperties": false,
 				},
-				"required":             []string{"profile_id", "sample_id"},
-				"additionalProperties": false,
 			},
-		},
-	)
-	registerTeslaFC100SummaryV1Tool(server, provider)
-	registerTeslaHSCV1Tool(server, provider)
-	registerTeslaWCVitalsV1Tool(server, provider)
-	registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)
-	registerGrowattProtocolIIV1Tool(server, provider)
-	registerOutBackAXSV1Tool(server, provider)
-	registerHuaweiEMMAV1Tool(server, provider)
-	registerHuaweiSmartLoggerV1Tool(server, provider)
-	registerHuaweiSDongleV1Tool(server, provider)
-	registerFroniusSunSpecV1Tool(server, provider)
+		)
+	}
+	if coreAvailable {
+		registerTeslaFC100SummaryV1Tool(server, provider)
+		registerTeslaHSCV1Tool(server, provider)
+		registerTeslaWCVitalsV1Tool(server, provider)
+		registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)
+		registerGrowattProtocolIIV1Tool(server, provider)
+		registerOutBackAXSV1Tool(server, provider)
+		registerHuaweiEMMAV1Tool(server, provider)
+		registerHuaweiSmartLoggerV1Tool(server, provider)
+		registerHuaweiSDongleV1Tool(server, provider)
+		registerFroniusSunSpecV1Tool(server, provider)
+	}
 	registerGrowattBMSRS485V202Tool(server, provider)
 }
 

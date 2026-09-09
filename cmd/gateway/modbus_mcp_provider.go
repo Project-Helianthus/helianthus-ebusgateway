@@ -40,10 +40,46 @@ type semanticPVAdapter interface {
 }
 
 func newGatewayModbusMCPProvider(adapter *modbusadapter.Adapter) mcp.ModbusV1Provider {
-	if adapter == nil {
+	return newGatewayModbusMCPProviderWithGrowatt(adapter, nil)
+}
+
+// newGatewayModbusMCPProviderWithGrowatt accepts the concrete lifecycle result
+// so a disabled (*growattBMSRS485ProductionProvider)(nil) is checked before it
+// can become a non-nil optional-provider interface.
+func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider) mcp.ModbusV1Provider {
+	if adapter == nil && growatt == nil {
 		return nil
 	}
-	return &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	core := &gatewayModbusMCPProvider{now: time.Now}
+	if adapter != nil {
+		core.adapter = adapter
+	}
+	if growatt == nil {
+		return core
+	}
+	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt}
+}
+
+type gatewayGrowattBMSMCPProvider struct {
+	*gatewayModbusMCPProvider
+	growatt mcp.GrowattBMSRS485V202Provider
+}
+
+func (provider gatewayGrowattBMSMCPProvider) ModbusV1CoreAvailable() bool {
+	return provider.gatewayModbusMCPProvider != nil && provider.gatewayModbusMCPProvider.ModbusV1CoreAvailable()
+}
+
+// ModbusV1CoreAvailable keeps the independent RTU observer from advertising
+// TCP raw/profile/SemReg tools when the TCP sidecar is not composed.
+func (provider *gatewayModbusMCPProvider) ModbusV1CoreAvailable() bool {
+	return provider != nil && provider.adapter != nil
+}
+
+func (provider gatewayGrowattBMSMCPProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
+	if provider.growatt == nil {
+		return mcp.GrowattBMSRS485V202Observation{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
+	}
+	return provider.growatt.GrowattBMSRS485V202(ctx)
 }
 
 func (provider *gatewayModbusMCPProvider) RawRead(ctx context.Context, request mcp.ModbusRawReadRequest) (mcp.ModbusRawReadResult, error) {

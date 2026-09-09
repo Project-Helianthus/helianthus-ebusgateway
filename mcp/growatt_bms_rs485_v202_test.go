@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -11,8 +12,8 @@ import (
 
 type growattBMSRS485V202Fixture struct{ *modbusV1FixtureProvider }
 
-func (*growattBMSRS485V202Fixture) GrowattBMSRS485V202(context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
-	return growattBMSRS485V202FixtureStatus(), nil
+func (*growattBMSRS485V202Fixture) GrowattBMSRS485V202(context.Context) (GrowattBMSRS485V202Observation, error) {
+	return GrowattBMSRS485V202Observation{Status: growattBMSRS485V202FixtureStatus(), ReceiptWall: time.Unix(1_800_000_000, 123).UTC()}, nil
 }
 
 func TestGrowattBMSRS485V202ToolProjectsOnlyQualifiedTypedStatus(t *testing.T) {
@@ -24,6 +25,13 @@ func TestGrowattBMSRS485V202ToolProjectsOnlyQualifiedTypedStatus(t *testing.T) {
 	r := msp06Call(t, s.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{})
 	if r.isError {
 		t.Fatal(r)
+	}
+	meta := msp06Map(t, r.envelope["meta"], "meta")
+	if consistency := msp06Map(t, meta["consistency"], "consistency"); consistency["mode"] != "LIVE" {
+		t.Fatalf("consistency=%#v", consistency)
+	}
+	if timestamp, _ := meta["data_timestamp"].(string); timestamp != "2027-01-15T08:00:00.000000123Z" {
+		t.Fatalf("data_timestamp=%q", timestamp)
 	}
 	d := msp06Map(t, r.envelope["data"], "data")
 	if d["profile"] != GrowattBMSRS485V202Profile || d["qualified"] != true {
@@ -67,13 +75,35 @@ func TestGrowattBMSRS485V202ToolRejectsNonExactRevision(t *testing.T) {
 	}
 }
 
+func TestGrowattBMSRS485V202ToolFailsClosedWithoutObservationReceipt(t *testing.T) {
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, growattBMSRS485V202NoReceiptFixture{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
+	r := msp06Call(t, s.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{})
+	if !r.isError || r.envelope["data"] != nil {
+		t.Fatalf("result=%#v", r)
+	}
+	meta := msp06Map(t, r.envelope["meta"], "meta")
+	if consistency := msp06Map(t, meta["consistency"], "consistency"); consistency["mode"] != "RETAINED_PROFILE" || meta["data_timestamp"] != "" {
+		t.Fatalf("meta=%#v", meta)
+	}
+}
+
 type growattBMSRS485V202ResultFixture struct {
 	*modbusV1FixtureProvider
 	status modbusreg.GrowattBMSTypedReadOnlyStatus
 }
 
-func (f growattBMSRS485V202ResultFixture) GrowattBMSRS485V202(context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
-	return f.status, nil
+type growattBMSRS485V202NoReceiptFixture struct{ *modbusV1FixtureProvider }
+
+func (growattBMSRS485V202NoReceiptFixture) GrowattBMSRS485V202(context.Context) (GrowattBMSRS485V202Observation, error) {
+	return GrowattBMSRS485V202Observation{Status: growattBMSRS485V202FixtureStatus()}, nil
+}
+
+func (f growattBMSRS485V202ResultFixture) GrowattBMSRS485V202(context.Context) (GrowattBMSRS485V202Observation, error) {
+	return GrowattBMSRS485V202Observation{Status: f.status, ReceiptWall: time.Unix(1_800_000_000, 123).UTC()}, nil
 }
 
 func growattBMSRS485V202FixtureStatus() modbusreg.GrowattBMSTypedReadOnlyStatus {

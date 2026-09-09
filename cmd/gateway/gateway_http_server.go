@@ -186,6 +186,7 @@ func startHTTPServer(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
 	if routePlan.portalPath != "" {
+		portalModbusProvider := portalTCPModbusProvider(modbusProvider)
 		portalPath := routePlan.portalPath
 		var getPortalBusObservability func() any
 		if busObservability != nil {
@@ -207,7 +208,7 @@ func startHTTPServer(
 			SemanticPVEnabled: cfg.PortalPV.SemanticEnabled,
 			RawModbusEnabled:  cfg.PortalPV.RawReadEnabled,
 			SemanticPV:        portalPVClient,
-			ModbusProvider:    modbusProvider,
+			ModbusProvider:    portalModbusProvider,
 			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
 				log.Printf("portal_modbus_raw_audit request_id=%s surface=%s tool=%s unit_id=%s function=%s offset=%s quantity=%s outcome=%s error_code=%s duration_ms=%d endpoint_ref=%s timestamp=%s",
 					event.RequestID, event.Surface, event.Tool, auditNumber(event.UnitID), auditNumber(event.Function),
@@ -370,4 +371,17 @@ func startHTTPServer(
 	}
 
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+// portalTCPModbusProvider prevents a composed native-only provider from
+// advertising Portal's TCP raw-read surface. Native Growatt MCP composition is
+// independent of this Portal diagnostic route.
+func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider {
+	if provider == nil {
+		return nil
+	}
+	if availability, ok := provider.(interface{ ModbusV1CoreAvailable() bool }); ok && !availability.ModbusV1CoreAvailable() {
+		return nil
+	}
+	return provider
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -71,6 +72,10 @@ func TestGrowattBMSRS485V202RuntimeFailsClosedAtMCPBoundary(t *testing.T) {
 	if !r.isError || r.envelope["data"] != nil || len(session.calls) != 2 {
 		t.Fatalf("result/calls=%#v/%#v", r, session.calls)
 	}
+	meta := msp06Map(t, r.envelope["meta"], "meta")
+	if consistency := msp06Map(t, meta["consistency"], "consistency"); consistency["mode"] != "RETAINED_PROFILE" || meta["data_timestamp"] != "" {
+		t.Fatalf("failure meta=%#v", meta)
+	}
 }
 
 func TestGrowattBMSRS485V202RuntimeRejectsMismatchedResponseAtMCPBoundary(t *testing.T) {
@@ -91,13 +96,84 @@ func TestGrowattBMSRS485V202RuntimeRejectsMismatchedResponseAtMCPBoundary(t *tes
 	}
 }
 
+func TestGrowattBMSRS485V202CorelessCompositionRegistersOnlyNativeTool(t *testing.T) {
+	session := &growattBMSRS485RuntimeSessionFake{wordsByOffset: growattBMSRS485RuntimeWords(), failAt: -1, mismatchAt: -1}
+	runtime, err := NewGrowattBMSRS485V202Runtime(growattBMSRS485RuntimeRevision(), 7, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, growattBMSRS485CorelessProvider{growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime}})
+	registered := make(map[string]bool, len(s.tools))
+	for _, tool := range s.tools {
+		registered[tool.Name] = true
+	}
+	if !registered[GrowattBMSRS485V202StatusGetTool] || registered[ModbusV1RawReadTool] || registered[SemanticV1PVCurrentGetTool] || registered[TeslaHSCV1StatusGetTool] {
+		t.Fatalf("registered tools=%#v", registered)
+	}
+}
+
+func TestGrowattBMSRS485V202RegistrationMatrix(t *testing.T) {
+	newServer := func(t *testing.T) *Server {
+		t.Helper()
+		s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	has := func(s *Server, name string) bool {
+		for _, tool := range s.tools {
+			if tool.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	disabled := newServer(t)
+	if has(disabled, GrowattBMSRS485V202StatusGetTool) || has(disabled, ModbusV1RawReadTool) {
+		t.Fatal("disabled Modbus composition registered a tool")
+	}
+	tcpOnly := newServer(t)
+	RegisterModbusV1Tools(tcpOnly, &modbusV1FixtureProvider{})
+	if !has(tcpOnly, ModbusV1RawReadTool) || has(tcpOnly, GrowattBMSRS485V202StatusGetTool) {
+		t.Fatal("TCP-only tool matrix is wrong")
+	}
+	session := &growattBMSRS485RuntimeSessionFake{wordsByOffset: growattBMSRS485RuntimeWords(), failAt: -1, mismatchAt: -1}
+	runtime, err := NewGrowattBMSRS485V202Runtime(growattBMSRS485RuntimeRevision(), 7, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bmsOnly := newServer(t)
+	RegisterModbusV1Tools(bmsOnly, growattBMSRS485CorelessProvider{growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime}})
+	if !has(bmsOnly, GrowattBMSRS485V202StatusGetTool) || has(bmsOnly, ModbusV1RawReadTool) || msp06Call(t, bmsOnly.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{}).isError {
+		t.Fatal("BMS-only tool/call matrix is wrong")
+	}
+	tcpBMS := newServer(t)
+	RegisterModbusV1Tools(tcpBMS, growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime})
+	if !has(tcpBMS, GrowattBMSRS485V202StatusGetTool) || !has(tcpBMS, ModbusV1RawReadTool) || msp06Call(t, tcpBMS.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{}).isError {
+		t.Fatal("TCP+BMS tool/call matrix is wrong")
+	}
+}
+
 type growattBMSRS485RuntimeProvider struct {
 	*modbusV1FixtureProvider
 	runtime *GrowattBMSRS485V202Runtime
 }
 
-func (provider growattBMSRS485RuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
-	return provider.runtime.GrowattBMSRS485V202(ctx)
+type growattBMSRS485CorelessProvider struct{ growattBMSRS485RuntimeProvider }
+
+func (growattBMSRS485CorelessProvider) ModbusV1CoreAvailable() bool { return false }
+
+func (provider growattBMSRS485RuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (GrowattBMSRS485V202Observation, error) {
+	status, err := provider.runtime.GrowattBMSRS485V202(ctx)
+	if err != nil {
+		return GrowattBMSRS485V202Observation{}, err
+	}
+	return GrowattBMSRS485V202Observation{Status: status, ReceiptWall: time.Unix(1_800_000_000, 456).UTC()}, nil
 }
 
 type growattBMSRS485RuntimeSessionFake struct {

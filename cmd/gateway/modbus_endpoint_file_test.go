@@ -97,6 +97,19 @@ func TestResolveModbusEndpointFileDisabledIsInertForAnyRetainedInputs(t *testing
 	}
 }
 
+func TestResolveModbusEndpointFileDisabledPreservesIndependentGrowattRTUConfig(t *testing.T) {
+	growatt := ebusgateway.GrowattBMSRS485Config{Enabled: true, SourceID: "growatt-bms-a", SourceEpoch: "epoch-1", DriverGeneration: 1}
+	cfg := ebusgateway.ModbusTCPConfig{
+		Endpoint: "tcp://retained.invalid:502", DialTimeout: -time.Second, GrowattBMSRS485: growatt,
+	}
+	if err := resolveModbusEndpointFile(&cfg, "/missing/retained-endpoint"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled || cfg.Endpoint != "" || cfg.DialTimeout != 0 || cfg.GrowattBMSRS485 != growatt {
+		t.Fatalf("disabled config = %+v", cfg)
+	}
+}
+
 func TestResolveModbusEndpointFileRejectsUnsafeFilesAndBounds(t *testing.T) {
 	valid := writeProtectedEndpointFile(t, "tcp://192.0.2.40:502", 0o600)
 	symlink := filepath.Join(t.TempDir(), "endpoint-link")

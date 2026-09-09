@@ -49,6 +49,39 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&cfg.ModbusTCPConfig.Endpoint, "modbus-tcp-endpoint", cfg.ModbusTCPConfig.Endpoint, "Modbus TCP endpoint URI (tcp://host:port)")
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
+	fs.BoolVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "growatt-bms-rs485-enabled", cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "enable the exact read-only Growatt BMS RS-485 V2.02 observer")
+	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID, "growatt-bms-rs485-source-id", cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID, "explicit non-secret Growatt BMS source identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.SourceEpoch, "growatt-bms-rs485-source-epoch", cfg.ModbusTCPConfig.GrowattBMSRS485.SourceEpoch, "explicit Growatt BMS source epoch")
+	fs.Uint64Var(&cfg.ModbusTCPConfig.GrowattBMSRS485.DriverGeneration, "growatt-bms-rs485-driver-generation", cfg.ModbusTCPConfig.GrowattBMSRS485.DriverGeneration, "explicit Growatt BMS driver generation")
+	fs.Func("growatt-bms-rs485-unit-id", "Growatt BMS unicast Modbus unit ID", func(value string) error {
+		parsed, err := strconv.ParseUint(value, 10, 8)
+		if err != nil {
+			return fmt.Errorf("invalid Growatt BMS RS-485 unit ID %q", value)
+		}
+		cfg.ModbusTCPConfig.GrowattBMSRS485.UnitID = byte(parsed)
+		return nil
+	})
+	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.SerialPath, "growatt-bms-rs485-serial-path", cfg.ModbusTCPConfig.GrowattBMSRS485.SerialPath, "configured Growatt BMS RS-485 serial path")
+	fs.Func("growatt-bms-rs485-baud", "Growatt BMS RS-485 baud", func(value string) error {
+		parsed, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid Growatt BMS RS-485 baud %q", value)
+		}
+		cfg.ModbusTCPConfig.GrowattBMSRS485.Baud = uint32(parsed)
+		return nil
+	})
+	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.Parity, "growatt-bms-rs485-parity", cfg.ModbusTCPConfig.GrowattBMSRS485.Parity, "Growatt BMS RS-485 parity: none, even, or odd")
+	fs.Func("growatt-bms-rs485-stop-bits", "Growatt BMS RS-485 stop bits", func(value string) error {
+		parsed, err := strconv.ParseUint(value, 10, 8)
+		if err != nil {
+			return fmt.Errorf("invalid Growatt BMS RS-485 stop bits %q", value)
+		}
+		cfg.ModbusTCPConfig.GrowattBMSRS485.StopBits = uint8(parsed)
+		return nil
+	})
+	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout, "growatt-bms-rs485-response-timeout", cfg.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout, "Growatt BMS RTU response timeout")
+	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "growatt-bms-rs485-max-response-delay", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "Growatt BMS maximum RTU response delay")
+	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "growatt-bms-rs485-max-quiescence", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "Growatt BMS RTU recovery quiescence bound")
 	bindEEBusFlags(fs, cfg)
 	bindM2MGraphQLFlags(fs, cfg)
 	fs.BoolVar(

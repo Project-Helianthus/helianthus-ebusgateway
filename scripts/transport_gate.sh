@@ -25,9 +25,10 @@ if [[ -z "${changed_files}" ]]; then
   exit 0
 fi
 
-requires_gate=0
+requires_ebus_gate=0
+requires_modbus_rtu_gate=0
 
-requires_transport_gate() {
+requires_ebus_transport_gate() {
   local file="$1"
   case "${file}" in
     *_test.go)
@@ -49,6 +50,93 @@ requires_transport_gate() {
       ;;
   esac
   return 1
+}
+
+# The Modbus RTU gate is deliberately separate from the eBUS M6a topology
+# matrix. It covers the gateway's explicit RTU composition boundary and the
+# exact pinned upstream endpoint contract, without pretending an ENH/ENS/ebusd
+# result proves an unrelated serial RTU path.
+modbus_rtu_dependency_changed() {
+  local changes
+  changes="$({
+    git diff --unified=0 "${base_ref}...HEAD" -- go.mod
+    git diff --cached --unified=0 -- go.mod
+    git diff --unified=0 -- go.mod
+  } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-modbus(reg)?[[:space:]]+' <<< "${changes}"
+}
+
+requires_modbus_rtu_transport_gate() {
+  local file="$1"
+  case "${file}" in
+    *_test.go)
+      return 1
+      ;;
+  esac
+  case "${file}" in
+    # Every non-test source input to issue #953's RTU configuration, lifecycle,
+    # observer runtime, qualification/projection, provider registration, or
+    # Portal provider binding is classified here.
+    modbus_config.go|\
+    cmd/gateway/gateway_cli.go|\
+    cmd/gateway/gateway_http_server.go|\
+    cmd/gateway/growatt_bms_rs485_runtime.go|\
+    cmd/gateway/gateway_run_lifecycle.go|\
+    cmd/gateway/modbus_endpoint_file.go|\
+    cmd/gateway/modbus_mcp_provider.go|\
+    mcp/growatt_bms_rs485_v202.go|\
+    mcp/growatt_bms_rs485_v202_runtime.go|\
+    mcp/modbus_v1.go)
+      return 0
+      ;;
+    go.mod)
+      modbus_rtu_dependency_changed
+      return
+      ;;
+  esac
+  return 1
+}
+
+run_modbus_rtu_transport_gate() {
+  local module_dir inventory expected count
+  local -a expected_tests=(
+    TestRTUProductionReadRetainsImmutableCorrelatedEvidence
+    TestRTUProductionExceptionDoesNotFenceButShortWriteDoes
+    TestRTUProductionRejectsUnadmittedReadBeforeWrite
+    TestRTUProductionRecoveryWaitsForRetiringReadOwnership
+    TestRTUProductionFourSequentialReadsRemainBounded
+    TestRTUProductionCancellationFencesAndPartialFramesRetainEvidence
+    TestRTUProductionMalformedAndCRCFramesRemainTerminalEvidence
+    TestRTUProductionRejectsTimingAndRecoveryBoundMismatch
+    TestRTUProductionRecoveryDiscardsDelayedOldGenerationFrame
+    TestRTUProductionRejectsRecoveryBoundsAndNoByteTimeout
+  )
+  echo "transport gate: Modbus RTU production conformance."
+  if ! GOWORK=off go test ./cmd/gateway \
+    -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition)' -count=1; then
+    echo "transport gate: FAIL — Modbus RTU gateway composition evidence failed."
+    return 1
+  fi
+  module_dir="$(GOWORK=off go list -m -f '{{.Dir}}' github.com/Project-Helianthus/helianthus-modbus)" || {
+    echo "transport gate: FAIL — pinned helianthus-modbus dependency is unavailable."
+    return 1
+  }
+  inventory="$(GOWORK=off go test "${module_dir}" -list '^TestRTUProduction')" || {
+    echo "transport gate: FAIL — pinned Modbus RTU endpoint test inventory failed."
+    return 1
+  }
+  for expected in "${expected_tests[@]}"; do
+    count="$(grep -Fxc "${expected}" <<< "${inventory}" || true)"
+    if [[ "${count}" -ne 1 ]]; then
+      echo "transport gate: FAIL — pinned Modbus RTU endpoint inventory missing or duplicates ${expected}."
+      return 1
+    fi
+  done
+  if ! GOWORK=off go test "${module_dir}" -run '^TestRTUProduction' -count=1; then
+    echo "transport gate: FAIL — pinned Modbus RTU endpoint conformance failed."
+    return 1
+  fi
+  echo "transport gate: PASS (Modbus RTU production composition and pinned endpoint conformance)."
 }
 
 # M2M SemReg PV listener configuration does not alter a protocol transport,
@@ -204,19 +292,27 @@ while IFS= read -r file; do
     if cmd_gateway_main_requires_transport_gate; then
       continue
     fi
-    requires_gate=1
-    break
+    requires_ebus_gate=1
+    requires_modbus_rtu_gate=1
+    continue
   fi
   if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
     continue
   fi
-  if requires_transport_gate "${file}"; then
-    requires_gate=1
-    break
+  if [[ "${file}" == "config.go" ]]; then
+    requires_ebus_gate=1
+    requires_modbus_rtu_gate=1
+    continue
+  fi
+  if requires_ebus_transport_gate "${file}"; then
+    requires_ebus_gate=1
+  fi
+  if requires_modbus_rtu_transport_gate "${file}"; then
+    requires_modbus_rtu_gate=1
   fi
 done <<< "${changed_files}"
 
-if [[ "${requires_gate}" -eq 0 ]]; then
+if [[ "${requires_ebus_gate}" -eq 0 && "${requires_modbus_rtu_gate}" -eq 0 ]]; then
   echo "transport gate: not triggered."
   exit 0
 fi
@@ -227,17 +323,23 @@ if [[ "${TRANSPORT_GATE_OWNER_OVERRIDE:-}" == "OVERRIDE_TRANSPORT_GATE_BY_OWNER"
     exit 1
   fi
   echo "transport gate: owner override active (${TRANSPORT_GATE_OWNER_REASON})."
+  # A documented owner override is scope-specific but applies to the current
+  # gate invocation as a whole: main.go can activate both eBUS and RTU gates.
+  requires_ebus_gate=0
+  requires_modbus_rtu_gate=0
   exit 0
 fi
 
-report_path="${TRANSPORT_MATRIX_REPORT:-}"
-if [[ -z "${report_path}" ]]; then
-  echo "transport gate: TRANSPORT_MATRIX_REPORT is required for transport/protocol changes."
-  exit 1
-fi
-if [[ ! -f "${report_path}" ]]; then
-  echo "transport gate: report not found at ${report_path}."
-  exit 1
+if [[ "${requires_ebus_gate}" -eq 1 ]]; then
+  report_path="${TRANSPORT_MATRIX_REPORT:-}"
+  if [[ -z "${report_path}" ]]; then
+    echo "transport gate: TRANSPORT_MATRIX_REPORT is required for eBUS transport/protocol changes."
+    exit 1
+  fi
+  if [[ ! -f "${report_path}" ]]; then
+    echo "transport gate: report not found at ${report_path}."
+    exit 1
+  fi
 fi
 
 # --- Adapter-direct (AD01..AD12) coverage tracking ---
@@ -264,6 +366,9 @@ adapter_direct_touched=0
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
   case "${file}" in
+    internal/adaptermux/*_test.go)
+      continue
+      ;;
     internal/adaptermux/*.go)
       adapter_direct_touched=1
       break
@@ -286,6 +391,7 @@ if [[ "${adapter_direct_touched}" -eq 1 ]]; then
   fi
 fi
 
+if [[ "${requires_ebus_gate}" -eq 1 ]]; then
 python3 - "${report_path}" <<'PY'
 import json
 import sys
@@ -356,3 +462,8 @@ if xpassed:
 msg = f"transport gate: PASS (pass={passed}, xfail={xfailed}, xpass={len(xpassed)}, blocked={blocked}, total={len(cases)})."
 print(msg)
 PY
+fi
+
+if [[ "${requires_modbus_rtu_gate}" -eq 1 ]]; then
+  run_modbus_rtu_transport_gate
+fi

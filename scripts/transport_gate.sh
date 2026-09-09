@@ -74,7 +74,16 @@ requires_modbus_rtu_transport_gate() {
       ;;
   esac
   case "${file}" in
-    modbus_config.go|cmd/gateway/growatt_bms_rs485_runtime.go|cmd/gateway/gateway_run_lifecycle.go)
+    # Every non-test source input to issue #953's RTU configuration, lifecycle,
+    # provider registration, or Portal provider binding is classified here.
+    modbus_config.go|\
+    cmd/gateway/gateway_cli.go|\
+    cmd/gateway/gateway_http_server.go|\
+    cmd/gateway/growatt_bms_rs485_runtime.go|\
+    cmd/gateway/gateway_run_lifecycle.go|\
+    cmd/gateway/modbus_endpoint_file.go|\
+    cmd/gateway/modbus_mcp_provider.go|\
+    mcp/modbus_v1.go)
       return 0
       ;;
     go.mod)
@@ -86,7 +95,19 @@ requires_modbus_rtu_transport_gate() {
 }
 
 run_modbus_rtu_transport_gate() {
-  local module_dir
+  local module_dir inventory expected count
+  local -a expected_tests=(
+    TestRTUProductionReadRetainsImmutableCorrelatedEvidence
+    TestRTUProductionExceptionDoesNotFenceButShortWriteDoes
+    TestRTUProductionRejectsUnadmittedReadBeforeWrite
+    TestRTUProductionRecoveryWaitsForRetiringReadOwnership
+    TestRTUProductionFourSequentialReadsRemainBounded
+    TestRTUProductionCancellationFencesAndPartialFramesRetainEvidence
+    TestRTUProductionMalformedAndCRCFramesRemainTerminalEvidence
+    TestRTUProductionRejectsTimingAndRecoveryBoundMismatch
+    TestRTUProductionRecoveryDiscardsDelayedOldGenerationFrame
+    TestRTUProductionRejectsRecoveryBoundsAndNoByteTimeout
+  )
   echo "transport gate: Modbus RTU production conformance."
   if ! GOWORK=off go test ./cmd/gateway \
     -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition)' -count=1; then
@@ -97,8 +118,18 @@ run_modbus_rtu_transport_gate() {
     echo "transport gate: FAIL — pinned helianthus-modbus dependency is unavailable."
     return 1
   }
-  if ! GOWORK=off go test "${module_dir}" \
-    -run 'TestRTUProduction(ReadRetainsImmutableCorrelatedEvidence|ExceptionDoesNotFenceButShortWriteDoes|FourSequentialReadsRemainBounded|RecoveryDiscardsDelayedOldGenerationFrame)' -count=1; then
+  inventory="$(GOWORK=off go test "${module_dir}" -list '^TestRTUProduction')" || {
+    echo "transport gate: FAIL — pinned Modbus RTU endpoint test inventory failed."
+    return 1
+  }
+  for expected in "${expected_tests[@]}"; do
+    count="$(grep -Fxc "${expected}" <<< "${inventory}" || true)"
+    if [[ "${count}" -ne 1 ]]; then
+      echo "transport gate: FAIL — pinned Modbus RTU endpoint inventory missing or duplicates ${expected}."
+      return 1
+    fi
+  done
+  if ! GOWORK=off go test "${module_dir}" -run '^TestRTUProduction' -count=1; then
     echo "transport gate: FAIL — pinned Modbus RTU endpoint conformance failed."
     return 1
   fi

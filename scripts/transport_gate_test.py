@@ -71,13 +71,30 @@ class TransportGateTests(unittest.TestCase):
         )
         return repo_path, report_path
 
-    def _fake_go_env(self, repo_path: pathlib.Path, exit_code: int) -> dict[str, str]:
+    def _fake_go_env(self, repo_path: pathlib.Path, exit_code: int, missing_test: str = "") -> dict[str, str]:
         bin_dir = repo_path / "fake-bin"
         bin_dir.mkdir()
         fake_go = bin_dir / "go"
         fake_go.write_text(
             "#!/usr/bin/env bash\n"
-            "echo /pinned/helianthus-modbus\n"
+            "if [[ \"$1\" == \"list\" ]]; then\n"
+            "  echo /pinned/helianthus-modbus\n"
+            "elif [[ \"$1\" == \"test\" && \" $* \" == *\" -list \"* ]]; then\n"
+            "  while IFS= read -r test_name; do\n"
+            f"    [[ \"$test_name\" == \"{missing_test}\" ]] || echo \"$test_name\"\n"
+            "  done <<'TESTS'\n"
+            "TestRTUProductionReadRetainsImmutableCorrelatedEvidence\n"
+            "TestRTUProductionExceptionDoesNotFenceButShortWriteDoes\n"
+            "TestRTUProductionRejectsUnadmittedReadBeforeWrite\n"
+            "TestRTUProductionRecoveryWaitsForRetiringReadOwnership\n"
+            "TestRTUProductionFourSequentialReadsRemainBounded\n"
+            "TestRTUProductionCancellationFencesAndPartialFramesRetainEvidence\n"
+            "TestRTUProductionMalformedAndCRCFramesRemainTerminalEvidence\n"
+            "TestRTUProductionRejectsTimingAndRecoveryBoundMismatch\n"
+            "TestRTUProductionRecoveryDiscardsDelayedOldGenerationFrame\n"
+            "TestRTUProductionRejectsRecoveryBoundsAndNoByteTimeout\n"
+            "TESTS\n"
+            "fi\n"
             f"exit {exit_code}\n",
             encoding="utf-8",
         )
@@ -133,8 +150,13 @@ class TransportGateTests(unittest.TestCase):
         go_mod_modified = go_mod_base.replace("v0.3.0", "v0.3.1")
         cases = (
             ("modbus_config.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
+            ("mcp/modbus_v1.go", "// base\n", "// modified\n"),
             ("go.mod", go_mod_base, go_mod_modified),
         )
         for changed_file, base_text, modified_text in cases:
@@ -155,7 +177,14 @@ class TransportGateTests(unittest.TestCase):
     def test_modbus_rtu_gate_fails_closed_for_lifecycle_and_dependency_changes(self) -> None:
         go_mod_base = "module test\n\ngo 1.22\n\nrequire github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
         cases = (
+            ("modbus_config.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
+            ("mcp/modbus_v1.go", "// base\n", "// modified\n"),
             ("go.mod", go_mod_base, go_mod_base.replace("v0.3.0", "v0.3.1")),
         )
         for changed_file, base_text, modified_text in cases:
@@ -171,6 +200,19 @@ class TransportGateTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
+
+    def test_modbus_rtu_gate_fails_closed_for_missing_pinned_endpoint_test(self) -> None:
+        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._fake_go_env(repo_path, 0, "TestRTUProductionFourSequentialReadsRemainBounded"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pinned Modbus RTU endpoint inventory missing or duplicates", result.stdout)
 
     def test_modbus_rtu_gate_skips_unrelated_go_mod_change(self) -> None:
         base_text = "module test\n\ngo 1.22\n\nrequire example.com/other v1.0.0\n"

@@ -85,15 +85,24 @@ the raw route; TCP-only and TCP+BMS advertise it and route into the existing
 request validation.
 
 The repository transport gate classifies this RTU production-composition path
-separately from eBUS M6a. It triggers on the RTU configuration/runtime,
-lifecycle composition wiring, and a diff that changes the exact direct
-`helianthus-modbus` selection in `go.mod`; unrelated module bumps do not
-trigger it. It runs the gateway's deterministic composition fixtures, then the
-exact pinned `helianthus-modbus` RTU production tests for immutable correlated
-evidence, fault fencing/recovery, four bounded reads, and old-generation
-rejection. The gate tests prove every composition input triggers and that failed
-lifecycle/dependency conformance commands fail closed. T01..T88 remains the
-required gate for eBUS transport/topology changes.
+separately from eBUS M6a. Its explicit non-test trigger set covers RTU config,
+CLI binding, runtime, lifecycle wiring, endpoint-file normalization, gateway
+provider composition, MCP registration, and Portal provider binding. A diff
+that changes the exact direct `helianthus-modbus` selection in `go.mod` also
+triggers; unrelated module bumps do not. It runs the gateway's deterministic
+composition fixtures, then inventories every pinned endpoint test before
+running the anchored `^TestRTUProduction` suite. The required f670 inventory
+is `ReadRetainsImmutableCorrelatedEvidence`, `ExceptionDoesNotFenceButShortWriteDoes`,
+`RejectsUnadmittedReadBeforeWrite`, `RecoveryWaitsForRetiringReadOwnership`,
+`FourSequentialReadsRemainBounded`, `CancellationFencesAndPartialFramesRetainEvidence`,
+`MalformedAndCRCFramesRemainTerminalEvidence`,
+`RejectsTimingAndRecoveryBoundMismatch`,
+`RecoveryDiscardsDelayedOldGenerationFrame`, and
+`RejectsRecoveryBoundsAndNoByteTimeout`. Missing or duplicate expected names,
+gateway failures, and endpoint conformance failures fail closed. The gate tests
+prove every composition input triggers, every such trigger fails closed for a
+failed command, and a partial endpoint inventory is rejected. T01..T88 remains
+the required gate for eBUS transport/topology changes.
 
 Final configured CI passed:
 
@@ -104,10 +113,10 @@ PASS
 
 It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
-`6`, `14`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
+`6`, `15`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
 composition/pinned-endpoint transport gate, and the passive smoke gate. The
 Modbus RTU gate passed; passive smoke was not triggered. Exact final CI log
-SHA-256: `ca03e307d4f1e7915c26aaa9be6370f83a1f1d3e58e2e146e6ad60a3c7db0033`.
+SHA-256: `f0053d83c5f0f6a8ef11e882841a3e2599854ee46f0ca5528ba8a12affdfc0ca`.
 
 ## Boundary
 

@@ -47,16 +47,23 @@ func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, grow
 	if adapter == nil && growatt == nil {
 		return nil
 	}
-	core := &gatewayModbusMCPProvider{adapter: adapter, now: time.Now}
+	core := &gatewayModbusMCPProvider{now: time.Now}
+	if adapter != nil {
+		core.adapter = adapter
+	}
 	if growatt == nil {
 		return core
 	}
-	return gatewayGrowattBMSMCPProvider{ModbusV1Provider: core, growatt: growatt}
+	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt}
 }
 
 type gatewayGrowattBMSMCPProvider struct {
-	mcp.ModbusV1Provider
+	*gatewayModbusMCPProvider
 	growatt mcp.GrowattBMSRS485V202Provider
+}
+
+func (provider gatewayGrowattBMSMCPProvider) ModbusV1CoreAvailable() bool {
+	return provider.gatewayModbusMCPProvider != nil && provider.gatewayModbusMCPProvider.ModbusV1CoreAvailable()
 }
 
 // ModbusV1CoreAvailable keeps the independent RTU observer from advertising

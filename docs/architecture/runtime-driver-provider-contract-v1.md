@@ -1597,8 +1597,14 @@ contract are:
   Tesla status is an inert disabled-profile report with outbound disabled.
 - Independent Growatt BMS RTU composition: only
   `modbus.v1.growatt.bms.rs485.status.get`, and only when its own explicit RTU
-  configuration has been admitted. Enabling it without Modbus TCP does not
-  advertise the TCP raw, profile, Tesla, or SemReg PV tools.
+configuration has been admitted. Enabling it without Modbus TCP does not
+advertise the TCP raw, profile, Tesla, or SemReg PV tools.
+
+The gateway constructs the Growatt optional MCP provider only when the RTU
+runtime exists. Its wrapper explicitly delegates core availability from the
+concrete TCP provider, so the four states remain disjoint: disabled registers no
+Modbus tool; TCP-only registers only core tools; BMS-only registers only the
+Growatt native tool; TCP+BMS registers both sets.
 
 The gateway exposes no public driver lifecycle `list/get/start/stop/restart`
 operation at this baseline. The control service in section 4 is the contract

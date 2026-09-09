@@ -111,6 +111,49 @@ func TestGrowattBMSRS485V202CorelessCompositionRegistersOnlyNativeTool(t *testin
 	}
 }
 
+func TestGrowattBMSRS485V202RegistrationMatrix(t *testing.T) {
+	newServer := func(t *testing.T) *Server {
+		t.Helper()
+		s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	has := func(s *Server, name string) bool {
+		for _, tool := range s.tools {
+			if tool.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	disabled := newServer(t)
+	if has(disabled, GrowattBMSRS485V202StatusGetTool) || has(disabled, ModbusV1RawReadTool) {
+		t.Fatal("disabled Modbus composition registered a tool")
+	}
+	tcpOnly := newServer(t)
+	RegisterModbusV1Tools(tcpOnly, &modbusV1FixtureProvider{})
+	if !has(tcpOnly, ModbusV1RawReadTool) || has(tcpOnly, GrowattBMSRS485V202StatusGetTool) {
+		t.Fatal("TCP-only tool matrix is wrong")
+	}
+	session := &growattBMSRS485RuntimeSessionFake{wordsByOffset: growattBMSRS485RuntimeWords(), failAt: -1, mismatchAt: -1}
+	runtime, err := NewGrowattBMSRS485V202Runtime(growattBMSRS485RuntimeRevision(), 7, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bmsOnly := newServer(t)
+	RegisterModbusV1Tools(bmsOnly, growattBMSRS485CorelessProvider{growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime}})
+	if !has(bmsOnly, GrowattBMSRS485V202StatusGetTool) || has(bmsOnly, ModbusV1RawReadTool) || msp06Call(t, bmsOnly.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{}).isError {
+		t.Fatal("BMS-only tool/call matrix is wrong")
+	}
+	tcpBMS := newServer(t)
+	RegisterModbusV1Tools(tcpBMS, growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime})
+	if !has(tcpBMS, GrowattBMSRS485V202StatusGetTool) || !has(tcpBMS, ModbusV1RawReadTool) || msp06Call(t, tcpBMS.Handler(), GrowattBMSRS485V202StatusGetTool, map[string]any{}).isError {
+		t.Fatal("TCP+BMS tool/call matrix is wrong")
+	}
+}
+
 type growattBMSRS485RuntimeProvider struct {
 	*modbusV1FixtureProvider
 	runtime *GrowattBMSRS485V202Runtime

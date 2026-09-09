@@ -72,6 +72,8 @@ the next call performs exactly one recovery and exactly four fresh FC03 reads;
 failed recovery fails closed; and concurrent polls and close serialize through
 the provider lifecycle. The optional-provider matrix proves fully disabled,
 TCP-only, BMS-only, and TCP+BMS paths expose Growatt only when a runtime exists.
+They also assert the exact registration/invocation matrix: disabled registers no
+Modbus tool; TCP-only core tools only; BMS-only Growatt only; TCP+BMS both.
 
 Final configured CI passed:
 
@@ -85,7 +87,7 @@ It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `6`, `11`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), and both declared
 gates. Transport and passive smoke were `not triggered`: this changes no eBUS
 transport topology, adapter-mux, scan, or passive runtime. CI log SHA-256:
-`8828e2057a846eb2e689f1c294e5cc15fd246713c1213b67a887428e8fa76c2a`.
+`7f17b2b277c6d5f6cb89877a00ea8c3dfec1ae543e4ba1de3d3ade5fdf728711`.
 
 ## Boundary
 

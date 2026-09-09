@@ -152,6 +152,9 @@ func TestGatewayModbusMCPProviderGrowattOptionalInterfaceMatrix(t *testing.T) {
 	if _, ok := tcpOnly.(mcp.GrowattBMSRS485V202Provider); ok {
 		t.Fatalf("TCP-only provider unexpectedly implements Growatt optional interface: %T", tcpOnly)
 	}
+	if availability, ok := tcpOnly.(interface{ ModbusV1CoreAvailable() bool }); !ok || !availability.ModbusV1CoreAvailable() {
+		t.Fatalf("TCP-only core availability=%T/%t", tcpOnly, ok)
+	}
 	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
 	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
 	for name, provider := range map[string]mcp.ModbusV1Provider{
@@ -162,6 +165,11 @@ func TestGatewayModbusMCPProviderGrowattOptionalInterfaceMatrix(t *testing.T) {
 			growatt, ok := provider.(mcp.GrowattBMSRS485V202Provider)
 			if !ok {
 				t.Fatalf("provider %T omits Growatt optional interface", provider)
+			}
+			availability, available := provider.(interface{ ModbusV1CoreAvailable() bool })
+			if !available || availability.ModbusV1CoreAvailable() != (name == "tcp-bms") {
+				core := provider.(gatewayGrowattBMSMCPProvider).gatewayModbusMCPProvider
+				t.Fatalf("%s core availability=%T/%t/%t adapter=%#v", name, provider, available, availability.ModbusV1CoreAvailable(), core.adapter)
 			}
 			if _, err := growatt.GrowattBMSRS485V202(context.Background()); err != nil {
 				t.Fatal(err)

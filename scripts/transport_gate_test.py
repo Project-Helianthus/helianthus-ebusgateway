@@ -71,6 +71,22 @@ class TransportGateTests(unittest.TestCase):
         )
         return repo_path, report_path
 
+    def _fake_go_env(self, repo_path: pathlib.Path, exit_code: int) -> dict[str, str]:
+        bin_dir = repo_path / "fake-bin"
+        bin_dir.mkdir()
+        fake_go = bin_dir / "go"
+        fake_go.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo /pinned/helianthus-modbus\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8",
+        )
+        fake_go.chmod(0o755)
+        return self._script_env(
+            TRANSPORT_GATE_BASE_REF="HEAD",
+            PATH=f"{bin_dir}:{os.environ['PATH']}",
+        )
+
     def test_transport_gate_triggers_for_cmd_gateway_main(self) -> None:
         repo_path, report_path = self._create_temp_repo(
             "cmd/gateway/main.go",
@@ -107,6 +123,35 @@ class TransportGateTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
+    def test_modbus_rtu_gate_triggers_for_runtime_and_config(self) -> None:
+        for changed_file in ("modbus_config.go", "cmd/gateway/growatt_bms_rs485_runtime.go"):
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(changed_file)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"],
+                    cwd=repo_path,
+                    env=self._fake_go_env(repo_path, 0),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertIn("Modbus RTU production conformance", result.stdout)
+                self.assertIn("Modbus RTU production composition and pinned endpoint conformance", result.stdout)
+
+    def test_modbus_rtu_gate_fails_closed_when_composition_command_fails(self) -> None:
+        repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._fake_go_env(repo_path, 1),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
     def test_transport_gate_fails_when_matrix_contains_xpass(self) -> None:
         repo_path, report_path = self._create_temp_repo(

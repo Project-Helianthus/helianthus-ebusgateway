@@ -1609,6 +1609,11 @@ The lifecycle factory receives the concrete runtime pointer and checks it before
 any optional-interface conversion, so a disabled typed-nil runtime cannot
 advertise the Growatt tool.
 
+Portal raw Modbus is a TCP-core diagnostic surface. Its bootstrap capability
+and raw-read route are absent for disabled and BMS-only composition even when
+the Portal raw-read setting is enabled; TCP-only and TCP+BMS composition retain
+the route.
+
 The gateway exposes no public driver lifecycle `list/get/start/stop/restart`
 operation at this baseline. The control service in section 4 is the contract
 for that later implementation.

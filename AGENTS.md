@@ -109,9 +109,12 @@ Public eBUS and B524 contracts are documented at:
 
 - Architecture, public API, protocol, semantic behavior, state-machine, or
   reverse-engineering changes require the corresponding public docs gate.
-- Transport or protocol-code changes require the applicable T01..T88 result with
-  no unexpected fail or xpass unless the operator records a scope-specific
-  override.
+- eBUS transport, topology, or protocol-code changes require the applicable
+  T01..T88 result with no unexpected fail or xpass unless the operator records
+  a scope-specific override. Modbus RTU production-composition changes require
+  the declared offline Modbus RTU transport gate: gateway composition fixtures
+  plus the pinned `helianthus-modbus` `RTUProductionEndpoint` conformance
+  tests. Both gates fail closed on an unexpected test failure.
 - A transport-gate override requires both
   `TRANSPORT_GATE_OWNER_OVERRIDE=OVERRIDE_TRANSPORT_GATE_BY_OWNER` and a
   non-empty `TRANSPORT_GATE_OWNER_REASON`. The reason must identify the exact

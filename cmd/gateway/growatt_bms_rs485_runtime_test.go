@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"testing"
@@ -11,6 +14,7 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
 
@@ -25,6 +29,42 @@ type growattEndpointFake struct {
 	closed     int
 	recovers   int
 	recoverErr error
+}
+
+func TestPortalRawModbusUsesOnlyTCPAvailableComposition(t *testing.T) {
+	var disabledRuntime *growattBMSRS485ProductionProvider
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	for name, provider := range map[string]mcp.ModbusV1Provider{
+		"disabled": newGatewayModbusMCPProviderWithGrowatt(nil, disabledRuntime),
+		"tcp-only": newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, disabledRuntime),
+		"bms-only": newGatewayModbusMCPProviderWithGrowatt(nil, runtime),
+		"tcp-bms":  newGatewayModbusMCPProviderWithGrowatt(&modbusadapter.Adapter{}, runtime),
+	} {
+		t.Run(name, func(t *testing.T) {
+			portalProvider := portalTCPModbusProvider(provider)
+			wantTCP := name == "tcp-only" || name == "tcp-bms"
+			if (portalProvider != nil) != wantTCP {
+				t.Fatalf("portal provider=%T; want TCP=%t", portalProvider, wantTCP)
+			}
+			handler := portal.NewHandler(portal.Options{RawModbusEnabled: true, ModbusProvider: portalProvider})
+			bootstrap := httptest.NewRecorder()
+			handler.ServeHTTP(bootstrap, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+			var payload map[string]any
+			if err := json.Unmarshal(bootstrap.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			capabilities := payload["capabilities"].(map[string]any)
+			if got := capabilities["modbus_raw_read"]; got != wantTCP {
+				t.Fatalf("bootstrap capability=%#v", got)
+			}
+			raw := httptest.NewRecorder()
+			handler.ServeHTTP(raw, httptest.NewRequest(http.MethodPost, "/api/v1/explorer/modbus/raw-read", nil))
+			if wantTCP && raw.Code != http.StatusUnsupportedMediaType || !wantTCP && raw.Code != http.StatusNotFound {
+				t.Fatalf("raw route status=%d wantTCP=%t", raw.Code, wantTCP)
+			}
+		})
+	}
 }
 
 func growattBMSProductionWords() map[uint16][]uint16 {

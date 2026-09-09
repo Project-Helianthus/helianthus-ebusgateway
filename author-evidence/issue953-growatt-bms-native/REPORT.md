@@ -41,8 +41,11 @@ failure does not request recovery; failed recovery stays unavailable.
 
 Without Modbus TCP, the RTU path registers only
 `modbus.v1.growatt.bms.rs485.status.get`; it adds no TCP raw/profile, Tesla, or
-SemReg PV tool. No SemReg, GraphQL, Portal, Home Assistant, Matter, eeBUS,
-Prometheus, or control surface was added.
+SemReg PV tool. Portal raw Modbus remains a TCP-core diagnostic surface: an
+enabled raw-read setting still leaves its capability false and route unavailable
+for disabled and BMS-only composition, while TCP-only and TCP+BMS retain it.
+No SemReg, GraphQL, Home Assistant, Matter, eeBUS, Prometheus, or control
+surface was added.
 
 ## Validation
 
@@ -50,7 +53,7 @@ Focused normal tests passed:
 
 ```text
 GOWORK=off go test ./cmd/gateway ./mcp \
-  -run 'Test(BindFlagsGrowatt|GrowattBMSRS485|ResolveModbusEndpointFile)' -count=1
+  -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition)' -count=1
 PASS
 ```
 
@@ -58,7 +61,7 @@ Focused race tests passed:
 
 ```text
 GOWORK=off go test -race ./cmd/gateway ./mcp \
-  -run 'TestGrowattBMSRS485' -count=1
+  -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition)' -count=1
 PASS
 ```
 
@@ -76,7 +79,18 @@ They also assert the exact registration/invocation matrix: disabled registers no
 Modbus tool; TCP-only core tools only; BMS-only Growatt only; TCP+BMS both.
 The lifecycle-shaped test supplies an explicit disabled concrete runtime pointer
 to the factory for both fully-disabled and TCP-only paths, proving no typed-nil
-interface can register Growatt.
+interface can register Growatt. It applies that same factory matrix to Portal:
+disabled and BMS-only advertise no raw Modbus capability and return `404` for
+the raw route; TCP-only and TCP+BMS advertise it and route into the existing
+request validation.
+
+The repository transport gate classifies this RTU runtime/configuration path
+separately from eBUS M6a. It runs the gateway's deterministic composition
+fixtures, then the exact pinned `helianthus-modbus` RTU production tests for
+immutable correlated evidence, fault fencing/recovery, four bounded reads, and
+old-generation rejection. The gate tests prove both RTU files trigger this path
+and that a failed gateway conformance command fails closed. T01..T88 remains the
+required gate for eBUS transport/topology changes.
 
 Final configured CI passed:
 
@@ -87,10 +101,10 @@ PASS
 
 It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
-`6`, `11`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), and both declared
-gates. Transport and passive smoke were `not triggered`: this changes no eBUS
-transport topology, adapter-mux, scan, or passive runtime. CI log SHA-256:
-`3e24b530b2db22b59e340e64e3d9b6c5799d56519092ec4b2a8d058d9bf9e99e`.
+`6`, `13`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
+composition/pinned-endpoint transport gate, and the passive smoke gate. The
+Modbus RTU gate passed; passive smoke was not triggered. CI log SHA-256:
+`6f5a7459a16f0fc266dd87a3e1a70468e5f118c3633187b3812f178430fec2cb`.
 
 ## Boundary
 

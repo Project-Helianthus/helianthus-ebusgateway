@@ -87,11 +87,12 @@ request validation.
 The repository transport gate classifies this RTU production-composition path
 separately from eBUS M6a. Its explicit non-test trigger set covers RTU config,
 CLI binding, runtime, lifecycle wiring, endpoint-file normalization, gateway
-provider composition, MCP registration, and Portal provider binding. A diff
-that changes the exact direct `helianthus-modbus` selection in `go.mod` also
-triggers; unrelated module bumps do not. It runs the gateway's deterministic
-composition fixtures, then inventories every pinned endpoint test before
-running the anchored `^TestRTUProduction` suite. The required f670 inventory
+provider composition, MCP registration, Portal provider binding, the MCP
+observer runtime, and the qualified native MCP projection. A diff that changes
+the exact direct `helianthus-modbus` or `helianthus-modbusreg` selection in
+`go.mod` also triggers; unrelated module bumps do not. It runs the gateway's
+deterministic composition fixtures, then inventories every pinned endpoint test
+before running the anchored `^TestRTUProduction` suite. The required f670 inventory
 is `ReadRetainsImmutableCorrelatedEvidence`, `ExceptionDoesNotFenceButShortWriteDoes`,
 `RejectsUnadmittedReadBeforeWrite`, `RecoveryWaitsForRetiringReadOwnership`,
 `FourSequentialReadsRemainBounded`, `CancellationFencesAndPartialFramesRetainEvidence`,
@@ -115,8 +116,14 @@ It covers `gofmt`, Portal Node `93/93`, assets, vet, native/Linux builds, full
 `go test -race ./...`, source-selection schema coverage, Python suites (`168`,
 `6`, `15`, `8`, `6`, `2`), `golangci-lint` (`0 issues`), the Modbus RTU
 composition/pinned-endpoint transport gate, and the passive smoke gate. The
-Modbus RTU gate passed; passive smoke was not triggered. Exact final CI log
-SHA-256: `f0053d83c5f0f6a8ef11e882841a3e2599854ee46f0ca5528ba8a12affdfc0ca`.
+Modbus RTU gate passed; passive smoke was not triggered. One prior full CI run
+failed in unchanged `internal/adaptermux` at
+`TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse/blocked_write_drains_before_BACKOFF_publication`
+(`36fdf34009b3984c60c07201cb6c8c47d464d8d7b80b803826fe48bdcb3c6669`).
+The isolated `GOWORK=off go test -race -count=1 ./internal/adaptermux` rerun
+passed in `114.416s`; a single subsequent complete CI rerun also passed. No
+cause is claimed for the retained adaptermux failure. The green complete CI log
+SHA-256 is `3b24b399d01415789b7c8cf243f4f6bf98cefb6dccd22192d599e30493e9343d`.
 
 ## Boundary
 

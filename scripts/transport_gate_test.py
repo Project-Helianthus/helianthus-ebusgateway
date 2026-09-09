@@ -145,9 +145,11 @@ class TransportGateTests(unittest.TestCase):
         go_mod_base = (
             "module test\n\n"
             "go 1.22\n\n"
-            "require github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+            "require (\n"
+            "  github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+            "  github.com/Project-Helianthus/helianthus-modbusreg v0.6.7\n"
+            ")\n"
         )
-        go_mod_modified = go_mod_base.replace("v0.3.0", "v0.3.1")
         cases = (
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
@@ -156,8 +158,11 @@ class TransportGateTests(unittest.TestCase):
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
+            ("mcp/growatt_bms_rs485_v202.go", "// base\n", "// modified\n"),
+            ("mcp/growatt_bms_rs485_v202_runtime.go", "// base\n", "// modified\n"),
             ("mcp/modbus_v1.go", "// base\n", "// modified\n"),
-            ("go.mod", go_mod_base, go_mod_modified),
+            ("go.mod", go_mod_base, go_mod_base.replace("v0.3.0", "v0.3.1")),
+            ("go.mod", go_mod_base, go_mod_base.replace("v0.6.7", "v0.6.8")),
         )
         for changed_file, base_text, modified_text in cases:
             with self.subTest(changed_file=changed_file):
@@ -175,7 +180,14 @@ class TransportGateTests(unittest.TestCase):
                 self.assertIn("Modbus RTU production composition and pinned endpoint conformance", result.stdout)
 
     def test_modbus_rtu_gate_fails_closed_for_lifecycle_and_dependency_changes(self) -> None:
-        go_mod_base = "module test\n\ngo 1.22\n\nrequire github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+        go_mod_base = (
+            "module test\n\n"
+            "go 1.22\n\n"
+            "require (\n"
+            "  github.com/Project-Helianthus/helianthus-modbus v0.3.0\n"
+            "  github.com/Project-Helianthus/helianthus-modbusreg v0.6.7\n"
+            ")\n"
+        )
         cases = (
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
@@ -184,8 +196,11 @@ class TransportGateTests(unittest.TestCase):
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
+            ("mcp/growatt_bms_rs485_v202.go", "// base\n", "// modified\n"),
+            ("mcp/growatt_bms_rs485_v202_runtime.go", "// base\n", "// modified\n"),
             ("mcp/modbus_v1.go", "// base\n", "// modified\n"),
             ("go.mod", go_mod_base, go_mod_base.replace("v0.3.0", "v0.3.1")),
+            ("go.mod", go_mod_base, go_mod_base.replace("v0.6.7", "v0.6.8")),
         )
         for changed_file, base_text, modified_text in cases:
             with self.subTest(changed_file=changed_file):

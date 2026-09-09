@@ -63,7 +63,7 @@ modbus_rtu_dependency_changed() {
     git diff --cached --unified=0 -- go.mod
     git diff --unified=0 -- go.mod
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
-  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-modbus[[:space:]]+' <<< "${changes}"
+  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-modbus(reg)?[[:space:]]+' <<< "${changes}"
 }
 
 requires_modbus_rtu_transport_gate() {
@@ -75,7 +75,8 @@ requires_modbus_rtu_transport_gate() {
   esac
   case "${file}" in
     # Every non-test source input to issue #953's RTU configuration, lifecycle,
-    # provider registration, or Portal provider binding is classified here.
+    # observer runtime, qualification/projection, provider registration, or
+    # Portal provider binding is classified here.
     modbus_config.go|\
     cmd/gateway/gateway_cli.go|\
     cmd/gateway/gateway_http_server.go|\
@@ -83,6 +84,8 @@ requires_modbus_rtu_transport_gate() {
     cmd/gateway/gateway_run_lifecycle.go|\
     cmd/gateway/modbus_endpoint_file.go|\
     cmd/gateway/modbus_mcp_provider.go|\
+    mcp/growatt_bms_rs485_v202.go|\
+    mcp/growatt_bms_rs485_v202_runtime.go|\
     mcp/modbus_v1.go)
       return 0
       ;;

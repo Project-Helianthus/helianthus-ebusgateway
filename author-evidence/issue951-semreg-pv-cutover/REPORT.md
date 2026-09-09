@@ -86,8 +86,9 @@ updated in `docs/architecture/runtime-driver-provider-contract-v1.md`.
 
 ## Review boundary
 
-Committed and pushed as `a2bab01ae713caf2225625bf1d150f20755c5a37` and
-opened as https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/956.
-No merge was attempted. Residual risk is limited to ordinary integration review
-of the broad deletion of legacy PV compatibility code and of the SemReg public
+The implementation commit is `a2bab01ae713caf2225625bf1d150f20755c5a37`;
+the current branch includes this report and is open as
+https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/956. No merge
+was attempted. Residual risk is limited to ordinary integration review of the
+broad deletion of legacy PV compatibility code and of the SemReg public
 projection contract; no live smoke claim is made.

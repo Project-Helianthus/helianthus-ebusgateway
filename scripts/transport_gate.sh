@@ -55,16 +55,21 @@ requires_transport_gate() {
 # topology, acquisition, or runtime admission. Keep the 88-case transport gate
 # for all other config.go changes.
 semreg_pv_config_only() {
-  local changes
+  local changes line trimmed
   changes="$({
     git diff --unified=0 "${base_ref}...HEAD" -- config.go
     git diff --cached --unified=0 -- config.go
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
   [[ -n "${changes}" ]] || return 1
-  while IFS= read -r line; do
-    case "${line}" in
-      *M2MGraphQL*|*KnownAssets*|*DeniedPrincipalFingerprints*|*"known asset"*|*"known :="*|*"known[asset]"*|*"for _, asset :="*|*"if _, allowed :="*|*"if _, duplicate :="*|*"}"*) ;;
+	while IFS= read -r line; do
+		trimmed="${line#"${line%%[![:space:]]*}"}"
+		trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+		if [[ "${trimmed}" == "}" ]]; then
+			continue
+		fi
+		case "${line}" in
+			*M2MGraphQL*|*KnownAssets*|*DeniedPrincipalFingerprints*|*"known asset"*|*"known :="*|*"known[asset]"*|*"for _, asset :="*|*"if _, allowed :="*|*"if _, duplicate :="*) ;;
       *) return 1 ;;
     esac
   done <<< "${changes}"

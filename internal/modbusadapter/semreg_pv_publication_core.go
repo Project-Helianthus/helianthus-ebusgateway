@@ -397,7 +397,10 @@ func pvPublicationCandidate(native modbusreg.SunSpecCapabilityFact, mapping pvMa
 		}
 		if mapping.nativeID == "inverter.ac.energy_lifetime" {
 			// SunSpec exposes this counter in Wh; the accepted PV pack publishes kWh.
-			decimal.Exponent10 -= 3
+			// Canonical decimal zero always uses exponent 0, regardless of unit.
+			if decimal.Coefficient != "0" {
+				decimal.Exponent10 -= 3
+			}
 			if err := decimal.Validate(); err != nil {
 				return semreg.FactCandidate{}, err
 			}

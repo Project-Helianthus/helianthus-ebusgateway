@@ -285,6 +285,23 @@ class TransportGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("transport gate: not triggered.", result.stdout)
 
+    def test_config_only_exemption_rejects_nonstructural_brace_line(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "config.go",
+            base_text="package gateway\n",
+            modified_text="package gateway\nfunc openTransport() { openSerial() }\n",
+        )
+        result = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

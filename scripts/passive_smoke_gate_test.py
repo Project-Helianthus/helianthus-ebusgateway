@@ -240,6 +240,23 @@ class PassiveSmokeGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
+    def test_config_only_exemption_rejects_nonstructural_brace_line(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "config.go",
+            base_text="package gateway\n",
+            modified_text="package gateway\nfunc openTransport() { openSerial() }\n",
+        )
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"],
+            cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

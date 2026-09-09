@@ -59,7 +59,7 @@ func TestPVPublicationDraftValidatesEveryProposalAndRejectsCallerLabels(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(draft.facts) != 10 || len(draft.services) != 3 || len(draft.capabilities) != 3 || len(draft.requested) != 14 || len(draft.dispositions) != 14 {
+	if len(draft.facts) != 11 || len(draft.services) != 3 || len(draft.capabilities) != 3 || len(draft.requested) != 14 || len(draft.dispositions) != 14 {
 		t.Fatalf("draft accounting facts=%d services=%d capabilities=%d requested=%d dispositions=%d", len(draft.facts), len(draft.services), len(draft.capabilities), len(draft.requested), len(draft.dispositions))
 	}
 	for _, fact := range draft.facts {
@@ -71,9 +71,6 @@ func TestPVPublicationDraftValidatesEveryProposalAndRejectsCallerLabels(t *testi
 		}
 		if fact.Quality.Qualification != semreg.QualificationQualified || fact.Quality.Promotion != semreg.PromotionPromoted {
 			t.Fatalf("candidate %s labels=%s/%s", fact.CandidateID, fact.Quality.Qualification, fact.Quality.Promotion)
-		}
-		if fact.Key.FactID == "pv.energy.generated" {
-			t.Fatal("generated energy escaped the decision blocker")
 		}
 	}
 	for _, service := range draft.services {
@@ -116,8 +113,8 @@ func TestPVPublicationDraftIsolatesOneInvalidField(t *testing.T) {
 	words := observedFroniusFloatControlsWords()
 	pvCoreSetFloat(words, 22, 2_000) // PV pack maximum frequency is 1000 Hz.
 	draft := pvCoreDraft(t, words, "source-epoch:pv:test-a", 1, 2_000)
-	if len(draft.facts) != 9 {
-		t.Fatalf("valid facts=%d want=9", len(draft.facts))
+	if len(draft.facts) != 10 {
+		t.Fatalf("valid facts=%d want=10", len(draft.facts))
 	}
 	disposition := pvCoreDisposition(t, draft, "inverter.ac.frequency")
 	if disposition.Outcome != projection.ProjectionWithheld || disposition.Reason == nil || *disposition.Reason != pvReasonFieldInvalid || len(disposition.SourceKeys) != 0 {
@@ -133,8 +130,8 @@ func TestPVPublicationDraftWithholdsUnsupportedOperatingSymbolOnly(t *testing.T)
 	const model113PayloadStart = 2 + 67 + 2
 	words[model113PayloadStart+46] = 1 // OFF is admitted natively but has no accepted mapping.
 	draft := pvCoreDraft(t, words, "source-epoch:pv:test-a", 1, 2_000)
-	if len(draft.facts) != 9 {
-		t.Fatalf("valid facts=%d want=9", len(draft.facts))
+	if len(draft.facts) != 10 {
+		t.Fatalf("valid facts=%d want=10", len(draft.facts))
 	}
 	disposition := pvCoreDisposition(t, draft, "inverter.operating_state")
 	if disposition.Outcome != projection.ProjectionWithheld || disposition.Reason == nil || *disposition.Reason != pvReasonSymbolUnavailable || len(disposition.SourceKeys) != 0 || len(disposition.Loss) != 1 || disposition.Loss[0].Kind != projection.LossSymbol {
@@ -301,6 +298,26 @@ func TestPVPublicationCorePublishesGeneratedEnergyAndKeepsCompleteProjection(t *
 	if _, err := projection.ValidateReport(view.snapshot, view.projection); err != nil {
 		t.Fatalf("snapshot-bound projection: %v", err)
 	}
+}
+
+func TestPVPublicationCorePublishesCanonicalZeroGeneratedEnergy(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	pvCoreSetFloat(words, 30, 0)
+	draft := pvCoreDraft(t, words, "source-epoch:pv:zero-energy", 1, 2_000)
+	disposition := pvCoreDisposition(t, draft, "inverter.ac.energy_lifetime")
+	if disposition.Outcome != projection.ProjectionTransformed || disposition.Reason == nil || *disposition.Reason != pvReasonCounterContinuityUnavailable {
+		t.Fatalf("zero energy disposition=%+v", disposition)
+	}
+	for _, candidate := range draft.facts {
+		if candidate.Key.FactID != "pv.energy.generated" {
+			continue
+		}
+		if candidate.Value == nil || candidate.Value.Quantity == nil || candidate.Value.Quantity.Unit != "unit.kilowatt_hour" || candidate.Value.Quantity.Number.Coefficient != "0" || candidate.Value.Quantity.Number.Exponent10 != 0 {
+			t.Fatalf("zero generated energy=%+v; want canonical 0e0 kWh", candidate.Value)
+		}
+		return
+	}
+	t.Fatal("canonical zero generated energy was withheld")
 }
 
 func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testing.T) {

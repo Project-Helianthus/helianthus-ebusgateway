@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -358,6 +360,41 @@ func TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison(t *tes
 	}
 	if got := graphQLProvider.AdapterStatus().UpdatesAvailable; got {
 		t.Fatal("adapter updatesAvailable changed without an authoritative adapter catalogue")
+	}
+}
+
+func TestIssue469MCPRuntimeStatusSerializesCachedDaemonReleaseGolden(t *testing.T) {
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer() error = %v", err)
+	}
+	server.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(
+		nil,
+		nil,
+		gatewayBuildInfo{ReleaseVersion: "0.6.56", BuildID: "test-build"},
+		func() bool { return true },
+	))
+
+	envelope := mcpCallToolEnvelope(t, server.Handler(), "ebus.v1.runtime.status.get", `{}`)
+	meta, ok := envelope["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("runtime status meta = %T; want object", envelope["meta"])
+	}
+	if timestamp, _ := meta["data_timestamp"].(string); timestamp == "" {
+		t.Fatal("runtime status data_timestamp is empty")
+	}
+	meta["data_timestamp"] = "<runtime>"
+
+	got, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal runtime status envelope: %v", err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "issue469_runtime_status.golden.json"))
+	if err != nil {
+		t.Fatalf("read runtime status golden: %v", err)
+	}
+	if string(got)+"\n" != string(want) {
+		t.Fatalf("runtime status golden mismatch\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
 

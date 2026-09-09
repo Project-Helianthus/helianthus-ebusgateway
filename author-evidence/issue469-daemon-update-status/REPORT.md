@@ -39,6 +39,10 @@ incorrect.
   failure-retention, request-free status, and concurrency coverage.
 - `cmd/gateway/status_provider.go` and composition: shared cached release state
   in GraphQL and MCP providers.
+- `cmd/gateway/status_provider_test.go` and
+  `cmd/gateway/testdata/issue469_runtime_status.golden.json`: server-level MCP
+  serialization coverage for the non-empty daemon release and cached update
+  result, including the deterministic `data_hash`.
 - `docs/daemon-update-status.md`: source, cache, failure, and adapter boundary.
 
 ## Validation
@@ -47,9 +51,16 @@ Focused normal and race tests:
 
 ```text
 GOWORK=off go test -race ./internal/releasecheck ./cmd/gateway \
-  -run 'TestChecker|TestIssue469DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison' -count=1
+  -run 'TestChecker|TestIssue469(DaemonStatusUsesEmbeddedReleaseAndSharedCachedComparison|MCPRuntimeStatusSerializesCachedDaemonReleaseGolden)' -count=1
 PASS
 ```
+
+The server-level MCP golden was introduced after the PR review correctly noted
+that direct provider tests cannot protect the stable serialized envelope. Its
+RED-first run failed because the intentional golden did not yet exist; the
+GREEN run pins `firmware_version: "0.6.56"`, `updates_available: true`,
+`initiator_address: "auto"`, and data hash
+`c7c819c9732585417ab480a19b08bb4628c1c156f1a178289ea10780c3decb22`.
 
 Full repository gate, finalized implementation tree:
 

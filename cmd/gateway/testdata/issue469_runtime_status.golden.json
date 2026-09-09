@@ -1,0 +1,29 @@
+{
+  "data": {
+    "adapter_status": {
+      "firmware_version": "",
+      "status": "unknown",
+      "updates_available": false
+    },
+    "daemon_status": {
+      "firmware_version": "0.6.56",
+      "initiator_address": "auto",
+      "status": "running",
+      "updates_available": true
+    },
+    "vaillant_regulator_capability": "UNKNOWN"
+  },
+  "error": null,
+  "meta": {
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "c7c819c9732585417ab480a19b08bb4628c1c156f1a178289ea10780c3decb22",
+    "data_timestamp": "\u003cruntime\u003e"
+  }
+}

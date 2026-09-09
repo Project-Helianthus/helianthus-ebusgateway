@@ -475,6 +475,12 @@ type pvPublicationOrder struct {
 	expectedSemanticRevision semreg.Uint64
 }
 
+// pvPublicationValidator observes a fully built, detached candidate while the
+// publication core lock is held. It must not mutate the core. This permits the
+// evidence owner to reject a capacity breach before the candidate becomes the
+// current public snapshot.
+type pvPublicationValidator func(assetID semreg.AssetID, snapshot semreg.Snapshot) error
+
 func newPVPublicationCore() (*pvPublicationCore, error) {
 	selection, err := semreg.NewSelectionKernel(pvSingleQualifiedSelection{})
 	if err != nil {
@@ -484,10 +490,18 @@ func newPVPublicationCore() (*pvPublicationCore, error) {
 }
 
 func (c *pvPublicationCore) ingest(draft pvPublicationDraft) (pvPublicationReceipt, error) {
-	return c.ingestWithOrder(draft, nil)
+	return c.ingestWithOrderAndValidation(draft, nil, nil)
 }
 
 func (c *pvPublicationCore) ingestWithOrder(draft pvPublicationDraft, order *pvPublicationOrder) (pvPublicationReceipt, error) {
+	return c.ingestWithOrderAndValidation(draft, order, nil)
+}
+
+func (c *pvPublicationCore) ingestWithValidation(draft pvPublicationDraft, validate pvPublicationValidator) (pvPublicationReceipt, error) {
+	return c.ingestWithOrderAndValidation(draft, nil, validate)
+}
+
+func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraft, order *pvPublicationOrder, validate pvPublicationValidator) (pvPublicationReceipt, error) {
 	if c == nil {
 		return pvPublicationReceipt{}, errors.New("PV publication core is unavailable")
 	}
@@ -543,6 +557,11 @@ func (c *pvPublicationCore) ingestWithOrder(draft pvPublicationDraft, order *pvP
 	report, err := projection.Project(snapshot, detached.manifest, detached.requested, detached.dispositions, nil)
 	if err != nil {
 		return pvPublicationReceipt{}, err
+	}
+	if validate != nil {
+		if err := validate(detached.assetID, snapshot); err != nil {
+			return pvPublicationReceipt{}, err
+		}
 	}
 	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, evaluation: evaluation, selections: selections, projection: report}
 	asset.kernel, asset.current = staged, view
@@ -644,12 +663,18 @@ func (c *pvPublicationCore) currentForValidation(assetID semreg.AssetID) (pvPubl
 // currentSunSpecObservationDigests reads every current asset under one core
 // read lock so adapter evidence pruning cannot orphan a still-public identity.
 func (c *pvPublicationCore) currentSunSpecObservationDigests() map[string]bool {
-	refs := make(map[string]bool)
 	if c == nil {
-		return refs
+		return make(map[string]bool)
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.currentSunSpecObservationDigestsLocked("", nil)
+}
+
+// currentSunSpecObservationDigestsLocked returns the references that would be
+// public if replacement were assigned to assetID. c.mu must already be held.
+func (c *pvPublicationCore) currentSunSpecObservationDigestsLocked(assetID semreg.AssetID, replacement *semreg.Snapshot) map[string]bool {
+	refs := make(map[string]bool)
 	collect := func(evidence []semreg.EvidenceRef) {
 		for _, ref := range evidence {
 			if ref.Kind == "sunspec.qualification_observation" {
@@ -657,25 +682,37 @@ func (c *pvPublicationCore) currentSunSpecObservationDigests() map[string]bool {
 			}
 		}
 	}
-	for _, asset := range c.assets {
-		if asset == nil || asset.current == nil {
-			continue
-		}
-		for _, envelope := range asset.current.snapshot.Facts {
+	collectSnapshot := func(snapshot semreg.Snapshot) {
+		for _, envelope := range snapshot.Facts {
 			for _, candidate := range envelope.Candidates {
 				collect(candidate.Evidence)
 				collect(candidate.Origin.Evidence)
 			}
 		}
-		for _, retained := range asset.current.snapshot.Retained {
+		for _, retained := range snapshot.Retained {
 			collect(retained.Candidate.Evidence)
 			collect(retained.Candidate.Origin.Evidence)
 		}
-		for _, capability := range asset.current.snapshot.Capabilities {
+		for _, capability := range snapshot.Capabilities {
 			collect(capability.ActivationEvidence)
 		}
-		for _, fence := range asset.current.snapshot.Fences {
+		for _, fence := range snapshot.Fences {
 			collect(fence.Evidence)
+		}
+	}
+	for id, asset := range c.assets {
+		if id == assetID && replacement != nil {
+			collectSnapshot(*replacement)
+			continue
+		}
+		if asset == nil || asset.current == nil {
+			continue
+		}
+		collectSnapshot(asset.current.snapshot)
+	}
+	if replacement != nil {
+		if _, exists := c.assets[assetID]; !exists {
+			collectSnapshot(*replacement)
 		}
 	}
 	return refs
@@ -794,10 +831,13 @@ func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exist
 			service.Revision = nextPVServiceRevision(current, service.InstanceID)
 			batch.ServiceUpserts = append(batch.ServiceUpserts, service)
 		}
-		for _, capability := range draft.capabilities {
-			capability.Revision = nextPVCapabilityRevision(current, capability.InstanceID)
-			batch.CapabilityUpserts = append(batch.CapabilityUpserts, capability)
-		}
+	}
+	// Capability activation is itself backed by the exact refresh observation.
+	// Refresh it on every publication so a fully superseding snapshot does not
+	// retain an otherwise obsolete current-observation digest.
+	for _, capability := range draft.capabilities {
+		capability.Revision = nextPVCapabilityRevision(current, capability.InstanceID)
+		batch.CapabilityUpserts = append(batch.CapabilityUpserts, capability)
 	}
 	for _, fact := range draft.facts {
 		fact.Revision = nextPVCandidateRevision(current, fact.CandidateID)

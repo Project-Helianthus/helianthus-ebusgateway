@@ -272,6 +272,95 @@ func TestSunSpecProducerRetainsEvidenceForEveryCurrentIdentity(t *testing.T) {
 	assertCurrentSunSpecEvidenceRetained(t, adapter, bResult, bResult)
 }
 
+func TestSunSpecProducerProspectiveRefreshEvidenceCapacity(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	listener, _ := serveSunSpecChain(t, words)
+	adapter, err := Start(context.Background(), integrationConfig(t, "tcp://"+listener.Addr().String()), realDialer, realFactory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	producer, err := NewSunSpecProducer(adapter, SunSpecProducerConfig{UnitID: 1, AuthorizationScope: "smoke:fronius-readonly", ReadTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := producer.Qualify(context.Background(), SunSpecPollIdentity{PollGeneration: 600, DeadlineIdentity: 700})
+	if err != nil || baseline.Outcome != SunSpecQualificationGO {
+		t.Fatalf("baseline=%+v err=%v", baseline, err)
+	}
+
+	protected := make([]SunSpecQualificationResult, 0, maxRetainedSunSpecRefreshEvidence)
+	for index := 0; index < maxRetainedSunSpecRefreshEvidence; index++ {
+		putSunSpecString(words[52:68], fmt.Sprintf("protected-%02d", index))
+		result, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: uint64(601 + index), DeadlineIdentity: uint64(701 + index)})
+		if err != nil || result.Outcome != SunSpecQualificationGO {
+			t.Fatalf("protected refresh %d=%+v err=%v", index, result, err)
+		}
+		protected = append(protected, result)
+	}
+	if len(adapter.refreshEvidence) != maxRetainedSunSpecRefreshEvidence {
+		t.Fatalf("protected refresh evidence=%d; want %d", len(adapter.refreshEvidence), maxRetainedSunSpecRefreshEvidence)
+	}
+	if len(adapter.semanticPV.assets) != maxRetainedSunSpecRefreshEvidence+1 {
+		t.Fatalf("current assets=%d; want baseline plus %d refresh identities", len(adapter.semanticPV.assets), maxRetainedSunSpecRefreshEvidence)
+	}
+
+	old := protected[0]
+	oldObservation, _, ok := adapter.SunSpecQualificationObservation(old.CapabilityID, old.SampleID)
+	if !ok {
+		t.Fatal("protected old evidence is unavailable before replacement")
+	}
+	oldIdentity, _, err := resolvePVPublicationIdentity(oldObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAssetID := "pv-asset-" + pvCoreRawHash(oldIdentity)[:32]
+	before, ok := adapter.SemanticPVCurrentByAsset(oldAssetID)
+	if !ok {
+		t.Fatal("protected old public asset is unavailable before replacement")
+	}
+
+	// The provisional 33rd store entry replaces an existing public asset. Its
+	// staged snapshot releases the old digest, so the prospective global set is
+	// still exactly 32 and the refresh must commit.
+	putSunSpecString(words[52:68], "protected-00")
+	replacement, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 700, DeadlineIdentity: 800})
+	if err != nil || replacement.Outcome != SunSpecQualificationGO {
+		t.Fatalf("replacement=%+v err=%v", replacement, err)
+	}
+	after, ok := adapter.SemanticPVCurrentByAsset(oldAssetID)
+	if !ok || after.Snapshot.SnapshotID == before.Snapshot.SnapshotID {
+		t.Fatalf("existing protected asset did not advance: before=%q after=%q", before.Snapshot.SnapshotID, after.Snapshot.SnapshotID)
+	}
+	assertCurrentSunSpecEvidenceRetained(t, adapter, replacement, replacement)
+	if _, _, ok := adapter.SunSpecQualificationObservation(old.CapabilityID, old.SampleID); ok {
+		t.Fatal("superseded protected evidence remained after prospective replacement")
+	}
+	if len(adapter.refreshEvidence) > maxRetainedSunSpecRefreshEvidence {
+		t.Fatalf("refresh evidence exceeded structural bound: %d", len(adapter.refreshEvidence))
+	}
+
+	// A new 33rd refresh identity keeps every existing refresh observation
+	// referenced, so it must fail before publishing a new semantic asset.
+	assetsBefore := len(adapter.semanticPV.assets)
+	currentBefore, ok := adapter.SemanticPVCurrentByAsset(oldAssetID)
+	if !ok {
+		t.Fatal("replacement asset unavailable before overflow attempt")
+	}
+	putSunSpecString(words[52:68], "protected-overflow")
+	overflow, err := producer.Refresh(context.Background(), SunSpecPollIdentity{PollGeneration: 701, DeadlineIdentity: 801})
+	if err != nil || overflow.Outcome != SunSpecQualificationStop {
+		t.Fatalf("overflow=%+v err=%v; want terminal STOP without publication", overflow, err)
+	}
+	currentAfter, ok := adapter.SemanticPVCurrentByAsset(oldAssetID)
+	if !ok || currentAfter.Snapshot.SnapshotID != currentBefore.Snapshot.SnapshotID || currentAfter.Snapshot.Revisions != currentBefore.Snapshot.Revisions {
+		t.Fatalf("overflow attempt advanced existing semantic state: before=%#v after=%#v", currentBefore.Snapshot.Revisions, currentAfter.Snapshot.Revisions)
+	}
+	if len(adapter.semanticPV.assets) != assetsBefore || len(adapter.refreshEvidence) != maxRetainedSunSpecRefreshEvidence {
+		t.Fatalf("overflow retained semantic/evidence state: assets=%d/%d evidence=%d/%d", len(adapter.semanticPV.assets), assetsBefore, len(adapter.refreshEvidence), maxRetainedSunSpecRefreshEvidence)
+	}
+}
+
 func assertCurrentSunSpecEvidenceRetained(t *testing.T, adapter *Adapter, initial, refresh SunSpecQualificationResult) {
 	t.Helper()
 	current, ok := adapter.SemanticPVCurrent(initial.CapabilityID, initial.SampleID)

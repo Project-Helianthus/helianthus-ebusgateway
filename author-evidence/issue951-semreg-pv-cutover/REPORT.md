@@ -184,3 +184,37 @@ The full configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
 `golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
 triggered. Final CI log SHA-256:
 `766b7fdc4f6b9ab1d6195a725bd328587f0ed3ee970207f3a99456399b7415b3`.
+
+## Prospective global evidence-capacity remediation
+
+Refresh evidence now stages its exact detached observation under `profileMu`
+before the SemReg candidate is built. While the publication core holds its
+write lock, it forks, applies, and evaluates that candidate, substitutes the
+candidate snapshot for the target asset in the all-current-asset reference set,
+and validates the resulting references before assigning `kernel` or `current`.
+The validator fails closed when any referenced observation is absent or more
+than 32 refresh records remain referenced. A failed validation rolls back the
+provisional record without a semantic revision; successful publication prunes
+only globally unreferenced refresh records.
+
+Capability activation evidence is refreshed with each exact observation. Thus a
+complete replacement does not keep its predecessor alive only through an old
+capability activation reference, while retained partial fields still preserve
+their referenced observation normally.
+
+The boundary regression creates 32 distinct, protected refresh identities,
+successfully replaces one identity through a temporary 33rd provisional record,
+and verifies the new public digest is immutable and replayable while the
+superseded record is pruned and the stored set remains at most 32. It then
+attempts a distinct 33rd protected identity and proves it stops without a new
+semantic asset, semantic revision, or retained evidence.
+
+Focused normal and race coverage passed for the bounded eviction, retained
+accumulator, all-current-identity, and prospective-capacity cases. Race log
+SHA-256: `64af18cca9838f05a20912a9ed4222a42bde0b0efc44bc8f52ea8269356bf63c`.
+
+The final configured `GOWORK=off ./scripts/ci_local.sh` passed: Portal Node
+`93/93`; all Go race packages; Python `168 + 6 + 11 + 8 + 6 + 2`; and
+`golangci-lint` with `0 issues`. Transport and passive-smoke gates were not
+triggered. CI log SHA-256:
+`12c5831c5d842283feb7d3953359c58d6abd04d04b85325c04ef976543bf7f4e`.

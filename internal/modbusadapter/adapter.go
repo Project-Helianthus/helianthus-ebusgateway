@@ -463,7 +463,8 @@ func (adapter *Adapter) PublishSunSpecCurrent(observation modbusreg.SunSpecQuali
 
 // RecordSunSpecCurrentObservation retains immutable native evidence for a
 // publishable refresh. It commits the evidence only with a successful SemReg
-// publication and evicts the oldest refresh evidence deterministically.
+// publication. Capacity is validated against the prospective global SemReg
+// state, so a replacement may release its superseded evidence atomically.
 func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.SunSpecQualificationObservation) error {
 	if adapter == nil {
 		return errors.New("modbus TCP adapter unavailable")
@@ -490,35 +491,17 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 		}
 		return adapter.publishSemanticPV(observation)
 	}
-	var evictedKey string
-	var evicted sunSpecQualificationRecord
-	if len(adapter.refreshOrder) == maxRetainedSunSpecRefreshEvidence {
-		referenced := adapter.semanticPV.currentSunSpecObservationDigests()
-		for _, candidate := range adapter.refreshOrder {
-			record := adapter.refreshEvidence[candidate]
-			if !referenced[sunSpecObservationDigest(record.encoded)] {
-				evictedKey, evicted = candidate, record
-				break
-			}
-		}
-		if evictedKey == "" {
-			return errors.New("SunSpec current evidence retention capacity would exceed bound")
-		}
-		delete(adapter.refreshEvidence, evictedKey)
-		adapter.refreshOrder = removeSunSpecRefreshKey(adapter.refreshOrder, evictedKey)
-	}
+	// Install the exact record before building the SemReg candidate. The core
+	// validates its prospective all-asset reference set before it publishes; a
+	// rejected candidate rolls this provisional record back without a revision.
 	adapter.refreshEvidence[key] = sunSpecQualificationRecord{
 		observation: observation,
 		encoded:     append([]byte(nil), encoded...),
 	}
 	adapter.refreshOrder = append(adapter.refreshOrder, key)
-	if err := adapter.publishSemanticPV(observation); err != nil {
+	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
 		delete(adapter.refreshEvidence, key)
 		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
-		if evictedKey != "" {
-			adapter.refreshEvidence[evictedKey] = evicted
-			adapter.refreshOrder = append([]string{evictedKey}, adapter.refreshOrder...)
-		}
 		return err
 	}
 	// A successful replacement can retire old candidate evidence. Pruning only
@@ -529,17 +512,6 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 
 func sunSpecObservationDigest(encoded []byte) string {
 	return "sha256:" + pvCoreHash("pv-observation", encoded)
-}
-
-func removeSunSpecRefreshKey(order []string, key string) []string {
-	for index, candidate := range order {
-		if candidate == key {
-			copy(order[index:], order[index+1:])
-			order[len(order)-1] = ""
-			return order[:len(order)-1]
-		}
-	}
-	return order
 }
 
 func (adapter *Adapter) pruneSunSpecRefreshEvidenceLocked(referenced map[string]bool) {
@@ -555,7 +527,46 @@ func (adapter *Adapter) pruneSunSpecRefreshEvidenceLocked(referenced map[string]
 	adapter.refreshOrder = kept
 }
 
+// validateSunSpecRefreshEvidenceLocked verifies the prospective public
+// references before the publication core assigns its staged kernel/current
+// pair. profileMu must be held by the caller.
+func (adapter *Adapter) validateSunSpecRefreshEvidenceLocked(referenced map[string]bool) error {
+	available := make(map[string]bool, len(adapter.qualifications)+len(adapter.refreshEvidence))
+	for _, record := range adapter.qualifications {
+		available[sunSpecObservationDigest(record.encoded)] = true
+	}
+	for _, record := range adapter.refreshEvidence {
+		available[sunSpecObservationDigest(record.encoded)] = true
+	}
+	for digest := range referenced {
+		if !available[digest] {
+			return errors.New("SunSpec current evidence reference is unavailable")
+		}
+	}
+	protected := 0
+	for _, record := range adapter.refreshEvidence {
+		if referenced[sunSpecObservationDigest(record.encoded)] {
+			protected++
+		}
+	}
+	if protected > maxRetainedSunSpecRefreshEvidence {
+		return errors.New("SunSpec current evidence retention capacity would exceed bound")
+	}
+	return nil
+}
+
 func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualificationObservation) error {
+	return adapter.publishSemanticPVWithValidation(observation, nil)
+}
+
+func (adapter *Adapter) publishSemanticPVWithEvidenceValidation(observation modbusreg.SunSpecQualificationObservation) error {
+	return adapter.publishSemanticPVWithValidation(observation, func(assetID semreg.AssetID, snapshot semreg.Snapshot) error {
+		referenced := adapter.semanticPV.currentSunSpecObservationDigestsLocked(assetID, &snapshot)
+		return adapter.validateSunSpecRefreshEvidenceLocked(referenced)
+	})
+}
+
+func (adapter *Adapter) publishSemanticPVWithValidation(observation modbusreg.SunSpecQualificationObservation, validate pvPublicationValidator) error {
 	if adapter.semanticPV == nil {
 		return errors.New("SemReg PV publication unavailable")
 	}
@@ -573,7 +584,7 @@ func (adapter *Adapter) publishSemanticPV(observation modbusreg.SunSpecQualifica
 	if err != nil {
 		return fmt.Errorf("build SemReg PV publication: %w", err)
 	}
-	if _, err := adapter.semanticPV.ingest(draft); err != nil {
+	if _, err := adapter.semanticPV.ingestWithValidation(draft, validate); err != nil {
 		return fmt.Errorf("publish SemReg PV observation: %w", err)
 	}
 	return nil

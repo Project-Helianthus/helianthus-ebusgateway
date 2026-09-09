@@ -1938,23 +1938,26 @@ func (s *Server) enforceInvokeV1Safety(args map[string]any) (invokeV1Policy, err
 	if err != nil {
 		return invokeV1Policy{}, err
 	}
-	planeName, _ := args["plane"].(string)
-	if planeName == "" {
-		return invokeV1Policy{}, fmt.Errorf("missing plane: %w", ebuserrors.ErrInvalidPayload)
+	planeName, planeOK := args["plane"].(string)
+	if !planeOK || strings.TrimSpace(planeName) == "" {
+		return invokeV1Policy{}, fmt.Errorf("invalid plane: expected non-empty string: %w", ebuserrors.ErrInvalidPayload)
 	}
-	methodName, _ := args["method"].(string)
-	if methodName == "" {
-		return invokeV1Policy{}, fmt.Errorf("missing method: %w", ebuserrors.ErrInvalidPayload)
+	methodName, methodOK := args["method"].(string)
+	if !methodOK || strings.TrimSpace(methodName) == "" {
+		return invokeV1Policy{}, fmt.Errorf("invalid method: expected non-empty string: %w", ebuserrors.ErrInvalidPayload)
 	}
-	intent, _ := args["intent"].(string)
+	intent, intentOK := args["intent"].(string)
 	intent = strings.TrimSpace(intent)
-	if intent == "" {
-		return invokeV1Policy{}, fmt.Errorf("missing intent: %w", ebuserrors.ErrInvalidPayload)
+	if !intentOK || intent == "" {
+		return invokeV1Policy{}, fmt.Errorf("invalid intent: expected READ_ONLY or MUTATE: %w", ebuserrors.ErrInvalidPayload)
+	}
+	if intent != "READ_ONLY" && intent != "MUTATE" {
+		return invokeV1Policy{}, fmt.Errorf("invalid intent: expected READ_ONLY or MUTATE: %w", ebuserrors.ErrInvalidPayload)
 	}
 	policy.intent = intent
 	allowDangerous, ok := args["allow_dangerous"].(bool)
 	if !ok {
-		return invokeV1Policy{}, fmt.Errorf("missing allow_dangerous: %w", ebuserrors.ErrInvalidPayload)
+		return invokeV1Policy{}, fmt.Errorf("invalid allow_dangerous: expected boolean: %w", ebuserrors.ErrInvalidPayload)
 	}
 	if timeout, err := parseInvokeTimeout(args["timeout_ms"]); err != nil {
 		return invokeV1Policy{}, err
@@ -1981,8 +1984,6 @@ func (s *Server) enforceInvokeV1Safety(args map[string]any) (invokeV1Policy, err
 			return invokeV1Policy{}, fmt.Errorf("MUTATE intent requires idempotency_key: %w", errInvokePermissionDenied)
 		}
 		policy.idempotencyKey = strings.TrimSpace(idempotencyKey)
-	default:
-		return invokeV1Policy{}, fmt.Errorf("invalid intent %q: %w", intent, ebuserrors.ErrInvalidPayload)
 	}
 
 	return policy, nil
@@ -3800,15 +3801,18 @@ func parseAddress(raw any) (byte, error) {
 	case int64:
 		return toAddress(int(value))
 	case float64:
+		if value != float64(int(value)) {
+			return 0, fmt.Errorf("invalid address: expected integer in range [0,255]: %w", ebuserrors.ErrInvalidPayload)
+		}
 		return toAddress(int(value))
 	default:
-		return 0, fmt.Errorf("invalid address: %w", ebuserrors.ErrInvalidPayload)
+		return 0, fmt.Errorf("invalid address: expected integer in range [0,255]: %w", ebuserrors.ErrInvalidPayload)
 	}
 }
 
 func toAddress(value int) (byte, error) {
 	if value < 0 || value > 0xFF {
-		return 0, fmt.Errorf("invalid address: %w", ebuserrors.ErrInvalidPayload)
+		return 0, fmt.Errorf("invalid address: expected integer in range [0,255]: %w", ebuserrors.ErrInvalidPayload)
 	}
 	return byte(value), nil
 }

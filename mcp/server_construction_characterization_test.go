@@ -9,7 +9,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
-const publicToolsListManifestSHA256 = "86a0db977fe30fc6ea7970c0c844aa865a497bea1bca5914903753cb921663d1"
+const publicToolsListManifestSHA256 = "4e4ee916dad4bf48658ddc68c51d7c5144e698d2b5cda61aa1afbd436c8db31a"
 
 func TestNewServerKeepsPublicToolsListManifest(t *testing.T) {
 	t.Parallel()

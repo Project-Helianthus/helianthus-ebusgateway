@@ -327,14 +327,14 @@ func defaultServerTools() []Tool {
 		},
 		{
 			Name:        toolInvokeV1Name,
-			Description: "Invoke a plane method on a device.",
+			Description: "Discover a device with ebus.v1.registry.devices.list, then select its plane with ebus.v1.registry.planes.list and method with ebus.v1.registry.methods.list before invoking it.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"address":         map[string]any{"type": "integer", "minimum": 0, "maximum": 255},
-					"plane":           map[string]any{"type": "string"},
-					"method":          map[string]any{"type": "string"},
-					"params":          map[string]any{"type": "object"},
+					"plane":           map[string]any{"type": "string", "description": "Plane name returned by ebus.v1.registry.planes.list for this address."},
+					"method":          map[string]any{"type": "string", "description": "Method name returned by ebus.v1.registry.methods.list for this address and plane."},
+					"params":          map[string]any{"type": "object", "description": "Method-specific parameters. Omit source to use the startup-admitted source; an explicit source overrides it when supplied as a nonzero byte."},
 					"intent":          map[string]any{"type": "string", "enum": []string{"READ_ONLY", "MUTATE"}},
 					"allow_dangerous": map[string]any{"type": "boolean"},
 					"idempotency_key": map[string]any{"type": "string"},

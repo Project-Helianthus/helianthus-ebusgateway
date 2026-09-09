@@ -91,10 +91,34 @@ func TestGrowattBMSRS485V202RuntimeRejectsMismatchedResponseAtMCPBoundary(t *tes
 	}
 }
 
+func TestGrowattBMSRS485V202CorelessCompositionRegistersOnlyNativeTool(t *testing.T) {
+	session := &growattBMSRS485RuntimeSessionFake{wordsByOffset: growattBMSRS485RuntimeWords(), failAt: -1, mismatchAt: -1}
+	runtime, err := NewGrowattBMSRS485V202Runtime(growattBMSRS485RuntimeRevision(), 7, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewServer(&testRegistry{entries: map[byte]registry.DeviceEntry{}}, &testInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterModbusV1Tools(s, growattBMSRS485CorelessProvider{growattBMSRS485RuntimeProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}, runtime: runtime}})
+	registered := make(map[string]bool, len(s.tools))
+	for _, tool := range s.tools {
+		registered[tool.Name] = true
+	}
+	if !registered[GrowattBMSRS485V202StatusGetTool] || registered[ModbusV1RawReadTool] || registered[SemanticV1PVCurrentGetTool] || registered[TeslaHSCV1StatusGetTool] {
+		t.Fatalf("registered tools=%#v", registered)
+	}
+}
+
 type growattBMSRS485RuntimeProvider struct {
 	*modbusV1FixtureProvider
 	runtime *GrowattBMSRS485V202Runtime
 }
+
+type growattBMSRS485CorelessProvider struct{ growattBMSRS485RuntimeProvider }
+
+func (growattBMSRS485CorelessProvider) ModbusV1CoreAvailable() bool { return false }
 
 func (provider growattBMSRS485RuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (modbusreg.GrowattBMSTypedReadOnlyStatus, error) {
 	return provider.runtime.GrowattBMSRS485V202(ctx)

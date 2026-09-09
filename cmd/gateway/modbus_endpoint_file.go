@@ -54,7 +54,11 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 		return errors.New("invalid Modbus TCP endpoint file configuration")
 	}
 	if !config.Enabled {
-		*config = ebusgateway.ModbusTCPConfig{}
+		// TCP endpoint inputs remain inert while disabled, but the independent
+		// explicitly configured Growatt RTU observer shares this composition
+		// boundary and must survive TCP endpoint normalization.
+		growatt := config.GrowattBMSRS485
+		*config = ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growatt}
 		return nil
 	}
 	if path == "" {

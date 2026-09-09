@@ -70,6 +70,18 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			defer func() { _ = sunSpecWorker.Close() }()
 		}
 	}
+	growattBMSRuntime, err := startGrowattBMSRS485Runtime(cfg.ModbusTCPConfig.GrowattBMSRS485)
+	if err != nil {
+		log.Printf("Growatt BMS RS-485 unavailable; continuing without Growatt BMS")
+		growattBMSRuntime = nil
+	}
+	if growattBMSRuntime != nil {
+		defer func() {
+			if err := growattBMSRuntime.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown Growatt BMS RS-485 sidecar: %w", err))
+			}
+		}()
+	}
 	m2mRuntime, err := newM2MGraphQLRuntime(cfg, modbusAdapter)
 	if err != nil {
 		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
@@ -536,7 +548,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		portalSemanticProvider,
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
-		newGatewayModbusMCPProvider(modbusAdapter),
+		newGatewayModbusMCPProviderWithGrowatt(modbusAdapter, growattBMSRuntime),
 		lateScheduleWriter,
 		lateConfigWriter,
 		busObservability,

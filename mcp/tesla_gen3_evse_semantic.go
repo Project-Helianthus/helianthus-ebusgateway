@@ -384,13 +384,6 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 	if err != nil {
 		return nil, err
 	}
-	// Publish seals the wall-time delay between the native evaluation and the
-	// accepted publication into this same-epoch floor. MCP and GraphQL must not
-	// restart evidence age at zero when they first read a queued outcome.
-	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.prometheusBaseMonotonic)
-	if err != nil {
-		return nil, err
-	}
 	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.lastReadMonotonic)
 	if err != nil {
 		return nil, err
@@ -667,7 +660,10 @@ func (p *TeslaGen3EVSESemanticPublication) readMonotonic(readClock uint64) (semr
 	if readClock < p.publishedReadClock {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock regressed")
 	}
-	base, err := strconv.ParseUint(string(p.evaluatedMonotonic.Nanoseconds), 10, 64)
+	// The sealed base already includes receipt-to-publication delay. Add the
+	// independent read-clock delta so partial delay and later read age
+	// accumulate instead of competing as two maximum candidates.
+	base, err := strconv.ParseUint(string(p.prometheusBaseMonotonic.Nanoseconds), 10, 64)
 	if err != nil {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication monotonic clock is invalid")
 	}
@@ -675,7 +671,7 @@ func (p *TeslaGen3EVSESemanticPublication) readMonotonic(readClock uint64) (semr
 	if base > ^uint64(0)-delta {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock overflows")
 	}
-	return semreg.MonotonicPoint{ClockEpochID: p.evaluatedMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+delta, 10))}, nil
+	return semreg.MonotonicPoint{ClockEpochID: p.prometheusBaseMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+delta, 10))}, nil
 }
 
 func teslaGen3EVSEEvaluationMonotonic(receipt semreg.MonotonicPoint, evidence TeslaGen3EVSESemanticEvidence) (semreg.MonotonicPoint, error) {

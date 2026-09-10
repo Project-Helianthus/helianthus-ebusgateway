@@ -486,6 +486,98 @@ func TestTeslaGen3EVSESemanticPublicationMCPAndGraphQLUseDelayedPublicationAgeFl
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationAccumulatesPartialDelayAcrossMCPAndGraphQLReads(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := base.Add(30 * time.Second)
+	var readClock uint64
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{
+		ObservationID: "observation:partial-publication-delay", ObservedAt: base, EvaluatedAt: base,
+		MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mcpHandler := teslaGen3EVSEMCPHandler(t, p)
+	graphqlHandler := teslaGen3EVSEGraphQLHandler(t, p)
+
+	for _, tc := range []struct {
+		name                string
+		postPublicationAge  time.Duration
+		allocatedOutcome    projection.ProjectionOutcome
+		configuredFreshness semreg.Freshness
+	}{
+		{name: "before expiry", postPublicationAge: 29 * time.Second, allocatedOutcome: projection.ProjectionExact, configuredFreshness: semreg.FreshnessFresh},
+		{name: "at expiry", postPublicationAge: 30 * time.Second, allocatedOutcome: projection.ProjectionWithheld, configuredFreshness: semreg.FreshnessStale},
+		{name: "after expiry", postPublicationAge: 31 * time.Second, allocatedOutcome: projection.ProjectionWithheld, configuredFreshness: semreg.FreshnessStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now = base.Add(30*time.Second + tc.postPublicationAge)
+			readClock = uint64(tc.postPublicationAge)
+			mcpData := teslaGen3EVSEMCPCurrent(t, mcpHandler)
+			graphqlData := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "partial-delay-"+tc.name)
+			var mcpJSON, graphqlJSON any
+			if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil || !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+				t.Fatalf("partial-delay MCP/GraphQL parity=%t err=%v", reflect.DeepEqual(mcpJSON, graphqlJSON), err)
+			}
+			var current SemanticEVSECurrent
+			if err := json.Unmarshal(mcpData, &current); err != nil {
+				t.Fatal(err)
+			}
+			if got := teslaGen3EVSEDisposition(current.Projection, "evse.limit.allocated_current"); got != tc.allocatedOutcome {
+				t.Fatalf("allocated outcome = %s, want %s", got, tc.allocatedOutcome)
+			}
+			if got := teslaGen3EVSEDisposition(current.Projection, "evse.limit.configured_current"); got != projection.ProjectionExact {
+				t.Fatalf("configured outcome = %s, want exact", got)
+			}
+			configured := teslaGen3EVSECandidate(t, current.Snapshot, "evse.limit.configured_current")
+			var freshness semreg.Freshness
+			for _, fact := range current.Evaluation.Facts {
+				if fact.CandidateID == configured.CandidateID {
+					freshness = fact.Freshness
+				}
+			}
+			if freshness != tc.configuredFreshness {
+				t.Fatalf("configured freshness = %s, want %s", freshness, tc.configuredFreshness)
+			}
+		})
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationReadFloorRejectsRollbackOverflowAndEpochMismatch(t *testing.T) {
+	p := &TeslaGen3EVSESemanticPublication{
+		publishedReadClock: 10,
+		prometheusBaseMonotonic: semreg.MonotonicPoint{
+			ClockEpochID: "clock-a",
+			Nanoseconds:  semreg.Uint64(strconv.FormatUint(^uint64(0)-5, 10)),
+		},
+	}
+	if got, err := p.readMonotonic(15); err != nil || got.Nanoseconds != semreg.Uint64(strconv.FormatUint(^uint64(0), 10)) || got.ClockEpochID != "clock-a" {
+		t.Fatalf("read floor boundary = %#v / %v", got, err)
+	}
+	if _, err := p.readMonotonic(9); err == nil {
+		t.Fatal("read-clock rollback accepted")
+	}
+	if _, err := p.readMonotonic(16); err == nil {
+		t.Fatal("read-floor overflow accepted")
+	}
+	if _, err := teslaGen3EVSEAtLeastMonotonic(
+		semreg.MonotonicPoint{ClockEpochID: "clock-a", Nanoseconds: "1"},
+		semreg.MonotonicPoint{ClockEpochID: "clock-b", Nanoseconds: "1"},
+	); err == nil {
+		t.Fatal("read-floor epoch mismatch accepted")
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonotonic(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	t.Run("equal zero coordinate uses receipt", func(t *testing.T) {

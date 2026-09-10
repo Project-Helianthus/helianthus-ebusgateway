@@ -79,3 +79,28 @@ publication clock or native I/O.
   passive-smoke gates not triggered. Durable log
   `/tmp/helianthus-ebusgateway-966-p2-full-ci.log`, SHA-256
   `71e1867afd16a359c2b93f572a3eaa3f7320813055362abf4f68bcf0a3db5923`.
+
+## P2 accepted-evidence aging correction
+
+Source `a9f77f7519bc2ac2ee2aa5927fe31d7366d01389` (tree
+`35af57e410bd47359a980be2930ba8fa928c9a1a`) carries the elapsed interval
+between immutable `EvaluatedAt` and the accepted publication epoch into the
+Prometheus-only monotonic scrape floor. An immediate scrape can therefore not
+present a 60-second allocation as exact after delayed publication. The
+deterministic regression covers publication at 59 seconds (exact), 60 seconds
+(withheld), and 120 seconds (withheld), plus a later rollback scrape. It also
+proves the configured current remains independently exact where appropriate,
+and that neither scrape nor the rollback path calls a publication clock or
+native I/O. The existing high-water and successor-publication tests retain the
+per-publication reset and connector non-resurrection properties.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./mcp` — PASS: root
+  9.575s, gateway 96.017s, MCP 25.554s. Durable log
+  `/tmp/helianthus-ebusgateway-966-delay-focused-race.log`, SHA-256
+  `d91e5249fdff2f0633f32090ff379f2bec43f6c34dc36c1848eacf5b592de973`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: Portal 93/93; complete Go race
+  suite; Python 168/6/26/11/6/2; golangci-lint 0 issues; transport gate not
+  triggered; Growatt Storage mapping 2 outputs/13 rejected; Tesla EVSE mapping
+  6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
+  `/tmp/helianthus-ebusgateway-966-delay-full-ci.log`, SHA-256
+  `05ac9fd606af1bf98cc8d8bf523c6c0c902431979876acff0d0f9b241edddb20`.

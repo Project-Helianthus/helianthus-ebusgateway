@@ -242,6 +242,17 @@ func TestGrowattBMSRS485ProductionCompositionBindsFourReadsAndImmutableEvidence(
 	}
 }
 
+func TestGrowattStoragePortalAvailabilityTracksStartedProvider(t *testing.T) {
+	var missing *growattBMSRS485ProductionProvider
+	if growattStoragePortalAvailable(newGatewayModbusMCPProviderWithGrowatt(nil, missing)) {
+		t.Fatal("failed Growatt startup advertised Portal Storage")
+	}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1})
+	if !growattStoragePortalAvailable(newGatewayModbusMCPProviderWithGrowatt(nil, runtime)) {
+		t.Fatal("started Growatt provider did not enable Portal Storage")
+	}
+}
+
 func TestGrowattBMSRS485SemanticStoragePublishesOneAtomicSemRegView(t *testing.T) {
 	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
 	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)

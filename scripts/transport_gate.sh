@@ -81,6 +81,7 @@ requires_modbus_rtu_transport_gate() {
     cmd/gateway/gateway_cli.go|\
     cmd/gateway/gateway_http_server.go|\
     cmd/gateway/growatt_bms_rs485_runtime.go|\
+	cmd/gateway/growatt_storage_semreg.go|\
     cmd/gateway/gateway_run_lifecycle.go|\
     cmd/gateway/modbus_endpoint_file.go|\
     cmd/gateway/modbus_mcp_provider.go|\

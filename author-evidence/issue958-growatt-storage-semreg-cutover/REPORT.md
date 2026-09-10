@@ -172,6 +172,11 @@ transport classifier tests (23), passive classifier tests (9), and the actual
 Modbus RTU production conformance gate pass. No full CI was run for this
 report-only gate correction.
 
+The Portal bootstrap now enables Storage only when the matching Growatt runtime
+successfully started; an endpoint-open failure leaves its forwarder absent until
+restart. The storage semantic publisher is classified as Modbus RTU transport
+source, with focused race and direct conformance-gate evidence passing.
+
 ## Structural gate-classifier correction
 
 Fresh review of `8cd99ff` found that a flattened line allowlist could accept a

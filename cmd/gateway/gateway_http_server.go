@@ -68,6 +68,10 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, fmt.Errorf("portal storage configuration: %w", err)
 	}
+	storageAvailable := growattStoragePortalAvailable(modbusProvider)
+	if !storageAvailable {
+		portalStorageClient = nil
+	}
 
 	queryHandler, snapshotHandler, subscriptionHandler, err := newHTTPControlPlaneGraphQLHandlers(gateway, builder, hub)
 	if err != nil {
@@ -213,7 +217,7 @@ func startHTTPServer(
 			GatewayVersion:         buildInfo.ReleaseVersion,
 			BuildID:                buildInfo.BuildID,
 			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
-			SemanticStorageEnabled: cfg.PortalStorage.SemanticEnabled,
+			SemanticStorageEnabled: cfg.PortalStorage.SemanticEnabled && storageAvailable,
 			RawModbusEnabled:       cfg.PortalPV.RawReadEnabled,
 			SemanticPV:             portalPVClient,
 			SemanticStorage:        portalStorageClient,
@@ -380,6 +384,13 @@ func startHTTPServer(
 	}
 
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+func growattStoragePortalAvailable(provider mcp.ModbusV1Provider) bool {
+	if growatt, ok := provider.(gatewayGrowattBMSMCPProvider); ok {
+		return growatt.storage != nil
+	}
+	return false
 }
 
 // portalTCPModbusProvider prevents a composed native-only provider from

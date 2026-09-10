@@ -192,6 +192,25 @@ func TestTeslaGen3EVSESemanticPublicationRejectsUnserializableLifecycleBeforeDig
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationRejectsUnrepresentableUnixNanoLifecycle(t *testing.T) {
+	p := newTeslaGen3EVSESemanticFixture(t)
+	before := p.current
+	for _, timestamp := range []time.Time{teslaGen3EVSEMinUnixNanoTime, teslaGen3EVSEMaxUnixNanoTime, teslaGen3EVSEMinUnixNanoTime.Add(-time.Nanosecond), teslaGen3EVSEMaxUnixNanoTime.Add(time.Nanosecond)} {
+		evidence := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:unixnano-" + timestamp.String(), ObservedAt: timestamp, EvaluatedAt: timestamp, MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 1}
+		err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), evidence)
+		if timestamp.Equal(teslaGen3EVSEMinUnixNanoTime) || timestamp.Equal(teslaGen3EVSEMaxUnixNanoTime) {
+			if err == nil || !strings.Contains(err.Error(), "replay or collision") {
+				t.Fatalf("boundary error=%v", err)
+			}
+		} else if err == nil || err.Error() != "tesla Gen3 EVSE semantic lifecycle time is out of range" {
+			t.Fatalf("outside error=%v", err)
+		}
+	}
+	if p.sequence != 1 || !reflect.DeepEqual(before, p.current) {
+		t.Fatal("unrepresentable lifecycle advanced state")
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

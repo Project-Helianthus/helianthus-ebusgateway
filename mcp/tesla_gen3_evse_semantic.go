@@ -27,6 +27,13 @@ const SemanticV1EVSECurrentGetTool = "semantic.v1.evse.current.get"
 
 var ErrTeslaGen3EVSESemanticUnavailable = errors.New("tesla Gen3 EVSE semantic publication unavailable")
 
+const teslaGen3EVSEMaxUnixNano = int64(^uint64(0) >> 1)
+
+var (
+	teslaGen3EVSEMinUnixNanoTime = time.Unix(0, -teslaGen3EVSEMaxUnixNano-1).UTC()
+	teslaGen3EVSEMaxUnixNanoTime = time.Unix(0, teslaGen3EVSEMaxUnixNano).UTC()
+)
+
 // TeslaGen3EVSESemanticConfig deliberately makes every identity and lifecycle
 // axis explicit.  Native payloads cannot manufacture an asset identity.
 type TeslaGen3EVSESemanticConfig struct {
@@ -251,6 +258,9 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence) error {
 	if e.ObservationID == "" || e.ObservedAt.IsZero() || e.EvaluatedAt.IsZero() || e.EvaluatedAt.Before(e.ObservedAt) || e.MonotonicNS < 0 || e.EvaluatedMonotonicNS < 0 || e.Sequence == 0 {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is invalid")
+	}
+	if e.ObservedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.ObservedAt.After(teslaGen3EVSEMaxUnixNanoTime) || e.EvaluatedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.EvaluatedAt.After(teslaGen3EVSEMaxUnixNanoTime) {
+		return errors.New("tesla Gen3 EVSE semantic lifecycle time is out of range")
 	}
 	if _, err := json.Marshal(e); err != nil {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is not serializable")

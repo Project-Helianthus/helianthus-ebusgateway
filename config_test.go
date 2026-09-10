@@ -119,6 +119,28 @@ func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
 	}
 }
 
+func TestConfigCrossValidatesPortalEVSEAgainstDedicatedM2MListener(t *testing.T) {
+	m2m := M2MGraphQLConfig{ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem", ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"asset:evse-a"}}
+	portal := PortalEVSEConfig{SemanticEnabled: true, M2MURL: "https://127.0.0.1:8443/graphql/m2m/v1", M2MServerName: "m2m.gateway.test", M2MCAFile: "ca.pem", M2MClientCert: "client.pem", M2MClientKey: "client-key.pem", AssetRef: "asset:evse-a"}
+	valid := Config{M2MGraphQL: m2m, PortalEVSE: portal}
+	if err := valid.ValidatePortalEVSE(); err != nil {
+		t.Fatalf("valid EVSE BFF configuration rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"raw read":         func(cfg *Config) { cfg.PortalEVSE.RawReadEnabled = true },
+		"unknown asset":    func(cfg *Config) { cfg.PortalEVSE.AssetRef = "asset:other" },
+		"different server": func(cfg *Config) { cfg.PortalEVSE.M2MServerName = "other.gateway.test" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := candidate.ValidatePortalEVSE(); err == nil {
+				t.Fatal("invalid EVSE BFF configuration accepted")
+			}
+		})
+	}
+}
+
 func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {
 	base := Config{
 		M2MGraphQL: M2MGraphQLConfig{

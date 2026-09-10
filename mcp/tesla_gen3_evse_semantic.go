@@ -60,6 +60,8 @@ type TeslaGen3EVSESemanticPublication struct {
 	dispositions       []projection.ProjectionDisposition
 	evaluatedAt        time.Time
 	evaluatedMonotonic semreg.MonotonicPoint
+	lastReadAt         time.Time
+	lastReadMonotonic  semreg.MonotonicPoint
 	allocatedExpiresAt *time.Time
 	sequence           uint64
 	now                func() time.Time
@@ -119,7 +121,7 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	p.kernel, p.current, p.manifest, p.requested, p.dispositions = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...)
-	p.evaluatedAt, p.evaluatedMonotonic, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, evaluationMono, expiresAt, evidence.Sequence
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, expiresAt, evidence.Sequence
 	return nil
 }
 
@@ -127,8 +129,8 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 	if p == nil {
 		return nil, ErrTeslaGen3EVSESemanticUnavailable
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.sequence == 0 {
 		return nil, ErrTeslaGen3EVSESemanticUnavailable
 	}
@@ -139,13 +141,28 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 		// injected clock advances again; monotonic progress remains authoritative.
 		now = p.evaluatedAt
 	}
+	if now.Before(p.lastReadAt) {
+		// An external retained-record owner can provide wall-only timestamps.
+		// Once a read has exposed an age, a wall-clock rollback must not make
+		// the same provisional allocation younger without new native evidence.
+		now = p.lastReadAt
+	}
 	mono, err := p.readMonotonic(now)
+	if err != nil {
+		return nil, err
+	}
+	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.lastReadMonotonic)
 	if err != nil {
 		return nil, err
 	}
 	// Re-evaluation applies the SemReg lifecycle to the immutable snapshot.
 	// It performs no provider call and does not fabricate a replacement batch.
-	return p.publicAt(p.current, p.manifest, p.requested, p.dispositions, now, mono, p.allocatedExpiresAt)
+	view, err := p.publicAt(p.current, p.manifest, p.requested, p.dispositions, now, mono, p.allocatedExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	p.lastReadAt, p.lastReadMonotonic = now, mono
+	return view, nil
 }
 
 func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence) error {
@@ -309,6 +326,27 @@ func teslaGen3EVSEEvaluationMonotonic(receipt semreg.MonotonicPoint, evidence Te
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE evaluation monotonic clock overflows")
 	}
 	return semreg.MonotonicPoint{ClockEpochID: receipt.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+delta, 10))}, nil
+}
+
+func teslaGen3EVSEAtLeastMonotonic(candidate, floor semreg.MonotonicPoint) (semreg.MonotonicPoint, error) {
+	if floor.ClockEpochID == "" {
+		return candidate, nil
+	}
+	if candidate.ClockEpochID != floor.ClockEpochID {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock epoch changed")
+	}
+	candidateNS, err := strconv.ParseUint(string(candidate.Nanoseconds), 10, 64)
+	if err != nil {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock is invalid")
+	}
+	floorNS, err := strconv.ParseUint(string(floor.Nanoseconds), 10, 64)
+	if err != nil {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE retained monotonic clock is invalid")
+	}
+	if candidateNS < floorNS {
+		return floor, nil
+	}
+	return candidate, nil
 }
 
 func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence) *time.Time {

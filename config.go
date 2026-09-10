@@ -127,6 +127,10 @@ type PortalPVConfig struct {
 // operation or native fallback fields.
 type PortalStorageConfig = PortalPVConfig
 
+// PortalEVSEConfig is an independently disabled, read-only BFF for the fixed
+// SemReg EVSE current projection. It has no operation or native fallback field.
+type PortalEVSEConfig = PortalPVConfig
+
 func (config PortalPVConfig) Validate() error {
 	fields := []string{config.M2MURL, config.M2MServerName, config.M2MCAFile, config.M2MClientCert, config.M2MClientKey, config.AssetRef}
 	if !config.SemanticEnabled {
@@ -212,6 +216,21 @@ func (cfg Config) ValidatePortalStorage() error {
 	}
 	if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond) {
 		return errors.New("portal storage semantic BFF requires MaxQuiescence plus four Growatt reads plus 500ms headroom below the M2M deadline")
+	}
+	return nil
+}
+
+// ValidatePortalEVSE pins the Portal EVSE BFF to the dedicated mTLS GraphQL
+// listener and an admitted opaque asset. EVSE record injection remains owned by
+// its separate qualified provider; this validation adds no acquisition route.
+func (cfg Config) ValidatePortalEVSE() error {
+	if cfg.PortalEVSE.RawReadEnabled {
+		return errors.New("portal EVSE configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalEVSE
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -304,6 +323,7 @@ type Config struct {
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig
 	PortalStorage            PortalStorageConfig
+	PortalEVSE               PortalEVSEConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

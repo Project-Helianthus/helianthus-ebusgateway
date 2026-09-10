@@ -261,6 +261,54 @@ func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t 
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationDoesNotRegressAfterWallClockRollback(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := base
+	p.now = func() time.Time { return now }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	provisional, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443, LimitCurrentMaxAmps: 16, LimitTimeoutSeconds: 60, SetRequestPayload: source.Provisional.SetRequestPayload(), AckPayload: source.Provisional.AckPayload(), ReadbackRequestPayload: source.Provisional.ReadbackRequestPayload(), ReadbackTerminalPayload: source.Provisional.ReadbackTerminalPayload()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Provisional = &provisional
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:rollback", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mcpHandler := teslaGen3EVSEMCPHandler(t, p)
+	graphqlHandler := teslaGen3EVSEGraphQLHandler(t, p)
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+	}{
+		{name: "expired", now: base.Add(61 * time.Second)},
+		{name: "rolled back before expiry", now: base.Add(30 * time.Second)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now = tc.now
+			mcpData := teslaGen3EVSEMCPCurrent(t, mcpHandler)
+			graphqlData := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "rollback-"+tc.name)
+			var mcpJSON, graphqlJSON any
+			if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+				t.Fatalf("MCP/GraphQL rollback divergence\nMCP: %s\nGraphQL: %s", mcpData, graphqlData)
+			}
+			encoded := string(mcpData)
+			if !strings.Contains(encoded, "withheld_provisional_expired") || !strings.Contains(encoded, `"freshness":"expired"`) {
+				t.Fatalf("rollback resurrected allocation: %s", encoded)
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationConcurrentExpiryReadsRemainStable(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	now := time.Date(2026, 9, 10, 12, 11, 0, 0, time.UTC)

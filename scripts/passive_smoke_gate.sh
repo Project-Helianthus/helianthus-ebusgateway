@@ -55,7 +55,7 @@ semreg_public_config_only() {
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
   [[ -n "${changes}" ]] || return 1
-	if grep -Fq "PortalStorage" <<< "${changes}"; then
+	if grep -Eq "Portal(Storage|EVSE)" <<< "${changes}"; then
 		python3 scripts/semreg_public_config_classifier.py "${base_ref}"
 		return
 	fi

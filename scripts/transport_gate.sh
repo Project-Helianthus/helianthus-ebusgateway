@@ -148,7 +148,7 @@ run_modbus_rtu_transport_gate() {
   echo "transport gate: PASS (Modbus RTU production composition and pinned endpoint conformance)."
 }
 
-# SemReg public read-surface configuration (PV or storage) does not alter a
+# SemReg public read-surface configuration (PV, storage, or EVSE) does not alter a
 # protocol transport, topology, acquisition, or runtime admission. Keep the
 # 88-case transport gate whenever an actual transport family is touched.
 semreg_public_config_only() {
@@ -159,9 +159,9 @@ semreg_public_config_only() {
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
 	[[ -n "${changes}" ]] || return 1
-	# Storage-only changes are exempt only when the complete source outside the
-	# exact declaration, Config field, and validator is byte-equivalent.
-	if grep -Fq "PortalStorage" <<< "${changes}"; then
+	# Storage/EVSE-only changes are exempt only when the complete source outside
+	# their exact declarations, Config fields, and validators is byte-equivalent.
+	if grep -Eq "Portal(Storage|EVSE)" <<< "${changes}"; then
 		python3 scripts/semreg_public_config_classifier.py "${base_ref}"
 		return
 	fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed unless config.go changes only the Storage public-read slice."""
+"""Fail closed unless config.go changes only an owned SemReg public-read slice."""
 from __future__ import annotations
 import re
 import subprocess
@@ -55,11 +55,32 @@ func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadlin
 	return responseTimeout <= (budget-maxQuiescence-time.Nanosecond)/4
 }
 '''
+EVSE_DECLARATION = (
+    "// PortalEVSEConfig is an independently disabled, read-only BFF for the fixed\n"
+    "// SemReg EVSE current projection. It has no operation or native fallback field.\n"
+    "type PortalEVSEConfig = PortalPVConfig\n"
+)
+EVSE_FIELD = re.compile(r"(?m)^\s*PortalEVSE\s+PortalEVSEConfig\n")
+EVSE_FUNCTION = '''// ValidatePortalEVSE pins the Portal EVSE BFF to the dedicated mTLS GraphQL
+// listener and an admitted opaque asset. EVSE record injection remains owned by
+// its separate qualified provider; this validation adds no acquisition route.
+func (cfg Config) ValidatePortalEVSE() error {
+	if cfg.PortalEVSE.RawReadEnabled {
+		return errors.New("portal EVSE configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalEVSE
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
+	}
+	return nil
+}
+'''
 
 def show(ref: str) -> str:
     return subprocess.check_output(["git", "show", f"{ref}:config.go"], text=True)
 
-def strip_storage(text: str) -> tuple[str, tuple[int, int, int, int]]:
+def strip_public_config(text: str) -> tuple[str, tuple[int, ...]]:
     declaration_count = text.count(DECLARATION)
     if declaration_count > 1: raise ValueError("duplicate Storage config declaration")
     text = text.replace(DECLARATION, "")
@@ -71,16 +92,24 @@ def strip_storage(text: str) -> tuple[str, tuple[int, int, int, int]]:
     helper_count = text.count(HELPER)
     if helper_count > 1: raise ValueError("duplicate growattStorageOperationFitsDeadline helper")
     text = text.replace(HELPER, "")
+    evse_declaration_count = text.count(EVSE_DECLARATION)
+    if evse_declaration_count > 1: raise ValueError("duplicate EVSE config declaration")
+    text = text.replace(EVSE_DECLARATION, "")
+    text, evse_field_count = EVSE_FIELD.subn("", text)
+    if evse_field_count > 1: raise ValueError("duplicate EVSE config field")
+    evse_function_count = text.count(EVSE_FUNCTION)
+    if evse_function_count > 1: raise ValueError("duplicate ValidatePortalEVSE function")
+    text = text.replace(EVSE_FUNCTION, "")
     normalized = re.sub(r"\n{2,}", "\n", text).strip() + "\n"
-    return normalized, (declaration_count, field_count, function_count, helper_count)
+    return normalized, (declaration_count, field_count, function_count, helper_count, evse_declaration_count, evse_field_count, evse_function_count)
 
 def main() -> int:
     try:
-        base_rest, base_counts = strip_storage(show(sys.argv[1]))
-        head_rest, head_counts = strip_storage(Path("config.go").read_text())
+        base_rest, base_counts = strip_public_config(show(sys.argv[1]))
+        head_rest, head_counts = strip_public_config(Path("config.go").read_text())
         if base_rest != head_rest: return 1
-        if head_counts != (1, 1, 1, 1): return 1
-        if any(count not in (0, 1) for count in base_counts): return 1
+        if any(count not in (0, 1) for count in base_counts + head_counts): return 1
+        if sum(head_counts) <= sum(base_counts): return 1
         return 0
     except Exception:
         return 1

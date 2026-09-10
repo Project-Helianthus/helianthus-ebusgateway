@@ -87,3 +87,28 @@ Hosted run status was 4/4 SUCCESS on the implementation head before this
 author-evidence-only update. No physical smoke applies: this issue is offline,
 read-only metric composition with no device, credential, transport acquisition,
 publication, Portal, GraphQL, or MCP operation.
+
+## Dimension and identity-rotation correction
+
+Current implementation head: `6f84e8cdb56d6c870ac7e71d750498c86354091a`.
+Current implementation tree: `15bb1659a33fc8c0f8f0acb42b3d9156a05eb022`.
+
+Every rendered PV or Storage fact now requires one accepted dimension. A missing
+dimension is malformed, emits no fact state/value/age/conflict sample, and is
+counted as render overflow; hostile coverage exercises both domains. The PV
+publication core retains historical identity-keyed public evidence but records
+one latest accepted active asset for the single-domain scrape view. The
+deterministic rotation test proves a new SunSpec Common identity remains
+available to metrics while the prior evidence remains addressable by asset, and
+the read-only scrape path performs no native acquisition or publication.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./internal/modbusadapter`
+  — PASS: root 9.437s, gateway 94.851s, Modbus adapter 130.346s; durable log
+  `/tmp/helianthus-ebusgateway-963-focused-race.log`, SHA-256
+  `52d5fe2671c1852a4cbd57f5ce43f39b7a0c7bbfd60b47b8caeae96864e14055`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: portal 93/93; full Go race
+  suite; Python suites 168/6/24/10/6/2; golangci-lint 0 issues; transport
+  gate PASS; Storage SemReg mapping gate PASS (2 executable outputs, 13
+  rejected scenarios); and passive smoke gate `not triggered`. Durable log
+  `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
+  `d769e96a2ccddaf29f292db3a8e642d67e60c6043bb3b280e61c30c2a0c02880`.

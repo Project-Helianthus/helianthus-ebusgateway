@@ -21,6 +21,7 @@ const (
 	route                     = "/graphql/m2m/v1"
 	semanticPVContractID      = "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"
 	semanticStorageContractID = "PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1"
+	semanticEVSEContractID    = "PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1"
 	maxRequestBytes           = 16 << 10
 	maxResponseBytes          = 1 << 20
 	maxJSONDepth              = 64
@@ -36,6 +37,10 @@ const semanticStorageFixedQuery = `query SemanticStorageCurrent($request: M2MCur
   semanticStorageCurrent(request: $request) { snapshot evaluation selections projection }
 }`
 
+const semanticEVSEFixedQuery = `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) {
+  semanticEVSECurrent(request: $request) { snapshot evaluation selections projection }
+}`
+
 // Config supplies the one immutable SemReg evaluation used by every public PV
 // consumer. The legacy canonical-PV provider is deliberately absent.
 type Config struct {
@@ -43,12 +48,14 @@ type Config struct {
 	MonotonicMilliseconds  func() int64
 	SemanticPVCurrent      func(context.Context, string) (json.RawMessage, bool)
 	SemanticStorageCurrent func(context.Context, string) (json.RawMessage, bool)
+	SemanticEVSECurrent    func(context.Context, string) (json.RawMessage, bool)
 }
 
 type handler struct {
 	cfg               Config
 	queryShape        string
 	storageQueryShape string
+	evseQueryShape    string
 	mu                sync.Mutex
 	principals        map[string]*principalLimit
 }
@@ -66,7 +73,7 @@ func WithMTLSPrincipal(ctx context.Context, fingerprint string) context.Context 
 }
 
 func NewHandler(cfg Config) (http.Handler, error) {
-	if cfg.SemanticPVCurrent == nil && cfg.SemanticStorageCurrent == nil {
+	if cfg.SemanticPVCurrent == nil && cfg.SemanticStorageCurrent == nil && cfg.SemanticEVSECurrent == nil {
 		return nil, errors.New("an authoritative SemReg projection provider is required")
 	}
 	if cfg.AllowedAssets == nil {
@@ -84,7 +91,11 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("invalid embedded SemReg storage query")
 	}
-	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, principals: make(map[string]*principalLimit)}, nil
+	evseShape, _, _, err := queryDocumentShape(semanticEVSEFixedQuery)
+	if err != nil {
+		return nil, errors.New("invalid embedded SemReg EVSE query")
+	}
+	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, principals: make(map[string]*principalLimit)}, nil
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -134,11 +145,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		root, contract, provider = "semanticPVCurrent", semanticPVContractID, h.cfg.SemanticPVCurrent
 	case "SemanticStorageCurrent":
 		root, contract, provider = "semanticStorageCurrent", semanticStorageContractID, h.cfg.SemanticStorageCurrent
+	case "SemanticEVSECurrent":
+		root, contract, provider = "semanticEVSECurrent", semanticEVSEContractID, h.cfg.SemanticEVSECurrent
 	default:
 		writeError(w, "", "QUERY_REJECTED")
 		return
 	}
-	if (request.OperationName == "SemanticPVCurrent" && queryShape != h.queryShape) || (request.OperationName == "SemanticStorageCurrent" && queryShape != h.storageQueryShape) || provider == nil {
+	if (request.OperationName == "SemanticPVCurrent" && queryShape != h.queryShape) || (request.OperationName == "SemanticStorageCurrent" && queryShape != h.storageQueryShape) || (request.OperationName == "SemanticEVSECurrent" && queryShape != h.evseQueryShape) || provider == nil {
 		writeError(w, root, "QUERY_REJECTED")
 		return
 	}

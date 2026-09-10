@@ -177,6 +177,21 @@ func TestTeslaGen3EVSESemanticPublicationRetriesIdenticalInputWithoutMutation(t 
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationRejectsUnserializableLifecycleBeforeDigest(t *testing.T) {
+	p := newTeslaGen3EVSESemanticFixture(t)
+	before := p.current
+	badTime := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, observation := range []string{"observation:unserializable-one", "observation:unserializable-two"} {
+		err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: observation, ObservedAt: badTime, EvaluatedAt: badTime, MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 1})
+		if err == nil || err.Error() != "tesla Gen3 EVSE semantic lifecycle is not serializable" {
+			t.Fatalf("unserializable lifecycle error=%v", err)
+		}
+	}
+	if p.sequence != 1 || !reflect.DeepEqual(before, p.current) {
+		t.Fatalf("unserializable collision advanced sequence=%d snapshot=%#v", p.sequence, p.current)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

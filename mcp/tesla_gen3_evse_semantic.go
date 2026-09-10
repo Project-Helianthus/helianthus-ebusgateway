@@ -252,6 +252,9 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	if e.ObservationID == "" || e.ObservedAt.IsZero() || e.EvaluatedAt.IsZero() || e.EvaluatedAt.Before(e.ObservedAt) || e.MonotonicNS < 0 || e.EvaluatedMonotonicNS < 0 || e.Sequence == 0 {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is invalid")
 	}
+	if _, err := json.Marshal(e); err != nil {
+		return errors.New("tesla Gen3 EVSE semantic lifecycle is not serializable")
+	}
 	if e.EvaluatedMonotonicNS == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
 		e.EvaluatedMonotonicNS = e.MonotonicNS
 	}

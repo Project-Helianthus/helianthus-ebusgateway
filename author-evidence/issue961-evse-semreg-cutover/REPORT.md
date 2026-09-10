@@ -9,6 +9,8 @@
 - Base: `b2651d73639efb7ba690bc1464d9b8b04df51e4a`
 - Implementation HEAD: `ccc3bccbaef22315fcb4e929f96097f699534f82`
 - Implementation tree: `dc63f43a7525128a34a8cb266cd641c83ce03758`
+- Lifecycle remediation implementation HEAD: `8f39cc90c5becace4d27a2b0ad7bf05dbafac900`
+- Lifecycle remediation implementation tree: `58e0abe4ee3536fb26255fc4e4b0efe0b003d39c`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -51,8 +53,28 @@ The accepted `wc3_24_44_3` mapping is field-local:
 
 Invalid persistent evidence and invalid lifecycle metadata fail before the
 kernel fork can be committed. A replay or sequence collision is rejected while
-the existing detached public snapshot remains unchanged. The MCP read copies its
-stored JSON snapshot and never invokes the injected native provider again.
+the existing detached public snapshot remains unchanged.
+
+## P1 lifecycle remediation
+
+The two accepted P1 review findings are corrected by
+`8f39cc90c5becace4d27a2b0ad7bf05dbafac900`. Stable Tesla candidate IDs now take
+their next revision from the candidate in the current committed SemReg snapshot;
+the first candidate is revision `1` and a subsequent accepted publication is
+revision `2`. The native evidence sequence remains the caller-supplied collision
+fence, while kernel fork/apply remains atomic.
+
+Every MCP and GraphQL read now evaluates the retained immutable SemReg snapshot
+at an injected, testable clock. The read derives a later monotonic point from the
+sealed publication point and calls `EvaluateSnapshot`; it neither calls a native
+provider nor emits a time-only lifecycle batch or fabricated replacement snapshot.
+Configured current therefore remains independently exact. A valid provisional
+allocation has `FreshFor=timeout` and `RetainFor=timeout+1ns`: just before expiry
+it is fresh and exact; at expiry its projection is explicitly withheld with
+`withheld_provisional_expired`; after expiry SemReg evaluates it as expired and
+the same projection remains withheld. This is an output disposition over the
+unchanged snapshot, consistent with the accepted SemReg lifecycle/projection
+contract.
 
 ## Public contracts and boundary
 
@@ -81,15 +103,19 @@ is accepted. This report makes no production or live-device reachability claim.
 
 RED-first tests define these rejection vectors before their corresponding
 implementation path is accepted: malformed persistent evidence; missing
-provisional evidence; zero timeout; inhibit state; expiry; replay/collision; and
-production composition. The focused suite contains seven top-level tests and
-three provisional sub-vectors:
+provisional evidence; zero timeout; inhibit state; expiry; replay/collision;
+stable sequential candidate revisions; just-before/equal/after-expiry lifecycle
+boundaries; concurrent read stability; MCP/GraphQL parity; and production
+composition. The focused race suite passed:
 
 ```text
 GOWORK=off go test -race ./mcp ./m2mgraphql ./cmd/gateway \
   -run 'TeslaGen3EVSESemantic|SemanticEVSE|TeslaEVSESemantic' -count=1
 PASS
 ```
+
+Its log SHA-256 is
+`d24b023ef43e9976574667824fc9cba027704b732f857cd58dc29dcbc4c49ae1`.
 
 The final full local gate passed:
 
@@ -103,7 +129,7 @@ schema coverage, Python script suites `168 + 6 + 24 + 9 + 6 + 2 = 215`,
 `golangci-lint` with `0 issues`, the Modbus RTU production transport gate, and
 the existing Growatt Storage SemReg mapping gate. The passive-smoke classifier
 reported `not triggered`. The final log SHA-256 is
-`8f6611faf174889f6d7543eae887299eab27fd52ecdffe12525446f012845dd4`.
+`6b9383f21fa6de4a6189e725dc6798dbecfcb54a0f4279332ac69c4e76b70836`.
 
 ## Gate classification
 

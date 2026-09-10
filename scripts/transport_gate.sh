@@ -150,42 +150,11 @@ semreg_public_config_only() {
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
 	[[ -n "${changes}" ]] || return 1
-	# Storage adds only a second loopback mTLS consumer configuration. Every
-	# changed line must be one of this finite set; a marker cannot carry an
-	# unrelated config change through the transport gate.
+	# Storage-only changes are exempt only when the complete source outside the
+	# exact declaration, Config field, and validator is byte-equivalent.
 	if grep -Fq "PortalStorage" <<< "${changes}"; then
-		while IFS= read -r line; do
-			trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-			[[ -z "${trimmed}" ]] && continue
-			case "${trimmed}" in
-				"// PortalStorageConfig is an independently disabled, read-only BFF for the"|\
-				"// versioned SemReg storage projection. It deliberately does not expose any"|\
-				"// operation or native fallback fields."|\
-				"type PortalStorageConfig = PortalPVConfig"|\
-				"type Config struct {"|\
-				"func (cfg Config) ValidatePortalStorage() error {"|\
-				"if cfg.PortalStorage.RawReadEnabled {"|\
-				"return errors.New(\"portal storage configuration does not permit raw reads\")"|\
-				"copy := cfg"|\
-				"copy.PortalPV = cfg.PortalStorage"|\
-				"if err := copy.ValidatePortalPV(); err != nil {"|\
-				"return err"|\
-				"if !cfg.PortalStorage.SemanticEnabled {"|\
-				"return nil"|\
-				"producer := cfg.ModbusTCPConfig.GrowattBMSRS485"|\
-				"if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {"|\
-				"return errors.New(\"portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer\")"|\
-				"PortalStorage            PortalStorageConfig"|\
-				"}") ;;
-				*) return 1 ;;
-			esac
-		done <<< "${changes}"
-		# Generic return/brace lines are admitted only at their exact cardinality
-		# inside the fixed Storage validator; an unrelated validator cannot borrow
-		# the PortalStorage marker to add another identical line.
-		[[ "$(grep -Ec '^[[:space:]]*return err[[:space:]]*$' <<< "${changes}")" -eq 1 && "$(grep -Ec '^[[:space:]]*return nil[[:space:]]*$' <<< "${changes}")" -eq 2 ]] || return 1
-		case "$(grep -Ec '^[[:space:]]*}[[:space:]]*$' <<< "${changes}")" in 5|6) ;; *) return 1 ;; esac
-		return 0
+		python3 scripts/semreg_public_config_classifier.py "${base_ref}"
+		return
 	fi
 	while IFS= read -r line; do
 		trimmed="${line#"${line%%[![:space:]]*}"}"

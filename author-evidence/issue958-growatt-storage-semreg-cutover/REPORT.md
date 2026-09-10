@@ -171,3 +171,26 @@ The classifier and hostile fixtures now list only those three lines; focused
 transport classifier tests (23), passive classifier tests (9), and the actual
 Modbus RTU production conformance gate pass. No full CI was run for this
 report-only gate correction.
+
+## Structural gate-classifier correction
+
+Fresh review of `8cd99ff` found that a flattened line allowlist could accept a
+Storage marker together with identical generic return or brace lines changed in
+an unrelated validator. The first cardinality-only correction at `6ff8a41` was
+rejected during lead integration because same-count line swaps remained possible.
+
+The final correction uses one shared, fail-closed structural classifier from both
+transport and passive gates. It removes exactly one canonical Portal Storage
+declaration, `Config.PortalStorage` field, and balanced
+`ValidatePortalStorage` function from base and working source, then requires all
+remaining `config.go` bytes to match. The balanced scanner handles nested blocks,
+comments, quoted strings, runes, and raw strings. Missing or duplicate structures
+reject. Hostile fixtures cover unrelated `return err`, `return nil`, and brace
+changes, including same-count swaps inside another validator; the valid
+Storage-only change remains exempt.
+
+Focused evidence: `python3 scripts/transport_gate_test.py` — 23 PASS; `python3
+scripts/passive_smoke_gate_test.py` — 9 PASS; direct transport gate — pinned
+Modbus RTU conformance PASS; direct passive-smoke gate — not triggered; Python
+compile and `git diff --check` — PASS. Complete CI and fresh exact-HEAD review
+remain pending after the final commit.

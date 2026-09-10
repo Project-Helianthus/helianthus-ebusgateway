@@ -11,6 +11,7 @@ import unittest
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
+CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 
 
 class TransportGateTests(unittest.TestCase):
@@ -56,7 +57,7 @@ type Config struct {
         return env
 
     def test_storage_config_allowlist_is_exact(self) -> None:
-        repo_path, _ = self._create_temp_repo("config.go", base_text="", modified_text=self.storage_config_only)
+        repo_path, _ = self._create_temp_repo("config.go", base_text="type Config struct {\n}\n", modified_text=self.storage_config_only)
         allowed = subprocess.run(["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
         self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
         self.assertIn("not triggered", allowed.stdout)
@@ -70,6 +71,29 @@ type Config struct {
             (repo_path / "config.go").write_text(self.storage_config_only + line, encoding="utf-8")
             hostile = subprocess.run(["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
             self.assertNotEqual(hostile.returncode, 0, line)
+
+        base_other = "type Config struct {\n}\n\nfunc validateOther() error {\n\tif changed {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
+        hostile_others = (
+            "func validateOther() error {\n\tif changed {\n\t\treturn nil\n\t}\n\treturn err\n}\n",
+            "func validateOther() error {\n\treturn err\n}\n",
+            "func validateOther() error {\n\tif changed {\n\t}\n\treturn nil\n}\n",
+        )
+        for modified_other in hostile_others:
+            wrong_hunk_repo, _ = self._create_temp_repo(
+                "config.go",
+                base_text=base_other,
+                modified_text=self.storage_config_only + "\n" + modified_other,
+            )
+            hostile = subprocess.run(
+                ["bash", "scripts/transport_gate.sh"],
+                cwd=wrong_hunk_repo,
+                env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(hostile.returncode, 0, modified_other)
+            self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
 
     def _create_temp_repo(
         self,
@@ -93,6 +117,7 @@ type Config struct {
 
         (repo_path / "scripts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(TRANSPORT_GATE_SCRIPT, repo_path / "scripts" / "transport_gate.sh")
+        shutil.copy2(CONFIG_CLASSIFIER, repo_path / "scripts" / "semreg_public_config_classifier.py")
 
         tracked_file = repo_path / changed_file
         tracked_file.parent.mkdir(parents=True, exist_ok=True)

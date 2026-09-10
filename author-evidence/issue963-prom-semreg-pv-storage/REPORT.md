@@ -135,3 +135,33 @@ no early expiry, receipt-wall clamping, and no native read/publication.
   rejected scenarios); and passive smoke gate `not triggered`. Durable log
   `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
   `5a4496e7ed8b9e801cb60f749a53fdb407d8cb8330ef6a4c31ee19c8072c92d5`.
+
+## PV detached-floor and complete-schema correction
+
+Current implementation head: `46700b11524cc82f1dc41bc5e5031e85cefea4ee`.
+Current implementation tree: `f758f76ca175fcdc4814e7034f9813cfdf28a421`.
+
+The scrape-specific PV accessor now preserves its detached view through exactly
+one evaluation retry at that view's wall/monotonic floor. A deterministic
+same-asset publication after capture verifies that `/metrics` returns the
+coherent newer detached tuple without Modbus acquisition or publication.
+
+The semantic renderer now validates a complete finite v1 schema for every
+fact-backed item: domain, exact pack and version, fact, raw dimension role,
+value kind, unit, and accepted symbolic token. Hostile boolean, wrong-unit,
+future-version, and fact/item mismatch inputs emit neither semantic fact state
+nor value samples and increment overflow.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./internal/modbusadapter`
+  — PASS: root 9.678s, gateway 95.101s, Modbus adapter 136.723s; durable log
+  `/tmp/helianthus-ebusgateway-963-focused-race.log`, SHA-256
+  `3d4b148f1abe22c107d1669902058a99998156810e4d3d705d4bc6f350de9d7f`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: portal 93/93; full Go race
+  suite; Python suites 168/6/24/10/6/2; golangci-lint 0 issues; transport
+  gate PASS; Storage SemReg mapping gate PASS (2 executable outputs, 13
+  rejected scenarios); and passive smoke gate `not triggered`. Durable log
+  `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
+  `ea5a13c596867f05baa7da419658c6fa2a4b9af52ed63b1fc4d9dae2e2c7b5b5`.
+
+Hosted CI was 4/4 SUCCESS on this implementation head before the following
+author-evidence-only commit.

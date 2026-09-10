@@ -273,8 +273,12 @@ func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.Tesla
 	}
 	if havePersistent {
 		latest := nextPersistentEvidence
-		if haveProvisional && nextProvisionalEvidence[1].ReceiptMonotonic > latest.ReceiptMonotonic {
-			latest = nextProvisionalEvidence[1]
+		if haveProvisional {
+			provisionalLatest := nextProvisionalEvidence[1]
+			if provisionalLatest.ReceiptMonotonic > latest.ReceiptMonotonic ||
+				provisionalLatest.ReceiptMonotonic == latest.ReceiptMonotonic && provisionalLatest.ReceiptWall.After(latest.ReceiptWall) {
+				latest = provisionalLatest
+			}
 		}
 		nextSequence := owner.sequence + 1
 		if nextSequence == 0 {

@@ -384,6 +384,13 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 	if err != nil {
 		return nil, err
 	}
+	// Publish seals the wall-time delay between the native evaluation and the
+	// accepted publication into this same-epoch floor. MCP and GraphQL must not
+	// restart evidence age at zero when they first read a queued outcome.
+	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.prometheusBaseMonotonic)
+	if err != nil {
+		return nil, err
+	}
 	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.lastReadMonotonic)
 	if err != nil {
 		return nil, err

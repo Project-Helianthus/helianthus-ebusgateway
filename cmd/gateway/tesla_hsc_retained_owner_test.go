@@ -159,11 +159,6 @@ func TestTeslaHSCRetainedOwnerPersistentSiblingDoesNotRefreshProvisional(t *test
 	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 2, 12, 60, false, 32)); err != nil {
 		t.Fatal(err)
 	}
-	before, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
-	if encoded, marshalErr := json.Marshal(before); err != nil || marshalErr != nil || !bytes.Contains(encoded, []byte(`evse.limit.allocated_current`)) {
-		t.Fatalf("initial semantic value/error = %s / %v / %v", encoded, err, marshalErr)
-	}
-
 	// Correlation 65 is 62 seconds after the retained provisional readback.
 	// It updates configured current after the provisional's 60-second lifetime
 	// without supplying any new provisional completed outcome.
@@ -272,6 +267,102 @@ func TestTeslaHSCRetainedOwnerProvisionalSiblingPreservesPersistentReceipt(t *te
 		return
 	}
 	t.Fatalf("configured-current fact missing: %s", encoded)
+}
+
+func TestTeslaHSCRetainedOwnerEqualMonotonicLaterWallPublishesWithoutRefresh(t *testing.T) {
+	owner := startTeslaEqualMonotonicFixture(t)
+	value, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+	encoded, marshalErr := json.Marshal(value)
+	if err != nil || marshalErr != nil {
+		t.Fatalf("equal-monotonic semantic value/error = %s / %v / %v", encoded, err, marshalErr)
+	}
+	var public struct {
+		Snapshot struct {
+			EvaluatedAt struct {
+				UnixNanoseconds string `json:"unix_nanoseconds"`
+			} `json:"evaluated_at"`
+			Facts []struct {
+				Key struct {
+					FactID string `json:"fact_id"`
+				} `json:"key"`
+				Candidates []struct {
+					Times struct {
+						ReceivedAt struct {
+							UnixNanoseconds string `json:"unix_nanoseconds"`
+						} `json:"received_at"`
+						ReceiptMonotonic struct {
+							Nanoseconds string `json:"nanoseconds"`
+						} `json:"receipt_monotonic"`
+					} `json:"times"`
+				} `json:"candidates"`
+			} `json:"facts"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.Snapshot.EvaluatedAt.UnixNanoseconds != "1700000003000000123" {
+		t.Fatalf("aggregate evaluated wall = %s, want later provisional wall", public.Snapshot.EvaluatedAt.UnixNanoseconds)
+	}
+	wantReceipts := map[string]string{
+		"evse.limit.configured_current": "1700000001000000123",
+		"evse.limit.allocated_current":  "1700000003000000123",
+	}
+	for _, fact := range public.Snapshot.Facts {
+		want, ok := wantReceipts[fact.Key.FactID]
+		if !ok {
+			continue
+		}
+		if len(fact.Candidates) != 1 || fact.Candidates[0].Times.ReceivedAt.UnixNanoseconds != want ||
+			fact.Candidates[0].Times.ReceiptMonotonic.Nanoseconds != "10000000000" {
+			t.Fatalf("%s receipt refreshed or changed: %#v", fact.Key.FactID, fact.Candidates)
+		}
+		delete(wantReceipts, fact.Key.FactID)
+	}
+	if len(wantReceipts) != 0 {
+		t.Fatalf("equal-monotonic facts missing: %v", wantReceipts)
+	}
+
+	beforeEvidence := owner.RetainedEvidence()
+	beforeSequence := owner.sequence
+	regressed := teslaPersistentOutcome(t, 4, 20)
+	regressed.Exchange.ReceiptMonotonic = 9 * time.Second
+	if err := owner.IngestPersistent(context.Background(), regressed); err == nil {
+		t.Fatal("true monotonic regression accepted")
+	}
+	after, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if err != nil || after.Persistent == nil || after.Provisional == nil ||
+		after.Persistent.MaxOutputCurrentAmps() != 16 || after.Provisional.LimitCurrentMaxAmps() != 12 ||
+		owner.sequence != beforeSequence || !reflect.DeepEqual(owner.RetainedEvidence(), beforeEvidence) {
+		t.Fatalf("true regression mutated retained state: %#v / %v", after, err)
+	}
+}
+
+func TestTeslaHSCRetainedOwnerEqualMonotonicConcurrentReadsRemainStable(t *testing.T) {
+	owner := startTeslaEqualMonotonicFixture(t)
+	wantEvidence := owner.RetainedEvidence()
+	var wait sync.WaitGroup
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 20 {
+				if _, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background()); err != nil {
+					t.Error(err)
+				}
+				if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
+					t.Error(err)
+				}
+				if _, ok := owner.SemanticEVSECurrentAt(time.Unix(1_700_000_010, 123).UTC()); !ok {
+					t.Error("equal-monotonic Prometheus read unavailable")
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	if got := owner.RetainedEvidence(); !reflect.DeepEqual(got, wantEvidence) {
+		t.Fatal("equal-monotonic concurrent reads mutated retained evidence")
+	}
 }
 
 func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
@@ -517,6 +608,23 @@ func startTeslaRetainedFixture(t *testing.T, config ebusgateway.TeslaGen3HSCReta
 	t.Helper()
 	owner, err := startTeslaHSCRetainedOwner(config)
 	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func startTeslaEqualMonotonicFixture(t *testing.T) *teslaHSCRetainedOwner {
+	t.Helper()
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	persistent := teslaPersistentOutcome(t, 1, 16)
+	persistent.Exchange.ReceiptMonotonic = 10 * time.Second
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	provisional := teslaProvisionalOutcome(t, 2, 12, 600, false, 32)
+	provisional.Set.ReceiptMonotonic = 10 * time.Second
+	provisional.Readback.ReceiptMonotonic = 10 * time.Second
+	if err := owner.IngestProvisional(context.Background(), provisional); err != nil {
 		t.Fatal(err)
 	}
 	return owner

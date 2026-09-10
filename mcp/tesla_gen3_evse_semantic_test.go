@@ -454,6 +454,38 @@ func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t 
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationMCPAndGraphQLUseDelayedPublicationAgeFloor(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base.Add(61 * time.Second) }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{
+		ObservationID: "observation:delayed-publication-floor", ObservedAt: base, EvaluatedAt: base,
+		MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mcpData := teslaGen3EVSEMCPCurrent(t, teslaGen3EVSEMCPHandler(t, p))
+	graphqlData := teslaGen3EVSEGraphQLCurrent(t, teslaGen3EVSEGraphQLHandler(t, p), "delayed-publication-floor")
+	var mcpJSON, graphqlJSON any
+	if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(mcpJSON, graphqlJSON) || !strings.Contains(string(mcpData), "withheld_provisional_expired") ||
+		!strings.Contains(string(mcpData), `"freshness":"expired"`) {
+		t.Fatalf("delayed MCP/GraphQL publication age parity=%t: %s", reflect.DeepEqual(mcpJSON, graphqlJSON), mcpData)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonotonic(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	t.Run("equal zero coordinate uses receipt", func(t *testing.T) {

@@ -695,6 +695,34 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtIsDetachedAndMonoton
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesSnapshot(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-deep-copy", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("detached scrape called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("detached scrape called read clock"); return 0, nil }
+	before := mustJSON(p.current)
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || len(current.Snapshot.Facts) == 0 || len(current.Snapshot.Facts[0].Key.Dimensions) == 0 || current.Snapshot.Facts[0].Key.Dimensions[0].Value.Text == nil {
+		t.Fatalf("missing mutable nested snapshot fact: %#v ok=%t", current.Snapshot, ok)
+	}
+	*current.Snapshot.Facts[0].Key.Dimensions[0].Value.Text = "tampered"
+	if got := mustJSON(p.current); got != before {
+		t.Fatalf("returned snapshot mutated retained publication\nbefore=%s\nafter=%s", before, got)
+	}
+	again, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || strings.Contains(mustJSON(again.Snapshot), "tampered") {
+		t.Fatalf("later scrape inherited consumer mutation: %#v ok=%t", again.Snapshot, ok)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorResurrection(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

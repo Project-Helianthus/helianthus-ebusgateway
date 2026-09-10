@@ -253,7 +253,13 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	if p.sequence == 0 || p.scrapeEpoch.IsZero() {
 		return SemanticEVSECurrent{}, false
 	}
-	snapshot := p.current
+	// The retained snapshot includes nested slices and pointers. Copy it while
+	// holding the publication mutex so an output consumer cannot mutate the
+	// accepted lifecycle through a returned SemanticEVSECurrent value.
+	snapshot, err := teslaGen3EVSECloneSnapshot(p.current)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
 	manifest := p.manifest
 	requested := append([]projection.RequestedItem(nil), p.requested...)
 	dispositions := append([]projection.ProjectionDisposition(nil), p.dispositions...)
@@ -294,6 +300,24 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	// native publication with a new lifecycle generation.
 	p.prometheusMonotonic = mono
 	return current, true
+}
+
+// teslaGen3EVSECloneSnapshot follows the SemReg publication kernel's detached
+// snapshot boundary. The accepted snapshot is already valid; retain the error
+// path so a future non-serializable addition fails the passive scrape closed.
+func teslaGen3EVSECloneSnapshot(snapshot semreg.Snapshot) (semreg.Snapshot, error) {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return semreg.Snapshot{}, err
+	}
+	var clone semreg.Snapshot
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return semreg.Snapshot{}, err
+	}
+	if err := clone.Validate(); err != nil {
+		return semreg.Snapshot{}, err
+	}
+	return clone, nil
 }
 
 func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.Context) (any, error) {

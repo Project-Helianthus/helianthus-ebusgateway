@@ -92,25 +92,25 @@ semreg_public_config_only() {
 bus_observability_semreg_metrics_only() {
 	python3 - "$base_ref" <<'PY'
 import subprocess, sys
-from collections import Counter
 base = sys.argv[1]
-expected = Counter([
+expected = [
  "// semanticMetricsProvider returns detached, already-evaluated SemReg views.",
  "// It is invoked after the store snapshot is released: a /metrics request must",
  "// never take the store lock across a driver or publication lock.",
  "semanticMetricsProvider func(time.Time) []SemanticMetricsDomain",
+ "}",
  "// SetSemanticMetricsProvider installs the read-only PV/Storage SemReg view",
  "// supplier used by the existing /metrics renderer. The supplier must neither",
  "// acquire native data nor publish; nil removes the optional semantic section.",
  "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {",
- "if store == nil {", "return", "store.mu.Lock()", "store.semanticMetricsProvider = provider", "store.mu.Unlock()",
+ "if store == nil {", "return", "}", "store.mu.Lock()", "store.semanticMetricsProvider = provider", "store.mu.Unlock()",
  "semanticMetricsProvider := store.semanticMetricsProvider",
  "var semanticDomains []SemanticMetricsDomain",
  "haveSemanticMetricsProvider := semanticMetricsProvider != nil",
- "if semanticMetricsProvider != nil {", "semanticDomains = semanticMetricsProvider(now)",
+ "if semanticMetricsProvider != nil {", "semanticDomains = semanticMetricsProvider(now)", "}",
  "if haveSemanticMetricsProvider {", "writeSemanticMetrics(writer, semanticDomains, now)",
- "}", "}", "}", "}",
-])
+ "}",
+]
 diffs = []
 for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observability_store.go"),
              ("git","diff","--unified=0","--","bus_observability_store.go"),
@@ -120,7 +120,7 @@ for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observabilit
 if not diffs:
     raise SystemExit(1)
 diffs = [line for line in diffs if line]
-if Counter(diffs) != expected:
+if diffs != expected:
     raise SystemExit(1)
 if not {"semanticMetricsProvider func(time.Time) []SemanticMetricsDomain", "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {", "semanticDomains = semanticMetricsProvider(now)", "writeSemanticMetrics(writer, semanticDomains, now)"}.issubset(diffs):
     raise SystemExit(1)

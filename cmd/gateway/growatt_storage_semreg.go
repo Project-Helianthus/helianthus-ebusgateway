@@ -137,9 +137,9 @@ func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growa
 		return growattStorageCurrent{}, false
 	}
 	p.mu.RLock()
-	raw, received, published := append(json.RawMessage(nil), p.current...), p.currentReceivedAt, p.currentPublishedAt
+	raw, received := append(json.RawMessage(nil), p.current...), p.currentReceivedAt
 	p.mu.RUnlock()
-	if len(raw) == 0 || received.IsZero() || published.IsZero() {
+	if len(raw) == 0 || received.IsZero() {
 		return growattStorageCurrent{}, false
 	}
 	var current growattStorageCurrent
@@ -150,9 +150,9 @@ func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growa
 	if err != nil {
 		return growattStorageCurrent{}, false
 	}
-	// Both points retain Go's independent monotonic coordinate. Wall-clock
-	// correction therefore cannot resurrect or prematurely age this snapshot.
-	elapsed := at.Sub(published)
+	// Both points retain Go's independent monotonic coordinate. Age starts at
+	// the native evidence receipt, so publication delay cannot prolong freshness.
+	elapsed := at.Sub(received)
 	if elapsed < 0 || elapsed == time.Duration(math.MaxInt64) || base < 0 || base > math.MaxInt64-int64(elapsed) {
 		return growattStorageCurrent{}, false
 	}

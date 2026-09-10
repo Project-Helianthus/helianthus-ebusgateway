@@ -259,11 +259,11 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	if e.ObservationID == "" || e.ObservedAt.IsZero() || e.EvaluatedAt.IsZero() || e.EvaluatedAt.Before(e.ObservedAt) || e.MonotonicNS < 0 || e.EvaluatedMonotonicNS < 0 || e.Sequence == 0 {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is invalid")
 	}
-	if e.ObservedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.ObservedAt.After(teslaGen3EVSEMaxUnixNanoTime) || e.EvaluatedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.EvaluatedAt.After(teslaGen3EVSEMaxUnixNanoTime) {
-		return errors.New("tesla Gen3 EVSE semantic lifecycle time is out of range")
-	}
 	if _, err := json.Marshal(e); err != nil {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is not serializable")
+	}
+	if e.ObservedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.ObservedAt.After(teslaGen3EVSEMaxUnixNanoTime) || e.EvaluatedAt.Before(teslaGen3EVSEMinUnixNanoTime) || e.EvaluatedAt.After(teslaGen3EVSEMaxUnixNanoTime) {
+		return errors.New("tesla Gen3 EVSE semantic lifecycle time is out of range")
 	}
 	if e.EvaluatedMonotonicNS == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
 		e.EvaluatedMonotonicNS = e.MonotonicNS

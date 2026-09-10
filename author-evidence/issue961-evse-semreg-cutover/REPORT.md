@@ -198,10 +198,13 @@ reported `not triggered`. The committed-head final log is
   no Tesla transport implementation changed.
 - Smoke: not applicable and not triggered because the work adds no runtime
   composition, acquisition, or live route.
-- Hosted CI: the final source correction has not yet been pushed at this report
-  commit. The earlier run `34448798371` is historical evidence only, against
-  `ccc3bccbaef22315fcb4e929f96097f699534f82`; final hosted status must be
-  read after pushing the report head.
+- Hosted CI: the final report head will trigger a new hosted run after push. The
+  earlier run `34448798371` is historical evidence only, against
+  `ccc3bccbaef22315fcb4e929f96097f699534f82`; it is not claimed for the
+  scope-correction head.
 
-The issue and PR bodies require reconciliation against this report head after
-push. No independent review or merge was requested or performed.
+Issue #961 was restored exactly to the canonical acceptance body and received a
+concise correction-evidence comment. PR #962 now retains `Closes #961` and
+describes the MCP plus authenticated mTLS GraphQL-only contract. The Portal
+finding `discussion_r3977269676` received a by-design reply without being
+resolved. No independent review or merge was requested or performed.

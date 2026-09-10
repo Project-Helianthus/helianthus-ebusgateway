@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -216,24 +217,186 @@ func TestGrowattBMSRS485SemanticStorageSerializesConcurrentObservations(t *testi
 	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
 	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
 	var group sync.WaitGroup
-	errs := make(chan error, 8)
+	results := make(chan struct {
+		view any
+		err  error
+	}, 8)
 	for range 8 {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			_, err := runtime.GrowattStorageSemanticCurrent(context.Background())
-			errs <- err
+			view, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+			results <- struct {
+				view any
+				err  error
+			}{view, err}
 		}()
 	}
 	group.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent semantic storage publish: %v", err)
+	close(results)
+	revisions := make(map[string]bool, 8)
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent semantic storage publish: %v", result.err)
+		}
+		revisions[growattStorageSemanticRevision(t, result.view)] = true
+	}
+	for want := 1; want <= 8; want++ {
+		if !revisions[strconv.Itoa(want)] {
+			t.Fatalf("concurrent semantic revisions=%#v; missing %d", revisions, want)
 		}
 	}
 	if _, ok := runtime.storage.Current("asset:growatt-bms-a"); !ok {
 		t.Fatal("concurrent publication lost configured asset view")
+	}
+}
+
+func TestGrowattStorageSemanticSequenceIgnoresNativeAndRejectedObservations(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := growattStorageSemanticRevision(t, first); got != "1" {
+		t.Fatalf("first semantic revision=%s", got)
+	}
+	if _, err := runtime.GrowattBMSRS485V202(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.failAt = len(fake.calls)
+	fake.mu.Unlock()
+	if _, err := runtime.GrowattStorageSemanticCurrent(context.Background()); err == nil {
+		t.Fatal("failed native observation published")
+	}
+	fake.mu.Lock()
+	fake.failAt = -1
+	fake.mu.Unlock()
+	second, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := growattStorageSemanticRevision(t, second); got != "2" {
+		t.Fatalf("semantic revision after native/reject gaps=%s", got)
+	}
+}
+
+func TestGrowattStorageRejectedPublicationDoesNotAdvanceSemanticCursor(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	native, err := runtime.GrowattBMSRS485V202(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, ok := runtime.LastObservationEvidence()
+	if !ok {
+		t.Fatal("missing native evidence")
+	}
+	first, err := runtime.storage.Publish(native.Status, evidence)
+	if err != nil || growattStorageSemanticRevision(t, first) != "1" {
+		t.Fatalf("first direct publication=%v/%v", first, err)
+	}
+	current, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok {
+		t.Fatal("missing first public state")
+	}
+	if _, err := runtime.storage.Publish(native.Status, evidence); err == nil {
+		t.Fatal("duplicate native evidence committed a second semantic batch")
+	}
+	if runtime.storage.publicationSequence != 1 {
+		t.Fatalf("rejected publication advanced cursor=%d", runtime.storage.publicationSequence)
+	}
+	after, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok || string(after) != string(current) {
+		t.Fatalf("rejected publication replaced state=%q/%q", after, current)
+	}
+	second, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+	if err != nil || growattStorageSemanticRevision(t, second) != "2" {
+		t.Fatalf("post-reject semantic publication=%v/%v", second, err)
+	}
+}
+
+func growattStorageSemanticRevision(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public struct {
+		Snapshot struct {
+			Revisions struct {
+				Semantic string `json:"semantic"`
+			} `json:"revisions"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatal(err)
+	}
+	return public.Snapshot.Revisions.Semantic
+}
+
+func TestGrowattStorageSoftStartingWithdrawsPriorOperatingFact(t *testing.T) {
+	for name, initialState := range map[string]uint16{"active": 2, "standby": 1} {
+		t.Run(name, func(t *testing.T) {
+			fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+			fake.words[0x000d][6] = initialState
+			runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+			if _, err := runtime.GrowattStorageSemanticCurrent(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			fake.words[0x000d][6] = 0
+			fake.mu.Unlock()
+			if _, err := runtime.GrowattStorageSemanticCurrent(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			current, ok := runtime.storage.Current("asset:growatt-bms-a")
+			if !ok {
+				t.Fatal("missing current storage view")
+			}
+			var public struct {
+				Snapshot struct {
+					Facts []struct {
+						Key struct {
+							FactID string `json:"fact_id"`
+						} `json:"key"`
+					} `json:"facts"`
+				} `json:"snapshot"`
+				Projection struct {
+					Dispositions []struct {
+						ItemID     string `json:"item_id"`
+						Outcome    string `json:"outcome"`
+						SourceKeys []struct {
+							FactID string `json:"fact_id"`
+						} `json:"source_keys"`
+					} `json:"dispositions"`
+				} `json:"projection"`
+			}
+			if err := json.Unmarshal(current, &public); err != nil {
+				t.Fatal(err)
+			}
+			for _, fact := range public.Snapshot.Facts {
+				if fact.Key.FactID == "storage.status.operating" {
+					t.Fatal("withheld operating state remained promoted")
+				}
+			}
+			withheld := false
+			for _, item := range public.Projection.Dispositions {
+				if item.ItemID == "storage.status.operating" && item.Outcome == "withheld" && len(item.SourceKeys) == 0 {
+					withheld = true
+				}
+			}
+			if !withheld {
+				t.Fatal("operating state was not exactly withheld")
+			}
+			if len(public.Snapshot.Facts) != 6 {
+				t.Fatalf("unrelated storage facts not preserved: %d", len(public.Snapshot.Facts))
+			}
+		})
 	}
 }
 

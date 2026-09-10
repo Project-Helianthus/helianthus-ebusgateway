@@ -192,9 +192,31 @@ func TestSafeEndpointRefRequiresExactLowercaseSHA256Contract(t *testing.T) {
 }
 
 func TestPortalBootstrapPublishesIndependentPVAndRawCapabilities(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	NewHandler(Options{}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
-	if !strings.Contains(recorder.Body.String(), `"semantic_pv":false`) || !strings.Contains(recorder.Body.String(), `"modbus_raw_read":false`) {
-		t.Fatalf("bootstrap lacks independent disabled capabilities: %s", recorder.Body.String())
+	for name, options := range map[string]Options{
+		"disabled": {},
+		"enabled": {
+			SemanticStorageEnabled: true,
+			SemanticStorage: func(context.Context) (ForwardedResponse, error) {
+				return ForwardedResponse{Status: http.StatusOK, Body: []byte(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`)}, nil
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			NewHandler(options).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+			var payload struct {
+				Capabilities map[string]bool   `json:"capabilities"`
+				Endpoints    map[string]string `json:"endpoints"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Capabilities["semantic_pv"] || payload.Capabilities["modbus_raw_read"] || payload.Capabilities["semantic_storage"] != (name == "enabled") {
+				t.Fatalf("bootstrap capability state=%#v", payload.Capabilities)
+			}
+			if got := payload.Endpoints["semantic_storage_current"]; got != "/portal/api/v1/semantic/storage/current" {
+				t.Fatalf("semantic storage endpoint=%q", got)
+			}
+		})
 	}
 }

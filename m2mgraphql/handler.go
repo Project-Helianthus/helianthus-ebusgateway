@@ -89,43 +89,43 @@ func NewHandler(cfg Config) (http.Handler, error) {
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, "REQUEST_INVALID")
+		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	if r.URL.Path != route || r.URL.RawQuery != "" {
-		writeError(w, "QUERY_REJECTED")
+		writeError(w, "", "QUERY_REJECTED")
 		return
 	}
 	principal, _ := r.Context().Value(principalKey{}).(string)
 	if strings.TrimSpace(principal) == "" {
-		writeError(w, "REQUEST_INVALID")
+		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
 	if err != nil {
-		writeError(w, "REQUEST_INVALID")
+		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	if len(body) > maxRequestBytes {
-		writeError(w, "REQUEST_LIMIT_EXCEEDED")
+		writeError(w, "", "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
 	if err := validateJSON(body); err != nil {
-		writeError(w, "REQUEST_INVALID")
+		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	request, err := decodeClosedRequest(body)
 	if err != nil {
-		writeError(w, "REQUEST_INVALID")
+		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	queryShape, queryDepth, queryFields, err := queryDocumentShape(request.Query)
 	if queryDepth > maxQueryDepth || queryFields > maxSelectedFields {
-		writeError(w, "REQUEST_LIMIT_EXCEEDED")
+		writeError(w, "", "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
 	if err != nil {
-		writeError(w, "QUERY_REJECTED")
+		writeError(w, "", "QUERY_REJECTED")
 		return
 	}
 	root, contract, provider := "", "", (func(context.Context, string) (json.RawMessage, bool))(nil)
@@ -135,42 +135,42 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "SemanticStorageCurrent":
 		root, contract, provider = "semanticStorageCurrent", semanticStorageContractID, h.cfg.SemanticStorageCurrent
 	default:
-		writeError(w, "QUERY_REJECTED")
+		writeError(w, "", "QUERY_REJECTED")
 		return
 	}
 	if (request.OperationName == "SemanticPVCurrent" && queryShape != h.queryShape) || (request.OperationName == "SemanticStorageCurrent" && queryShape != h.storageQueryShape) || provider == nil {
-		writeError(w, "QUERY_REJECTED")
+		writeError(w, root, "QUERY_REJECTED")
 		return
 	}
 	if request.Variables.Request.ContractID != contract {
-		writeError(w, "CONTRACT_INCOMPATIBLE")
+		writeError(w, root, "CONTRACT_INCOMPATIBLE")
 		return
 	}
 	asset := request.Variables.Request.AssetRef
 	if _, ok := h.cfg.AllowedAssets[asset]; !ok {
-		writeError(w, "ASSET_FORBIDDEN")
+		writeError(w, root, "ASSET_FORBIDDEN")
 		return
 	}
 	if !h.admit(principal) {
-		writeError(w, "REQUEST_LIMIT_EXCEEDED")
+		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
 	defer h.release(principal)
 	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
-		writeError(w, "SOURCE_UNAVAILABLE")
+		writeError(w, root, "SOURCE_UNAVAILABLE")
 		return
 	}
 	var projection map[string]json.RawMessage
 	if err := json.Unmarshal(data, &projection); err != nil || !hasExactKeys(projection, "snapshot", "evaluation", "selections", "projection") {
-		writeError(w, "SOURCE_UNAVAILABLE")
+		writeError(w, root, "SOURCE_UNAVAILABLE")
 		return
 	}
 	encoded, err := json.Marshal(map[string]any{"data": map[string]any{root: map[string]json.RawMessage{
 		"snapshot": projection["snapshot"], "evaluation": projection["evaluation"], "selections": projection["selections"], "projection": projection["projection"],
 	}}})
 	if err != nil || len(encoded) > maxResponseBytes {
-		writeError(w, "REQUEST_LIMIT_EXCEEDED")
+		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -214,9 +214,13 @@ func min(a, b int) int {
 	return b
 }
 
-func writeError(w http.ResponseWriter, code string) {
+func writeError(w http.ResponseWriter, root, code string) {
+	path := []string{}
+	if root != "" {
+		path = []string{root}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": nil, "errors": []any{map[string]any{"message": "M2M request failed", "path": []string{"semanticPVCurrent"}, "extensions": map[string]string{"code": code}}}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": nil, "errors": []any{map[string]any{"message": "M2M request failed", "path": path, "extensions": map[string]string{"code": code}}}})
 }
 
 func validateJSON(data []byte) error {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -77,5 +78,65 @@ func TestSemanticStorageCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	}
 	if _, ok := decoded["data"].(map[string]any)["semanticStorageCurrent"]; !ok {
 		t.Fatalf("storage GraphQL response=%s", response.Body.String())
+	}
+}
+
+func TestSemanticStorageErrorsUseStoragePathAndPreoperationErrorsAreNeutral(t *testing.T) {
+	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) { return nil, false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageRequest := func(contract, asset string) string {
+		return `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":` + strconv.Quote(contract) + `,"assetRef":` + strconv.Quote(asset) + `}}}`
+	}
+	assertM2MError(t, handler, storageRequest("wrong", "asset:storage-test"), "CONTRACT_INCOMPATIBLE", []string{"semanticStorageCurrent"})
+	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:other"), "ASSET_FORBIDDEN", []string{"semanticStorageCurrent"})
+	assertM2MError(t, handler, storageRequest(semanticStorageContractID, "asset:storage-test"), "SOURCE_UNAVAILABLE", []string{"semanticStorageCurrent"})
+	assertM2MError(t, handler, `{`, "REQUEST_INVALID", []string{})
+
+	pv, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"pv-asset-test": {}}, SemanticPVCurrent: func(context.Context, string) (json.RawMessage, bool) { return nil, false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvRequest := `{"operationName":"SemanticPVCurrent","query":` + strconv.Quote(semanticPVFixedQuery) + `,"variables":{"request":{"contractId":"wrong","assetRef":"pv-asset-test"}}}`
+	assertM2MError(t, pv, pvRequest, "CONTRACT_INCOMPATIBLE", []string{"semanticPVCurrent"})
+
+	quota, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, MonotonicMilliseconds: func() int64 { return 0 }, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) {
+		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
+	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
+	assertM2MError(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"), "REQUEST_LIMIT_EXCEEDED", []string{"semanticStorageCurrent"})
+}
+
+func assertM2MStorageSuccess(t *testing.T, handler http.Handler, request string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+		t.Fatalf("storage response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func assertM2MError(t *testing.T, handler http.Handler, request, wantCode string, wantPath []string) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
+	var decoded struct {
+		Errors []struct {
+			Path       []string `json:"path"`
+			Extensions struct {
+				Code string `json:"code"`
+			} `json:"extensions"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Errors) != 1 || decoded.Errors[0].Extensions.Code != wantCode || !reflect.DeepEqual(decoded.Errors[0].Path, wantPath) {
+		t.Fatalf("error=%#v want=%s/%#v response=%s", decoded.Errors, wantCode, wantPath, response.Body.String())
 	}
 }

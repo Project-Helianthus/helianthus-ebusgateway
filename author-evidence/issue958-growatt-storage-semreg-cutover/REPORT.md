@@ -116,3 +116,40 @@ tests, and installs `scripts/growatt_storage_semreg_gate.sh` in local CI.
 `scripts/transport_gate.sh` and `scripts/passive_smoke_gate.sh` preserve their
 existing fail-closed checks while recognizing the explicit `PortalStorage`
 public read-surface marker as non-transport/non-passive-capture configuration.
+
+## Subsequent P2 corrections
+
+- Correction code HEAD: `39a742da683869f46cca23228bc7904852d57446`
+- Correction code tree: `dc40ef94810ea806dabf7e68d06ded3c24494b5c`
+- Code commits: `87346de` (producer admission and canonical identity) and
+  `39a742d` (strict gate classifier and hostile fixtures).
+- Reviewed discussions: `discussion_r3974385693` and
+  `discussion_r3974385706`; both received post-push author replies.
+
+An enabled Portal Storage BFF now requires the Growatt RS-485 producer to be
+enabled and its configured `AssetID` to exactly equal `PortalStorage.AssetRef`,
+after dedicated M2M listener and allowlist validation. This does not enable
+Growatt or alter independent Portal PV settings. A wholly zero Storage
+configuration remains disabled.
+
+Semantic identity validation now preserves the original value. It rejects
+leading or trailing whitespace and values longer than 128 bytes before any
+publication, public route, or endpoint construction. Both `AssetID` and
+`SourceID` have leading-space, trailing-space, and overlength-before-trim
+coverage; the 128-byte boundary remains accepted.
+
+Focused evidence for this correction:
+
+- `GOWORK=off go test -race ./ ./cmd/gateway ./m2mgraphql ./portal ./mcp -run
+  'TestConfigCrossValidatesPortalStorage|TestGrowattSemanticIdentity|TestGrowattStorage|TestSemanticStorage|TestPortalBootstrap' -count=1` — PASS.
+- `python3 scripts/transport_gate_test.py` — 23 PASS; `python3
+  scripts/passive_smoke_gate_test.py` — 9 PASS.
+- `GOWORK=off ./scripts/transport_gate.sh` — PASS (pinned Modbus RTU
+  conformance); `./scripts/passive_smoke_gate.sh` — not triggered.
+
+The first complete local CI run on `87346de` reached `golangci-lint` with zero
+issues and then correctly stopped because the earlier strict config classifier
+required a transport matrix for the new admission lines. `39a742d` extends only
+the finite Storage-config allowlist and its hostile fixtures; its focused gate
+tests pass. A fresh complete `GOWORK=off ./scripts/ci_local.sh` and a fresh
+independent full-HEAD review remain pending for `39a742d`.

@@ -235,3 +235,24 @@ queue tests 50/50 PASS under `-race`; transport classifier 23/23 PASS; passive
 classifier 9/9 PASS; direct pinned Modbus RTU conformance PASS; passive smoke is
 not triggered by the exact reviewed public Storage slice. Complete CI and a fresh
 exact-HEAD independent review remain pending after commit and push.
+
+## Direct GraphQL deadline and public contract correction
+
+Direct mTLS GraphQL Storage remains reachable when Portal Storage is disabled.
+Configuration therefore validates its four sequential response windows against
+the server's ten-second write deadline independently of Portal. It reserves 500
+ms and rejects an aggregate at or above 9.5 seconds; the exact just-below boundary
+passes. The M2M runtime constructor invokes the same cross-configuration check,
+while native-only/MCP composition with M2M disabled keeps its existing bounded
+RTU timeout contract. Portal retains its stricter 4.5-second aggregate bound.
+
+The public runtime-provider contract now names the required stable asset ID,
+native and semantic MCP tools, mTLS GraphQL `SemanticStorageCurrent`, conditional
+Portal endpoint, seven-fact SemReg projection, explicit losses, serialized
+publication, and last-known-good behavior. Its migration section records the
+Board's pre-v1 no-compatibility cutover rule instead of promising legacy semantic fallback,
+shadow authority, adapters, or dual publication.
+
+Focused configuration/runtime race tests, both structural gate suites, direct
+Modbus RTU conformance, passive classification, and `git diff --check` pass.
+Complete CI and fresh exact-HEAD independent review remain pending after push.

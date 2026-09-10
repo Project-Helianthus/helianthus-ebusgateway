@@ -91,9 +91,20 @@ func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
 			t.Fatalf("Portal storage timeout accepted: %s", timeout)
 		}
 	}
+	direct := valid
+	direct.PortalStorage = PortalStorageConfig{}
+	direct.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = (9500*time.Millisecond - time.Nanosecond) / 4
+	if err := direct.ValidatePortalStorage(); err != nil {
+		t.Fatalf("near-bound direct GraphQL storage timeout rejected: %v", err)
+	}
+	direct.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = 9500 * time.Millisecond / 4
+	if err := direct.ValidatePortalStorage(); err == nil {
+		t.Fatal("direct GraphQL storage timeout without server headroom accepted")
+	}
 	nativeOnly := valid
 	nativeOnly.PortalStorage = PortalStorageConfig{}
-	nativeOnly.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = 2 * time.Second
+	nativeOnly.M2MGraphQL = M2MGraphQLConfig{}
+	nativeOnly.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = 3 * time.Second
 	if err := nativeOnly.ValidatePortalStorage(); err != nil {
 		t.Fatalf("native-only timeout rejected: %v", err)
 	}

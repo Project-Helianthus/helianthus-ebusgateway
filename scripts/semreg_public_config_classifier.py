@@ -14,28 +14,36 @@ DECLARATION = (
 )
 FIELD = re.compile(r"(?m)^\s*PortalStorage\s+PortalStorageConfig\n")
 FUNCTION = '''func (cfg Config) ValidatePortalStorage() error {
-\tif cfg.PortalStorage.RawReadEnabled {
-\t\treturn errors.New("portal storage configuration does not permit raw reads")
-\t}
-\tcopy := cfg
-\tcopy.PortalPV = cfg.PortalStorage
-\tif err := copy.ValidatePortalPV(); err != nil {
-\t\treturn err
-\t}
-\tif !cfg.PortalStorage.SemanticEnabled {
-\t\treturn nil
-\t}
-\tproducer := cfg.ModbusTCPConfig.GrowattBMSRS485
-\tif !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
-\t\treturn errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
-\t}
-\tconst m2mDeadline = 5 * time.Second
-\tconst m2mHeadroom = 500 * time.Millisecond
-\tbudget := m2mDeadline - m2mHeadroom
-\tif producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-\t\treturn errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
-\t}
-\treturn nil
+	if cfg.PortalStorage.RawReadEnabled {
+		return errors.New("portal storage configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
+	}
+	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
+	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
+		const m2mGraphQLDeadline = 10 * time.Second
+		const m2mGraphQLHeadroom = 500 * time.Millisecond
+		budget := m2mGraphQLDeadline - m2mGraphQLHeadroom
+		if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+			return errors.New("Growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
+		}
+	}
+	if !cfg.PortalStorage.SemanticEnabled {
+		return nil
+	}
+	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
+		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
+	}
+	const m2mDeadline = 5 * time.Second
+	const m2mHeadroom = 500 * time.Millisecond
+	budget := m2mDeadline - m2mHeadroom
+	if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+		return errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
+	}
+	return nil
 }
 '''
 

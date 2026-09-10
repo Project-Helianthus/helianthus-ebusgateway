@@ -30,7 +30,8 @@ The contract covers:
 - native observation to qualified semantic publication and projection;
 - semantic intent to one admitted native route and truthful outcome;
 - bounded causal loop and echo suppression; and
-- compatibility with current public surfaces during staged migration.
+- one SemReg public surface per migrated capability, with no pre-v1 legacy
+  fallback, adapter, shadow authority, or dual semantic publication.
 
 This contract adds no autonomous control, optimization, fallback policy, or
 write authority. A semantic capability describes a qualified possibility. A
@@ -97,7 +98,7 @@ ownership for every service, capability, operation, and effect definition.
 | Native driver/adapter | Native endpoint identity, connection and protocol lifecycle, discovery, qualification, decode, raw evidence, request construction, native retry/reconnect, native authorization, ACK/readback interpretation, and resource close proof |
 | Semantic kernel and packs | Protocol-neutral identities, facts, services, capabilities, operation intents/outcomes, provenance, validation, conflict, and projection-loss types |
 | Native-to-semantic binding | Exact profile/version and unique `PackRef`/`DefinitionIndex` mapping from qualified native evidence to semantic facts/capabilities and from a semantic operation and typed `ExpectedEffect` to one typed native operation and pack-evaluated readback predicate |
-| Public output/consumer | Target projection and compatibility behavior; never upstream qualification or native route selection |
+| Public output/consumer | Target projection and cutover behavior; never upstream qualification or native route selection |
 
 Common lifecycle code must not switch on protocol, vendor, model, register,
 feature, or function code. Native mappings register against an exact protocol,
@@ -1548,7 +1549,7 @@ code that is not connected to that composition stays unavailable.
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
 | Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, and one qualified/promoted `helianthus.pack.pv@1.0.0` SemReg projection through the existing qualify/refresh worker. | Read-only. The projection preserves admitted native observation and counter continuity evidence; generated energy is exact Wh-to-kWh with `counter_continuity_unavailable` as a declared projection loss. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
-| Growatt BMS RS-485 1xSxxP ESS V2.02 | When every `growatt-bms-rs485-*` configuration value is explicit and valid, `modbus.v1.growatt.bms.rs485.status.get` performs the four fixed FC03 reads through `helianthus-modbus` `RTUProductionEndpoint`, then exposes the existing qualified native status. | The endpoint owns serial opening, FC03 correlation, framing, immutable request/response ADU receipts, recovery, transport generation, and close. Gateway owns exact tuple/unit admission and source/driver identity; `helianthus-modbusreg` owns the four-slice observer and decoder. No TCP dependency, scan, broadcast, retry loop, write, or semantic projection is introduced. |
+| Growatt BMS RS-485 1xSxxP ESS V2.02 | When every `growatt-bms-rs485-*` configuration value is explicit and valid, `modbus.v1.growatt.bms.rs485.status.get` exposes the qualified native status and `semantic.v1.storage.growatt.current.get` publishes the accepted seven-fact Storage projection. The same detached SemReg report is available through mTLS GraphQL `SemanticStorageCurrent` and the Portal Storage endpoint when those surfaces are configured. | The endpoint owns serial opening, FC03 correlation, framing, immutable request/response ADU receipts, recovery, transport generation, and close. Gateway owns exact tuple/unit admission, stable asset/source/driver identity, serialized publication, and public routing; `helianthus-modbusreg` owns the four-slice observer and decoder. The semantic path is read-only, performs no Ah-to-kWh conversion, withholds `soft_starting`, and records explicit current, operating-state, and counter-continuity loss. No TCP dependency, scan, broadcast, retry loop, write, or control is introduced. |
 | Huawei SmartLogger/EMMA/S-Dongle, Growatt Protocol II, OutBack AXS, Fronius-specific status, Tesla FC100/WC/current-limit optional tools | Typed read/injected-provider contracts exist in the repository, but the production `gatewayModbusMCPProvider` does not implement their optional provider interfaces. | `unavailable` or `uncomposed` at this baseline. Later INT-07 composition must use exact qualified profile/version evidence. No write is inferred from a decoder, fixture, or provisional ACK/readback record. |
 | Gree CAN and Growatt CAN | No production provider is composed by this gateway baseline. | `unavailable` here. Receive-only registry readiness remains native evidence, not a gateway operation or transmit grant. |
 | Matter output | No production output binding is composed. | No read, write, or conformance claim. INT-13 owns the later versioned target mapping. |
@@ -1595,16 +1596,20 @@ contract are:
   `modbus.v1.profile.observation.get`, `semantic.v1.pv.current.get`, and
   `modbus.v1.tesla.hsc.status.get`. Only FC03/FC04 raw reads are admitted; the
   Tesla status is an inert disabled-profile report with outbound disabled.
-- Independent Growatt BMS RTU composition: only
-  `modbus.v1.growatt.bms.rs485.status.get`, and only when its own explicit RTU
-configuration has been admitted. Enabling it without Modbus TCP does not
-advertise the TCP raw, profile, Tesla, or SemReg PV tools.
+- Independent Growatt BMS RTU composition:
+  `modbus.v1.growatt.bms.rs485.status.get` and
+  `semantic.v1.storage.growatt.current.get`, only when the explicit RTU,
+  stable asset/source identity, and lifecycle configuration have been admitted.
+  Enabling it without Modbus TCP does not advertise the TCP raw, profile, Tesla,
+  or SemReg PV tools. A configured M2M listener exposes the same Storage report
+  as `SemanticStorageCurrent`; Portal exposes
+  `/api/v1/semantic/storage/current` only after the matching producer starts.
 
 The gateway constructs the Growatt optional MCP provider only when the RTU
 runtime exists. Its wrapper explicitly delegates core availability from the
 concrete TCP provider, so the four states remain disjoint: disabled registers no
-Modbus tool; TCP-only registers only core tools; BMS-only registers only the
-Growatt native tool; TCP+BMS registers both sets.
+Modbus tool; TCP-only registers only core tools; BMS-only registers the Growatt
+native and Storage semantic tools; TCP+BMS registers core plus both Growatt tools.
 The lifecycle factory receives the concrete runtime pointer and checks it before
 any optional-interface conversion, so a disabled typed-nil runtime cannot
 advertise the Growatt tool.
@@ -1618,11 +1623,11 @@ The gateway exposes no public driver lifecycle `list/get/start/stop/restart`
 operation at this baseline. The control service in section 4 is the contract
 for that later implementation.
 
-### 11.1 Growatt BMS RS-485 V2.02 native composition
+### 11.1 Growatt BMS RS-485 V2.02 native and Storage composition
 
 The Growatt BMS observer is disabled unless all of the following are explicitly
-configured: `growatt-bms-rs485-enabled`, source ID, source epoch, nonzero driver
-generation, unicast unit ID, serial path, baud/parity/stop bits, response
+configured: `growatt-bms-rs485-enabled`, asset ID, source ID, source epoch,
+nonzero driver generation, unicast unit ID, serial path, baud/parity/stop bits, response
 timeout, maximum response delay, and maximum quiescence. The selected protocol
 tuple is fixed in the gateway binary to `1xSxxP ESS`, `Rev2.01`, `V2.0`, and
 `2.02`; configuration cannot select another family or revision. Absent,
@@ -1657,10 +1662,13 @@ poll starts a new normal four-slice sample.
 evidence, recovery, and transport generation. The gateway does not reopen,
 decode, correlate, or retry around that endpoint; it supplies only exact
 admission for the four read slices. `helianthus-modbusreg` owns the fixed slice
-contract and typed decoding. This issue makes no SemReg, GraphQL, Portal, Home
-Assistant, Matter, eeBUS, Prometheus, or control publication. A later semantic
-successor must consume the retained qualified native envelope as an explicit
-separate cutover.
+contract and typed decoding. Gateway binds each completed four-slice native
+envelope to one stateful SemReg Storage publication. MCP, GraphQL, and Portal
+consume that same publication path; none primes or substitutes a separate cache.
+Rejected or cancelled samples preserve the last committed report and do not
+advance its semantic sequence. Home Assistant adoption remains a separate
+consumer issue. Matter, eeBUS, Prometheus, write, and control publication remain
+outside this composition.
 
 Exact public source anchors for these statements:
 
@@ -1697,7 +1705,7 @@ Exact public source anchors for these statements:
 - independent driver startup and process availability behavior:
   [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
 
-## 12. Compatibility and staged migration
+## 12. SemReg cutover and retained native evidence
 
 1. Freeze exact current MCP schemas/goldens, GraphQL behavior, Portal views, HA
    identities, eBUS registry IDs, eeBUS pairing/trust state, PV snapshot
@@ -1715,19 +1723,22 @@ Exact public source anchors for these statements:
    exact profile/version contract and qualification. An unavailable family stays
    visible as unavailable; it does not disappear or become a generic profile.
 6. Expose lifecycle `list/get/start/stop/restart` through INT-08 public surfaces.
-   Existing APIs remain unchanged until their own compatibility/parity acceptance
-   passes. HA later consumes the GraphQL form under INT-15.
-7. Activate one driver/consumer slice behind a reversible versioned selection.
-   Persist the selected semantic contract and migration version. Rollback restores
-   the previous compatible path and state schema, never a mixed semantic state.
-8. Remove historical eBUS-owned universal semantic donors only after every known
-   consumer and persisted identifier has migrated and the exact integrated BOM
-   passes INT-17/release acceptance.
+   Each applicable consumer migrates in the same capability wave as its public
+   SemReg route.
+7. Cut each mappable capability and its consumers to one SemReg semantic path.
+   Remove compatibility-only fallback, comparator, shadow authority, adapter,
+   and dual semantic publication before accepting that capability. Preserve the
+   native protocol evidence surface and its transport, qualification, lifecycle,
+   and safety gates.
+8. Remove historical eBUS-owned universal semantic donors when their mappable
+   consumers have cut over. A required dependency that does not map to SemReg is
+   escalated as a concrete architecture choice; it is not silently retained as a
+   second semantic layer.
 
-Compatibility aliases can locate a public semantic asset. They cannot populate
-`DriverID`, `NativeBindingID`, endpoint, generation, or route. No existing
-`ebus.v1.*`, `eebus.v1.*`, or `modbus.v1.*` contract is redefined by this
-document.
+An identity alias may locate a public semantic asset, but it cannot populate
+`DriverID`, `NativeBindingID`, endpoint, generation, or route. Native
+`ebus.v1.*`, `eebus.v1.*`, and `modbus.v1.*` evidence contracts retain their
+protocol ownership; they are not compatibility semantic APIs.
 
 ## 13. Acceptance scenarios for implementation
 
@@ -1817,7 +1828,7 @@ owning issue. The expected result is normative.
 | LOOP-05 | C attempts to reflect `[A,B,C]/3` back to A | A sees itself in the incoming path and returns `echo_suppressed` before mutating the context |
 | LOOP-06 | Receiver re-entry and exhausted hop capacity overlap | Ingress order returns `echo_suppressed` before `causal_budget_exceeded`; context remains unchanged |
 | MIG-01 | Old and semreg paths run on the same fixture | Comparator covers value, exact unit, dimensions, quality, time, provenance, identity, availability, and loss |
-| MIG-02 | Gateway rolls back within the supported state window | Previous compatible APIs and persisted state load without mixed contract versions |
+| MIG-02 | Gateway restarts or recovers within the supported state window | The current SemReg state contract and persisted state load without mixed versions. Release rollback to a legacy semantic API is unsupported before v1. |
 
 ## 14. Evidence and completion boundary
 

@@ -91,6 +91,23 @@ func TestM2MGraphQLRuntime_IncompleteEnabledConfigFailsClosed(t *testing.T) {
 	}
 }
 
+func TestM2MGraphQLRuntime_RejectsGrowattStorageWithoutWriteDeadlineHeadroom(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	growatt := growattProductionConfig()
+	growatt.ResponseTimeout = 9500 * time.Millisecond / 4
+	cfg := ebusgateway.Config{
+		M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+			ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+			ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+			AllowedAssets: []string{"asset:growatt-bms-a"},
+		},
+		ModbusTCPConfig: ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growatt},
+	}
+	if _, err := newM2MGraphQLRuntime(cfg, nil); err == nil {
+		t.Fatal("Growatt Storage M2M runtime accepted four reads without server write-deadline headroom")
+	}
+}
+
 func TestM2MGraphQLRuntime_StalledHandshakeDoesNotBlockOtherPrincipals(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{

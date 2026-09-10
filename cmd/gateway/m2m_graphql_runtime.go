@@ -76,6 +76,9 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	if err := validateM2MGraphQLConfig(config.M2MGraphQL); err != nil {
 		return nil, err
 	}
+	if err := config.ValidatePortalStorage(); err != nil {
+		return nil, err
+	}
 	tlsConfig, err := newM2MTLSConfig(config.M2MGraphQL)
 	if err != nil {
 		return nil, errors.New("M2M GraphQL TLS configuration is invalid")

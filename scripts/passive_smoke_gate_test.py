@@ -30,10 +30,18 @@ func (cfg Config) ValidatePortalStorage() error {
 	if err := copy.ValidatePortalPV(); err != nil {
 		return err
 	}
+	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
+	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
+		const m2mGraphQLDeadline = 10 * time.Second
+		const m2mGraphQLHeadroom = 500 * time.Millisecond
+		budget := m2mGraphQLDeadline - m2mGraphQLHeadroom
+		if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+			return errors.New("Growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
+		}
+	}
 	if !cfg.PortalStorage.SemanticEnabled {
 		return nil
 	}
-	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
 	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
 		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
 	}

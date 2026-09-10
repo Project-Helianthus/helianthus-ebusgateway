@@ -42,7 +42,9 @@ publication so an unchanged sibling cannot receive a new lifetime. A later
 correlated provisional outcome can publish allocated current again with its
 own lifecycle. When a provisional update includes the retained persistent
 record, each record keeps its own receipt coordinates, so the provisional
-update cannot refresh configured current.
+update cannot refresh configured current. Provisional allocation lifetime starts
+at the completed t25/t26 set/ack receipt. The later t27/t28 readback qualifies
+the value and advances aggregate evaluation, but does not restart that lifetime.
 
 ## Lifecycle and read surfaces
 
@@ -58,7 +60,9 @@ Accepted records feed the existing read-only surfaces:
 - MCP `modbus.v1.tesla.gen3.evse.current_limit.get` for native records;
 - MCP `semantic.v1.evse.current.get` for the evaluated SemReg view;
 - authenticated mTLS GraphQL `SemanticEVSECurrent` for the same detached SemReg
-  publication.
+  publication;
+- the EVSE domain on the configured semantic Prometheus listener, evaluated at
+  the scrape instant from that same detached publication.
 
 The two Tesla MCP tools are registered from the retained-owner capability even
 when the unrelated Modbus TCP core is disabled. That composition does not
@@ -66,9 +70,12 @@ register TCP raw/profile tools or Growatt tools; Growatt native, semantic, and
 Portal availability remain conditional on a successfully started Growatt
 runtime.
 
-Reads access retained memory only. They cannot ingest a record, advance a
-publication, open an endpoint, activate a profile, construct a request, retry,
-recover, or write.
+Reads access retained memory only. They cannot ingest a record, open an
+endpoint, activate a profile, construct a request, retry, recover, or write. A
+consumer read may advance only the public evaluation high-water. If an already
+buffered, later-correlated completed outcome is delivered afterward, the owner
+retains its original native receipt and evidence while the new public aggregate
+evaluation clamps to that high-water.
 
 ## Remaining boundary
 

@@ -6,21 +6,21 @@
 - Issue: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/965
 - PR: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/969
 - Branch: `issue/965-tesla-hsc-retained-owner`
-- Accepted base: `138eea47e75b99e008beb24c7ab5938f02690845`
-- Rebased implementation HEAD: `366023a6c717a2ead3521dad544c1e45122895d9`
-- Rebased implementation tree: `739845b260783ff8b7564faa81ff31d844f82c49`
+- Accepted base: `2daae4ca0318d014fe7e88aea76a2c54c1f76721`
+- Rebased implementation HEAD: `c3dc4cc36095a5dce101f76d163c7d20996c355a`
+- Rebased implementation tree: `91c8b71923dcdf948bcc53670eb58d67f0c80444`
 - Rebased blocking-findings remediation HEAD:
-  `afa79f777d1f9d1a2fc6bbc2e31bf67bd62ef8ef`
+  `cf43b8bec5ba34ac62928274f999e315e00a4d1a`
 - Rebased blocking-findings remediation tree:
-  `1dd518ff457a1d4a83051bd972c1247524f8accd`
-- Rebased validated source HEAD:
-  `b824e43241c726d7867e69bf25ddb786c266f9cf`
-- Rebased validated source tree:
-  `5068bd638b4b7204038c961b6faee7b73019e385`
+  `ac792831eb02460735dfcedc0a3623fd8c4f3370`
 - Optional-registration and record-lifecycle remediation HEAD:
-  `5626d8352d9b495f7c71477d96db67f24a87e6db`
+  `615afb748026d0a8dbd03a32d2406fe9dc72d7f4`
 - Optional-registration and record-lifecycle remediation tree:
-  `6aabe69395e4ec183abeed2092a6d9ccb02d55b6`
+  `920b43bbe091fc7aa1b4e73beabcce73c09205a6`
+- Rebased validated source HEAD:
+  `f0acdb46cd0de3055553dd1b168a7a8d3d5204d6`
+- Rebased validated source tree:
+  `11ea140885f06fcfb573cf4f4059c18932740f73`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -168,10 +168,10 @@ SHA-256: `9a30ab58105b974e720096cf42f47338abf11a9a7f9f64081dbd6596c1d9bd5f`
 
 ## Accepted-main rebase validation
 
-PR #969 was rebased onto accepted `main`
-`138eea47e75b99e008beb24c7ab5938f02690845`. The validated rebased source was
-`b824e43241c726d7867e69bf25ddb786c266f9cf`, tree
-`5068bd638b4b7204038c961b6faee7b73019e385`.
+PR #969 was first rebased onto accepted `main`
+`138eea47e75b99e008beb24c7ab5938f02690845`. The validated source for that
+historical rebase was `b824e43241c726d7867e69bf25ddb786c266f9cf`,
+tree `5068bd638b4b7204038c961b6faee7b73019e385`.
 
 The rebased focused retained-owner race run passed:
 
@@ -238,6 +238,62 @@ Tesla SemReg mapping gate SHA-256:
 All four later feedback threads were replied to with their correction and test
 evidence and deliberately left unresolved for fresh exact-HEAD review.
 
+## Accepted EVSE metrics dependency rebase
+
+Gateway #966 / PR #967 was accepted on `main` as
+`2daae4ca0318d014fe7e88aea76a2c54c1f76721`. PR #969 was rebased onto that
+exact commit. The one conflict in `cmd/gateway/gateway_cli.go` preserved both
+the accepted Prometheus EVSE flag and the retained-owner configuration flags.
+
+The retained owner now implements the accepted narrow
+`SemanticEVSEPrometheusProvider` read seam and production composition supplies
+that owner to the passive metrics callback. A scrape can only reevaluate the
+already accepted detached SemReg tuple; it has no acquisition, publication,
+request, send, or control authority. The owner returns unavailable after its
+generation is fenced. A deterministic Tesla-only regression proves the EVSE
+domain is populated from retained state while unrelated PV and storage domains
+remain absent, and the concurrent retained-read regression now includes the
+Prometheus seam.
+
+The accepted dependency also requires a publication instant at or after the
+evidence instant. The offline retained-owner fixture therefore uses a stable
+past epoch while preserving its exact wall/monotonic ordering assertions.
+
+The Prometheus composition regression was intentionally RED before the owner
+implemented the accepted interface:
+
+```text
+GOWORK=off go test ./cmd/gateway -run TestTeslaHSCRetainedOwnerFeedsDetachedPrometheusEVSEAndFencesLifecycle -count=1
+```
+
+It failed to compile because `*teslaHSCRetainedOwner` lacked
+`SemanticEVSECurrentAt`. Log SHA-256:
+`d2fd7df0aeef356a91d1d3dce49f9d1491fcab929c7a888c10b94c5daccac998`.
+
+The rebased focused race run passed:
+
+```text
+GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFileDisabledPreservesIndependentTesla|TeslaHSCRetained|TeslaGen3EVSE.*Prometheus|SemanticPrometheus|BindFlagsPrometheusEVSE|GrowattStoragePortalAvailability|GrowattBMSRS485V202.*Registration|GrowattBMSRS485V202Coreless)' -count=1
+```
+
+Log: `/tmp/gateway969-rebase-prometheus-focused-race.log`
+SHA-256: `a7eb6279ce90c1f9ab154ef1a8cb502fd099e3083193aae788670d0c4a782ea9`
+
+Complete local CI passed on source
+`f0acdb46cd0de3055553dd1b168a7a8d3d5204d6`, tree
+`11ea140885f06fcfb573cf4f4059c18932740f73`. It included all Go race tests,
+219 Python tests, zero lint findings, builds, transport conformance, both
+SemReg mapping gates, and passive-smoke classification.
+
+Log: `/tmp/gateway969-rebase-ci.log`
+SHA-256: `60bba8e4019b50c8837a3a04995f099616f1fc914e4cab601895be91a63c7dd7`
+
+Standalone affected gate hashes:
+
+- Modbus RTU transport: `47d34719e922010e57e94e13f8cb171d1751090279cf0882eda8d2cd20370f6e`
+- Tesla SemReg mapping: `429829d7fda5909a3bf54eba7f74a203aed9e85c16119b8edc12921da13ce100`
+- Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -281,10 +337,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 
 ## Runtime routing note
 
-The assignment requested `gpt-5.6-sol` at high effort. The applied task runtime
-identified itself as GPT-6, and its effort setting was not exposed. The author
-did not silently substitute another task or claim the requested routing was
-applied.
+The assignment requested `gpt-5.6-sol` at high effort. Actual provider runtime
+metadata was not exposed, so the author does not claim which model or effort
+was applied.
 
 The PR branch is the durable source for this report; `/tmp` log paths identify
 the author-side files whose hashes are recorded above.

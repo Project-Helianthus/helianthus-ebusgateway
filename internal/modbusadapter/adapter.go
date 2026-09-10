@@ -686,7 +686,25 @@ func clampSemanticPVReadWall(context semreg.EvaluationContext, floor semreg.Time
 }
 
 func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error) {
-	return adapter.semanticPVReadContextAt(time.Now())
+	if adapter == nil || adapter.startedWall.IsZero() || adapter.startedMono.IsZero() {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is unavailable")
+	}
+	wallClock, monotonicClock := time.Now, time.Now
+	if adapter.wallNow != nil {
+		wallClock = adapter.wallNow
+	}
+	if adapter.monotonicNow != nil {
+		monotonicClock = adapter.monotonicNow
+	}
+	wall := wallClock().UTC()
+	if wall.Before(adapter.startedWall) {
+		wall = adapter.startedWall
+	}
+	elapsed := monotonicClock().Sub(adapter.startedMono)
+	if elapsed < 0 {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
+	}
+	return semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(wall), EvaluateMonotonic: pvPublicationMonotonic(elapsed)}, nil
 }
 
 func (adapter *Adapter) semanticPVReadContextAt(at time.Time) (semreg.EvaluationContext, error) {

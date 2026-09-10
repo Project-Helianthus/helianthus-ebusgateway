@@ -358,6 +358,7 @@ type Config struct {
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
+			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
@@ -404,6 +405,7 @@ type Config struct {
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
+			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
@@ -437,7 +439,7 @@ type Config struct {
                 self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
     def test_modbus_rtu_gate_skips_handler_test_only_change(self) -> None:
-        for changed_file in ("m2mgraphql/handler_test.go", "m2mgraphql/client_test.go", "portal/handler_test.go", "cmd/gateway/portal_pv_client_test.go", "cmd/gateway/m2m_graphql_config_test.go"):
+        for changed_file in ("m2mgraphql/handler_test.go", "m2mgraphql/client_test.go", "portal/handler_test.go", "cmd/gateway/portal_pv_client_test.go", "cmd/gateway/m2m_graphql_config_test.go", "cmd/gateway/gateway_run_setup_test.go"):
             with self.subTest(changed_file=changed_file):
                 repo_path, _ = self._create_temp_repo(
                     changed_file, "package test\n", "package test\n// changed\n"

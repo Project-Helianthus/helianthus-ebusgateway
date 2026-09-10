@@ -79,7 +79,8 @@ requires_modbus_rtu_transport_gate() {
     # Portal provider binding is classified here.
     modbus_config.go|\
     cmd/gateway/gateway_cli.go|\
-    cmd/gateway/gateway_http_server.go|\
+	cmd/gateway/gateway_http_server.go|\
+	cmd/gateway/gateway_run_setup.go|\
     cmd/gateway/growatt_bms_rs485_runtime.go|\
 	cmd/gateway/growatt_storage_semreg.go|\
 	cmd/gateway/m2m_graphql_runtime.go|\

@@ -352,3 +352,22 @@ all Go race packages, Python 168 plus 6/24/9/6/2 suites, golangci-lint with 0
 issues, pinned RTU conformance, mapping 2 outputs/13 rejects, and passive smoke
 not triggered. Log `wave12/gateway959-third-correction-full-ci.log` SHA-256:
 `814a031db6dd41e38bf358dba66edf029fb838f4a532220cca9073c67f5176dc`.
+
+## Post-NBF source-classifier correction
+
+After the fresh `a777489` no-blocking-findings review, current PR feedback
+`discussion_r3975878889` identified one remaining pre-resource startup path:
+`cmd/gateway/gateway_run_setup.go` owns `ValidatePortalStorage` ordering before
+runtime resources are opened. The Modbus RTU classifier now includes that source.
+Its source-only trigger and fail-closed control pass; an unrelated
+`gateway_run_setup_test.go` change remains non-triggering. This correction changes
+no startup behavior, deadlines, evidence ownership, or public contract.
+
+Focused evidence: `GOWORK=off go test -race ./cmd/gateway -run
+'Test(GrowattBMSRS485|M2MGraphQLRuntime)' -count=1` passed; transport controls
+passed 24/24 and passive controls 9/9. Fresh complete `GOWORK=off
+./scripts/ci_local.sh` passed: 93 Portal Node tests, all Go race packages,
+Python 168 plus 6/24/9/6/2 suites, lint 0 issues, pinned RTU conformance,
+mapping 2 outputs/13 rejects, and passive smoke not triggered. Log
+`wave12/gateway959-fourth-correction-full-ci.log` SHA-256:
+`953b4da6a62236fbf939b1bd86b57c7d86cb26257a49fd47371f58beb27669d3`.

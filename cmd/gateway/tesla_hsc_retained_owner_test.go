@@ -447,6 +447,102 @@ func TestTeslaHSCRetainedOwnerDelayedReadbackIsImmediatelyExpiredAndRejectsRegre
 	}
 }
 
+func TestTeslaHSCRetainedOwnerCommitsBufferedOutcomeAfterMCPAndGraphQLReads(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	base := time.Now().UTC().Add(-2 * time.Minute)
+	first := teslaPersistentOutcome(t, 1, 16)
+	first.Exchange.ReceiptWall = base
+	first.Exchange.ReceiptMonotonic = time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	beforeMCP := teslaOwnerMCPCurrent(t, owner)
+	beforeGraphQL := teslaOwnerGraphQLCurrent(t, owner)
+	beforeMonotonic := teslaOwnerEvaluationMonotonic(t, beforeGraphQL)
+	if mcpMonotonic := teslaOwnerEvaluationMonotonic(t, beforeMCP); mcpMonotonic > beforeMonotonic {
+		beforeMonotonic = mcpMonotonic
+	}
+
+	buffered := teslaPersistentOutcome(t, 2, 21)
+	buffered.Exchange.ReceiptWall = base.Add(time.Second)
+	buffered.Exchange.ReceiptMonotonic = 2 * time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), buffered); err != nil {
+		t.Fatalf("valid buffered completed outcome rejected after public reads: %v", err)
+	}
+	native, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	evidence := owner.RetainedEvidence()
+	if err != nil || native.Persistent == nil || native.Persistent.MaxOutputCurrentAmps() != 21 || len(evidence) != 1 ||
+		evidence[0].CorrelationID != 2 || !evidence[0].ReceiptWall.Equal(buffered.Exchange.ReceiptWall) || evidence[0].ReceiptMonotonic != 2*time.Nanosecond {
+		t.Fatalf("buffered native record/evidence = %#v / %#v / %v", native, evidence, err)
+	}
+	afterMCP := teslaOwnerMCPCurrent(t, owner)
+	afterGraphQL := teslaOwnerGraphQLCurrent(t, owner)
+	for name, current := range map[string]mcp.SemanticEVSECurrent{"MCP": afterMCP, "GraphQL": afterGraphQL} {
+		if got := teslaOwnerEvaluationMonotonic(t, current); got < beforeMonotonic {
+			t.Fatalf("%s public evaluation regressed to %d below %d", name, got, beforeMonotonic)
+		}
+		candidate := teslaOwnerCandidate(t, current, "evse.limit.configured_current")
+		if candidate.ReceivedAt != strconv.FormatInt(buffered.Exchange.ReceiptWall.UnixNano(), 10) || candidate.ReceiptMonotonic != "2" {
+			t.Fatalf("%s buffered native receipt was fabricated: %#v", name, candidate)
+		}
+	}
+
+	beforeNative, beforeEvidence, beforeSequence := native, evidence, owner.sequence
+	replay := teslaPersistentOutcome(t, 2, 22)
+	replay.Exchange.ReceiptWall = base.Add(3 * time.Second)
+	replay.Exchange.ReceiptMonotonic = 3 * time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), replay); err == nil {
+		t.Fatal("duplicate correlation accepted after buffered commit")
+	}
+	regressed := teslaPersistentOutcome(t, 3, 23)
+	regressed.Exchange.ReceiptWall = base.Add(500 * time.Millisecond)
+	regressed.Exchange.ReceiptMonotonic = time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), regressed); err == nil {
+		t.Fatal("true native lifecycle regression accepted")
+	}
+	afterNative, afterErr := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if afterErr != nil || owner.sequence != beforeSequence || !reflect.DeepEqual(beforeNative, afterNative) || !reflect.DeepEqual(beforeEvidence, owner.RetainedEvidence()) {
+		t.Fatalf("rejected replay/regression mutated retained state: read=%v", afterErr)
+	}
+}
+
+func TestTeslaHSCRetainedOwnerConcurrentReadsBeforeBufferedOutcomeRemainStable(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	base := time.Now().UTC().Add(-2 * time.Minute)
+	first := teslaPersistentOutcome(t, 1, 16)
+	first.Exchange.ReceiptWall = base
+	first.Exchange.ReceiptMonotonic = time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 32)
+	var wait sync.WaitGroup
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	buffered := teslaPersistentOutcome(t, 2, 21)
+	buffered.Exchange.ReceiptWall = base.Add(time.Second)
+	buffered.Exchange.ReceiptMonotonic = 2 * time.Nanosecond
+	if err := owner.IngestPersistent(context.Background(), buffered); err != nil {
+		t.Fatalf("valid buffered completed outcome rejected after concurrent public reads: %v", err)
+	}
+	native, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if err != nil || native.Persistent == nil || native.Persistent.MaxOutputCurrentAmps() != 21 {
+		t.Fatalf("buffered native state = %#v / %v", native, err)
+	}
+}
+
 func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
 	config := teslaRetainedConfig()
 	owner := startTeslaRetainedFixture(t, config)
@@ -795,6 +891,15 @@ func teslaOwnerDisposition(current mcp.SemanticEVSECurrent, item string) string 
 
 type teslaOwnerCandidateReceipt struct {
 	ReceivedAt, ReceiptMonotonic string
+}
+
+func teslaOwnerEvaluationMonotonic(t *testing.T, current mcp.SemanticEVSECurrent) uint64 {
+	t.Helper()
+	value, err := strconv.ParseUint(string(current.Evaluation.Context.EvaluateMonotonic.Nanoseconds), 10, 64)
+	if err != nil {
+		t.Fatalf("semantic evaluation monotonic = %q: %v", current.Evaluation.Context.EvaluateMonotonic.Nanoseconds, err)
+	}
+	return value
 }
 
 func teslaOwnerCandidate(t *testing.T, current mcp.SemanticEVSECurrent, factID string) teslaOwnerCandidateReceipt {

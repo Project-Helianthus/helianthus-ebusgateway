@@ -1023,7 +1023,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtStaysCoherentDuringP
 	}
 }
 
-func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *testing.T) {
+func TestTeslaGen3EVSESemanticPublicationClampsBufferedOutcomeToReadFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
@@ -1038,22 +1038,41 @@ func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *test
 	if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
 		t.Fatal(err)
 	}
-	readClock, now = uint64(time.Second), base.Add(time.Second)
+	readClock, now = 100, base.Add(100*time.Nanosecond)
 	mcpHandler, graphqlHandler := teslaGen3EVSEMCPHandler(t, p), teslaGen3EVSEGraphQLHandler(t, p)
 	beforeMCP := teslaGen3EVSEMCPCurrent(t, mcpHandler)
-	if !strings.Contains(string(beforeMCP), "withheld_provisional_expired") {
-		t.Fatalf("first read did not reach expiry: %s", beforeMCP)
+	beforeGraphQL := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "buffered-before")
+	var beforeMCPJSON, beforeGraphQLJSON any
+	if err := json.Unmarshal(beforeMCP, &beforeMCPJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(beforeGraphQL, &beforeGraphQLJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeMCPJSON, beforeGraphQLJSON) {
+		t.Fatal("MCP/authenticated GraphQL pre-publication reads diverged")
+	}
+	var beforeCurrent SemanticEVSECurrent
+	if err := json.Unmarshal(beforeGraphQL, &beforeCurrent); err != nil {
+		t.Fatal(err)
 	}
 	beforeSnapshot, beforeSequence, beforeReadAt, beforeReadMono, beforeReadClock := p.current, p.sequence, p.lastReadAt, p.lastReadMonotonic, p.lastReadClock
 	next := teslaGen3EVSECurrentLimitV1FixtureSource(t)
-	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-regression", ObservedAt: base.Add(2 * time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}); err == nil {
-		t.Fatal("same-epoch monotonic regression was accepted")
+	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:buffered", ObservedAt: base.Add(2 * time.Nanosecond), EvaluatedAt: base.Add(2 * time.Nanosecond), MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}); err != nil {
+		t.Fatalf("valid native successor below public read floor rejected: %v", err)
 	}
-	if !reflect.DeepEqual(beforeSnapshot, p.current) || beforeSequence != p.sequence || beforeReadAt != p.lastReadAt || beforeReadMono != p.lastReadMonotonic || beforeReadClock != p.lastReadClock {
-		t.Fatal("regressed publication advanced retained state")
+	if beforeSequence != 1 || p.sequence != 2 || reflect.DeepEqual(beforeSnapshot, p.current) || p.lastReadAt.Before(beforeReadAt) ||
+		teslaGen3EVSEMonotonicAtOrAfter(beforeReadMono, p.lastReadMonotonic) && beforeReadMono != p.lastReadMonotonic ||
+		p.lastReadClock != beforeReadClock || p.nativeEvaluatedMonotonic.Nanoseconds != "2" {
+		t.Fatalf("buffered publication coordinates = sequence %d readAt %s readMono %#v native %#v", p.sequence, p.lastReadAt, p.lastReadMonotonic, p.nativeEvaluatedMonotonic)
+	}
+	candidate := teslaGen3EVSECandidate(t, p.current, "evse.limit.configured_current")
+	if candidate.Times.ReceivedAt.UnixNanoseconds != semreg.Int64(strconv.FormatInt(base.Add(2*time.Nanosecond).UnixNano(), 10)) ||
+		candidate.Times.ReceiptMonotonic.Nanoseconds != "2" || candidate.Times.EvaluateMonotonic != p.lastReadMonotonic {
+		t.Fatalf("buffered candidate receipt/evaluation = %#v", candidate.Times)
 	}
 	afterMCP := teslaGen3EVSEMCPCurrent(t, mcpHandler)
-	afterGraphQL := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "floor-regression")
+	afterGraphQL := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "buffered-after")
 	var mcpJSON, graphqlJSON any
 	if err := json.Unmarshal(afterMCP, &mcpJSON); err != nil {
 		t.Fatal(err)
@@ -1061,8 +1080,27 @@ func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *test
 	if err := json.Unmarshal(afterGraphQL, &graphqlJSON); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(mcpJSON, graphqlJSON) || !strings.Contains(string(afterMCP), "withheld_provisional_expired") {
-		t.Fatalf("withheld parity after rejected regression=%t: %s", reflect.DeepEqual(mcpJSON, graphqlJSON), afterMCP)
+	if !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+		t.Fatalf("MCP/GraphQL buffered publication parity=%t: %s", reflect.DeepEqual(mcpJSON, graphqlJSON), afterMCP)
+	}
+	var afterCurrent SemanticEVSECurrent
+	if err := json.Unmarshal(afterMCP, &afterCurrent); err != nil {
+		t.Fatal(err)
+	}
+	if teslaGen3EVSEMonotonicAtOrAfter(beforeCurrent.Evaluation.Context.EvaluateMonotonic, afterCurrent.Evaluation.Context.EvaluateMonotonic) &&
+		beforeCurrent.Evaluation.Context.EvaluateMonotonic != afterCurrent.Evaluation.Context.EvaluateMonotonic {
+		t.Fatalf("public evaluation regressed from %#v to %#v", beforeCurrent.Evaluation.Context, afterCurrent.Evaluation.Context)
+	}
+
+	acceptedSnapshot, acceptedSequence, acceptedNative := p.current, p.sequence, p.nativeEvaluatedMonotonic
+	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:collision", ObservedAt: base.Add(3 * time.Nanosecond), EvaluatedAt: base.Add(3 * time.Nanosecond), MonotonicNS: 3, EvaluatedMonotonicNS: 3, Sequence: 2}); err == nil {
+		t.Fatal("sequence collision accepted after buffered publication")
+	}
+	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:native-regression", ObservedAt: base.Add(3 * time.Nanosecond), EvaluatedAt: base.Add(3 * time.Nanosecond), MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 3}); err == nil {
+		t.Fatal("true native monotonic regression accepted")
+	}
+	if p.sequence != acceptedSequence || p.nativeEvaluatedMonotonic != acceptedNative || !reflect.DeepEqual(p.current, acceptedSnapshot) {
+		t.Fatal("rejected collision/regression advanced publication")
 	}
 }
 

@@ -52,7 +52,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 	}
 
 	t.Run("websocket", func(t *testing.T) {
-		server, hub, eventRouter := newSubscriptionServer(t)
+		server, hub, eventRouter, routed := newSubscriptionServer(t)
 		defer server.Close()
 
 		wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
@@ -95,6 +95,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 		}
 
 		waitForSubscription(t, hub, frame.Primary, frame.Secondary)
+		waitForSubscriptionRouting(t, routed)
 		eventRouter.HandleBroadcast(frame)
 
 		var msg wsMessage
@@ -131,7 +132,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("sse", func(t *testing.T) {
-		server, hub, eventRouter := newSubscriptionServer(t)
+		server, hub, eventRouter, routed := newSubscriptionServer(t)
 		defer server.Close()
 
 		body, err := json.Marshal(graphqlRequest{
@@ -165,6 +166,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 		}
 
 		waitForSubscription(t, hub, frame.Primary, frame.Secondary)
+		waitForSubscriptionRouting(t, routed)
 		eventRouter.HandleBroadcast(frame)
 
 		reader := bufio.NewReader(resp.Body)
@@ -191,7 +193,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 	})
 }
 
-func newSubscriptionServer(t *testing.T) (*httptest.Server, *BroadcastHub, *router.BusEventRouter) {
+func newSubscriptionServer(t *testing.T) (*httptest.Server, *BroadcastHub, *router.BusEventRouter, <-chan struct{}) {
 	t.Helper()
 
 	builder := NewBuilder(emptyRegistry{}, nil)
@@ -200,9 +202,14 @@ func newSubscriptionServer(t *testing.T) (*httptest.Server, *BroadcastHub, *rout
 	}
 
 	eventRouter := router.NewBusEventRouter(noopBus{})
+	routed := make(chan struct{}, 1)
 	var hub *BroadcastHub
 	hub = NewBroadcastHub(func() {
 		eventRouter.SetPlanes([]router.Plane{hub})
+		select {
+		case routed <- struct{}{}:
+		default:
+		}
 	})
 	eventRouter.SetPlanes([]router.Plane{hub})
 
@@ -211,7 +218,7 @@ func newSubscriptionServer(t *testing.T) (*httptest.Server, *BroadcastHub, *rout
 		t.Fatalf("NewSubscriptionHandler error = %v", err)
 	}
 
-	return httptest.NewServer(handler), hub, eventRouter
+	return httptest.NewServer(handler), hub, eventRouter, routed
 }
 
 func waitForSubscription(t *testing.T, hub *BroadcastHub, primary, secondary byte) {
@@ -227,6 +234,15 @@ func waitForSubscription(t *testing.T, hub *BroadcastHub, primary, secondary byt
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("subscription not registered for 0x%02x 0x%02x", primary, secondary)
+}
+
+func waitForSubscriptionRouting(t *testing.T, routed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-routed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription routing did not complete")
+	}
 }
 
 func readSSEData(t *testing.T, ctx context.Context, reader *bufio.Reader) []byte {

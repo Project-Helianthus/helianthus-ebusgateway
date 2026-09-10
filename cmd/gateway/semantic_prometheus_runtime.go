@@ -13,16 +13,20 @@ import (
 func semanticPrometheusDomains(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, storageAsset string, at time.Time) []ebusgateway.SemanticMetricsDomain {
 	// One instant is captured before either detached view is read. The domains
 	// may be different revisions, but every individual tuple is coherent.
-	domains := []ebusgateway.SemanticMetricsDomain{{Name: "pv"}, {Name: "storage"}}
+	domains := make([]ebusgateway.SemanticMetricsDomain, 0, 2)
 	if adapter != nil {
+		domain := ebusgateway.SemanticMetricsDomain{Name: "pv"}
 		if current, ok := adapter.SemanticPVCurrentSingleAt(at); ok {
-			domains[0] = ebusgateway.SemanticMetricsDomain{Name: "pv", Snapshot: current.Snapshot, Evaluation: current.Evaluation, Projection: current.Projection, Available: true}
+			domain = ebusgateway.SemanticMetricsDomain{Name: "pv", Snapshot: current.Snapshot, Evaluation: current.Evaluation, Projection: current.Projection, Available: true}
 		}
+		domains = append(domains, domain)
 	}
 	if growatt != nil && growatt.storage != nil {
+		domain := ebusgateway.SemanticMetricsDomain{Name: "storage"}
 		if current, ok := growatt.storage.CurrentAt(storageAsset, at); ok {
-			domains[1] = ebusgateway.SemanticMetricsDomain{Name: "storage", Snapshot: current.Snapshot, Evaluation: current.Evaluation, Projection: current.Projection, Available: true}
+			domain = ebusgateway.SemanticMetricsDomain{Name: "storage", Snapshot: current.Snapshot, Evaluation: current.Evaluation, Projection: current.Projection, Available: true}
 		}
+		domains = append(domains, domain)
 	}
 	return domains
 }

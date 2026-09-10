@@ -227,7 +227,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
-	if busObservability != nil {
+	if busObservability != nil && (modbusAdapter != nil || growattBMSRuntime != nil) {
 		// This is intentionally wired before the HTTP control plane starts. The
 		// callback reaches only immutable SemReg current views; it cannot invoke
 		// the Growatt observe/publish path or any native transport operation.

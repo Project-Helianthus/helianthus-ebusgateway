@@ -4,6 +4,7 @@
 
 - Repository: `Project-Helianthus/helianthus-ebusgateway`
 - Issue: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/965
+- PR: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/969
 - Branch: `issue/965-tesla-hsc-retained-owner`
 - Base: `c139d0e6ae59b4f925ac02a7cadf09db53278e13`
 - Implementation HEAD: `0d1bb2f9b9a8723f9c7b189df20746ac6e1e2f4e`
@@ -125,4 +126,3 @@ The assignment requested `gpt-5.6-sol` at high effort. The applied task runtime
 identified itself as GPT-6, and its effort setting was not exposed. The author
 did not silently substitute another task or claim the requested routing was
 applied.
-

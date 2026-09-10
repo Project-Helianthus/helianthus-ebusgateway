@@ -1,0 +1,351 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+)
+
+func TestTeslaHSCRetainedOwnerConfigurationFailsClosed(t *testing.T) {
+	if owner, err := startTeslaHSCRetainedOwner(ebusgateway.TeslaGen3HSCRetainedConfig{}); err != nil || owner != nil {
+		t.Fatalf("disabled zero config = %T, %v", owner, err)
+	}
+	for name, mutate := range map[string]func(*ebusgateway.TeslaGen3HSCRetainedConfig){
+		"disabled active fields": func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.Enabled = false },
+		"wrong profile":          func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.Profile = "wc3_other" },
+		"missing endpoint":       func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.EndpointID = "" },
+		"same asset source":      func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.SourceID = c.AssetID },
+		"zero generation":        func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.DriverGeneration = 0 },
+		"broadcast node":         func(c *ebusgateway.TeslaGen3HSCRetainedConfig) { c.Node = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := teslaRetainedConfig()
+			mutate(&config)
+			if _, err := startTeslaHSCRetainedOwner(config); err == nil {
+				t.Fatal("invalid configuration accepted")
+			}
+		})
+	}
+}
+
+func TestTeslaHSCRetainedOwnerIngestsCorrelatedOutcomesAndPublishesDetachedState(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	persistent := teslaPersistentOutcome(t, 1, 16)
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	provisional := teslaProvisionalOutcome(t, 2, 16, 600, false, 32)
+	if err := owner.IngestProvisional(context.Background(), provisional); err != nil {
+		t.Fatal(err)
+	}
+
+	source, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if err != nil || source.Persistent == nil || source.Provisional == nil ||
+		source.Persistent.MaxOutputCurrentAmps() != 16 || source.Provisional.LimitTimeoutSeconds() != 600 {
+		t.Fatalf("source/error = %#v / %v", source, err)
+	}
+	semantic, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(semantic)
+	if err != nil || !bytes.Contains(encoded, []byte(`evse.limit.configured_current`)) || !bytes.Contains(encoded, []byte(`evse.limit.allocated_current`)) {
+		t.Fatalf("semantic = %s, error=%v", encoded, err)
+	}
+	evidence := owner.RetainedEvidence()
+	if len(evidence) != 3 || evidence[0].EndpointID != "tesla-hsc-public-a" || evidence[0].TerminalOutcome != "success" {
+		t.Fatalf("evidence = %#v", evidence)
+	}
+
+	// All exposed state and evidence must be detached from caller-owned bytes.
+	persistent.Exchange.RequestPayload[0] ^= 0xff
+	provisional.Set.ResponseFrames[0].ADU[0] ^= 0xff
+	evidence[0].RequestADU[0] ^= 0xff
+	again, _ := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	againEvidence := owner.RetainedEvidence()
+	if again.Persistent.RequestPayload()[0] == persistent.Exchange.RequestPayload[0] || againEvidence[0].RequestADU[0] == evidence[0].RequestADU[0] {
+		t.Fatal("retained records or evidence alias caller-owned bytes")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerRejectsMismatchAndPreservesLastKnownGood(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+
+	tests := map[string]func(*TeslaGen3PersistentOutcome){
+		"generation":       func(o *TeslaGen3PersistentOutcome) { o.Exchange.DriverGeneration++ },
+		"identity":         func(o *TeslaGen3PersistentOutcome) { o.Exchange.SourceEpoch = "epoch:other" },
+		"request adu":      func(o *TeslaGen3PersistentOutcome) { o.Exchange.RequestADU[1] ^= 1 },
+		"response adu":     func(o *TeslaGen3PersistentOutcome) { o.Exchange.ResponseFrames[0].ADU[1] ^= 1 },
+		"typed value":      func(o *TeslaGen3PersistentOutcome) { o.MaxOutputCurrentAmps++ },
+		"terminal outcome": func(o *TeslaGen3PersistentOutcome) { o.Exchange.TerminalOutcome = "timeout" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			outcome := teslaPersistentOutcome(t, 2, 20)
+			mutate(&outcome)
+			if err := owner.IngestPersistent(context.Background(), outcome); err == nil {
+				t.Fatal("mismatched outcome accepted")
+			}
+			after, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+			if err != nil || after.Persistent.MaxOutputCurrentAmps() != before.Persistent.MaxOutputCurrentAmps() {
+				t.Fatalf("last known good changed: %#v / %v", after, err)
+			}
+		})
+	}
+
+	badProvisional := teslaProvisionalOutcome(t, 2, 20, 300, false, 32)
+	badProvisional.Readback.CorrelationID = badProvisional.Set.CorrelationID
+	if err := owner.IngestProvisional(context.Background(), badProvisional); err == nil {
+		t.Fatal("cross-operation correlation collision accepted")
+	}
+	after, _ := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if after.Persistent == nil || after.Provisional != nil {
+		t.Fatalf("invalid provisional replaced persistent sibling: %#v", after)
+	}
+}
+
+func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
+	config := teslaRetainedConfig()
+	owner := startTeslaRetainedFixture(t, config)
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Fence(config.DriverGeneration, config.DriverGeneration+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background()); err == nil {
+		t.Fatal("native read survived generation fence")
+	}
+	if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err == nil {
+		t.Fatal("semantic read survived generation fence")
+	}
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 2, 20)); err == nil {
+		t.Fatal("fenced owner accepted outcome")
+	}
+
+	next := config
+	next.SourceEpoch = "epoch:tesla-wc3-b"
+	next.DriverGeneration++
+	successor, err := owner.Successor(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if successor == nil {
+		t.Fatal("successor unavailable")
+	}
+	wrong := next
+	wrong.DriverGeneration++
+	if _, err := owner.Successor(wrong); err == nil {
+		t.Fatal("non-contiguous successor generation accepted")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerConcurrentReadsPerformNoIngestionOrIO(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 2, 16, 600, false, 32)); err != nil {
+		t.Fatal(err)
+	}
+	wantEvidence := owner.RetainedEvidence()
+	var wait sync.WaitGroup
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 20 {
+				if _, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background()); err != nil {
+					t.Error(err)
+				}
+				if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wait.Wait()
+	if got := owner.RetainedEvidence(); fmt.Sprint(got) != fmt.Sprint(wantEvidence) {
+		t.Fatal("detached reads advanced retained evidence")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerComposesExistingReadOnlySurfaces(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	provider := newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner)
+	if provider == nil {
+		t.Fatal("Tesla-only provider was omitted")
+	}
+	if core, ok := provider.(interface{ ModbusV1CoreAvailable() bool }); !ok || core.ModbusV1CoreAvailable() {
+		t.Fatalf("Tesla-only provider advertised unrelated Modbus core: %T", provider)
+	}
+	native, nativeOK := provider.(mcp.TeslaGen3EVSECurrentLimitV1Provider)
+	semantic, semanticOK := provider.(mcp.TeslaGen3EVSESemanticProvider)
+	if !nativeOK || !semanticOK {
+		t.Fatalf("provider interfaces native=%t semantic=%t type=%T", nativeOK, semanticOK, provider)
+	}
+	if value, err := native.TeslaGen3EVSECurrentLimitV1(context.Background()); err != nil || value.Persistent == nil {
+		t.Fatalf("native value/error = %#v / %v", value, err)
+	}
+	if _, err := semantic.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if public, err := currentTeslaEVSEPublic(context.Background(), owner.cfg.AssetID, owner); err != nil || !json.Valid(public) {
+		t.Fatalf("GraphQL publication/error = %s / %v", public, err)
+	}
+	if _, err := currentTeslaEVSEPublic(context.Background(), "asset:other", owner); err == nil {
+		t.Fatal("wrong GraphQL asset was accepted")
+	}
+}
+
+func TestTeslaHSCRetainedFlagsBindOnlyNonSendConfiguration(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	flags := flag.NewFlagSet("tesla-retained", flag.ContinueOnError)
+	bindFlags(flags, &cfg)
+	args := []string{
+		"-tesla-gen3-hsc-retained-enabled=true", "-tesla-gen3-hsc-endpoint-id=endpoint-a",
+		"-tesla-gen3-hsc-asset-id=asset:tesla-a", "-tesla-gen3-hsc-source-id=source:tesla-a",
+		"-tesla-gen3-hsc-source-epoch=epoch:a", "-tesla-gen3-hsc-clock-epoch=clock:a",
+		"-tesla-gen3-hsc-evse-id=evse-a", "-tesla-gen3-hsc-connector-id=connector-a",
+		"-tesla-gen3-hsc-profile=wc3_24_44_3", "-tesla-gen3-hsc-driver-generation=9", "-tesla-gen3-hsc-node=0x10",
+	}
+	if err := flags.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	want := ebusgateway.TeslaGen3HSCRetainedConfig{Enabled: true, EndpointID: "endpoint-a", AssetID: "asset:tesla-a", SourceID: "source:tesla-a", SourceEpoch: "epoch:a", ClockEpoch: "clock:a", EVSEID: "evse-a", ConnectorID: "connector-a", Profile: "wc3_24_44_3", DriverGeneration: 9, Node: 0x10}
+	if !reflect.DeepEqual(cfg.ModbusTCPConfig.TeslaGen3HSC, want) {
+		t.Fatalf("config = %#v, want %#v", cfg.ModbusTCPConfig.TeslaGen3HSC, want)
+	}
+	for _, forbidden := range []string{"serial", "request", "write", "activate", "credential", "authorization"} {
+		if flags.Lookup("tesla-gen3-hsc-"+forbidden) != nil {
+			t.Fatalf("forbidden Tesla retained flag exists: %s", forbidden)
+		}
+	}
+}
+
+func TestTeslaHSCRetainedOwnerSourceContainsNoSendOrActivationPath(t *testing.T) {
+	source, err := os.ReadFile("tesla_hsc_retained_owner.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"OpenRTUSerial(", ".Exchange(", "WriteRTU(", "BuildTeslaFC100OperationRequest(", "TESLA\\x00", "PASS\\x00"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("production retained owner contains forbidden send/activation path %q", forbidden)
+		}
+	}
+}
+
+func teslaRetainedConfig() ebusgateway.TeslaGen3HSCRetainedConfig {
+	return ebusgateway.TeslaGen3HSCRetainedConfig{
+		Enabled: true, EndpointID: "tesla-hsc-public-a", AssetID: "asset:tesla-wc3-a", SourceID: "source:tesla-wc3-a",
+		SourceEpoch: "epoch:tesla-wc3-a", ClockEpoch: "clock:tesla-wc3-a", EVSEID: "evse-a", ConnectorID: "connector-a",
+		Profile: modbusreg.TeslaGen3CurrentLimitOperationVersion24443, DriverGeneration: 7, Node: 0x10,
+	}
+}
+
+func startTeslaRetainedFixture(t *testing.T, config ebusgateway.TeslaGen3HSCRetainedConfig) *teslaHSCRetainedOwner {
+	t.Helper()
+	owner, err := startTeslaHSCRetainedOwner(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func teslaPersistentOutcome(t *testing.T, correlation uint64, amps uint32) TeslaGen3PersistentOutcome {
+	t.Helper()
+	body := []byte{0x0a, 0x02, 0x08, byte(amps)}
+	return TeslaGen3PersistentOutcome{MaxOutputCurrentAmps: amps, Exchange: teslaExchange(t, modbusreg.TeslaFC100OperationWCConfigureSettings, body, body, correlation)}
+}
+
+func teslaProvisionalOutcome(t *testing.T, correlation uint64, amps, timeout uint32, inhibit bool, configured uint32) TeslaGen3ProvisionalOutcome {
+	t.Helper()
+	inner := append([]byte{0x08, byte(amps), 0x10}, encodeTeslaTestVarint(timeout)...)
+	inner = append(inner, 0x18)
+	if inhibit {
+		inner = append(inner, 1)
+	} else {
+		inner = append(inner, 0)
+	}
+	setBody := append([]byte{0x0a, byte(len(inner))}, inner...)
+	readbackBody := append(append([]byte(nil), setBody...), 0x10, byte(configured))
+	return TeslaGen3ProvisionalOutcome{
+		LimitCurrentMaxAmps: amps, LimitTimeoutSeconds: timeout, InhibitCharging: inhibit,
+		Set:      teslaExchange(t, modbusreg.TeslaFC100OperationWCSetProvisional, setBody, nil, correlation),
+		Readback: teslaExchange(t, modbusreg.TeslaFC100OperationWCGetProvisional, nil, readbackBody, correlation+1),
+	}
+}
+
+func teslaExchange(t *testing.T, operation modbusreg.TeslaFC100Operation, requestBody, responseBody []byte, correlation uint64) TeslaGen3CompletedExchange {
+	t.Helper()
+	request, err := modbusreg.BuildTeslaFC100OperationRequest(modbusreg.TeslaGen3CurrentLimitOperationVersion24443, operation, requestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsePayload := teslaTestTerminal(operation, responseBody)
+	requestADU, err := modbus.EncodeRTUPrivateFunctionADU(0x10, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := modbus.NewPrivateFunctionRequest(request.FunctionCode(), responsePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseADU, err := modbus.EncodeRTUPrivateFunctionADU(0x10, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000+int64(correlation), 123).UTC()
+	return TeslaGen3CompletedExchange{
+		EndpointID: "tesla-hsc-public-a", SourceID: "source:tesla-wc3-a", SourceEpoch: "epoch:tesla-wc3-a",
+		DriverGeneration: 7, Node: 0x10, OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+		Operation: operation, CorrelationID: correlation, RequestPayload: request.Payload(), RequestADU: requestADU,
+		ResponseFrames: []TeslaGen3CompletedFrame{{Payload: responsePayload, ADU: responseADU}},
+		ReceiptWall:    now, ReceiptMonotonic: time.Duration(correlation) * time.Second, TerminalOutcome: "success",
+	}
+}
+
+func teslaTestTerminal(operation modbusreg.TeslaFC100Operation, body []byte) []byte {
+	tags := map[modbusreg.TeslaFC100Operation]byte{
+		modbusreg.TeslaFC100OperationWCConfigureSettings: 8,
+		modbusreg.TeslaFC100OperationWCSetProvisional:    26,
+		modbusreg.TeslaFC100OperationWCGetProvisional:    28,
+	}
+	inner := append(encodeTeslaTestVarint(uint32(tags[operation])<<3|2), encodeTeslaTestVarint(uint32(len(body)))...)
+	inner = append(inner, body...)
+	message := append([]byte{6<<3 | 2}, encodeTeslaTestVarint(uint32(len(inner)))...)
+	message = append(message, inner...)
+	return append([]byte{byte(len(message))}, message...)
+}
+
+func encodeTeslaTestVarint(value uint32) []byte {
+	var out []byte
+	for value >= 0x80 {
+		out = append(out, byte(value)|0x80)
+		value >>= 7
+	}
+	return append(out, byte(value))
+}
+
+var _ mcp.TeslaGen3EVSECurrentLimitV1Provider = (*teslaHSCRetainedOwner)(nil)
+var _ mcp.TeslaGen3EVSESemanticProvider = (*teslaHSCRetainedOwner)(nil)

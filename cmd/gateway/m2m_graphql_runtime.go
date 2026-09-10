@@ -74,6 +74,14 @@ func (connection *boundedM2MConnection) Close() error {
 }
 
 func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt ...*growattBMSRS485ProductionProvider) (*m2mGraphQLRuntime, error) {
+	var storage *growattBMSRS485ProductionProvider
+	if len(growatt) == 1 {
+		storage = growatt[0]
+	}
+	return newM2MGraphQLRuntimeWithTesla(config, adapter, storage, nil)
+}
+
+func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
@@ -91,6 +99,13 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	for _, asset := range config.M2MGraphQL.AllowedAssets {
 		allowed[asset] = struct{}{}
 	}
+	var semanticEVSECurrent func(context.Context, string) (json.RawMessage, bool)
+	if tesla != nil {
+		semanticEVSECurrent = func(ctx context.Context, asset string) (json.RawMessage, bool) {
+			current, err := currentTeslaEVSEPublic(ctx, asset, tesla)
+			return current, err == nil
+		}
+	}
 	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
 		AllowedAssets: allowed,
 		SemanticPVCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
@@ -104,7 +119,8 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
 			return encoded, err == nil
 		},
-		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt...),
+		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt),
+		SemanticEVSECurrent:    semanticEVSECurrent,
 	})
 	if err != nil {
 		return nil, errors.New("M2M GraphQL handler configuration is invalid")
@@ -125,6 +141,21 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(verifiedHandler, m2mRequestTimeout)}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
+}
+
+func currentTeslaEVSEPublic(ctx context.Context, asset string, tesla *teslaHSCRetainedOwner) (json.RawMessage, error) {
+	if tesla == nil || asset != tesla.cfg.AssetID {
+		return nil, errors.New("tesla HSC EVSE asset unavailable")
+	}
+	current, err := tesla.TeslaGen3EVSESemanticCurrent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(current)
+	if err != nil || !json.Valid(encoded) {
+		return nil, errors.New("tesla HSC EVSE publication is invalid")
+	}
+	return json.RawMessage(encoded), nil
 }
 
 func newM2MRequestDeadlineHandler(next http.Handler, timeout time.Duration) http.Handler {

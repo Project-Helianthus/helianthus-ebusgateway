@@ -166,7 +166,13 @@ semreg_public_config_only() {
 				"func (cfg Config) ValidatePortalStorage() error {"|\
 				"copy := cfg"|\
 				"copy.PortalPV = cfg.PortalStorage"|\
-				"return copy.ValidatePortalPV()"|\
+				"if err := copy.ValidatePortalPV(); err != nil {"|\
+				"return err"|\
+				"if !cfg.PortalStorage.SemanticEnabled {"|\
+				"return nil"|\
+				"producer := cfg.ModbusTCPConfig.GrowattBMSRS485"|\
+				"if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {"|\
+				"return errors.New(\"portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer\")"|\
 				"PortalStorage            PortalStorageConfig"|\
 				"}") ;;
 				*) return 1 ;;

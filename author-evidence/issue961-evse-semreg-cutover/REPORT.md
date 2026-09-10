@@ -394,3 +394,12 @@ Complete CI passed with the new mapping gate: `GOWORK=off
 ./scripts/ci_local.sh`; log
 `/tmp/helianthus-ebusgateway-961-docs-delay-ci.log`, SHA-256
 `d1c0ae3f66161dd7af7ca3629336ed384e1135888df5681e8a95a6a835dd9d42`.
+
+## P2 concurrent publication remediation
+
+Source `3636c51b7e7d03c3d279057161747d0a46ac6b16` acquires the publication
+lifecycle lock before reading the replaceable kernel pointer. Concurrent first,
+retry, gap, and successor submissions now serialize with atomic sequence,
+digest, snapshot, and revision state. Focused race SHA-256
+`37cd7e8e2121b1c9966ca4759174ade2dc58069a90e0d2fce84c3d61c48bf112`;
+full CI SHA-256 `5e83ae9938f9454351774af19ca7e3642bdea683df19079069ff62a9cbfd2057`.

@@ -25,6 +25,10 @@
   `412700feae13fb878b548a45ac90bf0bff32d649`
 - Set-receipt lifetime remediation source tree:
   `7e5dd2e1f671e686a45be624dbb0faf4c4868543`
+- Buffered-outcome/read-floor remediation source HEAD:
+  `ace69e96ac1034d7cf7d883873321068b4b6f955`
+- Buffered-outcome/read-floor remediation source tree:
+  `7dd44c2cecee53c20d42602a568775cfc09ef8ab`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -469,6 +473,71 @@ The complete 12-thread feedback inventory was inspected. This twelfth thread
 will remain unresolved after the author reply so a fresh reviewer can assess
 the new full HEAD.
 
+## Buffered completed outcomes after public reads
+
+The independent exact-HEAD review of
+`b2626fa201a324dd8b3458bba7a8d98b8aae9817` found that MCP or authenticated
+GraphQL could advance the semantic read high-water beyond the receipt of an
+already buffered, later-correlated completed native outcome. `Publish` compared
+the new native receipt against that consumer-generated floor, returned an
+error, and caused `publishAndCommit` to discard the otherwise valid record and
+evidence. Independent report SHA-256:
+`d6af98ede48f11da7cefc77e41f27d8a41e513669c7b15d13cb1d3b33d5f9f12`.
+
+The semantic publication now keeps a distinct native evaluated-monotonic
+high-water. Native receipt and evaluation admission remain ordered only against
+the previously accepted native coordinate. A later public snapshot clamps its
+aggregate wall and monotonic evaluation axes to the current consumer read
+high-water. Candidate receipt axes and registry-derived native evidence remain
+unchanged. Sequence collisions and true native lifecycle regressions still
+fail before publication state or owner evidence changes; existing epoch,
+overflow, rollback, set/ack expiry, fencing, and no-I/O controls remain green.
+
+The owner regression first failed after MCP and authenticated GraphQL reads with
+`tesla Gen3 EVSE publication monotonic clock regressed`. RED SHA-256:
+`a4881c4159d398aad2a4acd95cdedc578d4582900c7702c19fa5ebff424ddd8c`.
+The corrected deterministic tests prove correlation 2 and its original receipt
+commit after the reads, the public evaluation remains non-regressing, and
+duplicate correlation plus true native receipt regression cause no mutation.
+The same owner path has concurrent reader coverage under the race detector.
+
+Focused normal test SHA-256:
+`3c82c48dbe2017fca0dba1ce8ccb90a863782c8226a5ddb02bd0618e9364c2c7`.
+
+Focused gateway, MCP, and GraphQL race SHA-256:
+`aeb898b06d4780d8374ed8503127066e55e2be3fccb0ea795b15d74029ba8466`.
+
+Complete local CI passed on source
+`ace69e96ac1034d7cf7d883873321068b4b6f955`, tree
+`7dd44c2cecee53c20d42602a568775cfc09ef8ab`. It included the full Go race
+suite, 219 Python tests, zero lint findings, all builds, Modbus transport
+conformance, Growatt and Tesla SemReg mappings, and passive-smoke
+classification. SHA-256:
+`cf9df1658371c07b7a5545811ac579626ae2b57a80415efac482ed6e1911deda`.
+
+Standalone final gate hashes:
+
+- Modbus RTU transport: `5ea7cc36ebcd5bccd8a6f5b4b1a5679f42ecc5b0e72451b262963bad401694be`
+- Tesla SemReg mapping: `3a9b3d5f93f997f0a5ea7f8f9bb3c0f98219397f8bfd5a69bcd6c78bb3a61ed6`
+- Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
+Exact-head hosted run `34535851994` failed only
+`TestBroadcastSubscriptions_Integration/sse`: after the hub subscription became
+visible, the test emitted a broadcast before the synchronous subscription
+change callback had necessarily installed the matching router plane. The SSE
+request therefore received no payload and its 10-second request context ended.
+The accepted PR #970 change bounded the wait but still used hub-map visibility
+as readiness. This PR's integration fixture now signals only after
+`eventRouter.SetPlanes` completes and waits for that routing barrier before the
+test broadcast. The corrected WebSocket/SSE test passed 20 race repetitions.
+
+- Hosted failure log SHA-256: `a39a56271b23a9c773c698291c6fca8a5289764d10cbbfe9b3889d5210fed4da`
+- Corrected 20-run SSE race SHA-256: `816842b80798ab0b316d77c0acf0b475cf762b2ee37ec39d88816615a7bab0bc`
+
+The live inline inventory remains 12 unresolved threads. The later overall P2
+review finding is addressed in a PR comment with the final push evidence; a
+fresh independent exact-HEAD review is still required.
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -504,10 +573,10 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the ten earlier runtime/lifecycle findings, the public-link finding,
-  and the set-anchored allocation-lifetime finding are corrected. All 12 threads
-  remain unresolved. A fresh independent exact-HEAD review remains required
-  before merge; the author did not review the remediation.
+- Review: all earlier findings plus the buffered-outcome/read-floor finding are
+  corrected. All 12 inline threads remain unresolved. A fresh independent
+  exact-HEAD review remains required before merge; the author did not review
+  the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 

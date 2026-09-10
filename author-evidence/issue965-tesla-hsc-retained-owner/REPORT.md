@@ -21,6 +21,10 @@
   `e350c466a8003aff054d0203b3dccaf38d00cf08`
 - Rebased validated source tree:
   `739f8f0497ff756404c33d706a8aef3e1b7be0d5`
+- Set-receipt lifetime remediation source HEAD:
+  `412700feae13fb878b548a45ac90bf0bff32d649`
+- Set-receipt lifetime remediation source tree:
+  `7e5dd2e1f671e686a45be624dbb0faf4c4868543`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -395,6 +399,76 @@ classification. SHA-256:
 No runtime source or behavior changed. The thread was replied to and left
 unresolved for fresh exact-HEAD review.
 
+## Set-anchored provisional lifetime remediation
+
+The twelfth live feedback thread identified that the retained owner used the
+t27/t28 readback receipt as the provisional fact origin. A delayed readback
+therefore restarted `LimitTimeoutSeconds` even though the allocation originated
+at the completed t25/t26 set/ack. The owner now assigns
+`ProvisionalObservedAt` and `ProvisionalMonotonicNS` from the immutable set/ack
+evidence. The later readback remains the aggregate evaluation/currentness
+coordinate and still qualifies the exact completed provisional outcome.
+
+The RED regression used a 60-second allocation with the readback received 30
+seconds after the set. At the set-anchored timeout the old implementation still
+reported allocated current as exact. RED log SHA-256:
+`9e3fdfb0e054f0f40c6449a39565eebbe5b5c21ce0f52e0ae608a146dcb9fd51`.
+
+The corrected deterministic regressions prove:
+
+- a 30-second delayed readback is exact immediately and one second before the
+  set-anchored timeout, then withheld at and after that timeout;
+- a readback delayed 70 seconds is withheld immediately because the 60-second
+  allocation is already expired;
+- MCP, authenticated M2M GraphQL, and detached Prometheus agree;
+- configured current keeps its persistent receipt and remains independently
+  exact;
+- correlations 1, 2, and 3 and the t25/t26 plus t27/t28 operations retain their
+  exact native evidence;
+- a true lifecycle regression after the delayed readback is rejected without
+  changing native state, evidence, or publication sequence.
+
+The existing full owner and semantic regressions continue to cover clock
+rollback, overflow, epoch mismatch, delayed-publication accumulation, and
+generation fencing. All public reads remain detached and perform no native I/O.
+
+Focused normal test:
+
+```text
+GOWORK=off go test ./cmd/gateway -run 'TestTeslaHSCRetainedOwner(ProvisionalExpiryStartsAtSetAckReceipt|DelayedReadbackIsImmediatelyExpiredAndRejectsRegression)' -count=1
+ok github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway 0.619s
+```
+
+SHA-256: `3b8df7f623733fc7cd0e1947a19a8bae8dab3133e3dab1d10e82a57388b974d5`
+
+Focused race test:
+
+```text
+GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFileDisabledPreservesIndependentTesla|TeslaHSCRetained|TeslaGen3EVSE|SemanticPrometheus|BindFlagsPrometheusEVSE|GrowattStoragePortalAvailability|GrowattBMSRS485V202.*Registration|GrowattBMSRS485V202Coreless)' -count=1
+ok github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway 54.622s
+ok github.com/Project-Helianthus/helianthus-ebusgateway/mcp 20.175s
+```
+
+SHA-256: `261ad6309adc0c9673c893a7e4d67ecea4cb8d7b8e9152b88510b2c518ddb146`.
+
+Complete local CI passed on source
+`412700feae13fb878b548a45ac90bf0bff32d649`, tree
+`7e5dd2e1f671e686a45be624dbb0faf4c4868543`. It included the full Go race
+suite, 219 Python tests, zero lint findings, all builds, Modbus transport
+conformance, Growatt and Tesla SemReg mappings, and passive-smoke
+classification. SHA-256:
+`cfd183bff6a2405e47e4b3701d9e8f9a43b552ae89b504cb7b2639dedcb0506b`.
+
+Standalone final gate hashes:
+
+- Modbus RTU transport: `e0e5a1390b315c25174d1dc2493c6635cdaa8d6cb754905f2a581dbdee2e21f1`
+- Tesla SemReg mapping: `17aec1241b2cda5ae8be7c312309d028836dacde0c74b4af0c00c67a7f88619e`
+- Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
+The complete 12-thread feedback inventory was inspected. This twelfth thread
+will remain unresolved after the author reply so a fresh reviewer can assess
+the new full HEAD.
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -430,8 +504,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the eleven earlier runtime/lifecycle findings plus the public-link
-  finding are corrected. A fresh independent exact-HEAD review remains required
+- Review: the ten earlier runtime/lifecycle findings, the public-link finding,
+  and the set-anchored allocation-lifetime finding are corrected. All 12 threads
+  remain unresolved. A fresh independent exact-HEAD review remains required
   before merge; the author did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.

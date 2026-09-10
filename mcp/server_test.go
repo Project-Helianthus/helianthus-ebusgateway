@@ -263,6 +263,7 @@ type testSemanticProvider struct {
 	radioDelay        time.Duration
 	dhwDelay          time.Duration
 	energyDelay       time.Duration
+	zonesEntered      func()
 }
 
 type testFM5InterpretationProvider struct {
@@ -275,6 +276,9 @@ func (p testFM5InterpretationProvider) FM5Interpretation() Fm5Interpretation {
 }
 
 func (p testSemanticProvider) Zones() []Zone {
+	if p.zonesEntered != nil {
+		p.zonesEntered()
+	}
 	if p.zonesDelay > 0 {
 		time.Sleep(p.zonesDelay)
 	}
@@ -1984,6 +1988,8 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot timeout partial", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
@@ -1995,16 +2001,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			},
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
-			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:        &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
-			zonesDelay: 20 * time.Millisecond,
+			zones:        []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:          &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
+			zonesEntered: cancel,
 		})
 
-		res := doRPC(t, slowServer.Handler(), rpcRequest{
+		res := doRPCWithContext(t, ctx, slowServer.Handler(), rpcRequest{
 			JSONRPC: "2.0",
 			ID:      8,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":35,"allow_partial":true}}`),
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":35,"allow_partial":true}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -3349,6 +3355,22 @@ func assertToolErrorCode(t *testing.T, res rpcResponse, wantCode string) {
 	if code, _ := errorPayload["code"].(string); code != wantCode {
 		t.Fatalf("error code = %q; want %q", code, wantCode)
 	}
+}
+
+func doRPCWithContext(t *testing.T, ctx context.Context, handler http.Handler, req rpcRequest) rpcResponse {
+	t.Helper()
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(raw)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	var res rpcResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	return res
 }
 
 func doRPC(t *testing.T, handler http.Handler, req rpcRequest) rpcResponse {

@@ -92,8 +92,9 @@ semreg_public_config_only() {
 bus_observability_semreg_metrics_only() {
 	python3 - "$base_ref" <<'PY'
 import subprocess, sys
+from collections import Counter
 base = sys.argv[1]
-allowed = {
+expected = Counter([
  "// semanticMetricsProvider returns detached, already-evaluated SemReg views.",
  "// It is invoked after the store snapshot is released: a /metrics request must",
  "// never take the store lock across a driver or publication lock.",
@@ -108,8 +109,8 @@ allowed = {
  "haveSemanticMetricsProvider := semanticMetricsProvider != nil",
  "if semanticMetricsProvider != nil {", "semanticDomains = semanticMetricsProvider(now)",
  "if haveSemanticMetricsProvider {", "writeSemanticMetrics(writer, semanticDomains, now)",
- "}",
-}
+ "}", "}", "}", "}",
+])
 diffs = []
 for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observability_store.go"),
              ("git","diff","--unified=0","--","bus_observability_store.go"),
@@ -119,7 +120,7 @@ for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observabilit
 if not diffs:
     raise SystemExit(1)
 diffs = [line for line in diffs if line]
-if any(line not in allowed for line in diffs):
+if Counter(diffs) != expected:
     raise SystemExit(1)
 if not {"semanticMetricsProvider func(time.Time) []SemanticMetricsDomain", "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {", "semanticDomains = semanticMetricsProvider(now)", "writeSemanticMetrics(writer, semanticDomains, now)"}.issubset(diffs):
     raise SystemExit(1)

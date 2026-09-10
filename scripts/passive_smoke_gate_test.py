@@ -232,8 +232,14 @@ func (store *BusObservabilityStore) RenderPrometheus() {
 }
 '''
         allowed = '''type BusObservabilityStore struct {
+    // semanticMetricsProvider returns detached, already-evaluated SemReg views.
+    // It is invoked after the store snapshot is released: a /metrics request must
+    // never take the store lock across a driver or publication lock.
     semanticMetricsProvider func(time.Time) []SemanticMetricsDomain
 }
+// SetSemanticMetricsProvider installs the read-only PV/Storage SemReg view
+// supplier used by the existing /metrics renderer. The supplier must neither
+// acquire native data nor publish; nil removes the optional semantic section.
 func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {
     if store == nil {
         return

@@ -2,8 +2,11 @@
 
 - Repository: `Project-Helianthus/helianthus-ebusgateway`
 - Issue: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/966
+- PR: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/967
 - Branch: `issue/966-prom-semreg-evse`
 - Base: `c139d0e6ae59b4f925ac02a7cadf09db53278e13`
+- Validated implementation HEAD: `5f9ff3bfb47652473ff7af098858cdb6ed9d6e77`
+- Validated implementation tree: `5524a3ad10cb645fc75001e4cefd80bf19c5f697`
 
 ## Implemented scope
 

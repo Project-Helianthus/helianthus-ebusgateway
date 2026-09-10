@@ -206,8 +206,10 @@ func (cfg Config) ValidatePortalStorage() error {
 		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
 	}
 	const m2mDeadline = 5 * time.Second
-	if producer.ResponseTimeout > m2mDeadline/4 || producer.ResponseTimeout*4 >= m2mDeadline {
-		return errors.New("portal storage semantic BFF requires four Growatt reads below the M2M deadline")
+	const m2mHeadroom = 500 * time.Millisecond
+	budget := m2mDeadline - m2mHeadroom
+	if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+		return errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
 	}
 	return nil
 }

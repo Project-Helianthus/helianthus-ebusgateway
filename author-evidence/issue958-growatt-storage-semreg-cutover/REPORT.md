@@ -115,6 +115,10 @@ below the five-second M2M deadline; native-only timing remains allowed. The
 GraphQL runtime bridge and storage publisher both trigger Modbus RTU source-only
 conformance fixtures.
 
+Portal Storage reserves a fixed 500ms deterministic M2M headroom: four native
+response budgets must be strictly below 4.5s. The real Portal-to-mTLS GraphQL
+test uses four one-second delayed reads and succeeds without MCP priming.
+
 The Portal-to-mTLS-GraphQL integration now uses four deterministic nonzero
 native read delays and completes successfully without MCP priming, asserting
 all four reads inside the admitted aggregate deadline.

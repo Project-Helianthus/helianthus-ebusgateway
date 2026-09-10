@@ -197,7 +197,7 @@ func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailabl
 
 func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
-	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4, delay: 100 * time.Millisecond}
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4, delay: time.Second}
 	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,

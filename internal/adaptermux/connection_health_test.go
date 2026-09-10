@@ -13,21 +13,23 @@ import (
 )
 
 type managedFenceTransport struct {
-	closeOnce  sync.Once
-	closed     chan struct{}
-	writeOnce  sync.Once
-	writeStart chan struct{}
-	startOnce  sync.Once
-	startStart chan struct{}
-	writes     atomic.Int32
-	startCalls atomic.Int32
+	closeOnce   sync.Once
+	closed      chan struct{}
+	writeOnce   sync.Once
+	writeStart  chan struct{}
+	writeReturn chan struct{}
+	startOnce   sync.Once
+	startStart  chan struct{}
+	writes      atomic.Int32
+	startCalls  atomic.Int32
 }
 
 func newManagedFenceTransport() *managedFenceTransport {
 	return &managedFenceTransport{
-		closed:     make(chan struct{}),
-		writeStart: make(chan struct{}),
-		startStart: make(chan struct{}),
+		closed:      make(chan struct{}),
+		writeStart:  make(chan struct{}),
+		writeReturn: make(chan struct{}),
+		startStart:  make(chan struct{}),
 	}
 }
 
@@ -40,6 +42,7 @@ func (transport *managedFenceTransport) Write(payload []byte) (int, error) {
 	transport.writes.Add(1)
 	transport.writeOnce.Do(func() { close(transport.writeStart) })
 	<-transport.closed
+	close(transport.writeReturn)
 	return 0, net.ErrClosed
 }
 
@@ -222,11 +225,10 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 
 	t.Run("blocked write drains before BACKOFF publication", func(t *testing.T) {
 		upstream := newManagedFenceTransport()
-		writeDone := make(chan struct{})
 		callback := make(chan struct{})
 		mux, cancel := newMux(t, upstream, func() {
 			select {
-			case <-writeDone:
+			case <-upstream.writeReturn:
 			default:
 				t.Error("connection-loss callback crossed an admitted Write")
 			}
@@ -240,7 +242,6 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 
 		go func() {
 			_ = mux.doSend(41, 0x55)
-			close(writeDone)
 		}()
 		select {
 		case <-upstream.writeStart:

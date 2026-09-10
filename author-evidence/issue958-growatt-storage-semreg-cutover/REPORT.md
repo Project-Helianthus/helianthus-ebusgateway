@@ -8,6 +8,8 @@
 - Base tree: `0a850d5646d46f5782b1396d72a3d93bffa6974e`
 - Implementation HEAD: `df1d96b18bcb30fa6b92426c359d5aa762a21869`
 - Implementation tree: `08a88a50950044b4defd056ff25dbdb2457aa4d3`
+- Reachability correction HEAD: `a6e9139ace75d192c269930276867ee6bb0c56da`
+- Reachability correction tree: `8ef1c1c0cea2287a44d57653cdb10e2e74db1f29`
 - Dependency pins: SemReg `f3f761bc67e10d6a65eba6c13cb4dc51002d6955`; docs-semantic mapping `f830ace6c2b9dd1af0e87ce808fa545662578418`.
 
 This report is committed immediately after the implementation commit so it can
@@ -37,6 +39,19 @@ fallback, comparator, shadow authority, or dual semantic publication was added.
 Physical qualification, device access, serial access, credentials, deployment,
 and Home Assistant work remain outside this repository-local result.
 
+## Reachability correction
+
+Every GraphQL and Portal storage read now invokes the same serialized native
+observation-to-SemReg publication transaction as semantic MCP. A valid first
+GraphQL/Portal request is reachable without MCP priming. A native source failure
+returns unavailable and preserves the last known good projection.
+
+The integration test covers first Portal-through-GraphQL publication and source
+failure retention. MCP `data_timestamp` is derived from the authoritative
+`evaluation.context.evaluated_at`, never handler wall time. The transport and
+passive-smoke gates now have finite line-by-line `PortalStorage` allowlists;
+hostile tests prove an extra `HTTPAddr` line still triggers required evidence.
+
 ## RED/GREEN and validation
 
 - RED: concurrent storage publication initially exposed SemReg
@@ -51,6 +66,8 @@ and Home Assistant work remain outside this repository-local result.
 - Full local CI: `GOWORK=off ./scripts/ci_local.sh` — PASS, including race
   suite, Go vet/build, portal tests/assets, Python gate suites, lint, Modbus RTU
   conformance, source-specific mapping gate, and passive-smoke classification.
+- Correction CI: `GOWORK=off ./scripts/ci_local.sh` — PASS after the
+  reachability and gate-classifier fixes.
 
 ## Changed files
 

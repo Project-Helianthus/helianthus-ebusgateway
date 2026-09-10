@@ -330,3 +330,40 @@ coverage, Python suites `168 + 6 + 24 + 9 + 6 + 2 = 215`, golangci-lint with
 and a passive-smoke classifier result of `not triggered`. Log:
 `/tmp/helianthus-ebusgateway-961-retry-highwater-ci.log`; SHA-256
 `92a4dd82619b61440017060a116fa8b613c57469d7ce66469297e4b9f9545c06`.
+
+## P2 contiguous-sequence remediation
+
+Source `00e71d9a8ed7d5033ae844c700946afdbd901fb9` requires the first accepted
+EVSE publication sequence to be `1`; every distinct later input must be exactly
+the retained sequence plus one. A first-sequence violation or a later gap is
+rejected before an injected-clock read or SemReg kernel fork, preserving the
+snapshot, semantic revision, stable candidate revisions, retained input digest,
+and sequence. The accepted same-sequence identical input retry remains a no-op,
+while a different same-sequence input remains a collision. After a rejected gap,
+the missing next sequence resumes normal publication without a resynchronization
+or provider call.
+
+The focused race suite proves invalid first sequence, gap rejection, exact retry,
+contiguous resume, unchanged-state invariants, and MCP/authenticated GraphQL
+parity:
+
+```text
+GOWORK=off go test -race ./mcp -run 'TestTeslaGen3EVSESemanticPublication' -count=1
+PASS
+```
+
+Log: `/tmp/helianthus-ebusgateway-961-contiguous-sequence-focused-race.log`;
+SHA-256 `dd7f95b8acc8800782bb41956c5499227a2132d13f0234bf464bcec303716b1a`.
+
+Complete local CI passed on the same committed source:
+
+```text
+GOWORK=off ./scripts/ci_local.sh
+PASS
+```
+
+It covered terminology/source-selection, gofmt, Portal Node `93/93`, full Go
+race, schema coverage, Python `215`, golangci-lint `0 issues`, the Modbus RTU
+transport gate, the Growatt Storage SemReg mapping gate, and passive smoke `not
+triggered`. Log: `/tmp/helianthus-ebusgateway-961-contiguous-sequence-ci.log`;
+SHA-256 `818d0d23350faf70f3704c1c238e01c8ef139cb6660d52f2b94970f195d8b1f6`.

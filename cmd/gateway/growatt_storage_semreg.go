@@ -231,19 +231,27 @@ type growattStorageDisposition struct {
 func growattStorageDispositions(status modbusreg.GrowattBMSTypedReadOnlyStatus, asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) ([]projection.RequestedItem, []growattStorageDisposition) {
 	type field struct {
 		id          semreg.DefinitionID
+		nativeID    semreg.DefinitionID
 		value       float64
 		unit        semreg.DefinitionID
 		outcome     projection.ProjectionOutcome
 		loss        projection.LossKind
 		description string
 	}
-	fields := []field{{"storage.capacity.charge", status.CumulativeChargeAmpHours, "unit.ampere_hour", projection.ProjectionTransformed, projection.LossPolicy, "counter continuity/reset/wrap remains native evidence"}, {"storage.capacity.discharge", status.CumulativeDischargeAmpHours, "unit.ampere_hour", projection.ProjectionTransformed, projection.LossPolicy, "counter continuity/reset/wrap remains native evidence"}, {"storage.pack.current", status.PackCurrentAmps, "unit.ampere", projection.ProjectionTransformed, projection.LossProvenance, "native current sign reference is retained as provenance"}, {"storage.pack.voltage", status.PackVoltageVolts, "unit.volt", projection.ProjectionExact, "", ""}, {"storage.state.soc", float64(status.SOCPercent), "unit.percent", projection.ProjectionExact, "", ""}, {"storage.temperature.pack", float64(status.TemperatureCelsius), "unit.celsius", projection.ProjectionExact, "", ""}}
+	fields := []field{
+		{"storage.capacity.charge", "native.growatt.bms.rs485.v202.cumulative_charge_amp_hours", status.CumulativeChargeAmpHours, "unit.ampere_hour", projection.ProjectionTransformed, projection.LossPolicy, "counter continuity/reset/wrap remains native evidence"},
+		{"storage.capacity.discharge", "native.growatt.bms.rs485.v202.cumulative_discharge_amp_hours", status.CumulativeDischargeAmpHours, "unit.ampere_hour", projection.ProjectionTransformed, projection.LossPolicy, "counter continuity/reset/wrap remains native evidence"},
+		{"storage.pack.current", "native.growatt.bms.rs485.v202.pack_current_amps", status.PackCurrentAmps, "unit.ampere", projection.ProjectionTransformed, projection.LossProvenance, "native current sign reference is retained as provenance"},
+		{"storage.pack.voltage", "", status.PackVoltageVolts, "unit.volt", projection.ProjectionExact, "", ""},
+		{"storage.state.soc", "", float64(status.SOCPercent), "unit.percent", projection.ProjectionExact, "", ""},
+		{"storage.temperature.pack", "", float64(status.TemperatureCelsius), "unit.celsius", projection.ProjectionExact, "", ""},
+	}
 	requested := make([]projection.RequestedItem, 0, 7)
 	out := make([]growattStorageDisposition, 0, 7)
 	for _, f := range fields {
 		requested = append(requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: f.id})
 		candidate := growattStorageCandidate(asset, binding, source, epoch, generation, ev, wall, mono, f.id, f.value, f.unit)
-		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: f.id, Outcome: f.outcome, SourceKeys: []semreg.FactKey{candidate.Key}, Loss: growattStorageLoss(f.loss, f.id, f.description)}, candidate: []semreg.FactCandidate{candidate}})
+		out = append(out, growattStorageDisposition{item: projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: f.id, Outcome: f.outcome, SourceKeys: []semreg.FactKey{candidate.Key}, Loss: growattStorageLoss(f.loss, f.nativeID, f.description)}, candidate: []semreg.FactCandidate{candidate}})
 	}
 	requested = append(requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "storage.status.operating"})
 	if status.OperatingState == modbusreg.GrowattBMSStateSoftStarting {
@@ -267,11 +275,11 @@ func growattStorageProjectionDispositions(in []growattStorageDisposition) []proj
 	}
 	return out
 }
-func growattStorageLoss(kind projection.LossKind, id semreg.DefinitionID, description string) []projection.LossDetail {
+func growattStorageLoss(kind projection.LossKind, nativeID semreg.DefinitionID, description string) []projection.LossDetail {
 	if kind == "" {
 		return []projection.LossDetail{}
 	}
-	return []projection.LossDetail{{Kind: kind, SourceItems: []semreg.DefinitionID{"native.growatt.bms.rs485.v202." + id}, Description: description}}
+	return []projection.LossDetail{{Kind: kind, SourceItems: []semreg.DefinitionID{nativeID}, Description: description}}
 }
 
 func growattStorageCandidate(asset semreg.AssetID, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, ev semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint, id semreg.DefinitionID, value float64, unit semreg.DefinitionID) semreg.FactCandidate {

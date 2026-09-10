@@ -200,11 +200,8 @@ func (cfg Config) ValidatePortalStorage() error {
 	}
 	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
 	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
-		const m2mGraphQLDeadline = 10 * time.Second
-		const m2mGraphQLHeadroom = 500 * time.Millisecond
-		budget := m2mGraphQLDeadline - m2mGraphQLHeadroom
-		if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-			return errors.New("growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
+		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 500*time.Millisecond) {
+			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 500ms headroom below the M2M server deadline")
 		}
 	}
 	if !cfg.PortalStorage.SemanticEnabled {
@@ -213,13 +210,25 @@ func (cfg Config) ValidatePortalStorage() error {
 	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
 		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
 	}
-	const m2mDeadline = 5 * time.Second
-	const m2mHeadroom = 500 * time.Millisecond
-	budget := m2mDeadline - m2mHeadroom
-	if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-		return errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
+	if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond) {
+		return errors.New("portal storage semantic BFF requires MaxQuiescence plus four Growatt reads plus 500ms headroom below the M2M deadline")
 	}
 	return nil
+}
+
+// growattStorageOperationFitsDeadline checks the entire public RTU operation:
+// recovery can consume one MaxQuiescence interval before its four serial reads.
+// The subtraction/division formulation avoids overflowing time.Duration while
+// preserving the strict response-deadline boundary.
+func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadline, headroom time.Duration) bool {
+	if maxQuiescence < 0 || responseTimeout <= 0 || deadline <= headroom {
+		return false
+	}
+	budget := deadline - headroom
+	if maxQuiescence >= budget {
+		return false
+	}
+	return responseTimeout <= (budget-maxQuiescence-time.Nanosecond)/4
 }
 
 func (config M2MGraphQLConfig) Disabled() bool {

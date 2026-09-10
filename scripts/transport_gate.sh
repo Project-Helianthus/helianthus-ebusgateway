@@ -83,6 +83,7 @@ requires_modbus_rtu_transport_gate() {
     cmd/gateway/growatt_bms_rs485_runtime.go|\
 	cmd/gateway/growatt_storage_semreg.go|\
 	cmd/gateway/m2m_graphql_runtime.go|\
+	m2mgraphql/handler.go|\
 	mcp/growatt_storage_semantic.go|\
     cmd/gateway/gateway_run_lifecycle.go|\
     cmd/gateway/modbus_endpoint_file.go|\

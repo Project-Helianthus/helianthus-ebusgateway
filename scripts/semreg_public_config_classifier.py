@@ -24,11 +24,8 @@ FUNCTION = '''func (cfg Config) ValidatePortalStorage() error {
 	}
 	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
 	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
-		const m2mGraphQLDeadline = 10 * time.Second
-		const m2mGraphQLHeadroom = 500 * time.Millisecond
-		budget := m2mGraphQLDeadline - m2mGraphQLHeadroom
-		if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-			return errors.New("growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
+		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 500*time.Millisecond) {
+			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 500ms headroom below the M2M server deadline")
 		}
 	}
 	if !cfg.PortalStorage.SemanticEnabled {
@@ -37,20 +34,32 @@ FUNCTION = '''func (cfg Config) ValidatePortalStorage() error {
 	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
 		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
 	}
-	const m2mDeadline = 5 * time.Second
-	const m2mHeadroom = 500 * time.Millisecond
-	budget := m2mDeadline - m2mHeadroom
-	if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-		return errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
+	if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond) {
+		return errors.New("portal storage semantic BFF requires MaxQuiescence plus four Growatt reads plus 500ms headroom below the M2M deadline")
 	}
 	return nil
+}
+'''
+HELPER = '''// growattStorageOperationFitsDeadline checks the entire public RTU operation:
+// recovery can consume one MaxQuiescence interval before its four serial reads.
+// The subtraction/division formulation avoids overflowing time.Duration while
+// preserving the strict response-deadline boundary.
+func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadline, headroom time.Duration) bool {
+	if maxQuiescence < 0 || responseTimeout <= 0 || deadline <= headroom {
+		return false
+	}
+	budget := deadline - headroom
+	if maxQuiescence >= budget {
+		return false
+	}
+	return responseTimeout <= (budget-maxQuiescence-time.Nanosecond)/4
 }
 '''
 
 def show(ref: str) -> str:
     return subprocess.check_output(["git", "show", f"{ref}:config.go"], text=True)
 
-def strip_storage(text: str) -> tuple[str, tuple[int, int, int]]:
+def strip_storage(text: str) -> tuple[str, tuple[int, int, int, int]]:
     declaration_count = text.count(DECLARATION)
     if declaration_count > 1: raise ValueError("duplicate Storage config declaration")
     text = text.replace(DECLARATION, "")
@@ -59,15 +68,18 @@ def strip_storage(text: str) -> tuple[str, tuple[int, int, int]]:
     function_count = text.count(FUNCTION)
     if function_count > 1: raise ValueError("duplicate ValidatePortalStorage function")
     text = text.replace(FUNCTION, "")
+    helper_count = text.count(HELPER)
+    if helper_count > 1: raise ValueError("duplicate growattStorageOperationFitsDeadline helper")
+    text = text.replace(HELPER, "")
     normalized = re.sub(r"\n{2,}", "\n", text).strip() + "\n"
-    return normalized, (declaration_count, field_count, function_count)
+    return normalized, (declaration_count, field_count, function_count, helper_count)
 
 def main() -> int:
     try:
         base_rest, base_counts = strip_storage(show(sys.argv[1]))
         head_rest, head_counts = strip_storage(Path("config.go").read_text())
         if base_rest != head_rest: return 1
-        if head_counts != (1, 1, 1): return 1
+        if head_counts != (1, 1, 1, 1): return 1
         if any(count not in (0, 1) for count in base_counts): return 1
         return 0
     except Exception:

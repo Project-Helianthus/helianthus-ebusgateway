@@ -256,3 +256,44 @@ shadow authority, adapters, or dual publication.
 Focused configuration/runtime race tests, both structural gate suites, direct
 Modbus RTU conformance, passive classification, and `git diff --check` pass.
 Complete CI and fresh exact-HEAD independent review remain pending after push.
+
+## Exact-HEAD independent-review blocker correction
+
+This correction starts from independent review
+`gateway959-92778b0-independent/REVIEW.md`, SHA-256
+`8a675389a2a796af90e6f3c909402a2f95851f9272442062ce64433a8f47cd9a`,
+against reviewed HEAD `92778b0ee27613f837cf0542478b8b3f34b66a1f` and tree
+`39c1be10c95fdb35c1cc75b918cc19b6bfc35711`. It addresses only that report's
+three reachable blockers; no deadline was extended and no live I/O, write,
+fallback, comparator, compatibility surface, or second semantic authority was
+introduced.
+
+- `m2mgraphql/handler.go` is now a Modbus RTU production source input. The
+  source-only trigger and fail-closed controls cover the handler dispatch,
+  while an unrelated `m2mgraphql/handler_test.go` change remains non-triggering.
+- Every transformed storage loss now carries the real native DefinitionID:
+  `pack_current_amps`, `cumulative_charge_amp_hours`, or
+  `cumulative_discharge_amp_hours`. Exact voltage, SOC, and temperature mappings
+  still carry no loss, and operating-state continues to cite
+  `native.growatt.bms.rs485.v202.operating_state`.
+- Public Storage admission now proves the entire worst case,
+  `MaxQuiescence + 4 * ResponseTimeout`, strictly below the 4.5-second Portal
+  and 9.5-second direct-GraphQL budgets with 500 ms server headroom. The
+  subtraction/division check is overflow-safe. Deterministic direct-GraphQL
+  cancellation, retry through Portal, recovery, and last-known-good retention
+  coverage exercises the fault path.
+
+RED evidence was captured before the fixes: the new provenance and deadline
+tests failed, and `python3 scripts/transport_gate_test.py` failed 2 controls
+for `m2mgraphql/handler.go` being unclassified. GREEN focused race evidence:
+`GOWORK=off go test -race ./ ./cmd/gateway ./m2mgraphql ./portal ./mcp -run
+'Test(ConfigCrossValidatesPortalStorageAgainstGrowattProducer|GrowattStorageDispositionsUseExactNativeLossDefinitionIDs|GrowattStorageRecoveryCancellationRetryPreservesLastKnownGood|GrowattStorageGraphQLAndPortalPublishWithoutMCPPriming|GrowattBMSRS485)' -count=1`
+passed. The hostile structural suites passed: transport 24/24 and passive 9/9.
+
+Fresh complete validation passed before the correction commit:
+`GOWORK=off ./scripts/ci_local.sh`. It recorded 93 Portal Node tests, all Go
+race packages, 168 Python tests plus 6/24/9/6/2 gate suites, golangci-lint with
+0 issues, pinned Modbus RTU conformance, Storage mapping (2 executable outputs
+and 13 rejected scenarios), and passive-smoke not triggered. The complete log
+is `wave12/gateway959-correction-final-full-ci.log`, SHA-256
+`92c2a0a9b6bff261cf74d007a65bcfbcab26619fd620f70928c7f3985b5c474b`.

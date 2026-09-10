@@ -21,19 +21,21 @@ import (
 )
 
 type growattEndpointFake struct {
-	mu          sync.Mutex
-	words       map[uint16][]uint16
-	calls       [][2]uint16
-	unitIDs     []byte
-	failAt      int
-	mismatch    int
-	generation  uint64
-	closed      int
-	recovers    int
-	recoverErr  error
-	delay       time.Duration
-	readStarted chan struct{}
-	releaseRead chan struct{}
+	mu             sync.Mutex
+	words          map[uint16][]uint16
+	calls          [][2]uint16
+	unitIDs        []byte
+	failAt         int
+	mismatch       int
+	generation     uint64
+	closed         int
+	recovers       int
+	recoverErr     error
+	recoverStarted chan struct{}
+	releaseRecover chan struct{}
+	delay          time.Duration
+	readStarted    chan struct{}
+	releaseRead    chan struct{}
 }
 
 func TestPortalRawModbusUsesOnlyTCPAvailableComposition(t *testing.T) {
@@ -139,7 +141,20 @@ func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request mo
 	}, nil
 }
 
-func (fake *growattEndpointFake) Recover(context.Context) error {
+func (fake *growattEndpointFake) Recover(ctx context.Context) error {
+	if fake.recoverStarted != nil {
+		select {
+		case fake.recoverStarted <- struct{}{}:
+		default:
+		}
+	}
+	if fake.releaseRecover != nil {
+		select {
+		case <-fake.releaseRecover:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.recovers++
@@ -148,6 +163,81 @@ func (fake *growattEndpointFake) Recover(context.Context) error {
 	}
 	fake.generation++
 	return nil
+}
+
+func TestGrowattStorageRecoveryCancellationRetryPreservesLastKnownGood(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	if _, err := currentGrowattStoragePublic(context.Background(), "asset:growatt-bms-a", runtime); err != nil {
+		t.Fatalf("initial direct GraphQL storage publication: %v", err)
+	}
+	before, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok {
+		t.Fatal("initial storage projection unavailable")
+	}
+	fake.mu.Lock()
+	fake.failAt = len(fake.calls)
+	fake.mu.Unlock()
+	if _, err := currentGrowattStoragePublic(context.Background(), "asset:growatt-bms-a", runtime); err == nil {
+		t.Fatal("faulted direct GraphQL storage refresh unexpectedly succeeded")
+	}
+	afterFault, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok || string(afterFault) != string(before) {
+		t.Fatal("faulted refresh replaced last-known-good storage projection")
+	}
+	fake.mu.Lock()
+	fake.failAt = -1
+	fake.recoverStarted = make(chan struct{}, 1)
+	fake.releaseRecover = make(chan struct{})
+	fake.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelled := make(chan error, 1)
+	go func() {
+		_, err := currentGrowattStoragePublic(ctx, "asset:growatt-bms-a", runtime)
+		cancelled <- err
+	}()
+	select {
+	case <-fake.recoverStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("direct GraphQL recovery did not start")
+	}
+	cancel()
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled direct GraphQL recovery error=%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled direct GraphQL recovery did not return")
+	}
+	afterCancel, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok || string(afterCancel) != string(before) {
+		t.Fatal("cancelled recovery replaced last-known-good storage projection")
+	}
+	fake.mu.Lock()
+	fake.releaseRecover = nil
+	fake.mu.Unlock()
+	portalHandler := portal.NewHandler(portal.Options{
+		SemanticStorageEnabled: true,
+		SemanticStorage: func(ctx context.Context) (portal.ForwardedResponse, error) {
+			body, err := currentGrowattStoragePublic(ctx, "asset:growatt-bms-a", runtime)
+			return portal.ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: body}, err
+		},
+	})
+	response := httptest.NewRecorder()
+	portalHandler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/storage/current", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("post-cancellation Portal recovery status=%d body=%s", response.Code, response.Body.String())
+	}
+	afterRecovery, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok || string(afterRecovery) == string(before) {
+		t.Fatal("successful Portal retry did not publish a new storage projection")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.recovers != 1 {
+		t.Fatalf("successful retry recoveries=%d; want 1", fake.recovers)
+	}
 }
 
 func (fake *growattEndpointFake) Close() error {

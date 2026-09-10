@@ -117,11 +117,15 @@ type TeslaGen3EVSESemanticPublication struct {
 	lastReadClock      uint64
 	allocatedExpiresAt *semreg.MonotonicPoint
 	scrapeEpoch        time.Time
-	sequence           uint64
-	lastInputDigest    semreg.Digest
-	candidateHighWater map[semreg.CandidateID]semreg.Uint64
-	now                func() time.Time
-	readClock          func() (uint64, error)
+	// prometheusMonotonic is a read-only output lifecycle floor. It never
+	// changes the immutable SemReg publication or its revision, but prevents an
+	// older scrape context from making an already stale fact fresh again.
+	prometheusMonotonic semreg.MonotonicPoint
+	sequence            uint64
+	lastInputDigest     semreg.Digest
+	candidateHighWater  map[semreg.CandidateID]semreg.Uint64
+	now                 func() time.Time
+	readClock           func() (uint64, error)
 }
 
 func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*TeslaGen3EVSESemanticPublication, error) {
@@ -227,7 +231,7 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	p.kernel, p.current, p.manifest, p.requested, p.dispositions, p.candidateHighWater = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...), highWater
-	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.scrapeEpoch, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, scrapeEpoch, evidence.Sequence, inputDigest
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.scrapeEpoch, p.prometheusMonotonic, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, scrapeEpoch, evaluationMono, evidence.Sequence, inputDigest
 	return nil
 }
 
@@ -240,9 +244,9 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	if p == nil || at.IsZero() {
 		return SemanticEVSECurrent{}, false
 	}
-	p.mu.RLock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.sequence == 0 || p.scrapeEpoch.IsZero() {
-		p.mu.RUnlock()
 		return SemanticEVSECurrent{}, false
 	}
 	snapshot := p.current
@@ -257,7 +261,6 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 		copy := *p.allocatedExpiresAt
 		allocatedExpiresAt = &copy
 	}
-	p.mu.RUnlock()
 
 	// Preserve the original monotonic coordinate when it is available. A
 	// pre-publication scrape cannot evaluate this newer immutable snapshot at a
@@ -270,6 +273,10 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	if err != nil {
 		return SemanticEVSECurrent{}, false
 	}
+	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.prometheusMonotonic)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
 	wall := at
 	if wall.Before(evaluatedAt) {
 		wall = evaluatedAt
@@ -278,6 +285,10 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	if err != nil {
 		return SemanticEVSECurrent{}, false
 	}
+	// The output floor is deliberately separate from lastReadMonotonic. It
+	// serializes only Prometheus contexts and does not fence a later accepted
+	// native publication with a new lifecycle generation.
+	p.prometheusMonotonic = mono
 	return current, true
 }
 

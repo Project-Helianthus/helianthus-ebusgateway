@@ -282,6 +282,14 @@ func (store *BusObservabilityStore) RenderPrometheus() {
             result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
             self.assertNotEqual(result.returncode, 0, hostile)
 
+        omitted_unlock = allowed.replace("    store.mu.Unlock()\n}\nfunc (store *BusObservabilityStore) RenderPrometheus()", "}\nfunc (store *BusObservabilityStore) RenderPrometheus()", 1)
+        exchanged_unlock = omitted_unlock + "\nfunc unrelatedLockChange(store *BusObservabilityStore) { store.mu.Unlock() }\n"
+        for hostile in (omitted_unlock, exchanged_unlock):
+            (repo_path / "bus_observability_store.go").write_text(hostile, encoding="utf-8")
+            result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0, "classifier accepted changed lock structure")
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
     def test_passive_smoke_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

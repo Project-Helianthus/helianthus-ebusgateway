@@ -107,7 +107,9 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 				continue
 			}
 			for _, key := range disposition.SourceKeys {
-				renderSemanticFact(emit, d.Name, key, facts, evaluated, now)
+				if renderSemanticFact(emit, d.Name, key, facts, evaluated, now) {
+					overflow++
+				}
 			}
 		}
 	}
@@ -133,21 +135,28 @@ func evaluatedIndex(view semreg.EvaluationView) map[semreg.CandidateID]semreg.Ev
 	return out
 }
 
-func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, now time.Time) {
-	if key.Validate() != nil || !validSemanticFact(domain, string(key.PackID), string(key.FactID)) {
-		return
+func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, now time.Time) bool {
+	targetKey, targetOK := semanticFactKey(key)
+	if !targetOK || !validSemanticFact(domain, string(key.PackID), string(key.FactID)) {
+		return true
 	}
+	invalidCandidate := false
 	for _, envelope := range envelopes {
 		for _, candidate := range envelope.Candidates {
-			if semanticFactKey(candidate.Key) != semanticFactKey(key) {
+			candidateKey, candidateOK := semanticFactKey(candidate.Key)
+			if !candidateOK {
+				invalidCandidate = true
+				continue
+			}
+			if candidateKey != targetKey {
 				continue
 			}
 			e, ok := evaluated[candidate.CandidateID]
 			if !ok {
-				return
+				return true
 			}
 			if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
-				return
+				return true
 			}
 			dimension, dimensionsOK := semanticDimensions(key)
 			labels := labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension, "qualification", string(candidate.Quality.Qualification), "promotion", string(candidate.Quality.Promotion), "quality", string(candidate.Quality.Validity), "availability", string(e.EffectiveAvailability), "freshness", string(e.Freshness))
@@ -157,15 +166,16 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 				emit("helianthus_semantic_evidence_age_seconds", age, labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension))
 			}
 			if !dimensionsOK || len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
-				return
+				return false
 			}
 			value, unit, ok := semanticNumeric(candidate.Value)
 			if ok {
 				emit("helianthus_semantic_fact_value", value, labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension, "unit", unit))
 			}
-			return
+			return false
 		}
 	}
+	return invalidCandidate
 }
 
 func validSemanticState(q semreg.Qualification, p semreg.Promotion, v semreg.Validity, a semreg.Availability, f semreg.Freshness) bool {
@@ -202,15 +212,15 @@ func semanticDimensions(key semreg.FactKey) (string, bool) {
 	return "", false
 }
 
-func semanticFactKey(key semreg.FactKey) string {
+func semanticFactKey(key semreg.FactKey) (string, bool) {
 	if key.Validate() != nil {
-		return ""
+		return "", false
 	}
 	encoded, err := semreg.CanonicalJSON(key)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(encoded)
+	return string(encoded), true
 }
 
 func validSemanticFact(domain, pack, fact string) bool {

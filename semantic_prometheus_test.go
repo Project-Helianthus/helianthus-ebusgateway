@@ -51,8 +51,49 @@ func TestSemanticPrometheusRejectsIncoherentTuple(t *testing.T) {
 	domain.Projection.SnapshotID = "snapshot:other"
 	var out bytes.Buffer
 	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
-	if strings.Contains(out.String(), "\nhelianthus_semantic_fact_value{") || !strings.Contains(out.String(), "helianthus_semantic_render_overflow 1") {
+	if strings.Contains(out.String(), "\nhelianthus_semantic_fact_value{") || !strings.Contains(out.String(), `helianthus_semantic_projection_available{domain="pv"} 0`) || !strings.Contains(out.String(), "helianthus_semantic_render_overflow 1") {
 		t.Fatalf("incoherent tuple was rendered:\n%s", out.String())
+	}
+}
+
+func TestSemanticPrometheusRejectsUnknownPVProjectionItems(t *testing.T) {
+	domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	for _, suffix := range []string{"attacker-unique-suffix-a", "attacker-unique-suffix-b", "attacker-unique-suffix-c"} {
+		domain.Projection.Dispositions = append(domain.Projection.Dispositions, projection.ProjectionDisposition{
+			ItemID:     semreg.DefinitionID("projection.gateway.pv.inverter." + suffix),
+			Outcome:    projection.ProjectionExact,
+			SourceKeys: domain.Projection.Dispositions[0].SourceKeys,
+		})
+	}
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if strings.Contains(metrics, "attacker-unique-suffix") {
+		t.Fatalf("unbounded PV item label leaked:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, "helianthus_semantic_render_overflow 3") {
+		t.Fatalf("rejected item was not counted:\n%s", metrics)
+	}
+}
+
+func TestSemanticPrometheusRejectsInvalidStateLabels(t *testing.T) {
+	domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	domain.Evaluation.Facts[0].Freshness = semreg.Freshness("asset:private")
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if strings.Contains(metrics, "asset:private") || strings.Contains(metrics, "\nhelianthus_semantic_fact_state{") {
+		t.Fatalf("invalid semantic state leaked:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, "helianthus_semantic_render_overflow 1") {
+		t.Fatalf("invalid state was not counted:\n%s", metrics)
+	}
+}
+
+func TestSemanticFactKeyRejectsInvalidKeys(t *testing.T) {
+	invalid := semreg.FactKey{PackID: "not a definition id"}
+	if key, ok := semanticFactKey(invalid); ok || key != "" {
+		t.Fatalf("invalid fact key was canonicalized: %q, %t", key, ok)
 	}
 }
 

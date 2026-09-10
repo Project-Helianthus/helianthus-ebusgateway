@@ -18,6 +18,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 type growattEndpointFake struct {
@@ -537,6 +538,50 @@ func TestGrowattStorageRejectedPublicationDoesNotAdvanceSemanticCursor(t *testin
 	second, err := runtime.GrowattStorageSemanticCurrent(context.Background())
 	if err != nil || growattStorageSemanticRevision(t, second) != "2" {
 		t.Fatalf("post-reject semantic publication=%v/%v", second, err)
+	}
+}
+
+func TestGrowattStorageCurrentAtReevaluatesFreshnessWithoutObservation(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	native, err := runtime.GrowattBMSRS485V202(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, ok := runtime.LastObservationEvidence()
+	if !ok {
+		t.Fatal("missing evidence")
+	}
+	if _, err := runtime.storage.Publish(native.Status, evidence); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	reads := len(fake.calls)
+	fake.mu.Unlock()
+	sequence := runtime.storage.publicationSequence
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want semreg.Freshness
+	}{
+		{"before", evidence.ReceiptWall.Add(59 * time.Second), semreg.FreshnessFresh},
+		{"equal", evidence.ReceiptWall.Add(60 * time.Second), semreg.FreshnessStale},
+		{"after", evidence.ReceiptWall.Add(61 * time.Second), semreg.FreshnessStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current, ok := runtime.storage.CurrentAt("asset:growatt-bms-a", tc.at)
+			if !ok {
+				t.Fatal("missing reevaluated current")
+			}
+			if len(current.Evaluation.Facts) == 0 || current.Evaluation.Facts[0].Freshness != tc.want {
+				t.Fatalf("freshness=%+v want %s", current.Evaluation.Facts, tc.want)
+			}
+		})
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != reads || runtime.storage.publicationSequence != sequence {
+		t.Fatalf("scrape reevaluation read or published: calls=%d/%d sequence=%d/%d", len(fake.calls), reads, runtime.storage.publicationSequence, sequence)
 	}
 }
 

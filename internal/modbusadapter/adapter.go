@@ -635,6 +635,35 @@ func (adapter *Adapter) SemanticPVCurrentSingle() (SemanticPVCurrent, bool) {
 	return adapter.SemanticPVCurrentByAsset(string(asset))
 }
 
+// SemanticPVCurrentSingleAt evaluates the sole detached publication at an
+// explicit scrape instant. It retains the regular read-time rollback guards.
+func (adapter *Adapter) SemanticPVCurrentSingleAt(at time.Time) (SemanticPVCurrent, bool) {
+	if adapter == nil || adapter.semanticPV == nil || at.IsZero() {
+		return SemanticPVCurrent{}, false
+	}
+	asset, ok := adapter.semanticPV.singleAssetID()
+	if !ok {
+		return SemanticPVCurrent{}, false
+	}
+	view, err := adapter.semanticPV.publicView(asset)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err := adapter.semanticPVReadContextAt(at)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err = clampSemanticPVReadWall(context, view.wallFloor)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	view, err = adapter.semanticPV.evaluatePublicView(view, context)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
 // clampSemanticPVReadWall prevents a rolled-back wall clock from preceding
 // the immutable snapshot selected for this read. It changes only the wall
 // coordinate; monotonic elapsed time remains the current trusted read clock.
@@ -657,21 +686,18 @@ func clampSemanticPVReadWall(context semreg.EvaluationContext, floor semreg.Time
 }
 
 func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error) {
+	return adapter.semanticPVReadContextAt(time.Now())
+}
+
+func (adapter *Adapter) semanticPVReadContextAt(at time.Time) (semreg.EvaluationContext, error) {
 	if adapter == nil || adapter.startedWall.IsZero() || adapter.startedMono.IsZero() {
 		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is unavailable")
 	}
-	wallClock, monotonicClock := time.Now, time.Now
-	if adapter.wallNow != nil {
-		wallClock = adapter.wallNow
-	}
-	if adapter.monotonicNow != nil {
-		monotonicClock = adapter.monotonicNow
-	}
-	wall := wallClock().UTC()
+	wall := at.UTC()
 	if wall.Before(adapter.startedWall) {
 		wall = adapter.startedWall
 	}
-	elapsed := monotonicClock().Sub(adapter.startedMono)
+	elapsed := at.Sub(adapter.startedMono)
 	if elapsed < 0 {
 		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
 	}

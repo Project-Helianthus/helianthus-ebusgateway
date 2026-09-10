@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type growattStoragePublication struct {
 	sourceID            semreg.SourceID
 	kernel              *semreg.PublicationKernel
 	current             json.RawMessage
+	currentReceivedAt   time.Time
 	publicationSequence uint64
 }
 
@@ -104,7 +106,7 @@ func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedRead
 	if err != nil {
 		return nil, err
 	}
-	p.kernel, p.current, p.publicationSequence = staged, append(json.RawMessage(nil), encoded...), sequence
+	p.kernel, p.current, p.currentReceivedAt, p.publicationSequence = staged, append(json.RawMessage(nil), encoded...), evidence.ReceiptWall.UTC(), sequence
 	return json.RawMessage(append([]byte(nil), encoded...)), nil
 }
 
@@ -118,6 +120,49 @@ func (p *growattStoragePublication) Current(asset string) (json.RawMessage, bool
 		return nil, false
 	}
 	return append(json.RawMessage(nil), p.current...), true
+}
+
+type growattStorageCurrent struct {
+	Snapshot   semreg.Snapshot
+	Evaluation semreg.EvaluationView
+	Projection projection.ProjectionReport
+}
+
+// CurrentAt returns a detached current Storage tuple reevaluated at the one
+// supplied scrape instant. It reads no transport and never changes publication
+// state, revision, or the stored current bytes.
+func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growattStorageCurrent, bool) {
+	if p == nil || semreg.AssetID(asset) != p.assetID || at.IsZero() {
+		return growattStorageCurrent{}, false
+	}
+	p.mu.RLock()
+	raw, received := append(json.RawMessage(nil), p.current...), p.currentReceivedAt
+	p.mu.RUnlock()
+	if len(raw) == 0 || received.IsZero() || at.Before(received) {
+		return growattStorageCurrent{}, false
+	}
+	var current growattStorageCurrent
+	if json.Unmarshal(raw, &current) != nil || current.Snapshot.SnapshotID == "" {
+		return growattStorageCurrent{}, false
+	}
+	base, err := strconv.ParseInt(string(current.Snapshot.EvaluateMonotonic.Nanoseconds), 10, 64)
+	if err != nil {
+		return growattStorageCurrent{}, false
+	}
+	elapsed := at.Sub(received)
+	if elapsed < 0 || elapsed == time.Duration(math.MaxInt64) || base < 0 || base > math.MaxInt64-int64(elapsed) {
+		return growattStorageCurrent{}, false
+	}
+	context := semreg.EvaluationContext{
+		EvaluatedAt:       growattWall(at),
+		EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: current.Snapshot.EvaluateMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatInt(base+int64(elapsed), 10))},
+	}
+	evaluation, err := semreg.EvaluateSnapshot(current.Snapshot, context)
+	if err != nil {
+		return growattStorageCurrent{}, false
+	}
+	current.Evaluation = evaluation
+	return current, current.Projection.SnapshotID == current.Snapshot.SnapshotID
 }
 
 func validateGrowattStorageInput(status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, asset semreg.AssetID, source semreg.SourceID) error {

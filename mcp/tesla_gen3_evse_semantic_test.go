@@ -355,6 +355,77 @@ func TestTeslaGen3EVSESemanticPublicationRejectsMalformedPersistent(t *testing.T
 	}
 }
 
+func TestTeslaGen3EVSESemanticCapabilityActivationRequiresNativePublicationEvidence(t *testing.T) {
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	first := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:capability-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, Sequence: 1}
+	if err := p.Publish(source, first); err != nil {
+		t.Fatal(err)
+	}
+	before := p.current
+	if len(before.Capabilities) != 2 {
+		t.Fatalf("initial capabilities=%d", len(before.Capabilities))
+	}
+
+	updated, err := modbusreg.NewTeslaGen3PersistentCurrentLimit(modbusreg.TeslaGen3PersistentCurrentLimitSpec{
+		OperationVersion:     modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+		MaxOutputCurrentAmps: 15,
+		RequestPayload:       teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCConfigureSettings, []byte{0x08, 0x0f}),
+		TerminalPayload:      teslaGen3EVSECurrentLimitV1Terminal(8, []byte{0x08, 0x0f}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Persistent = &updated
+	second := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:capability-second", ObservedAt: base.Add(time.Second), EvaluatedAt: base.Add(time.Second), MonotonicNS: 2, Sequence: 2}
+	if err := p.Publish(source, second); err != nil {
+		t.Fatal(err)
+	}
+	after := p.current
+	if len(after.Capabilities) != len(before.Capabilities) {
+		t.Fatalf("capability count changed: before=%d after=%d", len(before.Capabilities), len(after.Capabilities))
+	}
+	wantPersistent := evseEvidence("native.tesla.wc3.current_limit.persistent", teslaGen3EVSEPersistentActivation{Persistent: source.Persistent, Evidence: second})
+	wantProvisional := evseEvidence("native.tesla.wc3.current_limit.provisional", teslaGen3EVSEProvisionalActivation{Provisional: source.Provisional, Evidence: second})
+	sourceOnly := evseDigestEvidence("native.tesla.wc3.current_limit.activation", p.cfg.SourceID)
+	for index, capability := range after.Capabilities {
+		if capability.InstanceID != before.Capabilities[index].InstanceID {
+			t.Fatalf("capability identity changed: before=%q after=%q", before.Capabilities[index].InstanceID, capability.InstanceID)
+		}
+		if capability.Qualification != semreg.QualificationQualified || capability.Availability != semreg.AvailabilityAvailable {
+			t.Fatalf("capability availability=%q qualification=%q", capability.Availability, capability.Qualification)
+		}
+		if len(capability.ActivationEvidence) != 2 || !slices.ContainsFunc(capability.ActivationEvidence, func(ref semreg.EvidenceRef) bool { return reflect.DeepEqual(ref, wantPersistent) }) || !slices.ContainsFunc(capability.ActivationEvidence, func(ref semreg.EvidenceRef) bool { return reflect.DeepEqual(ref, wantProvisional) }) {
+			t.Fatalf("capability activation evidence=%#v", capability.ActivationEvidence)
+		}
+		if slices.ContainsFunc(capability.ActivationEvidence, func(ref semreg.EvidenceRef) bool { return ref.Digest == sourceOnly.Digest }) {
+			t.Fatalf("capability activation was synthesized from source identity: %#v", capability.ActivationEvidence)
+		}
+	}
+
+	invalid := TeslaGen3EVSECurrentLimitV1Source{Persistent: &modbusreg.TeslaGen3PersistentCurrentLimit{}, Provisional: source.Provisional}
+	if err := p.Publish(invalid, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:capability-invalid", ObservedAt: base.Add(2 * time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 3, Sequence: 3}); err == nil {
+		t.Fatal("invalid evidence advanced the existing capability")
+	}
+	if !reflect.DeepEqual(after, p.current) {
+		t.Fatal("rejected evidence changed the current capability")
+	}
+	other, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Publish(invalid, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:same-source-invalid", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, Sequence: 1}); err == nil {
+		t.Fatal("same source identity synthesized a capability from invalid evidence")
+	}
+	if len(other.current.Capabilities) != 0 {
+		t.Fatalf("invalid publication produced capabilities: %#v", other.current.Capabilities)
+	}
+}
+
 func teslaGen3EVSECandidateRevisions(t *testing.T, snapshot semreg.Snapshot) map[semreg.CandidateID]semreg.Uint64 {
 	t.Helper()
 	revisions := make(map[semreg.CandidateID]semreg.Uint64)

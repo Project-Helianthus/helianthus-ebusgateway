@@ -44,6 +44,19 @@ type TeslaGen3EVSESemanticEvidence struct {
 	Sequence      uint64
 }
 
+// Capability activation is separately anchored to the immutable native records
+// that qualified the read capability. Source identity only identifies where a
+// record came from; it cannot activate a capability by itself.
+type teslaGen3EVSEPersistentActivation struct {
+	Persistent *modbusreg.TeslaGen3PersistentCurrentLimit
+	Evidence   TeslaGen3EVSESemanticEvidence
+}
+
+type teslaGen3EVSEProvisionalActivation struct {
+	Provisional *modbusreg.TeslaGen3ProvisionalCurrentLimit
+	Evidence    TeslaGen3EVSESemanticEvidence
+}
+
 // TeslaGen3EVSESemanticProvider is read-only.  It provides one detached,
 // evaluated SemReg view and has no operation or transport method.
 type TeslaGen3EVSESemanticProvider interface {
@@ -185,6 +198,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 		Source   TeslaGen3EVSECurrentLimitV1Source
 		Evidence TeslaGen3EVSESemanticEvidence
 	}{s, e})
+	activationEvidence := []semreg.EvidenceRef{evseEvidence("native.tesla.wc3.current_limit.persistent", teslaGen3EVSEPersistentActivation{Persistent: s.Persistent, Evidence: e})}
 	registry := evseDigestEvidence("registry.tesla.wc3_24_44_3", modbusreg.TeslaGen3CurrentLimitOperationVersion24443)
 	// MappingRevision is the kernel's monotonic label; the immutable accepted
 	// docs commit is retained in the registry evidence digest below.
@@ -194,6 +208,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	dispositions := []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{configured.Key}, Loss: []projection.LossDetail{}}}
 	facts := []semreg.FactCandidate{configured}
 	if provisional, reason := p.provisional(s.Provisional, e); provisional != nil {
+		activationEvidence = append(activationEvidence, evseEvidence("native.tesla.wc3.current_limit.provisional", teslaGen3EVSEProvisionalActivation{Provisional: s.Provisional, Evidence: e}))
 		timeout := time.Duration(s.Provisional.LimitTimeoutSeconds()) * time.Second
 		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, timeout, timeout+time.Nanosecond, current, binding, source, epoch, generation, evidence, receivedAt, receiptMono, evaluatedAt, evaluationMono)
 		facts = append(facts, allocated)
@@ -214,14 +229,14 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 		BindingUpserts:      []semreg.NativeBinding{{BindingID: binding, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: registry, State: semreg.BindingCurrent, Revision: seq}},
 		IdentityLinkUpserts: []semreg.IdentityLink{{AssetID: asset, BindingID: binding, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: seq}}, FactUpserts: facts,
 		ServiceUpserts:    []semreg.ServiceInstance{p.service("evse.service.evse", p.cfg.EVSEID, binding, asset, epoch, generation, seq), p.service("evse.service.connector", p.cfg.ConnectorID, binding, asset, epoch, generation, seq)},
-		CapabilityUpserts: []semreg.CapabilityInstance{p.capability("evse.capability.read.evse", "evse.service.evse", binding, asset, epoch, generation, seq), p.capability("evse.capability.read.connector", "evse.service.connector", binding, asset, epoch, generation, seq)},
+		CapabilityUpserts: []semreg.CapabilityInstance{p.capability("evse.capability.read.evse", "evse.service.evse", binding, asset, epoch, generation, seq, activationEvidence), p.capability("evse.capability.read.connector", "evse.service.connector", binding, asset, epoch, generation, seq, activationEvidence)},
 		SourceRetirements: []semreg.SourceEpochID{}, FactWithdrawals: []semreg.CandidateID{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
 	sort.Slice(batch.ServiceUpserts, func(i, j int) bool { return batch.ServiceUpserts[i].InstanceID < batch.ServiceUpserts[j].InstanceID })
 	sort.Slice(batch.CapabilityUpserts, func(i, j int) bool {
 		return batch.CapabilityUpserts[i].InstanceID < batch.CapabilityUpserts[j].InstanceID
 	})
 	if exists {
-		batch.SourceUpserts, batch.BindingUpserts, batch.IdentityLinkUpserts, batch.ServiceUpserts, batch.CapabilityUpserts = []semreg.SourceDescriptor{}, []semreg.NativeBinding{}, []semreg.IdentityLink{}, []semreg.ServiceInstance{}, []semreg.CapabilityInstance{}
+		batch.SourceUpserts, batch.BindingUpserts, batch.IdentityLinkUpserts, batch.ServiceUpserts = []semreg.SourceDescriptor{}, []semreg.NativeBinding{}, []semreg.IdentityLink{}, []semreg.ServiceInstance{}
 	}
 	digest, err := batch.ComputedDigest()
 	if err != nil {
@@ -269,9 +284,8 @@ func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string
 func (p *TeslaGen3EVSESemanticPublication) service(id, dimension string, binding semreg.NativeBindingID, asset semreg.AssetID, epoch semreg.SourceEpochID, generation, revision semreg.Uint64) semreg.ServiceInstance {
 	return semreg.ServiceInstance{InstanceID: semreg.ServiceInstanceID("service:tesla-wc3:" + evseHash(p.cfg.AssetID, id)[:32]), AssetID: asset, Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.evse", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}, BindingID: binding, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: revision}
 }
-func (p *TeslaGen3EVSESemanticPublication) capability(id, service string, binding semreg.NativeBindingID, asset semreg.AssetID, epoch semreg.SourceEpochID, generation, revision semreg.Uint64) semreg.CapabilityInstance {
-	activation := evseDigestEvidence("native.tesla.wc3.current_limit.activation", p.cfg.SourceID)
-	return semreg.CapabilityInstance{InstanceID: semreg.CapabilityInstanceID("capability:tesla-wc3:" + evseHash(p.cfg.AssetID, id)[:32]), AssetID: asset, ServiceInstance: semreg.ServiceInstanceID("service:tesla-wc3:" + evseHash(p.cfg.AssetID, service)[:32]), Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.evse", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}, BindingID: binding, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Constraints: []semreg.TypedField{}, ActivationEvidence: []semreg.EvidenceRef{activation}, Revision: revision}
+func (p *TeslaGen3EVSESemanticPublication) capability(id, service string, binding semreg.NativeBindingID, asset semreg.AssetID, epoch semreg.SourceEpochID, generation, revision semreg.Uint64, activationEvidence []semreg.EvidenceRef) semreg.CapabilityInstance {
+	return semreg.CapabilityInstance{InstanceID: semreg.CapabilityInstanceID("capability:tesla-wc3:" + evseHash(p.cfg.AssetID, id)[:32]), AssetID: asset, ServiceInstance: semreg.ServiceInstanceID("service:tesla-wc3:" + evseHash(p.cfg.AssetID, service)[:32]), Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.evse", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}, BindingID: binding, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Constraints: []semreg.TypedField{}, ActivationEvidence: append([]semreg.EvidenceRef(nil), activationEvidence...), Revision: revision}
 }
 
 func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *time.Time) (json.RawMessage, error) {

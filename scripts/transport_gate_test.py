@@ -36,7 +36,7 @@ func (cfg Config) ValidatePortalStorage() error {
 		const m2mGraphQLHeadroom = 500 * time.Millisecond
 		budget := m2mGraphQLDeadline - m2mGraphQLHeadroom
 		if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
-			return errors.New("Growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
+			return errors.New("growatt storage GraphQL requires four reads plus 500ms headroom below the M2M server deadline")
 		}
 	}
 	if !cfg.PortalStorage.SemanticEnabled {

@@ -29,6 +29,10 @@
   `ace69e96ac1034d7cf7d883873321068b4b6f955`
 - Buffered-outcome/read-floor remediation source tree:
   `7dd44c2cecee53c20d42602a568775cfc09ef8ab`
+- Canonical runtime-inventory documentation source HEAD:
+  `7e9d214549065996dfff566058c11f2385913a49`
+- Canonical runtime-inventory documentation source tree:
+  `62e8f83d1d63d0a464b4b17b4443c23745de843f`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -534,9 +538,48 @@ test broadcast. The corrected WebSocket/SSE test passed 20 race repetitions.
 - Hosted failure log SHA-256: `a39a56271b23a9c773c698291c6fca8a5289764d10cbbfe9b3889d5210fed4da`
 - Corrected 20-run SSE race SHA-256: `816842b80798ab0b316d77c0acf0b475cf762b2ee37ec39d88816615a7bab0bc`
 
-The live inline inventory remains 12 unresolved threads. The later overall P2
-review finding is addressed in a PR comment with the final push evidence; a
-fresh independent exact-HEAD review is still required.
+At that correction the live inline inventory contained 12 unresolved threads.
+The later overall P2 review finding is addressed in a PR comment with the final
+push evidence; a fresh independent exact-HEAD review is still required.
+
+Hosted run `34538287542` passed all four checks on report-bearing HEAD
+`ee4658034dec1a3d7baac1f4a9ee2e3009224be9`, including the corrected GraphQL
+WebSocket/SSE integration in the full test job.
+
+## Canonical current-operation inventory correction
+
+A thirteenth live P2 thread identified stale statements in
+`docs/architecture/runtime-driver-provider-contract-v1.md`. The canonical
+inventory still described the Tesla current-limit tools as uncomposed and said
+the injected seam created no gateway configuration or Prometheus metric.
+
+The inventory now records the explicit disabled-by-default `tesla-gen3-hsc-*`
+configuration and the owner-backed native MCP, semantic MCP, authenticated M2M
+GraphQL, and detached semantic Prometheus surfaces. It distinguishes the
+retained current-limit read from the remaining uncomposed Tesla optional tools,
+documents independence from Modbus TCP and absent Growatt owners, and preserves
+the no serial listener, acquisition, request, write, control, Portal, fallback,
+shadow, or dual-publication boundary. The focused owner document now includes
+the Prometheus read, set/ack lifetime origin, and buffered-outcome public
+high-water rule.
+
+Focused canonical-inventory check SHA-256:
+`7f3e823ca9ac04d1d9d28f62098fd5d49384daac439d1bacb56ad57a5cd8da84`.
+
+Complete local CI passed on documentation source
+`7e9d214549065996dfff566058c11f2385913a49`, tree
+`62e8f83d1d63d0a464b4b17b4443c23745de843f`, with the full Go race suite,
+219 Python tests, zero lint findings, all builds, Modbus transport conformance,
+Growatt and Tesla mappings, and passive-smoke classification. SHA-256:
+`a73b83da00f097783277c51a0193f20bc47bf1f6942c92afed38426667b7ad38`.
+
+Standalone final gate hashes:
+
+- Modbus RTU transport: `9771293bc4d85316605a863a2a78f5005e4905c0a604272a6ef8d0c175526716`
+- Tesla SemReg mapping: `e382b1e84397b39b061a2b88b8ad430e422f9e31eceeb371b1489a601d997472`
+- Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
+All 13 inline threads remain unresolved for fresh exact-HEAD review.
 
 ## Hosted adaptermux failure diagnosis
 
@@ -573,8 +616,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: all earlier findings plus the buffered-outcome/read-floor finding are
-  corrected. All 12 inline threads remain unresolved. A fresh independent
+- Review: all earlier findings plus the buffered-outcome/read-floor and
+  canonical-inventory findings are corrected. All 13 inline threads remain
+  unresolved. A fresh independent
   exact-HEAD review remains required before merge; the author did not review
   the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.

@@ -227,8 +227,10 @@ type Config struct {
 
     def test_bus_observability_semreg_append_is_only_exception(self) -> None:
         base = '''type BusObservabilityStore struct {
+    existing int
 }
 func (store *BusObservabilityStore) RenderPrometheus() {
+    writer := newPrometheusWriter(buffer)
 }
 '''
         allowed = '''type BusObservabilityStore struct {
@@ -236,6 +238,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
     // It is invoked after the store snapshot is released: a /metrics request must
     // never take the store lock across a driver or publication lock.
     semanticMetricsProvider func(time.Time) []SemanticMetricsDomain
+    existing int
 }
 // SetSemanticMetricsProvider installs the read-only PV/Storage SemReg view
 // supplier used by the existing /metrics renderer. The supplier must neither
@@ -249,6 +252,7 @@ func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(tim
     store.mu.Unlock()
 }
 func (store *BusObservabilityStore) RenderPrometheus() {
+    writer := newPrometheusWriter(buffer)
     semanticMetricsProvider := store.semanticMetricsProvider
     var semanticDomains []SemanticMetricsDomain
     haveSemanticMetricsProvider := semanticMetricsProvider != nil

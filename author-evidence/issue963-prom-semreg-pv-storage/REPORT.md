@@ -17,6 +17,12 @@ complete Go race suite, Python suites 168/6/24/10/6/2 passing, golangci-lint
 0 issues, transport conformance PASS, Storage SemReg gate PASS (2 executable,
 13 rejected), and passive smoke classifier `not triggered`.
 
+Post-correction exact head `c19cb601e69e69efda0a4f6698b219ee331678cd`
+also passed the focused race: root 9.700s, gateway 96.065s, adapter 130.581s;
+and full `ci_local.sh`: Python 168/6/24/10/6/2, lint 0, transport PASS,
+Storage 2/13 PASS, passive classifier not triggered. Hosted CI run
+`34467421336` was 4/4 SUCCESS on that same commit.
+
 Branch: `issue/963-prom-semreg-pv-storage` from gateway main
 `b2651d73639efb7ba690bc1464d9b8b04df51e4a`.
 

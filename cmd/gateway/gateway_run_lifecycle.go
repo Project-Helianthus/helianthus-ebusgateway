@@ -227,12 +227,15 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
-	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled) {
+	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled || cfg.PrometheusEVSEEnabled) {
 		// This is intentionally wired before the HTTP control plane starts. The
 		// callback reaches only immutable SemReg current views; it cannot invoke
 		// the Growatt observe/publish path or any native transport operation.
 		busObservability.SetSemanticMetricsProvider(func(at time.Time) []ebusgateway.SemanticMetricsDomain {
-			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
+			// EVSE acquisition remains outside this issue. A future accepted owner
+			// may supply the detached generic read seam; nil truthfully reports the
+			// configured runtime as unavailable without creating Tesla composition.
+			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, nil, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
 		})
 	}
 

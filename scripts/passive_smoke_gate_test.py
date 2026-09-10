@@ -116,6 +116,23 @@ type Config struct {
             self.assertNotEqual(hostile.returncode, 0)
             self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
+    def test_evse_prometheus_config_exemption_is_exact(self) -> None:
+        base = "type Config struct {\n}\n"
+        exact = base + "// PrometheusEVSEEnabled enables only the detached EVSE SemReg observation\n// section. It neither configures acquisition nor grants a native runtime.\nPrometheusEVSEEnabled bool\n"
+        for name, modified, expected in (
+            ("exact", exact, True),
+            ("extra-passive-state", exact + "PassiveStateDirectApply bool\n", False),
+            ("nearby-runtime", exact.replace("PrometheusEVSEEnabled bool", "PrometheusEVSEEnabled func()"), False),
+        ):
+            with self.subTest(name=name):
+                repo_path, _ = self._create_temp_repo("config.go", base, modified)
+                result = subprocess.run(
+                    ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                    env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, expected, msg=result.stdout + result.stderr)
+
         base_other = "type Config struct {\n}\n\nfunc validateOther() error {\n\tif changed {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
         hostile_others = (
             "func validateOther() error {\n\tif changed {\n\t\treturn nil\n\t}\n\treturn err\n}\n",

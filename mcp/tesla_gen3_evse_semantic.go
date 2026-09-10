@@ -83,6 +83,24 @@ type TeslaGen3EVSESemanticProvider interface {
 	TeslaGen3EVSESemanticCurrent(context.Context) (any, error)
 }
 
+// SemanticEVSECurrent is a detached, evaluated EVSE SemReg tuple. It is the
+// protocol-neutral read contract used by passive output bindings; it carries
+// neither native evidence bytes nor operation authority.
+type SemanticEVSECurrent struct {
+	Snapshot   semreg.Snapshot
+	Evaluation semreg.EvaluationView
+	Selections []semreg.Selection
+	Projection projection.ProjectionReport
+}
+
+// SemanticEVSEPrometheusProvider is the deliberately narrow read seam for a
+// Prometheus binding. Implementations must evaluate an already accepted
+// publication at the supplied scrape instant and must not acquire, publish, or
+// mutate lifecycle state.
+type SemanticEVSEPrometheusProvider interface {
+	SemanticEVSECurrentAt(time.Time) (SemanticEVSECurrent, bool)
+}
+
 type TeslaGen3EVSESemanticPublication struct {
 	mu                 sync.RWMutex
 	cfg                TeslaGen3EVSESemanticConfig
@@ -98,11 +116,17 @@ type TeslaGen3EVSESemanticPublication struct {
 	publishedReadClock uint64
 	lastReadClock      uint64
 	allocatedExpiresAt *semreg.MonotonicPoint
-	sequence           uint64
-	lastInputDigest    semreg.Digest
-	candidateHighWater map[semreg.CandidateID]semreg.Uint64
-	now                func() time.Time
-	readClock          func() (uint64, error)
+	scrapeEpoch        time.Time
+	// prometheusMonotonic is a read-only output lifecycle floor. It never
+	// changes the immutable SemReg publication or its revision, but prevents an
+	// older scrape context from making an already stale fact fresh again.
+	prometheusMonotonic     semreg.MonotonicPoint
+	prometheusBaseMonotonic semreg.MonotonicPoint
+	sequence                uint64
+	lastInputDigest         semreg.Digest
+	candidateHighWater      map[semreg.CandidateID]semreg.Uint64
+	now                     func() time.Time
+	readClock               func() (uint64, error)
 }
 
 func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*TeslaGen3EVSESemanticPublication, error) {
@@ -163,11 +187,19 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
+	scrapeEpoch := p.now()
+	if scrapeEpoch.IsZero() {
+		return errors.New("tesla Gen3 EVSE semantic scrape clock is unavailable")
+	}
 	if p.sequence != 0 && readClock < p.lastReadClock {
 		return errors.New("tesla Gen3 EVSE read monotonic clock regressed")
 	}
 	receiptMono := semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(p.cfg.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(evidence.MonotonicNS, 10))}
 	evaluationMono, err := teslaGen3EVSEEvaluationMonotonic(receiptMono, evidence)
+	if err != nil {
+		return err
+	}
+	prometheusMono, err := teslaGen3EVSEPublicationScrapeMonotonic(evaluationMono, evidence.EvaluatedAt, scrapeEpoch)
 	if err != nil {
 		return err
 	}
@@ -204,8 +236,113 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	p.kernel, p.current, p.manifest, p.requested, p.dispositions, p.candidateHighWater = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...), highWater
-	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, evidence.Sequence, inputDigest
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.scrapeEpoch, p.prometheusBaseMonotonic, p.prometheusMonotonic, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, scrapeEpoch, prometheusMono, prometheusMono, evidence.Sequence, inputDigest
 	return nil
+}
+
+// SemanticEVSECurrentAt reevaluates one detached accepted publication at the
+// caller's single scrape instant. It deliberately does not call now, readClock,
+// a provider, or Publish, so a Prometheus scrape cannot perform native I/O or
+// advance publication/read state. A scrape captured immediately before a
+// concurrent publication uses that publication's sealed scrape floor once.
+func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (SemanticEVSECurrent, bool) {
+	if p == nil || at.IsZero() {
+		return SemanticEVSECurrent{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sequence == 0 || p.scrapeEpoch.IsZero() {
+		return SemanticEVSECurrent{}, false
+	}
+	// The retained snapshot includes nested slices and pointers. Copy it while
+	// holding the publication mutex so an output consumer cannot mutate the
+	// accepted lifecycle through a returned SemanticEVSECurrent value.
+	snapshot, err := teslaGen3EVSECloneSnapshot(p.current)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
+	manifest, requested, dispositions, err := teslaGen3EVSECloneProjectionInputs(p.manifest, p.requested, p.dispositions)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
+	evaluatedAt := p.evaluatedAt
+	scrapeEpoch := p.scrapeEpoch
+	var allocatedExpiresAt *semreg.MonotonicPoint
+	if p.allocatedExpiresAt != nil {
+		copy := *p.allocatedExpiresAt
+		allocatedExpiresAt = &copy
+	}
+
+	// Preserve the original monotonic coordinate when it is available. A
+	// pre-publication scrape cannot evaluate this newer immutable snapshot at a
+	// negative age, so the one allowed floor retry is its sealed scrape instant.
+	elapsed := at.Sub(scrapeEpoch)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	// Begin with the immutable evidence-to-publication age, then add elapsed
+	// time since publication. prometheusMonotonic is only the high-water fence;
+	// it must not become the origin for a subsequent scrape calculation.
+	mono, err := teslaGen3EVSEReadMonotonic(p.prometheusBaseMonotonic, elapsed)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
+	mono, err = teslaGen3EVSEAtLeastMonotonic(mono, p.prometheusMonotonic)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
+	wall := at
+	if wall.Before(evaluatedAt) {
+		wall = evaluatedAt
+	}
+	current, err := teslaGen3EVSEPublicCurrentAt(snapshot, manifest, requested, dispositions, wall, mono, allocatedExpiresAt)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
+	// The output floor is deliberately separate from lastReadMonotonic. It
+	// serializes only Prometheus contexts and does not fence a later accepted
+	// native publication with a new lifecycle generation.
+	p.prometheusMonotonic = mono
+	return current, true
+}
+
+// teslaGen3EVSECloneSnapshot follows the SemReg publication kernel's detached
+// snapshot boundary. The accepted snapshot is already valid; retain the error
+// path so a future non-serializable addition fails the passive scrape closed.
+func teslaGen3EVSECloneSnapshot(snapshot semreg.Snapshot) (semreg.Snapshot, error) {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return semreg.Snapshot{}, err
+	}
+	var clone semreg.Snapshot
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return semreg.Snapshot{}, err
+	}
+	if err := clone.Validate(); err != nil {
+		return semreg.Snapshot{}, err
+	}
+	return clone, nil
+}
+
+func teslaGen3EVSECloneProjectionInputs(manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition) (projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+	value := struct {
+		Manifest     projection.ProjectionManifest      `json:"manifest"`
+		Requested    []projection.RequestedItem         `json:"requested"`
+		Dispositions []projection.ProjectionDisposition `json:"dispositions"`
+	}{Manifest: manifest, Requested: requested, Dispositions: dispositions}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return projection.ProjectionManifest{}, nil, nil, err
+	}
+	var clone struct {
+		Manifest     projection.ProjectionManifest      `json:"manifest"`
+		Requested    []projection.RequestedItem         `json:"requested"`
+		Dispositions []projection.ProjectionDisposition `json:"dispositions"`
+	}
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return projection.ProjectionManifest{}, nil, nil, err
+	}
+	return clone.Manifest, clone.Requested, clone.Dispositions, nil
 }
 
 func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.Context) (any, error) {
@@ -414,9 +551,18 @@ func (p *TeslaGen3EVSESemanticPublication) capability(id, service string, bindin
 }
 
 func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *semreg.MonotonicPoint) (json.RawMessage, error) {
-	evaluation, err := semreg.EvaluateSnapshot(snapshot, semreg.EvaluationContext{EvaluatedAt: evseWall(evaluated), EvaluateMonotonic: mono})
+	current, err := teslaGen3EVSEPublicCurrentAt(snapshot, manifest, requested, dispositions, evaluated, mono, allocatedExpiresAt)
 	if err != nil {
 		return nil, err
+	}
+	b, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+	return json.RawMessage(b), err
+}
+
+func teslaGen3EVSEPublicCurrentAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *semreg.MonotonicPoint) (SemanticEVSECurrent, error) {
+	evaluation, err := semreg.EvaluateSnapshot(snapshot, semreg.EvaluationContext{EvaluatedAt: evseWall(evaluated), EvaluateMonotonic: mono})
+	if err != nil {
+		return SemanticEVSECurrent{}, err
 	}
 	publicDispositions := append([]projection.ProjectionDisposition(nil), dispositions...)
 	if allocatedExpiresAt != nil && teslaGen3EVSEMonotonicAtOrAfter(mono, *allocatedExpiresAt) {
@@ -430,10 +576,35 @@ func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, ma
 	}
 	report, err := projection.Project(snapshot, manifest, requested, publicDispositions, nil)
 	if err != nil {
-		return nil, err
+		return SemanticEVSECurrent{}, err
 	}
-	b, err := json.Marshal(map[string]any{"snapshot": snapshot, "evaluation": evaluation, "selections": []semreg.Selection{}, "projection": report})
-	return json.RawMessage(b), err
+	return SemanticEVSECurrent{Snapshot: snapshot, Evaluation: evaluation, Selections: []semreg.Selection{}, Projection: report}, nil
+}
+
+func teslaGen3EVSEReadMonotonic(base semreg.MonotonicPoint, elapsed time.Duration) (semreg.MonotonicPoint, error) {
+	if elapsed < 0 {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE scrape monotonic clock regressed")
+	}
+	baseNS, err := strconv.ParseUint(string(base.Nanoseconds), 10, 64)
+	if err != nil {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication monotonic clock is invalid")
+	}
+	delta := uint64(elapsed)
+	if baseNS > ^uint64(0)-delta {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE scrape monotonic clock overflows")
+	}
+	return semreg.MonotonicPoint{ClockEpochID: base.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(baseNS+delta, 10))}, nil
+}
+
+// teslaGen3EVSEPublicationScrapeMonotonic carries immutable evidence age into
+// an immediate scrape after delayed publication. Without a trustworthy
+// same-epoch monotonic publication coordinate, a backward wall coordinate
+// cannot establish elapsed age and must fail closed.
+func teslaGen3EVSEPublicationScrapeMonotonic(evaluation semreg.MonotonicPoint, evaluatedAt, publishedAt time.Time) (semreg.MonotonicPoint, error) {
+	if publishedAt.Before(evaluatedAt) {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication wall clock precedes evaluation")
+	}
+	return teslaGen3EVSEReadMonotonic(evaluation, publishedAt.Sub(evaluatedAt))
 }
 
 func (p *TeslaGen3EVSESemanticPublication) readMonotonic(readClock uint64) (semreg.MonotonicPoint, error) {

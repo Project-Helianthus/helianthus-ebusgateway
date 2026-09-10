@@ -2,6 +2,7 @@ package ebusgateway
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,11 +163,113 @@ func TestSemanticPrometheusRejectsCrossSchemaValues(t *testing.T) {
 	}
 }
 
+func TestSemanticPrometheusEVSEExportsBoundedConfiguredAndConnectorFacts(t *testing.T) {
+	domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	addEVSEAllocatedFixture(&domain, "connector:private-a", "candidate:allocated-a")
+	addEVSEAllocatedFixture(&domain, "connector:private-b", "candidate:allocated-b")
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	for _, want := range []string{
+		`fact_id="evse.limit.configured_current"`,
+		`connector="connector_1"`,
+		`connector="connector_2"`,
+		`fact_id="evse.limit.allocated_current"`,
+	} {
+		if !strings.Contains(metrics, want) {
+			t.Fatalf("missing EVSE metric %q:\n%s", want, metrics)
+		}
+	}
+	if strings.Contains(metrics, "private-a") || strings.Contains(metrics, "private-b") || strings.Contains(metrics, "asset:private") {
+		t.Fatalf("EVSE identity leaked through labels:\n%s", metrics)
+	}
+}
+
+func TestSemanticPrometheusEVSEWithheldAllocationDoesNotSuppressConfiguredCurrent(t *testing.T) {
+	domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	reason := semreg.DefinitionID("withheld_provisional_missing")
+	domain.Projection.Dispositions = append(domain.Projection.Dispositions, projection.ProjectionDisposition{ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionWithheld, Reason: &reason, Loss: []projection.LossDetail{{Kind: projection.LossPolicy}}})
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if !strings.Contains(metrics, `helianthus_semantic_fact_value{dimension="evse",domain="evse",fact_id="evse.limit.configured_current",pack="helianthus.pack.evse",unit="unit.ampere"} 42`) || !strings.Contains(metrics, `item="evse.limit.allocated_current",loss_kind="policy"`) {
+		t.Fatalf("withheld allocation changed configured current:\n%s", metrics)
+	}
+}
+
+func TestSemanticPrometheusEVSERejectsHostileSchemaAndConnectorOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SemanticMetricsDomain)
+	}{
+		{"future-pack", func(domain *SemanticMetricsDomain) {
+			key := domain.Snapshot.Facts[0].Key
+			key.PackVersion = "2.0.0"
+			domain.Snapshot.Facts[0].Key, domain.Snapshot.Facts[0].Candidates[0].Key, domain.Projection.Dispositions[0].SourceKeys[0] = key, key, key
+		}},
+		{"wrong-dimension", func(domain *SemanticMetricsDomain) {
+			key := domain.Snapshot.Facts[0].Key
+			key.Dimensions[0].ID = "evse.dimension.connector"
+			domain.Snapshot.Facts[0].Key, domain.Snapshot.Facts[0].Candidates[0].Key, domain.Projection.Dispositions[0].SourceKeys[0] = key, key, key
+		}},
+		{"wrong-unit", func(domain *SemanticMetricsDomain) {
+			domain.Snapshot.Facts[0].Candidates[0].Value.Quantity.Unit = "unit.volt"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+			tc.mutate(&domain)
+			var out bytes.Buffer
+			writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+			metrics := out.String()
+			if strings.Contains(metrics, "\nhelianthus_semantic_fact_state{") || strings.Contains(metrics, "\nhelianthus_semantic_fact_value{") || !strings.Contains(metrics, "helianthus_semantic_render_overflow 1") {
+				t.Fatalf("hostile EVSE input was rendered:\n%s", metrics)
+			}
+		})
+	}
+	domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	for index := 0; index < semanticEVSEConnectorBudget+1; index++ {
+		addEVSEAllocatedFixture(&domain, "connector:hostile-"+strconv.Itoa(index), semreg.CandidateID("candidate:allocated-"+strconv.Itoa(index)))
+	}
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if strings.Contains(metrics, "hostile-") || !strings.Contains(metrics, "helianthus_semantic_render_overflow") {
+		t.Fatalf("unbounded EVSE connector labels leaked:\n%s", metrics)
+	}
+}
+
+func TestSemanticPrometheusEVSEConnectorSlotsIgnoreUnrenderableCandidates(t *testing.T) {
+	domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	for index := 0; index < semanticEVSEConnectorBudget; index++ {
+		candidateID := semreg.CandidateID("candidate:rejected-" + strconv.Itoa(index))
+		addEVSEAllocatedFixture(&domain, "connector:blocked-"+strconv.Itoa(index), candidateID)
+		for factIndex := range domain.Snapshot.Facts {
+			if len(domain.Snapshot.Facts[factIndex].Candidates) == 1 && domain.Snapshot.Facts[factIndex].Candidates[0].CandidateID == candidateID {
+				domain.Snapshot.Facts[factIndex].Candidates[0].Quality.Qualification = semreg.QualificationRejected
+			}
+		}
+	}
+	addEVSEAllocatedFixture(&domain, "connector:promoted", "candidate:promoted")
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if !strings.Contains(metrics, `helianthus_semantic_fact_value{connector="connector_1",dimension="connector",domain="evse",fact_id="evse.limit.allocated_current",pack="helianthus.pack.evse",unit="unit.ampere"} 16`) {
+		t.Fatalf("renderable connector was displaced by rejected candidates:\n%s", metrics)
+	}
+	if strings.Contains(metrics, "blocked-") || strings.Contains(metrics, "connector:promoted") {
+		t.Fatalf("connector identity leaked through labels:\n%s", metrics)
+	}
+}
+
 func semanticMetricsFixture(domain string, available bool, freshness semreg.Freshness, availability semreg.Availability, validity semreg.Validity, conflicts int) SemanticMetricsDomain {
 	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "inverter:asset:private", semreg.DefinitionID("pv.ac.aggregate_active_power")
 	unit := semreg.DefinitionID("unit.watt")
 	if domain == "storage" {
 		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "storage:asset:private", "storage.pack.voltage", "unit.volt"
+	}
+	if domain == "evse" {
+		dimensionID, dimensionValue, factID, unit = "evse.dimension.evse", "evse:asset:private", "evse.limit.configured_current", "unit.ampere"
 	}
 	version := semreg.SemanticVersion("1.0.0")
 	if domain == "storage" {
@@ -185,6 +288,18 @@ func semanticMetricsFixture(domain string, available bool, freshness semreg.Fres
 	if domain == "pv" {
 		item = "projection.gateway.pv.inverter.ac.power.active"
 	}
+	if domain == "evse" {
+		item = "evse.limit.configured_current"
+	}
 	report := projection.ProjectionReport{SnapshotID: snapshot.SnapshotID, Dispositions: []projection.ProjectionDisposition{{ItemID: item, Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{key}}}}
 	return SemanticMetricsDomain{Name: domain, Snapshot: snapshot, Evaluation: evaluation, Projection: report, Available: available}
+}
+
+func addEVSEAllocatedFixture(domain *SemanticMetricsDomain, connector string, candidateID semreg.CandidateID) {
+	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "16"}, Unit: "unit.ampere"}}
+	key := semreg.FactKey{PackID: "helianthus.pack.evse", PackVersion: "1.0.0", FactID: "evse.limit.allocated_current", Dimensions: []semreg.Dimension{{ID: "evse.dimension.connector", Value: semreg.Value{Kind: semreg.ValueText, Text: &connector}}}}
+	candidate := semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &value, Quality: semreg.Quality{Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood}, Times: semreg.Times{ReceivedAt: semreg.TimePoint{UnixNanoseconds: "100000000000", ClockID: "clock.utc"}}}
+	domain.Snapshot.Facts = append(domain.Snapshot.Facts, semreg.FactEnvelope{Key: key, Candidates: []semreg.FactCandidate{candidate}})
+	domain.Evaluation.Facts = append(domain.Evaluation.Facts, semreg.EvaluatedFact{CandidateID: candidateID, Freshness: semreg.FreshnessFresh, EffectiveAvailability: semreg.AvailabilityAvailable})
+	domain.Projection.Dispositions = append(domain.Projection.Dispositions, projection.ProjectionDisposition{ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{key}})
 }

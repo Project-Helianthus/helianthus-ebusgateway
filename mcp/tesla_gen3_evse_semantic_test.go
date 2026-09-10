@@ -18,6 +18,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
 func TestTeslaGen3EVSESemanticPublicationMapsConfiguredAndAllocated(t *testing.T) {
@@ -665,6 +666,267 @@ func TestTeslaGen3EVSESemanticPublicationUsesIndependentReadMonotonicClock(t *te
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtIsDetachedAndMonotonic(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	beforeSnapshot, beforeSequence, beforeReadAt, beforeReadMono, beforeReadClock := p.current, p.sequence, p.lastReadAt, p.lastReadMonotonic, p.lastReadClock
+	p.now = func() time.Time { t.Fatal("scrape called publication wall clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("scrape called publication monotonic clock"); return 0, nil }
+	fresh, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+	if !ok || fresh.Snapshot.SnapshotID != beforeSnapshot.SnapshotID || strings.Contains(mustJSON(fresh.Projection), "withheld_provisional_expired") {
+		t.Fatalf("fresh detached scrape=%#v ok=%t", fresh, ok)
+	}
+	expired, ok := p.SemanticEVSECurrentAt(base.Add(60 * time.Second))
+	if !ok || !strings.Contains(mustJSON(expired.Projection), "withheld_provisional_expired") {
+		t.Fatalf("expiry detached scrape=%#v ok=%t", expired, ok)
+	}
+	if !reflect.DeepEqual(beforeSnapshot, p.current) || beforeSequence != p.sequence || beforeReadAt != p.lastReadAt || beforeReadMono != p.lastReadMonotonic || beforeReadClock != p.lastReadClock {
+		t.Fatal("Prometheus current scrape mutated publication or read lifecycle")
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesSnapshot(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-deep-copy", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("detached scrape called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("detached scrape called read clock"); return 0, nil }
+	before := mustJSON(p.current)
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || len(current.Snapshot.Facts) == 0 || len(current.Snapshot.Facts[0].Key.Dimensions) == 0 || current.Snapshot.Facts[0].Key.Dimensions[0].Value.Text == nil {
+		t.Fatalf("missing mutable nested snapshot fact: %#v ok=%t", current.Snapshot, ok)
+	}
+	*current.Snapshot.Facts[0].Key.Dimensions[0].Value.Text = "tampered"
+	if got := mustJSON(p.current); got != before {
+		t.Fatalf("returned snapshot mutated retained publication\nbefore=%s\nafter=%s", before, got)
+	}
+	again, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || strings.Contains(mustJSON(again.Snapshot), "tampered") {
+		t.Fatalf("later scrape inherited consumer mutation: %#v ok=%t", again.Snapshot, ok)
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesProjectionInputs(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-projection-copy", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("detached projection scrape called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("detached projection scrape called read clock"); return 0, nil }
+	before := mustJSON(p.dispositions)
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || len(current.Projection.Dispositions) == 0 || len(current.Projection.Dispositions[0].SourceKeys) == 0 || len(current.Projection.Dispositions[0].SourceKeys[0].Dimensions) == 0 || current.Projection.Dispositions[0].SourceKeys[0].Dimensions[0].Value.Text == nil {
+		t.Fatalf("missing mutable projection source key: %#v ok=%t", current.Projection, ok)
+	}
+	*current.Projection.Dispositions[0].SourceKeys[0].Dimensions[0].Value.Text = "tampered"
+	if got := mustJSON(p.dispositions); got != before {
+		t.Fatalf("returned projection mutated retained inputs\nbefore=%s\nafter=%s", before, got)
+	}
+	again, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || strings.Contains(mustJSON(again.Projection), "tampered") {
+		t.Fatalf("later scrape inherited projection mutation: %#v ok=%t", again.Projection, ok)
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorResurrection(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-high-water", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("Prometheus high-water scrape called wall clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("Prometheus high-water scrape called read clock"); return 0, nil }
+
+	justBefore, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+	if !ok || teslaGen3EVSEDisposition(justBefore.Projection, "evse.limit.allocated_current") != projection.ProjectionExact {
+		t.Fatalf("allocation was not exact just before expiry: %#v ok=%t", justBefore.Projection, ok)
+	}
+	expired, ok := p.SemanticEVSECurrentAt(base.Add(60 * time.Second))
+	if !ok || teslaGen3EVSEDisposition(expired.Projection, "evse.limit.allocated_current") != projection.ProjectionWithheld {
+		t.Fatalf("allocation was not withheld at expiry: %#v ok=%t", expired.Projection, ok)
+	}
+	rolledBack, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+	if !ok || teslaGen3EVSEDisposition(rolledBack.Projection, "evse.limit.allocated_current") != projection.ProjectionWithheld {
+		t.Fatalf("wall/monotonic reorder resurrected allocation: %#v ok=%t", rolledBack.Projection, ok)
+	}
+	if rolledBack.Evaluation.Context.EvaluateMonotonic != expired.Evaluation.Context.EvaluateMonotonic || teslaGen3EVSEDisposition(rolledBack.Projection, "evse.limit.configured_current") != projection.ProjectionExact {
+		t.Fatalf("reordered scrape changed the high-water context or withdrew configured sibling: %#v", rolledBack)
+	}
+	if p.sequence != 1 || p.current.SnapshotID != rolledBack.Snapshot.SnapshotID {
+		t.Fatal("Prometheus high-water advanced publication state")
+	}
+	// A new accepted lifecycle publication owns a new floor. It may expose a
+	// fresh replacement allocation without reviving the expired predecessor.
+	nextAt, nextReadClock := base.Add(2*time.Second), uint64(1)
+	p.now = func() time.Time { return nextAt }
+	p.readClock = func() (uint64, error) { return nextReadClock, nil }
+	next := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	next.Provisional = teslaGen3EVSEProvisionalForTest(t, next, 60, false)
+	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-successor", ObservedAt: nextAt, EvaluatedAt: nextAt, MonotonicNS: int64(2*time.Second) + 1, EvaluatedMonotonicNS: int64(2*time.Second) + 1, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	successor, ok := p.SemanticEVSECurrentAt(nextAt)
+	if !ok || teslaGen3EVSEDisposition(successor.Projection, "evse.limit.allocated_current") != projection.ProjectionExact || teslaGen3EVSEDisposition(successor.Projection, "evse.limit.configured_current") != projection.ProjectionExact {
+		t.Fatalf("accepted successor did not establish its own current floor: %#v ok=%t", successor.Projection, ok)
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDelay(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name              string
+		delay             time.Duration
+		allocated         projection.ProjectionOutcome
+		allocatedOneLater projection.ProjectionOutcome
+	}{
+		{"before expiry", 59 * time.Second, projection.ProjectionExact, projection.ProjectionWithheld},
+		{"at expiry", 60 * time.Second, projection.ProjectionWithheld, projection.ProjectionWithheld},
+		{"after expiry", 120 * time.Second, projection.ProjectionWithheld, projection.ProjectionWithheld},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			publishedAt := base.Add(tc.delay)
+			p.now = func() time.Time { return publishedAt }
+			p.readClock = func() (uint64, error) { return 0, nil }
+			source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+			source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+			if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:publication-delay-" + tc.name, ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+				t.Fatal(err)
+			}
+			p.now = func() time.Time { t.Fatal("delayed scrape called publication clock"); return time.Time{} }
+			p.readClock = func() (uint64, error) { t.Fatal("delayed scrape called native/read clock"); return 0, nil }
+			current, ok := p.SemanticEVSECurrentAt(publishedAt)
+			if !ok || teslaGen3EVSEDisposition(current.Projection, "evse.limit.allocated_current") != tc.allocated || teslaGen3EVSEDisposition(current.Projection, "evse.limit.configured_current") != projection.ProjectionExact {
+				t.Fatalf("immediate delayed scrape=%#v ok=%t", current.Projection, ok)
+			}
+			oneLater, ok := p.SemanticEVSECurrentAt(publishedAt.Add(time.Second))
+			if !ok || teslaGen3EVSEDisposition(oneLater.Projection, "evse.limit.allocated_current") != tc.allocatedOneLater {
+				t.Fatalf("delayed scrape did not advance evidence age: %#v ok=%t", oneLater.Projection, ok)
+			}
+			rollback, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+			if !ok || teslaGen3EVSEDisposition(rollback.Projection, "evse.limit.allocated_current") != tc.allocatedOneLater {
+				t.Fatalf("rollback changed delayed allocation decision: %#v ok=%t", rollback.Projection, ok)
+			}
+		})
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationRejectsPublicationWallRollback(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	err = p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:rollback-publication", ObservedAt: base.Add(time.Minute), EvaluatedAt: base.Add(time.Minute), MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1})
+	if err == nil {
+		t.Fatal("publication wall rollback was accepted")
+	}
+	if p.sequence != 0 {
+		t.Fatal("rejected rollback publication advanced state")
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFloor(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, readClock := base, uint64(0)
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-one", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now, readClock = base.Add(time.Second), 1
+	second := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(second, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-two", ObservedAt: now, EvaluatedAt: now, MonotonicNS: int64(time.Second) + 1, EvaluatedMonotonicNS: int64(time.Second) + 1, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("floor retry called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("floor retry called read clock"); return 0, nil }
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || current.Snapshot.Revisions != p.current.Revisions || current.Evaluation.Revisions != p.current.Revisions {
+		t.Fatalf("pre-publication scrape did not return coherent floor tuple: %#v ok=%t", current, ok)
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtStaysCoherentDuringPublish(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, readClock := base, uint64(0)
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-one", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now, readClock = base.Add(time.Second), 1
+	errs := make(chan error, 128)
+	var readers sync.WaitGroup
+	for range 32 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 16 {
+				current, ok := p.SemanticEVSECurrentAt(base.Add(2 * time.Second))
+				if !ok || current.Snapshot.SnapshotID == "" || current.Evaluation.SnapshotID != current.Snapshot.SnapshotID || current.Projection.SnapshotID != current.Snapshot.SnapshotID || current.Evaluation.Revisions != current.Snapshot.Revisions || current.Projection.Revisions != current.Snapshot.Revisions {
+					errs <- fmt.Errorf("mixed Prometheus tuple: %#v ok=%t", current, ok)
+					return
+				}
+			}
+		}()
+	}
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-two", ObservedAt: now, EvaluatedAt: now, MonotonicNS: int64(time.Second) + 1, EvaluatedMonotonicNS: int64(time.Second) + 1, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
@@ -976,6 +1238,15 @@ func teslaGen3EVSECandidate(t *testing.T, snapshot semreg.Snapshot, factID semre
 	}
 	t.Fatalf("candidate %q missing", factID)
 	return semreg.FactCandidate{}
+}
+
+func teslaGen3EVSEDisposition(report projection.ProjectionReport, item semreg.DefinitionID) projection.ProjectionOutcome {
+	for _, disposition := range report.Dispositions {
+		if disposition.ItemID == item {
+			return disposition.Outcome
+		}
+	}
+	return ""
 }
 
 func teslaGen3EVSECandidateIDs(revisions map[semreg.CandidateID]semreg.Uint64) []semreg.CandidateID {

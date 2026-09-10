@@ -45,7 +45,6 @@ func TestPortalPVAndRawModbusRoutesAreClosedAndDisabledByDefault(t *testing.T) {
 	handler := NewHandler(Options{})
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/api/v1/semantic/pv/current", nil),
-		httptest.NewRequest(http.MethodGet, "/api/v1/semantic/evse/current", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/explorer/modbus/raw-read", strings.NewReader(`{"unit_id":1,"function":3,"offset":0,"quantity":1}`)),
 	} {
 		recorder := httptest.NewRecorder()
@@ -53,28 +52,6 @@ func TestPortalPVAndRawModbusRoutesAreClosedAndDisabledByDefault(t *testing.T) {
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("%s %s status=%d; want disabled 404", request.Method, request.URL.Path, recorder.Code)
 		}
-	}
-}
-
-func TestPortalEVSEForwardsExactSemanticEVSECurrentNormalAndWithheld(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-	}{
-		{name: "normal", body: `{"data":{"semanticEVSECurrent":{"snapshot":{"snapshot_id":"snapshot:normal"},"evaluation":{"candidate_evaluations":[{"freshness":"fresh"}]},"selections":[],"projection":{"items":[{"item_id":"evse.limit.configured_current","outcome":"exact"},{"item_id":"evse.limit.allocated_current","outcome":"exact"}]}}}}`},
-		{name: "withheld expired", body: `{"data":{"semanticEVSECurrent":{"snapshot":{"snapshot_id":"snapshot:expired"},"evaluation":{"candidate_evaluations":[{"freshness":"expired"}]},"selections":[],"projection":{"items":[{"item_id":"evse.limit.configured_current","outcome":"exact"},{"item_id":"evse.limit.allocated_current","outcome":"withheld","reason":"withheld_provisional_expired"}]}}}}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			handler := NewHandler(Options{SemanticEVSEEnabled: true, SemanticEVSE: func(context.Context) (ForwardedResponse, error) {
-				calls++
-				return ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: []byte(tc.body)}, nil
-			}})
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/evse/current", nil))
-			if response.Code != http.StatusOK || response.Body.String() != tc.body || calls != 1 {
-				t.Fatalf("EVSE BFF response=%d body=%s calls=%d", response.Code, response.Body.String(), calls)
-			}
-		})
 	}
 }
 
@@ -234,7 +211,7 @@ func TestPortalBootstrapPublishesIndependentPVAndRawCapabilities(t *testing.T) {
 			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.Capabilities["semantic_pv"] || payload.Capabilities["semantic_evse"] || payload.Capabilities["modbus_raw_read"] || payload.Capabilities["semantic_storage"] != (name == "enabled") {
+			if payload.Capabilities["semantic_pv"] || payload.Capabilities["modbus_raw_read"] || payload.Capabilities["semantic_storage"] != (name == "enabled") {
 				t.Fatalf("bootstrap capability state=%#v", payload.Capabilities)
 			}
 			if got := payload.Endpoints["semantic_storage_current"]; got != "/portal/api/v1/semantic/storage/current" {

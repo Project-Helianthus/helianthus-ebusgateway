@@ -10,26 +10,14 @@ import (
 )
 
 func newPortalPVClient(config ebusgateway.PortalPVConfig) (func(context.Context) (portal.ForwardedResponse, error), error) {
-	return newPortalSemanticClient(config, portalSemanticPV)
+	return newPortalSemanticClient(config, false)
 }
 
 func newPortalStorageClient(config ebusgateway.PortalStorageConfig) (func(context.Context) (portal.ForwardedResponse, error), error) {
-	return newPortalSemanticClient(config, portalSemanticStorage)
+	return newPortalSemanticClient(config, true)
 }
 
-func newPortalEVSEClient(config ebusgateway.PortalEVSEConfig) (func(context.Context) (portal.ForwardedResponse, error), error) {
-	return newPortalSemanticClient(config, portalSemanticEVSE)
-}
-
-type portalSemanticKind uint8
-
-const (
-	portalSemanticPV portalSemanticKind = iota
-	portalSemanticStorage
-	portalSemanticEVSE
-)
-
-func newPortalSemanticClient(config ebusgateway.PortalPVConfig, kind portalSemanticKind) (func(context.Context) (portal.ForwardedResponse, error), error) {
+func newPortalSemanticClient(config ebusgateway.PortalPVConfig, storage bool) (func(context.Context) (portal.ForwardedResponse, error), error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -46,15 +34,10 @@ func newPortalSemanticClient(config ebusgateway.PortalPVConfig, kind portalSeman
 	return func(ctx context.Context) (portal.ForwardedResponse, error) {
 		var response m2mgraphql.Response
 		var err error
-		switch kind {
-		case portalSemanticPV:
-			response, err = client.Current(ctx)
-		case portalSemanticStorage:
+		if storage {
 			response, err = client.StorageCurrent(ctx)
-		case portalSemanticEVSE:
-			response, err = client.EVSECurrent(ctx)
-		default:
-			return portal.ForwardedResponse{}, errors.New("portal semantic kind is invalid")
+		} else {
+			response, err = client.Current(ctx)
 		}
 		if err != nil {
 			return portal.ForwardedResponse{}, err

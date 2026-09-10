@@ -22,9 +22,6 @@ func prepareGatewayRunConfig(cfg *ebusgateway.Config) (gatewayBuildInfo, error) 
 	if err := cfg.ValidatePortalStorage(); err != nil {
 		return gatewayBuildInfo{}, fmt.Errorf("validate Portal storage configuration: %w", err)
 	}
-	if err := cfg.ValidatePortalEVSE(); err != nil {
-		return gatewayBuildInfo{}, fmt.Errorf("validate Portal EVSE configuration: %w", err)
-	}
 	if err := ebusgateway.ValidateSynchronizedEvidenceConfig(*cfg); err != nil {
 		return gatewayBuildInfo{}, fmt.Errorf("validate synchronized evidence config: %w", err)
 	}

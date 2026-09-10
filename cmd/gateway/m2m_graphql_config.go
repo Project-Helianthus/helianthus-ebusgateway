@@ -49,11 +49,4 @@ func bindM2MGraphQLFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) {
 	fs.StringVar(&cfg.PortalStorage.M2MClientCert, "portal-storage-m2m-client-cert", cfg.PortalStorage.M2MClientCert, "M2M GraphQL client certificate for Portal storage")
 	fs.StringVar(&cfg.PortalStorage.M2MClientKey, "portal-storage-m2m-client-key", cfg.PortalStorage.M2MClientKey, "M2M GraphQL client private key for Portal storage")
 	fs.StringVar(&cfg.PortalStorage.AssetRef, "portal-storage-asset-ref", cfg.PortalStorage.AssetRef, "fixed SemReg storage asset reference for Portal storage")
-	fs.BoolVar(&cfg.PortalEVSE.SemanticEnabled, "portal-evse-semantic-enabled", cfg.PortalEVSE.SemanticEnabled, "enable Portal EVSE semantic BFF")
-	fs.StringVar(&cfg.PortalEVSE.M2MURL, "portal-evse-m2m-url", cfg.PortalEVSE.M2MURL, "dedicated M2M GraphQL URL for Portal EVSE")
-	fs.StringVar(&cfg.PortalEVSE.M2MServerName, "portal-evse-m2m-server-name", cfg.PortalEVSE.M2MServerName, "dedicated M2M GraphQL certificate identity for Portal EVSE")
-	fs.StringVar(&cfg.PortalEVSE.M2MCAFile, "portal-evse-m2m-ca", cfg.PortalEVSE.M2MCAFile, "M2M GraphQL CA file for Portal EVSE")
-	fs.StringVar(&cfg.PortalEVSE.M2MClientCert, "portal-evse-m2m-client-cert", cfg.PortalEVSE.M2MClientCert, "M2M GraphQL client certificate for Portal EVSE")
-	fs.StringVar(&cfg.PortalEVSE.M2MClientKey, "portal-evse-m2m-client-key", cfg.PortalEVSE.M2MClientKey, "M2M GraphQL client private key for Portal EVSE")
-	fs.StringVar(&cfg.PortalEVSE.AssetRef, "portal-evse-asset-ref", cfg.PortalEVSE.AssetRef, "fixed SemReg EVSE asset reference for Portal EVSE")
 }

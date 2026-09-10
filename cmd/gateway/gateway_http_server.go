@@ -60,9 +60,6 @@ func startHTTPServer(
 	if err := cfg.ValidatePortalStorage(); err != nil {
 		return nil, nil, fmt.Errorf("validate Portal storage configuration: %w", err)
 	}
-	if err := cfg.ValidatePortalEVSE(); err != nil {
-		return nil, nil, fmt.Errorf("validate Portal EVSE configuration: %w", err)
-	}
 	portalPVClient, err := newPortalPVClient(cfg.PortalPV)
 	if err != nil {
 		return nil, nil, fmt.Errorf("portal PV configuration: %w", err)
@@ -70,10 +67,6 @@ func startHTTPServer(
 	portalStorageClient, err := newPortalStorageClient(cfg.PortalStorage)
 	if err != nil {
 		return nil, nil, fmt.Errorf("portal storage configuration: %w", err)
-	}
-	portalEVSEClient, err := newPortalEVSEClient(cfg.PortalEVSE)
-	if err != nil {
-		return nil, nil, fmt.Errorf("portal EVSE configuration: %w", err)
 	}
 	storageAvailable := growattStoragePortalAvailable(modbusProvider)
 	if !storageAvailable {
@@ -225,11 +218,9 @@ func startHTTPServer(
 			BuildID:                buildInfo.BuildID,
 			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
 			SemanticStorageEnabled: cfg.PortalStorage.SemanticEnabled && storageAvailable,
-			SemanticEVSEEnabled:    cfg.PortalEVSE.SemanticEnabled,
 			RawModbusEnabled:       cfg.PortalPV.RawReadEnabled,
 			SemanticPV:             portalPVClient,
 			SemanticStorage:        portalStorageClient,
-			SemanticEVSE:           portalEVSEClient,
 			ModbusProvider:         portalModbusProvider,
 			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
 				log.Printf("portal_modbus_raw_audit request_id=%s surface=%s tool=%s unit_id=%s function=%s offset=%s quantity=%s outcome=%s error_code=%s duration_ms=%d endpoint_ref=%s timestamp=%s",

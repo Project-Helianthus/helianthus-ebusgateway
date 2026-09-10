@@ -80,11 +80,9 @@ type Options struct {
 	EbusStandardServer     PortalEbusStandardServer
 	SemanticPVEnabled      bool
 	SemanticStorageEnabled bool
-	SemanticEVSEEnabled    bool
 	RawModbusEnabled       bool
 	SemanticPV             func(context.Context) (ForwardedResponse, error)
 	SemanticStorage        func(context.Context) (ForwardedResponse, error)
-	SemanticEVSE           func(context.Context) (ForwardedResponse, error)
 	ModbusProvider         mcp.ModbusV1Provider
 	RawModbusAudit         func(RawModbusAuditEvent)
 	Readiness              func() RuntimeReadiness
@@ -964,10 +962,6 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 		h.handleSemanticStorage(w, r)
 		return
 	}
-	if trimmed == "semantic/evse/current" {
-		h.handleSemanticEVSE(w, r)
-		return
-	}
 	if trimmed == "explorer/modbus/raw-read" {
 		h.handleRawModbusRead(w, r)
 		return
@@ -1033,7 +1027,6 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"eebus_admin":      eebusAdminAvailable,
 				"semantic_pv":      h.opts.SemanticPVEnabled && h.opts.SemanticPV != nil,
 				"semantic_storage": h.opts.SemanticStorageEnabled && h.opts.SemanticStorage != nil,
-				"semantic_evse":    h.opts.SemanticEVSEEnabled && h.opts.SemanticEVSE != nil,
 				"modbus_raw_read":  h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
@@ -1053,7 +1046,6 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"snapshot_diff":            "/portal/api/v1/snapshots/diff",
 				"snapshot_view":            "/portal/api/v1/snapshots/view",
 				"semantic_storage_current": "/portal/api/v1/semantic/storage/current",
-				"semantic_evse_current":    "/portal/api/v1/semantic/evse/current",
 				"sessions":                 "/portal/api/v1/sessions",
 				"session_save":             "/portal/api/v1/sessions/save",
 				"session_load":             "/portal/api/v1/sessions/load",
@@ -1163,34 +1155,6 @@ func (h *handler) handleSemanticStorage(w http.ResponseWriter, r *http.Request) 
 	response, err := h.opts.SemanticStorage(r.Context())
 	if err != nil {
 		http.Error(w, "semantic storage unavailable", http.StatusBadGateway)
-		return
-	}
-	if response.ContentType != "" {
-		w.Header().Set("Content-Type", response.ContentType)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-	}
-	w.WriteHeader(response.Status)
-	_, _ = w.Write(response.Body)
-}
-
-func (h *handler) handleSemanticEVSE(w http.ResponseWriter, r *http.Request) {
-	if !h.opts.SemanticEVSEEnabled || h.opts.SemanticEVSE == nil {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if r.URL.RawQuery != "" {
-		http.NotFound(w, r)
-		return
-	}
-	response, err := h.opts.SemanticEVSE(r.Context())
-	if err != nil {
-		http.Error(w, "semantic EVSE unavailable", http.StatusBadGateway)
 		return
 	}
 	if response.ContentType != "" {

@@ -17,6 +17,10 @@
   `b824e43241c726d7867e69bf25ddb786c266f9cf`
 - Rebased validated source tree:
   `5068bd638b4b7204038c961b6faee7b73019e385`
+- Optional-registration and record-lifecycle remediation HEAD:
+  `5626d8352d9b495f7c71477d96db67f24a87e6db`
+- Optional-registration and record-lifecycle remediation tree:
+  `6aabe69395e4ec183abeed2092a6d9ccb02d55b6`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -183,6 +187,57 @@ passive-smoke classification.
 
 SHA-256: `5a70eaa553e5f72fa12f887a31ed269e6b96d5024572f1fd7a777924bdf063df`
 
+## Later feedback remediation
+
+The complete feedback inventory after the accepted-main rebase contained four
+additional valid blockers. Commit
+`5626d8352d9b495f7c71477d96db67f24a87e6db`, tree
+`6aabe69395e4ec183abeed2092a6d9ccb02d55b6`, corrects all four:
+
+- Tesla retained native registration is independent of Modbus TCP core
+  availability. A Tesla-only provider registers
+  `modbus.v1.tesla.gen3.evse.current_limit.get` and
+  `semantic.v1.evse.current.get` while TCP raw/profile/PV and unrelated Tesla
+  tools remain absent.
+- Optional owner registration consults the composite provider's actual
+  capability. Tesla-only composition no longer advertises either Growatt tool;
+  Tesla-plus-Growatt composition retains both Growatt native and semantic tools.
+- Disabled Modbus TCP endpoint normalization preserves the independent Tesla
+  retained configuration, just as it preserves the independent Growatt RTU
+  configuration.
+- Semantic evidence now carries validated per-record receipt coordinates. A
+  newer provisional update uses the retained persistent outcome's original wall
+  and monotonic receipt, so it cannot refresh configured-current freshness. The
+  earlier persistent-only withdrawal behavior remains unchanged.
+
+The deterministic Tesla-only registration regression calls both advertised
+read-only tools and proves the TCP core and absent Growatt tools remain
+unregistered. The composite case retains both Growatt tools. Separate tests
+cover disabled-TCP normalization and both sibling lifecycle directions.
+
+Post-correction focused race:
+
+```text
+GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFileDisabledPreservesIndependentTesla|TeslaHSCRetained|TeslaGen3EVSE|GrowattStoragePortalAvailability|GrowattBMSRS485V202.*Registration|GrowattBMSRS485V202Coreless)' -count=1
+```
+
+SHA-256: `1d6c1f3da33e07555b2d78d0e104f8280476495051dbaae9bc933a7158a90837`
+
+The complete local CI passed on the corrected source, including the full Go
+race suite, 216 Python tests, lint, all builds, transport conformance, both
+SemReg mappings, and passive-smoke classification.
+
+SHA-256: `3b3f17825d73e96c9cc5238d57d22ea6116e08b007f012b8e0432b62e7f522aa`
+
+Affected transport gate SHA-256:
+`e9e9162087d0761e8b09864d874aba637efa6c1e727daed1a4873373ac01b3ce`
+
+Tesla SemReg mapping gate SHA-256:
+`c65326e84d5bc5fa42c712b1752e75ad87ab1b00bbda87b63ef8c10cf5a4e079`
+
+All four later feedback threads were replied to with their correction and test
+evidence and deliberately left unresolved for fresh exact-HEAD review.
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -218,9 +273,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the three validated blockers from the earlier independent review are
-  corrected. A fresh independent exact-HEAD review remains required before
-  merge; the author did not review the remediation.
+- Review: the three earlier and four later validated blockers are corrected. A
+  fresh independent exact-HEAD review remains required before merge; the author
+  did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 

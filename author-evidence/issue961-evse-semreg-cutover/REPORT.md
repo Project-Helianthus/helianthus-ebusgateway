@@ -13,8 +13,10 @@
 - Lifecycle remediation implementation tree: `58e0abe4ee3536fb26255fc4e4b0efe0b003d39c`
 - Delayed-ingestion remediation implementation HEAD: `ff83f755c6d0f98891301f0b2fdf697e389adf02`
 - Delayed-ingestion remediation implementation tree: `a728abfd3acf428769ca0feff0b1ba89f935fc4f`
-- Portal and rollback remediation HEAD: `7f23eeeb428b5512bdb7e9516e1dc5b6815796bf`
-- Portal and rollback remediation tree: `cf6b976b19fee40140d31b9f4491d1a2cf834e0c`
+- Rollback remediation HEAD: `7f23eeeb428b5512bdb7e9516e1dc5b6815796bf`
+- Rollback remediation tree: `cf6b976b19fee40140d31b9f4491d1a2cf834e0c`
+- Portal scope-correction source HEAD: `f5bf99fd4623c6cc4ce4ae21923e29e61dbba904`
+- Portal scope-correction source tree: `857cd1bcb1029a69eaba56a487a52da0f836f006`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -96,15 +98,17 @@ This remains an evaluation of the immutable snapshot. It makes no provider
 call, native observation, or time-only lifecycle batch; MCP and GraphQL retain
 their parity for the delayed-ingestion boundary.
 
-## Portal and rollback remediation
+## Portal scope correction and rollback remediation
 
-The configured read-only Portal EVSE BFF now forwards only the fixed
-`SemanticEVSECurrent` GraphQL response through
-`/api/v1/semantic/evse/current`; it has a dedicated disabled-by-default config,
-fixed asset reference, mTLS client settings, bootstrap capability and endpoint.
-Normal and withheld-expired projections are forwarded byte-for-byte by the
-Portal route. No native fallback, alias, second publication, acquisition, or
-operation path was added.
+The independent by-design opinion at
+`wave12/review/gateway962-portal-by-design-opinion/REVIEW.md`
+(SHA-256 `d8fe64571733b62e15a86b48c353e5adbfece81c6726758883bcfcad43615725`)
+confirmed the canonical #961 acceptance excludes an EVSE Portal surface.
+`f5bf99fd4623c6cc4ce4ae21923e29e61dbba904` therefore removes the temporary
+Portal EVSE configuration, validation, setup and HTTP wiring, GraphQL client
+branch, bootstrap capability and endpoint, handler, tests, and classifier
+allowance. No Portal route, capability, BFF, second publication, native call,
+fallback, alias, acquisition, operation, or runtime owner remains.
 
 Read evaluation now holds an exclusive lifecycle lock and persists the greatest
 returned wall and monotonic evaluation coordinates. A post-expiry read followed
@@ -144,15 +148,31 @@ boundaries; concurrent read stability; MCP/GraphQL parity; and production
 composition. The focused race suite passed:
 
 ```text
-GOWORK=off go test -race ./mcp ./m2mgraphql ./cmd/gateway \
-  -run 'TeslaGen3EVSESemantic|SemanticEVSE|TeslaEVSESemantic' -count=1
+GOWORK=off go test -race ./mcp ./m2mgraphql ./portal ./cmd/gateway \
+  -run 'TeslaGen3EVSESemantic|SemanticEVSE' -count=1
 PASS
 ```
 
-The latest focused Portal/lifecycle race log SHA-256 is
-`1e29498b5dd0569499f66fff4d780b71f8768c6f8892ae109d2ecc4136c52dba`.
+The committed-head focused race log is
+`/tmp/helianthus-ebusgateway-961-portal-removal-focused-race-committed.log`
+with SHA-256
+`7b8201cf9db8b4dba07ab3619eb508435b8f73281c7c21cbcb2b59c65dc5e095`.
 
-The final full local gate passed:
+The first pre-commit scope-correction full-CI invocation reached all compiled,
+race, Python, and lint phases but correctly stopped at the transport gate:
+historical committed Portal additions and unstaged removals were jointly
+classified as a transport change. It is recorded as a failed pre-commit run,
+not green:
+
+```text
+GOWORK=off ./scripts/ci_local.sh
+transport gate: TRANSPORT_MATRIX_REPORT is required for eBUS transport/protocol changes.
+```
+
+Its log is `/tmp/helianthus-ebusgateway-961-portal-removal-ci.log`, SHA-256
+`c9156bb069b8684cc4c5f351462b57117bcfd2b8e18952be7dd8d93bdbfc70ac`.
+After committing the complete removal, the final full local gate passed without
+an override or borrowed matrix report:
 
 ```text
 GOWORK=off ./scripts/ci_local.sh
@@ -163,23 +183,25 @@ It covered Portal Node `93/93`, `go test -race -count=1 ./...`, source-selection
 schema coverage, Python script suites `168 + 6 + 24 + 9 + 6 + 2 = 215`,
 `golangci-lint` with `0 issues`, the Modbus RTU production transport gate, and
 the existing Growatt Storage SemReg mapping gate. The passive-smoke classifier
-reported `not triggered`. The final log SHA-256 is
-`83a264a1234536005c24a30164a4e45a62b0816e29ce96212b89c1501c2dc3e0`.
+reported `not triggered`. The committed-head final log is
+`/tmp/helianthus-ebusgateway-961-portal-removal-ci-committed.log`, SHA-256
+`090aa0c08f2dfe3c702affe8d328f3471efebffd24cd533c4bd184012139f9f8`.
 
 ## Gate classification
 
 - Documentation: satisfied by the accepted docs-semantic EVSE mapping and the
-  gateway runtime-provider contract update.
+  gateway runtime-provider contract update; the correction restores its explicit
+  absence of a Portal EVSE view.
 - Semantic/lifecycle: applicable and passed through the focused race tests and
   full repository race suite.
 - Transport: source-selected existing Modbus RTU production conformance passed;
   no Tesla transport implementation changed.
 - Smoke: not applicable and not triggered because the work adds no runtime
   composition, acquisition, or live route.
-- Hosted CI: [run `34448798371`](https://github.com/Project-Helianthus/helianthus-ebusgateway/actions/runs/34448798371)
-  completed `SUCCESS` against the exact implementation head
-  `ccc3bccbaef22315fcb4e929f96097f699534f82`: terminology, lint, build, and
-  test all succeeded.
+- Hosted CI: the final source correction has not yet been pushed at this report
+  commit. The earlier run `34448798371` is historical evidence only, against
+  `ccc3bccbaef22315fcb4e929f96097f699534f82`; final hosted status must be
+  read after pushing the report head.
 
-The issue and PR bodies were reconciled against this state. No independent review
-or merge was requested or performed.
+The issue and PR bodies require reconciliation against this report head after
+push. No independent review or merge was requested or performed.

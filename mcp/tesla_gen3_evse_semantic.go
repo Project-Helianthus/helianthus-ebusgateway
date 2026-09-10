@@ -92,6 +92,8 @@ type TeslaGen3EVSESemanticPublication struct {
 	lastReadClock      uint64
 	allocatedExpiresAt *semreg.MonotonicPoint
 	sequence           uint64
+	lastInputDigest    semreg.Digest
+	candidateHighWater map[semreg.CandidateID]semreg.Uint64
 	now                func() time.Time
 	readClock          func() (uint64, error)
 }
@@ -117,7 +119,7 @@ func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*Tesl
 		}
 		return uint64(elapsed.Nanoseconds()), nil
 	}
-	return &TeslaGen3EVSESemanticPublication{cfg: cfg, kernel: kernel, now: time.Now, readClock: readClock}, nil
+	return &TeslaGen3EVSESemanticPublication{cfg: cfg, kernel: kernel, candidateHighWater: make(map[semreg.CandidateID]semreg.Uint64), now: time.Now, readClock: readClock}, nil
 }
 
 // Publish atomically maps one accepted WC3 24.44.3 record bundle.  A rejected
@@ -131,7 +133,17 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if evidence.Sequence <= p.sequence {
+	inputDigest := p.inputDigest(source, evidence)
+	if evidence.Sequence < p.sequence {
+		return errors.New("tesla Gen3 EVSE semantic replay or collision")
+	}
+	if evidence.Sequence == p.sequence {
+		if inputDigest == p.lastInputDigest {
+			// The accepted input is already represented by the immutable kernel
+			// snapshot.  Do not read a clock or construct a second batch: UP-02
+			// requires this retry to be a no-op.
+			return nil
+		}
 		return errors.New("tesla Gen3 EVSE semantic replay or collision")
 	}
 	readClock, err := p.readClock()
@@ -174,8 +186,12 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
-	p.kernel, p.current, p.manifest, p.requested, p.dispositions = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...)
-	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, evidence.Sequence
+	highWater, err := teslaGen3EVSECandidateHighWater(p.candidateHighWater, batch.FactUpserts)
+	if err != nil {
+		return err
+	}
+	p.kernel, p.current, p.manifest, p.requested, p.dispositions, p.candidateHighWater = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...), highWater
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, evidence.Sequence, inputDigest
 	return nil
 }
 
@@ -365,7 +381,7 @@ func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string
 	v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: strconv.FormatUint(uint64(amps), 10), Exponent10: 0}, Unit: "unit.ampere"}}
 	h := evseHash(p.cfg.AssetID, string(binding), id)
 	candidateID := semreg.CandidateID("candidate:tesla-wc3:" + h[:32])
-	return semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &v, Quality: semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}}, Times: semreg.Times{ReceivedAt: receivedAt, ReceiptMonotonic: receiptMono, EvaluatedAt: evaluatedAt, EvaluateMonotonic: evaluationMono}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy:tesla-wc3-native-receipt", Version: "1.0.0", FreshForNS: semreg.Uint64(strconv.FormatInt(freshFor.Nanoseconds(), 10)), RetainForNS: semreg.Uint64(strconv.FormatInt(retainFor.Nanoseconds(), 10)), MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:tesla-wc3:" + h[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{evidence}, Revision: nextTeslaGen3EVSECandidateRevision(current, candidateID)}
+	return semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &v, Quality: semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}}, Times: semreg.Times{ReceivedAt: receivedAt, ReceiptMonotonic: receiptMono, EvaluatedAt: evaluatedAt, EvaluateMonotonic: evaluationMono}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy:tesla-wc3-native-receipt", Version: "1.0.0", FreshForNS: semreg.Uint64(strconv.FormatInt(freshFor.Nanoseconds(), 10)), RetainForNS: semreg.Uint64(strconv.FormatInt(retainFor.Nanoseconds(), 10)), MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:tesla-wc3:" + h[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{evidence}, Revision: p.nextCandidateRevision(current, candidateID)}
 }
 
 func (p *TeslaGen3EVSESemanticPublication) service(id, dimension string, binding semreg.NativeBindingID, asset semreg.AssetID, epoch semreg.SourceEpochID, generation, revision semreg.Uint64) semreg.ServiceInstance {
@@ -524,7 +540,23 @@ func teslaGen3EVSEMonotonicAtOrAfter(value, boundary semreg.MonotonicPoint) bool
 	return currentErr != nil || expiryErr != nil || current >= expires
 }
 
-func nextTeslaGen3EVSECandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {
+func (p *TeslaGen3EVSESemanticPublication) inputDigest(source TeslaGen3EVSECurrentLimitV1Source, evidence TeslaGen3EVSESemanticEvidence) semreg.Digest {
+	return evseEvidence("native.tesla.wc3.current_limit.publication_input", struct {
+		DriverGeneration uint64                            `json:"driver_generation"`
+		Persistent       teslaGen3EVSEPersistentEvidence   `json:"persistent"`
+		Provisional      *teslaGen3EVSEProvisionalEvidence `json:"provisional,omitempty"`
+	}{DriverGeneration: p.cfg.DriverGeneration, Persistent: teslaGen3EVSEPersistentRecord(source.Persistent, evidence), Provisional: teslaGen3EVSEProvisionalRecord(source.Provisional, evidence)}).Digest
+}
+
+func (p *TeslaGen3EVSESemanticPublication) nextCandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {
+	highest := uint64(0)
+	if retained, ok := p.candidateHighWater[id]; ok {
+		value, err := strconv.ParseUint(string(retained), 10, 64)
+		if err != nil {
+			return ""
+		}
+		highest = value
+	}
 	for _, envelope := range snapshot.Facts {
 		for _, candidate := range envelope.Candidates {
 			if candidate.CandidateID != id {
@@ -534,10 +566,36 @@ func nextTeslaGen3EVSECandidateRevision(snapshot semreg.Snapshot, id semreg.Cand
 			if err != nil || revision == ^uint64(0) {
 				return ""
 			}
-			return semreg.Uint64(strconv.FormatUint(revision+1, 10))
+			if revision > highest {
+				highest = revision
+			}
 		}
 	}
-	return "1"
+	if highest == ^uint64(0) {
+		return ""
+	}
+	return semreg.Uint64(strconv.FormatUint(highest+1, 10))
+}
+
+func teslaGen3EVSECandidateHighWater(current map[semreg.CandidateID]semreg.Uint64, candidates []semreg.FactCandidate) (map[semreg.CandidateID]semreg.Uint64, error) {
+	next := make(map[semreg.CandidateID]semreg.Uint64, len(current)+len(candidates))
+	for id, revision := range current {
+		next[id] = revision
+	}
+	for _, candidate := range candidates {
+		revision, err := strconv.ParseUint(string(candidate.Revision), 10, 64)
+		if err != nil || revision == 0 {
+			return nil, errors.New("tesla Gen3 EVSE candidate revision is invalid")
+		}
+		if retained, ok := next[candidate.CandidateID]; ok {
+			retainedRevision, err := strconv.ParseUint(string(retained), 10, 64)
+			if err != nil || revision < retainedRevision {
+				return nil, errors.New("tesla Gen3 EVSE candidate revision regressed")
+			}
+		}
+		next[candidate.CandidateID] = candidate.Revision
+	}
+	return next, nil
 }
 func evseWall(t time.Time) semreg.TimePoint {
 	return semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(t.UTC().UnixNano(), 10)), ClockID: "wall.utc", UncertaintyNS: "0"}

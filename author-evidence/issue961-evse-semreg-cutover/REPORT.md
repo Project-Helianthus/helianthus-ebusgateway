@@ -403,3 +403,13 @@ retry, gap, and successor submissions now serialize with atomic sequence,
 digest, snapshot, and revision state. Focused race SHA-256
 `37cd7e8e2121b1c9966ca4759174ade2dc58069a90e0d2fce84c3d61c48bf112`;
 full CI SHA-256 `5e83ae9938f9454351774af19ca7e3642bdea683df19079069ff62a9cbfd2057`.
+
+## P2 lifecycle serialization remediation
+
+Source `386f6d05811d2451c0537d3bf21ad34a634c0115` rejects a lifecycle record
+whose timestamps cannot be JSON-serialized before any evidence or input digest
+is computed. Distinct invalid same-sequence bundles therefore share the stable
+serialization error rather than an empty digest, and cannot advance state or
+be mistaken for an idempotent retry. Focused race SHA-256
+`97c35296bb18cc0d267585f0d93c31f9979e11caf101e2bfd16647397128f4f4`;
+full CI SHA-256 `accf9e33b57514ad4dd262263295cdf1d39f700b9c5adbd5f380bbe353b8412e`.

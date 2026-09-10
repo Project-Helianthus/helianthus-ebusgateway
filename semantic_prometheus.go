@@ -181,16 +181,17 @@ func semanticDimensions(key semreg.FactKey) (string, bool) {
 	if dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil {
 		return "", false
 	}
-	switch *dimension.Value.Text {
-	case "phase:L1":
+	value := *dimension.Value.Text
+	switch {
+	case value == "phase:L1":
 		return "phase_l1", true
-	case "phase:L2":
+	case value == "phase:L2":
 		return "phase_l2", true
-	case "phase:L3":
+	case value == "phase:L3":
 		return "phase_l3", true
-	case "inverter":
+	case value == "inverter" || strings.HasPrefix(value, "inverter:"):
 		return "inverter", true
-	case "system":
+	case value == "system" || strings.HasPrefix(value, "system:"):
 		return "system", true
 	}
 	return "", false

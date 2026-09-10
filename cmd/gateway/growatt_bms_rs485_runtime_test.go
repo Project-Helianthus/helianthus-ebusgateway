@@ -555,6 +555,7 @@ func TestGrowattStorageCurrentAtReevaluatesFreshnessWithoutObservation(t *testin
 	if _, err := runtime.storage.Publish(native.Status, evidence); err != nil {
 		t.Fatal(err)
 	}
+	runtime.storage.currentPublishedAt = evidence.ReceiptWall
 	fake.mu.Lock()
 	reads := len(fake.calls)
 	fake.mu.Unlock()

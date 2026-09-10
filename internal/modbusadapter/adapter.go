@@ -616,6 +616,14 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	}
 	view, err = adapter.semanticPV.evaluatePublicView(view, context)
 	if err != nil {
+		// A publication may win after the scrape instant but before its detached
+		// read. Keep that whole newer tuple coherent at its own committed floor;
+		// never report a false unavailable projection because the supplied instant
+		// predates a snapshot it could not have observed.
+		context = semreg.EvaluationContext{EvaluatedAt: view.wallFloor, EvaluateMonotonic: view.snapshot.EvaluateMonotonic}
+		view, err = adapter.semanticPV.evaluatePublicView(view, context)
+	}
+	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true

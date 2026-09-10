@@ -37,6 +37,7 @@ type growattStoragePublication struct {
 	kernel              *semreg.PublicationKernel
 	current             json.RawMessage
 	currentReceivedAt   time.Time
+	currentPublishedAt  time.Time
 	publicationSequence uint64
 }
 
@@ -106,7 +107,7 @@ func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedRead
 	if err != nil {
 		return nil, err
 	}
-	p.kernel, p.current, p.currentReceivedAt, p.publicationSequence = staged, append(json.RawMessage(nil), encoded...), evidence.ReceiptWall.UTC(), sequence
+	p.kernel, p.current, p.currentReceivedAt, p.currentPublishedAt, p.publicationSequence = staged, append(json.RawMessage(nil), encoded...), evidence.ReceiptWall, time.Now(), sequence
 	return json.RawMessage(append([]byte(nil), encoded...)), nil
 }
 
@@ -136,9 +137,9 @@ func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growa
 		return growattStorageCurrent{}, false
 	}
 	p.mu.RLock()
-	raw, received := append(json.RawMessage(nil), p.current...), p.currentReceivedAt
+	raw, received, published := append(json.RawMessage(nil), p.current...), p.currentReceivedAt, p.currentPublishedAt
 	p.mu.RUnlock()
-	if len(raw) == 0 || received.IsZero() || at.Before(received) {
+	if len(raw) == 0 || received.IsZero() || published.IsZero() {
 		return growattStorageCurrent{}, false
 	}
 	var current growattStorageCurrent
@@ -149,7 +150,9 @@ func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growa
 	if err != nil {
 		return growattStorageCurrent{}, false
 	}
-	elapsed := at.Sub(received)
+	// Both points retain Go's independent monotonic coordinate. Wall-clock
+	// correction therefore cannot resurrect or prematurely age this snapshot.
+	elapsed := at.Sub(published)
 	if elapsed < 0 || elapsed == time.Duration(math.MaxInt64) || base < 0 || base > math.MaxInt64-int64(elapsed) {
 		return growattStorageCurrent{}, false
 	}

@@ -243,10 +243,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		// callback reaches only immutable SemReg current views; it cannot invoke
 		// the Growatt observe/publish path or any native transport operation.
 		busObservability.SetSemanticMetricsProvider(func(at time.Time) []ebusgateway.SemanticMetricsDomain {
-			// EVSE acquisition remains outside this issue. A future accepted owner
-			// may supply the detached generic read seam; nil truthfully reports the
-			// configured runtime as unavailable without creating Tesla composition.
-			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, nil, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
+			// The Tesla owner supplies only its detached retained publication. It
+			// cannot acquire, publish, or execute a native operation from a scrape.
+			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, teslaHSCRetained, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
 		})
 	}
 

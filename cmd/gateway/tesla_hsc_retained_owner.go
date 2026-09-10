@@ -341,6 +341,21 @@ func (owner *teslaHSCRetainedOwner) TeslaGen3EVSESemanticCurrent(ctx context.Con
 	return owner.publication.TeslaGen3EVSESemanticCurrent(ctx)
 }
 
+// SemanticEVSECurrentAt exposes only the detached accepted SemReg tuple used
+// by passive metrics bindings. The owner remains the lifecycle fence, so a
+// stopped or superseded generation cannot be revived by a later scrape.
+func (owner *teslaHSCRetainedOwner) SemanticEVSECurrentAt(at time.Time) (mcp.SemanticEVSECurrent, bool) {
+	if owner == nil {
+		return mcp.SemanticEVSECurrent{}, false
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if !owner.active || owner.publication == nil || !owner.havePersistent {
+		return mcp.SemanticEVSECurrent{}, false
+	}
+	return owner.publication.SemanticEVSECurrentAt(at)
+}
+
 func (owner *teslaHSCRetainedOwner) RetainedEvidence() []TeslaGen3RetainedExchangeEvidence {
 	if owner == nil {
 		return nil

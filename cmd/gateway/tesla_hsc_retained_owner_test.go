@@ -86,6 +86,30 @@ func TestTeslaHSCRetainedOwnerIngestsCorrelatedOutcomesAndPublishesDetachedState
 	}
 }
 
+func TestTeslaHSCRetainedOwnerFeedsDetachedPrometheusEVSEAndFencesLifecycle(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 2, 12, 600, false, 32)); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Unix(1_700_000_010, 123).UTC()
+	domains := semanticPrometheusDomains(nil, nil, owner, false, false, true, "", at)
+	if len(domains) != 1 || domains[0].Name != "evse" || !domains[0].Available ||
+		len(domains[0].Snapshot.Facts) == 0 || len(domains[0].Projection.Dispositions) == 0 {
+		t.Fatalf("Tesla retained Prometheus domain = %#v", domains)
+	}
+	if err := owner.Fence(7, 8); err != nil {
+		t.Fatal(err)
+	}
+	domains = semanticPrometheusDomains(nil, nil, owner, false, false, true, "", at.Add(time.Second))
+	if len(domains) != 1 || domains[0].Name != "evse" || domains[0].Available {
+		t.Fatalf("fenced Tesla retained Prometheus domain = %#v", domains)
+	}
+}
+
 func TestTeslaHSCRetainedOwnerRejectsMismatchAndPreservesLastKnownGood(t *testing.T) {
 	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
 	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
@@ -221,7 +245,7 @@ func TestTeslaHSCRetainedOwnerProvisionalSiblingPreservesPersistentReceipt(t *te
 			continue
 		}
 		got := fact.Candidates[0].Times
-		if got.ReceivedAt.UnixNanoseconds != "1800000001000000123" || got.ReceiptMonotonic.Nanoseconds != "1000000000" {
+		if got.ReceivedAt.UnixNanoseconds != "1700000001000000123" || got.ReceiptMonotonic.Nanoseconds != "1000000000" {
 			t.Fatalf("configured-current receipt refreshed by provisional sibling: %+v", got)
 		}
 		return
@@ -337,6 +361,9 @@ func TestTeslaHSCRetainedOwnerConcurrentReadsPerformNoIngestionOrIO(t *testing.T
 				}
 				if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
 					t.Error(err)
+				}
+				if _, ok := owner.SemanticEVSECurrentAt(time.Unix(1_700_000_010, 123).UTC()); !ok {
+					t.Error("detached Prometheus EVSE read unavailable")
 				}
 			}
 		}()
@@ -517,7 +544,7 @@ func teslaExchange(t *testing.T, operation modbusreg.TeslaFC100Operation, reques
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1_800_000_000+int64(correlation), 123).UTC()
+	now := time.Unix(1_700_000_000+int64(correlation), 123).UTC()
 	return TeslaGen3CompletedExchange{
 		EndpointID: "tesla-hsc-public-a", SourceID: "source:tesla-wc3-a", SourceEpoch: "epoch:tesla-wc3-a",
 		DriverGeneration: 7, Node: 0x10, OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
@@ -551,3 +578,4 @@ func encodeTeslaTestVarint(value uint32) []byte {
 
 var _ mcp.TeslaGen3EVSECurrentLimitV1Provider = (*teslaHSCRetainedOwner)(nil)
 var _ mcp.TeslaGen3EVSESemanticProvider = (*teslaHSCRetainedOwner)(nil)
+var _ mcp.SemanticEVSEPrometheusProvider = (*teslaHSCRetainedOwner)(nil)

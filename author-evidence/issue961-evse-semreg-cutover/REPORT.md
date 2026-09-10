@@ -21,6 +21,10 @@
   `a358005e8c6d839eef5eaf501d05cd6790380579`
 - Capability-activation remediation source tree:
   `94ed05b2c77f06885b6bb1b30ebe16bc289a4ec9`
+- Evidence and monotonic-clock remediation source HEAD:
+  `a050bce32e92b0db1ca7540baa34558b67c75e44`
+- Evidence and monotonic-clock remediation source tree:
+  `743144167a802c99e4ce233f7fb3f845defcd82d`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -133,6 +137,26 @@ snapshot. Configured-current publication remains independent of a withheld
 provisional allocation, and no operation, Portal, production composition, or
 native call is added.
 
+## P2 evidence and monotonic-clock remediation
+
+`a050bce32e92b0db1ca7540baa34558b67c75e44` replaces pointer-based evidence
+marshalling with detached serializable DTOs. Persistent evidence contains the
+operation version, decoded current, request and terminal payloads, and captured
+lifecycle coordinates. Provisional evidence additionally contains the decoded
+limit, timeout, inhibit state, and all set/ACK/readback payloads. The fact,
+identity, and capability digests therefore change when an accepted native value
+or one payload byte changes; later source-pointer mutation cannot alter the
+committed snapshot.
+
+Publication captures independent receipt and evaluation monotonic coordinates.
+Each read captures a separate injected monotonic clock and advances evaluation
+from that clock alone. Wall time remains in the public reporting envelope and is
+clamped only to keep reported evaluations non-regressing. Provisional expiry
+compares the monotonic receipt coordinate plus timeout with the read evaluation,
+so a forward wall jump cannot expire allocation early and a backward jump cannot
+resurrect it. Read-clock rollback or error fails closed before state changes or
+provider access.
+
 ## Public contracts and boundary
 
 - MCP: `semantic.v1.evse.current.get` returns the SemReg
@@ -215,6 +239,14 @@ SHA-256
 Complete local CI passed on the capability source head with
 `/tmp/helianthus-ebusgateway-961-capability-activation-ci.log`, SHA-256
 `dd8ccc60d7203c5f853345035d950daac606220ac19a818bbe261396defb308d`.
+
+The evidence/monotonic focused race passed with
+`/tmp/helianthus-ebusgateway-961-evidence-monotonic-focused-race.log`,
+SHA-256
+`1f4094d1f01366cc5a6d8553ae66a5a0f6e78702318588eb43c8be4e17fd6dcf`.
+Complete local CI passed on the evidence/monotonic source head with
+`/tmp/helianthus-ebusgateway-961-evidence-monotonic-ci.log`, SHA-256
+`af5595b6101fa06a845465a51046340c8aad2982605e789e1f346b7a1cb5b43d`.
 
 ## Gate classification
 

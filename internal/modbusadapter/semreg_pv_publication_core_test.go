@@ -424,6 +424,62 @@ func TestAdapterPublishesOneSemRegPVProjection(t *testing.T) {
 	}
 }
 
+func TestAdapterPVCurrentSingleFollowsLatestIdentityRotation(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:identity-rotation", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current }}
+
+	firstWords := observedFroniusFloatControlsWords()
+	first := pvCoreObservation(t, firstWords, 1, 2)
+	if err := adapter.publishSemanticPV(first); err != nil {
+		t.Fatal(err)
+	}
+	firstIdentity, _, err := resolvePVPublicationIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(firstIdentity)[:32])
+	firstView, ok := adapter.SemanticPVCurrentSingleAt(current)
+	if !ok {
+		t.Fatal("initial single PV view unavailable")
+	}
+	if firstView.Snapshot.AssetID != firstAsset {
+		t.Fatalf("initial active asset=%q want %q", firstView.Snapshot.AssetID, firstAsset)
+	}
+
+	current = current.Add(time.Second)
+	rotatedWords := append([]uint16(nil), firstWords...)
+	putSunSpecString(rotatedWords[52:68], "rotated-identity")
+	rotated := pvCoreObservation(t, rotatedWords, 3, 4)
+	if err := adapter.publishSemanticPV(rotated); err != nil {
+		t.Fatal(err)
+	}
+	rotatedIdentity, _, err := resolvePVPublicationIdentity(rotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(rotatedIdentity)[:32])
+	if firstAsset == rotatedAsset || len(core.assets) != 2 {
+		t.Fatalf("identity rotation was not retained: first=%q rotated=%q assets=%d", firstAsset, rotatedAsset, len(core.assets))
+	}
+	before, ok := adapter.SemanticPVCurrentByAsset(string(rotatedAsset))
+	if !ok {
+		t.Fatal("rotated public evidence unavailable by its identity")
+	}
+	active, ok := adapter.SemanticPVCurrentSingleAt(current)
+	if !ok || active.Snapshot.AssetID != rotatedAsset || active.Snapshot.SnapshotID != before.Snapshot.SnapshotID {
+		t.Fatalf("single metrics view did not select current identity: active=%q/%q want=%q/%q ok=%t", active.Snapshot.AssetID, active.Snapshot.SnapshotID, rotatedAsset, before.Snapshot.SnapshotID, ok)
+	}
+	if after, ok := adapter.SemanticPVCurrentByAsset(string(firstAsset)); !ok || after.Snapshot.AssetID != firstAsset {
+		t.Fatal("identity rotation discarded retained native evidence")
+	}
+}
+
 func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {

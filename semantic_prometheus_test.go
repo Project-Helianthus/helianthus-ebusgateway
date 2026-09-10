@@ -15,13 +15,13 @@ func TestSemanticPrometheusRendersOnlyFreshQualifiedNumericFacts(t *testing.T) {
 	var out bytes.Buffer
 	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
 	metrics := out.String()
-	if !strings.Contains(metrics, `helianthus_semantic_fact_value{dimension="",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv",unit="unit.watt"} 42`) {
+	if !strings.Contains(metrics, `helianthus_semantic_fact_value{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv",unit="unit.watt"} 42`) {
 		t.Fatalf("missing accepted value:\n%s", metrics)
 	}
 	if strings.Contains(metrics, "asset:private") {
 		t.Fatalf("forbidden asset identifier leaked:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `helianthus_semantic_evidence_age_seconds{dimension="",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv"} 1`) {
+	if !strings.Contains(metrics, `helianthus_semantic_evidence_age_seconds{dimension="inverter",domain="pv",fact_id="pv.ac.aggregate_active_power",pack="helianthus.pack.pv"} 1`) {
 		t.Fatalf("missing evidence age:\n%s", metrics)
 	}
 }
@@ -97,9 +97,36 @@ func TestSemanticFactKeyRejectsInvalidKeys(t *testing.T) {
 	}
 }
 
+func TestSemanticPrometheusRejectsDimensionlessFacts(t *testing.T) {
+	for _, domainName := range []string{"pv", "storage"} {
+		t.Run(domainName, func(t *testing.T) {
+			domain := semanticMetricsFixture(domainName, true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+			key := domain.Snapshot.Facts[0].Key
+			key.Dimensions = nil
+			domain.Snapshot.Facts[0].Key = key
+			domain.Snapshot.Facts[0].Candidates[0].Key = key
+			domain.Projection.Dispositions[0].SourceKeys[0] = key
+			var out bytes.Buffer
+			writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+			metrics := out.String()
+			if strings.Contains(metrics, `dimension=""`) || strings.Contains(metrics, "\nhelianthus_semantic_fact_state{") || strings.Contains(metrics, "\nhelianthus_semantic_fact_value{") {
+				t.Fatalf("dimensionless fact leaked:\n%s", metrics)
+			}
+			if !strings.Contains(metrics, "helianthus_semantic_render_overflow 1") {
+				t.Fatalf("dimensionless fact was not counted:\n%s", metrics)
+			}
+		})
+	}
+}
+
 func semanticMetricsFixture(domain string, available bool, freshness semreg.Freshness, availability semreg.Availability, validity semreg.Validity, conflicts int) SemanticMetricsDomain {
-	key := semreg.FactKey{PackID: "helianthus.pack." + semreg.DefinitionID(domain), PackVersion: "1.0.0", FactID: "pv.ac.aggregate_active_power", Dimensions: []semreg.Dimension{}}
-	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "42"}, Unit: "unit.watt"}}
+	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "inverter:asset:private", semreg.DefinitionID("pv.ac.aggregate_active_power")
+	unit := semreg.DefinitionID("unit.watt")
+	if domain == "storage" {
+		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "storage:asset:private", "storage.pack.voltage", "unit.volt"
+	}
+	key := semreg.FactKey{PackID: "helianthus.pack." + semreg.DefinitionID(domain), PackVersion: "1.0.0", FactID: factID, Dimensions: []semreg.Dimension{{ID: dimensionID, Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}}
+	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "42"}, Unit: unit}}
 	candidate := semreg.FactCandidate{CandidateID: "candidate:test", Key: key, Value: &value, Quality: semreg.Quality{Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: validity}, Times: semreg.Times{ReceivedAt: semreg.TimePoint{UnixNanoseconds: "100000000000", ClockID: "clock.utc"}}}
 	envelope := semreg.FactEnvelope{Key: key, Candidates: []semreg.FactCandidate{candidate}}
 	for i := 0; i < conflicts; i++ {

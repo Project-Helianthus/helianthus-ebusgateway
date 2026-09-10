@@ -633,9 +633,10 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
 }
 
-// SemanticPVCurrentSingle returns the sole detached PV publication when the
-// configured adapter has exactly one public PV asset. It is scrape-safe: it
-// delegates to the same read-only current accessor and never acquires Modbus.
+// SemanticPVCurrentSingle returns the active detached PV publication. Historical
+// identity-keyed views remain available by asset after a SunSpec Common identity
+// rotation; this bounded single-domain view follows the latest accepted one.
+// It is scrape-safe and never acquires Modbus.
 func (adapter *Adapter) SemanticPVCurrentSingle() (SemanticPVCurrent, bool) {
 	if adapter == nil || adapter.semanticPV == nil {
 		return SemanticPVCurrent{}, false
@@ -647,7 +648,7 @@ func (adapter *Adapter) SemanticPVCurrentSingle() (SemanticPVCurrent, bool) {
 	return adapter.SemanticPVCurrentByAsset(string(asset))
 }
 
-// SemanticPVCurrentSingleAt evaluates the sole detached publication at an
+// SemanticPVCurrentSingleAt evaluates the active detached publication at an
 // explicit scrape instant. It retains the regular read-time rollback guards.
 func (adapter *Adapter) SemanticPVCurrentSingleAt(at time.Time) (SemanticPVCurrent, bool) {
 	if adapter == nil || adapter.semanticPV == nil || at.IsZero() {

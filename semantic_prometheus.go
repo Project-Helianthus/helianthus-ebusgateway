@@ -159,13 +159,16 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 				return true
 			}
 			dimension, dimensionsOK := semanticDimensions(key)
+			if !dimensionsOK {
+				return true
+			}
 			labels := labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension, "qualification", string(candidate.Quality.Qualification), "promotion", string(candidate.Quality.Promotion), "quality", string(candidate.Quality.Validity), "availability", string(e.EffectiveAvailability), "freshness", string(e.Freshness))
 			emit("helianthus_semantic_fact_state", 1, labels)
 			emit("helianthus_semantic_open_conflicts", float64(len(envelope.Conflicts)), labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension))
 			if age, ok := semanticAge(candidate.Times.ReceivedAt, now); ok {
 				emit("helianthus_semantic_evidence_age_seconds", age, labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension))
 			}
-			if !dimensionsOK || len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
+			if len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || e.EffectiveAvailability != semreg.AvailabilityAvailable || e.Freshness != semreg.FreshnessFresh {
 				return false
 			}
 			value, unit, ok := semanticNumeric(candidate.Value)
@@ -184,7 +187,7 @@ func validSemanticState(q semreg.Qualification, p semreg.Promotion, v semreg.Val
 
 func semanticDimensions(key semreg.FactKey) (string, bool) {
 	if len(key.Dimensions) != 1 {
-		return "", len(key.Dimensions) == 0
+		return "", false
 	}
 	dimension := key.Dimensions[0]
 	if dimension.ID == "storage.dimension.pack" {

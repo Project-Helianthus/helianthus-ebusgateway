@@ -446,9 +446,10 @@ func pvPublicationServices(draft pvPublicationDraft) ([]semreg.ServiceInstance, 
 }
 
 type pvPublicationCore struct {
-	mu        sync.RWMutex
-	assets    map[semreg.AssetID]*pvPublicationAsset
-	selection *semreg.SelectionKernel
+	mu            sync.RWMutex
+	assets        map[semreg.AssetID]*pvPublicationAsset
+	activeAssetID semreg.AssetID
+	selection     *semreg.SelectionKernel
 }
 
 type pvPublicationAsset struct {
@@ -574,6 +575,10 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
 	asset.kernel, asset.current = staged, view
 	c.assets[detached.assetID] = asset
+	// Keep historical identity-keyed public evidence addressable, while the
+	// existing single-domain metric surface follows the most recently accepted
+	// bounded PV publication across a SunSpec Common identity rotation.
+	c.activeAssetID = detached.assetID
 	return pvPublicationReceipt{assetID: detached.assetID, snapshotID: snapshot.SnapshotID, revisions: snapshot.Revisions}, nil
 }
 
@@ -677,13 +682,8 @@ func (c *pvPublicationCore) singleAssetID() (semreg.AssetID, bool) {
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(c.assets) != 1 {
-		return "", false
-	}
-	for id, asset := range c.assets {
-		return id, asset != nil && asset.current != nil
-	}
-	return "", false
+	asset := c.assets[c.activeAssetID]
+	return c.activeAssetID, c.activeAssetID != "" && asset != nil && asset.current != nil
 }
 
 // evaluatePublicView evaluates an already detached snapshot. Callers that

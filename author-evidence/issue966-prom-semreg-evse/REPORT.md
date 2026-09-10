@@ -58,3 +58,24 @@ contract. Transport gate: no transport behavior changed; exact configuration
 and lifecycle classifier tests fail closed for extra or near-match changes.
 Smoke: offline deterministic tests only; no live device, credential, native
 acquisition, deployment, or hardware action occurred.
+
+## P2 scrape freshness-floor correction
+
+Source `8ae98a05c0252d1d612bce80bd767c6eea2cddbc` adds a Prometheus-only
+monotonic high-water floor per accepted publication. A scrape at allocated
+current expiry therefore withholds that connector, and a later wall/monotonic
+reorder to one second before expiry evaluates at the retained floor instead of
+resurrecting it. The floor does not alter the immutable snapshot, source
+sequence, revision, or native lifecycle. A valid later accepted publication
+replaces the floor and can expose its own fresh allocation. The regression also
+proves configured current remains exact and scraping does not invoke a
+publication clock or native I/O.
+
+- Focused race passed on the source tree: `GOWORK=off go test -race ./mcp -run
+  TestTeslaGen3EVSESemanticPublicationPrometheus -count=1`, plus root and
+  gateway semantic renderer tests.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: Portal 93/93, complete Go race,
+  Python 168/6/26/11/6/2, lint 0, both mapping gates PASS, and transport and
+  passive-smoke gates not triggered. Durable log
+  `/tmp/helianthus-ebusgateway-966-p2-full-ci.log`, SHA-256
+  `71e1867afd16a359c2b93f572a3eaa3f7320813055362abf4f68bcf0a3db5923`.

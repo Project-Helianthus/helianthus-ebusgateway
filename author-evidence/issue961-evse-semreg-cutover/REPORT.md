@@ -413,3 +413,12 @@ serialization error rather than an empty digest, and cannot advance state or
 be mistaken for an idempotent retry. Focused race SHA-256
 `97c35296bb18cc0d267585f0d93c31f9979e11caf101e2bfd16647397128f4f4`;
 full CI SHA-256 `accf9e33b57514ad4dd262263295cdf1d39f700b9c5adbd5f380bbe353b8412e`.
+
+## P2 UnixNano range remediation
+
+Source `7331adf0810f2131c7817c4e3a79d652c49d6791` preserves the established
+unserializable-time error precedence, then rejects JSON-serializable lifecycle
+times outside exact int64 Unix-nanosecond bounds before digest or snapshot
+construction. Exact endpoints and just-outside vectors prove unchanged state.
+Focused race SHA-256 `228cd038a4f9cd0a70ec8ebf361e1f266ae782536638331b508a6f45f67759e3`;
+full CI SHA-256 `1e48e4aaca69a5788ba9b3bb5ce8dd443015ceb7bbf41ba922a00effe306f27e`.

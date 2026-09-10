@@ -225,6 +225,71 @@ type Config struct {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
+    def test_bus_observability_semreg_append_is_only_exception(self) -> None:
+        base = '''type BusObservabilityStore struct {
+    existing int
+}
+func (store *BusObservabilityStore) RenderPrometheus() {
+    writer := newPrometheusWriter(buffer)
+}
+'''
+        allowed = '''type BusObservabilityStore struct {
+    // semanticMetricsProvider returns detached, already-evaluated SemReg views.
+    // It is invoked after the store snapshot is released: a /metrics request must
+    // never take the store lock across a driver or publication lock.
+    semanticMetricsProvider func(time.Time) []SemanticMetricsDomain
+    existing int
+}
+// SetSemanticMetricsProvider installs the read-only PV/Storage SemReg view
+// supplier used by the existing /metrics renderer. The supplier must neither
+// acquire native data nor publish; nil removes the optional semantic section.
+func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {
+    if store == nil {
+        return
+    }
+    store.mu.Lock()
+    store.semanticMetricsProvider = provider
+    store.mu.Unlock()
+}
+func (store *BusObservabilityStore) RenderPrometheus() {
+    writer := newPrometheusWriter(buffer)
+    semanticMetricsProvider := store.semanticMetricsProvider
+    var semanticDomains []SemanticMetricsDomain
+    haveSemanticMetricsProvider := semanticMetricsProvider != nil
+    if semanticMetricsProvider != nil {
+        semanticDomains = semanticMetricsProvider(now)
+    }
+    if haveSemanticMetricsProvider {
+        writeSemanticMetrics(writer, semanticDomains, now)
+    }
+}
+'''
+        repo_path, _ = self._create_temp_repo("bus_observability_store.go", base_text=base, modified_text=allowed)
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        (repo_path / "bus_observability_store.go").write_text(allowed + "func (store *BusObservabilityStore) MutatePassive() { store.passive.state = \"unsafe\" }\n", encoding="utf-8")
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+        for hostile in (
+            'writer.writeGaugeSample("ebus_unreviewed", 1, nil)\n',
+            'store.mu.RLock()\n',
+            'store.passive.state = "unsafe"\n',
+            'semanticMetricsProvider = func(time.Time) []SemanticMetricsDomain { return nil }\n',
+        ):
+            (repo_path / "bus_observability_store.go").write_text(allowed + hostile, encoding="utf-8")
+            result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0, hostile)
+
+        omitted_unlock = allowed.replace("    store.mu.Unlock()\n}\nfunc (store *BusObservabilityStore) RenderPrometheus()", "}\nfunc (store *BusObservabilityStore) RenderPrometheus()", 1)
+        exchanged_unlock = omitted_unlock + "\nfunc unrelatedLockChange(store *BusObservabilityStore) { store.mu.Unlock() }\n"
+        for hostile in (omitted_unlock, exchanged_unlock):
+            (repo_path / "bus_observability_store.go").write_text(hostile, encoding="utf-8")
+            result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0, "classifier accepted changed lock structure")
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
     def test_passive_smoke_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

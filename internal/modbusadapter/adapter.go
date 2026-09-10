@@ -614,11 +614,66 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
-	view, err = adapter.semanticPV.evaluatePublicView(view, context)
+	view, err = evaluatePVPublicViewAtFloor(adapter.semanticPV, view, context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+// SemanticPVCurrentSingle returns the active detached PV publication. Historical
+// identity-keyed views remain available by asset after a SunSpec Common identity
+// rotation; this bounded single-domain view follows the latest accepted one.
+// It is scrape-safe and never acquires Modbus.
+func (adapter *Adapter) SemanticPVCurrentSingle() (SemanticPVCurrent, bool) {
+	if adapter == nil || adapter.semanticPV == nil {
+		return SemanticPVCurrent{}, false
+	}
+	asset, ok := adapter.semanticPV.singleAssetID()
+	if !ok {
+		return SemanticPVCurrent{}, false
+	}
+	return adapter.SemanticPVCurrentByAsset(string(asset))
+}
+
+// SemanticPVCurrentSingleAt evaluates the active detached publication at an
+// explicit scrape instant. It retains the regular read-time rollback guards.
+func (adapter *Adapter) SemanticPVCurrentSingleAt(at time.Time) (SemanticPVCurrent, bool) {
+	if adapter == nil || adapter.semanticPV == nil || at.IsZero() {
+		return SemanticPVCurrent{}, false
+	}
+	asset, ok := adapter.semanticPV.singleAssetID()
+	if !ok {
+		return SemanticPVCurrent{}, false
+	}
+	view, err := adapter.semanticPV.publicView(asset)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err := adapter.semanticPVReadContextAt(at)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	context, err = clampSemanticPVReadWall(context, view.wallFloor)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	view, err = evaluatePVPublicViewAtFloor(adapter.semanticPV, view, context)
+	if err != nil {
+		return SemanticPVCurrent{}, false
+	}
+	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+// evaluatePVPublicViewAtFloor attempts the caller's scrape context once, then
+// preserves its original detached view for exactly one coherent floor retry.
+// Assignment on an error would otherwise discard the view needed by the retry.
+func evaluatePVPublicViewAtFloor(core *pvPublicationCore, view pvPublicationView, context semreg.EvaluationContext) (pvPublicationView, error) {
+	evaluated, err := core.evaluatePublicView(view, context)
+	if err == nil {
+		return evaluated, nil
+	}
+	return core.evaluatePublicView(view, semreg.EvaluationContext{EvaluatedAt: view.wallFloor, EvaluateMonotonic: view.snapshot.EvaluateMonotonic})
 }
 
 // clampSemanticPVReadWall prevents a rolled-back wall clock from preceding
@@ -658,6 +713,21 @@ func (adapter *Adapter) semanticPVReadContext() (semreg.EvaluationContext, error
 		wall = adapter.startedWall
 	}
 	elapsed := monotonicClock().Sub(adapter.startedMono)
+	if elapsed < 0 {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
+	}
+	return semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(wall), EvaluateMonotonic: pvPublicationMonotonic(elapsed)}, nil
+}
+
+func (adapter *Adapter) semanticPVReadContextAt(at time.Time) (semreg.EvaluationContext, error) {
+	if adapter == nil || adapter.startedWall.IsZero() || adapter.startedMono.IsZero() {
+		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is unavailable")
+	}
+	wall := at.UTC()
+	if wall.Before(adapter.startedWall) {
+		wall = adapter.startedWall
+	}
+	elapsed := at.Sub(adapter.startedMono)
 	if elapsed < 0 {
 		return semreg.EvaluationContext{}, errors.New("SemReg PV publication clock is invalid")
 	}

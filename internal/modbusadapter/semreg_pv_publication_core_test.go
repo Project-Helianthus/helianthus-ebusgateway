@@ -424,6 +424,103 @@ func TestAdapterPublishesOneSemRegPVProjection(t *testing.T) {
 	}
 }
 
+func TestAdapterPVCurrentSingleFollowsLatestIdentityRotation(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:identity-rotation", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current }}
+
+	firstWords := observedFroniusFloatControlsWords()
+	first := pvCoreObservation(t, firstWords, 1, 2)
+	if err := adapter.publishSemanticPV(first); err != nil {
+		t.Fatal(err)
+	}
+	firstIdentity, _, err := resolvePVPublicationIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(firstIdentity)[:32])
+	firstView, ok := adapter.SemanticPVCurrentSingleAt(current)
+	if !ok {
+		t.Fatal("initial single PV view unavailable")
+	}
+	if firstView.Snapshot.AssetID != firstAsset {
+		t.Fatalf("initial active asset=%q want %q", firstView.Snapshot.AssetID, firstAsset)
+	}
+
+	current = current.Add(time.Second)
+	rotatedWords := append([]uint16(nil), firstWords...)
+	putSunSpecString(rotatedWords[52:68], "rotated-identity")
+	rotated := pvCoreObservation(t, rotatedWords, 3, 4)
+	if err := adapter.publishSemanticPV(rotated); err != nil {
+		t.Fatal(err)
+	}
+	rotatedIdentity, _, err := resolvePVPublicationIdentity(rotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(rotatedIdentity)[:32])
+	if firstAsset == rotatedAsset || len(core.assets) != 2 {
+		t.Fatalf("identity rotation was not retained: first=%q rotated=%q assets=%d", firstAsset, rotatedAsset, len(core.assets))
+	}
+	before, ok := adapter.SemanticPVCurrentByAsset(string(rotatedAsset))
+	if !ok {
+		t.Fatal("rotated public evidence unavailable by its identity")
+	}
+	active, ok := adapter.SemanticPVCurrentSingleAt(current)
+	if !ok || active.Snapshot.AssetID != rotatedAsset || active.Snapshot.SnapshotID != before.Snapshot.SnapshotID {
+		t.Fatalf("single metrics view did not select current identity: active=%q/%q want=%q/%q ok=%t", active.Snapshot.AssetID, active.Snapshot.SnapshotID, rotatedAsset, before.Snapshot.SnapshotID, ok)
+	}
+	if after, ok := adapter.SemanticPVCurrentByAsset(string(firstAsset)); !ok || after.Snapshot.AssetID != firstAsset {
+		t.Fatal("identity rotation discarded retained native evidence")
+	}
+}
+
+func TestAdapterPVCurrentSingleAtRetriesNewerSameAssetAtDetachedFloor(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started.Add(time.Second)
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:single-retry", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current }}
+	words := observedFroniusFloatControlsWords()
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, words, 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	// RenderPrometheus captures this instant, then the same asset publishes a
+	// newer snapshot before the scrape detaches it.
+	captured := current
+	current = current.Add(time.Second)
+	updatedWords := append([]uint16(nil), words...)
+	pvCoreSetFloat(updatedWords, 20, 4_321.5)
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, updatedWords, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	identity, _, err := resolvePVPublicationIdentity(pvCoreObservation(t, updatedWords, 5, 6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := "pv-asset-" + pvCoreRawHash(identity)[:32]
+	newest, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok {
+		t.Fatal("newer same-asset view unavailable")
+	}
+	selected, selectedOK := core.singleAssetID()
+	if selected != semreg.AssetID(asset) || !selectedOK {
+		t.Fatalf("active asset=%q/%t want=%q", selected, selectedOK, asset)
+	}
+	view, ok := adapter.SemanticPVCurrentSingleAt(captured)
+	if !ok || view.Snapshot.SnapshotID != newest.Snapshot.SnapshotID {
+		t.Fatalf("captured scrape did not retry detached newer tuple: got=%q want=%q ok=%t", view.Snapshot.SnapshotID, newest.Snapshot.SnapshotID, ok)
+	}
+}
+
 func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {

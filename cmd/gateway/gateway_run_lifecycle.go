@@ -227,6 +227,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
+	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled) {
+		// This is intentionally wired before the HTTP control plane starts. The
+		// callback reaches only immutable SemReg current views; it cannot invoke
+		// the Growatt observe/publish path or any native transport operation.
+		busObservability.SetSemanticMetricsProvider(func(at time.Time) []ebusgateway.SemanticMetricsDomain {
+			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
+		})
+	}
 
 	// batch-21 forensic counters — wire the adaptermux diagnostic
 	// snapshot through the BusObservabilityStore Prometheus surface.

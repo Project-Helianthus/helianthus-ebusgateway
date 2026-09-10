@@ -269,3 +269,17 @@ concise correction-evidence comment. PR #962 now retains `Closes #961` and
 describes the MCP plus authenticated mTLS GraphQL-only contract. The Portal
 finding `discussion_r3977269676` received a by-design reply without being
 resolved. No independent review or merge was requested or performed.
+
+## P2 successor withdrawal and monotonic-floor remediation
+
+Source `a85d4ff644d278668c6937d2155bc8b3248bf267` uses SemReg
+`FactWithdrawals` to retire an earlier allocated-current candidate whenever an
+accepted successor withholds allocation. Configured current remains current.
+Missing, malformed, inhibited, zero-timeout, and expired successor vectors prove
+snapshot/evaluation/projection MCP and GraphQL parity. Later same-epoch receipt
+or evaluation coordinates below either retained publication/read floor are
+rejected before fork without changing snapshot, revision, sequence, or read
+state. Focused race SHA-256:
+`8b8e590340dcc494fdcce4f476a7e033fb209485870f2a5a55b5a7712d6ad756`.
+Complete CI SHA-256:
+`526745d2a4316b7e67fd9c70b0084f11bc6e5203aa459936852bf03421ab6eb4`.

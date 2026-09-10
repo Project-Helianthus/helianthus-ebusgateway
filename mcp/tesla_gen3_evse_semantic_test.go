@@ -745,6 +745,44 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorRes
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDelay(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		delay     time.Duration
+		allocated projection.ProjectionOutcome
+	}{
+		{"before expiry", 59 * time.Second, projection.ProjectionExact},
+		{"at expiry", 60 * time.Second, projection.ProjectionWithheld},
+		{"after expiry", 120 * time.Second, projection.ProjectionWithheld},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			publishedAt := base.Add(tc.delay)
+			p.now = func() time.Time { return publishedAt }
+			p.readClock = func() (uint64, error) { return 0, nil }
+			source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+			source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+			if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:publication-delay-" + tc.name, ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+				t.Fatal(err)
+			}
+			p.now = func() time.Time { t.Fatal("delayed scrape called publication clock"); return time.Time{} }
+			p.readClock = func() (uint64, error) { t.Fatal("delayed scrape called native/read clock"); return 0, nil }
+			current, ok := p.SemanticEVSECurrentAt(publishedAt)
+			if !ok || teslaGen3EVSEDisposition(current.Projection, "evse.limit.allocated_current") != tc.allocated || teslaGen3EVSEDisposition(current.Projection, "evse.limit.configured_current") != projection.ProjectionExact {
+				t.Fatalf("immediate delayed scrape=%#v ok=%t", current.Projection, ok)
+			}
+			rollback, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+			if !ok || teslaGen3EVSEDisposition(rollback.Projection, "evse.limit.allocated_current") != tc.allocated {
+				t.Fatalf("rollback changed delayed allocation decision: %#v ok=%t", rollback.Projection, ok)
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

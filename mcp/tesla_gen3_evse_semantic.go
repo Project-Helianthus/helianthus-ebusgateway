@@ -198,6 +198,10 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
+	prometheusMono, err := teslaGen3EVSEPublicationScrapeMonotonic(evaluationMono, evidence.EvaluatedAt, scrapeEpoch)
+	if err != nil {
+		return err
+	}
 	if p.sequence != 0 {
 		for _, floor := range []semreg.MonotonicPoint{p.evaluatedMonotonic, p.lastReadMonotonic} {
 			if err := teslaGen3EVSEPublicationMonotonicNotBefore(receiptMono, floor); err != nil {
@@ -231,7 +235,7 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	p.kernel, p.current, p.manifest, p.requested, p.dispositions, p.candidateHighWater = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...), highWater
-	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.scrapeEpoch, p.prometheusMonotonic, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, scrapeEpoch, evaluationMono, evidence.Sequence, inputDigest
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.scrapeEpoch, p.prometheusMonotonic, p.sequence, p.lastInputDigest = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, scrapeEpoch, prometheusMono, evidence.Sequence, inputDigest
 	return nil
 }
 
@@ -541,6 +545,16 @@ func teslaGen3EVSEReadMonotonic(base semreg.MonotonicPoint, elapsed time.Duratio
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE scrape monotonic clock overflows")
 	}
 	return semreg.MonotonicPoint{ClockEpochID: base.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(baseNS+delta, 10))}, nil
+}
+
+// teslaGen3EVSEPublicationScrapeMonotonic carries immutable evidence age into
+// an immediate scrape after delayed publication. A backward publication wall
+// coordinate stays at the evidence floor and cannot make the record younger.
+func teslaGen3EVSEPublicationScrapeMonotonic(evaluation semreg.MonotonicPoint, evaluatedAt, publishedAt time.Time) (semreg.MonotonicPoint, error) {
+	if publishedAt.Before(evaluatedAt) {
+		return evaluation, nil
+	}
+	return teslaGen3EVSEReadMonotonic(evaluation, publishedAt.Sub(evaluatedAt))
 }
 
 func (p *TeslaGen3EVSESemanticPublication) readMonotonic(readClock uint64) (semreg.MonotonicPoint, error) {

@@ -156,3 +156,25 @@ with rejected candidates and proves the later renderable connector receives
   6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
   `/tmp/helianthus-ebusgateway-966-age-slot-full-ci.log`, SHA-256
   `a6b084438a60cd5735ddf31fe39d66a599ca7a20fcf4e5f919e03aba92b364b8`.
+
+## P2 detached projection-input correction
+
+Source `5583c18d74a6a477089121126d771f6844f80559` (tree
+`22749170e8c38c77edc8e9ff65bdf225a9a7b8aa`) deep-copies the retained
+projection manifest, requested items, and dispositions before passive
+Prometheus reevaluation. Nested source-key dimensions, loss details, and
+manifest pack slices therefore cannot alias the retained publication. The
+regression mutates a returned projection source-key text pointer, verifies the
+retained dispositions' canonical bytes remain unchanged, and proves a later
+no-clock/no-I/O scrape has no injected value.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./mcp` — PASS: root
+  9.564s, gateway 95.814s, MCP 29.840s. Durable log
+  `/tmp/helianthus-ebusgateway-966-projection-focused-race.log`, SHA-256
+  `f304d98852169b0a985b8e838c2dcbdde053d26ffec809b7a1a2e6f6956c0766`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: Portal 93/93; complete Go race
+  suite; Python 168/6/26/11/6/2; golangci-lint 0 issues; transport gate not
+  triggered; Growatt Storage mapping 2 outputs/13 rejected; Tesla EVSE mapping
+  6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
+  `/tmp/helianthus-ebusgateway-966-projection-full-ci.log`, SHA-256
+  `e87bd8d6bcd589ea7fcc65b7a20889ac241d1f433df9b604dc4cc97593713851`.

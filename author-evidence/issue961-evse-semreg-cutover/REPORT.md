@@ -367,3 +367,30 @@ race, schema coverage, Python `215`, golangci-lint `0 issues`, the Modbus RTU
 transport gate, the Growatt Storage SemReg mapping gate, and passive smoke `not
 triggered`. Log: `/tmp/helianthus-ebusgateway-961-contiguous-sequence-ci.log`;
 SHA-256 `818d0d23350faf70f3704c1c238e01c8ef139cb6660d52f2b94970f195d8b1f6`.
+
+## P1 docs gate and P2 delayed-coordinate remediation
+
+Source `8e7b7c4d92f16c15ec2a8582537fadbdbd5520de` adds the declared Tesla EVSE
+SemReg mapping gate. It fetches the public immutable docs-semantic commit
+`88a422896e1dc8c45a6bf629f08b8bff6115c009`, proves that exact commit was
+fetched, runs its Tesla Gen3 WC3 24.44.3 mapping validator, verifies the pinned
+SemReg runtime `f3f761bc67e10d6a65eba6c13cb4dc51002d6955`, and runs the EVSE
+pack test. `ci_local.sh` invokes this gate after the existing Growatt mapping
+gate; the production-boundary classifier remains separate and unchanged.
+
+Delayed injected evidence with unequal observed/evaluated wall coordinates now
+requires an explicit non-regressing evaluation monotonic coordinate. Equal-time
+evidence may use the receipt coordinate, including zero. Regression coverage
+proves equal zero-coordinate acceptance, delayed missing-coordinate rejection
+before clock/kernel mutation, explicit delayed promotion, timeout-boundary
+withholding, unchanged public state, and MCP/authenticated GraphQL parity.
+
+Focused race: `GOWORK=off go test -race ./mcp -run
+'TestTeslaGen3EVSESemanticPublication' -count=1`; log
+`/tmp/helianthus-ebusgateway-961-docs-delay-focused-race.log`, SHA-256
+`29441a831eb6ab5bfa2203a319311472d797f320dd6a24f0c4181f58eb871eae`.
+
+Complete CI passed with the new mapping gate: `GOWORK=off
+./scripts/ci_local.sh`; log
+`/tmp/helianthus-ebusgateway-961-docs-delay-ci.log`, SHA-256
+`d1c0ae3f66161dd7af7ca3629336ed384e1135888df5681e8a95a6a835dd9d42`.

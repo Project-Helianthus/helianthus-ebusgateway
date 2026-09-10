@@ -11,6 +11,8 @@
 - Implementation tree: `dc63f43a7525128a34a8cb266cd641c83ce03758`
 - Lifecycle remediation implementation HEAD: `8f39cc90c5becace4d27a2b0ad7bf05dbafac900`
 - Lifecycle remediation implementation tree: `58e0abe4ee3536fb26255fc4e4b0efe0b003d39c`
+- Delayed-ingestion remediation implementation HEAD: `ff83f755c6d0f98891301f0b2fdf697e389adf02`
+- Delayed-ingestion remediation implementation tree: `a728abfd3acf428769ca0feff0b1ba89f935fc4f`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -76,6 +78,22 @@ the same projection remains withheld. This is an output disposition over the
 unchanged snapshot, consistent with the accepted SemReg lifecycle/projection
 contract.
 
+## P2 delayed-ingestion remediation
+
+`ff83f755c6d0f98891301f0b2fdf697e389adf02` keeps the native receipt
+coordinate (`ObservedAt`, `MonotonicNS`) distinct from the later semantic
+evaluation coordinate. It derives `EvaluateMonotonic` by adding the validated
+observation-to-evaluation interval to `ReceiptMonotonic`, records both pairs in
+every fact candidate, and uses the evaluation coordinate as the committed and
+subsequent read baseline. Thus a 30-second ingestion delay contributes to the
+SemReg freshness age: a 60-second allocation is fresh at 59 seconds and stale
+at its wall-clock expiry, exactly when its public projection becomes
+`withheld_provisional_expired`.
+
+This remains an evaluation of the immutable snapshot. It makes no provider
+call, native observation, or time-only lifecycle batch; MCP and GraphQL retain
+their parity for the delayed-ingestion boundary.
+
 ## Public contracts and boundary
 
 - MCP: `semantic.v1.evse.current.get` returns the SemReg
@@ -114,8 +132,8 @@ GOWORK=off go test -race ./mcp ./m2mgraphql ./cmd/gateway \
 PASS
 ```
 
-Its log SHA-256 is
-`d24b023ef43e9976574667824fc9cba027704b732f857cd58dc29dcbc4c49ae1`.
+The latest focused P2 race log SHA-256 is
+`85aede43021f1624258ca1a5130c7eec6ec880debb188c452bd036038a503310`.
 
 The final full local gate passed:
 
@@ -129,7 +147,7 @@ schema coverage, Python script suites `168 + 6 + 24 + 9 + 6 + 2 = 215`,
 `golangci-lint` with `0 issues`, the Modbus RTU production transport gate, and
 the existing Growatt Storage SemReg mapping gate. The passive-smoke classifier
 reported `not triggered`. The final log SHA-256 is
-`6b9383f21fa6de4a6189e725dc6798dbecfcb54a0f4279332ac69c4e76b70836`.
+`c8d26c02a40f88e470aac38a3836de9b42274094d7879e12274d7bae517a7ca5`.
 
 ## Gate classification
 

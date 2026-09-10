@@ -13,7 +13,6 @@ import (
 func semanticPrometheusDomains(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, storageAsset string, at time.Time) []ebusgateway.SemanticMetricsDomain {
 	// One instant is captured before either detached view is read. The domains
 	// may be different revisions, but every individual tuple is coherent.
-	at = at.UTC()
 	domains := []ebusgateway.SemanticMetricsDomain{{Name: "pv"}, {Name: "storage"}}
 	if adapter != nil {
 		if current, ok := adapter.SemanticPVCurrentSingleAt(at); ok {

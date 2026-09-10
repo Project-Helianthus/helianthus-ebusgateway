@@ -18,9 +18,9 @@
 - Optional-registration and record-lifecycle remediation tree:
   `920b43bbe091fc7aa1b4e73beabcce73c09205a6`
 - Rebased validated source HEAD:
-  `6a5f245bee72096f268f07a30eff4a88ab760259`
+  `0395307cef8bab7be4d91a337b9a00ac160f74e4`
 - Rebased validated source tree:
-  `102ca7cfa6249aa2eab3fce6212c4c89d1b28b58`
+  `aa021d04b69f8d8c1a035724e8e3195ab9a2b55b`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -115,7 +115,7 @@ GOWORK=off go test -race ./cmd/gateway -run '^TestTeslaHSCRetained' -count=1
 ok github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway 12.552s
 ```
 
-Log: `/tmp/gateway965-focused-race.log`  
+Log: `/tmp/gateway965-focused-race.log`
 SHA-256: `849c823a3a0cfda10d35272cc371e23bd293023f47522a8abcc99b3869fcd8a5`
 
 The complete repository CI passed:
@@ -131,7 +131,7 @@ conformance, Growatt and Tesla SemReg mapping gates, and passive-smoke
 classification. The passive smoke gate was not triggered because this change
 contains no live or runtime transport acquisition.
 
-Log: `/tmp/gateway965-ci-pass.log`  
+Log: `/tmp/gateway965-ci-pass.log`
 SHA-256: `0a21d4915493a9aeca080acf10b8c0dbd978bcbb346df4c60f5ae986e800854e`
 
 The standalone affected transport gate also passed:
@@ -141,7 +141,7 @@ GOWORK=off ./scripts/transport_gate.sh
 transport gate: PASS (Modbus RTU production composition and pinned endpoint conformance).
 ```
 
-Log: `/tmp/gateway965-transport-final.log`  
+Log: `/tmp/gateway965-transport-final.log`
 SHA-256: `f8580a2573ebcb3dada0fd8f55e3d8b009dbfa061ee51690727f14e4a01e2572`
 
 The remediation focused race run passed:
@@ -307,6 +307,61 @@ Standalone affected gate hashes:
 The additional provisional-first feedback thread was replied to with the
 correction and final evidence and left unresolved with the other threads.
 
+## Exact-HEAD lifecycle ordering and age remediation
+
+The independent review of `9602321cf0649ef0b4dba692861a566a47f29a58`
+reported that two admitted records can share a coarse monotonic coordinate
+while the later record has a later wall receipt. The aggregate lifecycle now
+uses monotonic order first and the later wall receipt as the tie-break. The
+normal regression accepts correlation-1 persistent followed by correlation-2/3
+provisional outcomes at the same 10-second monotonic coordinate, publishes both
+facts at the later aggregate wall instant, and proves that configured and
+allocated current retain their original per-record wall and monotonic receipts.
+A lower monotonic coordinate remains a true regression and leaves the records,
+evidence, and publication sequence unchanged. The same fixture is covered by
+32 concurrent native, semantic, and Prometheus readers under the race detector.
+
+The live PR inventory also contained a new delayed-publication finding. The
+publication already sealed receipt-to-publication elapsed time for detached
+Prometheus reads. MCP and GraphQL now apply that same immutable same-epoch floor
+before their own read high-water, so a queued expired allocation cannot restart
+its timeout when first read. A deterministic MCP/GraphQL parity regression
+publishes a 61-second-delayed record with a 60-second allocation and verifies
+immediate expired/withheld output from both surfaces.
+
+RED evidence:
+
+- Equal monotonic/later wall rejection:
+  `eadc1df26a173dfe7c9c4953e72ccbe425a85bc5b37ba177f05485af36235547`
+- Delayed MCP/GraphQL allocation incorrectly fresh:
+  `6d24919d9ff99ecdf89b7535a7aca649615383871276893c173860f0e606d768`
+
+Final focused race command:
+
+```text
+GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFileDisabledPreservesIndependentTesla|TeslaHSCRetained|TeslaGen3EVSE|SemanticPrometheus|BindFlagsPrometheusEVSE|GrowattStoragePortalAvailability|GrowattBMSRS485V202.*Registration|GrowattBMSRS485V202Coreless)' -count=1
+```
+
+Focused race SHA-256:
+`ae289fcf8a697b20e1084e70e027697975276235c92bbeb84a283c0f07bba89c`
+
+Complete local CI passed on source
+`0395307cef8bab7be4d91a337b9a00ac160f74e4`, tree
+`aa021d04b69f8d8c1a035724e8e3195ab9a2b55b`, including all Go race tests,
+219 Python tests, zero lint findings, all builds, transport conformance, both
+SemReg mapping gates, and passive-smoke classification. SHA-256:
+`7fb6b6c584330689f3bbf83e5623e9c21ba8b5e38324f9f263e2f82c2a466d94`.
+
+Standalone final gate hashes:
+
+- Modbus RTU transport: `1bef5f903fe62ca9fc2af3b517af02f871588fe1e948a42f28147a77a33ee7a9`
+- Tesla SemReg mapping: `949de3823c85716c0ff2d4523303ffba38323a844b4c4a652a722886c941ed2d`
+- Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
+Independent report SHA-256:
+`fd2410f5c9d44a7ffe6fa3c82d9cd25186a27e7e380e7d424624642e26c267e6`.
+The three trailing-space P3 lines were removed during this report refresh.
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -342,9 +397,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the three earlier and five later validated blockers are corrected. A
-  fresh independent exact-HEAD review remains required before merge; the author
-  did not review the remediation.
+- Review: the eight earlier blockers plus the equal-coordinate and delayed-age
+  findings are corrected. A fresh independent exact-HEAD review remains
+  required before merge; the author did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 

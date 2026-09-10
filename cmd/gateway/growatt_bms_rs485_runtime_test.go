@@ -169,6 +169,32 @@ func TestGrowattSemanticIdentityRejectsUncanonicalOriginalValues(t *testing.T) {
 	}
 }
 
+func TestGrowattSourceEpochIsAdmittedBeforeEndpointOpen(t *testing.T) {
+	for name, epoch := range map[string]string{"leading-space": " epoch", "invalid": "!", "control": "epoch\x00", "overlength": strings.Repeat("e", 257), "boundary": strings.Repeat("e", 256)} {
+		t.Run(name, func(t *testing.T) {
+			config := growattProductionConfig()
+			config.SourceEpoch = epoch
+			opened := false
+			original := openGrowattBMSRTUEndpoint
+			openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+				opened = true
+				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
+			}
+			defer func() { openGrowattBMSRTUEndpoint = original }()
+			_, err := startGrowattBMSRS485Runtime(config)
+			if name == "boundary" {
+				if err != nil || !opened {
+					t.Fatalf("valid boundary rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || opened {
+				t.Fatalf("invalid epoch opened endpoint: %v/%t", err, opened)
+			}
+		})
+	}
+}
+
 func startGrowattRuntimeWithFake(t *testing.T, config ebusgateway.GrowattBMSRS485Config, fake *growattEndpointFake) *growattBMSRS485ProductionProvider {
 	t.Helper()
 	original := openGrowattBMSRTUEndpoint

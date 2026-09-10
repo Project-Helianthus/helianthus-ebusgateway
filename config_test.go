@@ -74,6 +74,11 @@ func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
 	if err := (Config{}).ValidatePortalStorage(); err != nil {
 		t.Fatalf("fully disabled storage config rejected: %v", err)
 	}
+	raw := valid
+	raw.PortalStorage.RawReadEnabled = true
+	if err := raw.ValidatePortalStorage(); err == nil {
+		t.Fatal("Portal Storage raw-read setting accepted")
+	}
 }
 
 func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {

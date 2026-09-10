@@ -190,6 +190,9 @@ func (cfg Config) ValidatePortalPV() error {
 }
 
 func (cfg Config) ValidatePortalStorage() error {
+	if cfg.PortalStorage.RawReadEnabled {
+		return errors.New("portal storage configuration does not permit raw reads")
+	}
 	copy := cfg
 	copy.PortalPV = cfg.PortalStorage
 	if err := copy.ValidatePortalPV(); err != nil {

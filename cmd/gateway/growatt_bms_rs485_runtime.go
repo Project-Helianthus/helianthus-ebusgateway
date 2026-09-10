@@ -12,6 +12,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 const growattBMSRS485ClockEpoch = "system-monotonic-v1"
@@ -264,7 +265,7 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config) (*gro
 		}
 		return nil, nil
 	}
-	if !validGrowattSemanticIdentity(config.AssetID) || !validGrowattSemanticIdentity(config.SourceID) || config.AssetID == config.SourceID || config.SourceEpoch == "" || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
+	if !validGrowattSemanticIdentity(config.AssetID) || !validGrowattSemanticIdentity(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
 		config.SerialPath == "" || config.ResponseTimeout <= 0 || config.MaxResponseDelay <= 0 || config.MaxQuiescence <= config.MaxResponseDelay {
 		return nil, errors.New("enabled Growatt BMS RS-485 configuration is incomplete")
 	}

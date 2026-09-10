@@ -153,3 +153,12 @@ required a transport matrix for the new admission lines. `39a742d` extends only
 the finite Storage-config allowlist and its hostile fixtures; its focused gate
 tests pass. A fresh complete `GOWORK=off ./scripts/ci_local.sh` and a fresh
 independent full-HEAD review remain pending for `39a742d`.
+
+## Source epoch admission correction
+
+SourceEpoch is now validated as the exact SemReg `SourceEpochID` before the
+RTU endpoint is opened. Focused race tests reject whitespace, invalid/control
+characters, and values over 256 bytes without opening an endpoint, while the
+256-byte valid boundary opens. Portal Storage now rejects `RawReadEnabled=true`
+instead of silently accepting an unused PV alias field. Full CI remains pending
+by delivery-lead instruction.

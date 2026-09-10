@@ -87,9 +87,9 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 		emit("helianthus_semantic_projection_available", 1, labelMap("domain", d.Name))
 		facts := factIndex(d.Snapshot)
 		evaluated := evaluatedIndex(d.Evaluation)
-		connectorSlots := semanticEVSEConnectorSlots(d.Name, d.Snapshot)
 		dispositions := append([]projection.ProjectionDisposition(nil), d.Projection.Dispositions...)
 		sort.Slice(dispositions, func(i, j int) bool { return dispositions[i].ItemID < dispositions[j].ItemID })
+		connectorSlots := semanticEVSEConnectorSlots(d.Name, dispositions, facts, evaluated)
 		for _, disposition := range dispositions {
 			outcome := string(disposition.Outcome)
 			if !validOutcome(outcome) || !validSemanticItem(d.Name, string(disposition.ItemID)) {
@@ -252,21 +252,48 @@ func semanticDimensions(domain, item string, key semreg.FactKey, connectorSlots 
 const semanticEVSEConnectorBudget = 8
 
 // semanticEVSEConnectorSlots converts private connector identities into a
-// fixed, deterministic vocabulary. The raw identifier is used only to order a
-// detached snapshot; it is never emitted as a label.
-func semanticEVSEConnectorSlots(domain string, snapshot semreg.Snapshot) map[string]string {
+// fixed, deterministic vocabulary. Only a candidate that is referenced by an
+// exact or transformed allocated-current disposition and can actually emit a
+// value receives a slot. Raw identifiers are used only to order that detached
+// renderable set; they are never emitted as labels.
+func semanticEVSEConnectorSlots(domain string, dispositions []projection.ProjectionDisposition, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact) map[string]string {
 	if domain != "evse" {
 		return nil
 	}
-	keys := make([]string, 0)
-	for _, envelope := range snapshot.Facts {
-		for _, candidate := range envelope.Candidates {
-			key, ok := semanticFactKey(candidate.Key)
-			if !ok || candidate.Key.PackID != "helianthus.pack.evse" || candidate.Key.PackVersion != "1.0.0" || candidate.Key.FactID != "evse.limit.allocated_current" || len(candidate.Key.Dimensions) != 1 || candidate.Key.Dimensions[0].ID != "evse.dimension.connector" {
+	renderable := make(map[string]struct{})
+	for _, disposition := range dispositions {
+		if disposition.ItemID != "evse.limit.allocated_current" || (disposition.Outcome != projection.ProjectionExact && disposition.Outcome != projection.ProjectionTransformed) {
+			continue
+		}
+		schema, ok := semanticFactSchemaFor(domain, string(disposition.ItemID))
+		if !ok {
+			continue
+		}
+		for _, key := range disposition.SourceKeys {
+			targetKey, ok := semanticFactKey(key)
+			if !ok {
 				continue
 			}
-			keys = append(keys, key)
+			for _, envelope := range envelopes {
+				if len(envelope.Candidates) != 1 || len(envelope.Conflicts) != 0 {
+					continue
+				}
+				candidate := envelope.Candidates[0]
+				candidateKey, ok := semanticFactKey(candidate.Key)
+				if !ok || candidateKey != targetKey {
+					continue
+				}
+				evaluation, ok := evaluated[candidate.CandidateID]
+				if !ok || !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, evaluation.EffectiveAvailability, evaluation.Freshness) || candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || candidate.Quality.Validity != semreg.ValidityGood || evaluation.EffectiveAvailability != semreg.AvailabilityAvailable || evaluation.Freshness != semreg.FreshnessFresh || !schema.matches(key, candidate.Value) {
+					continue
+				}
+				renderable[targetKey] = struct{}{}
+			}
 		}
+	}
+	keys := make([]string, 0, len(renderable))
+	for key := range renderable {
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	slots := make(map[string]string, semanticEVSEConnectorBudget)

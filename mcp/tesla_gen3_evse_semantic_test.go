@@ -776,13 +776,14 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorRes
 func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDelay(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
-		name      string
-		delay     time.Duration
-		allocated projection.ProjectionOutcome
+		name              string
+		delay             time.Duration
+		allocated         projection.ProjectionOutcome
+		allocatedOneLater projection.ProjectionOutcome
 	}{
-		{"before expiry", 59 * time.Second, projection.ProjectionExact},
-		{"at expiry", 60 * time.Second, projection.ProjectionWithheld},
-		{"after expiry", 120 * time.Second, projection.ProjectionWithheld},
+		{"before expiry", 59 * time.Second, projection.ProjectionExact, projection.ProjectionWithheld},
+		{"at expiry", 60 * time.Second, projection.ProjectionWithheld, projection.ProjectionWithheld},
+		{"after expiry", 120 * time.Second, projection.ProjectionWithheld, projection.ProjectionWithheld},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
@@ -803,8 +804,12 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDela
 			if !ok || teslaGen3EVSEDisposition(current.Projection, "evse.limit.allocated_current") != tc.allocated || teslaGen3EVSEDisposition(current.Projection, "evse.limit.configured_current") != projection.ProjectionExact {
 				t.Fatalf("immediate delayed scrape=%#v ok=%t", current.Projection, ok)
 			}
+			oneLater, ok := p.SemanticEVSECurrentAt(publishedAt.Add(time.Second))
+			if !ok || teslaGen3EVSEDisposition(oneLater.Projection, "evse.limit.allocated_current") != tc.allocatedOneLater {
+				t.Fatalf("delayed scrape did not advance evidence age: %#v ok=%t", oneLater.Projection, ok)
+			}
 			rollback, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
-			if !ok || teslaGen3EVSEDisposition(rollback.Projection, "evse.limit.allocated_current") != tc.allocated {
+			if !ok || teslaGen3EVSEDisposition(rollback.Projection, "evse.limit.allocated_current") != tc.allocatedOneLater {
 				t.Fatalf("rollback changed delayed allocation decision: %#v ok=%t", rollback.Projection, ok)
 			}
 		})

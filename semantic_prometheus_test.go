@@ -239,6 +239,29 @@ func TestSemanticPrometheusEVSERejectsHostileSchemaAndConnectorOverflow(t *testi
 	}
 }
 
+func TestSemanticPrometheusEVSEConnectorSlotsIgnoreUnrenderableCandidates(t *testing.T) {
+	domain := semanticMetricsFixture("evse", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+	for index := 0; index < semanticEVSEConnectorBudget; index++ {
+		candidateID := semreg.CandidateID("candidate:rejected-" + strconv.Itoa(index))
+		addEVSEAllocatedFixture(&domain, "connector:blocked-"+strconv.Itoa(index), candidateID)
+		for factIndex := range domain.Snapshot.Facts {
+			if len(domain.Snapshot.Facts[factIndex].Candidates) == 1 && domain.Snapshot.Facts[factIndex].Candidates[0].CandidateID == candidateID {
+				domain.Snapshot.Facts[factIndex].Candidates[0].Quality.Qualification = semreg.QualificationRejected
+			}
+		}
+	}
+	addEVSEAllocatedFixture(&domain, "connector:promoted", "candidate:promoted")
+	var out bytes.Buffer
+	writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+	metrics := out.String()
+	if !strings.Contains(metrics, `helianthus_semantic_fact_value{connector="connector_1",dimension="connector",domain="evse",fact_id="evse.limit.allocated_current",pack="helianthus.pack.evse",unit="unit.ampere"} 16`) {
+		t.Fatalf("renderable connector was displaced by rejected candidates:\n%s", metrics)
+	}
+	if strings.Contains(metrics, "blocked-") || strings.Contains(metrics, "connector:promoted") {
+		t.Fatalf("connector identity leaked through labels:\n%s", metrics)
+	}
+}
+
 func semanticMetricsFixture(domain string, available bool, freshness semreg.Freshness, availability semreg.Availability, validity semreg.Validity, conflicts int) SemanticMetricsDomain {
 	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "inverter:asset:private", semreg.DefinitionID("pv.ac.aggregate_active_power")
 	unit := semreg.DefinitionID("unit.watt")

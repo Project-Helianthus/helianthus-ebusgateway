@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -202,6 +203,26 @@ func TestTeslaHSCRetainedOwnerPersistentSiblingDoesNotRefreshProvisional(t *test
 		bytes.Contains(response.Body.Bytes(), []byte(`"fact_id":"evse.limit.allocated_current"`)) ||
 		!bytes.Contains(response.Body.Bytes(), []byte(`"item_id":"evse.limit.allocated_current","outcome":"withheld"`)) {
 		t.Fatalf("authenticated GraphQL response=%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTeslaHSCRetainedOwnerPublishesRetainedProvisionalInInitialSemanticBatch(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 1, 12, 600, false, 32)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); !errors.Is(err, errTeslaHSCRetainedUnavailable) {
+		t.Fatalf("provisional-only semantic read error = %v", err)
+	}
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 3, 16)); err != nil {
+		t.Fatal(err)
+	}
+	semantic, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+	encoded, marshalErr := json.Marshal(semantic)
+	if err != nil || marshalErr != nil ||
+		!bytes.Contains(encoded, []byte(`"fact_id":"evse.limit.configured_current"`)) ||
+		!bytes.Contains(encoded, []byte(`"fact_id":"evse.limit.allocated_current"`)) {
+		t.Fatalf("initial combined semantic value/error = %s / %v / %v", encoded, err, marshalErr)
 	}
 }
 

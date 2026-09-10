@@ -282,10 +282,11 @@ func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.Tesla
 		}
 		source := mcp.TeslaGen3EVSECurrentLimitV1Source{Persistent: nextPersistent}
 		// An unchanged provisional sibling must not inherit a later persistent
-		// outcome's receipt and thereby gain a new lifetime. Keep the native
-		// provisional record retained, but withdraw it from this persistent-only
-		// semantic publication until a new correlated provisional outcome arrives.
-		publishProvisional := haveProvisional && !setPersistent
+		// outcome's receipt and thereby gain a new lifetime. The one exception is
+		// the initial semantic batch: a provisional accepted before the first
+		// persistent outcome has not been published yet, and its own retained
+		// receipt axes preserve its original lifetime.
+		publishProvisional := haveProvisional && (!setPersistent || owner.sequence == 0)
 		if publishProvisional {
 			source.Provisional = nextProvisional
 		}

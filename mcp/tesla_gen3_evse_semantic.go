@@ -261,9 +261,10 @@ func (p *TeslaGen3EVSESemanticPublication) SemanticEVSECurrentAt(at time.Time) (
 	if err != nil {
 		return SemanticEVSECurrent{}, false
 	}
-	manifest := p.manifest
-	requested := append([]projection.RequestedItem(nil), p.requested...)
-	dispositions := append([]projection.ProjectionDisposition(nil), p.dispositions...)
+	manifest, requested, dispositions, err := teslaGen3EVSECloneProjectionInputs(p.manifest, p.requested, p.dispositions)
+	if err != nil {
+		return SemanticEVSECurrent{}, false
+	}
 	evaluatedAt := p.evaluatedAt
 	scrapeEpoch := p.scrapeEpoch
 	var allocatedExpiresAt *semreg.MonotonicPoint
@@ -321,6 +322,27 @@ func teslaGen3EVSECloneSnapshot(snapshot semreg.Snapshot) (semreg.Snapshot, erro
 		return semreg.Snapshot{}, err
 	}
 	return clone, nil
+}
+
+func teslaGen3EVSECloneProjectionInputs(manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition) (projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+	value := struct {
+		Manifest     projection.ProjectionManifest      `json:"manifest"`
+		Requested    []projection.RequestedItem         `json:"requested"`
+		Dispositions []projection.ProjectionDisposition `json:"dispositions"`
+	}{Manifest: manifest, Requested: requested, Dispositions: dispositions}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return projection.ProjectionManifest{}, nil, nil, err
+	}
+	var clone struct {
+		Manifest     projection.ProjectionManifest      `json:"manifest"`
+		Requested    []projection.RequestedItem         `json:"requested"`
+		Dispositions []projection.ProjectionDisposition `json:"dispositions"`
+	}
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return projection.ProjectionManifest{}, nil, nil, err
+	}
+	return clone.Manifest, clone.Requested, clone.Dispositions, nil
 }
 
 func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.Context) (any, error) {

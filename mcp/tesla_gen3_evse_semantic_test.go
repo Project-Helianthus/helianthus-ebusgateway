@@ -723,6 +723,34 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesSnapshot(t
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesProjectionInputs(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus-projection-copy", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("detached projection scrape called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("detached projection scrape called read clock"); return 0, nil }
+	before := mustJSON(p.dispositions)
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || len(current.Projection.Dispositions) == 0 || len(current.Projection.Dispositions[0].SourceKeys) == 0 || len(current.Projection.Dispositions[0].SourceKeys[0].Dimensions) == 0 || current.Projection.Dispositions[0].SourceKeys[0].Dimensions[0].Value.Text == nil {
+		t.Fatalf("missing mutable projection source key: %#v ok=%t", current.Projection, ok)
+	}
+	*current.Projection.Dispositions[0].SourceKeys[0].Dimensions[0].Value.Text = "tampered"
+	if got := mustJSON(p.dispositions); got != before {
+		t.Fatalf("returned projection mutated retained inputs\nbefore=%s\nafter=%s", before, got)
+	}
+	again, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || strings.Contains(mustJSON(again.Projection), "tampered") {
+		t.Fatalf("later scrape inherited projection mutation: %#v ok=%t", again.Projection, ok)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorResurrection(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

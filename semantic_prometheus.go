@@ -230,7 +230,11 @@ func validSemanticFact(domain, pack, fact string) bool {
 }
 func validSemanticItem(domain, item string) bool {
 	if domain == "pv" {
-		return strings.HasPrefix(item, "projection.gateway.pv.inverter.")
+		switch item {
+		case "projection.gateway.pv.inverter.ac.current.phase_a", "projection.gateway.pv.inverter.ac.current.phase_b", "projection.gateway.pv.inverter.ac.current.phase_c", "projection.gateway.pv.inverter.ac.voltage.phase_a", "projection.gateway.pv.inverter.ac.voltage.phase_b", "projection.gateway.pv.inverter.ac.voltage.phase_c", "projection.gateway.pv.inverter.ac.power.active", "projection.gateway.pv.inverter.ac.frequency", "projection.gateway.pv.inverter.ac.energy_lifetime", "projection.gateway.pv.inverter.temperature.cabinet", "projection.gateway.pv.inverter.operating_state", "projection.gateway.pv.inverter.ac.current.total", "projection.gateway.pv.inverter.events.1", "projection.gateway.pv.inverter.events.2":
+			return true
+		}
+		return false
 	}
 	if domain == "storage" {
 		switch item {

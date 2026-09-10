@@ -82,6 +82,8 @@ semreg_public_config_only() {
 				*) return 1 ;;
 			esac
 		done <<< "${changes}"
+		[[ "$(grep -Ec '^[[:space:]]*return err[[:space:]]*$' <<< "${changes}")" -eq 1 && "$(grep -Ec '^[[:space:]]*return nil[[:space:]]*$' <<< "${changes}")" -eq 2 ]] || return 1
+		case "$(grep -Ec '^[[:space:]]*}[[:space:]]*$' <<< "${changes}")" in 5|6) ;; *) return 1 ;; esac
 		return 0
 	fi
 	while IFS= read -r line; do

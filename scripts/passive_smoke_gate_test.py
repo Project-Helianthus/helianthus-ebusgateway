@@ -66,6 +66,11 @@ type Config struct {
         self.assertNotEqual(hostile.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
+        for line in ("return err\n", "return nil\n", "}\n"):
+            (repo_path / "config.go").write_text(self.storage_config_only + line, encoding="utf-8")
+            hostile = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+            self.assertNotEqual(hostile.returncode, 0, line)
+
     def _create_temp_repo(
         self,
         changed_file: str,

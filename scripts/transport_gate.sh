@@ -180,6 +180,11 @@ semreg_public_config_only() {
 				*) return 1 ;;
 			esac
 		done <<< "${changes}"
+		# Generic return/brace lines are admitted only at their exact cardinality
+		# inside the fixed Storage validator; an unrelated validator cannot borrow
+		# the PortalStorage marker to add another identical line.
+		[[ "$(grep -Ec '^[[:space:]]*return err[[:space:]]*$' <<< "${changes}")" -eq 1 && "$(grep -Ec '^[[:space:]]*return nil[[:space:]]*$' <<< "${changes}")" -eq 2 ]] || return 1
+		case "$(grep -Ec '^[[:space:]]*}[[:space:]]*$' <<< "${changes}")" in 5|6) ;; *) return 1 ;; esac
 		return 0
 	fi
 	while IFS= read -r line; do

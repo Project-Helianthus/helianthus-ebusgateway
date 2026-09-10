@@ -110,6 +110,11 @@ hostile tests prove an extra `HTTPAddr` line still triggers required evidence.
 
 ## Changed files
 
+Portal-enabled Storage bounds four sequential Growatt response windows strictly
+below the five-second M2M deadline; native-only timing remains allowed. The
+GraphQL runtime bridge and storage publisher both trigger Modbus RTU source-only
+conformance fixtures.
+
 The implementation adds the storage publication core and MCP tool, extends the
 dedicated M2M GraphQL and Portal BFF paths, adds explicit configuration and
 tests, and installs `scripts/growatt_storage_semreg_gate.sh` in local CI.

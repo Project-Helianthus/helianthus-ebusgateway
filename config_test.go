@@ -79,6 +79,24 @@ func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
 	if err := raw.ValidatePortalStorage(); err == nil {
 		t.Fatal("Portal Storage raw-read setting accepted")
 	}
+	boundary := valid
+	boundary.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = (5*time.Second - time.Nanosecond) / 4
+	if err := boundary.ValidatePortalStorage(); err != nil {
+		t.Fatalf("near-bound Portal storage timeout rejected: %v", err)
+	}
+	for _, timeout := range []time.Duration{5 * time.Second / 4, time.Duration(1<<63 - 1)} {
+		candidate := valid
+		candidate.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = timeout
+		if err := candidate.ValidatePortalStorage(); err == nil {
+			t.Fatalf("Portal storage timeout accepted: %s", timeout)
+		}
+	}
+	nativeOnly := valid
+	nativeOnly.PortalStorage = PortalStorageConfig{}
+	nativeOnly.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout = 2 * time.Second
+	if err := nativeOnly.ValidatePortalStorage(); err != nil {
+		t.Fatalf("native-only timeout rejected: %v", err)
+	}
 }
 
 func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {

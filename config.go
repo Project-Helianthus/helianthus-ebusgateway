@@ -205,6 +205,10 @@ func (cfg Config) ValidatePortalStorage() error {
 	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
 		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
 	}
+	const m2mDeadline = 5 * time.Second
+	if producer.ResponseTimeout > m2mDeadline/4 || producer.ResponseTimeout*4 >= m2mDeadline {
+		return errors.New("portal storage semantic BFF requires four Growatt reads below the M2M deadline")
+	}
 	return nil
 }
 

@@ -13,6 +13,8 @@
 - Lifecycle remediation implementation tree: `58e0abe4ee3536fb26255fc4e4b0efe0b003d39c`
 - Delayed-ingestion remediation implementation HEAD: `ff83f755c6d0f98891301f0b2fdf697e389adf02`
 - Delayed-ingestion remediation implementation tree: `a728abfd3acf428769ca0feff0b1ba89f935fc4f`
+- Portal and rollback remediation HEAD: `7f23eeeb428b5512bdb7e9516e1dc5b6815796bf`
+- Portal and rollback remediation tree: `cf6b976b19fee40140d31b9f4491d1a2cf834e0c`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -94,6 +96,21 @@ This remains an evaluation of the immutable snapshot. It makes no provider
 call, native observation, or time-only lifecycle batch; MCP and GraphQL retain
 their parity for the delayed-ingestion boundary.
 
+## Portal and rollback remediation
+
+The configured read-only Portal EVSE BFF now forwards only the fixed
+`SemanticEVSECurrent` GraphQL response through
+`/api/v1/semantic/evse/current`; it has a dedicated disabled-by-default config,
+fixed asset reference, mTLS client settings, bootstrap capability and endpoint.
+Normal and withheld-expired projections are forwarded byte-for-byte by the
+Portal route. No native fallback, alias, second publication, acquisition, or
+operation path was added.
+
+Read evaluation now holds an exclusive lifecycle lock and persists the greatest
+returned wall and monotonic evaluation coordinates. A post-expiry read followed
+by a wall-clock rollback to before expiry is clamped to the prior evaluation and
+remains expired and withheld on both MCP and GraphQL.
+
 ## Public contracts and boundary
 
 - MCP: `semantic.v1.evse.current.get` returns the SemReg
@@ -132,8 +149,8 @@ GOWORK=off go test -race ./mcp ./m2mgraphql ./cmd/gateway \
 PASS
 ```
 
-The latest focused P2 race log SHA-256 is
-`85aede43021f1624258ca1a5130c7eec6ec880debb188c452bd036038a503310`.
+The latest focused Portal/lifecycle race log SHA-256 is
+`1e29498b5dd0569499f66fff4d780b71f8768c6f8892ae109d2ecc4136c52dba`.
 
 The final full local gate passed:
 
@@ -147,7 +164,7 @@ schema coverage, Python script suites `168 + 6 + 24 + 9 + 6 + 2 = 215`,
 `golangci-lint` with `0 issues`, the Modbus RTU production transport gate, and
 the existing Growatt Storage SemReg mapping gate. The passive-smoke classifier
 reported `not triggered`. The final log SHA-256 is
-`c8d26c02a40f88e470aac38a3836de9b42274094d7879e12274d7bae517a7ca5`.
+`83a264a1234536005c24a30164a4e45a62b0816e29ce96212b89c1501c2dc3e0`.
 
 ## Gate classification
 

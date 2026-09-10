@@ -58,3 +58,32 @@ Documentation gate: required and satisfied by
 CI transport gate passed; this change introduces no transport behavior. Smoke:
 offline semantic composition only; no live device, credential, deployment, or
 hardware action was performed.
+
+## Current author validation
+
+Current implementation head: `d0c1ed764371efc4287d6a381eb63a54b46abe99`.
+Current implementation tree: `f7180dbabf50ed386bc70dc5308d7ba95af574d7`.
+
+This correction closes the unbounded PV projection-item label path by admitting
+only the fourteen PV IDs declared by the accepted gateway projection catalog.
+Unknown suffixes are omitted and counted as render overflow. The renderer also
+rejects invalid canonical fact keys explicitly, counts invalid state vocabulary,
+and tests configured-startup outage versus disabled-domain registration. The
+passive-smoke classifier regression fixture now rejects a missing semantic
+unlock even if an unrelated unlock is added elsewhere.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./internal/modbusadapter`
+  — PASS: root 9.502s, gateway 95.532s, Modbus adapter 130.696s; durable log
+  `/tmp/helianthus-ebusgateway-963-focused-race.log`, SHA-256
+  `bb67b6c7658c5b7e20168d31fd8f5ebcc84ba49f77768b272d5706c8cd2f7c22`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: portal 93/93; full Go race
+  suite; Python suites 168/6/24/10/6/2; golangci-lint 0 issues; transport
+  gate PASS; Storage SemReg mapping gate PASS (2 executable outputs, 13
+  rejected scenarios); and passive smoke gate `not triggered`. Durable log
+  `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
+  `3c05187da1c2c91ebedd0d6c43e714b5318a73731135cb88cf4469417563b1a0`.
+
+Hosted run status was 4/4 SUCCESS on the implementation head before this
+author-evidence-only update. No physical smoke applies: this issue is offline,
+read-only metric composition with no device, credential, transport acquisition,
+publication, Portal, GraphQL, or MCP operation.

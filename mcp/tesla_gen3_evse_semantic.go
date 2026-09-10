@@ -125,14 +125,17 @@ func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*Tesl
 // Publish atomically maps one accepted WC3 24.44.3 record bundle.  A rejected
 // bundle never advances the kernel or replaces the retained public snapshot.
 func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLimitV1Source, evidence TeslaGen3EVSESemanticEvidence) error {
-	if p == nil || p.kernel == nil {
+	if p == nil {
+		return ErrTeslaGen3EVSESemanticUnavailable
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.kernel == nil {
 		return ErrTeslaGen3EVSESemanticUnavailable
 	}
 	if err := p.validate(source, evidence); err != nil {
 		return err
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	inputDigest := p.inputDigest(source, evidence)
 	if evidence.Sequence < p.sequence {
 		return errors.New("tesla Gen3 EVSE semantic replay or collision")

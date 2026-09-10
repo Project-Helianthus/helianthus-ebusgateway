@@ -232,6 +232,68 @@ func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationConcurrentPublishSerializesLifecycle(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base.Add(2 * time.Second) }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	first := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}
+	second := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-second", ObservedAt: base.Add(time.Second), EvaluatedAt: base.Add(time.Second), MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}
+	run := func(inputs []TeslaGen3EVSESemanticEvidence) []error {
+		start := make(chan struct{})
+		results := make(chan error, len(inputs))
+		var wait sync.WaitGroup
+		for _, input := range inputs {
+			input := input
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				results <- p.Publish(source, input)
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(results)
+		out := make([]error, 0, len(inputs))
+		for result := range results {
+			out = append(out, result)
+		}
+		return out
+	}
+	phaseOne := run([]TeslaGen3EVSESemanticEvidence{first, first, {ObservationID: "observation:concurrent-gap-one", ObservedAt: base.Add(2 * time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 3, EvaluatedMonotonicNS: 3, Sequence: 3}})
+	if p.sequence != 1 || p.current.Revisions.Semantic != "1" || len(phaseOne) != 3 {
+		t.Fatalf("phase one state sequence=%d revision=%s results=%v", p.sequence, p.current.Revisions.Semantic, phaseOne)
+	}
+	for _, result := range phaseOne {
+		if result != nil && !strings.Contains(result.Error(), "sequence gap") {
+			t.Fatalf("phase one result=%v", result)
+		}
+	}
+	phaseTwo := run([]TeslaGen3EVSESemanticEvidence{second, first, {ObservationID: "observation:concurrent-gap-two", ObservedAt: base.Add(3 * time.Second), EvaluatedAt: base.Add(3 * time.Second), MonotonicNS: 4, EvaluatedMonotonicNS: 4, Sequence: 4}})
+	if p.sequence != 2 || p.current.Revisions.Semantic != "2" || len(phaseTwo) != 3 {
+		t.Fatalf("phase two state sequence=%d revision=%s results=%v", p.sequence, p.current.Revisions.Semantic, phaseTwo)
+	}
+	for _, result := range phaseTwo {
+		if result != nil && !strings.Contains(result.Error(), "sequence gap") && !strings.Contains(result.Error(), "replay or collision") {
+			t.Fatalf("phase two result=%v", result)
+		}
+	}
+	mcpData := teslaGen3EVSEMCPCurrent(t, teslaGen3EVSEMCPHandler(t, p))
+	graphqlData := teslaGen3EVSEGraphQLCurrent(t, teslaGen3EVSEGraphQLHandler(t, p), "concurrent-publication")
+	var mcpJSON, graphqlJSON any
+	if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil || !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+		t.Fatalf("concurrent MCP/GraphQL parity=%t err=%v", reflect.DeepEqual(mcpJSON, graphqlJSON), err)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationAdvancesStableCandidateRevisions(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	before := teslaGen3EVSECandidateRevisions(t, p.current)

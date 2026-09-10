@@ -18,9 +18,9 @@
 - Optional-registration and record-lifecycle remediation tree:
   `920b43bbe091fc7aa1b4e73beabcce73c09205a6`
 - Rebased validated source HEAD:
-  `ee0f9f682bcec8f2cac5d606e6fc660a2503abb2`
+  `e350c466a8003aff054d0203b3dccaf38d00cf08`
 - Rebased validated source tree:
-  `a127edf0c906703339110a7a349486cc79f0b88f`
+  `739f8f0497ff756404c33d706a8aef3e1b7be0d5`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -371,6 +371,30 @@ The three trailing-space P3 lines were removed during this report refresh.
 The tenth partial-delay thread was replied to with the final correction and
 evidence and left unresolved for fresh exact-HEAD review.
 
+## Public documentation link correction
+
+The eleventh live feedback thread identified that the new README link used a
+repository-relative target despite the repository instruction requiring public
+GitHub URLs in tracked documentation. Commit
+`e350c466a8003aff054d0203b3dccaf38d00cf08`, tree
+`739f8f0497ff756404c33d706a8aef3e1b7be0d5`, changes only that target to:
+
+```text
+https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/tesla-gen3-hsc-retained-owner.md
+```
+
+The focused link check passed and also rejects the previous relative target.
+SHA-256: `d3b55d9255fa5759b7b0b305fe384edfe9bfebd092ba301b9c7af4839a6e51d9`.
+
+Complete applicable local CI passed on this documentation-only source,
+including the full Go race suite, 219 Python tests, zero lint findings, all
+builds, transport conformance, both SemReg mapping gates, and passive-smoke
+classification. SHA-256:
+`8a59e8436ca674931ddb4513634ca15e60b3a55d7e2a445dc09e2f48ab181464`.
+
+No runtime source or behavior changed. The thread was replied to and left
+unresolved for fresh exact-HEAD review.
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -406,9 +430,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the ten earlier findings plus the partial-delay accumulation finding
-  are corrected. A fresh independent exact-HEAD review remains required before
-  merge; the author did not review the remediation.
+- Review: the eleven earlier runtime/lifecycle findings plus the public-link
+  finding are corrected. A fresh independent exact-HEAD review remains required
+  before merge; the author did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 

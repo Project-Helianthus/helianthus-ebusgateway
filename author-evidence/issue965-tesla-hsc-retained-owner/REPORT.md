@@ -9,6 +9,10 @@
 - Base: `c139d0e6ae59b4f925ac02a7cadf09db53278e13`
 - Implementation HEAD: `0d1bb2f9b9a8723f9c7b189df20746ac6e1e2f4e`
 - Implementation tree: `8097ffb2d42fb158d191d9b4df0c8e02e12cdf71`
+- Blocking-findings remediation HEAD:
+  `c5bf9bcbfe61d627393e190a0e04a1be1be4d8eb`
+- Blocking-findings remediation tree:
+  `324d4ee08a6be0c42418311470bfb7ab08e9de61`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -58,6 +62,31 @@ while rejecting direct semantic construction or ingestion in lifecycle code.
 It separately rejects serial opening, exchange, request construction, device
 write calls, and activation markers in the retained owner.
 
+## Independent-review remediation
+
+The fresh independent review of PR #969 at `7874714491e9cf533779b3679212316df54a400e`
+reported three blocking findings. Remediation commit
+`c5bf9bcbfe61d627393e190a0e04a1be1be4d8eb` corrects all three:
+
+- A persistent-only update keeps the provisional native record and its original
+  evidence, but omits that unchanged sibling from the combined semantic publish.
+  This withdraws allocated current instead of assigning it the persistent
+  outcome's later receipt. The regression places the persistent update after
+  the provisional timeout and verifies configured current remains exact while
+  allocated current is withheld through the MCP provider and an M2M GraphQL
+  handler carrying an authenticated principal.
+- Both the Growatt-only and composite providers implement one Portal storage
+  availability capability. A started Growatt runtime remains available when
+  Tesla is composed, while Tesla-only and failed-Growatt compositions remain
+  unavailable.
+- `Successor` reserves the fenced transition while holding the owner lock.
+  Successful construction consumes it exactly once; construction failure
+  releases one retry. Repeated and 32-way concurrent admission regressions prove
+  that only one active owner can use the next epoch and generation.
+
+The three review threads were replied to with their correction and test evidence
+and deliberately left unresolved for the next independent review.
+
 ## RED-first and validation evidence
 
 The first focused owner test run was intentionally RED:
@@ -106,6 +135,54 @@ transport gate: PASS (Modbus RTU production composition and pinned endpoint conf
 Log: `/tmp/gateway965-transport-final.log`  
 SHA-256: `f8580a2573ebcb3dada0fd8f55e3d8b009dbfa061ee51690727f14e4a01e2572`
 
+The remediation focused race run passed:
+
+```text
+GOWORK=off go test -race ./cmd/gateway -run 'Test(TeslaHSCRetained|GrowattStoragePortalAvailability)' -count=1
+ok github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway 12.687s
+```
+
+Log: `/tmp/gateway969-remediation-focused-race.log`
+SHA-256: `85a63c0f38046e1c0c6e125f04b496f2256ce1a46e95eab81156254b246b8931`
+
+The complete repository CI also passed after remediation, including the full
+Go race suite, all 216 Python tests, zero lint findings, transport conformance,
+both SemReg mapping gates, and passive-smoke classification:
+
+Log: `/tmp/gateway969-remediation-ci.log`
+SHA-256: `a4a986163086ccbece0f685d484eb4107b08e014296efe2c6f8a04cac56ea200`
+
+The standalone affected transport gate passed after remediation:
+
+Log: `/tmp/gateway969-remediation-transport.log`
+SHA-256: `9a30ab58105b974e720096cf42f47338abf11a9a7f9f64081dbd6596c1d9bd5f`
+
+## Hosted adaptermux failure diagnosis
+
+Hosted run `34512623473`, test job `102990233209`, failed only
+`TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse/blocked_write_drains_before_BACKOFF_publication`
+at `internal/adaptermux/connection_health_test.go:231` with
+`connection-loss callback crossed an admitted Write`.
+
+Production `reconnect` first fences new work, closes the transport, then takes
+`connectionUseMu` for writing. The admitted `doSend` holds the read lease until
+the transport `Write` returns and its deferred lease release runs. The test's
+`writeDone` channel is closed by the caller goroutine only after `doSend`
+returns, outside that protected lease. After the read lease releases, the Go
+scheduler may run the waiting reconnect goroutine and its callback before it
+runs the caller's next `close(writeDone)` statement. The hosted assertion
+therefore observes an unprotected caller-side scheduling order, rather than a
+provider call crossing the production fence.
+
+This PR does not modify adaptermux. The deterministic correction belongs to
+open issue #968, which should observe provider return from inside the fake
+transport or another event within the protected call. The remediation's single
+complete local CI run passed the same full adaptermux race suite; no hosted
+retry loop was used.
+
+Hosted failure log: `/tmp/gateway969-hosted-test-failure.log`
+SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
+
 ## Gate and handoff state
 
 - Documentation gate: satisfied by
@@ -115,8 +192,9 @@ SHA-256: `f8580a2573ebcb3dada0fd8f55e3d8b009dbfa061ee51690727f14e4a01e2572`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: not performed by the author. A fresh independent exact-HEAD review
-  remains required before merge.
+- Review: the three validated blockers from the earlier independent review are
+  corrected. A fresh independent exact-HEAD review remains required before
+  merge; the author did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 
@@ -126,3 +204,6 @@ The assignment requested `gpt-5.6-sol` at high effort. The applied task runtime
 identified itself as GPT-6, and its effort setting was not exposed. The author
 did not silently substitute another task or claim the requested routing was
 applied.
+
+The PR branch is the durable source for this report; `/tmp` log paths identify
+the author-side files whose hashes are recorded above.

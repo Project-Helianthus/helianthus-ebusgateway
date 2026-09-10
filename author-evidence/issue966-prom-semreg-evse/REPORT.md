@@ -178,3 +178,12 @@ no-clock/no-I/O scrape has no injected value.
   6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
   `/tmp/helianthus-ebusgateway-966-projection-full-ci.log`, SHA-256
   `e87bd8d6bcd589ea7fcc65b7a20889ac241d1f433df9b604dc4cc97593713851`.
+
+## Accepted-main rebase validation
+
+The PR was rebased onto accepted `main` `138eea47`. Rebased source/head
+`baa45324eb66c5035f29225f4fc5e6d8f1275238` has tree
+`0585245c501b9f7228b91d7701405a9ae4494f0e`.
+
+- Rebased focused race: PASS; SHA-256 `c97d0e0fb6f3b4d791bb651028c402440fb2b75d61e6ee8dddfb50b6821b4bda`.
+- Rebased complete CI: PASS; SHA-256 `75957a498b76da22786786f89043b973a80043290716425f95a9d6eb9b0315ad`.

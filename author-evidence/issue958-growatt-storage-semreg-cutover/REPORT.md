@@ -297,3 +297,27 @@ race packages, 168 Python tests plus 6/24/9/6/2 gate suites, golangci-lint with
 and 13 rejected scenarios), and passive-smoke not triggered. The complete log
 is `wave12/gateway959-correction-final-full-ci.log`, SHA-256
 `92c2a0a9b6bff261cf74d007a65bcfbcab26619fd620f70928c7f3985b5c474b`.
+
+## Second exact-HEAD review correction
+
+Independent review `gateway959-a67da0e-independent/REVIEW.md` (SHA-256
+`696a7106e10879846e0d054ab6bbba0ec57c307926ed39ce2ac8cbc30365e536`)
+identified two additional reachable paths. The M2M runtime now supplies every
+verified request with a 9.5-second context deadline, preserving the 500 ms
+write-response headroom. A native owner can hold the capacity-one gate while a
+deadline-expired queued GraphQL request exits before a second RTU observation;
+a later live request still succeeds. The runtime test observes the actual
+provider deadline below the server write deadline.
+
+The RTU source classifier now covers `cmd/gateway/portal_pv_client.go`,
+`m2mgraphql/client.go`, and `portal/handler.go`; source-only pass/fail fixtures
+cover each, while test-only changes remain non-triggering. No live I/O, write,
+compatibility path, or semantic fallback was added.
+
+RED: the provider context lacked a deadline and six new source-gate controls
+failed. GREEN focused race tests and gate suites passed. Fresh complete
+`GOWORK=off ./scripts/ci_local.sh` passed: 93 Portal Node tests, all Go race
+packages, Python 168 plus 6/24/9/6/2 suites, lint 0 issues, RTU conformance,
+mapping 2 outputs/13 rejects, and passive smoke not triggered. Log:
+`wave12/gateway959-second-correction-full-ci.log`, SHA-256
+`1a50d558bf5470d25356f13af66a046846bfad7b7a94d77afe5ffa9979638883`.

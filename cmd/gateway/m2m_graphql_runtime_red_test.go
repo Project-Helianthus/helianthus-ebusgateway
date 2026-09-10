@@ -108,6 +108,48 @@ func TestM2MGraphQLRuntime_RejectsGrowattStorageWithoutWriteDeadlineHeadroom(t *
 	}
 }
 
+func TestM2MGraphQLRuntime_BoundsStorageProviderContextBelowWriteDeadline(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1, readDeadline: make(chan time.Time, 1), releaseRead: make(chan struct{})}
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile, AllowedAssets: []string{"asset:growatt-bms-a"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil, growatt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	body := []byte(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`)
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certs.pool, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certs.goodClient}}}}
+	result := make(chan error, 1)
+	go func() {
+		response, err := client.Post("https://"+runtime.Addr()+"/graphql/m2m/v1", "application/json", bytes.NewReader(body))
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		result <- err
+	}()
+	select {
+	case deadline := <-fake.readDeadline:
+		if deadline.IsZero() || time.Until(deadline) >= m2mHTTPBodyTimeout {
+			t.Fatalf("storage provider deadline=%s; want bounded below write timeout", deadline)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("storage provider did not start")
+	}
+	close(fake.releaseRead)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("bounded storage request failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bounded storage request did not complete")
+	}
+}
+
 func TestM2MGraphQLRuntime_StalledHandshakeDoesNotBlockOtherPrincipals(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{

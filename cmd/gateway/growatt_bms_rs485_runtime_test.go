@@ -35,6 +35,7 @@ type growattEndpointFake struct {
 	releaseRecover chan struct{}
 	delay          time.Duration
 	readStarted    chan struct{}
+	readDeadline   chan time.Time
 	releaseRead    chan struct{}
 }
 
@@ -96,6 +97,13 @@ func growattBMSProductionReadPDU(words []uint16) []byte {
 }
 
 func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error) {
+	if fake.readDeadline != nil {
+		deadline, _ := ctx.Deadline()
+		select {
+		case fake.readDeadline <- deadline:
+		default:
+		}
+	}
 	if fake.readStarted != nil {
 		select {
 		case fake.readStarted <- struct{}{}:
@@ -764,10 +772,20 @@ func TestGrowattBMSRS485QueuedSemanticCancellationDoesNotObserve(t *testing.T) {
 		t.Fatal("holder did not enter the first native read")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, ok := newGrowattStorageGraphQLProvider(runtime)(ctx, "asset:growatt-bms-a"); ok {
-		t.Fatal("cancelled queued GraphQL storage request published")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	queued := make(chan bool, 1)
+	go func() {
+		_, ok := newGrowattStorageGraphQLProvider(runtime)(ctx, "asset:growatt-bms-a")
+		queued <- ok
+	}()
+	select {
+	case ok := <-queued:
+		if ok {
+			t.Fatal("deadline-expired queued GraphQL storage request published")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadline-expired queued GraphQL storage request did not return")
 	}
 	fake.mu.Lock()
 	callsWhileHeld := len(fake.calls)
@@ -786,9 +804,13 @@ func TestGrowattBMSRS485QueuedSemanticCancellationDoesNotObserve(t *testing.T) {
 		t.Fatal("holder did not complete after release")
 	}
 	fake.mu.Lock()
-	defer fake.mu.Unlock()
 	if len(fake.calls) != 4 {
+		fake.mu.Unlock()
 		t.Fatalf("cancelled queued request started a second observation: calls=%d", len(fake.calls))
+	}
+	fake.mu.Unlock()
+	if _, ok := newGrowattStorageGraphQLProvider(runtime)(context.Background(), "asset:growatt-bms-a"); !ok {
+		t.Fatal("later live GraphQL storage request did not succeed after queued deadline expiry")
 	}
 }
 

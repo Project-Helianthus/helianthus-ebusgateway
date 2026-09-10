@@ -30,6 +30,8 @@ type m2mGraphQLRuntime struct {
 const (
 	m2mHTTPHeaderTimeout    = 5 * time.Second
 	m2mHTTPBodyTimeout      = 10 * time.Second
+	m2mResponseHeadroom     = 500 * time.Millisecond
+	m2mRequestTimeout       = m2mHTTPBodyTimeout - m2mResponseHeadroom
 	m2mMaxPreTLSConnections = 16
 )
 
@@ -116,7 +118,9 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))
+		ctx, cancel := context.WithTimeout(request.Context(), m2mRequestTimeout)
+		defer cancel()
+		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(ctx, m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))
 	})}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil

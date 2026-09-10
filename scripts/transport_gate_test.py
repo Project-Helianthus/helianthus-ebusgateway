@@ -361,7 +361,10 @@ type Config struct {
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/portal_pv_client.go", "// base\n", "// modified\n"),
 			("m2mgraphql/handler.go", "// base\n", "// modified\n"),
+			("m2mgraphql/client.go", "// base\n", "// modified\n"),
+			("portal/handler.go", "// base\n", "// modified\n"),
 			("mcp/growatt_storage_semantic.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
@@ -403,7 +406,10 @@ type Config struct {
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/portal_pv_client.go", "// base\n", "// modified\n"),
 			("m2mgraphql/handler.go", "// base\n", "// modified\n"),
+			("m2mgraphql/client.go", "// base\n", "// modified\n"),
+			("portal/handler.go", "// base\n", "// modified\n"),
 			("mcp/growatt_storage_semantic.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
@@ -429,16 +435,18 @@ type Config struct {
                 self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
     def test_modbus_rtu_gate_skips_handler_test_only_change(self) -> None:
-        repo_path, _ = self._create_temp_repo(
-            "m2mgraphql/handler_test.go", "package m2mgraphql\n", "package m2mgraphql\n// changed\n"
-        )
-        result = subprocess.run(
-            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
-            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
-            text=True, capture_output=True, check=False,
-        )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("transport gate: not triggered.", result.stdout)
+        for changed_file in ("m2mgraphql/handler_test.go", "m2mgraphql/client_test.go", "portal/handler_test.go", "cmd/gateway/portal_pv_client_test.go"):
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(
+                    changed_file, "package test\n", "package test\n// changed\n"
+                )
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertIn("transport gate: not triggered.", result.stdout)
 
     def test_modbus_rtu_gate_fails_closed_for_missing_pinned_endpoint_test(self) -> None:
         repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")

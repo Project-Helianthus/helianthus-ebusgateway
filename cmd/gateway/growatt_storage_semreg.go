@@ -39,7 +39,6 @@ type growattStoragePublication struct {
 }
 
 func validGrowattSemanticIdentity(value string) bool {
-	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 128 || value != strings.TrimSpace(value) {
 		return false
 	}

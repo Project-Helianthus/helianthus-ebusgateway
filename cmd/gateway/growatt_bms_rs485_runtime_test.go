@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,6 +139,33 @@ func growattProductionConfig() ebusgateway.GrowattBMSRS485Config {
 		Enabled: true, AssetID: "asset:growatt-bms-a", SourceID: "growatt-bms-a", SourceEpoch: "source-epoch-1", DriverGeneration: 1, UnitID: 7,
 		SerialPath: "/dev/fixture", Baud: 9600, Parity: "even", StopBits: 1,
 		ResponseTimeout: time.Second, MaxResponseDelay: 100 * time.Millisecond, MaxQuiescence: 200 * time.Millisecond,
+	}
+}
+
+func TestGrowattSemanticIdentityRejectsUncanonicalOriginalValues(t *testing.T) {
+	if !validGrowattSemanticIdentity(strings.Repeat("a", 128)) {
+		t.Fatal("128-byte identity rejected")
+	}
+	for _, value := range []string{" asset", "asset ", " " + strings.Repeat("a", 128), strings.Repeat("a", 129)} {
+		if validGrowattSemanticIdentity(value) {
+			t.Fatalf("invalid identity accepted: %q", value)
+		}
+	}
+	for name, mutate := range map[string]func(*ebusgateway.GrowattBMSRS485Config){
+		"asset-leading":     func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = " asset" },
+		"asset-trailing":    func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = "asset " },
+		"asset-overlength":  func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = " " + strings.Repeat("a", 128) },
+		"source-leading":    func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = " source" },
+		"source-trailing":   func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = "source " },
+		"source-overlength": func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = " " + strings.Repeat("b", 128) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := growattProductionConfig()
+			mutate(&c)
+			if _, err := startGrowattBMSRS485Runtime(c); err == nil {
+				t.Fatal("invalid configured identity started")
+			}
+		})
 	}
 }
 

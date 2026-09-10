@@ -51,6 +51,31 @@ func TestConfigCrossValidatesPortalPVAgainstDedicatedM2MListener(t *testing.T) {
 	}
 }
 
+func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
+	m2m := M2MGraphQLConfig{ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem", ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"asset:storage-a"}}
+	portal := PortalStorageConfig{SemanticEnabled: true, M2MURL: "https://127.0.0.1:8443/graphql/m2m/v1", M2MServerName: "m2m.gateway.test", M2MCAFile: "ca.pem", M2MClientCert: "client.pem", M2MClientKey: "client-key.pem", AssetRef: "asset:storage-a"}
+	valid := Config{M2MGraphQL: m2m, PortalStorage: portal, ModbusTCPConfig: ModbusTCPConfig{GrowattBMSRS485: GrowattBMSRS485Config{Enabled: true, AssetID: "asset:storage-a"}}}
+	if err := valid.ValidatePortalStorage(); err != nil {
+		t.Fatalf("exact matching storage producer rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"disabled-producer":       func(cfg *Config) { cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled = false },
+		"different-asset":         func(cfg *Config) { cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID = "asset:storage-b" },
+		"allowed-assets-mismatch": func(cfg *Config) { cfg.M2MGraphQL.AllowedAssets = []string{"asset:storage-b"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := candidate.ValidatePortalStorage(); err == nil {
+				t.Fatal("invalid storage startup configuration accepted")
+			}
+		})
+	}
+	if err := (Config{}).ValidatePortalStorage(); err != nil {
+		t.Fatalf("fully disabled storage config rejected: %v", err)
+	}
+}
+
 func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {
 	base := Config{
 		M2MGraphQL: M2MGraphQLConfig{

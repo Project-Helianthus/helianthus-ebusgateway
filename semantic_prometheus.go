@@ -75,18 +75,16 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 			overflow++
 			continue
 		}
-		available := 0.0
-		if d.Available {
-			available = 1
-		}
-		emit("helianthus_semantic_projection_available", available, labelMap("domain", d.Name))
 		if !d.Available {
+			emit("helianthus_semantic_projection_available", 0, labelMap("domain", d.Name))
 			continue
 		}
 		if d.Snapshot.SnapshotID == "" || d.Evaluation.SnapshotID != d.Snapshot.SnapshotID || d.Projection.SnapshotID != d.Snapshot.SnapshotID || d.Evaluation.Revisions != d.Snapshot.Revisions || d.Projection.Revisions != d.Snapshot.Revisions || d.Evaluation.EvaluationDigest == "" {
+			emit("helianthus_semantic_projection_available", 0, labelMap("domain", d.Name))
 			overflow++
 			continue
 		}
+		emit("helianthus_semantic_projection_available", 1, labelMap("domain", d.Name))
 		facts := factIndex(d.Snapshot)
 		evaluated := evaluatedIndex(d.Evaluation)
 		dispositions := append([]projection.ProjectionDisposition(nil), d.Projection.Dispositions...)
@@ -148,6 +146,9 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 			if !ok {
 				return
 			}
+			if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
+				return
+			}
 			dimension, dimensionsOK := semanticDimensions(key)
 			labels := labelMap("domain", domain, "pack", string(key.PackID), "fact_id", string(key.FactID), "dimension", dimension, "qualification", string(candidate.Quality.Qualification), "promotion", string(candidate.Quality.Promotion), "quality", string(candidate.Quality.Validity), "availability", string(e.EffectiveAvailability), "freshness", string(e.Freshness))
 			emit("helianthus_semantic_fact_state", 1, labels)
@@ -165,6 +166,10 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 			return
 		}
 	}
+}
+
+func validSemanticState(q semreg.Qualification, p semreg.Promotion, v semreg.Validity, a semreg.Availability, f semreg.Freshness) bool {
+	return (q == semreg.QualificationCandidate || q == semreg.QualificationQualified || q == semreg.QualificationUnsupported || q == semreg.QualificationUnknown || q == semreg.QualificationRejected) && (p == semreg.PromotionPromoted || p == semreg.PromotionUnpromoted) && (v == semreg.ValidityGood || v == semreg.ValiditySuspect || v == semreg.ValidityBad || v == semreg.ValidityUnknown) && (a == semreg.AvailabilityAvailable || a == semreg.AvailabilityDegraded || a == semreg.AvailabilityUnavailable || a == semreg.AvailabilityWithdrawn) && (f == semreg.FreshnessFresh || f == semreg.FreshnessStale || f == semreg.FreshnessExpired || f == semreg.FreshnessUnknown)
 }
 
 func semanticDimensions(key semreg.FactKey) (string, bool) {

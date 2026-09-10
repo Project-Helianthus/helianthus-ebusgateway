@@ -8,3 +8,10 @@ Only test fixtures changed. The MCP partial-snapshot test uses a request context
 - Complete `GOWORK=off ./scripts/ci_local.sh`: PASS; SHA-256 `3e0fdd6b1fbe6f1a657995dbaa0bb1123a1163a9a5cb37af5da1fd7f22bb2fce`.
 
 Docs gate not required; transport and smoke gates not triggered. No live action.
+
+## Third hosted race correction
+
+Source `b9a6371` adds a transport-owned write-return signal immediately before the managed provider `Write` returns. The BACKOFF callback therefore proves it cannot cross the admitted provider call without depending on caller-side `doSend` scheduling. Alongside the deterministic MCP request-context partial fixture and request-context SSE delivery fixture, all three tests pass ten repeated race runs.
+
+- Three-fixture focused race SHA-256: `97c5b94541e31744816c2d3f125de0406b4b6db5f5918bf575d3e`.
+- Complete CI SHA-256: `3808b28d213936f9af2059e4802ad2040567dc0deb185655ed5fd120477583c5`.

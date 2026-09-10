@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -48,5 +50,35 @@ func (server *Server) handleGrowattStorageSemanticCall(ctx context.Context, name
 	if err != nil {
 		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "EVALUATED_SEMREG_PUBLICATION", "")), true), true
 	}
-	return callToolResultText(mustJSON(newModbusV1Envelope(data, nil, true, "EVALUATED_SEMREG_PUBLICATION", time.Now().UTC().Format(time.RFC3339Nano))), false), true
+	timestamp, err := growattStorageEvaluatedTimestamp(data)
+	if err != nil {
+		return callToolResultText(mustJSON(newModbusV1Envelope(nil, err, true, "EVALUATED_SEMREG_PUBLICATION", "")), true), true
+	}
+	return callToolResultText(mustJSON(newModbusV1Envelope(data, nil, true, "EVALUATED_SEMREG_PUBLICATION", timestamp)), false), true
+}
+
+// growattStorageEvaluatedTimestamp derives the public envelope timestamp from
+// the authoritative SemReg evaluation, never from handler wall time.
+func growattStorageEvaluatedTimestamp(data any) (string, error) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return "", errors.New("growatt BMS storage semantic data is invalid")
+	}
+	var projection struct {
+		Evaluation struct {
+			Context struct {
+				EvaluatedAt struct {
+					UnixNanoseconds string `json:"unix_nanoseconds"`
+				} `json:"evaluated_at"`
+			} `json:"context"`
+		} `json:"evaluation"`
+	}
+	if err := json.Unmarshal(encoded, &projection); err != nil {
+		return "", errors.New("growatt BMS storage semantic data is invalid")
+	}
+	nanoseconds, err := strconv.ParseInt(projection.Evaluation.Context.EvaluatedAt.UnixNanoseconds, 10, 64)
+	if err != nil {
+		return "", errors.New("growatt BMS storage evaluation time is unavailable")
+	}
+	return time.Unix(0, nanoseconds).UTC().Format(time.RFC3339Nano), nil
 }

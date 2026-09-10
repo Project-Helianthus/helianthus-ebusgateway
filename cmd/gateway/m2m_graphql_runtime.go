@@ -97,12 +97,7 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
 			return encoded, err == nil
 		},
-		SemanticStorageCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
-			if len(growatt) != 1 || growatt[0] == nil || growatt[0].storage == nil {
-				return nil, false
-			}
-			return growatt[0].storage.Current(asset)
-		},
+		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt...),
 	})
 	if err != nil {
 		return nil, errors.New("M2M GraphQL handler configuration is invalid")
@@ -122,6 +117,32 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	})}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
+}
+
+// newGrowattStorageGraphQLProvider deliberately refreshes through the same
+// serialized native-observation -> SemReg publication transaction as MCP.
+// A GraphQL or Portal reader therefore neither depends on MCP priming nor
+// observes an unevaluated cache entry.
+func newGrowattStorageGraphQLProvider(growatt ...*growattBMSRS485ProductionProvider) func(context.Context, string) (json.RawMessage, bool) {
+	return func(ctx context.Context, asset string) (json.RawMessage, bool) {
+		published, err := currentGrowattStoragePublic(ctx, asset, growatt...)
+		return published, err == nil
+	}
+}
+
+func currentGrowattStoragePublic(ctx context.Context, asset string, growatt ...*growattBMSRS485ProductionProvider) (json.RawMessage, error) {
+	if len(growatt) != 1 || growatt[0] == nil || growatt[0].storage == nil || asset != string(growatt[0].storage.assetID) {
+		return nil, errors.New("growatt BMS storage asset unavailable")
+	}
+	published, err := growatt[0].GrowattStorageSemanticCurrent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(published)
+	if err != nil || !json.Valid(encoded) {
+		return nil, errors.New("growatt BMS storage publication is invalid")
+	}
+	return json.RawMessage(encoded), nil
 }
 
 func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {

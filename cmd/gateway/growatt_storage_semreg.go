@@ -94,7 +94,11 @@ func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedRead
 	if err != nil {
 		return nil, err
 	}
-	public := map[string]any{"snapshot": snapshot, "canonical": json.RawMessage(canonical), "evaluation": evaluation, "selections": []semreg.Selection{}, "projection": report}
+	// Canonical bytes validate the staged snapshot locally; public consumers get
+	// only the fixed detached SemReg projection shape shared by MCP, GraphQL,
+	// and Portal.
+	_ = canonical
+	public := map[string]any{"snapshot": snapshot, "evaluation": evaluation, "selections": []semreg.Selection{}, "projection": report}
 	encoded, err := json.Marshal(public)
 	if err != nil {
 		return nil, err

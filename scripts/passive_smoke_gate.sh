@@ -56,7 +56,24 @@ semreg_public_config_only() {
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
   [[ -n "${changes}" ]] || return 1
 	if grep -Fq "PortalStorage" <<< "${changes}"; then
-		if grep -Eq '(Transport|EEBus|Proxy|BusConfig)' <<< "${changes}"; then return 1; fi
+		while IFS= read -r line; do
+			trimmed="${line#"${line%%[![:space:]]*}"}"; trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+			[[ -z "${trimmed}" ]] && continue
+			case "${trimmed}" in
+				"// PortalStorageConfig is an independently disabled, read-only BFF for the"|\
+				"// versioned SemReg storage projection. It deliberately does not expose any"|\
+				"// operation or native fallback fields."|\
+				"type PortalStorageConfig = PortalPVConfig"|\
+				"type Config struct {"|\
+				"func (cfg Config) ValidatePortalStorage() error {"|\
+				"copy := cfg"|\
+				"copy.PortalPV = cfg.PortalStorage"|\
+				"return copy.ValidatePortalPV()"|\
+				"PortalStorage            PortalStorageConfig"|\
+				"}") ;;
+				*) return 1 ;;
+			esac
+		done <<< "${changes}"
 		return 0
 	fi
 	while IFS= read -r line; do

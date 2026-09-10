@@ -14,6 +14,22 @@ PASSIVE_SMOKE_GATE_SCRIPT = REPO_ROOT / "scripts" / "passive_smoke_gate.sh"
 
 
 class PassiveSmokeGateTests(unittest.TestCase):
+
+    storage_config_only = '''// PortalStorageConfig is an independently disabled, read-only BFF for the
+// versioned SemReg storage projection. It deliberately does not expose any
+// operation or native fallback fields.
+type PortalStorageConfig = PortalPVConfig
+
+func (cfg Config) ValidatePortalStorage() error {
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	return copy.ValidatePortalPV()
+}
+
+type Config struct {
+	PortalStorage            PortalStorageConfig
+}
+'''
     def _script_env(self, **extra: str) -> dict[str, str]:
         env = dict(os.environ)
         for key in (
@@ -25,6 +41,17 @@ class PassiveSmokeGateTests(unittest.TestCase):
             env.pop(key, None)
         env.update(extra)
         return env
+
+    def test_storage_config_allowlist_is_exact(self) -> None:
+        repo_path, _ = self._create_temp_repo("config.go", base_text="", modified_text=self.storage_config_only)
+        allowed = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
+        self.assertIn("not triggered", allowed.stdout)
+
+        (repo_path / "config.go").write_text(self.storage_config_only + "HTTPAddr string\n", encoding="utf-8")
+        hostile = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
     def _create_temp_repo(
         self,

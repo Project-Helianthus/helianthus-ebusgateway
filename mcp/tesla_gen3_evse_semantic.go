@@ -51,13 +51,18 @@ type TeslaGen3EVSESemanticProvider interface {
 }
 
 type TeslaGen3EVSESemanticPublication struct {
-	mu       sync.RWMutex
-	cfg      TeslaGen3EVSESemanticConfig
-	kernel   *semreg.PublicationKernel
-	current  semreg.Snapshot
-	view     json.RawMessage
-	sequence uint64
-	now      func() time.Time
+	mu                 sync.RWMutex
+	cfg                TeslaGen3EVSESemanticConfig
+	kernel             *semreg.PublicationKernel
+	current            semreg.Snapshot
+	manifest           projection.ProjectionManifest
+	requested          []projection.RequestedItem
+	dispositions       []projection.ProjectionDisposition
+	evaluatedAt        time.Time
+	evaluatedMonotonic semreg.MonotonicPoint
+	allocatedExpiresAt *time.Time
+	sequence           uint64
+	now                func() time.Time
 }
 
 func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*TeslaGen3EVSESemanticPublication, error) {
@@ -95,7 +100,7 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	_, _, exists := staged.Current()
-	batch, manifest, requested, dispositions, err := p.batch(source, evidence, exists)
+	batch, manifest, requested, dispositions, err := p.batch(source, evidence, p.current, exists)
 	if err != nil {
 		return err
 	}
@@ -104,11 +109,13 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
-	view, err := p.public(snapshot, manifest, requested, dispositions, evidence.EvaluatedAt, mono)
+	expiresAt := teslaGen3EVSEAllocatedExpiry(source.Provisional, evidence)
+	_, err = p.publicAt(snapshot, manifest, requested, dispositions, evidence.EvaluatedAt, mono, expiresAt)
 	if err != nil {
 		return err
 	}
-	p.kernel, p.current, p.view, p.sequence = staged, snapshot, view, evidence.Sequence
+	p.kernel, p.current, p.manifest, p.requested, p.dispositions = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...)
+	p.evaluatedAt, p.evaluatedMonotonic, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, mono, expiresAt, evidence.Sequence
 	return nil
 }
 
@@ -118,11 +125,23 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if len(p.view) == 0 {
+	if p.sequence == 0 {
 		return nil, ErrTeslaGen3EVSESemanticUnavailable
 	}
-	// Return detached bytes.  Reads never call the injected native provider.
-	return json.RawMessage(append([]byte(nil), p.view...)), nil
+	now := p.now()
+	if now.Before(p.evaluatedAt) {
+		// Wall-clock corrections cannot make a retained publication appear to
+		// predate its own receipt.  Keep the sealed evaluation point until the
+		// injected clock advances again; monotonic progress remains authoritative.
+		now = p.evaluatedAt
+	}
+	mono, err := p.readMonotonic(now)
+	if err != nil {
+		return nil, err
+	}
+	// Re-evaluation applies the SemReg lifecycle to the immutable snapshot.
+	// It performs no provider call and does not fabricate a replacement batch.
+	return p.publicAt(p.current, p.manifest, p.requested, p.dispositions, now, mono, p.allocatedExpiresAt)
 }
 
 func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence) error {
@@ -135,7 +154,7 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	return nil
 }
 
-func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence, exists bool) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence, current semreg.Snapshot, exists bool) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
 	asset, source := semreg.AssetID(p.cfg.AssetID), semreg.SourceID(p.cfg.SourceID)
 	epoch, generation := semreg.SourceEpochID(p.cfg.SourceEpoch), semreg.Uint64(strconv.FormatUint(p.cfg.DriverGeneration, 10))
 	seq := semreg.Uint64(strconv.FormatUint(e.Sequence, 10))
@@ -150,12 +169,13 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	// MappingRevision is the kernel's monotonic label; the immutable accepted
 	// docs commit is retained in the registry evidence digest below.
 	manifest := projection.ProjectionManifest{TargetID: "target:gateway-semantic-evse", TargetVersion: "1.0.0", KernelVersion: semreg.ContractKernelV1, PackVersions: []semreg.PackRef{{ID: "helianthus.pack.evse", Version: "1.0.0"}}, MappingRevision: "1"}
-	configured := p.candidate("evse.limit.configured_current", "evse.dimension.evse", p.cfg.EVSEID, s.Persistent.MaxOutputCurrentAmps(), binding, source, epoch, generation, evidence, wall, mono)
+	configured := p.candidate("evse.limit.configured_current", "evse.dimension.evse", p.cfg.EVSEID, s.Persistent.MaxOutputCurrentAmps(), 60*time.Second, 300*time.Second, current, binding, source, epoch, generation, evidence, wall, mono)
 	requested := []projection.RequestedItem{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current"}, {Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current"}}
 	dispositions := []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{configured.Key}, Loss: []projection.LossDetail{}}}
 	facts := []semreg.FactCandidate{configured}
 	if provisional, reason := p.provisional(s.Provisional, e); provisional != nil {
-		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, binding, source, epoch, generation, evidence, wall, mono)
+		timeout := time.Duration(s.Provisional.LimitTimeoutSeconds()) * time.Second
+		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, timeout, timeout+time.Nanosecond, current, binding, source, epoch, generation, evidence, wall, mono)
 		facts = append(facts, allocated)
 		dispositions = append(dispositions, projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{allocated.Key}, Loss: []projection.LossDetail{}})
 	} else {
@@ -167,7 +187,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	sort.Slice(dispositions, func(i, j int) bool { return dispositions[i].ItemID < dispositions[j].ItemID })
 	expected := semreg.Uint64("0")
 	if exists {
-		expected = p.current.Revisions.Semantic
+		expected = current.Revisions.Semantic
 	}
 	batch := semreg.PublicationBatch{Contract: semreg.ContractKernelV1, BatchID: semreg.BatchID("batch:tesla-wc3:" + evseHash(e.ObservationID)[:32]), AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, Sequence: seq, ExpectedSemanticRevision: expected, ObservedAt: wall,
 		SourceUpserts:       []semreg.SourceDescriptor{{SourceID: source, SourceEpochID: epoch, ProtocolID: "modbus_fc100", ProfileID: "tesla.wc3.24_44_3.current_limit", ProfileVersion: "24.44.3", RegistryEvidence: registry, StartedAt: wall, State: semreg.SourceCurrent, Revision: seq}},
@@ -218,11 +238,12 @@ func (p *TeslaGen3EVSESemanticPublication) provisional(v *modbusreg.TeslaGen3Pro
 	return &value, ""
 }
 
-func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string, amps uint32, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, evidence semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) semreg.FactCandidate {
+func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string, amps uint32, freshFor, retainFor time.Duration, current semreg.Snapshot, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, evidence semreg.EvidenceRef, wall semreg.TimePoint, mono semreg.MonotonicPoint) semreg.FactCandidate {
 	key := semreg.FactKey{PackID: "helianthus.pack.evse", PackVersion: "1.0.0", FactID: semreg.DefinitionID(id), Dimensions: []semreg.Dimension{{ID: semreg.DefinitionID(dimension), Value: semreg.Value{Kind: semreg.ValueText, Text: &value}}}}
 	v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: strconv.FormatUint(uint64(amps), 10), Exponent10: 0}, Unit: "unit.ampere"}}
 	h := evseHash(p.cfg.AssetID, string(binding), id)
-	return semreg.FactCandidate{CandidateID: semreg.CandidateID("candidate:tesla-wc3:" + h[:32]), Key: key, Value: &v, Quality: semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}}, Times: semreg.Times{ReceivedAt: wall, ReceiptMonotonic: mono, EvaluatedAt: wall, EvaluateMonotonic: mono}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy:tesla-wc3-native-receipt", Version: "1.0.0", FreshForNS: "60000000000", RetainForNS: "300000000000", MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:tesla-wc3:" + h[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{evidence}, Revision: "1"}
+	candidateID := semreg.CandidateID("candidate:tesla-wc3:" + h[:32])
+	return semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &v, Quality: semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}}, Times: semreg.Times{ReceivedAt: wall, ReceiptMonotonic: mono, EvaluatedAt: wall, EvaluateMonotonic: mono}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy:tesla-wc3-native-receipt", Version: "1.0.0", FreshForNS: semreg.Uint64(strconv.FormatInt(freshFor.Nanoseconds(), 10)), RetainForNS: semreg.Uint64(strconv.FormatInt(retainFor.Nanoseconds(), 10)), MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:tesla-wc3:" + h[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{evidence}, Revision: nextTeslaGen3EVSECandidateRevision(current, candidateID)}
 }
 
 func (p *TeslaGen3EVSESemanticPublication) service(id, dimension string, binding semreg.NativeBindingID, asset semreg.AssetID, epoch semreg.SourceEpochID, generation, revision semreg.Uint64) semreg.ServiceInstance {
@@ -233,17 +254,66 @@ func (p *TeslaGen3EVSESemanticPublication) capability(id, service string, bindin
 	return semreg.CapabilityInstance{InstanceID: semreg.CapabilityInstanceID("capability:tesla-wc3:" + evseHash(p.cfg.AssetID, id)[:32]), AssetID: asset, ServiceInstance: semreg.ServiceInstanceID("service:tesla-wc3:" + evseHash(p.cfg.AssetID, service)[:32]), Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.evse", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}, BindingID: binding, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Constraints: []semreg.TypedField{}, ActivationEvidence: []semreg.EvidenceRef{activation}, Revision: revision}
 }
 
-func (p *TeslaGen3EVSESemanticPublication) public(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint) (json.RawMessage, error) {
+func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *time.Time) (json.RawMessage, error) {
 	evaluation, err := semreg.EvaluateSnapshot(snapshot, semreg.EvaluationContext{EvaluatedAt: evseWall(evaluated), EvaluateMonotonic: mono})
 	if err != nil {
 		return nil, err
 	}
-	report, err := projection.Project(snapshot, manifest, requested, dispositions, nil)
+	publicDispositions := append([]projection.ProjectionDisposition(nil), dispositions...)
+	if allocatedExpiresAt != nil && !evaluated.Before(*allocatedExpiresAt) {
+		for index := range publicDispositions {
+			if publicDispositions[index].ItemID != "evse.limit.allocated_current" {
+				continue
+			}
+			reason := semreg.DefinitionID("withheld_provisional_expired")
+			publicDispositions[index] = projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionWithheld, Reason: &reason, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{"native.tesla.wc3.provisional_current_limit"}, Description: "allocated current withheld: expired"}}}
+		}
+	}
+	report, err := projection.Project(snapshot, manifest, requested, publicDispositions, nil)
 	if err != nil {
 		return nil, err
 	}
 	b, err := json.Marshal(map[string]any{"snapshot": snapshot, "evaluation": evaluation, "selections": []semreg.Selection{}, "projection": report})
 	return json.RawMessage(b), err
+}
+
+func (p *TeslaGen3EVSESemanticPublication) readMonotonic(now time.Time) (semreg.MonotonicPoint, error) {
+	if now.Before(p.evaluatedAt) {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read clock precedes publication")
+	}
+	base, err := strconv.ParseUint(string(p.evaluatedMonotonic.Nanoseconds), 10, 64)
+	if err != nil {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication monotonic clock is invalid")
+	}
+	delta := uint64(now.Sub(p.evaluatedAt).Nanoseconds())
+	if base > ^uint64(0)-delta {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock overflows")
+	}
+	return semreg.MonotonicPoint{ClockEpochID: p.evaluatedMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+delta, 10))}, nil
+}
+
+func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence) *time.Time {
+	if v == nil || v.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 || v.InhibitCharging() || v.LimitTimeoutSeconds() == 0 || v.LimitTimeoutSeconds() > 86399 || !evidence.EvaluatedAt.Before(evidence.ObservedAt.Add(time.Duration(v.LimitTimeoutSeconds())*time.Second)) {
+		return nil
+	}
+	expires := evidence.ObservedAt.Add(time.Duration(v.LimitTimeoutSeconds()) * time.Second)
+	return &expires
+}
+
+func nextTeslaGen3EVSECandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if candidate.CandidateID != id {
+				continue
+			}
+			revision, err := strconv.ParseUint(string(candidate.Revision), 10, 64)
+			if err != nil || revision == ^uint64(0) {
+				return ""
+			}
+			return semreg.Uint64(strconv.FormatUint(revision+1, 10))
+		}
+	}
+	return "1"
 }
 func evseWall(t time.Time) semreg.TimePoint {
 	return semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(t.UTC().UnixNano(), 10)), ClockID: "wall.utc", UncertaintyNS: "0"}

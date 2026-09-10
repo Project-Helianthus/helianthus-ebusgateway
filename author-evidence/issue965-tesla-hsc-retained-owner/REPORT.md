@@ -18,9 +18,9 @@
 - Optional-registration and record-lifecycle remediation tree:
   `920b43bbe091fc7aa1b4e73beabcce73c09205a6`
 - Rebased validated source HEAD:
-  `f0acdb46cd0de3055553dd1b168a7a8d3d5204d6`
+  `6a5f245bee72096f268f07a30eff4a88ab760259`
 - Rebased validated source tree:
-  `11ea140885f06fcfb573cf4f4059c18932740f73`
+  `102ca7cfa6249aa2eab3fce6212c4c89d1b28b58`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -235,8 +235,9 @@ Affected transport gate SHA-256:
 Tesla SemReg mapping gate SHA-256:
 `c65326e84d5bc5fa42c712b1752e75ad87ab1b00bbda87b63ef8c10cf5a4e079`
 
-All four later feedback threads were replied to with their correction and test
-evidence and deliberately left unresolved for fresh exact-HEAD review.
+The four feedback threads available during that correction were replied to with
+their correction and test evidence and deliberately left unresolved for fresh
+exact-HEAD review.
 
 ## Accepted EVSE metrics dependency rebase
 
@@ -259,6 +260,15 @@ The accepted dependency also requires a publication instant at or after the
 evidence instant. The offline retained-owner fixture therefore uses a stable
 past epoch while preserving its exact wall/monotonic ordering assertions.
 
+The final feedback inventory contained one additional valid P2. When a
+provisional outcome arrived before the first persistent outcome, it was retained
+but omitted from the initial semantic batch. The initial batch now includes that
+provisional record with its original receipt axes; later persistent-only updates
+still omit an already published unchanged provisional sibling. The regression
+first failed with allocated current withheld and then passed after the narrow
+condition changed. RED log SHA-256:
+`d1521402475741d9ebc818e8e0ce0b53c53170d3ef025bdcebc02ea9d66df607`.
+
 The Prometheus composition regression was intentionally RED before the owner
 implemented the accepted interface:
 
@@ -277,22 +287,25 @@ GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFil
 ```
 
 Log: `/tmp/gateway969-rebase-prometheus-focused-race.log`
-SHA-256: `a7eb6279ce90c1f9ab154ef1a8cb502fd099e3083193aae788670d0c4a782ea9`
+SHA-256: `92f495561025213360a0d97ebe222eb6df3a2f651718ccfa78653522588f1b58`
 
 Complete local CI passed on source
-`f0acdb46cd0de3055553dd1b168a7a8d3d5204d6`, tree
-`11ea140885f06fcfb573cf4f4059c18932740f73`. It included all Go race tests,
+`6a5f245bee72096f268f07a30eff4a88ab760259`, tree
+`102ca7cfa6249aa2eab3fce6212c4c89d1b28b58`. It included all Go race tests,
 219 Python tests, zero lint findings, builds, transport conformance, both
 SemReg mapping gates, and passive-smoke classification.
 
 Log: `/tmp/gateway969-rebase-ci.log`
-SHA-256: `60bba8e4019b50c8837a3a04995f099616f1fc914e4cab601895be91a63c7dd7`
+SHA-256: `2752f1c4d673b4e0f4349eb400b4773bd1bd402c4d74c15ea29ba6c2ce613f11`
 
 Standalone affected gate hashes:
 
-- Modbus RTU transport: `47d34719e922010e57e94e13f8cb171d1751090279cf0882eda8d2cd20370f6e`
-- Tesla SemReg mapping: `429829d7fda5909a3bf54eba7f74a203aed9e85c16119b8edc12921da13ce100`
+- Modbus RTU transport: `df52e3fe3f24413661f424598c4223d5e451ef3c0ff699dee0c7d3b0cb9ff02a`
+- Tesla SemReg mapping: `3054dc341905d349127269f0a85e6a84d98dabecdf9625d16add98865a22ffd3`
 - Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+
+The additional provisional-first feedback thread was replied to with the
+correction and final evidence and left unresolved with the other threads.
 
 ## Hosted adaptermux failure diagnosis
 
@@ -329,7 +342,7 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the three earlier and four later validated blockers are corrected. A
+- Review: the three earlier and five later validated blockers are corrected. A
   fresh independent exact-HEAD review remains required before merge; the author
   did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.

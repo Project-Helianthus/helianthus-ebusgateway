@@ -146,6 +146,16 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
+	if p.sequence != 0 {
+		for _, floor := range []semreg.MonotonicPoint{p.evaluatedMonotonic, p.lastReadMonotonic} {
+			if err := teslaGen3EVSEPublicationMonotonicNotBefore(receiptMono, floor); err != nil {
+				return err
+			}
+			if err := teslaGen3EVSEPublicationMonotonicNotBefore(evaluationMono, floor); err != nil {
+				return err
+			}
+		}
+	}
 	staged, err := p.kernel.Fork()
 	if err != nil {
 		return err
@@ -249,7 +259,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	configured := p.candidate("evse.limit.configured_current", "evse.dimension.evse", p.cfg.EVSEID, s.Persistent.MaxOutputCurrentAmps(), 60*time.Second, 300*time.Second, current, binding, source, epoch, generation, evidence, receivedAt, receiptMono, evaluatedAt, evaluationMono)
 	requested := []projection.RequestedItem{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current"}, {Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current"}}
 	dispositions := []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{configured.Key}, Loss: []projection.LossDetail{}}}
-	facts := []semreg.FactCandidate{configured}
+	facts, withdrawals := []semreg.FactCandidate{configured}, []semreg.CandidateID{}
 	if provisional, reason := p.provisional(s.Provisional, e); provisional != nil {
 		activationEvidence = append(activationEvidence, evseEvidence("native.tesla.wc3.current_limit.provisional", *provisionalRecord))
 		timeout := time.Duration(s.Provisional.LimitTimeoutSeconds()) * time.Second
@@ -257,6 +267,9 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 		facts = append(facts, allocated)
 		dispositions = append(dispositions, projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{allocated.Key}, Loss: []projection.LossDetail{}})
 	} else {
+		if allocatedID, ok := teslaGen3EVSECandidateID(p.cfg.AssetID, binding, "evse.limit.allocated_current"); ok && teslaGen3EVSESnapshotHasCandidate(current, allocatedID) {
+			withdrawals = append(withdrawals, allocatedID)
+		}
 		r := semreg.DefinitionID("withheld_provisional_" + reason)
 		dispositions = append(dispositions, projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionWithheld, Reason: &r, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{"native.tesla.wc3.provisional_current_limit"}, Description: "allocated current withheld: " + reason}}})
 	}
@@ -273,7 +286,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 		IdentityLinkUpserts: []semreg.IdentityLink{{AssetID: asset, BindingID: binding, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidence}, Revision: seq}}, FactUpserts: facts,
 		ServiceUpserts:    []semreg.ServiceInstance{p.service("evse.service.evse", p.cfg.EVSEID, binding, asset, epoch, generation, seq), p.service("evse.service.connector", p.cfg.ConnectorID, binding, asset, epoch, generation, seq)},
 		CapabilityUpserts: []semreg.CapabilityInstance{p.capability("evse.capability.read.evse", "evse.service.evse", binding, asset, epoch, generation, seq, activationEvidence), p.capability("evse.capability.read.connector", "evse.service.connector", binding, asset, epoch, generation, seq, activationEvidence)},
-		SourceRetirements: []semreg.SourceEpochID{}, FactWithdrawals: []semreg.CandidateID{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
+		SourceRetirements: []semreg.SourceEpochID{}, FactWithdrawals: withdrawals, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
 	sort.Slice(batch.ServiceUpserts, func(i, j int) bool { return batch.ServiceUpserts[i].InstanceID < batch.ServiceUpserts[j].InstanceID })
 	sort.Slice(batch.CapabilityUpserts, func(i, j int) bool {
 		return batch.CapabilityUpserts[i].InstanceID < batch.CapabilityUpserts[j].InstanceID
@@ -437,6 +450,46 @@ func teslaGen3EVSEAtLeastMonotonic(candidate, floor semreg.MonotonicPoint) (semr
 		return floor, nil
 	}
 	return candidate, nil
+}
+
+func teslaGen3EVSEPublicationMonotonicNotBefore(value, floor semreg.MonotonicPoint) error {
+	if floor.ClockEpochID == "" {
+		return nil
+	}
+	if value.ClockEpochID != floor.ClockEpochID {
+		return errors.New("tesla Gen3 EVSE publication monotonic clock epoch changed")
+	}
+	valueNS, err := strconv.ParseUint(string(value.Nanoseconds), 10, 64)
+	if err != nil {
+		return errors.New("tesla Gen3 EVSE publication monotonic clock is invalid")
+	}
+	floorNS, err := strconv.ParseUint(string(floor.Nanoseconds), 10, 64)
+	if err != nil {
+		return errors.New("tesla Gen3 EVSE retained publication monotonic clock is invalid")
+	}
+	if valueNS < floorNS {
+		return errors.New("tesla Gen3 EVSE publication monotonic clock regressed")
+	}
+	return nil
+}
+
+func teslaGen3EVSECandidateID(asset string, binding semreg.NativeBindingID, fact string) (semreg.CandidateID, bool) {
+	h := evseHash(asset, string(binding), fact)
+	if len(h) < 32 {
+		return "", false
+	}
+	return semreg.CandidateID("candidate:tesla-wc3:" + h[:32]), true
+}
+
+func teslaGen3EVSESnapshotHasCandidate(snapshot semreg.Snapshot, id semreg.CandidateID) bool {
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if candidate.CandidateID == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence, receipt semreg.MonotonicPoint) *semreg.MonotonicPoint {

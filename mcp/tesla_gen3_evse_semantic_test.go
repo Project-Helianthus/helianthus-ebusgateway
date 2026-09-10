@@ -141,7 +141,7 @@ func TestTeslaGen3EVSESemanticPublicationAdvancesStableCandidateRevisions(t *tes
 	before := teslaGen3EVSECandidateRevisions(t, p.current)
 	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 	when := time.Date(2026, 9, 10, 12, 2, 0, 0, time.UTC)
-	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:second", ObservedAt: when, EvaluatedAt: when, MonotonicNS: 2, Sequence: 2}); err != nil {
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:second", ObservedAt: when, EvaluatedAt: when, MonotonicNS: 1000000002, EvaluatedMonotonicNS: 1000000002, Sequence: 2}); err != nil {
 		t.Fatalf("second accepted publication: %v", err)
 	}
 	after := teslaGen3EVSECandidateRevisions(t, p.current)
@@ -387,6 +387,49 @@ func TestTeslaGen3EVSESemanticPublicationUsesIndependentReadMonotonicClock(t *te
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, readClock := base, uint64(0)
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	provisional := teslaGen3EVSEProvisionalForTest(t, first, 1, false)
+	first.Provisional = provisional
+	if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	readClock, now = uint64(time.Second), base.Add(time.Second)
+	mcpHandler, graphqlHandler := teslaGen3EVSEMCPHandler(t, p), teslaGen3EVSEGraphQLHandler(t, p)
+	beforeMCP := teslaGen3EVSEMCPCurrent(t, mcpHandler)
+	if !strings.Contains(string(beforeMCP), "withheld_provisional_expired") {
+		t.Fatalf("first read did not reach expiry: %s", beforeMCP)
+	}
+	beforeSnapshot, beforeSequence, beforeReadAt, beforeReadMono, beforeReadClock := p.current, p.sequence, p.lastReadAt, p.lastReadMonotonic, p.lastReadClock
+	next := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-regression", ObservedAt: base.Add(2 * time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}); err == nil {
+		t.Fatal("same-epoch monotonic regression was accepted")
+	}
+	if !reflect.DeepEqual(beforeSnapshot, p.current) || beforeSequence != p.sequence || beforeReadAt != p.lastReadAt || beforeReadMono != p.lastReadMonotonic || beforeReadClock != p.lastReadClock {
+		t.Fatal("regressed publication advanced retained state")
+	}
+	afterMCP := teslaGen3EVSEMCPCurrent(t, mcpHandler)
+	afterGraphQL := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "floor-regression")
+	var mcpJSON, graphqlJSON any
+	if err := json.Unmarshal(afterMCP, &mcpJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(afterGraphQL, &graphqlJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(mcpJSON, graphqlJSON) || !strings.Contains(string(afterMCP), "withheld_provisional_expired") {
+		t.Fatalf("withheld parity after rejected regression=%t: %s", reflect.DeepEqual(mcpJSON, graphqlJSON), afterMCP)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationConcurrentExpiryReadsRemainStable(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	now := time.Date(2026, 9, 10, 12, 11, 0, 0, time.UTC)
@@ -431,6 +474,85 @@ func TestTeslaGen3EVSESemanticPublicationRejectsMalformedPersistent(t *testing.T
 	if _, err := p.TeslaGen3EVSESemanticCurrent(context.Background()); err == nil {
 		t.Fatal("invalid publication advanced state")
 	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationWithdrawsSupersededAllocatedCurrent(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, reason string
+		provisional  func(*testing.T, TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit
+		evaluatedNS  int64
+	}{
+		{name: "missing", reason: "missing", provisional: func(*testing.T, TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+			return nil
+		}, evaluatedNS: 2},
+		{name: "malformed", reason: "malformed_or_correlation_mismatched", provisional: func(*testing.T, TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+			return &modbusreg.TeslaGen3ProvisionalCurrentLimit{}
+		}, evaluatedNS: 2},
+		{name: "inhibited", reason: "inhibited", provisional: func(t *testing.T, source TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+			return teslaGen3EVSEProvisionalForTest(t, source, 60, true)
+		}, evaluatedNS: 2},
+		{name: "zero timeout", reason: "zero_timeout", provisional: func(t *testing.T, source TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+			return teslaGen3EVSEProvisionalForTest(t, source, 0, false)
+		}, evaluatedNS: 2},
+		{name: "expired", reason: "expired", provisional: func(t *testing.T, source TeslaGen3EVSECurrentLimitV1Source) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+			return teslaGen3EVSEProvisionalForTest(t, source, 1, false)
+		}, evaluatedNS: int64(time.Second) + 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.readClock = func() (uint64, error) { return 0, nil }
+			first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+			if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:first-" + tc.name, ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+				t.Fatal(err)
+			}
+			next := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+			next.Provisional = tc.provisional(t, next)
+			evaluated := base.Add(time.Second)
+			if err := p.Publish(next, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:next-" + tc.name, ObservedAt: evaluated, EvaluatedAt: evaluated, MonotonicNS: 2, EvaluatedMonotonicNS: tc.evaluatedNS, Sequence: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if teslaGen3EVSESnapshotHasFact(p.current, "evse.limit.allocated_current") {
+				t.Fatalf("withdrawn allocation remains in snapshot: %#v", p.current.Facts)
+			}
+			if !teslaGen3EVSESnapshotHasFact(p.current, "evse.limit.configured_current") {
+				t.Fatal("configured current was withdrawn with allocation")
+			}
+			mcpData := teslaGen3EVSEMCPCurrent(t, teslaGen3EVSEMCPHandler(t, p))
+			graphqlData := teslaGen3EVSEGraphQLCurrent(t, teslaGen3EVSEGraphQLHandler(t, p), tc.name)
+			var mcpJSON, graphqlJSON any
+			if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mcpJSON, graphqlJSON) || !strings.Contains(string(mcpData), "withheld_provisional_"+tc.reason) {
+				t.Fatalf("withheld parity=%t projection=%s", reflect.DeepEqual(mcpJSON, graphqlJSON), mcpData)
+			}
+		})
+	}
+}
+
+func teslaGen3EVSEProvisionalForTest(t *testing.T, source TeslaGen3EVSECurrentLimitV1Source, timeout uint32, inhibit bool) *modbusreg.TeslaGen3ProvisionalCurrentLimit {
+	t.Helper()
+	value, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443, LimitCurrentMaxAmps: 16, LimitTimeoutSeconds: timeout, InhibitCharging: inhibit, SetRequestPayload: source.Provisional.SetRequestPayload(), AckPayload: source.Provisional.AckPayload(), ReadbackRequestPayload: source.Provisional.ReadbackRequestPayload(), ReadbackTerminalPayload: source.Provisional.ReadbackTerminalPayload()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &value
+}
+
+func teslaGen3EVSESnapshotHasFact(snapshot semreg.Snapshot, id semreg.DefinitionID) bool {
+	for _, envelope := range snapshot.Facts {
+		if envelope.Key.FactID == id && len(envelope.Candidates) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTeslaGen3EVSESemanticCapabilityActivationRequiresNativePublicationEvidence(t *testing.T) {

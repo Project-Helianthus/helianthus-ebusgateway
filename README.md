@@ -27,6 +27,9 @@ companions group the existing command declarations by responsibility:
 - `gateway_static_seed.go` -- static registry seed bootstrap.
 - `gateway_runtime_state.go` -- runtime-state bootstrap and readiness projection.
 
+The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
+[`docs/tesla-gen3-hsc-retained-owner.md`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/tesla-gen3-hsc-retained-owner.md).
+
 ### What does not belong in this repository
 
 - Low-level transport framing and bus primitives (use `helianthus-ebusgo`).

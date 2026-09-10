@@ -84,6 +84,24 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "growatt-bms-rs485-max-response-delay", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "Growatt BMS maximum RTU response delay")
 	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "growatt-bms-rs485-max-quiescence", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "Growatt BMS RTU recovery quiescence bound")
 	fs.BoolVar(&cfg.PrometheusEVSEEnabled, "semantic-prometheus-evse-enabled", cfg.PrometheusEVSEEnabled, "append detached EVSE SemReg metrics when an EVSE semantic runtime is configured")
+	fs.BoolVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.Enabled, "tesla-gen3-hsc-retained-enabled", cfg.ModbusTCPConfig.TeslaGen3HSC.Enabled, "enable the non-send Tesla Gen3 HSC completed-outcome owner")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.EndpointID, "tesla-gen3-hsc-endpoint-id", cfg.ModbusTCPConfig.TeslaGen3HSC.EndpointID, "public Tesla HSC endpoint identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.AssetID, "tesla-gen3-hsc-asset-id", cfg.ModbusTCPConfig.TeslaGen3HSC.AssetID, "stable Tesla WC3 semantic asset identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.SourceID, "tesla-gen3-hsc-source-id", cfg.ModbusTCPConfig.TeslaGen3HSC.SourceID, "stable Tesla WC3 native source identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.SourceEpoch, "tesla-gen3-hsc-source-epoch", cfg.ModbusTCPConfig.TeslaGen3HSC.SourceEpoch, "Tesla WC3 retained source epoch")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.ClockEpoch, "tesla-gen3-hsc-clock-epoch", cfg.ModbusTCPConfig.TeslaGen3HSC.ClockEpoch, "Tesla WC3 retained monotonic clock epoch")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.EVSEID, "tesla-gen3-hsc-evse-id", cfg.ModbusTCPConfig.TeslaGen3HSC.EVSEID, "Tesla WC3 EVSE semantic dimension identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.ConnectorID, "tesla-gen3-hsc-connector-id", cfg.ModbusTCPConfig.TeslaGen3HSC.ConnectorID, "Tesla WC3 connector semantic dimension identity")
+	fs.StringVar(&cfg.ModbusTCPConfig.TeslaGen3HSC.Profile, "tesla-gen3-hsc-profile", cfg.ModbusTCPConfig.TeslaGen3HSC.Profile, "exact Tesla WC3 retained operation profile")
+	fs.Uint64Var(&cfg.ModbusTCPConfig.TeslaGen3HSC.DriverGeneration, "tesla-gen3-hsc-driver-generation", cfg.ModbusTCPConfig.TeslaGen3HSC.DriverGeneration, "Tesla WC3 retained driver generation")
+	fs.Func("tesla-gen3-hsc-node", "Tesla WC3 unicast Modbus node", func(value string) error {
+		parsed, err := strconv.ParseUint(value, 0, 8)
+		if err != nil {
+			return fmt.Errorf("invalid Tesla Gen3 HSC node %q", value)
+		}
+		cfg.ModbusTCPConfig.TeslaGen3HSC.Node = byte(parsed)
+		return nil
+	})
 	bindEEBusFlags(fs, cfg)
 	bindM2MGraphQLFlags(fs, cfg)
 	fs.BoolVar(

@@ -60,10 +60,80 @@ func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, grow
 	return gatewayGrowattBMSMCPProvider{gatewayModbusMCPProvider: core, growatt: growatt, storage: growatt}
 }
 
+// gatewayModbusRuntimeProvider composes independent native owners without
+// widening the core Modbus provider or adding a transport path to either
+// optional read-only surface.
+type gatewayModbusRuntimeProvider struct {
+	*gatewayModbusMCPProvider
+	growatt *growattBMSRS485ProductionProvider
+	tesla   *teslaHSCRetainedOwner
+}
+
+func newGatewayModbusMCPProviderWithRuntimes(adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner) mcp.ModbusV1Provider {
+	if tesla == nil {
+		return newGatewayModbusMCPProviderWithGrowatt(adapter, growatt)
+	}
+	core := &gatewayModbusMCPProvider{now: time.Now}
+	if adapter != nil {
+		core.adapter = adapter
+	}
+	return &gatewayModbusRuntimeProvider{gatewayModbusMCPProvider: core, growatt: growatt, tesla: tesla}
+}
+
+func (provider *gatewayModbusRuntimeProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
+	if provider == nil || provider.growatt == nil {
+		return mcp.GrowattBMSRS485V202Observation{}, mcp.ErrGrowattBMSRS485V202ProviderUnavailable
+	}
+	return provider.growatt.GrowattBMSRS485V202(ctx)
+}
+
+func (provider *gatewayModbusRuntimeProvider) GrowattStorageSemanticCurrent(ctx context.Context) (any, error) {
+	if provider == nil || provider.growatt == nil {
+		return nil, mcp.ErrGrowattStorageSemanticProviderUnavailable
+	}
+	return provider.growatt.GrowattStorageSemanticCurrent(ctx)
+}
+
+func (provider *gatewayModbusRuntimeProvider) TeslaGen3EVSECurrentLimitV1(ctx context.Context) (mcp.TeslaGen3EVSECurrentLimitV1Source, error) {
+	if provider == nil || provider.tesla == nil {
+		return mcp.TeslaGen3EVSECurrentLimitV1Source{}, mcp.ErrTeslaGen3EVSECurrentLimitV1ProviderUnavailable
+	}
+	return provider.tesla.TeslaGen3EVSECurrentLimitV1(ctx)
+}
+
+func (provider *gatewayModbusRuntimeProvider) TeslaGen3EVSESemanticCurrent(ctx context.Context) (any, error) {
+	if provider == nil || provider.tesla == nil {
+		return nil, mcp.ErrTeslaGen3EVSESemanticUnavailable
+	}
+	return provider.tesla.TeslaGen3EVSESemanticCurrent(ctx)
+}
+
+func (provider *gatewayModbusRuntimeProvider) GrowattStoragePortalAvailable() bool {
+	return provider != nil && provider.growatt != nil
+}
+
+func (provider *gatewayModbusRuntimeProvider) ModbusV1OptionalToolAvailable(tool string) bool {
+	if provider == nil {
+		return false
+	}
+	switch tool {
+	case mcp.TeslaGen3EVSECurrentLimitV1GetTool, mcp.SemanticV1EVSECurrentGetTool:
+		return provider.tesla != nil
+	case mcp.GrowattBMSRS485V202StatusGetTool, mcp.SemanticV1GrowattStorageCurrentGetTool:
+		return provider.growatt != nil
+	default:
+		return false
+	}
+}
+
 type gatewayGrowattBMSMCPProvider struct {
 	*gatewayModbusMCPProvider
 	growatt mcp.GrowattBMSRS485V202Provider
 	storage mcp.GrowattStorageSemanticProvider
+}
+
+func (provider gatewayGrowattBMSMCPProvider) GrowattStoragePortalAvailable() bool {
+	return provider.storage != nil
 }
 
 func (provider gatewayGrowattBMSMCPProvider) ModbusV1CoreAvailable() bool {

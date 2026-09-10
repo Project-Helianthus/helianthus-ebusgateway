@@ -409,6 +409,21 @@ func TestGrowattStoragePortalAvailabilityTracksStartedProvider(t *testing.T) {
 	}
 }
 
+func TestGrowattStoragePortalAvailabilitySurvivesTeslaComposition(t *testing.T) {
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1})
+	tesla := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if !growattStoragePortalAvailable(newGatewayModbusMCPProviderWithRuntimes(nil, runtime, tesla)) {
+		t.Fatal("Tesla composition disabled started Growatt Portal Storage")
+	}
+	if growattStoragePortalAvailable(newGatewayModbusMCPProviderWithRuntimes(nil, nil, tesla)) {
+		t.Fatal("Tesla-only composition advertised absent Growatt Portal Storage")
+	}
+	var failed *growattBMSRS485ProductionProvider
+	if growattStoragePortalAvailable(newGatewayModbusMCPProviderWithRuntimes(nil, failed, tesla)) {
+		t.Fatal("failed Growatt startup advertised Portal Storage through Tesla composition")
+	}
+}
+
 func TestGrowattBMSRS485SemanticStoragePublishesOneAtomicSemRegView(t *testing.T) {
 	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
 	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)

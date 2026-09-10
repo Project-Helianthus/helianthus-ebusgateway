@@ -9,6 +9,25 @@ type ModbusTCPConfig struct {
 	Endpoint        string
 	DialTimeout     time.Duration
 	GrowattBMSRS485 GrowattBMSRS485Config
+	TeslaGen3HSC    TeslaGen3HSCRetainedConfig
+}
+
+// TeslaGen3HSCRetainedConfig enables the non-send owner for completed,
+// transport-correlated WC3 current-limit outcomes. EndpointID is a public
+// configured label. No serial path or operation authority is part of this
+// configuration.
+type TeslaGen3HSCRetainedConfig struct {
+	Enabled          bool
+	EndpointID       string
+	AssetID          string
+	SourceID         string
+	SourceEpoch      string
+	ClockEpoch       string
+	EVSEID           string
+	ConnectorID      string
+	Profile          string
+	DriverGeneration uint64
+	Node             byte
 }
 
 // GrowattBMSRS485Config is the explicit, disabled-by-default composition

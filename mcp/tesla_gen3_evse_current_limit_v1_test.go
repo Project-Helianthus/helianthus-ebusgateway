@@ -191,17 +191,19 @@ func TestTeslaGen3EVSECurrentLimitV1ToolListSchemaAndOrder(t *testing.T) {
 
 func teslaGen3EVSECurrentLimitV1FixtureSource(t *testing.T) TeslaGen3EVSECurrentLimitV1Source {
 	t.Helper()
-	persistentRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCConfigureSettings, []byte{0x08, 0x10})
+	persistentBody := []byte{0x0a, 0x02, 0x08, 0x10}
+	persistentRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCConfigureSettings, persistentBody)
 	persistent, err := modbusreg.NewTeslaGen3PersistentCurrentLimit(modbusreg.TeslaGen3PersistentCurrentLimitSpec{
 		OperationVersion:     modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
 		MaxOutputCurrentAmps: 16,
 		RequestPayload:       persistentRequest,
-		TerminalPayload:      teslaGen3EVSECurrentLimitV1Terminal(8, []byte{0x08, 0x10}),
+		TerminalPayload:      teslaGen3EVSECurrentLimitV1Terminal(8, persistentBody),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	setRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCSetProvisional, []byte{0x08, 0x10})
+	provisionalBody := []byte{0x0a, 0x07, 0x08, 0x10, 0x10, 0xd8, 0x04, 0x18, 0x00}
+	setRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCSetProvisional, provisionalBody)
 	readbackRequest := teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCGetProvisional, nil)
 	provisional, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{
 		OperationVersion:        modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
@@ -210,7 +212,7 @@ func teslaGen3EVSECurrentLimitV1FixtureSource(t *testing.T) TeslaGen3EVSECurrent
 		SetRequestPayload:       setRequest,
 		AckPayload:              teslaGen3EVSECurrentLimitV1Terminal(26, nil),
 		ReadbackRequestPayload:  readbackRequest,
-		ReadbackTerminalPayload: teslaGen3EVSECurrentLimitV1Terminal(28, []byte{0x08, 0x10}),
+		ReadbackTerminalPayload: teslaGen3EVSECurrentLimitV1Terminal(28, append(append([]byte(nil), provisionalBody...), 0x10, 0x20)),
 	})
 	if err != nil {
 		t.Fatal(err)

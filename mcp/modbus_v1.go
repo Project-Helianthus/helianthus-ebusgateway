@@ -81,6 +81,18 @@ type modbusV1CoreAvailability interface {
 	ModbusV1CoreAvailable() bool
 }
 
+// modbusV1OptionalToolAvailability lets a composite provider expose only the
+// optional owners that were actually started. Providers without this method
+// retain the existing structural-interface registration behavior.
+type modbusV1OptionalToolAvailability interface {
+	ModbusV1OptionalToolAvailable(string) bool
+}
+
+func modbusV1OptionalToolAvailable(provider ModbusV1Provider, tool string) bool {
+	availability, ok := provider.(modbusV1OptionalToolAvailability)
+	return !ok || availability.ModbusV1OptionalToolAvailable(tool)
+}
+
 type SemanticPVCurrentResult struct {
 	Data      any
 	Evaluated string
@@ -151,7 +163,6 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		registerTeslaFC100SummaryV1Tool(server, provider)
 		registerTeslaHSCV1Tool(server, provider)
 		registerTeslaWCVitalsV1Tool(server, provider)
-		registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)
 		registerGrowattProtocolIIV1Tool(server, provider)
 		registerOutBackAXSV1Tool(server, provider)
 		registerHuaweiEMMAV1Tool(server, provider)
@@ -159,9 +170,18 @@ func RegisterModbusV1Tools(server *Server, provider ModbusV1Provider) {
 		registerHuaweiSDongleV1Tool(server, provider)
 		registerFroniusSunSpecV1Tool(server, provider)
 	}
-	registerGrowattBMSRS485V202Tool(server, provider)
-	registerGrowattStorageSemanticTool(server, provider)
-	registerTeslaGen3EVSESemanticTool(server, provider)
+	if modbusV1OptionalToolAvailable(provider, TeslaGen3EVSECurrentLimitV1GetTool) {
+		registerTeslaGen3EVSECurrentLimitV1Tool(server, provider)
+	}
+	if modbusV1OptionalToolAvailable(provider, GrowattBMSRS485V202StatusGetTool) {
+		registerGrowattBMSRS485V202Tool(server, provider)
+	}
+	if modbusV1OptionalToolAvailable(provider, SemanticV1GrowattStorageCurrentGetTool) {
+		registerGrowattStorageSemanticTool(server, provider)
+	}
+	if modbusV1OptionalToolAvailable(provider, SemanticV1EVSECurrentGetTool) {
+		registerTeslaGen3EVSESemanticTool(server, provider)
+	}
 }
 
 func (server *Server) handleModbusV1Call(ctx context.Context, name string, args map[string]any) (map[string]any, bool) {

@@ -31,6 +31,7 @@ type growattEndpointFake struct {
 	closed     int
 	recovers   int
 	recoverErr error
+	delay      time.Duration
 }
 
 func TestPortalRawModbusUsesOnlyTCPAvailableComposition(t *testing.T) {
@@ -90,7 +91,14 @@ func growattBMSProductionReadPDU(words []uint16) []byte {
 	return pdu
 }
 
-func (fake *growattEndpointFake) Read(_ context.Context, unit byte, request modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error) {
+func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error) {
+	if fake.delay > 0 {
+		select {
+		case <-time.After(fake.delay):
+		case <-ctx.Done():
+			return modbus.ReadRegistersResponse{}, modbus.RTUReadEvidence{}, ctx.Err()
+		}
+	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.unitIDs = append(fake.unitIDs, unit)

@@ -32,8 +32,8 @@ func (cfg Config) ValidatePortalStorage() error {
 	}
 	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
 	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
-		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 500*time.Millisecond) {
-			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 500ms headroom below the M2M server deadline")
+		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 750*time.Millisecond) {
+			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 250ms processing and 500ms response headroom below the M2M server deadline")
 		}
 	}
 	if !cfg.PortalStorage.SemanticEnabled {

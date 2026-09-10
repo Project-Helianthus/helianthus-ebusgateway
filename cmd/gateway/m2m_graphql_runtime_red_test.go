@@ -25,6 +25,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
 
@@ -147,6 +148,33 @@ func TestM2MGraphQLRuntime_BoundsStorageProviderContextBelowWriteDeadline(t *tes
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("bounded storage request did not complete")
+	}
+}
+
+func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testing.T) {
+	const timeout = 80 * time.Millisecond
+	const preProviderWork = 20 * time.Millisecond
+	const providerWork = 20 * time.Millisecond
+	providerCalled := false
+	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{AllowedAssets: map[string]struct{}{"asset:growatt-bms-a": {}}, SemanticStorageCurrent: func(ctx context.Context, _ string) (json.RawMessage, bool) {
+		providerCalled = true
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= providerWork {
+			return nil, false
+		}
+		time.Sleep(providerWork)
+		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), ctx.Err() == nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preProvider := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(preProviderWork); handler.ServeHTTP(w, r) })
+	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
+	request = request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), "principal"))
+	response := httptest.NewRecorder()
+	newM2MRequestDeadlineHandler(preProvider, timeout).ServeHTTP(response, request)
+	if !providerCalled || response.Code != http.StatusOK {
+		t.Fatalf("provider/status=%t/%d body=%s", providerCalled, response.Code, response.Body.String())
 	}
 }
 

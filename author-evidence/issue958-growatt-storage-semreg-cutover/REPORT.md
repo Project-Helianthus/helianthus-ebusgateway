@@ -321,3 +321,34 @@ packages, Python 168 plus 6/24/9/6/2 suites, lint 0 issues, RTU conformance,
 mapping 2 outputs/13 rejects, and passive smoke not triggered. Log:
 `wave12/gateway959-second-correction-full-ci.log`, SHA-256
 `1a50d558bf5470d25356f13af66a046846bfad7b7a94d77afe5ffa9979638883`.
+
+## Third exact-HEAD review correction
+
+Independent review `gateway959-ab12ee1-independent/REVIEW.md` (SHA-256
+`8ea80e0524dc637a20537a633f6f8b9d139130068f3dd8a3b6022642e94af940`)
+found two remaining call-path/budget defects. The RTU source classifier now
+includes `cmd/gateway/m2m_graphql_config.go`; source-only pass/fail fixtures
+cover the Portal Storage flag binder and its test-only counterpart remains
+non-triggering.
+
+Direct GraphQL retains the outer 10-second server deadline and its separate
+500 ms response reserve. Its verified-mTLS request context remains 9.5 seconds
+and now reserves a further 250 ms for parsing, admission, projection, and
+response work: configuration admits the recovery-plus-four-read native segment
+only strictly below 9.25 seconds, using the existing overflow-safe arithmetic.
+The Portal's stricter independent budget is unchanged.
+
+`newM2MRequestDeadlineHandler` is the production request wrapper. A deterministic
+scaled-timeout test runs pre-provider and provider work through the real M2M
+handler, verifies the bounded context remains usable, and completes the direct
+GraphQL response. Configuration tests cover just-below and exact 9.25-second
+native-operation boundaries. No live I/O, write, fallback, compatibility path,
+or second semantic authority was added.
+
+RED focused tests exposed the missing binder classification and missing internal
+processing reserve. GREEN focused race validation and gate suites passed.
+Fresh complete `GOWORK=off ./scripts/ci_local.sh` passed: 93 Portal Node tests,
+all Go race packages, Python 168 plus 6/24/9/6/2 suites, golangci-lint with 0
+issues, pinned RTU conformance, mapping 2 outputs/13 rejects, and passive smoke
+not triggered. Log `wave12/gateway959-third-correction-full-ci.log` SHA-256:
+`814a031db6dd41e38bf358dba66edf029fb838f4a532220cca9073c67f5176dc`.

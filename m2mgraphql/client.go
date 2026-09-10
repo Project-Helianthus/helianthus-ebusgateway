@@ -75,6 +75,12 @@ func (client *Client) StorageCurrent(ctx context.Context) (Response, error) {
 	return client.current(ctx, "SemanticStorageCurrent", semanticStorageFixedQuery, semanticStorageContractID)
 }
 
+// EVSECurrent uses the fixed authenticated EVSE SemReg query.  It has no
+// native-record fallback and no operation path.
+func (client *Client) EVSECurrent(ctx context.Context) (Response, error) {
+	return client.current(ctx, "SemanticEVSECurrent", semanticEVSEFixedQuery, semanticEVSEContractID)
+}
+
 func (client *Client) current(ctx context.Context, operation, query, contract string) (Response, error) {
 	if client == nil || client.http == nil {
 		return Response{}, errors.New("M2M GraphQL client unavailable")

@@ -66,6 +66,9 @@ semreg_public_config_only() {
 			continue
 		fi
 		case "${trimmed}" in
+			"// PrometheusEVSEEnabled enables only the detached EVSE SemReg observation"|\
+			"// section. It neither configures acquisition nor grants a native runtime."|\
+			"PrometheusEVSEEnabled bool"|\
 			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
 			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
 			"KnownAssets                 []string"|\

@@ -83,6 +83,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout, "growatt-bms-rs485-response-timeout", cfg.ModbusTCPConfig.GrowattBMSRS485.ResponseTimeout, "Growatt BMS RTU response timeout")
 	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "growatt-bms-rs485-max-response-delay", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxResponseDelay, "Growatt BMS maximum RTU response delay")
 	fs.DurationVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "growatt-bms-rs485-max-quiescence", cfg.ModbusTCPConfig.GrowattBMSRS485.MaxQuiescence, "Growatt BMS RTU recovery quiescence bound")
+	fs.BoolVar(&cfg.PrometheusEVSEEnabled, "semantic-prometheus-evse-enabled", cfg.PrometheusEVSEEnabled, "append detached EVSE SemReg metrics when an EVSE semantic runtime is configured")
 	bindEEBusFlags(fs, cfg)
 	bindM2MGraphQLFlags(fs, cfg)
 	fs.BoolVar(

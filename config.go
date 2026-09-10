@@ -323,6 +323,9 @@ type Config struct {
 	StateMinStabilitySeconds int
 	StartupSource            StartupSourceOverride
 	DiagnosticFullRangeRetry bool
+	// PrometheusEVSEEnabled enables only the detached EVSE SemReg observation
+	// section. It neither configures acquisition nor grants a native runtime.
+	PrometheusEVSEEnabled bool
 	// SemanticInterval is a legacy single-interval semantic polling configuration.
 	// Prefer SemanticDiscoveryInterval / SemanticConfigInterval / SemanticStateInterval.
 	SemanticInterval                       time.Duration

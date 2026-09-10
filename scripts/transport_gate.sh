@@ -170,6 +170,9 @@ semreg_public_config_only() {
 		trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 		if [[ "${trimmed}" == "}" ]]; then continue; fi
 		case "${trimmed}" in
+			"// PrometheusEVSEEnabled enables only the detached EVSE SemReg observation"|\
+			"// section. It neither configures acquisition nor grants a native runtime."|\
+			"PrometheusEVSEEnabled bool"|\
 			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
 			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
 			"KnownAssets                 []string"|\
@@ -312,11 +315,14 @@ while IFS= read -r file; do
 	if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
     continue
   fi
-  if [[ "${file}" == "config.go" ]]; then
+	if [[ "${file}" == "config.go" ]]; then
     requires_ebus_gate=1
     requires_modbus_rtu_gate=1
     continue
-  fi
+	fi
+	if [[ "${file}" == "cmd/gateway/gateway_cli.go" || "${file}" == "cmd/gateway/gateway_run_lifecycle.go" ]] && python3 scripts/semreg_prometheus_transport_classifier.py "${base_ref}" "${file}"; then
+		continue
+	fi
   if requires_ebus_transport_gate "${file}"; then
     requires_ebus_gate=1
   fi

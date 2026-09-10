@@ -665,6 +665,99 @@ func TestTeslaGen3EVSESemanticPublicationUsesIndependentReadMonotonicClock(t *te
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtIsDetachedAndMonotonic(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:prometheus", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	beforeSnapshot, beforeSequence, beforeReadAt, beforeReadMono, beforeReadClock := p.current, p.sequence, p.lastReadAt, p.lastReadMonotonic, p.lastReadClock
+	p.now = func() time.Time { t.Fatal("scrape called publication wall clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("scrape called publication monotonic clock"); return 0, nil }
+	fresh, ok := p.SemanticEVSECurrentAt(base.Add(59 * time.Second))
+	if !ok || fresh.Snapshot.SnapshotID != beforeSnapshot.SnapshotID || strings.Contains(mustJSON(fresh.Projection), "withheld_provisional_expired") {
+		t.Fatalf("fresh detached scrape=%#v ok=%t", fresh, ok)
+	}
+	expired, ok := p.SemanticEVSECurrentAt(base.Add(60 * time.Second))
+	if !ok || !strings.Contains(mustJSON(expired.Projection), "withheld_provisional_expired") {
+		t.Fatalf("expiry detached scrape=%#v ok=%t", expired, ok)
+	}
+	if !reflect.DeepEqual(beforeSnapshot, p.current) || beforeSequence != p.sequence || beforeReadAt != p.lastReadAt || beforeReadMono != p.lastReadMonotonic || beforeReadClock != p.lastReadClock {
+		t.Fatal("Prometheus current scrape mutated publication or read lifecycle")
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFloor(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, readClock := base, uint64(0)
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-one", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now, readClock = base.Add(time.Second), 1
+	second := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(second, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:floor-two", ObservedAt: now, EvaluatedAt: now, MonotonicNS: int64(time.Second) + 1, EvaluatedMonotonicNS: int64(time.Second) + 1, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { t.Fatal("floor retry called publication clock"); return time.Time{} }
+	p.readClock = func() (uint64, error) { t.Fatal("floor retry called read clock"); return 0, nil }
+	current, ok := p.SemanticEVSECurrentAt(base)
+	if !ok || current.Snapshot.Revisions != p.current.Revisions || current.Evaluation.Revisions != p.current.Revisions {
+		t.Fatalf("pre-publication scrape did not return coherent floor tuple: %#v ok=%t", current, ok)
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtStaysCoherentDuringPublish(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, readClock := base, uint64(0)
+	p.now = func() time.Time { return now }
+	p.readClock = func() (uint64, error) { return readClock, nil }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-one", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	now, readClock = base.Add(time.Second), 1
+	errs := make(chan error, 128)
+	var readers sync.WaitGroup
+	for range 32 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 16 {
+				current, ok := p.SemanticEVSECurrentAt(base.Add(2 * time.Second))
+				if !ok || current.Snapshot.SnapshotID == "" || current.Evaluation.SnapshotID != current.Snapshot.SnapshotID || current.Projection.SnapshotID != current.Snapshot.SnapshotID || current.Evaluation.Revisions != current.Snapshot.Revisions || current.Projection.Revisions != current.Snapshot.Revisions {
+					errs <- fmt.Errorf("mixed Prometheus tuple: %#v ok=%t", current, ok)
+					return
+				}
+			}
+		}()
+	}
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:concurrent-two", ObservedAt: now, EvaluatedAt: now, MonotonicNS: int64(time.Second) + 1, EvaluatedMonotonicNS: int64(time.Second) + 1, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationRejectsRegressionBelowReadFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

@@ -12,6 +12,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
 CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
+PROMETHEUS_LIFECYCLE_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_prometheus_transport_classifier.py"
 
 
 class TransportGateTests(unittest.TestCase):
@@ -162,6 +163,7 @@ type Config struct {
         (repo_path / "scripts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(TRANSPORT_GATE_SCRIPT, repo_path / "scripts" / "transport_gate.sh")
         shutil.copy2(CONFIG_CLASSIFIER, repo_path / "scripts" / "semreg_public_config_classifier.py")
+        shutil.copy2(PROMETHEUS_LIFECYCLE_CLASSIFIER, repo_path / "scripts" / "semreg_prometheus_transport_classifier.py")
 
         tracked_file = repo_path / changed_file
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
@@ -642,6 +644,47 @@ type Config struct {
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("transport gate: not triggered.", result.stdout)
+
+    def test_semreg_prometheus_lifecycle_exemption_requires_the_complete_hunk(self) -> None:
+        base = (
+            "package main\nfunc runGatewayLifecycle() {\n"
+            "\tif busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled) {\n"
+            "\t\t\treturn semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)\n\t}\n}\n"
+        )
+        exact = base.replace(
+            "\tif busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled) {\n\t\t\treturn semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)",
+            "\tif busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled || cfg.PrometheusEVSEEnabled) {\n\t\t\t// EVSE acquisition remains outside this issue. A future accepted owner\n\t\t\t// may supply the detached generic read seam; nil truthfully reports the\n\t\t\t// configured runtime as unavailable without creating Tesla composition.\n\t\t\treturn semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, nil, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)",
+        )
+        for name, modified, expected in (
+            ("exact", exact, True),
+            ("extra-lock", exact.replace("\t}\n}", "\t\tstore.mu.Lock()\n\t}\n}"), False),
+            ("missing-unavailable", exact.replace(" || cfg.PrometheusEVSEEnabled", ""), False),
+        ):
+            with self.subTest(name=name):
+                repo_path, _ = self._create_temp_repo("cmd/gateway/gateway_run_lifecycle.go", base, modified)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, expected, msg=result.stdout + result.stderr)
+
+    def test_semreg_prometheus_cli_exemption_is_one_exact_flag(self) -> None:
+        base = "package main\nfunc bindFlags() {}\n"
+        exact = base + '\tfs.BoolVar(&cfg.PrometheusEVSEEnabled, "semantic-prometheus-evse-enabled", cfg.PrometheusEVSEEnabled, "append detached EVSE SemReg metrics when an EVSE semantic runtime is configured")\n'
+        for name, modified, expected in (
+            ("exact", exact, True),
+            ("transport-flag", exact.replace("PrometheusEVSEEnabled", "ModbusTCPConfig.Enabled", 1), False),
+            ("extra-runtime", exact + "\topenSerial()\n", False),
+        ):
+            with self.subTest(name=name):
+                repo_path, _ = self._create_temp_repo("cmd/gateway/gateway_cli.go", base, modified)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, expected, msg=result.stdout + result.stderr)
 
     def test_transport_gate_skips_test_only_adaptermux_change(self) -> None:
         repo_path, _ = self._create_temp_repo("internal/adaptermux/e2e_test.go")

@@ -283,3 +283,50 @@ state. Focused race SHA-256:
 `8b8e590340dcc494fdcce4f476a7e033fb209485870f2a5a55b5a7712d6ad756`.
 Complete CI SHA-256:
 `526745d2a4316b7e67fd9c70b0084f11bc6e5203aa459936852bf03421ab6eb4`.
+
+## P2 retry idempotence and candidate-history remediation
+
+Source `6d5caec1bc042ac8453bdd3033d22ab75819c05e` retains the immutable
+accepted input digest with its caller generation and sequence. An identical
+same-generation, same-sequence, same-input-digest retry returns without reading
+the injected clock, forking the SemReg kernel, changing any snapshot bytes,
+candidate or semantic revision, sequence, or public output. A same-sequence
+input with a different digest remains a collision and is rejected before any
+mutation.
+
+The stateful publication also retains each stable candidate's accepted revision
+high-water independently of its current snapshot membership. Therefore an
+accepted `FactWithdrawal` removes a superseded allocated-current candidate from
+the kernel snapshot, while a later valid allocation with the same stable
+candidate identity reactivates at revision `2` rather than reusing `1` or
+colliding with kernel history. Configured current remains independently current.
+The regression suite covers exact retry/no-op, distinct-digest conflict,
+withdrawal then reactivation, and MCP/mTLS GraphQL parity for both retained and
+reactivated states. It makes no native-provider call, time-only lifecycle batch,
+Portal surface, production composition, fallback, alias, or operation path.
+
+Focused semantic race evidence passed:
+
+```text
+GOWORK=off go test -race ./mcp -run \
+  'TestTeslaGen3EVSESemanticPublication(RetriesIdenticalInputWithoutMutation|ReactivatesWithdrawnAllocatedCurrentAboveHighWater|RejectsReplayAndPreservesLastKnownGood|WithdrawsSupersededAllocatedCurrent)$' -count=1
+PASS
+```
+
+Log: `/tmp/helianthus-ebusgateway-961-retry-highwater-focused-race.log`;
+SHA-256 `075f22f84959a3cd94c3b05b3b3010c7cabf139142b47f9202ae87a68a1101d7`.
+
+The full committed-head local gate also passed:
+
+```text
+GOWORK=off ./scripts/ci_local.sh
+PASS
+```
+
+It covered terminology/source-selection, gofmt, Portal Node `93/93`, go vet,
+native and Linux cross-builds, the full Go race suite, source-selection schema
+coverage, Python suites `168 + 6 + 24 + 9 + 6 + 2 = 215`, golangci-lint with
+`0 issues`, Modbus RTU transport conformance, Growatt Storage SemReg mapping,
+and a passive-smoke classifier result of `not triggered`. Log:
+`/tmp/helianthus-ebusgateway-961-retry-highwater-ci.log`; SHA-256
+`92a4dd82619b61440017060a116fa8b613c57469d7ce66469297e4b9f9545c06`.

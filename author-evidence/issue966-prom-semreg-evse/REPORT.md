@@ -126,3 +126,33 @@ value, and keeps the no-clock/no-I/O scrape boundary under `-race`.
   6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
   `/tmp/helianthus-ebusgateway-966-detach-full-ci.log`, SHA-256
   `0203bc7e85f5d550192cbd51f28a1e7118990ec7e357eb96875c9fd64036cf61`.
+
+## P2 evidence-age progression and connector-slot corrections
+
+Source `6a445163f9e6f7b173f6eb74c4ef9a3e5cb63780` (tree
+`4f783917c17acd4427cd6e09208f4eddc8e79a91`) keeps an immutable
+delay-adjusted Prometheus monotonic base per accepted publication and adds each
+post-publication scrape interval to that base before applying the high-water
+fence. A 60-second allocation evaluated at T0 and published at T0+59s is thus
+withheld on T0+60s rather than incorrectly remaining exact until T0+119s.
+The same regression covers before/at/after expiry and rollback without a clock
+or I/O call.
+
+The EVSE slot allocator now reserves its eight protocol-neutral connector slots
+only for exact/transformed allocated-current disposition keys whose single
+candidate is fully qualified, promoted, good, available, fresh, conflict-free,
+and schema-valid. Rejected or otherwise unrenderable candidates cannot displace
+a valid promoted connector. The hostile regression fills the lexical prefix
+with rejected candidates and proves the later renderable connector receives
+`connector_1` without an identity label.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./mcp` — PASS: root
+  9.459s, gateway 95.050s, MCP 29.624s. Durable log
+  `/tmp/helianthus-ebusgateway-966-age-slot-focused-race.log`, SHA-256
+  `f4b2ed7c2eb7abfa905ee3840df149f3971eaa7936cc1d68b155dd4731632781`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: Portal 93/93; complete Go race
+  suite; Python 168/6/26/11/6/2; golangci-lint 0 issues; transport gate not
+  triggered; Growatt Storage mapping 2 outputs/13 rejected; Tesla EVSE mapping
+  6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
+  `/tmp/helianthus-ebusgateway-966-age-slot-full-ci.log`, SHA-256
+  `a6b084438a60cd5735ddf31fe39d66a599ca7a20fcf4e5f919e03aba92b364b8`.

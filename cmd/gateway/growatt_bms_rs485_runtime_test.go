@@ -586,6 +586,53 @@ func TestGrowattStorageCurrentAtReevaluatesFreshnessWithoutObservation(t *testin
 	}
 }
 
+func TestGrowattStorageCurrentAtClampsWallRollbackWithoutChangingMonotonicFreshness(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	native, err := runtime.GrowattBMSRS485V202(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, ok := runtime.LastObservationEvidence()
+	if !ok {
+		t.Fatal("missing evidence")
+	}
+	if _, err := runtime.storage.Publish(native.Status, evidence); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	reads := len(fake.calls)
+	fake.mu.Unlock()
+	sequence := runtime.storage.publicationSequence
+	for _, tc := range []struct {
+		name          string
+		wall          time.Time
+		elapsed       time.Duration
+		wantFreshness semreg.Freshness
+		wantWallFloor bool
+	}{
+		{"rollback-fresh", evidence.ReceiptWall.Add(-time.Hour), 59 * time.Second, semreg.FreshnessFresh, true},
+		{"rollback-stale-no-resurrection", evidence.ReceiptWall.Add(-time.Hour), 60 * time.Second, semreg.FreshnessStale, true},
+		{"forward-fresh-no-early-expiry", evidence.ReceiptWall.Add(time.Hour), 59 * time.Second, semreg.FreshnessFresh, false},
+		{"forward-stale", evidence.ReceiptWall.Add(time.Hour), 61 * time.Second, semreg.FreshnessStale, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current, ok := runtime.storage.currentAtWithElapsed("asset:growatt-bms-a", tc.wall, tc.elapsed, true)
+			if !ok || len(current.Evaluation.Facts) == 0 || current.Evaluation.Facts[0].Freshness != tc.wantFreshness {
+				t.Fatalf("current=%+v ok=%t want freshness=%s", current.Evaluation, ok, tc.wantFreshness)
+			}
+			if tc.wantWallFloor && current.Evaluation.Context.EvaluatedAt.UnixNanoseconds != growattWall(evidence.ReceiptWall).UnixNanoseconds {
+				t.Fatalf("rollback evaluation wall=%s want receipt floor=%s", current.Evaluation.Context.EvaluatedAt.UnixNanoseconds, growattWall(evidence.ReceiptWall).UnixNanoseconds)
+			}
+		})
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != reads || runtime.storage.publicationSequence != sequence {
+		t.Fatalf("wall-step scrape read or published: calls=%d/%d sequence=%d/%d", len(fake.calls), reads, runtime.storage.publicationSequence, sequence)
+	}
+}
+
 func growattStorageSemanticRevision(t *testing.T, value any) string {
 	t.Helper()
 	encoded, err := json.Marshal(value)

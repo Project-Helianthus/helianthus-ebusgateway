@@ -133,6 +133,13 @@ type growattStorageCurrent struct {
 // supplied scrape instant. It reads no transport and never changes publication
 // state, revision, or the stored current bytes.
 func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growattStorageCurrent, bool) {
+	return p.currentAtWithElapsed(asset, at, 0, false)
+}
+
+// currentAtWithElapsed is the CurrentAt implementation. The explicit elapsed
+// seam lets the deterministic tests model Go's independent monotonic clock
+// after a wall-clock step without introducing a second production clock.
+func (p *growattStoragePublication) currentAtWithElapsed(asset string, at time.Time, elapsedOverride time.Duration, useElapsedOverride bool) (growattStorageCurrent, bool) {
 	if p == nil || semreg.AssetID(asset) != p.assetID || at.IsZero() {
 		return growattStorageCurrent{}, false
 	}
@@ -153,11 +160,22 @@ func (p *growattStoragePublication) CurrentAt(asset string, at time.Time) (growa
 	// Both points retain Go's independent monotonic coordinate. Age starts at
 	// the native evidence receipt, so publication delay cannot prolong freshness.
 	elapsed := at.Sub(received)
+	if useElapsedOverride {
+		elapsed = elapsedOverride
+	}
 	if elapsed < 0 || elapsed == time.Duration(math.MaxInt64) || base < 0 || base > math.MaxInt64-int64(elapsed) {
 		return growattStorageCurrent{}, false
 	}
+	// elapsed is deliberately computed from Go's monotonic coordinates above.
+	// Serialize a comparable wall coordinate separately: a backward wall step
+	// must not place evaluation before the immutable receipt wall floor.
+	evaluationWall := at.UTC()
+	receiptWall := received.UTC()
+	if evaluationWall.UnixNano() < receiptWall.UnixNano() {
+		evaluationWall = receiptWall
+	}
 	context := semreg.EvaluationContext{
-		EvaluatedAt:       growattWall(at),
+		EvaluatedAt:       growattWall(evaluationWall),
 		EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: current.Snapshot.EvaluateMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatInt(base+int64(elapsed), 10))},
 	}
 	evaluation, err := semreg.EvaluateSnapshot(current.Snapshot, context)

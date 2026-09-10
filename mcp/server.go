@@ -491,6 +491,7 @@ type Server struct {
 	bus                         BusObservabilityProvider
 	watch                       WatchSummaryProvider
 	semantic                    SemanticProvider
+	semanticSnapshotTimeout     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	scheduleWriter              ScheduleWriter
 	configWriter                ConfigWriter
 	rpcSource                   byte
@@ -3225,7 +3226,11 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 		return nil, err
 	}
 
-	deadlineCtx, cancel := context.WithTimeout(ctx, options.timeout)
+	timeoutContext := s.semanticSnapshotTimeout
+	if timeoutContext == nil {
+		timeoutContext = context.WithTimeout
+	}
+	deadlineCtx, cancel := timeoutContext(ctx, options.timeout)
 	defer cancel()
 
 	data := make(map[string]any, len(options.planes))
@@ -3249,7 +3254,7 @@ func (s *Server) readSemanticSnapshot(ctx context.Context, args map[string]any, 
 		default:
 		}
 
-		planeCtx, planeCancel := context.WithTimeout(deadlineCtx, perPlane)
+		planeCtx, planeCancel := timeoutContext(deadlineCtx, perPlane)
 		value, planeErr := s.readSemanticPlane(planeCtx, plane, snapshot)
 		planeCancel()
 		if planeErr != nil {

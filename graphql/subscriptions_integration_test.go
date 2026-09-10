@@ -145,7 +145,9 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 			t.Fatalf("json.Marshal error = %v", err)
 		}
 
-		req, err := http.NewRequest(http.MethodPost, server.URL, bytes.NewReader(body))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("http.NewRequest error = %v", err)
 		}
@@ -166,7 +168,7 @@ func TestBroadcastSubscriptions_Integration(t *testing.T) {
 		eventRouter.HandleBroadcast(frame)
 
 		reader := bufio.NewReader(resp.Body)
-		data := readSSEData(t, reader)
+		data := readSSEData(t, ctx, reader)
 
 		var payloadData struct {
 			Data struct {
@@ -227,7 +229,7 @@ func waitForSubscription(t *testing.T, hub *BroadcastHub, primary, secondary byt
 	t.Fatalf("subscription not registered for 0x%02x 0x%02x", primary, secondary)
 }
 
-func readSSEData(t *testing.T, reader *bufio.Reader) []byte {
+func readSSEData(t *testing.T, ctx context.Context, reader *bufio.Reader) []byte {
 	t.Helper()
 
 	resultCh := make(chan []byte, 1)
@@ -259,8 +261,8 @@ func readSSEData(t *testing.T, reader *bufio.Reader) []byte {
 			t.Fatal("empty SSE payload")
 		}
 		return data
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for SSE payload")
+	case <-ctx.Done():
+		t.Fatalf("SSE request context ended before payload: %v", ctx.Err())
 		return nil
 	}
 }

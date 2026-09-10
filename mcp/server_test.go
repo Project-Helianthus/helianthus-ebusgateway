@@ -243,6 +243,21 @@ func (p *testWatchSummaryProvider) Snapshot() WatchSummary {
 	return *copy
 }
 
+type testDeadlineContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c testDeadlineContext) Done() <-chan struct{} { return c.done }
+func (c testDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 type testSemanticProvider struct {
 	zones             []Zone
 	zonesPublished    bool
@@ -263,6 +278,7 @@ type testSemanticProvider struct {
 	radioDelay        time.Duration
 	dhwDelay          time.Duration
 	energyDelay       time.Duration
+	zonesEntered      func()
 }
 
 type testFM5InterpretationProvider struct {
@@ -275,6 +291,9 @@ func (p testFM5InterpretationProvider) FM5Interpretation() Fm5Interpretation {
 }
 
 func (p testSemanticProvider) Zones() []Zone {
+	if p.zonesEntered != nil {
+		p.zonesEntered()
+	}
 	if p.zonesDelay > 0 {
 		time.Sleep(p.zonesDelay)
 	}
@@ -1984,9 +2003,13 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot timeout partial", func(t *testing.T) {
+		deadlineDone := make(chan struct{})
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
+		}
+		slowServer.semanticSnapshotTimeout = func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+			return testDeadlineContext{Context: context.Background(), done: deadlineDone}, func() {}
 		}
 		slowServer.SetStatusProvider(testStatusProvider{
 			daemon: ServiceStatus{Status: "running"},
@@ -1995,16 +2018,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			},
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
-			zones:      []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:        &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
-			zonesDelay: 20 * time.Millisecond,
+			zones:        []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:          &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
+			zonesEntered: func() { close(deadlineDone) },
 		})
 
 		res := doRPC(t, slowServer.Handler(), rpcRequest{
 			JSONRPC: "2.0",
 			ID:      8,
 			Method:  "tools/call",
-			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":35,"allow_partial":true}}`),
+			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":35,"allow_partial":true}}`),
 		})
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
@@ -2012,11 +2035,16 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("partial snapshot data type = %T; want map", envelope["data"])
 		}
 		completed, ok := data["completed_planes"].([]any)
-		if !ok || len(completed) == 0 {
-			t.Fatalf("partial snapshot completed_planes = %#v; want at least one", data["completed_planes"])
+		if !ok || len(completed) != 1 || completed[0] != "dhw" {
+			t.Fatalf("partial snapshot completed_planes = %#v; want [dhw]", data["completed_planes"])
 		}
-		if _, ok := data["error_planes"].([]any); !ok {
+		errorPlanes, ok := data["error_planes"].([]any)
+		if !ok || len(errorPlanes) != 1 {
 			t.Fatalf("partial snapshot error_planes type = %T; want []any", data["error_planes"])
+		}
+		planeError, ok := errorPlanes[0].(map[string]any)
+		if !ok || planeError["plane"] != "zones" || planeError["code"] != "TIMEOUT" {
+			t.Fatalf("partial snapshot error_planes = %#v; want zones TIMEOUT", errorPlanes)
 		}
 	})
 

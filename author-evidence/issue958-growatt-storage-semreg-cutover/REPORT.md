@@ -162,3 +162,12 @@ characters, and values over 256 bytes without opening an endpoint, while the
 256-byte valid boundary opens. Portal Storage now rejects `RawReadEnabled=true`
 instead of silently accepting an unused PV alias field. Full CI remains pending
 by delivery-lead instruction.
+
+The delivery-lead full-CI run for `db00a5f` passed Go race and Python suites,
+then correctly stopped at the finite transport config classifier because the
+three explicit Storage `RawReadEnabled` rejection lines were not listed. Its
+log SHA-256 is `2efddab4275b01684a077a8507e0a0aaa069e36d6a351853c43b71e2bb2c3ba8`.
+The classifier and hostile fixtures now list only those three lines; focused
+transport classifier tests (23), passive classifier tests (9), and the actual
+Modbus RTU production conformance gate pass. No full CI was run for this
+report-only gate correction.

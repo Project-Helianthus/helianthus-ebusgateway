@@ -146,6 +146,9 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		}
 		return errors.New("tesla Gen3 EVSE semantic replay or collision")
 	}
+	if (p.sequence == 0 && evidence.Sequence != 1) || (p.sequence != 0 && (p.sequence == ^uint64(0) || evidence.Sequence != p.sequence+1)) {
+		return errors.New("tesla Gen3 EVSE semantic sequence gap")
+	}
 	readClock, err := p.readClock()
 	if err != nil {
 		return err

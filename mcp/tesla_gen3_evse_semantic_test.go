@@ -173,6 +173,60 @@ func TestTeslaGen3EVSESemanticPublicationRetriesIdenticalInputWithoutMutation(t 
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	readCalls := 0
+	p.readClock = func() (uint64, error) {
+		readCalls++
+		return 0, nil
+	}
+	first := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:contiguous-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:contiguous-invalid-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}); err == nil {
+		t.Fatal("first sequence other than one accepted")
+	}
+	if readCalls != 0 || p.sequence != 0 || len(p.current.Facts) != 0 {
+		t.Fatalf("invalid first sequence mutated state calls=%d sequence=%d snapshot=%#v", readCalls, p.sequence, p.current)
+	}
+	if err := p.Publish(source, first); err != nil {
+		t.Fatalf("first sequence: %v", err)
+	}
+	before := p.current
+	beforeDigest := p.lastInputDigest
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:contiguous-gap", ObservedAt: base.Add(2 * time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 3, EvaluatedMonotonicNS: 3, Sequence: 3}); err == nil {
+		t.Fatal("sequence gap accepted")
+	}
+	if readCalls != 1 || p.sequence != 1 || p.lastInputDigest != beforeDigest || !reflect.DeepEqual(before, p.current) {
+		t.Fatalf("gap mutated state calls=%d sequence=%d digest=%q snapshot=%#v", readCalls, p.sequence, p.lastInputDigest, p.current)
+	}
+	if err := p.Publish(source, first); err != nil {
+		t.Fatalf("exact retry after gap: %v", err)
+	}
+	if readCalls != 1 || p.sequence != 1 || !reflect.DeepEqual(before, p.current) {
+		t.Fatalf("retry mutated state calls=%d sequence=%d snapshot=%#v", readCalls, p.sequence, p.current)
+	}
+	second := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:contiguous-second", ObservedAt: base.Add(time.Second), EvaluatedAt: base.Add(time.Second), MonotonicNS: 2, EvaluatedMonotonicNS: 2, Sequence: 2}
+	if err := p.Publish(source, second); err != nil {
+		t.Fatalf("contiguous resume: %v", err)
+	}
+	if readCalls != 2 || p.sequence != 2 || p.current.Revisions.Semantic != "2" {
+		t.Fatalf("resume calls=%d sequence=%d revision=%s", readCalls, p.sequence, p.current.Revisions.Semantic)
+	}
+	mcpData := teslaGen3EVSEMCPCurrent(t, teslaGen3EVSEMCPHandler(t, p))
+	graphqlData := teslaGen3EVSEGraphQLCurrent(t, teslaGen3EVSEGraphQLHandler(t, p), "contiguous")
+	var mcpJSON, graphqlJSON any
+	if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil || !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+		t.Fatalf("contiguous MCP/GraphQL parity=%t err=%v", reflect.DeepEqual(mcpJSON, graphqlJSON), err)
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationAdvancesStableCandidateRevisions(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	before := teslaGen3EVSECandidateRevisions(t, p.current)

@@ -671,6 +671,21 @@ func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationVie
 	return asset.current.detached()
 }
 
+func (c *pvPublicationCore) singleAssetID() (semreg.AssetID, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.assets) != 1 {
+		return "", false
+	}
+	for id, asset := range c.assets {
+		return id, asset != nil && asset.current != nil
+	}
+	return "", false
+}
+
 // evaluatePublicView evaluates an already detached snapshot. Callers that
 // need a current clock must detach first, then obtain that clock, so a later
 // concurrent publication cannot make the context precede this snapshot's

@@ -136,6 +136,11 @@ type BusObservabilityStore struct {
 	// HelianthusV8ShadowWouldHaveDroppedGrowing alert wiring.
 	v8RolloutProvider func() V8RolloutSnapshot
 
+	// semanticMetricsProvider returns detached, already-evaluated SemReg views.
+	// It is invoked after the store snapshot is released: a /metrics request must
+	// never take the store lock across a driver or publication lock.
+	semanticMetricsProvider func() []SemanticMetricsDomain
+
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
@@ -1148,6 +1153,18 @@ func (store *BusObservabilityStore) SetV8RolloutProvider(provider func() V8Rollo
 	store.mu.Unlock()
 }
 
+// SetSemanticMetricsProvider installs the read-only PV/Storage SemReg view
+// supplier used by the existing /metrics renderer. The supplier must neither
+// acquire native data nor publish; nil removes the optional semantic section.
+func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func() []SemanticMetricsDomain) {
+	if store == nil {
+		return
+	}
+	store.mu.Lock()
+	store.semanticMetricsProvider = provider
+	store.mu.Unlock()
+}
+
 func (store *BusObservabilityStore) RenderPrometheus() string {
 	if store == nil {
 		return ""
@@ -1180,6 +1197,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	passiveState := passive.state
 	adaptermuxDiagProvider := store.adaptermuxDiagProvider
 	v8RolloutProvider := store.v8RolloutProvider
+	semanticMetricsProvider := store.semanticMetricsProvider
 	store.mu.Unlock()
 
 	// batch-21 diagnostic counters — snapshot OUTSIDE store.mu (the
@@ -1206,6 +1224,11 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 		v8Rollout = v8RolloutProvider()
 		haveV8Rollout = true
 	}
+	var semanticDomains []SemanticMetricsDomain
+	haveSemanticMetricsProvider := semanticMetricsProvider != nil
+	if semanticMetricsProvider != nil {
+		semanticDomains = semanticMetricsProvider()
+	}
 
 	if energyMetricsRefresher != nil {
 		energyMetricsRefresher(now, passiveState)
@@ -1213,6 +1236,9 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 
 	var buffer bytes.Buffer
 	writer := newPrometheusWriter(&buffer)
+	if haveSemanticMetricsProvider {
+		writeSemanticMetrics(writer, semanticDomains, now)
+	}
 
 	writer.writeHelp("ebus_observability_transport_info", "Observe-first transport metadata.")
 	writer.writeType("ebus_observability_transport_info", "gauge")

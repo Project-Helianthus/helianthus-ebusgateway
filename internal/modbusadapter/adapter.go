@@ -621,6 +621,20 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
 }
 
+// SemanticPVCurrentSingle returns the sole detached PV publication when the
+// configured adapter has exactly one public PV asset. It is scrape-safe: it
+// delegates to the same read-only current accessor and never acquires Modbus.
+func (adapter *Adapter) SemanticPVCurrentSingle() (SemanticPVCurrent, bool) {
+	if adapter == nil || adapter.semanticPV == nil {
+		return SemanticPVCurrent{}, false
+	}
+	asset, ok := adapter.semanticPV.singleAssetID()
+	if !ok {
+		return SemanticPVCurrent{}, false
+	}
+	return adapter.SemanticPVCurrentByAsset(string(asset))
+}
+
 // clampSemanticPVReadWall prevents a rolled-back wall clock from preceding
 // the immutable snapshot selected for this read. It changes only the wall
 // coordinate; monotonic elapsed time remains the current trusted read clock.

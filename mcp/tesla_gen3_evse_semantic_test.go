@@ -118,6 +118,8 @@ func TestTeslaGen3EVSESemanticPublicationRejectsProvisionalVectorsFieldLocally(t
 
 func TestTeslaGen3EVSESemanticPublicationRejectsReplayAndPreservesLastKnownGood(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
+	now := time.Date(2026, 9, 10, 12, 2, 0, 0, time.UTC)
+	p.now = func() time.Time { return now }
 	before, err := p.TeslaGen3EVSESemanticCurrent(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +140,8 @@ func TestTeslaGen3EVSESemanticPublicationRejectsReplayAndPreservesLastKnownGood(
 
 func TestTeslaGen3EVSESemanticPublicationRetriesIdenticalInputWithoutMutation(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
+	now := time.Date(2026, 9, 10, 12, 2, 0, 0, time.UTC)
+	p.now = func() time.Time { return now }
 	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 	when := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	evidence := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:fixture", ObservedAt: when, EvaluatedAt: when.Add(time.Second), MonotonicNS: 1, EvaluatedMonotonicNS: 1000000001, Sequence: 1}
@@ -179,6 +183,7 @@ func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.now = func() time.Time { return base.Add(time.Second) }
 	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 	readCalls := 0
 	p.readClock = func() (uint64, error) {
@@ -359,6 +364,92 @@ func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t 
 			encoded := string(mcpData)
 			if !strings.Contains(encoded, tc.freshness) || strings.Contains(encoded, "withheld_provisional_expired") != tc.withheld {
 				t.Fatalf("delayed lifecycle freshness=%q withheld=%t: %s", tc.freshness, tc.withheld, encoded)
+			}
+		})
+	}
+}
+
+func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonotonic(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	t.Run("equal zero coordinate uses receipt", func(t *testing.T) {
+		p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.readClock = func() (uint64, error) { return 0, nil }
+		if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:zero-equal", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 0, EvaluatedMonotonicNS: 0, Sequence: 1}); err != nil {
+			t.Fatal(err)
+		}
+		if !teslaGen3EVSESnapshotHasFact(p.current, "evse.limit.allocated_current") {
+			t.Fatal("equal zero-coordinate evidence did not publish allocation")
+		}
+	})
+	t.Run("delayed zero coordinate fails closed with parity", func(t *testing.T) {
+		p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.now = func() time.Time { return base }
+		readCalls := 0
+		p.readClock = func() (uint64, error) {
+			readCalls++
+			return 0, nil
+		}
+		source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+		first := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:delayed-floor", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}
+		if err := p.Publish(source, first); err != nil {
+			t.Fatal(err)
+		}
+		before := p.current
+		beforeView, err := p.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		callsBeforeReject := readCalls
+		bad := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:delayed-zero", ObservedAt: base.Add(time.Second), EvaluatedAt: base.Add(2 * time.Second), MonotonicNS: 2, EvaluatedMonotonicNS: 0, Sequence: 2}
+		if err := p.Publish(source, bad); err == nil {
+			t.Fatal("delayed evidence without evaluation monotonic coordinate accepted")
+		}
+		if readCalls != callsBeforeReject || p.sequence != 1 || !reflect.DeepEqual(before, p.current) {
+			t.Fatalf("rejected delayed evidence mutated calls=%d sequence=%d snapshot=%#v", readCalls, p.sequence, p.current)
+		}
+		afterView, err := p.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil || string(beforeView.(json.RawMessage)) != string(afterView.(json.RawMessage)) {
+			t.Fatalf("rejected delayed evidence changed public view err=%v", err)
+		}
+		mcpData := teslaGen3EVSEMCPCurrent(t, teslaGen3EVSEMCPHandler(t, p))
+		graphqlData := teslaGen3EVSEGraphQLCurrent(t, teslaGen3EVSEGraphQLHandler(t, p), "delayed-zero")
+		var mcpJSON, graphqlJSON any
+		if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil || !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+			t.Fatalf("rejected delayed MCP/GraphQL parity=%t err=%v", reflect.DeepEqual(mcpJSON, graphqlJSON), err)
+		}
+	})
+	for _, tc := range []struct {
+		name      string
+		timeout   uint32
+		allocated bool
+	}{
+		{name: "delayed explicit coordinate", timeout: 2, allocated: true},
+		{name: "delayed timeout boundary", timeout: 1, allocated: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.now = func() time.Time { return base.Add(time.Second) }
+			p.readClock = func() (uint64, error) { return 0, nil }
+			source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+			source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, tc.timeout, false)
+			evidence := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:" + tc.name, ObservedAt: base, EvaluatedAt: base.Add(time.Second), MonotonicNS: 0, EvaluatedMonotonicNS: int64(time.Second), Sequence: 1}
+			if err := p.Publish(source, evidence); err != nil {
+				t.Fatal(err)
+			}
+			if teslaGen3EVSESnapshotHasFact(p.current, "evse.limit.allocated_current") != tc.allocated {
+				t.Fatalf("allocated=%t want=%t snapshot=%#v", teslaGen3EVSESnapshotHasFact(p.current, "evse.limit.allocated_current"), tc.allocated, p.current.Facts)
 			}
 		})
 	}
@@ -595,6 +686,7 @@ func TestTeslaGen3EVSESemanticPublicationWithdrawsSupersededAllocatedCurrent(t *
 			if err != nil {
 				t.Fatal(err)
 			}
+			p.now = func() time.Time { return base.Add(time.Second) }
 			p.readClock = func() (uint64, error) { return 0, nil }
 			first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 			if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:first-" + tc.name, ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {
@@ -634,6 +726,7 @@ func TestTeslaGen3EVSESemanticPublicationReactivatesWithdrawnAllocatedCurrentAbo
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.now = func() time.Time { return base.Add(2 * time.Second) }
 	p.readClock = func() (uint64, error) { return 0, nil }
 	first := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 	if err := p.Publish(first, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:high-water-first", ObservedAt: base, EvaluatedAt: base, MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1}); err != nil {

@@ -73,5 +73,8 @@ echo "==> transport gate"
 echo "==> Growatt storage SemReg mapping gate"
 ./scripts/growatt_storage_semreg_gate.sh
 
+echo "==> Tesla EVSE SemReg mapping gate"
+./scripts/tesla_evse_semreg_mapping_gate.sh
+
 echo "==> passive smoke gate"
 ./scripts/passive_smoke_gate.sh

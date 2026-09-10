@@ -252,6 +252,9 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	if e.EvaluatedMonotonicNS == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
 		e.EvaluatedMonotonicNS = e.MonotonicNS
 	}
+	if e.EvaluatedMonotonicNS == 0 && !e.EvaluatedAt.Equal(e.ObservedAt) {
+		return errors.New("tesla Gen3 EVSE delayed evaluation monotonic clock is required")
+	}
 	if e.EvaluatedMonotonicNS < e.MonotonicNS {
 		return errors.New("tesla Gen3 EVSE evaluation monotonic clock regressed")
 	}

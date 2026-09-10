@@ -104,3 +104,25 @@ per-publication reset and connector non-resurrection properties.
   6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
   `/tmp/helianthus-ebusgateway-966-delay-full-ci.log`, SHA-256
   `05ac9fd606af1bf98cc8d8bf523c6c0c902431979876acff0d0f9b241edddb20`.
+
+## P2 detached-snapshot correction
+
+Source `dcc68f22d0358543da81279f9bd6c241b123895a` (tree
+`139289c9e04ec51bc74150b6714a45840504cb6e`) deep-copies the complete
+retained SemReg snapshot while holding the publication mutex before Prometheus
+reevaluation. A caller can consequently mutate a returned nested fact
+dimension without changing the retained publication or a later scrape. The
+regression mutates the returned nested text pointer, proves the canonical
+retained snapshot is unchanged, verifies the next scrape contains no injected
+value, and keeps the no-clock/no-I/O scrape boundary under `-race`.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./mcp` — PASS: root
+  9.629s, gateway 95.697s, MCP 30.235s. Durable log
+  `/tmp/helianthus-ebusgateway-966-detach-focused-race.log`, SHA-256
+  `a255ff4fba0353c0099820296e47c727d49d6e9f7de0a943922b046000648580`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: Portal 93/93; complete Go race
+  suite; Python 168/6/26/11/6/2; golangci-lint 0 issues; transport gate not
+  triggered; Growatt Storage mapping 2 outputs/13 rejected; Tesla EVSE mapping
+  6 outputs/9 rejected; passive-smoke gate not triggered. Durable log
+  `/tmp/helianthus-ebusgateway-966-detach-full-ci.log`, SHA-256
+  `0203bc7e85f5d550192cbd51f28a1e7118990ec7e357eb96875c9fd64036cf61`.

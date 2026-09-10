@@ -301,8 +301,11 @@ func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.Tesla
 			PersistentObservedAt: nextPersistentEvidence.ReceiptWall, PersistentMonotonicNS: nextPersistentEvidence.ReceiptMonotonic.Nanoseconds(),
 		}
 		if publishProvisional {
-			semanticEvidence.ProvisionalObservedAt = nextProvisionalEvidence[1].ReceiptWall
-			semanticEvidence.ProvisionalMonotonicNS = nextProvisionalEvidence[1].ReceiptMonotonic.Nanoseconds()
+			// The allocation lifetime starts when the set/ack completes. The later
+			// readback qualifies the value and advances aggregate evaluation, but
+			// must not restart LimitTimeoutSeconds.
+			semanticEvidence.ProvisionalObservedAt = nextProvisionalEvidence[0].ReceiptWall
+			semanticEvidence.ProvisionalMonotonicNS = nextProvisionalEvidence[0].ReceiptMonotonic.Nanoseconds()
 		}
 		if err := owner.publication.Publish(source, semanticEvidence); err != nil {
 			return err

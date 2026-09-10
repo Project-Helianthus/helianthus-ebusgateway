@@ -306,7 +306,7 @@ func TestTeslaHSCRetainedOwnerEqualMonotonicLaterWallPublishesWithoutRefresh(t *
 	}
 	wantReceipts := map[string]string{
 		"evse.limit.configured_current": "1700000001000000123",
-		"evse.limit.allocated_current":  "1700000003000000123",
+		"evse.limit.allocated_current":  "1700000002000000123",
 	}
 	for _, fact := range public.Snapshot.Facts {
 		want, ok := wantReceipts[fact.Key.FactID]
@@ -362,6 +362,88 @@ func TestTeslaHSCRetainedOwnerEqualMonotonicConcurrentReadsRemainStable(t *testi
 	wait.Wait()
 	if got := owner.RetainedEvidence(); !reflect.DeepEqual(got, wantEvidence) {
 		t.Fatal("equal-monotonic concurrent reads mutated retained evidence")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerProvisionalExpiryStartsAtSetAckReceipt(t *testing.T) {
+	owner, anchor, provisional := startTeslaDelayedReadbackFixture(t, 30*time.Second)
+	mcpCurrent := teslaOwnerMCPCurrent(t, owner)
+	graphqlCurrent := teslaOwnerGraphQLCurrent(t, owner)
+	for name, current := range map[string]mcp.SemanticEVSECurrent{"MCP": mcpCurrent, "GraphQL": graphqlCurrent} {
+		if got := teslaOwnerDisposition(current, "evse.limit.allocated_current"); got != "exact" {
+			t.Fatalf("%s allocated outcome before timeout = %q, want exact", name, got)
+		}
+		if got := teslaOwnerDisposition(current, "evse.limit.configured_current"); got != "exact" {
+			t.Fatalf("%s configured outcome = %q, want exact", name, got)
+		}
+	}
+
+	var current mcp.SemanticEVSECurrent
+	for _, tc := range []struct {
+		name, outcome string
+		at            time.Time
+	}{
+		{name: "before", outcome: "exact", at: anchor.Add(29 * time.Second)},
+		{name: "at", outcome: "withheld", at: anchor.Add(30 * time.Second)},
+		{name: "after", outcome: "withheld", at: anchor.Add(31 * time.Second)},
+	} {
+		var ok bool
+		current, ok = owner.SemanticEVSECurrentAt(tc.at)
+		if !ok {
+			t.Fatalf("%s set-anchored expiry view unavailable", tc.name)
+		}
+		if got := teslaOwnerDisposition(current, "evse.limit.allocated_current"); got != tc.outcome {
+			t.Fatalf("%s allocated outcome = %q, want %q", tc.name, got, tc.outcome)
+		}
+		if got := teslaOwnerDisposition(current, "evse.limit.configured_current"); got != "exact" {
+			t.Fatalf("%s configured outcome = %q, want exact", tc.name, got)
+		}
+	}
+	allocated := teslaOwnerCandidate(t, current, "evse.limit.allocated_current")
+	if allocated.ReceivedAt != strconv.FormatInt(provisional.Set.ReceiptWall.UnixNano(), 10) || allocated.ReceiptMonotonic != "10000000000" {
+		t.Fatalf("allocated receipt = %#v, want set/ack receipt", allocated)
+	}
+	configured := teslaOwnerCandidate(t, current, "evse.limit.configured_current")
+	if configured.ReceivedAt != strconv.FormatInt(anchor.Add(-31*time.Second).UnixNano(), 10) || configured.ReceiptMonotonic != "9000000000" {
+		t.Fatalf("configured receipt was disturbed: %#v", configured)
+	}
+}
+
+func TestTeslaHSCRetainedOwnerDelayedReadbackIsImmediatelyExpiredAndRejectsRegression(t *testing.T) {
+	owner, anchor, provisional := startTeslaDelayedReadbackFixture(t, 70*time.Second)
+	evidence := owner.RetainedEvidence()
+	if len(evidence) != 3 || evidence[0].CorrelationID != 1 || evidence[1].CorrelationID != 2 || evidence[2].CorrelationID != 3 ||
+		evidence[1].Operation != modbusreg.TeslaFC100OperationWCSetProvisional || evidence[2].Operation != modbusreg.TeslaFC100OperationWCGetProvisional ||
+		!evidence[1].ReceiptWall.Equal(provisional.Set.ReceiptWall) || evidence[1].ReceiptMonotonic != 10*time.Second {
+		t.Fatalf("exact retained correlation = %#v", evidence)
+	}
+	mcpCurrent := teslaOwnerMCPCurrent(t, owner)
+	graphqlCurrent := teslaOwnerGraphQLCurrent(t, owner)
+	prometheusCurrent, ok := owner.SemanticEVSECurrentAt(anchor)
+	if !ok {
+		t.Fatal("already-expired Prometheus view unavailable")
+	}
+	for name, current := range map[string]mcp.SemanticEVSECurrent{"MCP": mcpCurrent, "GraphQL": graphqlCurrent, "Prometheus": prometheusCurrent} {
+		if got := teslaOwnerDisposition(current, "evse.limit.allocated_current"); got != "withheld" {
+			t.Fatalf("%s already-expired allocated outcome = %q, want withheld", name, got)
+		}
+		if got := teslaOwnerDisposition(current, "evse.limit.configured_current"); got != "exact" {
+			t.Fatalf("%s configured outcome = %q, want exact", name, got)
+		}
+	}
+	beforeNative, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	beforeEvidence, beforeSequence := owner.RetainedEvidence(), owner.sequence
+	regressed := teslaProvisionalOutcome(t, 4, 20, 60, false, 32)
+	regressed.Set.ReceiptWall = anchor.Add(time.Second)
+	regressed.Readback.ReceiptWall = anchor.Add(2 * time.Second)
+	regressed.Set.ReceiptMonotonic = 79 * time.Second
+	regressed.Readback.ReceiptMonotonic = 80 * time.Second
+	if err == nil {
+		err = owner.IngestProvisional(context.Background(), regressed)
+	}
+	afterNative, afterErr := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	if err == nil || afterErr != nil || owner.sequence != beforeSequence || !reflect.DeepEqual(beforeNative, afterNative) || !reflect.DeepEqual(beforeEvidence, owner.RetainedEvidence()) {
+		t.Fatalf("true lifecycle regression mutated state: ingest=%v read=%v", err, afterErr)
 	}
 }
 
@@ -628,6 +710,107 @@ func startTeslaEqualMonotonicFixture(t *testing.T) *teslaHSCRetainedOwner {
 		t.Fatal(err)
 	}
 	return owner
+}
+
+func startTeslaDelayedReadbackFixture(t *testing.T, delay time.Duration) (*teslaHSCRetainedOwner, time.Time, TeslaGen3ProvisionalOutcome) {
+	t.Helper()
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	anchor := time.Now().UTC()
+	persistent := teslaPersistentOutcome(t, 1, 16)
+	persistent.Exchange.ReceiptWall = anchor.Add(-delay - time.Second)
+	persistent.Exchange.ReceiptMonotonic = 9 * time.Second
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	provisional := teslaProvisionalOutcome(t, 2, 12, 60, false, 32)
+	provisional.Set.ReceiptWall = anchor.Add(-delay)
+	provisional.Set.ReceiptMonotonic = 10 * time.Second
+	provisional.Readback.ReceiptWall = anchor
+	provisional.Readback.ReceiptMonotonic = 10*time.Second + delay
+	if err := owner.IngestProvisional(context.Background(), provisional); err != nil {
+		t.Fatal(err)
+	}
+	return owner, anchor, provisional
+}
+
+func teslaOwnerMCPCurrent(t *testing.T, owner *teslaHSCRetainedOwner) mcp.SemanticEVSECurrent {
+	t.Helper()
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner))
+	envelope := mcpCallToolEnvelope(t, server.Handler(), mcp.SemanticV1EVSECurrentGetTool, `{}`)
+	raw, err := json.Marshal(envelope["data"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current mcp.SemanticEVSECurrent
+	if err := json.Unmarshal(raw, &current); err != nil {
+		t.Fatal(err)
+	}
+	return current
+}
+
+func teslaOwnerGraphQLCurrent(t *testing.T, owner *teslaHSCRetainedOwner) mcp.SemanticEVSECurrent {
+	t.Helper()
+	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
+		AllowedAssets: map[string]struct{}{owner.cfg.AssetID: {}},
+		SemanticEVSECurrent: func(ctx context.Context, asset string) (json.RawMessage, bool) {
+			value, currentErr := currentTeslaEVSEPublic(ctx, asset, owner)
+			return value, currentErr == nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), "retained-owner-test")))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GraphQL response=%d %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	var current mcp.SemanticEVSECurrent
+	if err := json.Unmarshal(decoded.Data["semanticEVSECurrent"], &current); err != nil {
+		t.Fatal(err)
+	}
+	return current
+}
+
+func teslaOwnerDisposition(current mcp.SemanticEVSECurrent, item string) string {
+	for _, disposition := range current.Projection.Dispositions {
+		if string(disposition.ItemID) == item {
+			return string(disposition.Outcome)
+		}
+	}
+	return ""
+}
+
+type teslaOwnerCandidateReceipt struct {
+	ReceivedAt, ReceiptMonotonic string
+}
+
+func teslaOwnerCandidate(t *testing.T, current mcp.SemanticEVSECurrent, factID string) teslaOwnerCandidateReceipt {
+	t.Helper()
+	for _, envelope := range current.Snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if string(candidate.Key.FactID) == factID {
+				return teslaOwnerCandidateReceipt{
+					ReceivedAt:       string(candidate.Times.ReceivedAt.UnixNanoseconds),
+					ReceiptMonotonic: string(candidate.Times.ReceiptMonotonic.Nanoseconds),
+				}
+			}
+		}
+	}
+	t.Fatalf("candidate %q missing", factID)
+	return teslaOwnerCandidateReceipt{}
 }
 
 func teslaPersistentOutcome(t *testing.T, correlation uint64, amps uint32) TeslaGen3PersistentOutcome {

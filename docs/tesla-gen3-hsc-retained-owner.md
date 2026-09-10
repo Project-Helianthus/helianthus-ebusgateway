@@ -36,14 +36,20 @@ application errors, duplicate outcomes, and mixed identity or generation.
 Persistent and provisional records remain separate. A rejected update does not
 replace either accepted sibling. The retained evidence is bounded to the latest
 persistent exchange and the latest provisional set/readback pair. All returned
-payload and ADU slices are detached copies.
+payload and ADU slices are detached copies. A persistent-only update retains
+the native provisional record but withdraws it from the new semantic
+publication, because the combined publisher cannot give an unchanged sibling a
+different receipt coordinate. A later correlated provisional outcome can
+publish allocated current again with its own lifecycle.
 
 ## Lifecycle and read surfaces
 
 A generation fence makes native and semantic reads unavailable before a
 successor can be admitted. A successor requires the same stable endpoint,
 asset, source, clock, EVSE, connector, profile and node, a different source
-epoch, and exactly the next driver generation.
+epoch, and exactly the next driver generation. The fence reserves one successor
+atomically; successful construction consumes it, while construction failure
+restores one retry.
 
 Accepted records feed the existing read-only surfaces:
 

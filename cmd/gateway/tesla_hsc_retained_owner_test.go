@@ -6,14 +6,19 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -121,6 +126,61 @@ func TestTeslaHSCRetainedOwnerRejectsMismatchAndPreservesLastKnownGood(t *testin
 	}
 }
 
+func TestTeslaHSCRetainedOwnerPersistentSiblingDoesNotRefreshProvisional(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 2, 12, 60, false, 32)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+	if encoded, marshalErr := json.Marshal(before); err != nil || marshalErr != nil || !bytes.Contains(encoded, []byte(`evse.limit.allocated_current`)) {
+		t.Fatalf("initial semantic value/error = %s / %v / %v", encoded, err, marshalErr)
+	}
+
+	// Correlation 65 is 62 seconds after the retained provisional readback.
+	// It updates configured current after the provisional's 60-second lifetime
+	// without supplying any new provisional completed outcome.
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 65, 21)); err != nil {
+		t.Fatal(err)
+	}
+	native, err := owner.TeslaGen3EVSECurrentLimitV1(context.Background())
+	evidence := owner.RetainedEvidence()
+	if err != nil || native.Provisional == nil || len(evidence) != 3 || evidence[2].CorrelationID != 3 {
+		t.Fatalf("native provisional sibling/evidence = %#v / %#v / %v", native.Provisional, evidence, err)
+	}
+	provider := newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner)
+	semantic := provider.(mcp.TeslaGen3EVSESemanticProvider)
+	mcpValue, err := semantic.TeslaGen3EVSESemanticCurrent(context.Background())
+	mcpEncoded, marshalErr := json.Marshal(mcpValue)
+	if err != nil || marshalErr != nil || !bytes.Contains(mcpEncoded, []byte(`"fact_id":"evse.limit.configured_current"`)) ||
+		bytes.Contains(mcpEncoded, []byte(`"fact_id":"evse.limit.allocated_current"`)) ||
+		!bytes.Contains(mcpEncoded, []byte(`"item_id":"evse.limit.allocated_current","outcome":"withheld"`)) {
+		t.Fatalf("MCP semantic value/error = %s / %v / %v", mcpEncoded, err, marshalErr)
+	}
+
+	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
+		AllowedAssets: map[string]struct{}{owner.cfg.AssetID: {}},
+		SemanticEVSECurrent: func(ctx context.Context, asset string) (json.RawMessage, bool) {
+			value, currentErr := currentTeslaEVSEPublic(ctx, asset, owner)
+			return value, currentErr == nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := `query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(query) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), "test-principal")))
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"fact_id":"evse.limit.configured_current"`)) ||
+		bytes.Contains(response.Body.Bytes(), []byte(`"fact_id":"evse.limit.allocated_current"`)) ||
+		!bytes.Contains(response.Body.Bytes(), []byte(`"item_id":"evse.limit.allocated_current","outcome":"withheld"`)) {
+		t.Fatalf("authenticated GraphQL response=%d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
 	config := teslaRetainedConfig()
 	owner := startTeslaRetainedFixture(t, config)
@@ -150,10 +210,62 @@ func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
 	if successor == nil {
 		t.Fatal("successor unavailable")
 	}
+	if duplicate, err := owner.Successor(next); err == nil || duplicate != nil {
+		t.Fatalf("repeated successor = %T, %v", duplicate, err)
+	}
 	wrong := next
 	wrong.DriverGeneration++
 	if _, err := owner.Successor(wrong); err == nil {
 		t.Fatal("non-contiguous successor generation accepted")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerSuccessorReservationRetriesAfterConstructionFailure(t *testing.T) {
+	config := teslaRetainedConfig()
+	owner := startTeslaRetainedFixture(t, config)
+	if err := owner.Fence(config.DriverGeneration, config.DriverGeneration+1); err != nil {
+		t.Fatal(err)
+	}
+	next := config
+	next.SourceEpoch = "epoch:tesla-wc3-b"
+	next.DriverGeneration++
+	invalid := next
+	invalid.Enabled = false
+	if successor, err := owner.Successor(invalid); err == nil || successor != nil {
+		t.Fatalf("invalid successor construction = %T, %v", successor, err)
+	}
+	if successor, err := owner.Successor(next); err != nil || successor == nil {
+		t.Fatalf("retry successor = %T, %v", successor, err)
+	}
+}
+
+func TestTeslaHSCRetainedOwnerSuccessorReservationIsAtomic(t *testing.T) {
+	config := teslaRetainedConfig()
+	owner := startTeslaRetainedFixture(t, config)
+	if err := owner.Fence(config.DriverGeneration, config.DriverGeneration+1); err != nil {
+		t.Fatal(err)
+	}
+	next := config
+	next.SourceEpoch = "epoch:tesla-wc3-b"
+	next.DriverGeneration++
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	var successes atomic.Int32
+	for range 32 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			if successor, err := owner.Successor(next); err == nil && successor != nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("successful concurrent successors = %d, want 1", got)
 	}
 }
 

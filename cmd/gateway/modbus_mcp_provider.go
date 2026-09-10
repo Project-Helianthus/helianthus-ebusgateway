@@ -108,10 +108,18 @@ func (provider *gatewayModbusRuntimeProvider) TeslaGen3EVSESemanticCurrent(ctx c
 	return provider.tesla.TeslaGen3EVSESemanticCurrent(ctx)
 }
 
+func (provider *gatewayModbusRuntimeProvider) GrowattStoragePortalAvailable() bool {
+	return provider != nil && provider.growatt != nil
+}
+
 type gatewayGrowattBMSMCPProvider struct {
 	*gatewayModbusMCPProvider
 	growatt mcp.GrowattBMSRS485V202Provider
 	storage mcp.GrowattStorageSemanticProvider
+}
+
+func (provider gatewayGrowattBMSMCPProvider) GrowattStoragePortalAvailable() bool {
+	return provider.storage != nil
 }
 
 func (provider gatewayGrowattBMSMCPProvider) ModbusV1CoreAvailable() bool {

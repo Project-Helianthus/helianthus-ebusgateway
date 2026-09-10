@@ -387,8 +387,8 @@ func startHTTPServer(
 }
 
 func growattStoragePortalAvailable(provider mcp.ModbusV1Provider) bool {
-	if growatt, ok := provider.(gatewayGrowattBMSMCPProvider); ok {
-		return growatt.storage != nil
+	if availability, ok := provider.(interface{ GrowattStoragePortalAvailable() bool }); ok {
+		return availability.GrowattStoragePortalAvailable()
 	}
 	return false
 }

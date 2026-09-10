@@ -79,21 +79,23 @@ func (e TeslaGen3RetainedExchangeEvidence) clone() TeslaGen3RetainedExchangeEvid
 }
 
 type teslaHSCRetainedOwner struct {
-	mu              sync.Mutex
-	cfg             ebusgateway.TeslaGen3HSCRetainedConfig
-	active          bool
-	nextGeneration  uint64
-	persistent      *modbusreg.TeslaGen3PersistentCurrentLimit
-	provisional     *modbusreg.TeslaGen3ProvisionalCurrentLimit
-	persistentInput TeslaGen3RetainedExchangeEvidence
-	provisionalIn   [2]TeslaGen3RetainedExchangeEvidence
-	havePersistent  bool
-	haveProvisional bool
-	publication     *mcp.TeslaGen3EVSESemanticPublication
-	sequence        uint64
-	lastCorrelation uint64
-	lastReceiptWall time.Time
-	lastReceiptMono time.Duration
+	mu                sync.Mutex
+	cfg               ebusgateway.TeslaGen3HSCRetainedConfig
+	active            bool
+	nextGeneration    uint64
+	successorReserved bool
+	successorConsumed bool
+	persistent        *modbusreg.TeslaGen3PersistentCurrentLimit
+	provisional       *modbusreg.TeslaGen3ProvisionalCurrentLimit
+	persistentInput   TeslaGen3RetainedExchangeEvidence
+	provisionalIn     [2]TeslaGen3RetainedExchangeEvidence
+	havePersistent    bool
+	haveProvisional   bool
+	publication       *mcp.TeslaGen3EVSESemanticPublication
+	sequence          uint64
+	lastCorrelation   uint64
+	lastReceiptWall   time.Time
+	lastReceiptMono   time.Duration
 }
 
 func startTeslaHSCRetainedOwner(config ebusgateway.TeslaGen3HSCRetainedConfig) (*teslaHSCRetainedOwner, error) {
@@ -279,7 +281,14 @@ func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.Tesla
 			return errors.New("tesla HSC publication sequence exhausted")
 		}
 		source := mcp.TeslaGen3EVSECurrentLimitV1Source{Persistent: nextPersistent}
-		if haveProvisional {
+		// The semantic publisher has one lifecycle coordinate for the whole
+		// source. An unchanged provisional sibling must not inherit a later
+		// persistent outcome's receipt and thereby gain a new lifetime. Keep
+		// the native provisional record retained, but withdraw it from this
+		// persistent-only semantic publication until a new correlated
+		// provisional outcome arrives.
+		publishProvisional := haveProvisional && !setPersistent
+		if publishProvisional {
 			source.Provisional = nextProvisional
 		}
 		ns := latest.ReceiptMonotonic.Nanoseconds()
@@ -362,15 +371,29 @@ func (owner *teslaHSCRetainedOwner) Successor(config ebusgateway.TeslaGen3HSCRet
 		return nil, errTeslaHSCRetainedUnavailable
 	}
 	owner.mu.Lock()
-	fenced, expected, previous := !owner.active, owner.nextGeneration, owner.cfg
-	owner.mu.Unlock()
-	if !fenced || config.DriverGeneration != expected || config.SourceEpoch == previous.SourceEpoch ||
+	previous := owner.cfg
+	if owner.active || owner.successorReserved || owner.successorConsumed || config.DriverGeneration != owner.nextGeneration || config.SourceEpoch == previous.SourceEpoch ||
 		config.EndpointID != previous.EndpointID || config.AssetID != previous.AssetID || config.SourceID != previous.SourceID ||
 		config.ClockEpoch != previous.ClockEpoch || config.EVSEID != previous.EVSEID || config.ConnectorID != previous.ConnectorID ||
 		config.Profile != previous.Profile || config.Node != previous.Node {
+		owner.mu.Unlock()
 		return nil, errors.New("tesla HSC successor identity or generation is invalid")
 	}
-	return startTeslaHSCRetainedOwner(config)
+	owner.successorReserved = true
+	owner.mu.Unlock()
+
+	successor, err := startTeslaHSCRetainedOwner(config)
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	owner.successorReserved = false
+	if err != nil {
+		return nil, err
+	}
+	if successor == nil {
+		return nil, errors.New("tesla HSC successor construction returned no owner")
+	}
+	owner.successorConsumed = true
+	return successor, nil
 }
 
 func (owner *teslaHSCRetainedOwner) Close() error {

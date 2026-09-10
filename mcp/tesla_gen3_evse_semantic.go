@@ -44,12 +44,16 @@ type TeslaGen3EVSESemanticConfig struct {
 // TeslaGen3EVSESemanticEvidence is supplied by the injection owner.  It is
 // metadata only: payloads stay in the accepted registry records.
 type TeslaGen3EVSESemanticEvidence struct {
-	ObservationID        string
-	ObservedAt           time.Time
-	EvaluatedAt          time.Time
-	MonotonicNS          int64
-	EvaluatedMonotonicNS int64
-	Sequence             uint64
+	ObservationID          string
+	ObservedAt             time.Time
+	EvaluatedAt            time.Time
+	MonotonicNS            int64
+	EvaluatedMonotonicNS   int64
+	PersistentObservedAt   time.Time
+	PersistentMonotonicNS  int64
+	ProvisionalObservedAt  time.Time
+	ProvisionalMonotonicNS int64
+	Sequence               uint64
 }
 
 type teslaGen3EVSEPersistentEvidence struct {
@@ -218,7 +222,7 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 		return err
 	}
 	_, _, exists := staged.Current()
-	batch, manifest, requested, dispositions, err := p.batch(source, evidence, p.current, exists, receiptMono, evaluationMono)
+	batch, manifest, requested, dispositions, err := p.batch(source, evidence, p.current, exists, evaluationMono)
 	if err != nil {
 		return err
 	}
@@ -226,7 +230,9 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
-	expiresAt := teslaGen3EVSEAllocatedExpiry(source.Provisional, evidence, receiptMono)
+	provisionalLifecycle := teslaGen3EVSERecordLifecycle(evidence, evidence.ProvisionalObservedAt, evidence.ProvisionalMonotonicNS)
+	provisionalReceiptMono := teslaGen3EVSEMonotonic(p.cfg.ClockEpoch, provisionalLifecycle.MonotonicNS)
+	expiresAt := teslaGen3EVSEAllocatedExpiry(source.Provisional, provisionalLifecycle, provisionalReceiptMono)
 	_, err = p.publicAt(snapshot, manifest, requested, dispositions, evidence.EvaluatedAt, evaluationMono, expiresAt)
 	if err != nil {
 		return err
@@ -411,34 +417,64 @@ func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV
 	if e.EvaluatedMonotonicNS < e.MonotonicNS {
 		return errors.New("tesla Gen3 EVSE evaluation monotonic clock regressed")
 	}
+	evaluatedMono := e.EvaluatedMonotonicNS
+	if evaluatedMono == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
+		evaluatedMono = e.MonotonicNS
+	}
+	for _, record := range []struct {
+		name       string
+		observedAt time.Time
+		monotonic  int64
+	}{
+		{name: "persistent", observedAt: e.PersistentObservedAt, monotonic: e.PersistentMonotonicNS},
+		{name: "provisional", observedAt: e.ProvisionalObservedAt, monotonic: e.ProvisionalMonotonicNS},
+	} {
+		if record.observedAt.IsZero() {
+			if record.monotonic != 0 {
+				return fmt.Errorf("tesla Gen3 EVSE %s receipt lifecycle is incomplete", record.name)
+			}
+			continue
+		}
+		if record.observedAt.Before(teslaGen3EVSEMinUnixNanoTime) || record.observedAt.After(teslaGen3EVSEMaxUnixNanoTime) ||
+			record.observedAt.After(e.EvaluatedAt) || record.monotonic < 0 || record.monotonic > evaluatedMono {
+			return fmt.Errorf("tesla Gen3 EVSE %s receipt lifecycle is invalid", record.name)
+		}
+	}
+	if s.Provisional == nil && !e.ProvisionalObservedAt.IsZero() {
+		return errors.New("tesla Gen3 EVSE provisional receipt exists without a record")
+	}
 	if s.Persistent == nil || s.Persistent.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(s.Persistent.RequestPayload()) == 0 || len(s.Persistent.TerminalPayload()) == 0 {
 		return errors.New("tesla Gen3 EVSE persistent evidence is invalid")
 	}
 	return nil
 }
 
-func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence, current semreg.Snapshot, exists bool, receiptMono, evaluationMono semreg.MonotonicPoint) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence, current semreg.Snapshot, exists bool, evaluationMono semreg.MonotonicPoint) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
 	asset, source := semreg.AssetID(p.cfg.AssetID), semreg.SourceID(p.cfg.SourceID)
 	epoch, generation := semreg.SourceEpochID(p.cfg.SourceEpoch), semreg.Uint64(strconv.FormatUint(p.cfg.DriverGeneration, 10))
 	seq := semreg.Uint64(strconv.FormatUint(e.Sequence, 10))
 	binding := semreg.NativeBindingID("binding:tesla-wc3:" + evseHash(p.cfg.AssetID, p.cfg.SourceID)[:32])
 	receivedAt, evaluatedAt := evseWall(e.ObservedAt), evseWall(e.EvaluatedAt)
-	persistentRecord := teslaGen3EVSEPersistentRecord(s.Persistent, e)
-	provisionalRecord := teslaGen3EVSEProvisionalRecord(s.Provisional, e)
+	persistentLifecycle := teslaGen3EVSERecordLifecycle(e, e.PersistentObservedAt, e.PersistentMonotonicNS)
+	provisionalLifecycle := teslaGen3EVSERecordLifecycle(e, e.ProvisionalObservedAt, e.ProvisionalMonotonicNS)
+	persistentReceivedAt, persistentReceiptMono := evseWall(persistentLifecycle.ObservedAt), teslaGen3EVSEMonotonic(p.cfg.ClockEpoch, persistentLifecycle.MonotonicNS)
+	provisionalReceivedAt, provisionalReceiptMono := evseWall(provisionalLifecycle.ObservedAt), teslaGen3EVSEMonotonic(p.cfg.ClockEpoch, provisionalLifecycle.MonotonicNS)
+	persistentRecord := teslaGen3EVSEPersistentRecord(s.Persistent, persistentLifecycle)
+	provisionalRecord := teslaGen3EVSEProvisionalRecord(s.Provisional, provisionalLifecycle)
 	evidence := evseEvidence("native.tesla.wc3.current_limit", teslaGen3EVSEPublicationEvidence{Persistent: persistentRecord, Provisional: provisionalRecord})
 	activationEvidence := []semreg.EvidenceRef{evseEvidence("native.tesla.wc3.current_limit.persistent", persistentRecord)}
 	registry := evseDigestEvidence("registry.tesla.wc3_24_44_3", modbusreg.TeslaGen3CurrentLimitOperationVersion24443)
 	// MappingRevision is the kernel's monotonic label; the immutable accepted
 	// docs commit is retained in the registry evidence digest below.
 	manifest := projection.ProjectionManifest{TargetID: "target:gateway-semantic-evse", TargetVersion: "1.0.0", KernelVersion: semreg.ContractKernelV1, PackVersions: []semreg.PackRef{{ID: "helianthus.pack.evse", Version: "1.0.0"}}, MappingRevision: "1"}
-	configured := p.candidate("evse.limit.configured_current", "evse.dimension.evse", p.cfg.EVSEID, s.Persistent.MaxOutputCurrentAmps(), 60*time.Second, 300*time.Second, current, binding, source, epoch, generation, evidence, receivedAt, receiptMono, evaluatedAt, evaluationMono)
+	configured := p.candidate("evse.limit.configured_current", "evse.dimension.evse", p.cfg.EVSEID, s.Persistent.MaxOutputCurrentAmps(), 60*time.Second, 300*time.Second, current, binding, source, epoch, generation, evidence, persistentReceivedAt, persistentReceiptMono, evaluatedAt, evaluationMono)
 	requested := []projection.RequestedItem{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current"}, {Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current"}}
 	dispositions := []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{configured.Key}, Loss: []projection.LossDetail{}}}
 	facts, withdrawals := []semreg.FactCandidate{configured}, []semreg.CandidateID{}
-	if provisional, reason := p.provisional(s.Provisional, e); provisional != nil {
+	if provisional, reason := p.provisional(s.Provisional, provisionalLifecycle); provisional != nil {
 		activationEvidence = append(activationEvidence, evseEvidence("native.tesla.wc3.current_limit.provisional", *provisionalRecord))
 		timeout := time.Duration(s.Provisional.LimitTimeoutSeconds()) * time.Second
-		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, timeout, timeout+time.Nanosecond, current, binding, source, epoch, generation, evidence, receivedAt, receiptMono, evaluatedAt, evaluationMono)
+		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, timeout, timeout+time.Nanosecond, current, binding, source, epoch, generation, evidence, provisionalReceivedAt, provisionalReceiptMono, evaluatedAt, evaluationMono)
 		facts = append(facts, allocated)
 		dispositions = append(dispositions, projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.limit.allocated_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{allocated.Key}, Loss: []projection.LossDetail{}})
 	} else {
@@ -478,6 +514,19 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 		return semreg.PublicationBatch{}, manifest, nil, nil, fmt.Errorf("tesla Gen3 EVSE semantic batch: %w", err)
 	}
 	return batch, manifest, requested, dispositions, nil
+}
+
+func teslaGen3EVSERecordLifecycle(evidence TeslaGen3EVSESemanticEvidence, observedAt time.Time, monotonicNS int64) TeslaGen3EVSESemanticEvidence {
+	if observedAt.IsZero() {
+		return evidence
+	}
+	evidence.ObservedAt = observedAt
+	evidence.MonotonicNS = monotonicNS
+	return evidence
+}
+
+func teslaGen3EVSEMonotonic(clockEpoch string, nanoseconds int64) semreg.MonotonicPoint {
+	return semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(clockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(nanoseconds, 10))}
 }
 
 func (p *TeslaGen3EVSESemanticPublication) provisional(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, e TeslaGen3EVSESemanticEvidence) (*uint32, string) {
@@ -734,11 +783,13 @@ func teslaGen3EVSEMonotonicAtOrAfter(value, boundary semreg.MonotonicPoint) bool
 }
 
 func (p *TeslaGen3EVSESemanticPublication) inputDigest(source TeslaGen3EVSECurrentLimitV1Source, evidence TeslaGen3EVSESemanticEvidence) semreg.Digest {
+	persistentLifecycle := teslaGen3EVSERecordLifecycle(evidence, evidence.PersistentObservedAt, evidence.PersistentMonotonicNS)
+	provisionalLifecycle := teslaGen3EVSERecordLifecycle(evidence, evidence.ProvisionalObservedAt, evidence.ProvisionalMonotonicNS)
 	return evseEvidence("native.tesla.wc3.current_limit.publication_input", struct {
 		DriverGeneration uint64                            `json:"driver_generation"`
 		Persistent       teslaGen3EVSEPersistentEvidence   `json:"persistent"`
 		Provisional      *teslaGen3EVSEProvisionalEvidence `json:"provisional,omitempty"`
-	}{DriverGeneration: p.cfg.DriverGeneration, Persistent: teslaGen3EVSEPersistentRecord(source.Persistent, evidence), Provisional: teslaGen3EVSEProvisionalRecord(source.Provisional, evidence)}).Digest
+	}{DriverGeneration: p.cfg.DriverGeneration, Persistent: teslaGen3EVSEPersistentRecord(source.Persistent, persistentLifecycle), Provisional: teslaGen3EVSEProvisionalRecord(source.Provisional, provisionalLifecycle)}).Digest
 }
 
 func (p *TeslaGen3EVSESemanticPublication) nextCandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {

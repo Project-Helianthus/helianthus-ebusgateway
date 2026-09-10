@@ -57,8 +57,8 @@ func resolveModbusEndpointFile(config *ebusgateway.ModbusTCPConfig, path string)
 		// TCP endpoint inputs remain inert while disabled, but the independent
 		// explicitly configured Growatt RTU observer shares this composition
 		// boundary and must survive TCP endpoint normalization.
-		growatt := config.GrowattBMSRS485
-		*config = ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growatt}
+		growatt, tesla := config.GrowattBMSRS485, config.TeslaGen3HSC
+		*config = ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growatt, TeslaGen3HSC: tesla}
 		return nil
 	}
 	if path == "" {

@@ -110,6 +110,19 @@ func TestResolveModbusEndpointFileDisabledPreservesIndependentGrowattRTUConfig(t
 	}
 }
 
+func TestResolveModbusEndpointFileDisabledPreservesIndependentTeslaRetainedConfig(t *testing.T) {
+	tesla := teslaRetainedConfig()
+	cfg := ebusgateway.ModbusTCPConfig{
+		Endpoint: "tcp://retained.invalid:502", DialTimeout: -time.Second, TeslaGen3HSC: tesla,
+	}
+	if err := resolveModbusEndpointFile(&cfg, "/missing/retained-endpoint"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Enabled || cfg.Endpoint != "" || cfg.DialTimeout != 0 || cfg.TeslaGen3HSC != tesla {
+		t.Fatalf("disabled config = %+v", cfg)
+	}
+}
+
 func TestResolveModbusEndpointFileRejectsUnsafeFilesAndBounds(t *testing.T) {
 	valid := writeProtectedEndpointFile(t, "tcp://192.0.2.40:502", 0o600)
 	symlink := filepath.Join(t.TempDir(), "endpoint-link")

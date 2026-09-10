@@ -181,6 +181,54 @@ func TestTeslaHSCRetainedOwnerPersistentSiblingDoesNotRefreshProvisional(t *test
 	}
 }
 
+func TestTeslaHSCRetainedOwnerProvisionalSiblingPreservesPersistentReceipt(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestProvisional(context.Background(), teslaProvisionalOutcome(t, 65, 12, 600, false, 32)); err != nil {
+		t.Fatal(err)
+	}
+	value, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+	encoded, marshalErr := json.Marshal(value)
+	if err != nil || marshalErr != nil {
+		t.Fatalf("semantic value/error = %s / %v / %v", encoded, err, marshalErr)
+	}
+	var public struct {
+		Snapshot struct {
+			Facts []struct {
+				Key struct {
+					FactID string `json:"fact_id"`
+				} `json:"key"`
+				Candidates []struct {
+					Times struct {
+						ReceivedAt struct {
+							UnixNanoseconds string `json:"unix_nanoseconds"`
+						} `json:"received_at"`
+						ReceiptMonotonic struct {
+							Nanoseconds string `json:"nanoseconds"`
+						} `json:"receipt_monotonic"`
+					} `json:"times"`
+				} `json:"candidates"`
+			} `json:"facts"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(encoded, &public); err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range public.Snapshot.Facts {
+		if fact.Key.FactID != "evse.limit.configured_current" || len(fact.Candidates) != 1 {
+			continue
+		}
+		got := fact.Candidates[0].Times
+		if got.ReceivedAt.UnixNanoseconds != "1800000001000000123" || got.ReceiptMonotonic.Nanoseconds != "1000000000" {
+			t.Fatalf("configured-current receipt refreshed by provisional sibling: %+v", got)
+		}
+		return
+	}
+	t.Fatalf("configured-current fact missing: %s", encoded)
+}
+
 func TestTeslaHSCRetainedOwnerFencesGenerationBeforeSuccessor(t *testing.T) {
 	config := teslaRetainedConfig()
 	owner := startTeslaRetainedFixture(t, config)
@@ -328,6 +376,48 @@ func TestTeslaHSCRetainedOwnerComposesExistingReadOnlySurfaces(t *testing.T) {
 	if _, err := currentTeslaEVSEPublic(context.Background(), "asset:other", owner); err == nil {
 		t.Fatal("wrong GraphQL asset was accepted")
 	}
+}
+
+func TestTeslaHSCRetainedOwnerRegistrationMatrix(t *testing.T) {
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	newServer := func(t *testing.T, provider mcp.ModbusV1Provider) *mcp.Server {
+		t.Helper()
+		server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mcp.RegisterModbusV1Tools(server, provider)
+		return server
+	}
+	assertTools := func(t *testing.T, server *mcp.Server, required, forbidden []string) {
+		t.Helper()
+		tools := mcpToolsList(t, server.Handler())
+		for _, name := range required {
+			if !mcpToolsContain(tools, name) {
+				t.Errorf("tools/list missing %q", name)
+			}
+		}
+		for _, name := range forbidden {
+			if mcpToolsContain(tools, name) {
+				t.Errorf("tools/list exposed %q", name)
+			}
+		}
+	}
+	coreTools := []string{mcp.ModbusV1RawReadTool, mcp.ModbusV1ProfileObservationGetTool, mcp.SemanticV1PVCurrentGetTool, mcp.TeslaFC100SummaryV1GetTool, mcp.TeslaHSCV1StatusGetTool, mcp.TeslaWCVitalsV1GetTool}
+	growattTools := []string{mcp.GrowattBMSRS485V202StatusGetTool, mcp.SemanticV1GrowattStorageCurrentGetTool}
+	teslaTools := []string{mcp.TeslaGen3EVSECurrentLimitV1GetTool, mcp.SemanticV1EVSECurrentGetTool}
+
+	teslaOnly := newServer(t, newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner))
+	assertTools(t, teslaOnly, teslaTools, append(append([]string(nil), coreTools...), growattTools...))
+	mcpCallToolEnvelope(t, teslaOnly.Handler(), mcp.TeslaGen3EVSECurrentLimitV1GetTool, `{}`)
+	mcpCallToolEnvelope(t, teslaOnly.Handler(), mcp.SemanticV1EVSECurrentGetTool, `{}`)
+
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1})
+	composite := newServer(t, newGatewayModbusMCPProviderWithRuntimes(nil, growatt, owner))
+	assertTools(t, composite, append(append([]string(nil), teslaTools...), growattTools...), coreTools)
 }
 
 func TestTeslaHSCRetainedFlagsBindOnlyNonSendConfiguration(t *testing.T) {

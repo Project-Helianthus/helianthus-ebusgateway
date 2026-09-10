@@ -112,6 +112,20 @@ func (provider *gatewayModbusRuntimeProvider) GrowattStoragePortalAvailable() bo
 	return provider != nil && provider.growatt != nil
 }
 
+func (provider *gatewayModbusRuntimeProvider) ModbusV1OptionalToolAvailable(tool string) bool {
+	if provider == nil {
+		return false
+	}
+	switch tool {
+	case mcp.TeslaGen3EVSECurrentLimitV1GetTool, mcp.SemanticV1EVSECurrentGetTool:
+		return provider.tesla != nil
+	case mcp.GrowattBMSRS485V202StatusGetTool, mcp.SemanticV1GrowattStorageCurrentGetTool:
+		return provider.growatt != nil
+	default:
+		return false
+	}
+}
+
 type gatewayGrowattBMSMCPProvider struct {
 	*gatewayModbusMCPProvider
 	growatt mcp.GrowattBMSRS485V202Provider

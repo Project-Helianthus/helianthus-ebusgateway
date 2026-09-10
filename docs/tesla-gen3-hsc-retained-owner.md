@@ -38,9 +38,11 @@ replace either accepted sibling. The retained evidence is bounded to the latest
 persistent exchange and the latest provisional set/readback pair. All returned
 payload and ADU slices are detached copies. A persistent-only update retains
 the native provisional record but withdraws it from the new semantic
-publication, because the combined publisher cannot give an unchanged sibling a
-different receipt coordinate. A later correlated provisional outcome can
-publish allocated current again with its own lifecycle.
+publication so an unchanged sibling cannot receive a new lifetime. A later
+correlated provisional outcome can publish allocated current again with its
+own lifecycle. When a provisional update includes the retained persistent
+record, each record keeps its own receipt coordinates, so the provisional
+update cannot refresh configured current.
 
 ## Lifecycle and read surfaces
 
@@ -57,6 +59,12 @@ Accepted records feed the existing read-only surfaces:
 - MCP `semantic.v1.evse.current.get` for the evaluated SemReg view;
 - authenticated mTLS GraphQL `SemanticEVSECurrent` for the same detached SemReg
   publication.
+
+The two Tesla MCP tools are registered from the retained-owner capability even
+when the unrelated Modbus TCP core is disabled. That composition does not
+register TCP raw/profile tools or Growatt tools; Growatt native, semantic, and
+Portal availability remain conditional on a successfully started Growatt
+runtime.
 
 Reads access retained memory only. They cannot ingest a record, advance a
 publication, open an endpoint, activate a profile, construct a request, retry,

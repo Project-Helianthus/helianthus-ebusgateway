@@ -281,21 +281,25 @@ func (owner *teslaHSCRetainedOwner) publishAndCommit(persistent *modbusreg.Tesla
 			return errors.New("tesla HSC publication sequence exhausted")
 		}
 		source := mcp.TeslaGen3EVSECurrentLimitV1Source{Persistent: nextPersistent}
-		// The semantic publisher has one lifecycle coordinate for the whole
-		// source. An unchanged provisional sibling must not inherit a later
-		// persistent outcome's receipt and thereby gain a new lifetime. Keep
-		// the native provisional record retained, but withdraw it from this
-		// persistent-only semantic publication until a new correlated
-		// provisional outcome arrives.
+		// An unchanged provisional sibling must not inherit a later persistent
+		// outcome's receipt and thereby gain a new lifetime. Keep the native
+		// provisional record retained, but withdraw it from this persistent-only
+		// semantic publication until a new correlated provisional outcome arrives.
 		publishProvisional := haveProvisional && !setPersistent
 		if publishProvisional {
 			source.Provisional = nextProvisional
 		}
 		ns := latest.ReceiptMonotonic.Nanoseconds()
-		if err := owner.publication.Publish(source, mcp.TeslaGen3EVSESemanticEvidence{
+		semanticEvidence := mcp.TeslaGen3EVSESemanticEvidence{
 			ObservationID: fmt.Sprintf("observation:%s:%d:%d", owner.cfg.EndpointID, owner.cfg.DriverGeneration, nextSequence),
 			ObservedAt:    latest.ReceiptWall, EvaluatedAt: latest.ReceiptWall, MonotonicNS: ns, EvaluatedMonotonicNS: ns, Sequence: nextSequence,
-		}); err != nil {
+			PersistentObservedAt: nextPersistentEvidence.ReceiptWall, PersistentMonotonicNS: nextPersistentEvidence.ReceiptMonotonic.Nanoseconds(),
+		}
+		if publishProvisional {
+			semanticEvidence.ProvisionalObservedAt = nextProvisionalEvidence[1].ReceiptWall
+			semanticEvidence.ProvisionalMonotonicNS = nextProvisionalEvidence[1].ReceiptMonotonic.Nanoseconds()
+		}
+		if err := owner.publication.Publish(source, semanticEvidence); err != nil {
 			return err
 		}
 		owner.sequence = nextSequence

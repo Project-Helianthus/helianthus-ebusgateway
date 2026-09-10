@@ -168,6 +168,7 @@ func (session *growattBMSRTUSession) complete(observationID string, revision uin
 
 type growattBMSRS485ProductionProvider struct {
 	mu      sync.Mutex
+	gate    chan struct{}
 	runtime *mcp.GrowattBMSRS485V202Runtime
 	session *growattBMSRTUSession
 	storage *growattStoragePublication
@@ -180,10 +181,34 @@ func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx conte
 	if provider == nil || provider.runtime == nil || provider.session == nil {
 		return mcp.GrowattBMSRS485V202Observation{}, errors.New("growatt BMS RTU production provider unavailable")
 	}
+	if err := provider.acquire(ctx); err != nil {
+		return mcp.GrowattBMSRS485V202Observation{}, err
+	}
+	defer provider.release()
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	return provider.observeLocked(ctx)
 }
+
+func (provider *growattBMSRS485ProductionProvider) acquire(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case provider.gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			provider.release()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (provider *growattBMSRS485ProductionProvider) release() { <-provider.gate }
 
 // observeLocked is the single native observation transaction. Both the native
 // MCP tool and the semantic path use it, so a typed status can never be paired
@@ -212,6 +237,10 @@ func (provider *growattBMSRS485ProductionProvider) SemanticStorageCurrent(ctx co
 	if provider == nil || provider.storage == nil {
 		return nil, errors.New("growatt BMS storage semantic provider unavailable")
 	}
+	if err := provider.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer provider.release()
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	observation, err := provider.observeLocked(ctx)
@@ -249,6 +278,10 @@ func (provider *growattBMSRS485ProductionProvider) Close() error {
 	if provider == nil || provider.session == nil || provider.session.endpoint == nil {
 		return nil
 	}
+	if err := provider.acquire(context.Background()); err != nil {
+		return err
+	}
+	defer provider.release()
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	return provider.session.endpoint.Close()
@@ -265,7 +298,7 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config) (*gro
 		}
 		return nil, nil
 	}
-	if !validGrowattSemanticIdentity(config.AssetID) || !validGrowattSemanticIdentity(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
+	if !validGrowattAssetID(config.AssetID) || !validGrowattSourceID(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
 		config.SerialPath == "" || config.ResponseTimeout <= 0 || config.MaxResponseDelay <= 0 || config.MaxQuiescence <= config.MaxResponseDelay {
 		return nil, errors.New("enabled Growatt BMS RS-485 configuration is incomplete")
 	}
@@ -297,7 +330,7 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config) (*gro
 		_ = endpoint.Close()
 		return nil, err
 	}
-	return &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage}, nil
+	return &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1)}, nil
 }
 
 type growattBMSRTUAdmission struct{ unitID byte }

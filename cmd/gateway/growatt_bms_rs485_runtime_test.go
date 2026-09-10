@@ -21,17 +21,19 @@ import (
 )
 
 type growattEndpointFake struct {
-	mu         sync.Mutex
-	words      map[uint16][]uint16
-	calls      [][2]uint16
-	unitIDs    []byte
-	failAt     int
-	mismatch   int
-	generation uint64
-	closed     int
-	recovers   int
-	recoverErr error
-	delay      time.Duration
+	mu          sync.Mutex
+	words       map[uint16][]uint16
+	calls       [][2]uint16
+	unitIDs     []byte
+	failAt      int
+	mismatch    int
+	generation  uint64
+	closed      int
+	recovers    int
+	recoverErr  error
+	delay       time.Duration
+	readStarted chan struct{}
+	releaseRead chan struct{}
 }
 
 func TestPortalRawModbusUsesOnlyTCPAvailableComposition(t *testing.T) {
@@ -92,6 +94,19 @@ func growattBMSProductionReadPDU(words []uint16) []byte {
 }
 
 func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error) {
+	if fake.readStarted != nil {
+		select {
+		case fake.readStarted <- struct{}{}:
+		default:
+		}
+	}
+	if fake.releaseRead != nil {
+		select {
+		case <-fake.releaseRead:
+		case <-ctx.Done():
+			return modbus.ReadRegistersResponse{}, modbus.RTUReadEvidence{}, ctx.Err()
+		}
+	}
 	if fake.delay > 0 {
 		select {
 		case <-time.After(fake.delay):
@@ -151,27 +166,61 @@ func growattProductionConfig() ebusgateway.GrowattBMSRS485Config {
 }
 
 func TestGrowattSemanticIdentityRejectsUncanonicalOriginalValues(t *testing.T) {
-	if !validGrowattSemanticIdentity(strings.Repeat("a", 128)) {
-		t.Fatal("128-byte identity rejected")
+	if !validGrowattAssetID(strings.Repeat("a", 256)) || !validGrowattSourceID(strings.Repeat("b", 256)) {
+		t.Fatal("256-byte SemReg identity boundary rejected")
 	}
-	for _, value := range []string{" asset", "asset ", " " + strings.Repeat("a", 128), strings.Repeat("a", 129)} {
+	for _, value := range []string{" asset", "asset ", "!asset", "asset#invalid", strings.Repeat("a", 257)} {
 		if validGrowattSemanticIdentity(value) {
 			t.Fatalf("invalid identity accepted: %q", value)
 		}
 	}
 	for name, mutate := range map[string]func(*ebusgateway.GrowattBMSRS485Config){
-		"asset-leading":     func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = " asset" },
-		"asset-trailing":    func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = "asset " },
-		"asset-overlength":  func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = " " + strings.Repeat("a", 128) },
-		"source-leading":    func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = " source" },
-		"source-trailing":   func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = "source " },
-		"source-overlength": func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = " " + strings.Repeat("b", 128) },
+		"asset-leading":        func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = " asset" },
+		"asset-trailing":       func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = "asset " },
+		"asset-first-invalid":  func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = "!asset" },
+		"asset-punctuation":    func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = "asset#invalid" },
+		"asset-overlength":     func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = strings.Repeat("a", 257) },
+		"source-leading":       func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = " source" },
+		"source-trailing":      func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = "source " },
+		"source-first-invalid": func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = "!source" },
+		"source-punctuation":   func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = "source#invalid" },
+		"source-overlength":    func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = strings.Repeat("b", 257) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := growattProductionConfig()
 			mutate(&c)
-			if _, err := startGrowattBMSRS485Runtime(c); err == nil {
-				t.Fatal("invalid configured identity started")
+			opened := false
+			original := openGrowattBMSRTUEndpoint
+			openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+				opened = true
+				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
+			}
+			defer func() { openGrowattBMSRTUEndpoint = original }()
+			if _, err := startGrowattBMSRS485Runtime(c); err == nil || opened {
+				t.Fatalf("invalid configured identity started/opened: %v/%t", err, opened)
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*ebusgateway.GrowattBMSRS485Config){
+		"asset-boundary":  func(c *ebusgateway.GrowattBMSRS485Config) { c.AssetID = strings.Repeat("a", 256) },
+		"source-boundary": func(c *ebusgateway.GrowattBMSRS485Config) { c.SourceID = strings.Repeat("b", 256) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := growattProductionConfig()
+			mutate(&c)
+			opened := false
+			original := openGrowattBMSRTUEndpoint
+			openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+				opened = true
+				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
+			}
+			defer func() { openGrowattBMSRTUEndpoint = original }()
+			runtime, err := startGrowattBMSRS485Runtime(c)
+			if err != nil || !opened {
+				t.Fatalf("valid SemReg identity boundary rejected: %v/%t", err, opened)
+			}
+			if err := runtime.Close(); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -603,6 +652,98 @@ func TestGrowattBMSRS485ProductionCompositionSerializesPollRecoveryAndClose(t *t
 	wait.Wait()
 	if fake.recovers != 1 || fake.closed != 1 {
 		t.Fatalf("recover/close=%d/%d", fake.recovers, fake.closed)
+	}
+}
+
+func TestGrowattBMSRS485QueuedSemanticCancellationDoesNotObserve(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake := &growattEndpointFake{
+		words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1,
+		readStarted: started, releaseRead: release,
+	}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.GrowattBMSRS485V202(context.Background())
+		holderDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not enter the first native read")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := newGrowattStorageGraphQLProvider(runtime)(ctx, "asset:growatt-bms-a"); ok {
+		t.Fatal("cancelled queued GraphQL storage request published")
+	}
+	fake.mu.Lock()
+	callsWhileHeld := len(fake.calls)
+	fake.mu.Unlock()
+	if callsWhileHeld != 0 {
+		t.Fatalf("cancelled queued request reached native endpoint: calls=%d", callsWhileHeld)
+	}
+
+	close(release)
+	select {
+	case err := <-holderDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not complete after release")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != 4 {
+		t.Fatalf("cancelled queued request started a second observation: calls=%d", len(fake.calls))
+	}
+}
+
+func TestGrowattBMSRS485QueuedSemanticRequestProceedsAfterOwnerRelease(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake := &growattEndpointFake{
+		words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1,
+		readStarted: started, releaseRead: release,
+	}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	holderDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.GrowattBMSRS485V202(context.Background())
+		holderDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder did not enter the first native read")
+	}
+
+	semanticDone := make(chan error, 1)
+	queued := make(chan struct{})
+	go func() {
+		close(queued)
+		_, err := runtime.SemanticStorageCurrent(context.Background())
+		semanticDone <- err
+	}()
+	<-queued
+	close(release)
+	for name, result := range map[string]<-chan error{"holder": holderDone, "semantic": semanticDone} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("%s request failed: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s request did not complete", name)
+		}
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != 8 {
+		t.Fatalf("serialized observations=%d calls; want 8", len(fake.calls))
 	}
 }
 

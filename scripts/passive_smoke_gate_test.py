@@ -22,22 +22,28 @@ class PassiveSmokeGateTests(unittest.TestCase):
 type PortalStorageConfig = PortalPVConfig
 
 func (cfg Config) ValidatePortalStorage() error {
-if cfg.PortalStorage.RawReadEnabled {
-return errors.New("portal storage configuration does not permit raw reads")
-}
-copy := cfg
-copy.PortalPV = cfg.PortalStorage
-if err := copy.ValidatePortalPV(); err != nil {
-return err
-}
-if !cfg.PortalStorage.SemanticEnabled {
-return nil
-}
-producer := cfg.ModbusTCPConfig.GrowattBMSRS485
-if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
-return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
-}
-return nil
+	if cfg.PortalStorage.RawReadEnabled {
+		return errors.New("portal storage configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
+	}
+	if !cfg.PortalStorage.SemanticEnabled {
+		return nil
+	}
+	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
+	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
+		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
+	}
+	const m2mDeadline = 5 * time.Second
+	const m2mHeadroom = 500 * time.Millisecond
+	budget := m2mDeadline - m2mHeadroom
+	if producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+		return errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
+	}
+	return nil
 }
 
 type Config struct {
@@ -71,6 +77,26 @@ type Config struct {
             (repo_path / "config.go").write_text(self.storage_config_only + line, encoding="utf-8")
             hostile = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
             self.assertNotEqual(hostile.returncode, 0, line)
+
+        hostile_validators = (
+            self.storage_config_only.replace(
+                "if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {\n",
+                "if producer.AssetID != cfg.PortalStorage.AssetRef {\n",
+            ),
+            self.storage_config_only.replace(
+                "producer.ResponseTimeout*4 >= budget",
+                "producer.ResponseTimeout*4 >= m2mDeadline",
+            ),
+        )
+        for modified in hostile_validators:
+            (repo_path / "config.go").write_text(modified, encoding="utf-8")
+            hostile = subprocess.run(
+                ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(hostile.returncode, 0)
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
         base_other = "type Config struct {\n}\n\nfunc validateOther() error {\n\tif changed {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
         hostile_others = (

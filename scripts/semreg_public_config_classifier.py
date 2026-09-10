@@ -13,56 +13,34 @@ DECLARATION = (
     "type PortalStorageConfig = PortalPVConfig\n"
 )
 FIELD = re.compile(r"(?m)^\s*PortalStorage\s+PortalStorageConfig\n")
-FUNCTION = "func (cfg Config) ValidatePortalStorage() error {"
+FUNCTION = '''func (cfg Config) ValidatePortalStorage() error {
+\tif cfg.PortalStorage.RawReadEnabled {
+\t\treturn errors.New("portal storage configuration does not permit raw reads")
+\t}
+\tcopy := cfg
+\tcopy.PortalPV = cfg.PortalStorage
+\tif err := copy.ValidatePortalPV(); err != nil {
+\t\treturn err
+\t}
+\tif !cfg.PortalStorage.SemanticEnabled {
+\t\treturn nil
+\t}
+\tproducer := cfg.ModbusTCPConfig.GrowattBMSRS485
+\tif !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
+\t\treturn errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
+\t}
+\tconst m2mDeadline = 5 * time.Second
+\tconst m2mHeadroom = 500 * time.Millisecond
+\tbudget := m2mDeadline - m2mHeadroom
+\tif producer.ResponseTimeout > budget/4 || producer.ResponseTimeout*4 >= budget {
+\t\treturn errors.New("portal storage semantic BFF requires four Growatt reads plus 500ms headroom below the M2M deadline")
+\t}
+\treturn nil
+}
+'''
 
 def show(ref: str) -> str:
     return subprocess.check_output(["git", "show", f"{ref}:config.go"], text=True)
-
-def balanced_block_end(text: str, opening: int) -> int:
-    depth = 0
-    state = "code"
-    index = opening
-    while index < len(text):
-        char = text[index]
-        following = text[index + 1] if index + 1 < len(text) else ""
-        if state == "line_comment":
-            if char == "\n": state = "code"
-        elif state == "block_comment":
-            if char == "*" and following == "/":
-                state = "code"; index += 1
-        elif state == "double":
-            if char == "\\": index += 1
-            elif char == '"': state = "code"
-        elif state == "single":
-            if char == "\\": index += 1
-            elif char == "'": state = "code"
-        elif state == "raw":
-            if char == "`": state = "code"
-        elif char == "/" and following == "/":
-            state = "line_comment"; index += 1
-        elif char == "/" and following == "*":
-            state = "block_comment"; index += 1
-        elif char == '"': state = "double"
-        elif char == "'": state = "single"
-        elif char == "`": state = "raw"
-        elif char == "{": depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                end = index + 1
-                if end < len(text) and text[end] == "\n": end += 1
-                return end
-        index += 1
-    raise ValueError("unbalanced ValidatePortalStorage function")
-
-def remove_function(text: str) -> tuple[str, int]:
-    matches = list(re.finditer(r"(?m)^" + re.escape(FUNCTION), text))
-    if len(matches) > 1: raise ValueError("duplicate ValidatePortalStorage function")
-    if not matches: return text, 0
-    start = matches[0].start()
-    opening = text.index("{", matches[0].start(), matches[0].end())
-    end = balanced_block_end(text, opening)
-    return text[:start] + text[end:], 1
 
 def strip_storage(text: str) -> tuple[str, tuple[int, int, int]]:
     declaration_count = text.count(DECLARATION)
@@ -70,7 +48,9 @@ def strip_storage(text: str) -> tuple[str, tuple[int, int, int]]:
     text = text.replace(DECLARATION, "")
     text, field_count = FIELD.subn("", text)
     if field_count > 1: raise ValueError("duplicate Storage config field")
-    text, function_count = remove_function(text)
+    function_count = text.count(FUNCTION)
+    if function_count > 1: raise ValueError("duplicate ValidatePortalStorage function")
+    text = text.replace(FUNCTION, "")
     normalized = re.sub(r"\n{2,}", "\n", text).strip() + "\n"
     return normalized, (declaration_count, field_count, function_count)
 

@@ -39,19 +39,19 @@ type growattStoragePublication struct {
 }
 
 func validGrowattSemanticIdentity(value string) bool {
-	if value == "" || len(value) > 128 || value != strings.TrimSpace(value) {
-		return false
-	}
-	for _, r := range value {
-		if r < 0x21 || r > 0x7e {
-			return false
-		}
-	}
-	return true
+	return validGrowattAssetID(value) && validGrowattSourceID(value)
+}
+
+func validGrowattAssetID(value string) bool {
+	return value == strings.TrimSpace(value) && semreg.AssetID(value).Validate() == nil
+}
+
+func validGrowattSourceID(value string) bool {
+	return value == strings.TrimSpace(value) && semreg.SourceID(value).Validate() == nil
 }
 
 func newGrowattStoragePublication(asset, source string) (*growattStoragePublication, error) {
-	if !validGrowattSemanticIdentity(asset) || !validGrowattSemanticIdentity(source) || asset == source {
+	if !validGrowattAssetID(asset) || !validGrowattSourceID(source) || asset == source {
 		return nil, errors.New("growatt BMS semantic asset/source identity is invalid")
 	}
 	kernel, err := semreg.NewPublicationKernel(semreg.AssetID(asset), storage.New())
@@ -128,7 +128,7 @@ func validateGrowattStorageInput(status modbusreg.GrowattBMSTypedReadOnlyStatus,
 	if status.Revision != growattBMSRS485Revision || status.OutboundAllowed() || evidence.OutboundAllowed || evidence.Qualification != "qualified" {
 		return errors.New("revision_or_unit_or_slice_invalid")
 	}
-	if !validGrowattSemanticIdentity(string(asset)) || !validGrowattSemanticIdentity(string(source)) || asset == semreg.AssetID(source) {
+	if !validGrowattAssetID(string(asset)) || !validGrowattSourceID(string(source)) || asset == semreg.AssetID(source) {
 		return errors.New("identity_missing_or_invalid")
 	}
 	if evidence.SourceID != string(source) || evidence.SourceEpoch == "" || evidence.DriverGeneration == 0 || evidence.ClockEpoch == "" || evidence.ReceiptMonotonic < 0 {

@@ -199,16 +199,39 @@ rejected during lead integration because same-count line swaps remained possible
 
 The final correction uses one shared, fail-closed structural classifier from both
 transport and passive gates. It removes exactly one canonical Portal Storage
-declaration, `Config.PortalStorage` field, and balanced
+declaration, `Config.PortalStorage` field, and the byte-exact reviewed
 `ValidatePortalStorage` function from base and working source, then requires all
-remaining `config.go` bytes to match. The balanced scanner handles nested blocks,
-comments, quoted strings, runes, and raw strings. Missing or duplicate structures
-reject. Hostile fixtures cover unrelated `return err`, `return nil`, and brace
-changes, including same-count swaps inside another validator; the valid
-Storage-only change remains exempt.
+remaining `config.go` bytes to match. Missing, duplicate, reformatted, or changed
+structures reject. Hostile fixtures cover unrelated `return err`, `return nil`,
+and brace changes, same-count swaps inside another validator, deletion of matching
+producer admission, and relaxation of the four-read timing bound. The exact
+reviewed Storage slice remains exempt.
 
 Focused evidence: `python3 scripts/transport_gate_test.py` — 23 PASS; `python3
 scripts/passive_smoke_gate_test.py` — 9 PASS; direct transport gate — pinned
 Modbus RTU conformance PASS; direct passive-smoke gate — not triggered; Python
 compile and `git diff --check` — PASS. Complete CI and fresh exact-HEAD review
 remain pending after the final commit.
+
+## Context-aware serialization and exact identity correction
+
+The production provider now acquires one capacity-one ownership gate with the
+request context before entering the existing state mutex. A queued request whose
+context expires returns without starting another RTU observation; a live queued
+request proceeds after the current owner releases. Close remains serialized with
+native and semantic publication. Deterministic race tests hold the first native
+read, cancel a queued GraphQL/SemReg request, prove no second endpoint call, then
+prove an admitted queued semantic request completes as the next four-read sample.
+The queue tests pass 50 consecutive race-enabled runs.
+
+Configured `AssetID` and `SourceID` are validated as their exact pinned SemReg
+types before the endpoint opens. Leading/trailing whitespace, invalid first
+characters, disallowed punctuation, and 257-byte values reject without calling
+the endpoint; the 256-byte boundary for each type remains valid. The source epoch,
+distinct-identity, native qualification, evidence, and publication checks remain.
+
+Focused evidence after these changes: gateway/MCP/GraphQL/Portal race tests PASS;
+queue tests 50/50 PASS under `-race`; transport classifier 23/23 PASS; passive
+classifier 9/9 PASS; direct pinned Modbus RTU conformance PASS; passive smoke is
+not triggered by the exact reviewed public Storage slice. Complete CI and a fresh
+exact-HEAD independent review remain pending after commit and push.

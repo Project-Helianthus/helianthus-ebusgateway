@@ -37,24 +37,37 @@ type TeslaGen3EVSESemanticConfig struct {
 // TeslaGen3EVSESemanticEvidence is supplied by the injection owner.  It is
 // metadata only: payloads stay in the accepted registry records.
 type TeslaGen3EVSESemanticEvidence struct {
-	ObservationID string
-	ObservedAt    time.Time
-	EvaluatedAt   time.Time
-	MonotonicNS   int64
-	Sequence      uint64
+	ObservationID        string
+	ObservedAt           time.Time
+	EvaluatedAt          time.Time
+	MonotonicNS          int64
+	EvaluatedMonotonicNS int64
+	Sequence             uint64
 }
 
-// Capability activation is separately anchored to the immutable native records
-// that qualified the read capability. Source identity only identifies where a
-// record came from; it cannot activate a capability by itself.
-type teslaGen3EVSEPersistentActivation struct {
-	Persistent *modbusreg.TeslaGen3PersistentCurrentLimit
-	Evidence   TeslaGen3EVSESemanticEvidence
+type teslaGen3EVSEPersistentEvidence struct {
+	OperationVersion     string                        `json:"operation_version"`
+	MaxOutputCurrentAmps uint32                        `json:"max_output_current_amps"`
+	RequestPayload       []byte                        `json:"request_payload"`
+	TerminalPayload      []byte                        `json:"terminal_payload"`
+	Lifecycle            TeslaGen3EVSESemanticEvidence `json:"lifecycle"`
 }
 
-type teslaGen3EVSEProvisionalActivation struct {
-	Provisional *modbusreg.TeslaGen3ProvisionalCurrentLimit
-	Evidence    TeslaGen3EVSESemanticEvidence
+type teslaGen3EVSEProvisionalEvidence struct {
+	OperationVersion        string                        `json:"operation_version"`
+	LimitCurrentMaxAmps     uint32                        `json:"limit_current_max_amps"`
+	LimitTimeoutSeconds     uint32                        `json:"limit_timeout_s"`
+	InhibitCharging         bool                          `json:"inhibit_charging"`
+	SetRequestPayload       []byte                        `json:"set_request_payload"`
+	AckPayload              []byte                        `json:"ack_payload"`
+	ReadbackRequestPayload  []byte                        `json:"readback_request_payload"`
+	ReadbackTerminalPayload []byte                        `json:"readback_terminal_payload"`
+	Lifecycle               TeslaGen3EVSESemanticEvidence `json:"lifecycle"`
+}
+
+type teslaGen3EVSEPublicationEvidence struct {
+	Persistent  teslaGen3EVSEPersistentEvidence   `json:"persistent"`
+	Provisional *teslaGen3EVSEProvisionalEvidence `json:"provisional,omitempty"`
 }
 
 // TeslaGen3EVSESemanticProvider is read-only.  It provides one detached,
@@ -75,9 +88,12 @@ type TeslaGen3EVSESemanticPublication struct {
 	evaluatedMonotonic semreg.MonotonicPoint
 	lastReadAt         time.Time
 	lastReadMonotonic  semreg.MonotonicPoint
-	allocatedExpiresAt *time.Time
+	publishedReadClock uint64
+	lastReadClock      uint64
+	allocatedExpiresAt *semreg.MonotonicPoint
 	sequence           uint64
 	now                func() time.Time
+	readClock          func() (uint64, error)
 }
 
 func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*TeslaGen3EVSESemanticPublication, error) {
@@ -93,7 +109,15 @@ func NewTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*Tesl
 	if err != nil {
 		return nil, err
 	}
-	return &TeslaGen3EVSESemanticPublication{cfg: cfg, kernel: kernel, now: time.Now}, nil
+	origin := time.Now()
+	readClock := func() (uint64, error) {
+		elapsed := time.Since(origin)
+		if elapsed < 0 {
+			return 0, errors.New("tesla Gen3 EVSE read monotonic clock regressed")
+		}
+		return uint64(elapsed.Nanoseconds()), nil
+	}
+	return &TeslaGen3EVSESemanticPublication{cfg: cfg, kernel: kernel, now: time.Now, readClock: readClock}, nil
 }
 
 // Publish atomically maps one accepted WC3 24.44.3 record bundle.  A rejected
@@ -109,6 +133,13 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	defer p.mu.Unlock()
 	if evidence.Sequence <= p.sequence {
 		return errors.New("tesla Gen3 EVSE semantic replay or collision")
+	}
+	readClock, err := p.readClock()
+	if err != nil {
+		return err
+	}
+	if p.sequence != 0 && readClock < p.lastReadClock {
+		return errors.New("tesla Gen3 EVSE read monotonic clock regressed")
 	}
 	receiptMono := semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(p.cfg.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(evidence.MonotonicNS, 10))}
 	evaluationMono, err := teslaGen3EVSEEvaluationMonotonic(receiptMono, evidence)
@@ -128,13 +159,13 @@ func (p *TeslaGen3EVSESemanticPublication) Publish(source TeslaGen3EVSECurrentLi
 	if err != nil {
 		return err
 	}
-	expiresAt := teslaGen3EVSEAllocatedExpiry(source.Provisional, evidence)
+	expiresAt := teslaGen3EVSEAllocatedExpiry(source.Provisional, evidence, receiptMono)
 	_, err = p.publicAt(snapshot, manifest, requested, dispositions, evidence.EvaluatedAt, evaluationMono, expiresAt)
 	if err != nil {
 		return err
 	}
 	p.kernel, p.current, p.manifest, p.requested, p.dispositions = staged, snapshot, manifest, append([]projection.RequestedItem(nil), requested...), append([]projection.ProjectionDisposition(nil), dispositions...)
-	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, expiresAt, evidence.Sequence
+	p.evaluatedAt, p.evaluatedMonotonic, p.lastReadAt, p.lastReadMonotonic, p.publishedReadClock, p.lastReadClock, p.allocatedExpiresAt, p.sequence = evidence.EvaluatedAt, evaluationMono, evidence.EvaluatedAt, evaluationMono, readClock, readClock, expiresAt, evidence.Sequence
 	return nil
 }
 
@@ -160,7 +191,14 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 		// the same provisional allocation younger without new native evidence.
 		now = p.lastReadAt
 	}
-	mono, err := p.readMonotonic(now)
+	readClock, err := p.readClock()
+	if err != nil {
+		return nil, err
+	}
+	if readClock < p.lastReadClock {
+		return nil, errors.New("tesla Gen3 EVSE read monotonic clock regressed")
+	}
+	mono, err := p.readMonotonic(readClock)
 	if err != nil {
 		return nil, err
 	}
@@ -174,13 +212,19 @@ func (p *TeslaGen3EVSESemanticPublication) TeslaGen3EVSESemanticCurrent(context.
 	if err != nil {
 		return nil, err
 	}
-	p.lastReadAt, p.lastReadMonotonic = now, mono
+	p.lastReadAt, p.lastReadMonotonic, p.lastReadClock = now, mono, readClock
 	return view, nil
 }
 
 func (p *TeslaGen3EVSESemanticPublication) validate(s TeslaGen3EVSECurrentLimitV1Source, e TeslaGen3EVSESemanticEvidence) error {
-	if e.ObservationID == "" || e.ObservedAt.IsZero() || e.EvaluatedAt.IsZero() || e.EvaluatedAt.Before(e.ObservedAt) || e.MonotonicNS < 0 || e.Sequence == 0 {
+	if e.ObservationID == "" || e.ObservedAt.IsZero() || e.EvaluatedAt.IsZero() || e.EvaluatedAt.Before(e.ObservedAt) || e.MonotonicNS < 0 || e.EvaluatedMonotonicNS < 0 || e.Sequence == 0 {
 		return errors.New("tesla Gen3 EVSE semantic lifecycle is invalid")
+	}
+	if e.EvaluatedMonotonicNS == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
+		e.EvaluatedMonotonicNS = e.MonotonicNS
+	}
+	if e.EvaluatedMonotonicNS < e.MonotonicNS {
+		return errors.New("tesla Gen3 EVSE evaluation monotonic clock regressed")
 	}
 	if s.Persistent == nil || s.Persistent.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(s.Persistent.RequestPayload()) == 0 || len(s.Persistent.TerminalPayload()) == 0 {
 		return errors.New("tesla Gen3 EVSE persistent evidence is invalid")
@@ -194,11 +238,10 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	seq := semreg.Uint64(strconv.FormatUint(e.Sequence, 10))
 	binding := semreg.NativeBindingID("binding:tesla-wc3:" + evseHash(p.cfg.AssetID, p.cfg.SourceID)[:32])
 	receivedAt, evaluatedAt := evseWall(e.ObservedAt), evseWall(e.EvaluatedAt)
-	evidence := evseEvidence("native.tesla.wc3.current_limit", struct {
-		Source   TeslaGen3EVSECurrentLimitV1Source
-		Evidence TeslaGen3EVSESemanticEvidence
-	}{s, e})
-	activationEvidence := []semreg.EvidenceRef{evseEvidence("native.tesla.wc3.current_limit.persistent", teslaGen3EVSEPersistentActivation{Persistent: s.Persistent, Evidence: e})}
+	persistentRecord := teslaGen3EVSEPersistentRecord(s.Persistent, e)
+	provisionalRecord := teslaGen3EVSEProvisionalRecord(s.Provisional, e)
+	evidence := evseEvidence("native.tesla.wc3.current_limit", teslaGen3EVSEPublicationEvidence{Persistent: persistentRecord, Provisional: provisionalRecord})
+	activationEvidence := []semreg.EvidenceRef{evseEvidence("native.tesla.wc3.current_limit.persistent", persistentRecord)}
 	registry := evseDigestEvidence("registry.tesla.wc3_24_44_3", modbusreg.TeslaGen3CurrentLimitOperationVersion24443)
 	// MappingRevision is the kernel's monotonic label; the immutable accepted
 	// docs commit is retained in the registry evidence digest below.
@@ -208,7 +251,7 @@ func (p *TeslaGen3EVSESemanticPublication) batch(s TeslaGen3EVSECurrentLimitV1So
 	dispositions := []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "evse.limit.configured_current", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{configured.Key}, Loss: []projection.LossDetail{}}}
 	facts := []semreg.FactCandidate{configured}
 	if provisional, reason := p.provisional(s.Provisional, e); provisional != nil {
-		activationEvidence = append(activationEvidence, evseEvidence("native.tesla.wc3.current_limit.provisional", teslaGen3EVSEProvisionalActivation{Provisional: s.Provisional, Evidence: e}))
+		activationEvidence = append(activationEvidence, evseEvidence("native.tesla.wc3.current_limit.provisional", *provisionalRecord))
 		timeout := time.Duration(s.Provisional.LimitTimeoutSeconds()) * time.Second
 		allocated := p.candidate("evse.limit.allocated_current", "evse.dimension.connector", p.cfg.ConnectorID, *provisional, timeout, timeout+time.Nanosecond, current, binding, source, epoch, generation, evidence, receivedAt, receiptMono, evaluatedAt, evaluationMono)
 		facts = append(facts, allocated)
@@ -266,11 +309,42 @@ func (p *TeslaGen3EVSESemanticPublication) provisional(v *modbusreg.TeslaGen3Pro
 	if timeout > 86399 {
 		return nil, "timeout_out_of_range"
 	}
-	if !e.EvaluatedAt.Before(e.ObservedAt.Add(time.Duration(timeout) * time.Second)) {
+	evaluated := e.EvaluatedMonotonicNS
+	if evaluated == 0 && e.EvaluatedAt.Equal(e.ObservedAt) {
+		evaluated = e.MonotonicNS
+	}
+	if evaluated < e.MonotonicNS || uint64(evaluated-e.MonotonicNS) >= uint64(timeout)*uint64(time.Second) {
 		return nil, "expired"
 	}
 	value := v.LimitCurrentMaxAmps()
 	return &value, ""
+}
+
+func teslaGen3EVSEPersistentRecord(value *modbusreg.TeslaGen3PersistentCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) teslaGen3EVSEPersistentEvidence {
+	return teslaGen3EVSEPersistentEvidence{
+		OperationVersion:     value.OperationVersion(),
+		MaxOutputCurrentAmps: value.MaxOutputCurrentAmps(),
+		RequestPayload:       append([]byte(nil), value.RequestPayload()...),
+		TerminalPayload:      append([]byte(nil), value.TerminalPayload()...),
+		Lifecycle:            lifecycle,
+	}
+}
+
+func teslaGen3EVSEProvisionalRecord(value *modbusreg.TeslaGen3ProvisionalCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) *teslaGen3EVSEProvisionalEvidence {
+	if value == nil {
+		return nil
+	}
+	return &teslaGen3EVSEProvisionalEvidence{
+		OperationVersion:        value.OperationVersion(),
+		LimitCurrentMaxAmps:     value.LimitCurrentMaxAmps(),
+		LimitTimeoutSeconds:     value.LimitTimeoutSeconds(),
+		InhibitCharging:         value.InhibitCharging(),
+		SetRequestPayload:       append([]byte(nil), value.SetRequestPayload()...),
+		AckPayload:              append([]byte(nil), value.AckPayload()...),
+		ReadbackRequestPayload:  append([]byte(nil), value.ReadbackRequestPayload()...),
+		ReadbackTerminalPayload: append([]byte(nil), value.ReadbackTerminalPayload()...),
+		Lifecycle:               lifecycle,
+	}
 }
 
 func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string, amps uint32, freshFor, retainFor time.Duration, current semreg.Snapshot, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, evidence semreg.EvidenceRef, receivedAt semreg.TimePoint, receiptMono semreg.MonotonicPoint, evaluatedAt semreg.TimePoint, evaluationMono semreg.MonotonicPoint) semreg.FactCandidate {
@@ -288,13 +362,13 @@ func (p *TeslaGen3EVSESemanticPublication) capability(id, service string, bindin
 	return semreg.CapabilityInstance{InstanceID: semreg.CapabilityInstanceID("capability:tesla-wc3:" + evseHash(p.cfg.AssetID, id)[:32]), AssetID: asset, ServiceInstance: semreg.ServiceInstanceID("service:tesla-wc3:" + evseHash(p.cfg.AssetID, service)[:32]), Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: "helianthus.pack.evse", Version: "1.0.0"}, ID: semreg.DefinitionID(id), Version: "1.0.0"}, BindingID: binding, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Constraints: []semreg.TypedField{}, ActivationEvidence: append([]semreg.EvidenceRef(nil), activationEvidence...), Revision: revision}
 }
 
-func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *time.Time) (json.RawMessage, error) {
+func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, manifest projection.ProjectionManifest, requested []projection.RequestedItem, dispositions []projection.ProjectionDisposition, evaluated time.Time, mono semreg.MonotonicPoint, allocatedExpiresAt *semreg.MonotonicPoint) (json.RawMessage, error) {
 	evaluation, err := semreg.EvaluateSnapshot(snapshot, semreg.EvaluationContext{EvaluatedAt: evseWall(evaluated), EvaluateMonotonic: mono})
 	if err != nil {
 		return nil, err
 	}
 	publicDispositions := append([]projection.ProjectionDisposition(nil), dispositions...)
-	if allocatedExpiresAt != nil && !evaluated.Before(*allocatedExpiresAt) {
+	if allocatedExpiresAt != nil && teslaGen3EVSEMonotonicAtOrAfter(mono, *allocatedExpiresAt) {
 		for index := range publicDispositions {
 			if publicDispositions[index].ItemID != "evse.limit.allocated_current" {
 				continue
@@ -311,15 +385,15 @@ func (p *TeslaGen3EVSESemanticPublication) publicAt(snapshot semreg.Snapshot, ma
 	return json.RawMessage(b), err
 }
 
-func (p *TeslaGen3EVSESemanticPublication) readMonotonic(now time.Time) (semreg.MonotonicPoint, error) {
-	if now.Before(p.evaluatedAt) {
-		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read clock precedes publication")
+func (p *TeslaGen3EVSESemanticPublication) readMonotonic(readClock uint64) (semreg.MonotonicPoint, error) {
+	if readClock < p.publishedReadClock {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock regressed")
 	}
 	base, err := strconv.ParseUint(string(p.evaluatedMonotonic.Nanoseconds), 10, 64)
 	if err != nil {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication monotonic clock is invalid")
 	}
-	delta := uint64(now.Sub(p.evaluatedAt).Nanoseconds())
+	delta := readClock - p.publishedReadClock
 	if base > ^uint64(0)-delta {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE read monotonic clock overflows")
 	}
@@ -331,15 +405,17 @@ func teslaGen3EVSEEvaluationMonotonic(receipt semreg.MonotonicPoint, evidence Te
 	if err != nil {
 		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE receipt monotonic clock is invalid")
 	}
-	delay := evidence.EvaluatedAt.Sub(evidence.ObservedAt)
-	if delay < 0 {
-		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE evaluation precedes observation")
+	evaluated := evidence.EvaluatedMonotonicNS
+	if evaluated == 0 && evidence.EvaluatedAt.Equal(evidence.ObservedAt) {
+		evaluated = evidence.MonotonicNS
 	}
-	delta := uint64(delay.Nanoseconds())
-	if base > ^uint64(0)-delta {
-		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE evaluation monotonic clock overflows")
+	if evaluated < evidence.MonotonicNS {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE evaluation monotonic clock regressed")
 	}
-	return semreg.MonotonicPoint{ClockEpochID: receipt.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+delta, 10))}, nil
+	if uint64(evaluated) < uint64(base) {
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE evaluation monotonic clock regressed")
+	}
+	return semreg.MonotonicPoint{ClockEpochID: receipt.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatInt(evaluated, 10))}, nil
 }
 
 func teslaGen3EVSEAtLeastMonotonic(candidate, floor semreg.MonotonicPoint) (semreg.MonotonicPoint, error) {
@@ -363,12 +439,36 @@ func teslaGen3EVSEAtLeastMonotonic(candidate, floor semreg.MonotonicPoint) (semr
 	return candidate, nil
 }
 
-func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence) *time.Time {
-	if v == nil || v.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 || v.InhibitCharging() || v.LimitTimeoutSeconds() == 0 || v.LimitTimeoutSeconds() > 86399 || !evidence.EvaluatedAt.Before(evidence.ObservedAt.Add(time.Duration(v.LimitTimeoutSeconds())*time.Second)) {
+func teslaGen3EVSEAllocatedExpiry(v *modbusreg.TeslaGen3ProvisionalCurrentLimit, evidence TeslaGen3EVSESemanticEvidence, receipt semreg.MonotonicPoint) *semreg.MonotonicPoint {
+	if v == nil || v.OperationVersion() != modbusreg.TeslaGen3CurrentLimitOperationVersion24443 || len(v.SetRequestPayload()) == 0 || len(v.AckPayload()) == 0 || len(v.ReadbackRequestPayload()) == 0 || len(v.ReadbackTerminalPayload()) == 0 || v.InhibitCharging() || v.LimitTimeoutSeconds() == 0 || v.LimitTimeoutSeconds() > 86399 {
 		return nil
 	}
-	expires := evidence.ObservedAt.Add(time.Duration(v.LimitTimeoutSeconds()) * time.Second)
+	evaluated := evidence.EvaluatedMonotonicNS
+	if evaluated == 0 && evidence.EvaluatedAt.Equal(evidence.ObservedAt) {
+		evaluated = evidence.MonotonicNS
+	}
+	if evaluated < evidence.MonotonicNS {
+		return nil
+	}
+	base, err := strconv.ParseUint(string(receipt.Nanoseconds), 10, 64)
+	if err != nil {
+		return nil
+	}
+	timeout := uint64(v.LimitTimeoutSeconds()) * uint64(time.Second)
+	if base > ^uint64(0)-timeout || uint64(evaluated) >= base+timeout {
+		return nil
+	}
+	expires := semreg.MonotonicPoint{ClockEpochID: receipt.ClockEpochID, Nanoseconds: semreg.Uint64(strconv.FormatUint(base+timeout, 10))}
 	return &expires
+}
+
+func teslaGen3EVSEMonotonicAtOrAfter(value, boundary semreg.MonotonicPoint) bool {
+	if value.ClockEpochID != boundary.ClockEpochID {
+		return true
+	}
+	current, currentErr := strconv.ParseUint(string(value.Nanoseconds), 10, 64)
+	expires, expiryErr := strconv.ParseUint(string(boundary.Nanoseconds), 10, 64)
+	return currentErr != nil || expiryErr != nil || current >= expires
 }
 
 func nextTeslaGen3EVSECandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {

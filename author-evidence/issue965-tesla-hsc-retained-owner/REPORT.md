@@ -18,9 +18,9 @@
 - Optional-registration and record-lifecycle remediation tree:
   `920b43bbe091fc7aa1b4e73beabcce73c09205a6`
 - Rebased validated source HEAD:
-  `0395307cef8bab7be4d91a337b9a00ac160f74e4`
+  `ee0f9f682bcec8f2cac5d606e6fc660a2503abb2`
 - Rebased validated source tree:
-  `aa021d04b69f8d8c1a035724e8e3195ab9a2b55b`
+  `a127edf0c906703339110a7a349486cc79f0b88f`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -321,13 +321,18 @@ A lower monotonic coordinate remains a true regression and leaves the records,
 evidence, and publication sequence unchanged. The same fixture is covered by
 32 concurrent native, semantic, and Prometheus readers under the race detector.
 
-The live PR inventory also contained a new delayed-publication finding. The
+The live PR inventory also contained delayed-publication findings. The
 publication already sealed receipt-to-publication elapsed time for detached
-Prometheus reads. MCP and GraphQL now apply that same immutable same-epoch floor
-before their own read high-water, so a queued expired allocation cannot restart
-its timeout when first read. A deterministic MCP/GraphQL parity regression
-publishes a 61-second-delayed record with a 60-second allocation and verifies
-immediate expired/withheld output from both surfaces.
+Prometheus reads. MCP and GraphQL now use that same immutable same-epoch point
+as their read-clock origin and add subsequent elapsed time before applying the
+read high-water. A queued allocation therefore keeps only its remaining native
+lifetime. Deterministic MCP/authenticated-GraphQL parity regressions preserve
+the already-expired case and exercise a 60-second allocation published 30
+seconds late: it remains exact at 59 seconds total age, becomes withheld at 60
+seconds, and stays withheld afterward. Configured current remains independently
+exact while its freshness becomes stale. The read origin retains rollback,
+overflow, and clock-epoch failure coverage and has no provider or native I/O
+path.
 
 RED evidence:
 
@@ -335,6 +340,8 @@ RED evidence:
   `eadc1df26a173dfe7c9c4953e72ccbe425a85bc5b37ba177f05485af36235547`
 - Delayed MCP/GraphQL allocation incorrectly fresh:
   `6d24919d9ff99ecdf89b7535a7aca649615383871276893c173860f0e606d768`
+- Partial publication delay incorrectly failed to accumulate:
+  `e0f82b1c65878069ee152c17214f0252b07392c885ef9cea1cc7a4a8b5fac679`
 
 Final focused race command:
 
@@ -343,24 +350,26 @@ GOWORK=off go test -race ./cmd/gateway ./mcp -run 'Test(ResolveModbusEndpointFil
 ```
 
 Focused race SHA-256:
-`ae289fcf8a697b20e1084e70e027697975276235c92bbeb84a283c0f07bba89c`
+`35e30727dbd7ef256b99b7cb26131fec6565c1e31528f20c3811d00053fb4afb`
 
 Complete local CI passed on source
-`0395307cef8bab7be4d91a337b9a00ac160f74e4`, tree
-`aa021d04b69f8d8c1a035724e8e3195ab9a2b55b`, including all Go race tests,
+`ee0f9f682bcec8f2cac5d606e6fc660a2503abb2`, tree
+`a127edf0c906703339110a7a349486cc79f0b88f`, including all Go race tests,
 219 Python tests, zero lint findings, all builds, transport conformance, both
 SemReg mapping gates, and passive-smoke classification. SHA-256:
-`7fb6b6c584330689f3bbf83e5623e9c21ba8b5e38324f9f263e2f82c2a466d94`.
+`bc6fd165ff444aee180b57f66e43ac9029c8a7b21235584fd35ca932d9c3a638`.
 
 Standalone final gate hashes:
 
-- Modbus RTU transport: `1bef5f903fe62ca9fc2af3b517af02f871588fe1e948a42f28147a77a33ee7a9`
-- Tesla SemReg mapping: `949de3823c85716c0ff2d4523303ffba38323a844b4c4a652a722886c941ed2d`
+- Modbus RTU transport: `d434b3b65287a18810ccfe58a450cad09d2ead6bb8cbb98d1e7baee873c2c666`
+- Tesla SemReg mapping: `e79357ae6d11df624b42e945db859586b1f775fec9f28e17819fab56b3c8aaca`
 - Tesla owner boundary: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
 
 Independent report SHA-256:
 `fd2410f5c9d44a7ffe6fa3c82d9cd25186a27e7e380e7d424624642e26c267e6`.
 The three trailing-space P3 lines were removed during this report refresh.
+The tenth partial-delay thread was replied to with the final correction and
+evidence and left unresolved for fresh exact-HEAD review.
 
 ## Hosted adaptermux failure diagnosis
 
@@ -397,9 +406,9 @@ SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`
 - SemReg gate: passed for the existing Tesla EVSE mapping.
 - Smoke gate: not triggered; no live acquisition or physical test was
   performed or claimed.
-- Review: the eight earlier blockers plus the equal-coordinate and delayed-age
-  findings are corrected. A fresh independent exact-HEAD review remains
-  required before merge; the author did not review the remediation.
+- Review: the ten earlier findings plus the partial-delay accumulation finding
+  are corrected. A fresh independent exact-HEAD review remains required before
+  merge; the author did not review the remediation.
 - Merge: not performed. The implementation is not present on remote `main`.
 - Issue: remains open. This PR uses `Refs #965`.
 

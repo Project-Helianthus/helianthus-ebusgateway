@@ -112,3 +112,26 @@ the read-only scrape path performs no native acquisition or publication.
   rejected scenarios); and passive smoke gate `not triggered`. Durable log
   `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
   `d769e96a2ccddaf29f292db3a8e642d67e60c6043bb3b280e61c30c2a0c02880`.
+
+## Storage wall-rollback correction
+
+Current implementation head: `b29e4b0e8203381f7b5680fb39436bba3dc3523c`.
+Current implementation tree: `45d7433bcbf0d1b8973f2d01d5c57588ad4056d6`.
+
+Storage scrape reevaluation still derives freshness solely from receipt-to-scrape
+monotonic elapsed time. It now clamps the serialized evaluation wall coordinate
+to the detached receipt wall floor, preventing a backward wall adjustment from
+making `EvaluateSnapshot` reject an otherwise valid tuple. Deterministic
+rollback and forward-step cases cover fresh/stale boundaries, no resurrection,
+no early expiry, receipt-wall clamping, and no native read/publication.
+
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway ./internal/modbusadapter`
+  — PASS: root 9.595s, gateway 95.586s, Modbus adapter 130.811s; durable log
+  `/tmp/helianthus-ebusgateway-963-focused-race.log`, SHA-256
+  `0ce5d1778fa51b7f3d1230da356988fe835974a45bfa8611520573f5bfe0a548`.
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: portal 93/93; full Go race
+  suite; Python suites 168/6/24/10/6/2; golangci-lint 0 issues; transport
+  gate PASS; Storage SemReg mapping gate PASS (2 executable outputs, 13
+  rejected scenarios); and passive smoke gate `not triggered`. Durable log
+  `/tmp/helianthus-ebusgateway-963-full-ci.log`, SHA-256
+  `5a4496e7ed8b9e801cb60f749a53fdb407d8cb8330ef6a4c31ee19c8072c92d5`.

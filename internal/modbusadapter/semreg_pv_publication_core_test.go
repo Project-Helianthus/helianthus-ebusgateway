@@ -480,6 +480,47 @@ func TestAdapterPVCurrentSingleFollowsLatestIdentityRotation(t *testing.T) {
 	}
 }
 
+func TestAdapterPVCurrentSingleAtRetriesNewerSameAssetAtDetachedFloor(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started.Add(time.Second)
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:single-retry", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current }}
+	words := observedFroniusFloatControlsWords()
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, words, 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	// RenderPrometheus captures this instant, then the same asset publishes a
+	// newer snapshot before the scrape detaches it.
+	captured := current
+	current = current.Add(time.Second)
+	updatedWords := append([]uint16(nil), words...)
+	pvCoreSetFloat(updatedWords, 20, 4_321.5)
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, updatedWords, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	identity, _, err := resolvePVPublicationIdentity(pvCoreObservation(t, updatedWords, 5, 6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := "pv-asset-" + pvCoreRawHash(identity)[:32]
+	newest, ok := adapter.SemanticPVCurrentByAsset(asset)
+	if !ok {
+		t.Fatal("newer same-asset view unavailable")
+	}
+	selected, selectedOK := core.singleAssetID()
+	if selected != semreg.AssetID(asset) || !selectedOK {
+		t.Fatalf("active asset=%q/%t want=%q", selected, selectedOK, asset)
+	}
+	view, ok := adapter.SemanticPVCurrentSingleAt(captured)
+	if !ok || view.Snapshot.SnapshotID != newest.Snapshot.SnapshotID {
+		t.Fatalf("captured scrape did not retry detached newer tuple: got=%q want=%q ok=%t", view.Snapshot.SnapshotID, newest.Snapshot.SnapshotID, ok)
+	}
+}
+
 func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {

@@ -614,19 +614,7 @@ func (adapter *Adapter) SemanticPVCurrentByAsset(assetRef string) (SemanticPVCur
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
-	view, err = adapter.semanticPV.evaluatePublicView(view, context)
-	if err != nil {
-		context = semreg.EvaluationContext{EvaluatedAt: view.wallFloor, EvaluateMonotonic: view.snapshot.EvaluateMonotonic}
-		view, err = adapter.semanticPV.evaluatePublicView(view, context)
-	}
-	if err != nil {
-		// A publication may win after the scrape instant but before its detached
-		// read. Keep that whole newer tuple coherent at its own committed floor;
-		// never report a false unavailable projection because the supplied instant
-		// predates a snapshot it could not have observed.
-		context = semreg.EvaluationContext{EvaluatedAt: view.wallFloor, EvaluateMonotonic: view.snapshot.EvaluateMonotonic}
-		view, err = adapter.semanticPV.evaluatePublicView(view, context)
-	}
+	view, err = evaluatePVPublicViewAtFloor(adapter.semanticPV, view, context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
@@ -670,11 +658,22 @@ func (adapter *Adapter) SemanticPVCurrentSingleAt(at time.Time) (SemanticPVCurre
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
-	view, err = adapter.semanticPV.evaluatePublicView(view, context)
+	view, err = evaluatePVPublicViewAtFloor(adapter.semanticPV, view, context)
 	if err != nil {
 		return SemanticPVCurrent{}, false
 	}
 	return SemanticPVCurrent{Snapshot: view.snapshot, Canonical: view.canonical, Evaluation: view.evaluation, Selections: view.selections, Projection: view.projection}, true
+}
+
+// evaluatePVPublicViewAtFloor attempts the caller's scrape context once, then
+// preserves its original detached view for exactly one coherent floor retry.
+// Assignment on an error would otherwise discard the view needed by the retry.
+func evaluatePVPublicViewAtFloor(core *pvPublicationCore, view pvPublicationView, context semreg.EvaluationContext) (pvPublicationView, error) {
+	evaluated, err := core.evaluatePublicView(view, context)
+	if err == nil {
+		return evaluated, nil
+	}
+	return core.evaluatePublicView(view, semreg.EvaluationContext{EvaluatedAt: view.wallFloor, EvaluateMonotonic: view.snapshot.EvaluateMonotonic})
 }
 
 // clampSemanticPVReadWall prevents a rolled-back wall clock from preceding

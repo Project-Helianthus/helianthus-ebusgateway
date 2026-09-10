@@ -107,7 +107,7 @@ func writeSemanticMetrics(w *prometheusWriter, domains []SemanticMetricsDomain, 
 				continue
 			}
 			for _, key := range disposition.SourceKeys {
-				if renderSemanticFact(emit, d.Name, key, facts, evaluated, now) {
+				if renderSemanticFact(emit, d.Name, string(disposition.ItemID), key, facts, evaluated, now) {
 					overflow++
 				}
 			}
@@ -135,9 +135,10 @@ func evaluatedIndex(view semreg.EvaluationView) map[semreg.CandidateID]semreg.Ev
 	return out
 }
 
-func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, now time.Time) bool {
+func renderSemanticFact(emit func(string, float64, map[string]string) bool, domain, item string, key semreg.FactKey, envelopes map[string]semreg.FactEnvelope, evaluated map[semreg.CandidateID]semreg.EvaluatedFact, now time.Time) bool {
 	targetKey, targetOK := semanticFactKey(key)
-	if !targetOK || !validSemanticFact(domain, string(key.PackID), string(key.FactID)) {
+	schema, schemaOK := semanticFactSchemaFor(domain, item)
+	if !targetOK || !schemaOK {
 		return true
 	}
 	invalidCandidate := false
@@ -156,6 +157,9 @@ func renderSemanticFact(emit func(string, float64, map[string]string) bool, doma
 				return true
 			}
 			if !validSemanticState(candidate.Quality.Qualification, candidate.Quality.Promotion, candidate.Quality.Validity, e.EffectiveAvailability, e.Freshness) {
+				return true
+			}
+			if !schema.matches(key, candidate.Value) {
 				return true
 			}
 			dimension, dimensionsOK := semanticDimensions(key)
@@ -226,36 +230,92 @@ func semanticFactKey(key semreg.FactKey) (string, bool) {
 	return string(encoded), true
 }
 
-func validSemanticFact(domain, pack, fact string) bool {
-	if domain == "pv" && pack == "helianthus.pack.pv" {
-		switch fact {
-		case "pv.ac.current", "pv.ac.voltage", "pv.ac.aggregate_active_power", "pv.ac.frequency", "pv.energy.generated", "pv.temperature.inverter", "pv.status.operating":
-			return true
-		}
-	}
-	if domain == "storage" && pack == "helianthus.pack.storage" {
-		switch fact {
-		case "storage.capacity.charge", "storage.capacity.discharge", "storage.pack.current", "storage.pack.voltage", "storage.state.soc", "storage.temperature.pack", "storage.status.operating":
-			return true
-		}
-	}
-	return false
-}
 func validSemanticItem(domain, item string) bool {
+	_, ok := semanticFactSchemaFor(domain, item)
+	if ok {
+		return true
+	}
+	return domain == "pv" && (item == "projection.gateway.pv.inverter.ac.current.total" || item == "projection.gateway.pv.inverter.events.1" || item == "projection.gateway.pv.inverter.events.2")
+}
+
+// semanticFactSchema is the complete finite v1 contract for a fact-backed
+// projection item. It binds pack version, fact, dimension, and value shape so
+// independent allowlists cannot accidentally compose a different metric.
+type semanticFactSchema struct {
+	domain, item, pack, version, fact, dimensionID, dimensionValue, unit string
+	dimensionSuffix                                                      bool
+	symbols                                                              map[string]bool
+}
+
+func (s semanticFactSchema) matches(key semreg.FactKey, value *semreg.Value) bool {
+	if string(key.PackID) != s.pack || string(key.PackVersion) != s.version || string(key.FactID) != s.fact || len(key.Dimensions) != 1 || value == nil {
+		return false
+	}
+	dimension := key.Dimensions[0]
+	if string(dimension.ID) != s.dimensionID || dimension.Value.Kind != semreg.ValueText || dimension.Value.Text == nil || *dimension.Value.Text == "" {
+		return false
+	}
+	if s.dimensionValue != "" && *dimension.Value.Text != s.dimensionValue && (!s.dimensionSuffix || !strings.HasPrefix(*dimension.Value.Text, s.dimensionValue+":")) {
+		return false
+	}
+	if s.symbols != nil {
+		return value.Kind == semreg.ValueSymbol && value.Symbol != nil && value.Symbol.Known && string(value.Symbol.Namespace) == s.fact && s.symbols[string(value.Symbol.Token)]
+	}
+	return value.Kind == semreg.ValueQuantity && value.Quantity != nil && string(value.Quantity.Unit) == s.unit
+}
+
+func semanticFactSchemaFor(domain, item string) (semanticFactSchema, bool) {
+	const pvPack, pvVersion = "helianthus.pack.pv", "1.0.0"
+	const storagePack, storageVersion = "helianthus.pack.storage", "1.1.0"
+	pv := func(item, fact, dimension, value, unit string) semanticFactSchema {
+		return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: fact, dimensionID: dimension, dimensionValue: value, dimensionSuffix: value == "inverter" || value == "system", unit: unit}
+	}
+	storage := func(item, unit string) semanticFactSchema {
+		return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", unit: unit}
+	}
 	if domain == "pv" {
 		switch item {
-		case "projection.gateway.pv.inverter.ac.current.phase_a", "projection.gateway.pv.inverter.ac.current.phase_b", "projection.gateway.pv.inverter.ac.current.phase_c", "projection.gateway.pv.inverter.ac.voltage.phase_a", "projection.gateway.pv.inverter.ac.voltage.phase_b", "projection.gateway.pv.inverter.ac.voltage.phase_c", "projection.gateway.pv.inverter.ac.power.active", "projection.gateway.pv.inverter.ac.frequency", "projection.gateway.pv.inverter.ac.energy_lifetime", "projection.gateway.pv.inverter.temperature.cabinet", "projection.gateway.pv.inverter.operating_state", "projection.gateway.pv.inverter.ac.current.total", "projection.gateway.pv.inverter.events.1", "projection.gateway.pv.inverter.events.2":
-			return true
+		case "projection.gateway.pv.inverter.ac.current.phase_a":
+			return pv(item, "pv.ac.current", "pv.dimension.phase", "phase:L1", "unit.ampere"), true
+		case "projection.gateway.pv.inverter.ac.current.phase_b":
+			return pv(item, "pv.ac.current", "pv.dimension.phase", "phase:L2", "unit.ampere"), true
+		case "projection.gateway.pv.inverter.ac.current.phase_c":
+			return pv(item, "pv.ac.current", "pv.dimension.phase", "phase:L3", "unit.ampere"), true
+		case "projection.gateway.pv.inverter.ac.voltage.phase_a":
+			return pv(item, "pv.ac.voltage", "pv.dimension.phase", "phase:L1", "unit.volt"), true
+		case "projection.gateway.pv.inverter.ac.voltage.phase_b":
+			return pv(item, "pv.ac.voltage", "pv.dimension.phase", "phase:L2", "unit.volt"), true
+		case "projection.gateway.pv.inverter.ac.voltage.phase_c":
+			return pv(item, "pv.ac.voltage", "pv.dimension.phase", "phase:L3", "unit.volt"), true
+		case "projection.gateway.pv.inverter.ac.power.active":
+			return pv(item, "pv.ac.aggregate_active_power", "pv.dimension.inverter", "inverter", "unit.watt"), true
+		case "projection.gateway.pv.inverter.ac.frequency":
+			return pv(item, "pv.ac.frequency", "pv.dimension.inverter", "inverter", "unit.hertz"), true
+		case "projection.gateway.pv.inverter.ac.energy_lifetime":
+			return pv(item, "pv.energy.generated", "pv.dimension.system", "system", "unit.kilowatt_hour"), true
+		case "projection.gateway.pv.inverter.temperature.cabinet":
+			return pv(item, "pv.temperature.inverter", "pv.dimension.inverter", "inverter", "unit.celsius"), true
+		case "projection.gateway.pv.inverter.operating_state":
+			return semanticFactSchema{domain: "pv", item: item, pack: pvPack, version: pvVersion, fact: "pv.status.operating", dimensionID: "pv.dimension.inverter", dimensionValue: "inverter", dimensionSuffix: true, symbols: map[string]bool{"generating": true}}, true
 		}
-		return false
 	}
 	if domain == "storage" {
 		switch item {
-		case "storage.capacity.charge", "storage.capacity.discharge", "storage.pack.current", "storage.pack.voltage", "storage.state.soc", "storage.temperature.pack", "storage.status.operating":
-			return true
+		case "storage.capacity.charge", "storage.capacity.discharge":
+			return storage(item, "unit.ampere_hour"), true
+		case "storage.pack.current":
+			return storage(item, "unit.ampere"), true
+		case "storage.pack.voltage":
+			return storage(item, "unit.volt"), true
+		case "storage.state.soc":
+			return storage(item, "unit.percent"), true
+		case "storage.temperature.pack":
+			return storage(item, "unit.celsius"), true
+		case "storage.status.operating":
+			return semanticFactSchema{domain: "storage", item: item, pack: storagePack, version: storageVersion, fact: item, dimensionID: "storage.dimension.pack", symbols: map[string]bool{"active": true, "standby": true}}, true
 		}
 	}
-	return false
+	return semanticFactSchema{}, false
 }
 
 func semanticNumeric(value *semreg.Value) (float64, string, bool) {

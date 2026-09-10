@@ -119,13 +119,60 @@ func TestSemanticPrometheusRejectsDimensionlessFacts(t *testing.T) {
 	}
 }
 
+func TestSemanticPrometheusRejectsCrossSchemaValues(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SemanticMetricsDomain)
+	}{
+		{"boolean-power", func(domain *SemanticMetricsDomain) {
+			value := true
+			domain.Snapshot.Facts[0].Candidates[0].Value = &semreg.Value{Kind: semreg.ValueBoolean, Boolean: &value}
+		}},
+		{"wrong-unit", func(domain *SemanticMetricsDomain) {
+			domain.Snapshot.Facts[0].Candidates[0].Value.Quantity.Unit = "unit.volt"
+		}},
+		{"future-pack", func(domain *SemanticMetricsDomain) {
+			key := domain.Snapshot.Facts[0].Key
+			key.PackVersion = "2.0.0"
+			domain.Snapshot.Facts[0].Key = key
+			domain.Snapshot.Facts[0].Candidates[0].Key = key
+			domain.Projection.Dispositions[0].SourceKeys[0] = key
+		}},
+		{"fact-item-mismatch", func(domain *SemanticMetricsDomain) {
+			key := domain.Snapshot.Facts[0].Key
+			key.FactID = "pv.ac.frequency"
+			domain.Snapshot.Facts[0].Key = key
+			domain.Snapshot.Facts[0].Candidates[0].Key = key
+			domain.Projection.Dispositions[0].SourceKeys[0] = key
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			domain := semanticMetricsFixture("pv", true, semreg.FreshnessFresh, semreg.AvailabilityAvailable, semreg.ValidityGood, 0)
+			tc.mutate(&domain)
+			var out bytes.Buffer
+			writeSemanticMetrics(newPrometheusWriter(&out), []SemanticMetricsDomain{domain}, time.Unix(101, 0))
+			metrics := out.String()
+			if strings.Contains(metrics, "\nhelianthus_semantic_fact_state{") || strings.Contains(metrics, "\nhelianthus_semantic_fact_value{") || strings.Contains(metrics, "unit=\"boolean\"") {
+				t.Fatalf("cross-schema input leaked:\n%s", metrics)
+			}
+			if !strings.Contains(metrics, "helianthus_semantic_render_overflow 1") {
+				t.Fatalf("cross-schema input was not counted:\n%s", metrics)
+			}
+		})
+	}
+}
+
 func semanticMetricsFixture(domain string, available bool, freshness semreg.Freshness, availability semreg.Availability, validity semreg.Validity, conflicts int) SemanticMetricsDomain {
 	dimensionID, dimensionValue, factID := semreg.DefinitionID("pv.dimension.inverter"), "inverter:asset:private", semreg.DefinitionID("pv.ac.aggregate_active_power")
 	unit := semreg.DefinitionID("unit.watt")
 	if domain == "storage" {
 		dimensionID, dimensionValue, factID, unit = "storage.dimension.pack", "storage:asset:private", "storage.pack.voltage", "unit.volt"
 	}
-	key := semreg.FactKey{PackID: "helianthus.pack." + semreg.DefinitionID(domain), PackVersion: "1.0.0", FactID: factID, Dimensions: []semreg.Dimension{{ID: dimensionID, Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}}
+	version := semreg.SemanticVersion("1.0.0")
+	if domain == "storage" {
+		version = "1.1.0"
+	}
+	key := semreg.FactKey{PackID: "helianthus.pack." + semreg.DefinitionID(domain), PackVersion: version, FactID: factID, Dimensions: []semreg.Dimension{{ID: dimensionID, Value: semreg.Value{Kind: semreg.ValueText, Text: &dimensionValue}}}}
 	value := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: "42"}, Unit: unit}}
 	candidate := semreg.FactCandidate{CandidateID: "candidate:test", Key: key, Value: &value, Quality: semreg.Quality{Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: validity}, Times: semreg.Times{ReceivedAt: semreg.TimePoint{UnixNanoseconds: "100000000000", ClockID: "clock.utc"}}}
 	envelope := semreg.FactEnvelope{Key: key, Candidates: []semreg.FactCandidate{candidate}}

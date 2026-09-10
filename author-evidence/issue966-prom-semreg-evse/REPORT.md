@@ -187,3 +187,10 @@ The PR was rebased onto accepted `main` `138eea47`. Rebased source/head
 
 - Rebased focused race: PASS; SHA-256 `c97d0e0fb6f3b4d791bb651028c402440fb2b75d61e6ee8dddfb50b6821b4bda`.
 - Rebased complete CI: PASS; SHA-256 `75957a498b76da22786786f89043b973a80043290716425f95a9d6eb9b0315ad`.
+
+## Publication-wall rollback correction
+
+Source `0879c9781993c00438f37b73dc8b43400823c3f9` rejects a publication whose wall epoch precedes `EvaluatedAt`, because no trustworthy publication-to-evaluation age is available. This preserves the independent configured-current contract by retaining the previous accepted snapshot; the rejected timed allocation cannot be exposed as fresh. The deterministic regression proves no sequence/lifecycle advance.
+
+- Focused race SHA-256: `aee4da1ba3b84ea25ae98037c40a3d47dddcd92c42c19377063e8486cf270498`.
+- Complete CI SHA-256: `61788de4f6092a12727029ffebb00a38fd6bd5dedbbdedc5603a7548ef806a2a`.

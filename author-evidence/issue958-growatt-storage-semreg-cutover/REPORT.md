@@ -16,6 +16,34 @@ This report is committed immediately after the implementation commit so it can
 record its exact immutable HEAD and tree without a self-reference. No remote
 mutation was performed.
 
+## Exact-HEAD review corrections
+
+- Correction code commit: `b8f3fceed4cca4af23d72e4310a26cbd30356795`
+- Correction code tree: `9a2984a9d2e95b3f1a38785aab6d0c87ea286e7d`
+- Reviewed PR discussions: `discussion_r3974190402`,
+  `discussion_r3974190408`, `discussion_r3974190413`, and
+  `discussion_r3974190417`.
+
+The semantic publisher has an asset-local publication cursor. It is independent
+from the native observation revision and advances only when the staged kernel,
+evaluation, projection, and public JSON have all succeeded. Native MCP reads,
+failed native samples, and rejected duplicate publication batches therefore do
+not create a semantic revision gap or replace public state. Concurrent semantic
+reads produce exactly the contiguous revisions 1 through 8.
+
+When a previously promoted active or standby operating state becomes
+`soft_starting`, the batch withdraws its exact prior candidate before projecting
+the explicit withheld disposition. The public snapshot has no operating fact,
+the withheld disposition has no source keys, and the six unrelated accepted
+facts remain. The state transition is covered for active and standby origins;
+the serialized publication path also covers replay and concurrent reads.
+
+Portal bootstrap publishes `semantic_storage_current` with the canonical BFF
+path under both enabled and disabled capability states. GraphQL recognized
+storage-operation contract, asset, quota, and source failures now use the
+`semanticStorageCurrent` error path. Parsing and other pre-operation failures
+use a stable empty path; PV retains `semanticPVCurrent`.
+
 ## Delivered behavior
 
 `GrowattBMSRS485Config` now requires a distinct explicit non-secret `asset_id`
@@ -68,6 +96,17 @@ hostile tests prove an extra `HTTPAddr` line still triggers required evidence.
   conformance, source-specific mapping gate, and passive-smoke classification.
 - Correction CI: `GOWORK=off ./scripts/ci_local.sh` — PASS after the
   reachability and gate-classifier fixes.
+- Exact-HEAD correction focused race: `GOWORK=off go test -race
+  ./cmd/gateway ./mcp ./m2mgraphql ./portal -run
+  'TestGrowattStorage|TestGrowattBMSRS485SemanticStorage|TestSemanticStorage|TestPortalBootstrapPublishes'
+  -count=1` — PASS.
+- Hostile gate controls: `python3 scripts/transport_gate_test.py` (23 PASS)
+  and `python3 scripts/passive_smoke_gate_test.py` (9 PASS); an allowed
+  `PortalStorage`-only diff passes classification and an unrelated config line
+  does not bypass its applicable gate.
+- Exact-HEAD full CI: `GOWORK=off ./scripts/ci_local.sh` — PASS: 168 Python
+  tests, six additional Python suites (6/23/9/6/2), lint with 0 issues, all Go
+  race packages, transport, mapping+SemReg, and passive-smoke gates.
 
 ## Changed files
 

@@ -22,15 +22,13 @@ Validation completed:
 - `GOWORK=off go test . -run TestSemanticPrometheus -count=1` — PASS.
 - `./scripts/growatt_storage_semreg_gate.sh` — PASS: 2 executable outputs and
   13 rejected scenarios; pinned Storage pack test PASS.
-- Earlier focused `GOWORK=off go test -race . ./cmd/gateway
-  ./internal/modbusadapter` passed before the final renderer hardening; the
-  subsequent full focused rerun was interrupted by the pre-existing long suite
-  after the renderer test failure that was fixed locally.
-- `GOWORK=off ./scripts/ci_local.sh` completed all build, race, lint, transport,
-  and Storage mapping stages, then stopped at the repository passive-smoke gate:
-  changing `bus_observability_store.go` structurally requires
-  `PASSIVE_SMOKE_REPORT`. No report was supplied or fabricated because this
-  issue has an explicitly offline/no-live smoke boundary.
+- `GOWORK=off go test -race -count=1 . ./cmd/gateway
+  ./internal/modbusadapter` — PASS (root, gateway, and Modbus adapter).
+- `GOWORK=off ./scripts/ci_local.sh` — PASS: portal 93/93, Go race suite,
+  Python suites including passive gate 10/10, lint 0 issues, transport gate,
+  Storage mapping gate, and the semantic-only passive classifier. The gate
+  remains fail-closed for passive state, locking, or counter changes and does
+  not use a report or override for this detached renderer append.
 
 Documentation gate: required and satisfied by
 `docs/semantic-prometheus-pv-storage-v1.md`. Transport gate: applicable local

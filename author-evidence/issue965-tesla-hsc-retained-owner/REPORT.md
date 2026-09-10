@@ -6,13 +6,17 @@
 - Issue: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/965
 - PR: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/969
 - Branch: `issue/965-tesla-hsc-retained-owner`
-- Base: `c139d0e6ae59b4f925ac02a7cadf09db53278e13`
-- Implementation HEAD: `0d1bb2f9b9a8723f9c7b189df20746ac6e1e2f4e`
-- Implementation tree: `8097ffb2d42fb158d191d9b4df0c8e02e12cdf71`
-- Blocking-findings remediation HEAD:
-  `c5bf9bcbfe61d627393e190a0e04a1be1be4d8eb`
-- Blocking-findings remediation tree:
-  `324d4ee08a6be0c42418311470bfb7ab08e9de61`
+- Accepted base: `138eea47e75b99e008beb24c7ab5938f02690845`
+- Rebased implementation HEAD: `366023a6c717a2ead3521dad544c1e45122895d9`
+- Rebased implementation tree: `739845b260783ff8b7564faa81ff31d844f82c49`
+- Rebased blocking-findings remediation HEAD:
+  `afa79f777d1f9d1a2fc6bbc2e31bf67bd62ef8ef`
+- Rebased blocking-findings remediation tree:
+  `1dd518ff457a1d4a83051bd972c1247524f8accd`
+- Rebased validated source HEAD:
+  `b824e43241c726d7867e69bf25ddb786c266f9cf`
+- Rebased validated source tree:
+  `5068bd638b4b7204038c961b6faee7b73019e385`
 - Registry dependency: `helianthus-modbusreg`
   `v0.6.8-0.20260905063817-ed75fdfbed0d`
 
@@ -64,9 +68,10 @@ write calls, and activation markers in the retained owner.
 
 ## Independent-review remediation
 
-The fresh independent review of PR #969 at `7874714491e9cf533779b3679212316df54a400e`
-reported three blocking findings. Remediation commit
-`c5bf9bcbfe61d627393e190a0e04a1be1be4d8eb` corrects all three:
+The fresh independent review of PR #969 at pre-rebase head
+`7874714491e9cf533779b3679212316df54a400e` reported three blocking findings.
+Rebased remediation commit `afa79f777d1f9d1a2fc6bbc2e31bf67bd62ef8ef`
+preserves the corrections for all three:
 
 - A persistent-only update keeps the provisional native record and its original
   evidence, but omits that unchanged sibling from the combined semantic publish.
@@ -157,6 +162,27 @@ The standalone affected transport gate passed after remediation:
 Log: `/tmp/gateway969-remediation-transport.log`
 SHA-256: `9a30ab58105b974e720096cf42f47338abf11a9a7f9f64081dbd6596c1d9bd5f`
 
+## Accepted-main rebase validation
+
+PR #969 was rebased onto accepted `main`
+`138eea47e75b99e008beb24c7ab5938f02690845`. The validated rebased source was
+`b824e43241c726d7867e69bf25ddb786c266f9cf`, tree
+`5068bd638b4b7204038c961b6faee7b73019e385`.
+
+The rebased focused retained-owner race run passed:
+
+```text
+GOWORK=off go test -race ./cmd/gateway -run 'Test(TeslaHSCRetained|GrowattStoragePortalAvailability)' -count=1
+```
+
+SHA-256: `e839d8ba1dd09c59e48d44f9893750236fed5acf18ba2ec769974301f0b5c717`
+
+The complete repository CI passed on the rebased source, including the full Go
+race suite, all transport and mapping gates, lint, builds, Python checks, and
+passive-smoke classification.
+
+SHA-256: `5a70eaa553e5f72fa12f887a31ed269e6b96d5024572f1fd7a777924bdf063df`
+
 ## Hosted adaptermux failure diagnosis
 
 Hosted run `34512623473`, test job `102990233209`, failed only
@@ -174,11 +200,11 @@ runs the caller's next `close(writeDone)` statement. The hosted assertion
 therefore observes an unprotected caller-side scheduling order, rather than a
 provider call crossing the production fence.
 
-This PR does not modify adaptermux. The deterministic correction belongs to
-open issue #968, which should observe provider return from inside the fake
-transport or another event within the protected call. The remediation's single
-complete local CI run passed the same full adaptermux race suite; no hosted
-retry loop was used.
+This PR does not modify adaptermux. Accepted base
+`138eea47e75b99e008beb24c7ab5938f02690845` contains the deterministic test
+correction merged through PR #970. The complete CI on the rebased source passed
+the full adaptermux race suite and all remaining gates; no hosted retry loop was
+used.
 
 Hosted failure log: `/tmp/gateway969-hosted-test-failure.log`
 SHA-256: `607c4eae1b8b400ec3ae2c9c18b6128f28985a31d8cfaab57f85254947a34871`

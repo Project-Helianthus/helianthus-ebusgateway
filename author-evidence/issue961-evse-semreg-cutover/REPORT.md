@@ -17,6 +17,10 @@
 - Rollback remediation tree: `cf6b976b19fee40140d31b9f4491d1a2cf834e0c`
 - Portal scope-correction source HEAD: `f5bf99fd4623c6cc4ce4ae21923e29e61dbba904`
 - Portal scope-correction source tree: `857cd1bcb1029a69eaba56a487a52da0f836f006`
+- Capability-activation remediation source HEAD:
+  `a358005e8c6d839eef5eaf501d05cd6790380579`
+- Capability-activation remediation source tree:
+  `94ed05b2c77f06885b6bb1b30ebe16bc289a4ec9`
 - Accepted documentation mapping: docs-semantic main
   `88a422896e1dc8c45a6bf629f08b8bff6115c009`, reviewed source
   `c0f105cf83229f58ef71664f9cfd30d24c1b02ac`, tree
@@ -115,6 +119,20 @@ returned wall and monotonic evaluation coordinates. A post-expiry read followed
 by a wall-clock rollback to before expiry is clamped to the prior evaluation and
 remains expired and withheld on both MCP and GraphQL.
 
+## P2 capability-activation remediation
+
+`a358005e8c6d839eef5eaf501d05cd6790380579` removes source-identity-derived
+activation proof. Each qualified, available read capability now carries the
+immutable persistent current-limit record as activation evidence and includes
+the provisional record only when it passes the accepted version, correlation,
+timeout, inhibition, and expiry checks. The capability instance ID remains
+stable while a new accepted native record refreshes its evidence. Invalid
+persistent evidence is rejected before a kernel commit, so it cannot create or
+advance a qualified available capability; rejection preserves the prior
+snapshot. Configured-current publication remains independent of a withheld
+provisional allocation, and no operation, Portal, production composition, or
+native call is added.
+
 ## Public contracts and boundary
 
 - MCP: `semantic.v1.evse.current.get` returns the SemReg
@@ -145,7 +163,10 @@ implementation path is accepted: malformed persistent evidence; missing
 provisional evidence; zero timeout; inhibit state; expiry; replay/collision;
 stable sequential candidate revisions; just-before/equal/after-expiry lifecycle
 boundaries; concurrent read stability; MCP/GraphQL parity; and production
-composition. The focused race suite passed:
+composition. The P2 regression additionally proves that a shared SourceID does
+not synthesize activation, different accepted persistent evidence refreshes the
+stable capability identity's activation evidence, and invalid evidence neither
+creates nor advances capabilities. The focused race suite passed:
 
 ```text
 GOWORK=off go test -race ./mcp ./m2mgraphql ./portal ./cmd/gateway \
@@ -186,6 +207,14 @@ the existing Growatt Storage SemReg mapping gate. The passive-smoke classifier
 reported `not triggered`. The committed-head final log is
 `/tmp/helianthus-ebusgateway-961-portal-removal-ci-committed.log`, SHA-256
 `090aa0c08f2dfe3c702affe8d328f3471efebffd24cd533c4bd184012139f9f8`.
+
+The capability-activation focused race passed with
+`/tmp/helianthus-ebusgateway-961-capability-activation-focused-race.log`,
+SHA-256
+`1f7aa93cb038898b5f98b67f9b2a781d1c7aa1338c725b7edb85346102001157`.
+Complete local CI passed on the capability source head with
+`/tmp/helianthus-ebusgateway-961-capability-activation-ci.log`, SHA-256
+`dd8ccc60d7203c5f853345035d950daac606220ac19a818bbe261396defb308d`.
 
 ## Gate classification
 

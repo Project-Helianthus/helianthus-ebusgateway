@@ -11,9 +11,62 @@ import unittest
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
+CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 
 
 class TransportGateTests(unittest.TestCase):
+
+    storage_config_only = '''// PortalStorageConfig is an independently disabled, read-only BFF for the
+// versioned SemReg storage projection. It deliberately does not expose any
+// operation or native fallback fields.
+type PortalStorageConfig = PortalPVConfig
+
+func (cfg Config) ValidatePortalStorage() error {
+	if cfg.PortalStorage.RawReadEnabled {
+		return errors.New("portal storage configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
+	}
+	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
+	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
+		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 750*time.Millisecond) {
+			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 250ms processing and 500ms response headroom below the M2M server deadline")
+		}
+	}
+	if !cfg.PortalStorage.SemanticEnabled {
+		return nil
+	}
+	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
+		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
+	}
+	if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond) {
+		return errors.New("portal storage semantic BFF requires MaxQuiescence plus four Growatt reads plus 500ms headroom below the M2M deadline")
+	}
+	return nil
+}
+
+// growattStorageOperationFitsDeadline checks the entire public RTU operation:
+// recovery can consume one MaxQuiescence interval before its four serial reads.
+// The subtraction/division formulation avoids overflowing time.Duration while
+// preserving the strict response-deadline boundary.
+func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadline, headroom time.Duration) bool {
+	if maxQuiescence < 0 || responseTimeout <= 0 || deadline <= headroom {
+		return false
+	}
+	budget := deadline - headroom
+	if maxQuiescence >= budget {
+		return false
+	}
+	return responseTimeout <= (budget-maxQuiescence-time.Nanosecond)/4
+}
+
+type Config struct {
+	PortalStorage            PortalStorageConfig
+}
+'''
     def _script_env(self, **extra: str) -> dict[str, str]:
         env = dict(os.environ)
         for key in (
@@ -25,6 +78,66 @@ class TransportGateTests(unittest.TestCase):
             env.pop(key, None)
         env.update(extra)
         return env
+
+    def test_storage_config_allowlist_is_exact(self) -> None:
+        repo_path, _ = self._create_temp_repo("config.go", base_text="type Config struct {\n}\n", modified_text=self.storage_config_only)
+        allowed = subprocess.run(["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
+        self.assertIn("not triggered", allowed.stdout)
+
+        (repo_path / "config.go").write_text(self.storage_config_only + "HTTPAddr string\n", encoding="utf-8")
+        hostile = subprocess.run(["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
+
+        for line in ("return err\n", "return nil\n", "}\n"):
+            (repo_path / "config.go").write_text(self.storage_config_only + line, encoding="utf-8")
+            hostile = subprocess.run(["bash", "scripts/transport_gate.sh"], cwd=repo_path, env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+            self.assertNotEqual(hostile.returncode, 0, line)
+
+        hostile_validators = (
+            self.storage_config_only.replace(
+                "if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {\n",
+                "if producer.AssetID != cfg.PortalStorage.AssetRef {\n",
+            ),
+            self.storage_config_only.replace(
+			"growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond)",
+			"growattStorageOperationFitsDeadline(0, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond)",
+            ),
+			self.storage_config_only.replace("maxQuiescence >= budget", "maxQuiescence > budget"),
+        )
+        for modified in hostile_validators:
+            (repo_path / "config.go").write_text(modified, encoding="utf-8")
+            hostile = subprocess.run(
+                ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(hostile.returncode, 0)
+            self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
+
+        base_other = "type Config struct {\n}\n\nfunc validateOther() error {\n\tif changed {\n\t\treturn err\n\t}\n\treturn nil\n}\n"
+        hostile_others = (
+            "func validateOther() error {\n\tif changed {\n\t\treturn nil\n\t}\n\treturn err\n}\n",
+            "func validateOther() error {\n\treturn err\n}\n",
+            "func validateOther() error {\n\tif changed {\n\t}\n\treturn nil\n}\n",
+        )
+        for modified_other in hostile_others:
+            wrong_hunk_repo, _ = self._create_temp_repo(
+                "config.go",
+                base_text=base_other,
+                modified_text=self.storage_config_only + "\n" + modified_other,
+            )
+            hostile = subprocess.run(
+                ["bash", "scripts/transport_gate.sh"],
+                cwd=wrong_hunk_repo,
+                env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(hostile.returncode, 0, modified_other)
+            self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
 
     def _create_temp_repo(
         self,
@@ -48,6 +161,7 @@ class TransportGateTests(unittest.TestCase):
 
         (repo_path / "scripts").mkdir(parents=True, exist_ok=True)
         shutil.copy2(TRANSPORT_GATE_SCRIPT, repo_path / "scripts" / "transport_gate.sh")
+        shutil.copy2(CONFIG_CLASSIFIER, repo_path / "scripts" / "semreg_public_config_classifier.py")
 
         tracked_file = repo_path / changed_file
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +358,16 @@ class TransportGateTests(unittest.TestCase):
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
+			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/m2m_graphql_config.go", "// base\n", "// modified\n"),
+			("cmd/gateway/portal_pv_client.go", "// base\n", "// modified\n"),
+			("m2mgraphql/handler.go", "// base\n", "// modified\n"),
+			("m2mgraphql/client.go", "// base\n", "// modified\n"),
+			("portal/handler.go", "// base\n", "// modified\n"),
+			("mcp/growatt_storage_semantic.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
@@ -282,7 +405,16 @@ class TransportGateTests(unittest.TestCase):
             ("modbus_config.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_cli.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
+			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
+			("cmd/gateway/m2m_graphql_config.go", "// base\n", "// modified\n"),
+			("cmd/gateway/portal_pv_client.go", "// base\n", "// modified\n"),
+			("m2mgraphql/handler.go", "// base\n", "// modified\n"),
+			("m2mgraphql/client.go", "// base\n", "// modified\n"),
+			("portal/handler.go", "// base\n", "// modified\n"),
+			("mcp/growatt_storage_semantic.go", "// base\n", "// modified\n"),
             ("cmd/gateway/gateway_run_lifecycle.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_endpoint_file.go", "// base\n", "// modified\n"),
             ("cmd/gateway/modbus_mcp_provider.go", "// base\n", "// modified\n"),
@@ -305,6 +437,20 @@ class TransportGateTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
+
+    def test_modbus_rtu_gate_skips_handler_test_only_change(self) -> None:
+        for changed_file in ("m2mgraphql/handler_test.go", "m2mgraphql/client_test.go", "portal/handler_test.go", "cmd/gateway/portal_pv_client_test.go", "cmd/gateway/m2m_graphql_config_test.go", "cmd/gateway/gateway_run_setup_test.go"):
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(
+                    changed_file, "package test\n", "package test\n// changed\n"
+                )
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertIn("transport gate: not triggered.", result.stdout)
 
     def test_modbus_rtu_gate_fails_closed_for_missing_pinned_endpoint_test(self) -> None:
         repo_path, _ = self._create_temp_repo("cmd/gateway/growatt_bms_rs485_runtime.go")

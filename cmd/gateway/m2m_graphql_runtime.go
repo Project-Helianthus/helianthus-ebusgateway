@@ -28,9 +28,13 @@ type m2mGraphQLRuntime struct {
 }
 
 const (
-	m2mHTTPHeaderTimeout    = 5 * time.Second
-	m2mHTTPBodyTimeout      = 10 * time.Second
-	m2mMaxPreTLSConnections = 16
+	m2mHTTPHeaderTimeout     = 5 * time.Second
+	m2mHTTPBodyTimeout       = 10 * time.Second
+	m2mResponseHeadroom      = 500 * time.Millisecond
+	m2mProcessingHeadroom    = 250 * time.Millisecond
+	m2mRequestTimeout        = m2mHTTPBodyTimeout - m2mResponseHeadroom
+	m2mNativeOperationBudget = m2mRequestTimeout - m2mProcessingHeadroom
+	m2mMaxPreTLSConnections  = 16
 )
 
 type boundedM2MListener struct {
@@ -69,11 +73,14 @@ func (connection *boundedM2MConnection) Close() error {
 	return err
 }
 
-func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter) (*m2mGraphQLRuntime, error) {
+func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt ...*growattBMSRS485ProductionProvider) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
 	if err := validateM2MGraphQLConfig(config.M2MGraphQL); err != nil {
+		return nil, err
+	}
+	if err := config.ValidatePortalStorage(); err != nil {
 		return nil, err
 	}
 	tlsConfig, err := newM2MTLSConfig(config.M2MGraphQL)
@@ -97,6 +104,7 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
 			return encoded, err == nil
 		},
+		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt...),
 	})
 	if err != nil {
 		return nil, errors.New("M2M GraphQL handler configuration is invalid")
@@ -107,15 +115,50 @@ func newM2MGraphQLRuntime(config ebusgateway.Config, adapter *modbusadapter.Adap
 	}
 	listener := newBoundedM2MListener(rawListener, m2mMaxPreTLSConnections)
 	runtime := &m2mGraphQLRuntime{listener: listener}
-	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+	verifiedHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
 			response.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))
-	})}
+	})
+	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(verifiedHandler, m2mRequestTimeout)}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
+}
+
+func newM2MRequestDeadlineHandler(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		ctx, cancel := context.WithTimeout(request.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(response, request.WithContext(ctx))
+	})
+}
+
+// newGrowattStorageGraphQLProvider deliberately refreshes through the same
+// serialized native-observation -> SemReg publication transaction as MCP.
+// A GraphQL or Portal reader therefore neither depends on MCP priming nor
+// observes an unevaluated cache entry.
+func newGrowattStorageGraphQLProvider(growatt ...*growattBMSRS485ProductionProvider) func(context.Context, string) (json.RawMessage, bool) {
+	return func(ctx context.Context, asset string) (json.RawMessage, bool) {
+		published, err := currentGrowattStoragePublic(ctx, asset, growatt...)
+		return published, err == nil
+	}
+}
+
+func currentGrowattStoragePublic(ctx context.Context, asset string, growatt ...*growattBMSRS485ProductionProvider) (json.RawMessage, error) {
+	if len(growatt) != 1 || growatt[0] == nil || growatt[0].storage == nil || asset != string(growatt[0].storage.assetID) {
+		return nil, errors.New("growatt BMS storage asset unavailable")
+	}
+	published, err := growatt[0].GrowattStorageSemanticCurrent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(published)
+	if err != nil || !json.Valid(encoded) {
+		return nil, errors.New("growatt BMS storage publication is invalid")
+	}
+	return json.RawMessage(encoded), nil
 }
 
 func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {

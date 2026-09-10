@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -16,6 +17,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +25,8 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
 
 func TestM2MGraphQLRuntime_IsDisabledByDefaultAndSeparateFromGenericHTTP(t *testing.T) {
@@ -85,6 +89,92 @@ func TestM2MGraphQLRuntime_IncompleteEnabledConfigFailsClosed(t *testing.T) {
 	_, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{ListenAddr: "127.0.0.1:0", AllowedAssets: []string{"pv-asset-fixture"}}}, nil)
 	if err == nil {
 		t.Fatal("incomplete enabled M2M configuration started a listener")
+	}
+}
+
+func TestM2MGraphQLRuntime_RejectsGrowattStorageWithoutWriteDeadlineHeadroom(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	growatt := growattProductionConfig()
+	growatt.ResponseTimeout = 9500 * time.Millisecond / 4
+	cfg := ebusgateway.Config{
+		M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+			ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+			ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+			AllowedAssets: []string{"asset:growatt-bms-a"},
+		},
+		ModbusTCPConfig: ebusgateway.ModbusTCPConfig{GrowattBMSRS485: growatt},
+	}
+	if _, err := newM2MGraphQLRuntime(cfg, nil); err == nil {
+		t.Fatal("Growatt Storage M2M runtime accepted four reads without server write-deadline headroom")
+	}
+}
+
+func TestM2MGraphQLRuntime_BoundsStorageProviderContextBelowWriteDeadline(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1, readDeadline: make(chan time.Time, 1), releaseRead: make(chan struct{})}
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile, AllowedAssets: []string{"asset:growatt-bms-a"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil, growatt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	body := []byte(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`)
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certs.pool, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certs.goodClient}}}}
+	result := make(chan error, 1)
+	go func() {
+		response, err := client.Post("https://"+runtime.Addr()+"/graphql/m2m/v1", "application/json", bytes.NewReader(body))
+		if err == nil {
+			_ = response.Body.Close()
+		}
+		result <- err
+	}()
+	select {
+	case deadline := <-fake.readDeadline:
+		if deadline.IsZero() || time.Until(deadline) >= m2mHTTPBodyTimeout {
+			t.Fatalf("storage provider deadline=%s; want bounded below write timeout", deadline)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("storage provider did not start")
+	}
+	close(fake.releaseRead)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("bounded storage request failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bounded storage request did not complete")
+	}
+}
+
+func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testing.T) {
+	const timeout = 80 * time.Millisecond
+	const preProviderWork = 20 * time.Millisecond
+	const providerWork = 20 * time.Millisecond
+	providerCalled := false
+	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{AllowedAssets: map[string]struct{}{"asset:growatt-bms-a": {}}, SemanticStorageCurrent: func(ctx context.Context, _ string) (json.RawMessage, bool) {
+		providerCalled = true
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= providerWork {
+			return nil, false
+		}
+		time.Sleep(providerWork)
+		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), ctx.Err() == nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preProvider := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(preProviderWork); handler.ServeHTTP(w, r) })
+	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
+	request = request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), "principal"))
+	response := httptest.NewRecorder()
+	newM2MRequestDeadlineHandler(preProvider, timeout).ServeHTTP(response, request)
+	if !providerCalled || response.Code != http.StatusOK {
+		t.Fatalf("provider/status=%t/%d body=%s", providerCalled, response.Code, response.Body.String())
 	}
 }
 
@@ -189,6 +279,63 @@ func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailabl
 	}
 	if len(envelope.Errors) != 1 || envelope.Errors[0].Extensions.Code != "SOURCE_UNAVAILABLE" {
 		t.Fatalf("known asset without snapshot response=%+v", envelope)
+	}
+}
+
+func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4, delay: time.Second}
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile, AllowedAssets: []string{"asset:growatt-bms-a"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil, growatt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	dir := t.TempDir()
+	clientCert := writeM2MPEM(t, dir, "portal-client.pem", "CERTIFICATE", certs.goodClient.Certificate[0])
+	clientKey := writeM2MPEM(t, dir, "portal-client-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(certs.goodClient.PrivateKey.(*rsa.PrivateKey)))
+	portalConfig := ebusgateway.PortalStorageConfig{SemanticEnabled: true, M2MURL: "https://localhost:" + strings.TrimPrefix(runtime.Addr(), "127.0.0.1:") + "/graphql/m2m/v1", M2MServerName: "m2m.gateway.test", M2MCAFile: certs.caFile, M2MClientCert: clientCert, M2MClientKey: clientKey, AssetRef: "asset:growatt-bms-a"}
+	forward, err := newPortalStorageClient(portalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := portal.NewHandler(portal.Options{SemanticStorageEnabled: true, SemanticStorage: forward})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/storage/current", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("first Portal->GraphQL storage response=%d body=%s", response.Code, response.Body.String())
+	}
+	if len(fake.calls) != 4 {
+		t.Fatalf("first public read did not perform one native observation: calls=%d", len(fake.calls))
+	}
+	var public map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &public); err != nil {
+		t.Fatal(err)
+	}
+	data, ok := public["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("Portal storage GraphQL response lacks data=%s", response.Body.String())
+	}
+	if _, ok := data["semanticStorageCurrent"]; !ok {
+		t.Fatalf("Portal storage GraphQL parity response=%s", response.Body.String())
+	}
+	before, ok := growatt.storage.Current("asset:growatt-bms-a")
+	if !ok {
+		t.Fatal("first public GraphQL read did not commit current SemReg projection")
+	}
+	fake.mu.Lock()
+	fake.failAt = len(fake.calls)
+	fake.mu.Unlock()
+	if _, ok := newGrowattStorageGraphQLProvider(growatt)(context.Background(), "asset:growatt-bms-a"); ok {
+		t.Fatal("failed native refresh became a public storage result")
+	}
+	after, ok := growatt.storage.Current("asset:growatt-bms-a")
+	if !ok || !bytes.Equal(before, after) {
+		t.Fatal("rejected native refresh replaced the last known good storage projection")
 	}
 }
 

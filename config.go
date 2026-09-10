@@ -122,6 +122,11 @@ type PortalPVConfig struct {
 	AssetRef        string
 }
 
+// PortalStorageConfig is an independently disabled, read-only BFF for the
+// versioned SemReg storage projection. It deliberately does not expose any
+// operation or native fallback fields.
+type PortalStorageConfig = PortalPVConfig
+
 func (config PortalPVConfig) Validate() error {
 	fields := []string{config.M2MURL, config.M2MServerName, config.M2MCAFile, config.M2MClientCert, config.M2MClientKey, config.AssetRef}
 	if !config.SemanticEnabled {
@@ -182,6 +187,48 @@ func (cfg Config) ValidatePortalPV() error {
 		}
 	}
 	return errors.New("portal PV semantic BFF asset is not admitted by the dedicated M2M listener")
+}
+
+func (cfg Config) ValidatePortalStorage() error {
+	if cfg.PortalStorage.RawReadEnabled {
+		return errors.New("portal storage configuration does not permit raw reads")
+	}
+	copy := cfg
+	copy.PortalPV = cfg.PortalStorage
+	if err := copy.ValidatePortalPV(); err != nil {
+		return err
+	}
+	producer := cfg.ModbusTCPConfig.GrowattBMSRS485
+	if producer.Enabled && !cfg.M2MGraphQL.Disabled() {
+		if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 10*time.Second, 750*time.Millisecond) {
+			return errors.New("growatt storage GraphQL requires MaxQuiescence plus four reads plus 250ms processing and 500ms response headroom below the M2M server deadline")
+		}
+	}
+	if !cfg.PortalStorage.SemanticEnabled {
+		return nil
+	}
+	if !producer.Enabled || producer.AssetID != cfg.PortalStorage.AssetRef {
+		return errors.New("portal storage semantic BFF requires the enabled matching Growatt BMS RS-485 producer")
+	}
+	if !growattStorageOperationFitsDeadline(producer.MaxQuiescence, producer.ResponseTimeout, 5*time.Second, 500*time.Millisecond) {
+		return errors.New("portal storage semantic BFF requires MaxQuiescence plus four Growatt reads plus 500ms headroom below the M2M deadline")
+	}
+	return nil
+}
+
+// growattStorageOperationFitsDeadline checks the entire public RTU operation:
+// recovery can consume one MaxQuiescence interval before its four serial reads.
+// The subtraction/division formulation avoids overflowing time.Duration while
+// preserving the strict response-deadline boundary.
+func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadline, headroom time.Duration) bool {
+	if maxQuiescence < 0 || responseTimeout <= 0 || deadline <= headroom {
+		return false
+	}
+	budget := deadline - headroom
+	if maxQuiescence >= budget {
+		return false
+	}
+	return responseTimeout <= (budget-maxQuiescence-time.Nanosecond)/4
 }
 
 func (config M2MGraphQLConfig) Disabled() bool {
@@ -256,6 +303,7 @@ type Config struct {
 	EEBusConfig              EEBusConfig
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig
+	PortalStorage            PortalStorageConfig
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool

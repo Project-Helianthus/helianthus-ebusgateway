@@ -45,9 +45,9 @@ requires_passive_smoke_gate() {
   return 1
 }
 
-# The SemReg PV M2M listener's allowlist cleanup is public API configuration.
+# SemReg public M2M listener configuration is public API configuration.
 # It neither opens a passive source nor changes passive capture behavior.
-semreg_pv_config_only() {
+semreg_public_config_only() {
   local changes line trimmed
   changes="$({
     git diff --unified=0 "${base_ref}...HEAD" -- config.go
@@ -55,6 +55,10 @@ semreg_pv_config_only() {
     git diff --unified=0 -- config.go
   } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
   [[ -n "${changes}" ]] || return 1
+	if grep -Fq "PortalStorage" <<< "${changes}"; then
+		python3 scripts/semreg_public_config_classifier.py "${base_ref}"
+		return
+	fi
 	while IFS= read -r line; do
 		trimmed="${line#"${line%%[![:space:]]*}"}"
 		trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
@@ -201,7 +205,7 @@ while IFS= read -r file; do
     requires_gate=1
     break
   fi
-  if [[ "${file}" == "config.go" ]] && semreg_pv_config_only; then
+  if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
     continue
   fi
   if requires_passive_smoke_gate "${file}"; then

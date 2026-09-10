@@ -50,6 +50,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&inputs.modbusEndpointFile, "modbus-tcp-endpoint-file", "", "path to an owner-only file containing the Modbus TCP endpoint URI")
 	fs.DurationVar(&cfg.ModbusTCPConfig.DialTimeout, "modbus-tcp-dial-timeout", cfg.ModbusTCPConfig.DialTimeout, "Modbus TCP dial timeout")
 	fs.BoolVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "growatt-bms-rs485-enabled", cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, "enable the exact read-only Growatt BMS RS-485 V2.02 observer")
+	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "growatt-bms-rs485-asset-id", cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, "explicit non-secret stable Growatt BMS semantic asset identity")
 	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID, "growatt-bms-rs485-source-id", cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID, "explicit non-secret Growatt BMS source identity")
 	fs.StringVar(&cfg.ModbusTCPConfig.GrowattBMSRS485.SourceEpoch, "growatt-bms-rs485-source-epoch", cfg.ModbusTCPConfig.GrowattBMSRS485.SourceEpoch, "explicit Growatt BMS source epoch")
 	fs.Uint64Var(&cfg.ModbusTCPConfig.GrowattBMSRS485.DriverGeneration, "growatt-bms-rs485-driver-generation", cfg.ModbusTCPConfig.GrowattBMSRS485.DriverGeneration, "explicit Growatt BMS driver generation")

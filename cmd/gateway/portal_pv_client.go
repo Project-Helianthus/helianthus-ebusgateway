@@ -10,6 +10,14 @@ import (
 )
 
 func newPortalPVClient(config ebusgateway.PortalPVConfig) (func(context.Context) (portal.ForwardedResponse, error), error) {
+	return newPortalSemanticClient(config, false)
+}
+
+func newPortalStorageClient(config ebusgateway.PortalStorageConfig) (func(context.Context) (portal.ForwardedResponse, error), error) {
+	return newPortalSemanticClient(config, true)
+}
+
+func newPortalSemanticClient(config ebusgateway.PortalPVConfig, storage bool) (func(context.Context) (portal.ForwardedResponse, error), error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -24,7 +32,13 @@ func newPortalPVClient(config ebusgateway.PortalPVConfig) (func(context.Context)
 		return nil, errors.New("portal PV M2M client is invalid")
 	}
 	return func(ctx context.Context) (portal.ForwardedResponse, error) {
-		response, err := client.Current(ctx)
+		var response m2mgraphql.Response
+		var err error
+		if storage {
+			response, err = client.StorageCurrent(ctx)
+		} else {
+			response, err = client.Current(ctx)
+		}
 		if err != nil {
 			return portal.ForwardedResponse{}, err
 		}

@@ -208,6 +208,59 @@ func TestTeslaGen3EVSESemanticPublicationReevaluatesProvisionalExpiryWithMCPGrap
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := base.Add(30 * time.Second)
+	p.now = func() time.Time { return now }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	provisional, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{OperationVersion: modbusreg.TeslaGen3CurrentLimitOperationVersion24443, LimitCurrentMaxAmps: 16, LimitTimeoutSeconds: 60, SetRequestPayload: source.Provisional.SetRequestPayload(), AckPayload: source.Provisional.AckPayload(), ReadbackRequestPayload: source.Provisional.ReadbackRequestPayload(), ReadbackTerminalPayload: source.Provisional.ReadbackTerminalPayload()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.Provisional = &provisional
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:delayed", ObservedAt: base, EvaluatedAt: now, MonotonicNS: 100, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	allocated := teslaGen3EVSECandidate(t, p.current, "evse.limit.allocated_current")
+	if allocated.Times.ReceiptMonotonic.Nanoseconds != "100" || allocated.Times.EvaluateMonotonic.Nanoseconds != "30000000100" || string(allocated.Times.EvaluatedAt.UnixNanoseconds) != strconv.FormatInt(now.UnixNano(), 10) {
+		t.Fatalf("delayed coordinates=%+v", allocated.Times)
+	}
+	mcpHandler := teslaGen3EVSEMCPHandler(t, p)
+	graphqlHandler := teslaGen3EVSEGraphQLHandler(t, p)
+	for _, tc := range []struct {
+		name, freshness string
+		now             time.Time
+		withheld        bool
+	}{
+		{name: "before wall expiry", now: base.Add(59 * time.Second), freshness: `"freshness":"fresh"`},
+		{name: "at wall expiry", now: base.Add(60 * time.Second), freshness: `"freshness":"stale"`, withheld: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now = tc.now
+			mcpData := teslaGen3EVSEMCPCurrent(t, mcpHandler)
+			graphqlData := teslaGen3EVSEGraphQLCurrent(t, graphqlHandler, "delayed-"+tc.name)
+			var mcpJSON, graphqlJSON any
+			if err := json.Unmarshal(mcpData, &mcpJSON); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(graphqlData, &graphqlJSON); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(mcpJSON, graphqlJSON) {
+				t.Fatalf("MCP/GraphQL delayed-ingestion divergence\nMCP: %s\nGraphQL: %s", mcpData, graphqlData)
+			}
+			encoded := string(mcpData)
+			if !strings.Contains(encoded, tc.freshness) || strings.Contains(encoded, "withheld_provisional_expired") != tc.withheld {
+				t.Fatalf("delayed lifecycle freshness=%q withheld=%t: %s", tc.freshness, tc.withheld, encoded)
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationConcurrentExpiryReadsRemainStable(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	now := time.Date(2026, 9, 10, 12, 11, 0, 0, time.UTC)
@@ -263,6 +316,19 @@ func teslaGen3EVSECandidateRevisions(t *testing.T, snapshot semreg.Snapshot) map
 		}
 	}
 	return revisions
+}
+
+func teslaGen3EVSECandidate(t *testing.T, snapshot semreg.Snapshot, factID semreg.DefinitionID) semreg.FactCandidate {
+	t.Helper()
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			if candidate.Key.FactID == factID {
+				return candidate
+			}
+		}
+	}
+	t.Fatalf("candidate %q missing", factID)
+	return semreg.FactCandidate{}
 }
 
 func teslaGen3EVSECandidateIDs(revisions map[semreg.CandidateID]semreg.Uint64) []semreg.CandidateID {

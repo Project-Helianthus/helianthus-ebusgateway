@@ -597,11 +597,12 @@ func teslaGen3EVSEReadMonotonic(base semreg.MonotonicPoint, elapsed time.Duratio
 }
 
 // teslaGen3EVSEPublicationScrapeMonotonic carries immutable evidence age into
-// an immediate scrape after delayed publication. A backward publication wall
-// coordinate stays at the evidence floor and cannot make the record younger.
+// an immediate scrape after delayed publication. Without a trustworthy
+// same-epoch monotonic publication coordinate, a backward wall coordinate
+// cannot establish elapsed age and must fail closed.
 func teslaGen3EVSEPublicationScrapeMonotonic(evaluation semreg.MonotonicPoint, evaluatedAt, publishedAt time.Time) (semreg.MonotonicPoint, error) {
 	if publishedAt.Before(evaluatedAt) {
-		return evaluation, nil
+		return semreg.MonotonicPoint{}, errors.New("tesla Gen3 EVSE publication wall clock precedes evaluation")
 	}
 	return teslaGen3EVSEReadMonotonic(evaluation, publishedAt.Sub(evaluatedAt))
 }

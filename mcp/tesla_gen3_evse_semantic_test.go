@@ -844,6 +844,25 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDela
 	}
 }
 
+func TestTeslaGen3EVSESemanticPublicationRejectsPublicationWallRollback(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.now = func() time.Time { return base }
+	p.readClock = func() (uint64, error) { return 0, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	source.Provisional = teslaGen3EVSEProvisionalForTest(t, source, 60, false)
+	err = p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:rollback-publication", ObservedAt: base.Add(time.Minute), EvaluatedAt: base.Add(time.Minute), MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1})
+	if err == nil {
+		t.Fatal("publication wall rollback was accepted")
+	}
+	if p.sequence != 0 {
+		t.Fatal("rejected rollback publication advanced state")
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())

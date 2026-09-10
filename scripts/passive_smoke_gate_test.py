@@ -225,6 +225,27 @@ type Config struct {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
+    def test_bus_observability_semreg_append_is_only_exception(self) -> None:
+        allowed = '''type BusObservabilityStore struct {
+ semanticMetricsProvider func() []SemanticMetricsDomain
+}
+func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func() []SemanticMetricsDomain) {
+ store.semanticMetricsProvider = provider
+}
+func (store *BusObservabilityStore) RenderPrometheus() {
+ semanticMetricsProvider := store.semanticMetricsProvider
+ semanticDomains := semanticMetricsProvider()
+ writeSemanticMetrics(writer, semanticDomains, now)
+}
+'''
+        repo_path, _ = self._create_temp_repo("bus_observability_store.go", base_text="type BusObservabilityStore struct {}\n", modified_text=allowed)
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        (repo_path / "bus_observability_store.go").write_text(allowed + "func (store *BusObservabilityStore) MutatePassive() { store.passive.state = \"unsafe\" }\n", encoding="utf-8")
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
     def test_passive_smoke_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

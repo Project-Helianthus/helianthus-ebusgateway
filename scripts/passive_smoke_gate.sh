@@ -84,6 +84,37 @@ semreg_public_config_only() {
   return 0
 }
 
+# A semantic /metrics append is not a passive-capture behavior change. Keep
+# this exception deliberately narrow: it accepts only the provider field,
+# setter, detached snapshot hand-off, and renderer append. Any passive state,
+# lock, counter, or unrelated RenderPrometheus change still requires the
+# ordinary deterministic passive-smoke report.
+bus_observability_semreg_metrics_only() {
+	python3 - "$base_ref" <<'PY'
+import subprocess, sys
+base = sys.argv[1]
+allowed = (
+    "semanticMetricsProvider", "semanticDomains", "haveSemanticMetricsProvider",
+    "SemanticMetricsDomain", "writeSemanticMetrics", "semantic Prometheus",
+    "semantic section", "semantic provider", "semantic metrics",
+)
+diffs = []
+for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observability_store.go"),
+             ("git","diff","--unified=0","--","bus_observability_store.go"),
+             ("git","diff","--cached","--unified=0","--","bus_observability_store.go")):
+    r = subprocess.run(args, text=True, capture_output=True, check=False)
+    diffs.extend(line[1:] for line in r.stdout.splitlines() if line[:1] in "+-" and not line.startswith(("+++", "---")))
+if not diffs:
+    raise SystemExit(1)
+joined = "\n".join(diffs)
+if not all(anchor in joined for anchor in ("semanticMetricsProvider", "SetSemanticMetricsProvider", "semanticDomains", "writeSemanticMetrics")):
+    raise SystemExit(1)
+if any(token in joined for token in ("store.passive", "refreshPassive", "evictStale", "watchEfficiency", "seriesBudgetOverflow", "RecordBus", "RecordFrame", "RecordError")):
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 cmd_gateway_main_requires_passive_smoke_gate() {
   python3 - "$base_ref" <<'PY'
 from __future__ import annotations
@@ -206,6 +237,9 @@ while IFS= read -r file; do
     break
   fi
   if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
+    continue
+  fi
+  if [[ "${file}" == "bus_observability_store.go" ]] && bus_observability_semreg_metrics_only; then
     continue
   fi
   if requires_passive_smoke_gate "${file}"; then

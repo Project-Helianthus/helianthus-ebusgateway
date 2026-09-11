@@ -24,6 +24,9 @@ func Decode(data []byte) (Manifest, error) {
 	if len(data) > MaxManifestBytes {
 		return Manifest{}, fmt.Errorf("manifest exceeds %d bytes", MaxManifestBytes)
 	}
+	if !utf8.Valid(data) {
+		return Manifest{}, fmt.Errorf("manifest contains invalid UTF-8")
+	}
 	var raw any
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return Manifest{}, err
@@ -33,6 +36,9 @@ func Decode(data []byte) (Manifest, error) {
 	}
 	if _, ok := raw.(map[string]any); !ok {
 		return Manifest{}, fmt.Errorf("closed manifest: top-level value must be an object")
+	}
+	if err := requireManifestMembers(raw.(map[string]any)); err != nil {
+		return Manifest{}, err
 	}
 	if err := rejectForbidden(raw); err != nil {
 		return Manifest{}, err
@@ -47,6 +53,144 @@ func Decode(data []byte) (Manifest, error) {
 		return Manifest{}, err
 	}
 	return m, nil
+}
+
+func requiredObject(value any, path string, names ...string) (map[string]any, error) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("closed manifest: required object %s is absent or not an object", path)
+	}
+	for _, name := range names {
+		if _, ok := object[name]; !ok {
+			return nil, fmt.Errorf("closed manifest: missing required member %s.%s", path, name)
+		}
+	}
+	return object, nil
+}
+func requiredArray(value any, path string) ([]any, error) {
+	array, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("closed manifest: required array %s is absent or not an array", path)
+	}
+	return array, nil
+}
+func requireRef(value any, path string) error {
+	object, err := requiredObject(value, path, "pack", "id", "version")
+	if err != nil {
+		return err
+	}
+	_, err = requiredObject(object["pack"], path+".pack", "id", "version")
+	return err
+}
+func requireLabel(value any, path string) error {
+	_, err := requiredObject(value, path, "key", "default")
+	return err
+}
+func requireManifestMembers(root map[string]any) error {
+	if _, err := requiredObject(root, "manifest", "contract", "manifest_id", "manifest_version", "contributor", "requires", "groups", "fields", "views", "actions", "diagnostics"); err != nil {
+		return err
+	}
+	contributor, err := requiredObject(root["contributor"], "contributor", "driver_id", "native_contract")
+	if err != nil {
+		return err
+	}
+	if _, err = requiredObject(contributor["native_contract"], "contributor.native_contract", "owner", "contract", "version"); err != nil {
+		return err
+	}
+	requires, err := requiredObject(root["requires"], "requires", "semantic_kernel", "packs")
+	if err != nil {
+		return err
+	}
+	packs, err := requiredArray(requires["packs"], "requires.packs")
+	if err != nil {
+		return err
+	}
+	for i, item := range packs {
+		if _, err := requiredObject(item, fmt.Sprintf("requires.packs[%d]", i), "id", "version"); err != nil {
+			return err
+		}
+	}
+	groups, err := requiredArray(root["groups"], "groups")
+	if err != nil {
+		return err
+	}
+	for i, item := range groups {
+		object, err := requiredObject(item, fmt.Sprintf("groups[%d]", i), "id", "label", "resource_context", "order")
+		if err != nil {
+			return err
+		}
+		if err := requireLabel(object["label"], fmt.Sprintf("groups[%d].label", i)); err != nil {
+			return err
+		}
+	}
+	fields, err := requiredArray(root["fields"], "fields")
+	if err != nil {
+		return err
+	}
+	for i, item := range fields {
+		object, err := requiredObject(item, fmt.Sprintf("fields[%d]", i), "id", "group", "label", "ref", "service_ref", "capability_ref", "unit_ref", "order")
+		if err != nil {
+			return err
+		}
+		if err := requireLabel(object["label"], fmt.Sprintf("fields[%d].label", i)); err != nil {
+			return err
+		}
+		for _, name := range []string{"ref", "service_ref", "capability_ref", "unit_ref"} {
+			if err := requireRef(object[name], fmt.Sprintf("fields[%d].%s", i, name)); err != nil {
+				return err
+			}
+		}
+	}
+	views, err := requiredArray(root["views"], "views")
+	if err != nil {
+		return err
+	}
+	for i, item := range views {
+		object, err := requiredObject(item, fmt.Sprintf("views[%d]", i), "id", "group", "label", "renderer", "slot", "field_ids", "diagnostic_ids", "order")
+		if err != nil {
+			return err
+		}
+		if err := requireLabel(object["label"], fmt.Sprintf("views[%d].label", i)); err != nil {
+			return err
+		}
+		for _, name := range []string{"field_ids", "diagnostic_ids"} {
+			if _, err := requiredArray(object[name], fmt.Sprintf("views[%d].%s", i, name)); err != nil {
+				return err
+			}
+		}
+	}
+	actions, err := requiredArray(root["actions"], "actions")
+	if err != nil {
+		return err
+	}
+	for i, item := range actions {
+		object, err := requiredObject(item, fmt.Sprintf("actions[%d]", i), "id", "group", "label", "operation_ref", "capability_ref", "service_ref", "argument_ref", "effect_ref", "order")
+		if err != nil {
+			return err
+		}
+		if err := requireLabel(object["label"], fmt.Sprintf("actions[%d].label", i)); err != nil {
+			return err
+		}
+		for _, name := range []string{"operation_ref", "capability_ref", "service_ref", "argument_ref", "effect_ref"} {
+			if err := requireRef(object[name], fmt.Sprintf("actions[%d].%s", i, name)); err != nil {
+				return err
+			}
+		}
+	}
+	diagnostics, err := requiredArray(root["diagnostics"], "diagnostics")
+	if err != nil {
+		return err
+	}
+	for i, item := range diagnostics {
+		object, err := requiredObject(item, fmt.Sprintf("diagnostics[%d]", i), "id", "group", "label", "member_id", "kind", "order")
+		if err != nil {
+			return err
+		}
+		if err := requireLabel(object["label"], fmt.Sprintf("diagnostics[%d].label", i)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -236,10 +380,10 @@ func ref(r DefinitionRef, packs []PackRef, index SemanticIndex) error {
 		return err
 	}
 	if r.Pack.ID == "" || r.Pack.Version == "" || !containsPack(packs, r.Pack) {
-		return fmt.Errorf("reference has undeclared pack %s", r.Pack.Key())
+		return fmt.Errorf("reference has undeclared pack %q@%q", r.Pack.ID, r.Pack.Version)
 	}
 	if !index.HasDefinition(r) {
-		return fmt.Errorf("dangling reference %s", r.Key())
+		return fmt.Errorf("dangling reference %q@%q/%q@%q", r.Pack.ID, r.Pack.Version, r.ID, r.Version)
 	}
 	return nil
 }
@@ -252,7 +396,7 @@ func containsPack(packs []PackRef, want PackRef) bool {
 	return false
 }
 func uniquePacks(packs []PackRef, index SemanticIndex) error {
-	seen := map[string]bool{}
+	seen := map[packKey]bool{}
 	for _, p := range packs {
 		if err := id("pack id", p.ID); err != nil {
 			return err
@@ -260,12 +404,12 @@ func uniquePacks(packs []PackRef, index SemanticIndex) error {
 		if err := version("pack version", p.Version); err != nil {
 			return err
 		}
-		if seen[p.Key()] {
-			return fmt.Errorf("duplicate pack %s", p.Key())
+		if seen[asPackKey(p)] {
+			return fmt.Errorf("duplicate pack %q@%q", p.ID, p.Version)
 		}
-		seen[p.Key()] = true
+		seen[asPackKey(p)] = true
 		if !index.HasPack(p) {
-			return fmt.Errorf("wrong or unresolved pack %s", p.Key())
+			return fmt.Errorf("wrong or unresolved pack %q@%q", p.ID, p.Version)
 		}
 	}
 	return nil
@@ -434,12 +578,14 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 type Registry struct {
 	mu        sync.Mutex
 	index     SemanticIndex
-	digests   map[string]string
-	conflicts map[string]bool
+	digests   map[registryKey]string
+	conflicts map[registryKey]bool
 }
 
+type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
+
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[string]string{}, conflicts: map[string]bool{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}}
 }
 
 // Accept derives the authoritative digest from the validated canonical
@@ -453,16 +599,16 @@ func (r *Registry) Accept(m Manifest, suppliedDigest string) error {
 	if err != nil {
 		return err
 	}
-	key := m.Contributor.DriverID + "|" + m.ManifestID + "|" + m.ManifestVersion
+	key := registryKey{m.Contributor.DriverID, m.ManifestID, m.ManifestVersion}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.conflicts[key] {
-		return fmt.Errorf("manifest digest conflict for %s", key)
+		return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
 	}
 	if prior, ok := r.digests[key]; ok && prior != digest {
 		r.conflicts[key] = true
 		delete(r.digests, key)
-		return fmt.Errorf("manifest digest conflict for %s", key)
+		return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
 	}
 	r.digests[key] = digest
 	return nil
@@ -479,6 +625,9 @@ func CanonicalDigest(m Manifest, index SemanticIndex) (string, error) {
 	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return "", fmt.Errorf("canonical descriptor encoding: %w", err)
+	}
+	if len(encoded) > MaxManifestBytes {
+		return "", fmt.Errorf("canonical manifest exceeds %d bytes", MaxManifestBytes)
 	}
 	sum := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
@@ -513,7 +662,15 @@ func Canonicalize(m Manifest, index SemanticIndex) (Manifest, error) {
 	for i := range out.Views {
 		out.Views[i].FieldIDs = append([]string(nil), out.Views[i].FieldIDs...)
 		out.Views[i].DiagnosticIDs = append([]string(nil), out.Views[i].DiagnosticIDs...)
+		sort.Strings(out.Views[i].FieldIDs)
+		sort.Strings(out.Views[i].DiagnosticIDs)
 	}
+	sort.Slice(out.Requires.Packs, func(i, j int) bool {
+		if out.Requires.Packs[i].ID != out.Requires.Packs[j].ID {
+			return out.Requires.Packs[i].ID < out.Requires.Packs[j].ID
+		}
+		return out.Requires.Packs[i].Version < out.Requires.Packs[j].Version
+	})
 	sort.Slice(out.Groups, func(i, j int) bool {
 		return ordered(out.Groups[i].Order, out.Groups[i].ID, out.Groups[j].Order, out.Groups[j].ID)
 	})

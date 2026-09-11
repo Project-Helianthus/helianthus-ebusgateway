@@ -52,6 +52,16 @@ catalog generation. A rejected
 manifest is isolated to that contribution; Portal Core and other valid drivers
 remain available.
 
+The wire decoder rejects invalid UTF-8 before JSON parsing, duplicate object
+keys, non-object top-level values, unknown members, and every missing member
+required by the schema; deliberately empty arrays and a present `order: 0` are
+preserved as distinct valid wire values.
+Canonical order is `(order,id)` for descriptor records, `(id,version)` for
+required PackRefs, and lexical identifier order for view field/diagnostic
+reference lists. Direct typed admission applies the same 256 KiB bound to the
+trusted canonical JSON encoding. Registry and fixture-index lookups use typed
+tuples, never delimiter-concatenated identity strings.
+
 ## Truth and actions
 
 Semantic availability, freshness, validity, qualification, promotion, conflict,

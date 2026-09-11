@@ -20,23 +20,17 @@ type PackRef struct {
 	Version string `json:"version"`
 }
 
-func (p PackRef) Key() string { return p.ID + "@" + p.Version }
-
 type DefinitionRef struct {
 	Pack    PackRef `json:"pack"`
 	ID      string  `json:"id"`
 	Version string  `json:"version"`
 }
 
-func (r DefinitionRef) Key() string { return r.Pack.Key() + "/" + r.ID + "@" + r.Version }
-
 type NativeContractRef struct {
 	Owner    string `json:"owner"`
 	Contract string `json:"contract"`
 	Version  string `json:"version"`
 }
-
-func (r NativeContractRef) Key() string { return r.Owner + "/" + r.Contract + "@" + r.Version }
 
 type Label struct {
 	Key     string `json:"key"`
@@ -131,30 +125,52 @@ type SemanticIndex interface {
 // StaticIndex is deliberately small and useful for deterministic fixtures.
 // Production composition must provide a current SemReg-backed SemanticIndex.
 type StaticIndex struct {
-	Packs               map[string]bool
-	Definitions         map[string]bool
-	Units               map[string]DefinitionRef
-	ServiceCapabilities map[string]bool
-	FieldRelations      map[string]bool
-	Operations          map[string]bool
-	NativeMembers       map[string]bool
+	Packs               map[packKey]bool
+	Definitions         map[definitionKey]bool
+	Units               map[definitionKey]DefinitionRef
+	ServiceCapabilities map[serviceCapabilityKey]bool
+	FieldRelations      map[fieldRelationKey]bool
+	Operations          map[operationKey]bool
+	NativeMembers       map[nativeMemberKey]bool
 }
 
-func (s StaticIndex) HasPack(p PackRef) bool             { return s.Packs[p.Key()] }
-func (s StaticIndex) HasDefinition(r DefinitionRef) bool { return s.Definitions[r.Key()] }
+type packKey struct{ ID, Version string }
+type definitionKey struct {
+	Pack        packKey
+	ID, Version string
+}
+type serviceCapabilityKey struct{ Service, Capability definitionKey }
+type fieldRelationKey struct{ Field, Service, Capability definitionKey }
+type operationKey struct{ Operation, Capability, Service, Argument, Effect definitionKey }
+type nativeContractKey struct{ Owner, Contract, Version string }
+type nativeMemberKey struct {
+	Contract nativeContractKey
+	Kind, ID string
+}
+
+func asPackKey(p PackRef) packKey { return packKey(p) }
+func asDefinitionKey(r DefinitionRef) definitionKey {
+	return definitionKey{asPackKey(r.Pack), r.ID, r.Version}
+}
+func asNativeContractKey(r NativeContractRef) nativeContractKey {
+	return nativeContractKey(r)
+}
+
+func (s StaticIndex) HasPack(p PackRef) bool             { return s.Packs[asPackKey(p)] }
+func (s StaticIndex) HasDefinition(r DefinitionRef) bool { return s.Definitions[asDefinitionKey(r)] }
 func (s StaticIndex) CanonicalUnit(r DefinitionRef) (DefinitionRef, bool) {
-	u, ok := s.Units[r.Key()]
+	u, ok := s.Units[asDefinitionKey(r)]
 	return u, ok
 }
 func (s StaticIndex) ServiceOwnsCapability(service, capability DefinitionRef) bool {
-	return s.ServiceCapabilities[service.Key()+"|"+capability.Key()]
+	return s.ServiceCapabilities[serviceCapabilityKey{asDefinitionKey(service), asDefinitionKey(capability)}]
 }
 func (s StaticIndex) FieldMatches(field, service, capability DefinitionRef) bool {
-	return s.FieldRelations[field.Key()+"|"+service.Key()+"|"+capability.Key()]
+	return s.FieldRelations[fieldRelationKey{asDefinitionKey(field), asDefinitionKey(service), asDefinitionKey(capability)}]
 }
 func (s StaticIndex) OperationMatches(operation, capability, service, argument, effect DefinitionRef) bool {
-	return s.Operations[operation.Key()+"|"+capability.Key()+"|"+service.Key()+"|"+argument.Key()+"|"+effect.Key()]
+	return s.Operations[operationKey{asDefinitionKey(operation), asDefinitionKey(capability), asDefinitionKey(service), asDefinitionKey(argument), asDefinitionKey(effect)}]
 }
 func (s StaticIndex) HasNativeMember(contract NativeContractRef, kind, id string) bool {
-	return s.NativeMembers[contract.Key()+"|"+kind+"|"+id]
+	return s.NativeMembers[nativeMemberKey{asNativeContractKey(contract), kind, id}]
 }

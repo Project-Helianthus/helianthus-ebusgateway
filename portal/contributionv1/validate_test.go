@@ -74,36 +74,36 @@ func readFixture(t *testing.T, name string, into any) {
 }
 
 func indexFromCatalog(c fixtureCatalog) StaticIndex {
-	s := StaticIndex{Packs: map[string]bool{}, Definitions: map[string]bool{}, Units: map[string]DefinitionRef{}, ServiceCapabilities: map[string]bool{}, FieldRelations: map[string]bool{}, Operations: map[string]bool{}, NativeMembers: map[string]bool{}}
+	s := StaticIndex{Packs: map[packKey]bool{}, Definitions: map[definitionKey]bool{}, Units: map[definitionKey]DefinitionRef{}, ServiceCapabilities: map[serviceCapabilityKey]bool{}, FieldRelations: map[fieldRelationKey]bool{}, Operations: map[operationKey]bool{}, NativeMembers: map[nativeMemberKey]bool{}}
 	for _, p := range c.Index.Packs {
-		s.Packs[p.Key()] = true
+		s.Packs[asPackKey(p)] = true
 	}
 	for _, r := range c.Index.Definitions {
-		s.Definitions[r.Key()] = true
+		s.Definitions[asDefinitionKey(r)] = true
 	}
 	for _, f := range c.Index.Fields {
-		s.Definitions[f.Ref.Key()] = true
-		s.Definitions[f.UnitRef.Key()] = true
-		s.Definitions[f.ServiceRef.Key()] = true
-		s.Definitions[f.CapabilityRef.Key()] = true
-		s.Units[f.Ref.Key()] = f.UnitRef
-		s.FieldRelations[f.Ref.Key()+"|"+f.ServiceRef.Key()+"|"+f.CapabilityRef.Key()] = true
+		s.Definitions[asDefinitionKey(f.Ref)] = true
+		s.Definitions[asDefinitionKey(f.UnitRef)] = true
+		s.Definitions[asDefinitionKey(f.ServiceRef)] = true
+		s.Definitions[asDefinitionKey(f.CapabilityRef)] = true
+		s.Units[asDefinitionKey(f.Ref)] = f.UnitRef
+		s.FieldRelations[fieldRelationKey{asDefinitionKey(f.Ref), asDefinitionKey(f.ServiceRef), asDefinitionKey(f.CapabilityRef)}] = true
 	}
 	for _, v := range c.Index.ServiceCapabilities {
-		s.Definitions[v.Service.Key()] = true
-		s.Definitions[v.Capability.Key()] = true
-		s.ServiceCapabilities[v.Service.Key()+"|"+v.Capability.Key()] = true
+		s.Definitions[asDefinitionKey(v.Service)] = true
+		s.Definitions[asDefinitionKey(v.Capability)] = true
+		s.ServiceCapabilities[serviceCapabilityKey{asDefinitionKey(v.Service), asDefinitionKey(v.Capability)}] = true
 	}
 	for _, v := range c.Index.Operations {
-		s.Definitions[v.Operation.Key()] = true
-		s.Definitions[v.Capability.Key()] = true
-		s.Definitions[v.Service.Key()] = true
-		s.Definitions[v.Argument.Key()] = true
-		s.Definitions[v.Effect.Key()] = true
-		s.Operations[v.Operation.Key()+"|"+v.Capability.Key()+"|"+v.Service.Key()+"|"+v.Argument.Key()+"|"+v.Effect.Key()] = true
+		s.Definitions[asDefinitionKey(v.Operation)] = true
+		s.Definitions[asDefinitionKey(v.Capability)] = true
+		s.Definitions[asDefinitionKey(v.Service)] = true
+		s.Definitions[asDefinitionKey(v.Argument)] = true
+		s.Definitions[asDefinitionKey(v.Effect)] = true
+		s.Operations[operationKey{asDefinitionKey(v.Operation), asDefinitionKey(v.Capability), asDefinitionKey(v.Service), asDefinitionKey(v.Argument), asDefinitionKey(v.Effect)}] = true
 	}
 	for _, v := range c.Index.NativeMembers {
-		s.NativeMembers[v.Contract.Key()+"|"+v.Kind+"|"+v.ID] = true
+		s.NativeMembers[nativeMemberKey{asNativeContractKey(v.Contract), v.Kind, v.ID}] = true
 	}
 	return s
 }
@@ -283,6 +283,108 @@ func TestDecodeRejectsTopLevelNull(t *testing.T) {
 	}
 }
 
+func TestDecodeRequiresSchemaMembers(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	base := rawManifest(t, c.Manifests[0])
+	cases := []struct {
+		name   string
+		remove func(map[string]any)
+	}{
+		{"top-level-contract", func(v map[string]any) { delete(v, "contract") }},
+		{"top-level-manifest-id", func(v map[string]any) { delete(v, "manifest_id") }},
+		{"top-level-manifest-version", func(v map[string]any) { delete(v, "manifest_version") }},
+		{"top-level-contributor", func(v map[string]any) { delete(v, "contributor") }},
+		{"top-level-requires", func(v map[string]any) { delete(v, "requires") }},
+		{"top-level-empty-groups", func(v map[string]any) { delete(v, "groups") }},
+		{"top-level-empty-fields", func(v map[string]any) { delete(v, "fields") }},
+		{"top-level-empty-views", func(v map[string]any) { delete(v, "views") }},
+		{"top-level-empty-actions", func(v map[string]any) { delete(v, "actions") }},
+		{"top-level-empty-diagnostics", func(v map[string]any) { delete(v, "diagnostics") }},
+		{"contributor-driver", func(v map[string]any) { delete(v["contributor"].(map[string]any), "driver_id") }},
+		{"native-contract-version", func(v map[string]any) {
+			delete(v["contributor"].(map[string]any)["native_contract"].(map[string]any), "version")
+		}},
+		{"requires-kernel", func(v map[string]any) { delete(v["requires"].(map[string]any), "semantic_kernel") }},
+		{"required-pack-version", func(v map[string]any) {
+			delete(v["requires"].(map[string]any)["packs"].([]any)[0].(map[string]any), "version")
+		}},
+		{"group-zero-order", func(v map[string]any) { delete(v["groups"].([]any)[0].(map[string]any), "order") }},
+		{"group-label-default", func(v map[string]any) {
+			delete(v["groups"].([]any)[0].(map[string]any)["label"].(map[string]any), "default")
+		}},
+		{"field-ref", func(v map[string]any) { delete(v["fields"].([]any)[0].(map[string]any), "ref") }},
+		{"field-ref-pack-version", func(v map[string]any) {
+			delete(v["fields"].([]any)[0].(map[string]any)["ref"].(map[string]any)["pack"].(map[string]any), "version")
+		}},
+		{"view-field-ids", func(v map[string]any) { delete(v["views"].([]any)[0].(map[string]any), "field_ids") }},
+		{"view-diagnostic-ids", func(v map[string]any) { delete(v["views"].([]any)[0].(map[string]any), "diagnostic_ids") }},
+		{"action-zero-order", func(v map[string]any) { delete(v["actions"].([]any)[0].(map[string]any), "order") }},
+		{"diagnostic-zero-order", func(v map[string]any) {
+			v["diagnostics"] = []any{map[string]any{"id": "d", "group": "zone", "label": map[string]any{"key": "d", "default": "D"}, "member_id": "d", "kind": "field"}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value := cloneRaw(t, base)
+			tc.remove(value)
+			if _, err := Decode(rawBytes(t, value)); err == nil || !strings.Contains(err.Error(), "missing required member") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsInvalidUTF8BeforeNormalization(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	b, err := json.Marshal(c.Manifests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range [][]byte{[]byte(`"manifest_id":"portal.thermal"`), []byte(`"id":"thermal.temperature.zone"`)} {
+		bad := bytes.Replace(b, needle, append(append([]byte{}, needle[:len(needle)-2]...), []byte{0xff, '"'}...), 1)
+		if _, err := Decode(bad); err == nil || !strings.Contains(err.Error(), "invalid UTF-8") {
+			t.Fatalf("error=%v", err)
+		}
+	}
+}
+
+func TestDecodeDistinguishesPresentZeroOrderFromMissingOrder(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	raw := rawManifest(t, c.Manifests[0])
+	raw["groups"].([]any)[0].(map[string]any)["order"] = 0
+	if _, err := Decode(rawBytes(t, raw)); err != nil {
+		t.Fatalf("present zero order rejected: %v", err)
+	}
+}
+
+func rawManifest(t *testing.T, m Manifest) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(rawBytes(t, m), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func rawBytes(t *testing.T, value any) []byte {
+	t.Helper()
+	out, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func cloneRaw(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(rawBytes(t, value), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestIDLimitUsesUnicodeCodePoints(t *testing.T) {
 	if err := id("id", strings.Repeat("é", 128)); err != nil {
 		t.Fatalf("128 code points rejected: %v", err)
@@ -342,6 +444,83 @@ func TestRegistryQuarantinesDivergentCanonicalDescriptorsDespiteSpoofedDigest(t 
 	}
 	if err := r.Accept(first, spoof); err == nil {
 		t.Fatal("descriptor identity was not quarantined")
+	}
+}
+
+func TestRegistryTupleKeysDoNotAliasDelimitedIdentities(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	first, second := cloneManifest(t, c.Manifests[0]), cloneManifest(t, c.Manifests[0])
+	first.Contributor.DriverID, first.ManifestID = "a", "b|c"
+	second.Contributor.DriverID, second.ManifestID = "a|b", "c"
+	r := NewRegistry(idx)
+	if err := r.Accept(first, "spoof"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Accept(second, "spoof"); err != nil {
+		t.Fatalf("distinct tuple collided: %v", err)
+	}
+}
+
+func TestCanonicalDigestBoundsDirectManifestAndCanonicalizesUnorderedArrays(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	oversized := cloneManifest(t, c.Manifests[0])
+	oversized.Groups[0].Label.Default = strings.Repeat("x", MaxManifestBytes)
+	if _, err := CanonicalDigest(oversized, idx); err == nil || !strings.Contains(err.Error(), "canonical manifest exceeds") {
+		t.Fatalf("error=%v", err)
+	}
+	if err := NewRegistry(idx).Accept(oversized, "spoof"); err == nil {
+		t.Fatal("registry accepted oversized direct manifest")
+	}
+
+	first := cloneManifest(t, c.Manifests[0])
+	first.Requires.Packs = append(first.Requires.Packs, PackRef{ID: "helianthus.pack.pv", Version: "1.0.0"})
+	first.Fields = append(first.Fields, Field{ID: "temperature-copy", Group: "zone", Label: Label{Key: "thermal.temperature.copy", Default: "Temperature copy"}, Ref: first.Fields[0].Ref, ServiceRef: first.Fields[0].ServiceRef, CapabilityRef: first.Fields[0].CapabilityRef, UnitRef: first.Fields[0].UnitRef, Order: 20})
+	first.Views[0].FieldIDs = []string{"temperature", "temperature-copy"}
+	first.Diagnostics = []Diagnostic{{ID: "d-a", Group: "zone", Label: Label{Key: "d.a", Default: "A"}, MemberID: "a", Kind: "field", Order: 10}, {ID: "d-b", Group: "zone", Label: Label{Key: "d.b", Default: "B"}, MemberID: "b", Kind: "field", Order: 20}}
+	first.Views[0].DiagnosticIDs = []string{"d-a", "d-b"}
+	idx.NativeMembers[nativeMemberKey{asNativeContractKey(first.Contributor.NativeContract), "field", "a"}] = true
+	idx.NativeMembers[nativeMemberKey{asNativeContractKey(first.Contributor.NativeContract), "field", "b"}] = true
+	second := cloneManifest(t, first)
+	second.Requires.Packs[0], second.Requires.Packs[1] = second.Requires.Packs[1], second.Requires.Packs[0]
+	second.Views[0].FieldIDs[0], second.Views[0].FieldIDs[1] = second.Views[0].FieldIDs[1], second.Views[0].FieldIDs[0]
+	second.Views[0].DiagnosticIDs[0], second.Views[0].DiagnosticIDs[1] = second.Views[0].DiagnosticIDs[1], second.Views[0].DiagnosticIDs[0]
+	firstDigest, err := CanonicalDigest(first, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := CanonicalDigest(second, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("reordered equivalent descriptors differ: %s != %s", firstDigest, secondDigest)
+	}
+	r := NewRegistry(idx)
+	if err := r.Accept(first, "spoof"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Accept(second, "spoof"); err != nil {
+		t.Fatalf("reordered descriptor quarantined: %v", err)
+	}
+}
+
+func TestStaticIndexTypedKeysDoNotAliasDelimitedValues(t *testing.T) {
+	packA, packB := PackRef{ID: "a@b", Version: "c"}, PackRef{ID: "a", Version: "b@c"}
+	definitionA, definitionB := DefinitionRef{Pack: packA, ID: "d/e", Version: "f"}, DefinitionRef{Pack: PackRef{ID: "a@b", Version: "c/d"}, ID: "e", Version: "f"}
+	nativeA, nativeB := NativeContractRef{Owner: "a", Contract: "b/c", Version: "d"}, NativeContractRef{Owner: "a/b", Contract: "c", Version: "d"}
+	index := StaticIndex{Packs: map[packKey]bool{asPackKey(packA): true}, Definitions: map[definitionKey]bool{asDefinitionKey(definitionA): true}, Units: map[definitionKey]DefinitionRef{asDefinitionKey(definitionA): definitionA}, ServiceCapabilities: map[serviceCapabilityKey]bool{serviceCapabilityKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, FieldRelations: map[fieldRelationKey]bool{fieldRelationKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, Operations: map[operationKey]bool{operationKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, NativeMembers: map[nativeMemberKey]bool{nativeMemberKey{asNativeContractKey(nativeA), "field", "x"}: true}}
+	if index.HasPack(packB) || index.HasDefinition(definitionB) {
+		t.Fatal("delimiter aliases matched static keys")
+	}
+	if _, ok := index.CanonicalUnit(definitionB); ok {
+		t.Fatal("unit alias matched")
+	}
+	if index.ServiceOwnsCapability(definitionB, definitionB) || index.FieldMatches(definitionB, definitionB, definitionB) || index.OperationMatches(definitionB, definitionB, definitionB, definitionB, definitionB) || index.HasNativeMember(nativeB, "field", "x") {
+		t.Fatal("composite static relation alias matched")
 	}
 }
 

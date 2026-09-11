@@ -3,6 +3,7 @@ package contributionv1
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +15,10 @@ type fixtureCatalog struct {
 		Packs       []PackRef       `json:"packs"`
 		Definitions []DefinitionRef `json:"definitions"`
 		Fields      []struct {
-			Ref     DefinitionRef `json:"ref"`
-			UnitRef DefinitionRef `json:"unit_ref"`
+			Ref           DefinitionRef `json:"ref"`
+			UnitRef       DefinitionRef `json:"unit_ref"`
+			ServiceRef    DefinitionRef `json:"service_ref"`
+			CapabilityRef DefinitionRef `json:"capability_ref"`
 		} `json:"fields"`
 		ServiceCapabilities []struct {
 			Service    DefinitionRef `json:"service"`
@@ -35,6 +38,28 @@ type fixtureCatalog struct {
 		} `json:"native_members"`
 	} `json:"index"`
 	Manifests []Manifest `json:"manifests"`
+	Resources []struct {
+		ID             string `json:"id"`
+		State          string `json:"state"`
+		ContributionID string `json:"contribution_id"`
+		Capabilities   []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		} `json:"capabilities"`
+	} `json:"resources"`
+	Navigation struct {
+		Perspectives []struct {
+			ID string `json:"id"`
+		} `json:"perspectives"`
+		DefaultPerspective string `json:"default_perspective"`
+		DefaultResource    string `json:"default_resource"`
+	} `json:"navigation"`
+	ContributionStates []struct {
+		ManifestID   string `json:"manifest_id"`
+		ResourceID   string `json:"resource_id"`
+		CapabilityID string `json:"capability_id"`
+		State        string `json:"state"`
+	} `json:"contribution_states"`
 }
 
 func readFixture(t *testing.T, name string, into any) {
@@ -49,7 +74,7 @@ func readFixture(t *testing.T, name string, into any) {
 }
 
 func indexFromCatalog(c fixtureCatalog) StaticIndex {
-	s := StaticIndex{Packs: map[string]bool{}, Definitions: map[string]bool{}, Units: map[string]DefinitionRef{}, ServiceCapabilities: map[string]bool{}, Operations: map[string]bool{}, NativeMembers: map[string]bool{}}
+	s := StaticIndex{Packs: map[string]bool{}, Definitions: map[string]bool{}, Units: map[string]DefinitionRef{}, ServiceCapabilities: map[string]bool{}, FieldRelations: map[string]bool{}, Operations: map[string]bool{}, NativeMembers: map[string]bool{}}
 	for _, p := range c.Index.Packs {
 		s.Packs[p.Key()] = true
 	}
@@ -59,7 +84,10 @@ func indexFromCatalog(c fixtureCatalog) StaticIndex {
 	for _, f := range c.Index.Fields {
 		s.Definitions[f.Ref.Key()] = true
 		s.Definitions[f.UnitRef.Key()] = true
+		s.Definitions[f.ServiceRef.Key()] = true
+		s.Definitions[f.CapabilityRef.Key()] = true
 		s.Units[f.Ref.Key()] = f.UnitRef
+		s.FieldRelations[f.Ref.Key()+"|"+f.ServiceRef.Key()+"|"+f.CapabilityRef.Key()] = true
 	}
 	for _, v := range c.Index.ServiceCapabilities {
 		s.Definitions[v.Service.Key()] = true
@@ -92,6 +120,44 @@ func TestFiveDomainCatalogIsAccepted(t *testing.T) {
 			t.Fatalf("%s: %v", m.ManifestID, err)
 		}
 	}
+	if err := validateFixturePresentation(c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validateFixturePresentation(c fixtureCatalog) error {
+	states := map[string]bool{"available": true, "unavailable": true, "stale": true, "conflict": true, "partial": true, "unknown": true, "unsupported": true, "withdrawn": true, "withheld": true}
+	manifests, resources, capabilities, perspectives := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, m := range c.Manifests {
+		manifests[m.ManifestID] = true
+	}
+	for _, resource := range c.Resources {
+		if resource.ID == "" || resources[resource.ID] || !states[resource.State] || !manifests[resource.ContributionID] {
+			return fmt.Errorf("invalid fixture resource %q", resource.ID)
+		}
+		resources[resource.ID] = true
+		for _, capability := range resource.Capabilities {
+			if capability.ID == "" || !states[capability.State] {
+				return fmt.Errorf("invalid fixture capability %q", capability.ID)
+			}
+			capabilities[resource.ID+"|"+capability.ID] = true
+		}
+	}
+	for _, perspective := range c.Navigation.Perspectives {
+		if perspective.ID == "" || perspectives[perspective.ID] {
+			return fmt.Errorf("invalid fixture perspective %q", perspective.ID)
+		}
+		perspectives[perspective.ID] = true
+	}
+	if !perspectives[c.Navigation.DefaultPerspective] || !resources[c.Navigation.DefaultResource] {
+		return fmt.Errorf("invalid fixture defaults")
+	}
+	for _, item := range c.ContributionStates {
+		if !manifests[item.ManifestID] || !resources[item.ResourceID] || !capabilities[item.ResourceID+"|"+item.CapabilityID] || !states[item.State] {
+			return fmt.Errorf("invalid contribution state %q", item.ManifestID)
+		}
+	}
+	return nil
 }
 
 func TestInvalidManifestsFailClosed(t *testing.T) {
@@ -159,6 +225,8 @@ func applyInvalidMutation(m *Manifest, mutation string) {
 		m.Actions[len(m.Actions)-1].OperationRef = DefinitionRef{}
 	case "wrong-effect":
 		m.Actions[0].EffectRef = m.Fields[0].Ref
+	case "cross-service-field":
+		m.Fields[0].Ref.ID = "thermal.temperature.system"
 	}
 }
 
@@ -209,6 +277,21 @@ func TestDecodeRejectsRedundantActionReference(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsTopLevelNull(t *testing.T) {
+	if _, err := Decode([]byte("null")); err == nil || !strings.Contains(err.Error(), "top-level value must be an object") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestIDLimitUsesUnicodeCodePoints(t *testing.T) {
+	if err := id("id", strings.Repeat("é", 128)); err != nil {
+		t.Fatalf("128 code points rejected: %v", err)
+	}
+	if err := id("id", strings.Repeat("é", 129)); err == nil {
+		t.Fatal("129 code points accepted")
+	}
+}
+
 func TestNilIndexFailsClosed(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)
@@ -232,12 +315,86 @@ func TestRegistryRejectsDigestConflict(t *testing.T) {
 	if err := r.Accept(c.Manifests[0], "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Accept(c.Manifests[0], "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"); err == nil {
+	different := cloneManifest(t, c.Manifests[0])
+	different.Groups[0].Label.Default = "Different"
+	if err := r.Accept(different, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("digest conflict accepted")
 	}
 	if err := r.Accept(c.Manifests[0], "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); err == nil {
 		t.Fatal("quarantined manifest was re-accepted")
 	}
+}
+
+func TestRegistryQuarantinesDivergentCanonicalDescriptorsDespiteSpoofedDigest(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	r := NewRegistry(idx)
+	first := cloneManifest(t, c.Manifests[0])
+	different := cloneManifest(t, first)
+	different.Groups[0].Label.Default = "Changed display label"
+	spoof := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := r.Accept(first, spoof); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Accept(different, spoof); err == nil {
+		t.Fatal("different descriptor with spoofed digest accepted")
+	}
+	if err := r.Accept(first, spoof); err == nil {
+		t.Fatal("descriptor identity was not quarantined")
+	}
+}
+
+func TestRegistryConcurrentSameAndDifferentDescriptorsAreDeterministic(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	for _, tc := range []struct {
+		name        string
+		manifests   []Manifest
+		wantSuccess int
+	}{
+		{"same", repeatManifest(t, c.Manifests[0], 32), 32},
+		{"different", differentlyLabeledManifests(t, c.Manifests[0], 32), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRegistry(idx)
+			start := make(chan struct{})
+			results := make(chan error, 32)
+			for i := 0; i < 32; i++ {
+				m := tc.manifests[i]
+				go func() { <-start; results <- r.Accept(m, "sha256:spoofed") }()
+			}
+			close(start)
+			success := 0
+			for i := 0; i < 32; i++ {
+				if <-results == nil {
+					success++
+				}
+			}
+			if success != tc.wantSuccess {
+				t.Fatalf("success=%d, want %d", success, tc.wantSuccess)
+			}
+		})
+	}
+}
+
+func repeatManifest(t *testing.T, source Manifest, count int) []Manifest {
+	t.Helper()
+	items := make([]Manifest, count)
+	for i := range items {
+		items[i] = cloneManifest(t, source)
+	}
+	return items
+}
+
+func differentlyLabeledManifests(t *testing.T, source Manifest, count int) []Manifest {
+	t.Helper()
+	items := repeatManifest(t, source, count)
+	for i := range items {
+		items[i].Groups[0].Label.Default += string(rune('a' + i))
+	}
+	return items
 }
 
 func TestCanonicalizeSortsDefensivelyWithoutMutatingInput(t *testing.T) {

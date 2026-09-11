@@ -8,6 +8,7 @@
     {"id":"unsupported renderer","mutation":"unsupported-renderer","want":"unsupported renderer"},
     {"id":"mismatched operation","mutation":"operation-mismatch","want":"dangling reference"},
     {"id":"action without operation","mutation":"action-without-operation","want":"reference id"},
-    {"id":"wrong existing effect","mutation":"wrong-effect","want":"operation mismatch"}
+    {"id":"wrong existing effect","mutation":"wrong-effect","want":"operation mismatch"},
+    {"id":"cross service field","mutation":"cross-service-field","want":"field/service/capability mismatch"}
   ]
 }

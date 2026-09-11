@@ -123,6 +123,7 @@ type SemanticIndex interface {
 	HasDefinition(DefinitionRef) bool
 	CanonicalUnit(DefinitionRef) (DefinitionRef, bool)
 	ServiceOwnsCapability(DefinitionRef, DefinitionRef) bool
+	FieldMatches(DefinitionRef, DefinitionRef, DefinitionRef) bool
 	OperationMatches(DefinitionRef, DefinitionRef, DefinitionRef, DefinitionRef, DefinitionRef) bool
 	HasNativeMember(NativeContractRef, string, string) bool
 }
@@ -134,6 +135,7 @@ type StaticIndex struct {
 	Definitions         map[string]bool
 	Units               map[string]DefinitionRef
 	ServiceCapabilities map[string]bool
+	FieldRelations      map[string]bool
 	Operations          map[string]bool
 	NativeMembers       map[string]bool
 }
@@ -146,6 +148,9 @@ func (s StaticIndex) CanonicalUnit(r DefinitionRef) (DefinitionRef, bool) {
 }
 func (s StaticIndex) ServiceOwnsCapability(service, capability DefinitionRef) bool {
 	return s.ServiceCapabilities[service.Key()+"|"+capability.Key()]
+}
+func (s StaticIndex) FieldMatches(field, service, capability DefinitionRef) bool {
+	return s.FieldRelations[field.Key()+"|"+service.Key()+"|"+capability.Key()]
 }
 func (s StaticIndex) OperationMatches(operation, capability, service, argument, effect DefinitionRef) bool {
 	return s.Operations[operation.Key()+"|"+capability.Key()+"|"+service.Key()+"|"+argument.Key()+"|"+effect.Key()]

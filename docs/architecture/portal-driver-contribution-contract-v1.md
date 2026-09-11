@@ -22,8 +22,8 @@ accepts major contract 1 and does not select a newer pack version.
 
 Groups are resource-scoped labels with unique ids/orders. Fields carry exact
 field, service, capability and canonical-unit DefinitionRefs. The SemReg index
-must resolve each reference, confirm service/capability ownership and confirm
-the field's exact canonical unit. There is no scale, offset, formula or
+must resolve each reference, confirm the exact field/service/capability
+ownership relationship and confirm the field's exact canonical unit. There is no scale, offset, formula or
 alternate display unit.
 
 Views select only `summary`, `field_table`, `relationship_graph`, `state_strip`,
@@ -41,10 +41,14 @@ routes, retry policy, authority or precondition results. There is no arbitrary
 component escape hatch.
 
 The JSON size limit is 256 KiB. Limits are 64 groups, 64 views, 512 fields, 64
-actions and 128 diagnostics. IDs are manifest-scoped UTF-8 strings of at most
-128 bytes. IDs and orders are unique within each collection. A host canonicalizes
-validated arrays by `(order,id)`; equal driver/manifest/version records with
-different `sha256:` digests are a conflict and neither is rendered. A rejected
+actions and 128 diagnostics. IDs are manifest-scoped Unicode strings of at most
+128 code points; this is the JSON Schema `maxLength` and Go validator limit.
+IDs and orders are unique within each collection. A host canonicalizes
+validated arrays by `(order,id)`, serializes the canonical value and derives its
+trusted SHA-256 digest. Publisher-supplied digest metadata is never trusted.
+Equal driver/manifest/version records with different derived digests are a
+conflict and neither is rendered; the identity/version is quarantined for that
+catalog generation. A rejected
 manifest is isolated to that contribution; Portal Core and other valid drivers
 remain available.
 
@@ -70,8 +74,12 @@ does not grant authority.
 1.0.0, PV 1.0.0, Storage/BMS 1.1.0, EVSE 1.0.0 and Infrastructure 1.0.0. The
 fixture-driven INT-09 static prototype covers installation/resources,
 capabilities, all host perspectives, HVAC/PV-BMS/EVSE, unavailable
-Infrastructure and retained negative states. It has no production handler,
-network request or operation invocation.
+Infrastructure and retained negative states. The fixture carries resource and
+capability state, contribution-state binding, perspective entries and default
+navigation. The prototype reads those records generically, so a changed state or
+valid sixth fixture contribution requires no manifest-id/product branch. Fixture
+tests validate the presentation references before the prototype uses them. It
+has no production handler, network request or operation invocation.
 
 The state fixture records the open gateway #552 reconciliation: B503 target
 context is resource-scoped; its five native availability states are retained;

@@ -2,12 +2,15 @@ package contributionv1
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -27,6 +30,9 @@ func Decode(data []byte) (Manifest, error) {
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Manifest{}, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if _, ok := raw.(map[string]any); !ok {
+		return Manifest{}, fmt.Errorf("closed manifest: top-level value must be an object")
 	}
 	if err := rejectForbidden(raw); err != nil {
 		return Manifest{}, err
@@ -179,7 +185,7 @@ func Validate(m Manifest, index SemanticIndex) error {
 }
 
 func id(name, value string) error {
-	if value == "" || len(value) > 128 || !utf8.ValidString(value) {
+	if value == "" || utf8.RuneCountInString(value) > 128 || !utf8.ValidString(value) {
 		return fmt.Errorf("invalid %s", name)
 	}
 	return nil
@@ -311,6 +317,9 @@ func validateFields(fields []Field, groups map[string]bool, packs []PackRef, ind
 		if !index.ServiceOwnsCapability(f.ServiceRef, f.CapabilityRef) {
 			return nil, fmt.Errorf("field %q service/capability mismatch", f.ID)
 		}
+		if !index.FieldMatches(f.Ref, f.ServiceRef, f.CapabilityRef) {
+			return nil, fmt.Errorf("field %q field/service/capability mismatch", f.ID)
+		}
 		if ids[f.ID] {
 			return nil, fmt.Errorf("duplicate field id %q", f.ID)
 		}
@@ -423,6 +432,7 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 
 // Registry detects non-deterministic publication of the same driver manifest.
 type Registry struct {
+	mu        sync.Mutex
 	index     SemanticIndex
 	digests   map[string]string
 	conflicts map[string]bool
@@ -431,17 +441,21 @@ type Registry struct {
 func NewRegistry(index SemanticIndex) *Registry {
 	return &Registry{index: index, digests: map[string]string{}, conflicts: map[string]bool{}}
 }
-func (r *Registry) Accept(m Manifest, digest string) error {
+
+// Accept derives the authoritative digest from the validated canonical
+// descriptor. suppliedDigest is deliberately untrusted publisher metadata and
+// cannot affect admission, replacement, or quarantine.
+func (r *Registry) Accept(m Manifest, suppliedDigest string) error {
 	if r == nil || nilIndex(r.index) {
 		return fmt.Errorf("semantic index is required")
 	}
-	if err := Validate(m, r.index); err != nil {
+	digest, err := CanonicalDigest(m, r.index)
+	if err != nil {
 		return err
 	}
-	if !validDigest(digest) {
-		return fmt.Errorf("invalid manifest digest")
-	}
 	key := m.Contributor.DriverID + "|" + m.ManifestID + "|" + m.ManifestVersion
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.conflicts[key] {
 		return fmt.Errorf("manifest digest conflict for %s", key)
 	}
@@ -452,6 +466,22 @@ func (r *Registry) Accept(m Manifest, digest string) error {
 	}
 	r.digests[key] = digest
 	return nil
+}
+
+// CanonicalDigest validates the contribution, orders all descriptor
+// collections, then hashes the deterministic JSON wire encoding. It is the
+// only digest used by Registry admission.
+func CanonicalDigest(m Manifest, index SemanticIndex) (string, error) {
+	canonical, err := Canonicalize(m, index)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("canonical descriptor encoding: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func nilIndex(index SemanticIndex) bool {
@@ -465,18 +495,6 @@ func nilIndex(index SemanticIndex) bool {
 	default:
 		return false
 	}
-}
-
-func validDigest(digest string) bool {
-	if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
-		return false
-	}
-	for _, r := range digest[len("sha256:"):] {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Canonicalize first validates then returns a copy whose ordered descriptor

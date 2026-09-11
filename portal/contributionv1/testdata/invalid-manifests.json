@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"id":"duplicate id","mutation":"duplicate-field-id","want":"duplicate field id"},
+    {"id":"duplicate order","mutation":"duplicate-field-order","want":"duplicate field order"},
+    {"id":"wrong version","mutation":"wrong-pack-version","want":"wrong or unresolved pack"},
+    {"id":"dangling ref","mutation":"dangling-service","want":"dangling reference"},
+    {"id":"unit mismatch","mutation":"unit-mismatch","want":"unit mismatch"},
+    {"id":"unsupported renderer","mutation":"unsupported-renderer","want":"unsupported renderer"},
+    {"id":"mismatched operation","mutation":"operation-mismatch","want":"dangling reference"},
+    {"id":"action without operation","mutation":"action-without-operation","want":"reference id"},
+    {"id":"wrong existing effect","mutation":"wrong-effect","want":"operation mismatch"}
+  ]
+}

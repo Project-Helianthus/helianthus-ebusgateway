@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 1100px; margin: auto; padding: 1.5rem; line-height: 1.45; }
+nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+button, .contribution, .resource-domain, .state, .action-case, aside { border: 1px solid #777; border-radius: .35rem; padding: .65rem; background: Canvas; color: CanvasText; }
+button:focus-visible, a:focus-visible { outline: 3px solid #005fcc; outline-offset: 2px; }
+#resources, #catalog, #states, #actions { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.state { display: flex; flex-direction: column; gap: .25rem; border-left-width: .55rem; }
+.state-unavailable, .state-withheld, .state-withdrawn { border-left-color: #7a3e00; }
+.state-stale, .state-partial { border-left-color: #6a5700; }
+.state-conflict, .state-invalid-contribution { border-left-color: #9b1b30; }
+.state-unknown, .state-unsupported { border-left-color: #34536d; }
+.skip { position: absolute; left: -10000px; } .skip:focus { left: 1rem; top: 1rem; background: Canvas; padding: .5rem; }
+[disabled] { cursor: not-allowed; opacity: .7; }

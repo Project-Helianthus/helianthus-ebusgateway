@@ -118,6 +118,11 @@ navigation. The prototype reads those records generically, so a changed state or
 valid sixth fixture contribution requires no manifest-id/product branch. Fixture
 tests validate the presentation references before the prototype uses them. It
 has no production handler, network request or operation invocation.
+Each resource and contribution-state record carries the full registry identity
+`(driver_id, manifest_id, manifest_version)`. The prototype requires that full
+identity to match the selected resource and admitted manifest, so colliding
+manifest IDs from distinct drivers or versions cannot select one another's
+fields or actions.
 
 The state fixture records the open gateway #552 reconciliation: B503 target
 context is resource-scoped; its five native availability states are retained;

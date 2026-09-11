@@ -10,6 +10,10 @@ function element(name, attributes = {}, children = []) {
 }
 function replace(container, nodes) { container.replaceChildren(...nodes); }
 function findResource(catalog, id) { return catalog.resources.find((resource) => resource.id === id); }
+function manifestIdentity(manifest) { return {driver_id: manifest.contributor.driver_id, manifest_id: manifest.manifest_id, manifest_version: manifest.manifest_version}; }
+function sameRegistryIdentity(left, right) {
+  return Boolean(left && right) && left.driver_id === right.driver_id && left.manifest_id === right.manifest_id && left.manifest_version === right.manifest_version;
+}
 
 export function initialNavigation(catalog) {
   const resource = findResource(catalog, catalog.navigation.default_resource);
@@ -29,9 +33,11 @@ export function reduceNavigation(catalog, state, selection) {
 }
 
 export function visibleContributions(catalog, state) {
+  const resource = findResource(catalog, state.resource);
+  if (!resource) return [];
   return catalog.contribution_states
-    .filter((item) => item.resource_id === state.resource && item.capability_id === state.capability)
-    .map((item) => ({manifest: catalog.manifests.find((manifest) => manifest.manifest_id === item.manifest_id), state: item.state}))
+    .filter((item) => item.resource_id === state.resource && item.capability_id === state.capability && sameRegistryIdentity(item.contribution, resource.contribution))
+    .map((item) => ({manifest: catalog.manifests.find((manifest) => sameRegistryIdentity(manifestIdentity(manifest), item.contribution)), state: item.state}))
     .filter((item) => item.manifest);
 }
 

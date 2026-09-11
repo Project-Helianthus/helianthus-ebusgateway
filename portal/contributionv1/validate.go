@@ -130,13 +130,9 @@ func parseWireOrder(number json.Number) (int32, error) {
 	if literal == "" {
 		return 0, fmt.Errorf("missing number digits")
 	}
-	exponent := 0
+	exponentLiteral := ""
 	if exponentAt := strings.IndexAny(literal, "eE"); exponentAt >= 0 {
-		var err error
-		exponent, err = parseWireOrderExponent(literal[exponentAt+1:])
-		if err != nil {
-			return 0, err
-		}
+		exponentLiteral = literal[exponentAt+1:]
 		literal = literal[:exponentAt]
 	}
 	integer, fraction, hasDecimal := literal, "", false
@@ -155,6 +151,14 @@ func parseWireOrder(number json.Number) (int32, error) {
 	significant := strings.TrimLeft(digits, "0")
 	if significant == "" {
 		return 0, nil
+	}
+	exponent := 0
+	if exponentLiteral != "" {
+		var err error
+		exponent, err = parseWireOrderExponent(exponentLiteral)
+		if err != nil {
+			return 0, err
+		}
 	}
 	scale := exponent - len(fraction)
 	if scale < 0 {

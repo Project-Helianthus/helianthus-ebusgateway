@@ -39,10 +39,10 @@ type fixtureCatalog struct {
 	} `json:"index"`
 	Manifests []Manifest `json:"manifests"`
 	Resources []struct {
-		ID             string `json:"id"`
-		State          string `json:"state"`
-		ContributionID string `json:"contribution_id"`
-		Capabilities   []struct {
+		ID           string                  `json:"id"`
+		State        string                  `json:"state"`
+		Contribution fixtureRegistryIdentity `json:"contribution"`
+		Capabilities []struct {
 			ID    string `json:"id"`
 			State string `json:"state"`
 		} `json:"capabilities"`
@@ -55,11 +55,21 @@ type fixtureCatalog struct {
 		DefaultResource    string `json:"default_resource"`
 	} `json:"navigation"`
 	ContributionStates []struct {
-		ManifestID   string `json:"manifest_id"`
-		ResourceID   string `json:"resource_id"`
-		CapabilityID string `json:"capability_id"`
-		State        string `json:"state"`
+		Contribution fixtureRegistryIdentity `json:"contribution"`
+		ResourceID   string                  `json:"resource_id"`
+		CapabilityID string                  `json:"capability_id"`
+		State        string                  `json:"state"`
 	} `json:"contribution_states"`
+}
+
+type fixtureRegistryIdentity struct {
+	DriverID        string `json:"driver_id"`
+	ManifestID      string `json:"manifest_id"`
+	ManifestVersion string `json:"manifest_version"`
+}
+
+func fixtureIdentity(m Manifest) fixtureRegistryIdentity {
+	return fixtureRegistryIdentity{DriverID: m.Contributor.DriverID, ManifestID: m.ManifestID, ManifestVersion: m.ManifestVersion}
 }
 
 func readFixture(t *testing.T, name string, into any) {
@@ -127,15 +137,19 @@ func TestFiveDomainCatalogIsAccepted(t *testing.T) {
 
 func validateFixturePresentation(c fixtureCatalog) error {
 	states := map[string]bool{"available": true, "unavailable": true, "stale": true, "conflict": true, "partial": true, "unknown": true, "unsupported": true, "withdrawn": true, "withheld": true}
-	manifests, resources, capabilities, perspectives := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	manifests, resources, capabilities, perspectives := map[fixtureRegistryIdentity]bool{}, map[string]fixtureRegistryIdentity{}, map[string]bool{}, map[string]bool{}
 	for _, m := range c.Manifests {
-		manifests[m.ManifestID] = true
+		identity := fixtureIdentity(m)
+		if manifests[identity] {
+			return fmt.Errorf("duplicate fixture manifest identity %q/%q@%q", identity.DriverID, identity.ManifestID, identity.ManifestVersion)
+		}
+		manifests[identity] = true
 	}
 	for _, resource := range c.Resources {
-		if resource.ID == "" || resources[resource.ID] || !states[resource.State] || !manifests[resource.ContributionID] {
+		if resource.ID == "" || resources[resource.ID] != (fixtureRegistryIdentity{}) || !states[resource.State] || !manifests[resource.Contribution] {
 			return fmt.Errorf("invalid fixture resource %q", resource.ID)
 		}
-		resources[resource.ID] = true
+		resources[resource.ID] = resource.Contribution
 		for _, capability := range resource.Capabilities {
 			if capability.ID == "" || !states[capability.State] {
 				return fmt.Errorf("invalid fixture capability %q", capability.ID)
@@ -149,12 +163,12 @@ func validateFixturePresentation(c fixtureCatalog) error {
 		}
 		perspectives[perspective.ID] = true
 	}
-	if !perspectives[c.Navigation.DefaultPerspective] || !resources[c.Navigation.DefaultResource] {
+	if !perspectives[c.Navigation.DefaultPerspective] || resources[c.Navigation.DefaultResource] == (fixtureRegistryIdentity{}) {
 		return fmt.Errorf("invalid fixture defaults")
 	}
 	for _, item := range c.ContributionStates {
-		if !manifests[item.ManifestID] || !resources[item.ResourceID] || !capabilities[item.ResourceID+"|"+item.CapabilityID] || !states[item.State] {
-			return fmt.Errorf("invalid contribution state %q", item.ManifestID)
+		if !manifests[item.Contribution] || resources[item.ResourceID] != item.Contribution || !capabilities[item.ResourceID+"|"+item.CapabilityID] || !states[item.State] {
+			return fmt.Errorf("invalid contribution state %q/%q@%q", item.Contribution.DriverID, item.Contribution.ManifestID, item.Contribution.ManifestVersion)
 		}
 	}
 	return nil
@@ -419,12 +433,15 @@ func TestDecodeAcceptsSchemaValidIntegralOrderSpellings(t *testing.T) {
 	}{
 		{"decimal", "1.0", 1, true},
 		{"exponent", "1e0", 1, true},
+		{"positive-zero-large-exponent", "0e1000000", 0, true},
+		{"negative-zero-large-exponent", "-0e1000000", 0, true},
 		{"minimum", "-2147483648", MinOrder, true},
 		{"maximum", "2147483647", MaxOrder, true},
 		{"below-minimum", "-2147483649", 0, false},
 		{"above-maximum", "2147483648", 0, false},
 		{"fraction", "1.5", 0, false},
 		{"fractional-exponent", "1e-1", 0, false},
+		{"nonzero-near-zero-large-exponent", "1e-1000000", 0, false},
 		{"non-finite-nan", "NaN", 0, false},
 		{"non-finite-infinity", "Infinity", 0, false},
 	} {

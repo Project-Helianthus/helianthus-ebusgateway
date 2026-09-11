@@ -61,13 +61,43 @@ test("INT-09 fixture navigation handles changed state and a valid sixth contribu
   sixth.manifest_id = "portal.fixture.sixth";
   sixth.contributor.driver_id = "fixture.sixth";
   catalog.manifests.push(sixth);
-  catalog.resources.push({id: "sixth-resource", domain: "Fixture", items: ["resource"], detail: "Generic fixture contribution.", state: "stale", contribution_id: sixth.manifest_id, capabilities: [{id: "sixth-read", label: "Fixture read", state: "stale"}]});
-  catalog.contribution_states.push({manifest_id: sixth.manifest_id, resource_id: "sixth-resource", capability_id: "sixth-read", state: "stale"});
+  const identity = {driver_id: sixth.contributor.driver_id, manifest_id: sixth.manifest_id, manifest_version: sixth.manifest_version};
+  catalog.resources.push({id: "sixth-resource", domain: "Fixture", items: ["resource"], detail: "Generic fixture contribution.", state: "stale", contribution: identity, capabilities: [{id: "sixth-read", label: "Fixture read", state: "stale"}]});
+  catalog.contribution_states.push({contribution: identity, resource_id: "sixth-resource", capability_id: "sixth-read", state: "stale"});
   state = mod.reduceNavigation(catalog, state, {kind: "resource", id: "sixth-resource"});
   const visible = mod.visibleContributions(catalog, state);
   assert.equal(visible.length, 1);
   assert.equal(visible[0].manifest.manifest_id, sixth.manifest_id);
   assert.equal(visible[0].state, "stale");
+});
+
+test("INT-09 binds catalog state to full registry identity", async () => {
+  const catalog = JSON.parse(await readFile(fixture, "utf8"));
+  const mod = await import(pathToFileURL(path.join(prototype, "int09.js")).href);
+  const primary = catalog.manifests[0];
+  const colliding = structuredClone(primary);
+  colliding.contributor.driver_id = "thermal.secondary";
+  colliding.manifest_version = "2.0.0";
+  colliding.fields[0].label.default = "Secondary-only field";
+  catalog.manifests.push(colliding);
+  const primaryIdentity = {driver_id: primary.contributor.driver_id, manifest_id: primary.manifest_id, manifest_version: primary.manifest_version};
+  const secondaryIdentity = {driver_id: colliding.contributor.driver_id, manifest_id: colliding.manifest_id, manifest_version: colliding.manifest_version};
+
+  let state = mod.initialNavigation(catalog);
+  let visible = mod.visibleContributions(catalog, state);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].manifest.fields[0].label.default, "Temperature");
+
+  catalog.resources.push({id: "thermal-secondary", domain: "Thermal secondary", items: ["zone"], detail: "Colliding manifest fixture.", state: "available", contribution: secondaryIdentity, capabilities: [{id: "secondary-read", label: "Secondary read", state: "available"}]});
+  catalog.contribution_states.push({contribution: primaryIdentity, resource_id: "thermal-secondary", capability_id: "secondary-read", state: "conflict"});
+  state = mod.reduceNavigation(catalog, state, {kind: "resource", id: "thermal-secondary"});
+  assert.deepEqual(mod.visibleContributions(catalog, state), []);
+
+  catalog.contribution_states.at(-1).contribution = secondaryIdentity;
+  visible = mod.visibleContributions(catalog, state);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].manifest.contributor.driver_id, "thermal.secondary");
+  assert.equal(visible[0].manifest.fields[0].label.default, "Secondary-only field");
 });
 
 test("INT-09 preserves every requested state and caller-scoped action outcome", async () => {

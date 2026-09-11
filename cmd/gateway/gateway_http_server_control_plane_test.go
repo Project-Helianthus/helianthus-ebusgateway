@@ -66,6 +66,18 @@ func TestHTTPControlPlaneRouteManifestOmitsDisabledOptionalRoutes(t *testing.T) 
 	}
 }
 
+func TestPortalCatalogRouteIsReservedAgainstConfigurableRoutes(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.GraphQLPath = "/graphql/portal/v1"
+	if err := validatePortalCatalogRoute(cfg); err == nil {
+		t.Fatal("expected reserved route collision")
+	}
+	cfg.GraphQLPath = "/graphql"
+	if err := validatePortalCatalogRoute(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T) {
 	source, err := os.ReadFile("gateway_run_lifecycle.go")
 	if err != nil {

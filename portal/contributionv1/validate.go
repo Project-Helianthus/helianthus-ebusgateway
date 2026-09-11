@@ -954,16 +954,155 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 
 // Registry detects non-deterministic publication of the same driver manifest.
 type Registry struct {
-	mu        sync.Mutex
-	index     SemanticIndex
-	digests   map[registryKey]string
-	conflicts map[registryKey]bool
+	mu         sync.Mutex
+	index      SemanticIndex
+	digests    map[registryKey]string
+	conflicts  map[registryKey]bool
+	accepted   map[registryKey]AcceptedDescriptor
+	generation map[string]uint64
+	revision   uint64
 }
 
 type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
 
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, generation: map[string]uint64{}}
+}
+
+// DriverGeneration fences a driver's complete descriptor publication.  A
+// delayed shutdown/publication cannot replace a newer accepted generation.
+type DriverGeneration struct {
+	DriverID   string
+	Generation uint64
+}
+type DescriptorKey struct{ DriverID, ManifestID, ManifestVersion string }
+type AcceptedDescriptor struct {
+	Key        DescriptorKey
+	Manifest   Manifest
+	Digest     string
+	Generation uint64
+}
+type RegistrySnapshot struct {
+	Revision    uint64
+	Accepted    []AcceptedDescriptor
+	Quarantined []DescriptorKey
+}
+
+// ReplaceGeneration atomically installs one complete canonical descriptor set
+// for a driver.  It is enumerable so a compositor has no hidden digest-only
+// second registry.
+func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifest) error {
+	if r == nil || nilIndex(r.index) || owner.DriverID == "" || owner.Generation == 0 {
+		return fmt.Errorf("descriptor generation is invalid")
+	}
+	staged := make(map[registryKey]AcceptedDescriptor, len(manifests))
+	for _, m := range manifests {
+		if m.Contributor.DriverID != owner.DriverID {
+			return fmt.Errorf("descriptor driver does not match generation owner")
+		}
+		canonical, err := Canonicalize(m, r.index)
+		if err != nil {
+			return err
+		}
+		digest, err := CanonicalDigest(canonical, r.index)
+		if err != nil {
+			return err
+		}
+		key := registryKey{owner.DriverID, canonical.ManifestID, canonical.ManifestVersion}
+		if prior, ok := staged[key]; ok && prior.Digest != digest {
+			return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
+		}
+		staged[key] = AcceptedDescriptor{Key: DescriptorKey{owner.DriverID, canonical.ManifestID, canonical.ManifestVersion}, Manifest: canonical, Digest: digest, Generation: owner.Generation}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.generation[owner.DriverID]
+	if current > owner.Generation {
+		return fmt.Errorf("descriptor generation is stale")
+	}
+	if current == owner.Generation {
+		for key, item := range staged {
+			if prior, ok := r.accepted[key]; !ok || prior.Digest != item.Digest {
+				return fmt.Errorf("descriptor generation replay differs")
+			}
+		}
+		return nil
+	}
+	for key := range r.accepted {
+		if key.DriverID == owner.DriverID {
+			delete(r.accepted, key)
+			delete(r.digests, key)
+			delete(r.conflicts, key)
+		}
+	}
+	for key, item := range staged {
+		r.accepted[key], r.digests[key] = item, item.Digest
+	}
+	r.generation[owner.DriverID] = owner.Generation
+	r.revision++
+	return nil
+}
+
+func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {
+	if r == nil || owner.DriverID == "" || owner.Generation == 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.generation[owner.DriverID] != owner.Generation {
+		return false
+	}
+	for key := range r.accepted {
+		if key.DriverID == owner.DriverID {
+			delete(r.accepted, key)
+			delete(r.digests, key)
+			delete(r.conflicts, key)
+		}
+	}
+	delete(r.generation, owner.DriverID)
+	r.revision++
+	return true
+}
+
+func (r *Registry) Snapshot() RegistrySnapshot {
+	if r == nil {
+		return RegistrySnapshot{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := RegistrySnapshot{Revision: r.revision, Accepted: make([]AcceptedDescriptor, 0, len(r.accepted)), Quarantined: make([]DescriptorKey, 0, len(r.conflicts))}
+	for _, item := range r.accepted {
+		copy, err := Canonicalize(item.Manifest, r.index)
+		if err != nil {
+			continue
+		}
+		item.Manifest = copy
+		out.Accepted = append(out.Accepted, item)
+	}
+	for key := range r.conflicts {
+		out.Quarantined = append(out.Quarantined, DescriptorKey(key))
+	}
+	sort.Slice(out.Accepted, func(i, j int) bool {
+		a, b := out.Accepted[i].Key, out.Accepted[j].Key
+		if a.DriverID != b.DriverID {
+			return a.DriverID < b.DriverID
+		}
+		if a.ManifestID != b.ManifestID {
+			return a.ManifestID < b.ManifestID
+		}
+		return a.ManifestVersion < b.ManifestVersion
+	})
+	sort.Slice(out.Quarantined, func(i, j int) bool {
+		a, b := out.Quarantined[i], out.Quarantined[j]
+		if a.DriverID != b.DriverID {
+			return a.DriverID < b.DriverID
+		}
+		if a.ManifestID != b.ManifestID {
+			return a.ManifestID < b.ManifestID
+		}
+		return a.ManifestVersion < b.ManifestVersion
+	})
+	return out
 }
 
 // Accept derives the authoritative digest from the validated canonical

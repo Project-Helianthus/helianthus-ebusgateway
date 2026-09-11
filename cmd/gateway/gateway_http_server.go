@@ -14,6 +14,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
@@ -27,6 +28,7 @@ func startHTTPServer(
 	eebusProvider mcp.EEBusV1Provider,
 	eebusCommandRouter mcp.EEBusV1CommandRouter,
 	modbusProvider mcp.ModbusV1Provider,
+	portalCatalogSource catalogv1.SourceCapture,
 	scheduleWriter mcp.ScheduleWriter,
 	configWriter mcp.ConfigWriter,
 	busObservability *ebusgateway.BusObservabilityStore,
@@ -41,6 +43,9 @@ func startHTTPServer(
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
+	}
+	if err := validatePortalCatalogRoute(cfg); err != nil {
+		return nil, nil, err
 	}
 	if gateway == nil {
 		return nil, nil, fmt.Errorf("gateway missing for http server")
@@ -195,7 +200,7 @@ func startHTTPServer(
 	// This fixed route is intentionally separate from the legacy control-plane
 	// GraphQL endpoint: it starts with no source or action authority and never
 	// falls back to an existing GraphQL/MCP/native path.
-	mux.Handle("/graphql/portal/v1", newPortalCatalogV1Handler())
+	mux.Handle("/graphql/portal/v1", newPortalCatalogV1Handler(portalCatalogSource))
 	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
@@ -389,6 +394,15 @@ func startHTTPServer(
 	}
 
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+func validatePortalCatalogRoute(cfg ebusgateway.Config) error {
+	for _, path := range []string{cfg.GraphQLPath, cfg.SnapshotPath, cfg.SubscriptionPath, cfg.MCPPath, cfg.MetricsPath, cfg.PortalPath} {
+		if path == "/graphql/portal/v1" {
+			return fmt.Errorf("configured route %q collides with reserved Portal catalog route", path)
+		}
+	}
+	return nil
 }
 
 func growattStoragePortalAvailable(provider mcp.ModbusV1Provider) bool {

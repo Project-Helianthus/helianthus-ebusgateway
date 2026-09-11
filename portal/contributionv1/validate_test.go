@@ -760,6 +760,31 @@ func TestRegistryTupleKeysDoNotAliasDelimitedIdentities(t *testing.T) {
 	}
 }
 
+func TestRegistryGenerationSnapshotIsEnumerableAndFenced(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	r := NewRegistry(idx)
+	m := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: m.Contributor.DriverID, Generation: 2}
+	if err := r.ReplaceGeneration(owner, []Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	s := r.Snapshot()
+	if s.Revision != 1 || len(s.Accepted) != 1 || s.Accepted[0].Generation != 2 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+	if r.WithdrawGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}) {
+		t.Fatal("older withdrawal removed a successor")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}, []Manifest{m}); err == nil {
+		t.Fatal("older replacement was accepted")
+	}
+	if !r.WithdrawGeneration(owner) || len(r.Snapshot().Accepted) != 0 {
+		t.Fatal("current generation was not withdrawn")
+	}
+}
+
 func TestCanonicalizePreservesExplicitEmptyRequiredArrays(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

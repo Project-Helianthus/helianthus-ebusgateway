@@ -23,39 +23,83 @@ var ErrStale = errors.New("portal action claims are stale")
 
 // FivePacks is structural input, never a product-specific source switch.
 var FivePacks = []contributionv1.PackRef{
-	{ID: "helianthus.thermal-hvac", Version: "1.0.0"},
-	{ID: "helianthus.pv", Version: "1.0.0"},
-	{ID: "helianthus.storage-bms", Version: "1.1.0"},
-	{ID: "helianthus.evse", Version: "1.0.0"},
-	{ID: "helianthus.infrastructure", Version: "1.0.0"},
+	{ID: "helianthus.pack.thermal", Version: "1.0.0"},
+	{ID: "helianthus.pack.pv", Version: "1.0.0"},
+	{ID: "helianthus.pack.storage", Version: "1.1.0"},
+	{ID: "helianthus.pack.evse", Version: "1.0.0"},
+	{ID: "helianthus.pack.infrastructure", Version: "1.0.0"},
 }
 
-type Identity struct{ DriverID, ManifestID, ManifestVersion, Digest string }
+type Identity struct {
+	DriverID        string `json:"driver_id"`
+	ManifestID      string `json:"manifest_id"`
+	ManifestVersion string `json:"manifest_version"`
+	Digest          string `json:"digest"`
+}
 type Domain struct {
 	Pack        contributionv1.PackRef `json:"pack"`
 	SourceState string                 `json:"source_state"`
 	Reason      string                 `json:"reason,omitempty"`
 }
 type Source struct {
-	AssetID, SnapshotID, Revision, EvaluationDigest, BindingID, SourceEpoch string
-	DriverGeneration                                                        uint64
+	AssetID          string `json:"asset_id"`
+	SnapshotID       string `json:"snapshot_id"`
+	Revision         string `json:"revision"`
+	EvaluationDigest string `json:"evaluation_digest"`
+	BindingID        string `json:"binding_id"`
+	SourceEpoch      string `json:"source_epoch"`
+	DriverGeneration uint64 `json:"driver_generation"`
+	// These detached records retain the evidence-bearing SemReg tuple.  The
+	// scalar fence members above are for admission claims; they never replace
+	// provenance, disposition, loss, quality, binding, or revision data.
+	Snapshot   json.RawMessage `json:"snapshot"`
+	Evaluation json.RawMessage `json:"evaluation"`
+	Selections json.RawMessage `json:"selections"`
+	Projection json.RawMessage `json:"projection"`
 }
 type Resource struct {
-	ID, Domain, ServiceID, CapabilityID string
-	Source                              Source
-	State                               string `json:"state"`
+	ID                          string `json:"id"`
+	Domain                      string `json:"domain"`
+	ServiceID                   string `json:"service_id"`
+	CapabilityID                string `json:"capability_id"`
+	ContributionDriverID        string `json:"contribution_driver_id"`
+	ContributionManifestID      string `json:"contribution_manifest_id"`
+	ContributionManifestVersion string `json:"contribution_manifest_version"`
+	Source                      Source `json:"source"`
+	State                       string `json:"state"`
 }
 type Field struct {
-	ID, ResourceID, DefinitionID, UnitID string
-	Value                                json.RawMessage
-	Quality, Projection                  string
+	ID                          string          `json:"id"`
+	ResourceID                  string          `json:"resource_id"`
+	DefinitionID                string          `json:"definition_id"`
+	UnitID                      string          `json:"unit_id"`
+	ContributionDriverID        string          `json:"contribution_driver_id"`
+	ContributionManifestID      string          `json:"contribution_manifest_id"`
+	ContributionManifestVersion string          `json:"contribution_manifest_version"`
+	Value                       json.RawMessage `json:"value"`
+	Quality                     string          `json:"quality"`
+	Projection                  string          `json:"projection"`
 }
 type Action struct {
-	ID, ResourceID, ServiceID, CapabilityID, OperationID string
-	Discoverable, Enabled                                bool
-	Reason                                               string `json:"reason,omitempty"`
+	ID                          string `json:"id"`
+	ResourceID                  string `json:"resource_id"`
+	ServiceID                   string `json:"service_id"`
+	CapabilityID                string `json:"capability_id"`
+	OperationID                 string `json:"operation_id"`
+	ContributionDriverID        string `json:"contribution_driver_id"`
+	ContributionManifestID      string `json:"contribution_manifest_id"`
+	ContributionManifestVersion string `json:"contribution_manifest_version"`
+	Source                      Source `json:"source"`
+	Discoverable                bool   `json:"discoverable"`
+	Enabled                     bool   `json:"enabled"`
+	Reason                      string `json:"reason,omitempty"`
 }
-type Quarantine struct{ DriverID, ManifestID, ManifestVersion, Reason string }
+type Quarantine struct {
+	DriverID        string `json:"driver_id"`
+	ManifestID      string `json:"manifest_id"`
+	ManifestVersion string `json:"manifest_version"`
+	Reason          string `json:"reason"`
+}
 type Catalog struct {
 	Contract           string       `json:"contract"`
 	CatalogRevision    string       `json:"catalog_revision"`
@@ -78,6 +122,13 @@ type Descriptor struct {
 type SourceCapture interface {
 	Capture(at time.Time) ([]Resource, []Field, error)
 }
+
+// FencedSourceCapture exposes a stable, detached source/lifecycle vector. The
+// composer compares it before and after capture and never publishes a mixed view.
+type FencedSourceCapture interface {
+	SourceCapture
+	Fence() string
+}
 type Authorizer interface {
 	Scope(caller any) (string, error)
 	Discover(caller any, action Action) bool
@@ -90,9 +141,21 @@ type Revalidator interface {
 	Revalidate(action Action, claim Claims) error
 }
 type Claims struct {
-	CatalogRevision, Digest, ActionID, ResourceID, CapabilityID, SnapshotID, Revision, BindingID, SourceEpoch, IdempotencyKey string
-	DriverGeneration                                                                                                          uint64
-	Deadline                                                                                                                  time.Time
+	CatalogRevision  string    `json:"catalog_revision"`
+	Digest           string    `json:"digest"`
+	DriverID         string    `json:"driver_id"`
+	ManifestID       string    `json:"manifest_id"`
+	ManifestVersion  string    `json:"manifest_version"`
+	ActionID         string    `json:"action_id"`
+	ResourceID       string    `json:"resource_id"`
+	CapabilityID     string    `json:"capability_id"`
+	SnapshotID       string    `json:"snapshot_id"`
+	Revision         string    `json:"revision"`
+	BindingID        string    `json:"binding_id"`
+	SourceEpoch      string    `json:"source_epoch"`
+	IdempotencyKey   string    `json:"idempotency_key"`
+	DriverGeneration uint64    `json:"driver_generation"`
+	Deadline         time.Time `json:"deadline"`
 }
 
 type Composer struct {
@@ -149,18 +212,46 @@ func (c *Composer) Withdraw(driver, manifest, version string) {
 }
 
 func canonical(v any) ([]byte, error) { return json.Marshal(v) }
-func hash(v any) string               { b, _ := canonical(v); h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func clone[T any](v T) T              { b, _ := json.Marshal(v); var out T; _ = json.Unmarshal(b, &out); return out }
+func hash(v any) (string, error) {
+	b, err := canonical(v)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
+}
+func clone[T any](v T) T { b, _ := json.Marshal(v); var out T; _ = json.Unmarshal(b, &out); return out }
 func sortCatalog(c *Catalog) {
-	sort.Slice(c.Domains, func(i, j int) bool { return c.Domains[i].Pack.ID < c.Domains[j].Pack.ID })
+	sort.Slice(c.Domains, func(i, j int) bool {
+		return less(c.Domains[i].Pack.ID, c.Domains[i].Pack.Version, c.Domains[j].Pack.ID, c.Domains[j].Pack.Version)
+	})
 	sort.Slice(c.Contributions, func(i, j int) bool {
-		return c.Contributions[i].DriverID+c.Contributions[i].ManifestID+c.Contributions[i].ManifestVersion < c.Contributions[j].DriverID+c.Contributions[j].ManifestID+c.Contributions[j].ManifestVersion
+		return less(c.Contributions[i].DriverID, c.Contributions[i].ManifestID, c.Contributions[i].ManifestVersion, c.Contributions[j].DriverID, c.Contributions[j].ManifestID, c.Contributions[j].ManifestVersion)
 	})
-	sort.Slice(c.Resources, func(i, j int) bool { return c.Resources[i].ID < c.Resources[j].ID })
-	sort.Slice(c.Fields, func(i, j int) bool { return c.Fields[i].ID < c.Fields[j].ID })
-	sort.Slice(c.Actions, func(i, j int) bool { return c.Actions[i].ID < c.Actions[j].ID })
+	sort.Slice(c.Resources, func(i, j int) bool {
+		a, b := c.Resources[i], c.Resources[j]
+		return less(a.ContributionDriverID, a.ContributionManifestID, a.ContributionManifestVersion, a.ID, a.ServiceID, a.CapabilityID, b.ContributionDriverID, b.ContributionManifestID, b.ContributionManifestVersion, b.ID, b.ServiceID, b.CapabilityID)
+	})
+	sort.Slice(c.Fields, func(i, j int) bool {
+		a, b := c.Fields[i], c.Fields[j]
+		return less(a.ContributionDriverID, a.ContributionManifestID, a.ContributionManifestVersion, a.ResourceID, a.ID, a.DefinitionID, a.UnitID, b.ContributionDriverID, b.ContributionManifestID, b.ContributionManifestVersion, b.ResourceID, b.ID, b.DefinitionID, b.UnitID)
+	})
+	sort.Slice(c.Actions, func(i, j int) bool {
+		a, b := c.Actions[i], c.Actions[j]
+		return less(a.ContributionDriverID, a.ContributionManifestID, a.ContributionManifestVersion, a.ResourceID, a.ID, a.ServiceID, a.CapabilityID, a.OperationID, b.ContributionDriverID, b.ContributionManifestID, b.ContributionManifestVersion, b.ResourceID, b.ID, b.ServiceID, b.CapabilityID, b.OperationID)
+	})
 	sort.Slice(c.Quarantines, func(i, j int) bool {
-		return c.Quarantines[i].DriverID+c.Quarantines[i].ManifestID < c.Quarantines[j].DriverID+c.Quarantines[j].ManifestID
+		return less(c.Quarantines[i].DriverID, c.Quarantines[i].ManifestID, c.Quarantines[i].ManifestVersion, c.Quarantines[j].DriverID, c.Quarantines[j].ManifestID, c.Quarantines[j].ManifestVersion)
 	})
+}
+func less(a ...string) bool {
+	n := len(a) / 2
+	for i := 0; i < n; i++ {
+		if a[i] == a[n+i] {
+			continue
+		}
+		return a[i] < a[n+i]
+	}
+	return false
 }
 func canonicalDomain(id string) string { return strings.TrimSpace(id) }

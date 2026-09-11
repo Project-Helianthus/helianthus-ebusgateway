@@ -24,6 +24,10 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		source, auth, now := c.source, c.auth, c.now
 		c.mu.RUnlock()
+		fence := ""
+		if fenced, ok := source.(FencedSourceCapture); ok {
+			fence = fenced.Fence()
+		}
 		at := now().UTC()
 		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
 		for _, p := range FivePacks {
@@ -55,15 +59,45 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 					out.Domains[i].Reason = ""
 				}
 			}
+			if fenced, ok := source.(FencedSourceCapture); ok && fence != fenced.Fence() {
+				continue
+			}
 		}
 		available := make(map[string]bool, len(out.Resources))
 		for _, r := range out.Resources {
+			if available[r.ID] {
+				return Catalog{}, errors.New("ambiguous detached resource context")
+			}
 			available[r.ID] = true
 		}
 		for _, d := range descriptors {
 			out.Contributions = append(out.Contributions, Identity{DriverID: d.Manifest.Contributor.DriverID, ManifestID: d.Manifest.ManifestID, ManifestVersion: d.Manifest.ManifestVersion, Digest: d.Digest})
+			groups := make(map[string]string, len(d.Manifest.Groups))
+			invalid := false
+			for _, g := range d.Manifest.Groups {
+				if g.ID == "" || g.ResourceContext == "" {
+					invalid = true
+					break
+				}
+				if _, exists := groups[g.ID]; exists {
+					invalid = true
+					break
+				}
+				groups[g.ID] = g.ResourceContext
+			}
+			if invalid {
+				return Catalog{}, errors.New("contribution group resource mapping is invalid")
+			}
 			for _, a := range d.Manifest.Actions {
-				action := Action{ID: a.ID, ResourceID: a.Group, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID}
+				resourceID, ok := groups[a.Group]
+				if !ok {
+					return Catalog{}, errors.New("action group has no resource context")
+				}
+				resource, exists := findResource(out.Resources, resourceID)
+				if !exists {
+					continue
+				}
+				action := Action{ID: a.ID, ResourceID: resourceID, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID, ContributionDriverID: d.Manifest.Contributor.DriverID, ContributionManifestID: d.Manifest.ManifestID, ContributionManifestVersion: d.Manifest.ManifestVersion, Source: resource.Source}
 				if auth != nil {
 					action.Discoverable = auth.Discover(caller, action)
 					action.Enabled = action.Discoverable && auth.Invoke(caller, action)
@@ -78,14 +112,21 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		sortCatalog(&out)
 		structural := struct {
-			Revision      uint64
-			Domains       []Domain
-			Contributions []Identity
-			Resources     []Resource
-		}{rev, out.Domains, out.Contributions, out.Resources}
-		out.CatalogRevision = hash(structural)
+			Revision uint64
+			Fence    string
+			Catalog  Catalog
+		}{rev, fence, out}
+		revisionDigest, err := hash(structural)
+		if err != nil {
+			return Catalog{}, err
+		}
+		out.CatalogRevision = revisionDigest
 		out.CatalogDigest = ""
-		out.CatalogDigest = hash(out)
+		catalogDigest, err := hash(out)
+		if err != nil {
+			return Catalog{}, err
+		}
+		out.CatalogDigest = catalogDigest
 		c.mu.RLock()
 		unchanged := rev == c.revision
 		c.mu.RUnlock()
@@ -109,13 +150,16 @@ func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
 	}
 	var action *Action
 	for i := range catalog.Actions {
-		if catalog.Actions[i].ID == claim.ActionID && catalog.Actions[i].ResourceID == claim.ResourceID && catalog.Actions[i].CapabilityID == claim.CapabilityID {
+		if matchesClaim(catalog.Actions[i], claim) {
 			action = &catalog.Actions[i]
 			break
 		}
 	}
 	if action == nil {
 		return nil, ErrUnauthorized
+	}
+	if !matchesDigest(catalog.Contributions, claim) {
+		return nil, ErrStale
 	}
 	c.mu.RLock()
 	invoker, revalidator := c.invoker, c.revalidator
@@ -133,6 +177,26 @@ func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
 		return nil, err
 	}
 	return invoker.Invoke(*action, claim)
+}
+
+func findResource(resources []Resource, id string) (Resource, bool) {
+	for _, r := range resources {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Resource{}, false
+}
+func matchesClaim(a Action, c Claims) bool {
+	return a.ID == c.ActionID && a.ResourceID == c.ResourceID && a.CapabilityID == c.CapabilityID && a.ContributionDriverID == c.DriverID && a.ContributionManifestID == c.ManifestID && a.ContributionManifestVersion == c.ManifestVersion && a.Source.SnapshotID == c.SnapshotID && a.Source.Revision == c.Revision && a.Source.BindingID == c.BindingID && a.Source.SourceEpoch == c.SourceEpoch && a.Source.DriverGeneration == c.DriverGeneration && c.Digest != ""
+}
+func matchesDigest(items []Identity, c Claims) bool {
+	for _, i := range items {
+		if i.DriverID == c.DriverID && i.ManifestID == c.ManifestID && i.ManifestVersion == c.ManifestVersion && i.Digest == c.Digest {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonicalJSON is public for transport and fixed wire tests.

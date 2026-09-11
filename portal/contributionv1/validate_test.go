@@ -360,6 +360,79 @@ func TestDecodeDistinguishesPresentZeroOrderFromMissingOrder(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNullAndWrongRequiredScalarTypes(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	base := rawManifest(t, c.Manifests[0])
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"contract-null", func(v map[string]any) { v["contract"] = nil }},
+		{"manifest-id-number", func(v map[string]any) { v["manifest_id"] = 7 }},
+		{"driver-null", func(v map[string]any) { v["contributor"].(map[string]any)["driver_id"] = nil }},
+		{"native-owner-null", func(v map[string]any) {
+			v["contributor"].(map[string]any)["native_contract"].(map[string]any)["owner"] = nil
+		}},
+		{"kernel-null", func(v map[string]any) { v["requires"].(map[string]any)["semantic_kernel"] = nil }},
+		{"pack-id-null", func(v map[string]any) {
+			v["requires"].(map[string]any)["packs"].([]any)[0].(map[string]any)["id"] = nil
+		}},
+		{"group-label-null", func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["label"].(map[string]any)["key"] = nil }},
+		{"group-order-null", func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["order"] = nil }},
+		{"field-ref-null", func(v map[string]any) { v["fields"].([]any)[0].(map[string]any)["ref"] = nil }},
+		{"view-renderer-null", func(v map[string]any) { v["views"].([]any)[0].(map[string]any)["renderer"] = nil }},
+		{"view-reference-null", func(v map[string]any) { v["views"].([]any)[0].(map[string]any)["field_ids"] = nil }},
+		{"action-operation-null", func(v map[string]any) { v["actions"].([]any)[0].(map[string]any)["operation_ref"] = nil }},
+		{"action-order-null", func(v map[string]any) { v["actions"].([]any)[0].(map[string]any)["order"] = nil }},
+		{"diagnostic-member-null", func(v map[string]any) {
+			v["diagnostics"] = []any{map[string]any{"id": "d", "group": "zone", "label": map[string]any{"key": "d", "default": "D"}, "member_id": nil, "kind": "field", "order": 0}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := cloneRaw(t, base)
+			tc.mutate(raw)
+			if _, err := Decode(rawBytes(t, raw)); err == nil || !strings.Contains(err.Error(), "closed manifest") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRequiresNonNilSchemaArraysAndDiagnosticMemberID(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{"packs", func(m *Manifest) { m.Requires.Packs = nil }}, {"groups", func(m *Manifest) { m.Groups = nil }}, {"fields", func(m *Manifest) { m.Fields = nil }}, {"views", func(m *Manifest) { m.Views = nil }}, {"actions", func(m *Manifest) { m.Actions = nil }}, {"diagnostics", func(m *Manifest) { m.Diagnostics = nil }}, {"view-fields", func(m *Manifest) { m.Views[0].FieldIDs = nil }}, {"view-diagnostics", func(m *Manifest) { m.Views[0].DiagnosticIDs = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := cloneManifest(t, c.Manifests[0])
+			tc.mutate(&m)
+			if err := Validate(m, idx); err == nil || !strings.Contains(err.Error(), "nil") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+	allowed := cloneManifest(t, c.Manifests[0])
+	allowed.Groups, allowed.Fields, allowed.Views, allowed.Actions, allowed.Diagnostics = []Group{}, []Field{}, []View{}, []Action{}, []Diagnostic{}
+	if err := Validate(allowed, idx); err != nil {
+		t.Fatalf("explicit empty arrays rejected: %v", err)
+	}
+	for _, memberID := range []string{"", strings.Repeat("é", 129)} {
+		m := cloneManifest(t, c.Manifests[0])
+		m.Diagnostics = []Diagnostic{{ID: "diagnostic", Group: "zone", Label: Label{Key: "diagnostic", Default: "Diagnostic"}, MemberID: memberID, Kind: "field", Order: 1}}
+		idx.NativeMembers[nativeMemberKey{asNativeContractKey(m.Contributor.NativeContract), "field", memberID}] = true
+		if err := Validate(m, idx); err == nil || !strings.Contains(err.Error(), "diagnostic member_id") {
+			t.Fatalf("member_id=%q error=%v", memberID, err)
+		}
+	}
+}
+
 func rawManifest(t *testing.T, m Manifest) map[string]any {
 	t.Helper()
 	var out map[string]any

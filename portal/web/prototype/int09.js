@@ -66,9 +66,9 @@ function renderCatalog(catalog, state) {
   replace(document.querySelector("#catalog"), nodes);
 }
 function renderStates(states) { replace(document.querySelector("#states"), states.map((state) => element("article", {class: `state state-${state.id}`}, [element("strong", {}, [state.id]), element("span", {}, [state.text])]))); }
+export function discoverableActions(actions) { return actions.filter((action) => action.visible); }
 function renderActions(actions) {
-  replace(document.querySelector("#actions"), actions.map((action) => {
-    if (!action.visible) return element("article", {class: "action-case"}, [element("strong", {}, [action.id]), element("span", {}, [" Action intentionally absent from discovery."])]);
+  replace(document.querySelector("#actions"), discoverableActions(actions).map((action) => {
     const attributes = {type: "button", "aria-describedby": `reason-${action.id}`}; if (!action.enabled) attributes.disabled = "";
     return element("article", {class: "action-case"}, [element("button", attributes, [action.id]), element("span", {id: `reason-${action.id}`}, [action.text])]);
   }));

@@ -75,6 +75,27 @@ test("INT-09 preserves every requested state and caller-scoped action outcome", 
   assert.match(matrix.b503.issue, /remains open/);
 });
 
+test("INT-09 unauthorized actions create no DOM node or descriptive leak", async () => {
+  const [catalog, matrix] = await Promise.all([readFile(fixture, "utf8").then(JSON.parse), readFile(states, "utf8").then(JSON.parse)]);
+  const mod = await import(pathToFileURL(path.join(prototype, "int09.js")).href);
+  assert.deepEqual(mod.discoverableActions(matrix.actions).map((action) => action.id), ["authorized-disabled", "admitted-enabled"]);
+  class FakeNode {
+    constructor(textContent = "") { this.children = []; this.attributes = {}; this.textContent = textContent; }
+    setAttribute(key, value) { this.attributes[key] = String(value); }
+    append(child) { this.children.push(child); }
+    replaceChildren(...children) { this.children = children; }
+    addEventListener() {}
+  }
+  const nodes = new Map([["#perspectives", new FakeNode()], ["#resources", new FakeNode()], ["#catalog", new FakeNode()], ["#states", new FakeNode()], ["#actions", new FakeNode()], ["#b503", new FakeNode()], ["#announcement", new FakeNode()]]);
+  const previousDocument = globalThis.document; const previousNode = globalThis.Node;
+  globalThis.Node = FakeNode;
+  globalThis.document = { createElement: () => new FakeNode(), createTextNode: (value) => new FakeNode(String(value)), querySelector: (selector) => nodes.get(selector) };
+  try { mod.render(catalog, matrix); } finally { globalThis.document = previousDocument; globalThis.Node = previousNode; }
+  const stringify = (node) => `${node.textContent || ""} ${Object.values(node.attributes).join(" ")} ${node.children.map(stringify).join(" ")}`;
+  const rendered = stringify(nodes.get("#actions"));
+  assert.doesNotMatch(rendered, /unauthorized-hidden|Unauthorized discovery|HVAC mode/i);
+});
+
 test("INT-09 prototype uses focus-visible and non-color text state cues", async () => {
   const css = await readFile(path.join(prototype, "int09.css"), "utf8");
   assert.match(css, /:focus-visible/);

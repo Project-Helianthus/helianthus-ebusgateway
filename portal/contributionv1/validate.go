@@ -74,31 +74,79 @@ func requiredArray(value any, path string) ([]any, error) {
 	}
 	return array, nil
 }
+func requiredString(object map[string]any, path, name string) error {
+	if _, ok := object[name].(string); !ok {
+		return fmt.Errorf("closed manifest: required string %s.%s is null or wrong type", path, name)
+	}
+	return nil
+}
+func requiredInteger(object map[string]any, path, name string) error {
+	number, ok := object[name].(float64)
+	if !ok || number != float64(int64(number)) {
+		return fmt.Errorf("closed manifest: required integer %s.%s is null or wrong type", path, name)
+	}
+	return nil
+}
 func requireRef(value any, path string) error {
 	object, err := requiredObject(value, path, "pack", "id", "version")
 	if err != nil {
 		return err
 	}
-	_, err = requiredObject(object["pack"], path+".pack", "id", "version")
-	return err
+	if err := requiredString(object, path, "id"); err != nil {
+		return err
+	}
+	if err := requiredString(object, path, "version"); err != nil {
+		return err
+	}
+	pack, err := requiredObject(object["pack"], path+".pack", "id", "version")
+	if err != nil {
+		return err
+	}
+	if err := requiredString(pack, path+".pack", "id"); err != nil {
+		return err
+	}
+	return requiredString(pack, path+".pack", "version")
 }
 func requireLabel(value any, path string) error {
-	_, err := requiredObject(value, path, "key", "default")
-	return err
+	object, err := requiredObject(value, path, "key", "default")
+	if err != nil {
+		return err
+	}
+	if err := requiredString(object, path, "key"); err != nil {
+		return err
+	}
+	return requiredString(object, path, "default")
 }
 func requireManifestMembers(root map[string]any) error {
 	if _, err := requiredObject(root, "manifest", "contract", "manifest_id", "manifest_version", "contributor", "requires", "groups", "fields", "views", "actions", "diagnostics"); err != nil {
 		return err
 	}
+	for _, name := range []string{"contract", "manifest_id", "manifest_version"} {
+		if err := requiredString(root, "manifest", name); err != nil {
+			return err
+		}
+	}
 	contributor, err := requiredObject(root["contributor"], "contributor", "driver_id", "native_contract")
 	if err != nil {
 		return err
 	}
-	if _, err = requiredObject(contributor["native_contract"], "contributor.native_contract", "owner", "contract", "version"); err != nil {
+	if err = requiredString(contributor, "contributor", "driver_id"); err != nil {
 		return err
+	}
+	native, err := requiredObject(contributor["native_contract"], "contributor.native_contract", "owner", "contract", "version")
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"owner", "contract", "version"} {
+		if err := requiredString(native, "contributor.native_contract", name); err != nil {
+			return err
+		}
 	}
 	requires, err := requiredObject(root["requires"], "requires", "semantic_kernel", "packs")
 	if err != nil {
+		return err
+	}
+	if err := requiredString(requires, "requires", "semantic_kernel"); err != nil {
 		return err
 	}
 	packs, err := requiredArray(requires["packs"], "requires.packs")
@@ -106,7 +154,14 @@ func requireManifestMembers(root map[string]any) error {
 		return err
 	}
 	for i, item := range packs {
-		if _, err := requiredObject(item, fmt.Sprintf("requires.packs[%d]", i), "id", "version"); err != nil {
+		object, err := requiredObject(item, fmt.Sprintf("requires.packs[%d]", i), "id", "version")
+		if err != nil {
+			return err
+		}
+		if err := requiredString(object, fmt.Sprintf("requires.packs[%d]", i), "id"); err != nil {
+			return err
+		}
+		if err := requiredString(object, fmt.Sprintf("requires.packs[%d]", i), "version"); err != nil {
 			return err
 		}
 	}
@@ -120,6 +175,14 @@ func requireManifestMembers(root map[string]any) error {
 			return err
 		}
 		if err := requireLabel(object["label"], fmt.Sprintf("groups[%d].label", i)); err != nil {
+			return err
+		}
+		for _, name := range []string{"id", "resource_context"} {
+			if err := requiredString(object, fmt.Sprintf("groups[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		if err := requiredInteger(object, fmt.Sprintf("groups[%d]", i), "order"); err != nil {
 			return err
 		}
 	}
@@ -140,6 +203,14 @@ func requireManifestMembers(root map[string]any) error {
 				return err
 			}
 		}
+		for _, name := range []string{"id", "group"} {
+			if err := requiredString(object, fmt.Sprintf("fields[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		if err := requiredInteger(object, fmt.Sprintf("fields[%d]", i), "order"); err != nil {
+			return err
+		}
 	}
 	views, err := requiredArray(root["views"], "views")
 	if err != nil {
@@ -154,9 +225,23 @@ func requireManifestMembers(root map[string]any) error {
 			return err
 		}
 		for _, name := range []string{"field_ids", "diagnostic_ids"} {
-			if _, err := requiredArray(object[name], fmt.Sprintf("views[%d].%s", i, name)); err != nil {
+			array, err := requiredArray(object[name], fmt.Sprintf("views[%d].%s", i, name))
+			if err != nil {
 				return err
 			}
+			for j, value := range array {
+				if _, ok := value.(string); !ok {
+					return fmt.Errorf("closed manifest: required string views[%d].%s[%d] is null or wrong type", i, name, j)
+				}
+			}
+		}
+		for _, name := range []string{"id", "group", "renderer", "slot"} {
+			if err := requiredString(object, fmt.Sprintf("views[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		if err := requiredInteger(object, fmt.Sprintf("views[%d]", i), "order"); err != nil {
+			return err
 		}
 	}
 	actions, err := requiredArray(root["actions"], "actions")
@@ -176,6 +261,14 @@ func requireManifestMembers(root map[string]any) error {
 				return err
 			}
 		}
+		for _, name := range []string{"id", "group"} {
+			if err := requiredString(object, fmt.Sprintf("actions[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		if err := requiredInteger(object, fmt.Sprintf("actions[%d]", i), "order"); err != nil {
+			return err
+		}
 	}
 	diagnostics, err := requiredArray(root["diagnostics"], "diagnostics")
 	if err != nil {
@@ -187,6 +280,14 @@ func requireManifestMembers(root map[string]any) error {
 			return err
 		}
 		if err := requireLabel(object["label"], fmt.Sprintf("diagnostics[%d].label", i)); err != nil {
+			return err
+		}
+		for _, name := range []string{"id", "group", "member_id", "kind"} {
+			if err := requiredString(object, fmt.Sprintf("diagnostics[%d]", i), name); err != nil {
+				return err
+			}
+		}
+		if err := requiredInteger(object, fmt.Sprintf("diagnostics[%d]", i), "order"); err != nil {
 			return err
 		}
 	}
@@ -297,6 +398,9 @@ func Validate(m Manifest, index SemanticIndex) error {
 	}
 	if m.Requires.SemanticKernel != SemanticKernel {
 		return fmt.Errorf("wrong semantic kernel %q", m.Requires.SemanticKernel)
+	}
+	if m.Requires.Packs == nil || m.Groups == nil || m.Fields == nil || m.Views == nil || m.Actions == nil || m.Diagnostics == nil {
+		return fmt.Errorf("schema-required array is nil")
 	}
 	if len(m.Requires.Packs) == 0 {
 		return fmt.Errorf("requires.packs is required")
@@ -486,6 +590,9 @@ func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract Na
 		if err := label(d.Label); err != nil {
 			return nil, err
 		}
+		if err := id("diagnostic member_id", d.MemberID); err != nil {
+			return nil, err
+		}
 		if !diagnosticKinds[d.Kind] {
 			return nil, fmt.Errorf("unsupported diagnostic kind %q", d.Kind)
 		}
@@ -519,6 +626,9 @@ func validateViews(views []View, groups, fields, diagnostics map[string]bool) er
 		}
 		if !slots[v.Slot] {
 			return fmt.Errorf("unsupported host slot %q", v.Slot)
+		}
+		if v.FieldIDs == nil || v.DiagnosticIDs == nil {
+			return fmt.Errorf("view %q schema-required reference array is nil", v.ID)
 		}
 		for _, f := range v.FieldIDs {
 			if !fields[f] {

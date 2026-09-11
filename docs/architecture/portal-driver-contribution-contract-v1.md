@@ -56,6 +56,11 @@ The wire decoder rejects invalid UTF-8 before JSON parsing, duplicate object
 keys, non-object top-level values, unknown members, and every missing member
 required by the schema; deliberately empty arrays and a present `order: 0` are
 preserved as distinct valid wire values.
+Every required wire member is also type-checked and non-null before typed
+decode. Direct typed admission requires each schema-required array to be a
+non-nil slice, while explicitly empty arrays remain valid where the schema
+permits them. Native diagnostic member IDs follow the same non-empty,
+128-code-point identifier rule as every other public ID.
 Canonical order is `(order,id)` for descriptor records, `(id,version)` for
 required PackRefs, and lexical identifier order for view field/diagnostic
 reference lists. Direct typed admission applies the same 256 KiB bound to the
@@ -77,6 +82,11 @@ invokable action is enabled only if the exact current capability, binding,
 generation, semantic revisions, typed preconditions, route and deadline are
 admitted. Invocation repeats every check. A visible descriptor or enabled button
 does not grant authority.
+
+Hidden means absent: a caller without discovery permission receives no action
+DOM node, label, identifier, count, tooltip, description or other explanatory
+text. Test-only state evidence may record that condition, but is never rendered
+in that caller's action surface.
 
 ## Fixture and #552 boundary
 

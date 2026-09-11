@@ -28,6 +28,7 @@ func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
 		"/snapshot",
 		"/subscription",
 		"/mcp",
+		"/graphql/portal/v1",
 		"/admin/eebus/v1/",
 		"/dump",
 		"/ui/",
@@ -57,6 +58,7 @@ func TestHTTPControlPlaneRouteManifestOmitsDisabledOptionalRoutes(t *testing.T) 
 		"/snapshot",
 		"/subscription",
 		"/mcp",
+		"/graphql/portal/v1",
 		"/admin/eebus/v1/",
 	}
 	if got := httpControlPlaneRouteManifest(cfg, false); !reflect.DeepEqual(got, want) {

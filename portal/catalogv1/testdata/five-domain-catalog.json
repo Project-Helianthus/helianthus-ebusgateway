@@ -1,0 +1,15 @@
+{
+  "contract": "helianthus.gateway.portal-catalog/v1",
+  "catalog_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "catalog_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "evaluation_instant": "2026-09-11T00:00:00Z",
+  "authorization_scope": "fixture-public-read",
+  "domains": [
+    {"pack":{"id":"helianthus.evse","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"},
+    {"pack":{"id":"helianthus.infrastructure","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"},
+    {"pack":{"id":"helianthus.pv","version":"1.0.0"},"source_state":"PRESENT"},
+    {"pack":{"id":"helianthus.storage-bms","version":"1.1.0"},"source_state":"ABSENT","reason":"source_unavailable"},
+    {"pack":{"id":"helianthus.thermal-hvac","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"}
+  ],
+  "contributions": [], "resources": [], "fields": [], "actions": [], "quarantines": []
+}

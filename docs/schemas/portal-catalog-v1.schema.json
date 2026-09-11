@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-helianthus.org/schemas/portal-catalog-v1.schema.json",
+  "title": "Helianthus Gateway Portal Catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope", "domains", "contributions", "resources", "fields", "actions", "quarantines"],
+  "properties": {
+    "contract": {"const": "helianthus.gateway.portal-catalog/v1"},
+    "catalog_revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "catalog_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evaluation_instant": {"type": "string", "format": "date-time"},
+    "authorization_scope": {"type": "string"},
+    "domains": {"type": "array", "minItems": 5, "items": {"type": "object", "required": ["pack", "source_state"], "properties": {"pack": {"type": "object", "required": ["id", "version"], "properties": {"id": {"type": "string"}, "version": {"type": "string"}}}, "source_state": {"enum": ["PRESENT", "ABSENT"]}, "reason": {"type": "string"}}}},
+    "contributions": {"type": "array"}, "resources": {"type": "array"}, "fields": {"type": "array"}, "actions": {"type": "array"}, "quarantines": {"type": "array"}
+  }
+}

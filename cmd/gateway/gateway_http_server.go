@@ -192,6 +192,10 @@ func startHTTPServer(
 	}
 
 	mux := http.NewServeMux()
+	// This fixed route is intentionally separate from the legacy control-plane
+	// GraphQL endpoint: it starts with no source or action authority and never
+	// falls back to an existing GraphQL/MCP/native path.
+	mux.Handle("/graphql/portal/v1", newPortalCatalogV1Handler())
 	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
@@ -206,11 +210,12 @@ func startHTTPServer(
 			}
 		}
 		portalHandler := portal.NewHandler(portal.Options{
-			GraphQLPath:      cfg.GraphQLPath,
-			SnapshotPath:     cfg.SnapshotPath,
-			SubscriptionPath: cfg.SubscriptionPath,
-			MCPPath:          cfg.MCPPath,
-			EEBusAdminPath:   "/admin/eebus/v1",
+			GraphQLPath:       cfg.GraphQLPath,
+			PortalCatalogPath: "/graphql/portal/v1",
+			SnapshotPath:      cfg.SnapshotPath,
+			SubscriptionPath:  cfg.SubscriptionPath,
+			MCPPath:           cfg.MCPPath,
+			EEBusAdminPath:    "/admin/eebus/v1",
 			Readiness: func() portal.RuntimeReadiness {
 				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
 			},

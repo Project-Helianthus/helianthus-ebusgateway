@@ -123,6 +123,9 @@ Each resource and contribution-state record carries the full registry identity
 identity to match the selected resource and admitted manifest, so colliding
 manifest IDs from distinct drivers or versions cannot select one another's
 fields or actions.
+Fixture validation binds a capability reference with the typed
+`(resource_id, capability_id)` tuple, so delimiter characters in either ID
+cannot alias another resource/capability pair.
 
 The state fixture records the open gateway #552 reconciliation: B503 target
 context is resource-scoped; its five native availability states are retained;

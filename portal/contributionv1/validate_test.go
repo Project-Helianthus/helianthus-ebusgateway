@@ -68,6 +68,8 @@ type fixtureRegistryIdentity struct {
 	ManifestVersion string `json:"manifest_version"`
 }
 
+type fixtureCapabilityKey struct{ ResourceID, CapabilityID string }
+
 func fixtureIdentity(m Manifest) fixtureRegistryIdentity {
 	return fixtureRegistryIdentity{DriverID: m.Contributor.DriverID, ManifestID: m.ManifestID, ManifestVersion: m.ManifestVersion}
 }
@@ -135,9 +137,35 @@ func TestFiveDomainCatalogIsAccepted(t *testing.T) {
 	}
 }
 
+func TestFixtureCapabilityTupleKeysDoNotAliasDelimitedValues(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := c.Resources[0]
+	first.ID, first.Contribution = "a", fixtureIdentity(c.Manifests[0])
+	first.Capabilities = append(first.Capabilities[:0:0], first.Capabilities...)
+	first.Capabilities[0].ID = "b|c"
+	second := c.Resources[1]
+	second.ID, second.Contribution, second.Capabilities = "a|b", fixtureIdentity(c.Manifests[1]), nil
+	c.Resources = append(c.Resources, first, second)
+
+	state := c.ContributionStates[0]
+	state.Contribution, state.ResourceID, state.CapabilityID = second.Contribution, second.ID, "c"
+	c.ContributionStates = append(c.ContributionStates, state)
+	if err := validateFixturePresentation(c); err == nil || !strings.Contains(err.Error(), "invalid contribution state") {
+		t.Fatalf("delimiter-aliased nonexistent capability accepted: %v", err)
+	}
+
+	c.ContributionStates[len(c.ContributionStates)-1].Contribution = first.Contribution
+	c.ContributionStates[len(c.ContributionStates)-1].ResourceID = first.ID
+	c.ContributionStates[len(c.ContributionStates)-1].CapabilityID = first.Capabilities[0].ID
+	if err := validateFixturePresentation(c); err != nil {
+		t.Fatalf("real capability tuple rejected: %v", err)
+	}
+}
+
 func validateFixturePresentation(c fixtureCatalog) error {
 	states := map[string]bool{"available": true, "unavailable": true, "stale": true, "conflict": true, "partial": true, "unknown": true, "unsupported": true, "withdrawn": true, "withheld": true}
-	manifests, resources, capabilities, perspectives := map[fixtureRegistryIdentity]bool{}, map[string]fixtureRegistryIdentity{}, map[string]bool{}, map[string]bool{}
+	manifests, resources, capabilities, perspectives := map[fixtureRegistryIdentity]bool{}, map[string]fixtureRegistryIdentity{}, map[fixtureCapabilityKey]bool{}, map[string]bool{}
 	for _, m := range c.Manifests {
 		identity := fixtureIdentity(m)
 		if manifests[identity] {
@@ -151,10 +179,11 @@ func validateFixturePresentation(c fixtureCatalog) error {
 		}
 		resources[resource.ID] = resource.Contribution
 		for _, capability := range resource.Capabilities {
-			if capability.ID == "" || !states[capability.State] {
+			key := fixtureCapabilityKey{ResourceID: resource.ID, CapabilityID: capability.ID}
+			if capability.ID == "" || capabilities[key] || !states[capability.State] {
 				return fmt.Errorf("invalid fixture capability %q", capability.ID)
 			}
-			capabilities[resource.ID+"|"+capability.ID] = true
+			capabilities[key] = true
 		}
 	}
 	for _, perspective := range c.Navigation.Perspectives {
@@ -167,7 +196,7 @@ func validateFixturePresentation(c fixtureCatalog) error {
 		return fmt.Errorf("invalid fixture defaults")
 	}
 	for _, item := range c.ContributionStates {
-		if !manifests[item.Contribution] || resources[item.ResourceID] != item.Contribution || !capabilities[item.ResourceID+"|"+item.CapabilityID] || !states[item.State] {
+		if !manifests[item.Contribution] || resources[item.ResourceID] != item.Contribution || !capabilities[fixtureCapabilityKey{ResourceID: item.ResourceID, CapabilityID: item.CapabilityID}] || !states[item.State] {
 			return fmt.Errorf("invalid contribution state %q/%q@%q", item.Contribution.DriverID, item.Contribution.ManifestID, item.Contribution.ManifestVersion)
 		}
 	}

@@ -397,8 +397,9 @@ func startHTTPServer(
 }
 
 func validatePortalCatalogRoute(cfg ebusgateway.Config) error {
-	for _, path := range []string{cfg.GraphQLPath, cfg.SnapshotPath, cfg.SubscriptionPath, cfg.MCPPath, cfg.MetricsPath, cfg.PortalPath} {
-		if path == "/graphql/portal/v1" {
+	plan := newHTTPControlPlaneRoutePlan(cfg, true)
+	for _, path := range []string{plan.metricsPath, plan.graphqlPath, plan.snapshotPath, plan.subscriptionPath, plan.mcpPath, plan.dumpUploadPath, plan.uiPath, plan.portalPath} {
+		if strings.TrimRight(path, "/") == "/graphql/portal/v1" {
 			return fmt.Errorf("configured route %q collides with reserved Portal catalog route", path)
 		}
 	}

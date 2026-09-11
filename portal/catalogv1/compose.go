@@ -3,6 +3,7 @@ package catalogv1
 import (
 	"errors"
 	"sort"
+	"time"
 )
 
 // Catalog is a bounded optimistic detached capture. Sources are called once per
@@ -115,7 +116,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			Revision uint64
 			Fence    string
 			Catalog  Catalog
-		}{rev, fence, out}
+		}{rev, fence, catalogRevisionView(out)}
 		revisionDigest, err := hash(structural)
 		if err != nil {
 			return Catalog{}, err
@@ -135,6 +136,16 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 	}
 	return Catalog{}, ErrCatalogChanged
+}
+
+// catalogRevisionView excludes response-time decoration from the action claim.
+// It retains descriptors, source records, caller scope, and lifecycle fences;
+// native admission still revalidates freshness and expiry immediately before I/O.
+func catalogRevisionView(c Catalog) Catalog {
+	c.EvaluationInstant = time.Time{}
+	c.CatalogRevision = ""
+	c.CatalogDigest = ""
+	return c
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {

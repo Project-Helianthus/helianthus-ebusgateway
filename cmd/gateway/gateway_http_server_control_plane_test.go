@@ -76,6 +76,16 @@ func TestPortalCatalogRouteIsReservedAgainstConfigurableRoutes(t *testing.T) {
 	if err := validatePortalCatalogRoute(cfg); err != nil {
 		t.Fatal(err)
 	}
+	for _, set := range []func(*ebusgateway.Config){
+		func(c *ebusgateway.Config) { c.UIPath = "graphql/portal/v1" },
+		func(c *ebusgateway.Config) { c.DumpUploadPath = "graphql/portal/v1" },
+	} {
+		candidate := ebusgateway.DefaultConfig()
+		set(&candidate)
+		if err := validatePortalCatalogRoute(candidate); err == nil {
+			t.Fatal("normalized route collision accepted")
+		}
+	}
 }
 
 func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T) {

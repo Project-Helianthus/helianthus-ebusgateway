@@ -169,6 +169,29 @@ func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestInvokeCatalogRevisionIgnoresResponseEvaluationInstant(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	invoker, revalidator := &invokeFake{}, &revalidateFake{}
+	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "test.pack"}}}, authFake{}, invoker)
+	now := time.Unix(10, 0).UTC()
+	c.now = func() time.Time { now = now.Add(time.Second); return now }
+	c.SetRevalidator(revalidator)
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := Claims{CatalogRevision: first.CatalogRevision, Digest: first.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", IdempotencyKey: "once", Deadline: time.Unix(100, 0)}
+	if _, err := c.Invoke("caller", claim); err != nil {
+		t.Fatalf("response evaluation time made action stale: %v", err)
+	}
+	if invoker.calls.Load() != 1 || revalidator.calls.Load() != 1 {
+		t.Fatalf("calls=%d revalidations=%d", invoker.calls.Load(), revalidator.calls.Load())
+	}
+}
+
 func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	base := Catalog{Contract: Contract, Domains: []Domain{}, Contributions: []Identity{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}, Resources: []Resource{{ID: "same", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Fields: []Field{{ID: "same", ResourceID: "r", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ResourceID: "r", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Actions: []Action{}, Quarantines: []Quarantine{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}}
 	want, _ := CanonicalJSON(base)

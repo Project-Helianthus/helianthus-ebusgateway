@@ -77,3 +77,30 @@ unformatted preserved test; the second reached lint and reported one
 `staticcheck` conversion cleanup in the new registry snapshot. The final rerun
 passes both. No live, device, deployment, credential, or native-control action
 was performed.
+
+## Exact-HEAD follow-up correction
+
+The independent exact-HEAD review of `d0ad038` identified four additional
+blocking cases. Catalog revision hashing now excludes only response-time
+`evaluation_instant` and response digest fields, so a fresh invocation capture
+does not reject an otherwise unchanged action solely because wall time advanced.
+Source/descriptors/caller/fence records remain bound, and revalidation still
+owns freshness and expiry checks before native I/O.
+
+`ReplaceGeneration` now deep-detaches the validated canonical manifest before
+storage, compares the complete same-generation descriptor key set, and rejects
+both added and omitted replay members. The route guard now checks the normalized
+control-plane plan, including no-leading-slash UI and dump-upload paths. New
+regressions prove action success across changed response time, immutable nested
+manifest slices, complete replay key-set equality, and normalized route
+collisions. The older complete-tuple ordering and group-resource-context
+regressions remain covered.
+
+- Follow-up focused race tests: PASS.
+- Portal Node suite: 101 passed, 0 failed.
+- Linux 386 package compilation: PASS; generated binaries were moved outside
+  the worktree.
+- Follow-up `GOWORK=off ./scripts/ci_local.sh`: PASS, including race, lint,
+  Modbus RTU transport, and passive mapping gates. Durable log:
+  `author-evidence/issue973-portal-catalog-admission/ci_local-d0ad038-followup.log`,
+  SHA-256 `ab158b10d536dd82571f2a4023a8bb30bf1b948b3be95c7aecc54ecf1c9da59a`.

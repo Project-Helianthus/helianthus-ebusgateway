@@ -785,6 +785,34 @@ func TestRegistryGenerationSnapshotIsEnumerableAndFenced(t *testing.T) {
 	}
 }
 
+func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	r := NewRegistry(indexFromCatalog(c))
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{second, first}); err != nil {
+		t.Fatalf("reordered exact replay: %v", err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err == nil {
+		t.Fatal("omitted accepted descriptor replayed")
+	}
+	third := cloneManifest(t, first)
+	third.ManifestID = "portal.thermal-third"
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second, third}); err == nil {
+		t.Fatal("added descriptor replayed")
+	}
+	first.Views[0].FieldIDs[0] = "mutated"
+	if got := r.Snapshot().Accepted[0].Manifest.Views[0].FieldIDs[0]; got == "mutated" {
+		t.Fatal("registry retained caller-owned nested slice")
+	}
+}
+
 func TestCanonicalizePreservesExplicitEmptyRequiredArrays(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

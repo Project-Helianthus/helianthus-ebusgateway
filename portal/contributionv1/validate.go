@@ -1004,6 +1004,10 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		if err != nil {
 			return err
 		}
+		canonical, err = detachedCanonicalManifest(canonical)
+		if err != nil {
+			return err
+		}
 		digest, err := CanonicalDigest(canonical, r.index)
 		if err != nil {
 			return err
@@ -1021,6 +1025,15 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		return fmt.Errorf("descriptor generation is stale")
 	}
 	if current == owner.Generation {
+		existing := 0
+		for key := range r.accepted {
+			if key.DriverID == owner.DriverID {
+				existing++
+			}
+		}
+		if existing != len(staged) {
+			return fmt.Errorf("descriptor generation replay key set differs")
+		}
 		for key, item := range staged {
 			if prior, ok := r.accepted[key]; !ok || prior.Digest != item.Digest {
 				return fmt.Errorf("descriptor generation replay differs")
@@ -1041,6 +1054,20 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 	r.generation[owner.DriverID] = owner.Generation
 	r.revision++
 	return nil
+}
+
+// detachedCanonicalManifest severs nested slices from the caller-owned input.
+// Registry state remains immutable if a publisher mutates its descriptor later.
+func detachedCanonicalManifest(m Manifest) (Manifest, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("canonical descriptor copy: %w", err)
+	}
+	copy, err := Decode(raw)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("canonical descriptor copy: %w", err)
+	}
+	return copy, nil
 }
 
 func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {

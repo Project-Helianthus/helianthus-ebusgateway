@@ -249,6 +249,53 @@ func TestDecodeRejectsUnknownAndExecutableMembers(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsCaseFoldedRawMemberAliases(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	base := rawManifest(t, c.Manifests[0])
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"top-level", func(v map[string]any) { v["Contract"] = v["contract"] }},
+		{"contributor", func(v map[string]any) { v["contributor"].(map[string]any)["Driver_ID"] = "thermal.primary" }},
+		{"native-contract", func(v map[string]any) {
+			v["contributor"].(map[string]any)["native_contract"].(map[string]any)["Owner"] = "helianthus"
+		}},
+		{"requirements", func(v map[string]any) { v["requires"].(map[string]any)["Semantic_Kernel"] = SemanticKernel }},
+		{"requirements-pack", func(v map[string]any) {
+			v["requires"].(map[string]any)["packs"].([]any)[0].(map[string]any)["ID"] = "helianthus.pack.thermal"
+		}},
+		{"group", func(v map[string]any) { v["groups"].([]any)[0].(map[string]any)["ID"] = "zone" }},
+		{"label-duplicate-semantic-target", func(v map[string]any) {
+			v["groups"].([]any)[0].(map[string]any)["label"].(map[string]any)["Key"] = "thermal.zone.overwrite"
+		}},
+		{"field", func(v map[string]any) { v["fields"].([]any)[0].(map[string]any)["Group"] = "zone" }},
+		{"definition", func(v map[string]any) {
+			v["fields"].([]any)[0].(map[string]any)["ref"].(map[string]any)["ID"] = "thermal.temperature.zone"
+		}},
+		{"definition-pack", func(v map[string]any) {
+			v["fields"].([]any)[0].(map[string]any)["ref"].(map[string]any)["pack"].(map[string]any)["ID"] = "helianthus.pack.thermal"
+		}},
+		{"view-unicode-folded-slot", func(v map[string]any) { v["views"].([]any)[0].(map[string]any)["ſlot"] = "native_diagnostics" }},
+		{"action", func(v map[string]any) {
+			v["actions"].([]any)[0].(map[string]any)["Operation_Ref"] = v["actions"].([]any)[0].(map[string]any)["operation_ref"]
+		}},
+		{"diagnostic", func(v map[string]any) {
+			v["diagnostics"] = []any{map[string]any{"id": "diagnostic", "group": "zone", "label": map[string]any{"key": "diagnostic", "default": "Diagnostic"}, "member_id": "native-field", "Member_ID": "overwrite", "kind": "field", "order": 1}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value := cloneRaw(t, base)
+			tc.mutate(value)
+			if _, err := Decode(rawBytes(t, value)); err == nil || !strings.Contains(err.Error(), "unknown member") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsNestedDuplicateObjectKeys(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)
@@ -272,7 +319,7 @@ func TestDecodeRejectsRedundantActionReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := bytes.Replace(b, []byte(`"actions":[{`), []byte(`"actions":[{"ref":null,`), 1)
-	if _, err := Decode(bad); err == nil || !strings.Contains(err.Error(), "unknown field") {
+	if _, err := Decode(bad); err == nil || !strings.Contains(err.Error(), "unknown member") {
 		t.Fatalf("error=%v", err)
 	}
 }

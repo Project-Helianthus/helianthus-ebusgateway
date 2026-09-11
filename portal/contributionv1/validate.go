@@ -76,9 +76,16 @@ func requiredObject(value any, path string, names ...string) (map[string]any, er
 	if !ok {
 		return nil, fmt.Errorf("closed manifest: required object %s is absent or not an object", path)
 	}
+	allowed := make(map[string]bool, len(names))
 	for _, name := range names {
+		allowed[name] = true
 		if _, ok := object[name]; !ok {
 			return nil, fmt.Errorf("closed manifest: missing required member %s.%s", path, name)
+		}
+	}
+	for name := range object {
+		if !allowed[name] {
+			return nil, fmt.Errorf("closed manifest: unknown member %s.%s", path, name)
 		}
 	}
 	return object, nil

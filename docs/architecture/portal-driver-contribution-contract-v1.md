@@ -68,6 +68,9 @@ decode. Direct typed admission requires each schema-required array to be a
 non-nil slice, while explicitly empty arrays remain valid where the schema
 permits them. Native diagnostic member IDs follow the same non-empty,
 128-code-point identifier rule as every other public ID.
+Every raw object is checked against its exact, case-sensitive schema member
+set before typed decoding. Case-folded aliases and duplicate semantic targets
+with distinct wire spellings are unknown members, never alternate fields.
 It also rejects escaped unpaired UTF-16 high or low surrogates before JSON
 normalization; a valid high/low surrogate pair remains a valid JSON string.
 Canonical order is `(order,id)` for descriptor records, `(id,version)` for

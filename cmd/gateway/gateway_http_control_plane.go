@@ -85,6 +85,7 @@ func (plan httpControlPlaneRoutePlan) manifest() []string {
 		plan.snapshotPath,
 		plan.subscriptionPath,
 		plan.mcpPath,
+		"/graphql/portal/v1",
 		"/admin/eebus/v1/",
 	)
 	if plan.dumpUploadPath != "" {

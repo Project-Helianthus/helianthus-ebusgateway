@@ -20,6 +20,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -544,6 +545,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		eebusProvider mcp.EEBusV1Provider,
 		eebusCommandRouter mcp.EEBusV1CommandRouter,
 		modbusProvider mcp.ModbusV1Provider,
+		portalCatalogSource catalogv1.SourceCapture,
 		scheduleWriter mcp.ScheduleWriter,
 		configWriter mcp.ConfigWriter,
 		busObservability *ebusgateway.BusObservabilityStore,
@@ -557,7 +559,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver,
+			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver,
 		)
 	}
 	server, advertiser, err := startHTTPServerFn(
@@ -570,6 +572,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
 		newGatewayModbusMCPProviderWithRuntimes(modbusAdapter, growattBMSRuntime, teslaHSCRetained),
+		newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained),
 		lateScheduleWriter,
 		lateConfigWriter,
 		busObservability,

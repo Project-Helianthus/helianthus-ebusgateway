@@ -1,0 +1,6 @@
+[
+  {"name":"hidden_action","caller":"public-read","expect_actions":0},
+  {"name":"stale_catalog_revision","expect":"portal action claims are stale"},
+  {"name":"digest_conflict","expect":"both descriptors quarantined"},
+  {"name":"source_absent","expect":"no invented resource or enabled action"}
+]

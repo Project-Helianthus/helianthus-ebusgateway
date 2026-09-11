@@ -28,6 +28,7 @@ func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
 		"/snapshot",
 		"/subscription",
 		"/mcp",
+		"/graphql/portal/v1",
 		"/admin/eebus/v1/",
 		"/dump",
 		"/ui/",
@@ -57,10 +58,33 @@ func TestHTTPControlPlaneRouteManifestOmitsDisabledOptionalRoutes(t *testing.T) 
 		"/snapshot",
 		"/subscription",
 		"/mcp",
+		"/graphql/portal/v1",
 		"/admin/eebus/v1/",
 	}
 	if got := httpControlPlaneRouteManifest(cfg, false); !reflect.DeepEqual(got, want) {
 		t.Fatalf("route manifest = %#v; want %#v", got, want)
+	}
+}
+
+func TestPortalCatalogRouteIsReservedAgainstConfigurableRoutes(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.GraphQLPath = "/graphql/portal/v1"
+	if err := validatePortalCatalogRoute(cfg); err == nil {
+		t.Fatal("expected reserved route collision")
+	}
+	cfg.GraphQLPath = "/graphql"
+	if err := validatePortalCatalogRoute(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, set := range []func(*ebusgateway.Config){
+		func(c *ebusgateway.Config) { c.UIPath = "graphql/portal/v1" },
+		func(c *ebusgateway.Config) { c.DumpUploadPath = "graphql/portal/v1" },
+	} {
+		candidate := ebusgateway.DefaultConfig()
+		set(&candidate)
+		if err := validatePortalCatalogRoute(candidate); err == nil {
+			t.Fatal("normalized route collision accepted")
+		}
 	}
 }
 

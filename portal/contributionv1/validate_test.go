@@ -760,6 +760,86 @@ func TestRegistryTupleKeysDoNotAliasDelimitedIdentities(t *testing.T) {
 	}
 }
 
+func TestRegistryGenerationSnapshotIsEnumerableAndFenced(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	r := NewRegistry(idx)
+	m := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: m.Contributor.DriverID, Generation: 2}
+	if err := r.ReplaceGeneration(owner, []Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	s := r.Snapshot()
+	if s.Revision != 1 || len(s.Accepted) != 1 || s.Accepted[0].Generation != 2 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+	if r.WithdrawGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}) {
+		t.Fatal("older withdrawal removed a successor")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}, []Manifest{m}); err == nil {
+		t.Fatal("older replacement was accepted")
+	}
+	if !r.WithdrawGeneration(owner) || len(r.Snapshot().Accepted) != 0 {
+		t.Fatal("current generation was not withdrawn")
+	}
+}
+
+func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	r := NewRegistry(indexFromCatalog(c))
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{second, first}); err != nil {
+		t.Fatalf("reordered exact replay: %v", err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err == nil {
+		t.Fatal("omitted accepted descriptor replayed")
+	}
+	third := cloneManifest(t, first)
+	third.ManifestID = "portal.thermal-third"
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second, third}); err == nil {
+		t.Fatal("added descriptor replayed")
+	}
+	first.Views[0].FieldIDs[0] = "mutated"
+	if got := r.Snapshot().Accepted[0].Manifest.Views[0].FieldIDs[0]; got == "mutated" {
+		t.Fatal("registry retained caller-owned nested slice")
+	}
+}
+
+func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	unchanged := NewRegistry(indexFromCatalog(c))
+	if err := unchanged.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unchanged.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{first}); err != nil {
+		t.Fatalf("unchanged successor rejected: %v", err)
+	}
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed"
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{changed}); err == nil {
+		t.Fatal("changed descriptor replaced across generation")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("conflict snapshot=%+v", snapshot)
+	}
+}
+
 func TestCanonicalizePreservesExplicitEmptyRequiredArrays(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

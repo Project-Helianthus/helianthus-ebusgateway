@@ -55,6 +55,9 @@ remain available.
 Every record order is a signed 32-bit integer from `-2147483648` through
 `2147483647`. The JSON Schema, raw wire decoder and typed Go validation use this
 same portable range, including Linux 32-bit builds.
+Schema-valid integral decimal and exponent spellings, such as `1.0` and
+`1e0`, are accepted without float narrowing and normalize to that typed order;
+fractional, non-finite and out-of-range forms reject.
 
 The wire decoder rejects invalid UTF-8 before JSON parsing, duplicate object
 keys, non-object top-level values, unknown members, and every missing member
@@ -72,6 +75,10 @@ required PackRefs, and lexical identifier order for view field/diagnostic
 reference lists. Direct typed admission applies the same 256 KiB bound to the
 trusted canonical JSON encoding. Registry and fixture-index lookups use typed
 tuples, never delimiter-concatenated identity strings.
+`StaticIndex` keeps those tuple keys private and exposes `NewStaticIndex` plus
+typed add methods for each pack, definition, unit, service-capability, field,
+operation and native-member relation; its zero value initializes safely on the
+first add.
 
 ## Truth and actions
 

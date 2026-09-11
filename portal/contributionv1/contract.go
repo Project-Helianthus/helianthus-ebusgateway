@@ -127,13 +127,13 @@ type SemanticIndex interface {
 // StaticIndex is deliberately small and useful for deterministic fixtures.
 // Production composition must provide a current SemReg-backed SemanticIndex.
 type StaticIndex struct {
-	Packs               map[packKey]bool
-	Definitions         map[definitionKey]bool
-	Units               map[definitionKey]DefinitionRef
-	ServiceCapabilities map[serviceCapabilityKey]bool
-	FieldRelations      map[fieldRelationKey]bool
-	Operations          map[operationKey]bool
-	NativeMembers       map[nativeMemberKey]bool
+	packs               map[packKey]bool
+	definitions         map[definitionKey]bool
+	units               map[definitionKey]DefinitionRef
+	serviceCapabilities map[serviceCapabilityKey]bool
+	fieldRelations      map[fieldRelationKey]bool
+	operations          map[operationKey]bool
+	nativeMembers       map[nativeMemberKey]bool
 }
 
 type packKey struct{ ID, Version string }
@@ -158,21 +158,78 @@ func asNativeContractKey(r NativeContractRef) nativeContractKey {
 	return nativeContractKey(r)
 }
 
-func (s StaticIndex) HasPack(p PackRef) bool             { return s.Packs[asPackKey(p)] }
-func (s StaticIndex) HasDefinition(r DefinitionRef) bool { return s.Definitions[asDefinitionKey(r)] }
+// NewStaticIndex creates a fixture-oriented SemanticIndex with collision-free
+// typed relation keys. Its Add methods are also safe on a zero-valued index.
+func NewStaticIndex() *StaticIndex { return &StaticIndex{} }
+
+func (s *StaticIndex) ensureMaps() {
+	if s.packs == nil {
+		s.packs = make(map[packKey]bool)
+	}
+	if s.definitions == nil {
+		s.definitions = make(map[definitionKey]bool)
+	}
+	if s.units == nil {
+		s.units = make(map[definitionKey]DefinitionRef)
+	}
+	if s.serviceCapabilities == nil {
+		s.serviceCapabilities = make(map[serviceCapabilityKey]bool)
+	}
+	if s.fieldRelations == nil {
+		s.fieldRelations = make(map[fieldRelationKey]bool)
+	}
+	if s.operations == nil {
+		s.operations = make(map[operationKey]bool)
+	}
+	if s.nativeMembers == nil {
+		s.nativeMembers = make(map[nativeMemberKey]bool)
+	}
+}
+
+func (s *StaticIndex) AddPack(p PackRef) {
+	s.ensureMaps()
+	s.packs[asPackKey(p)] = true
+}
+func (s *StaticIndex) AddDefinition(r DefinitionRef) {
+	s.ensureMaps()
+	s.definitions[asDefinitionKey(r)] = true
+}
+func (s *StaticIndex) AddCanonicalUnit(ref, unit DefinitionRef) {
+	s.ensureMaps()
+	s.units[asDefinitionKey(ref)] = unit
+}
+func (s *StaticIndex) AddServiceCapability(service, capability DefinitionRef) {
+	s.ensureMaps()
+	s.serviceCapabilities[serviceCapabilityKey{asDefinitionKey(service), asDefinitionKey(capability)}] = true
+}
+func (s *StaticIndex) AddFieldRelation(field, service, capability DefinitionRef) {
+	s.ensureMaps()
+	s.fieldRelations[fieldRelationKey{asDefinitionKey(field), asDefinitionKey(service), asDefinitionKey(capability)}] = true
+}
+func (s *StaticIndex) AddOperation(operation, capability, service, argument, effect DefinitionRef) {
+	s.ensureMaps()
+	s.operations[operationKey{asDefinitionKey(operation), asDefinitionKey(capability), asDefinitionKey(service), asDefinitionKey(argument), asDefinitionKey(effect)}] = true
+}
+func (s *StaticIndex) AddNativeMember(contract NativeContractRef, kind, id string) {
+	s.ensureMaps()
+	s.nativeMembers[nativeMemberKey{asNativeContractKey(contract), kind, id}] = true
+}
+
+func (s StaticIndex) HasPack(p PackRef) bool             { return s.packs[asPackKey(p)] }
+func (s StaticIndex) HasDefinition(r DefinitionRef) bool { return s.definitions[asDefinitionKey(r)] }
 func (s StaticIndex) CanonicalUnit(r DefinitionRef) (DefinitionRef, bool) {
-	u, ok := s.Units[asDefinitionKey(r)]
+	u, ok := s.units[asDefinitionKey(r)]
 	return u, ok
 }
 func (s StaticIndex) ServiceOwnsCapability(service, capability DefinitionRef) bool {
-	return s.ServiceCapabilities[serviceCapabilityKey{asDefinitionKey(service), asDefinitionKey(capability)}]
+	return s.serviceCapabilities[serviceCapabilityKey{asDefinitionKey(service), asDefinitionKey(capability)}]
 }
 func (s StaticIndex) FieldMatches(field, service, capability DefinitionRef) bool {
-	return s.FieldRelations[fieldRelationKey{asDefinitionKey(field), asDefinitionKey(service), asDefinitionKey(capability)}]
+	return s.fieldRelations[fieldRelationKey{asDefinitionKey(field), asDefinitionKey(service), asDefinitionKey(capability)}]
 }
 func (s StaticIndex) OperationMatches(operation, capability, service, argument, effect DefinitionRef) bool {
-	return s.Operations[operationKey{asDefinitionKey(operation), asDefinitionKey(capability), asDefinitionKey(service), asDefinitionKey(argument), asDefinitionKey(effect)}]
+	return s.operations[operationKey{asDefinitionKey(operation), asDefinitionKey(capability), asDefinitionKey(service), asDefinitionKey(argument), asDefinitionKey(effect)}]
 }
 func (s StaticIndex) HasNativeMember(contract NativeContractRef, kind, id string) bool {
-	return s.NativeMembers[nativeMemberKey{asNativeContractKey(contract), kind, id}]
+	return s.nativeMembers[nativeMemberKey{asNativeContractKey(contract), kind, id}]
 }

@@ -74,38 +74,38 @@ func readFixture(t *testing.T, name string, into any) {
 }
 
 func indexFromCatalog(c fixtureCatalog) StaticIndex {
-	s := StaticIndex{Packs: map[packKey]bool{}, Definitions: map[definitionKey]bool{}, Units: map[definitionKey]DefinitionRef{}, ServiceCapabilities: map[serviceCapabilityKey]bool{}, FieldRelations: map[fieldRelationKey]bool{}, Operations: map[operationKey]bool{}, NativeMembers: map[nativeMemberKey]bool{}}
+	s := NewStaticIndex()
 	for _, p := range c.Index.Packs {
-		s.Packs[asPackKey(p)] = true
+		s.AddPack(p)
 	}
 	for _, r := range c.Index.Definitions {
-		s.Definitions[asDefinitionKey(r)] = true
+		s.AddDefinition(r)
 	}
 	for _, f := range c.Index.Fields {
-		s.Definitions[asDefinitionKey(f.Ref)] = true
-		s.Definitions[asDefinitionKey(f.UnitRef)] = true
-		s.Definitions[asDefinitionKey(f.ServiceRef)] = true
-		s.Definitions[asDefinitionKey(f.CapabilityRef)] = true
-		s.Units[asDefinitionKey(f.Ref)] = f.UnitRef
-		s.FieldRelations[fieldRelationKey{asDefinitionKey(f.Ref), asDefinitionKey(f.ServiceRef), asDefinitionKey(f.CapabilityRef)}] = true
+		s.AddDefinition(f.Ref)
+		s.AddDefinition(f.UnitRef)
+		s.AddDefinition(f.ServiceRef)
+		s.AddDefinition(f.CapabilityRef)
+		s.AddCanonicalUnit(f.Ref, f.UnitRef)
+		s.AddFieldRelation(f.Ref, f.ServiceRef, f.CapabilityRef)
 	}
 	for _, v := range c.Index.ServiceCapabilities {
-		s.Definitions[asDefinitionKey(v.Service)] = true
-		s.Definitions[asDefinitionKey(v.Capability)] = true
-		s.ServiceCapabilities[serviceCapabilityKey{asDefinitionKey(v.Service), asDefinitionKey(v.Capability)}] = true
+		s.AddDefinition(v.Service)
+		s.AddDefinition(v.Capability)
+		s.AddServiceCapability(v.Service, v.Capability)
 	}
 	for _, v := range c.Index.Operations {
-		s.Definitions[asDefinitionKey(v.Operation)] = true
-		s.Definitions[asDefinitionKey(v.Capability)] = true
-		s.Definitions[asDefinitionKey(v.Service)] = true
-		s.Definitions[asDefinitionKey(v.Argument)] = true
-		s.Definitions[asDefinitionKey(v.Effect)] = true
-		s.Operations[operationKey{asDefinitionKey(v.Operation), asDefinitionKey(v.Capability), asDefinitionKey(v.Service), asDefinitionKey(v.Argument), asDefinitionKey(v.Effect)}] = true
+		s.AddDefinition(v.Operation)
+		s.AddDefinition(v.Capability)
+		s.AddDefinition(v.Service)
+		s.AddDefinition(v.Argument)
+		s.AddDefinition(v.Effect)
+		s.AddOperation(v.Operation, v.Capability, v.Service, v.Argument, v.Effect)
 	}
 	for _, v := range c.Index.NativeMembers {
-		s.NativeMembers[nativeMemberKey{asNativeContractKey(v.Contract), v.Kind, v.ID}] = true
+		s.AddNativeMember(v.Contract, v.Kind, v.ID)
 	}
-	return s
+	return *s
 }
 
 func TestFiveDomainCatalogIsAccepted(t *testing.T) {
@@ -360,6 +360,40 @@ func TestDecodeDistinguishesPresentZeroOrderFromMissingOrder(t *testing.T) {
 	}
 }
 
+func TestDecodeAcceptsSchemaValidIntegralOrderSpellings(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	base := rawBytes(t, c.Manifests[0])
+	for _, tc := range []struct {
+		name    string
+		literal string
+		want    int32
+		valid   bool
+	}{
+		{"decimal", "1.0", 1, true},
+		{"exponent", "1e0", 1, true},
+		{"minimum", "-2147483648", MinOrder, true},
+		{"maximum", "2147483647", MaxOrder, true},
+		{"below-minimum", "-2147483649", 0, false},
+		{"above-maximum", "2147483648", 0, false},
+		{"fraction", "1.5", 0, false},
+		{"fractional-exponent", "1e-1", 0, false},
+		{"non-finite-nan", "NaN", 0, false},
+		{"non-finite-infinity", "Infinity", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := bytes.Replace(base, []byte(`"order":10`), []byte(`"order":`+tc.literal), 1)
+			manifest, err := Decode(data)
+			if (err == nil) != tc.valid {
+				t.Fatalf("literal=%s err=%v valid=%t", tc.literal, err, tc.valid)
+			}
+			if tc.valid && manifest.Groups[0].Order != tc.want {
+				t.Fatalf("literal=%s normalized order=%d want=%d", tc.literal, manifest.Groups[0].Order, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecodeRejectsNullAndWrongRequiredScalarTypes(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)
@@ -426,7 +460,7 @@ func TestValidateRequiresNonNilSchemaArraysAndDiagnosticMemberID(t *testing.T) {
 	for _, memberID := range []string{"", strings.Repeat("é", 129)} {
 		m := cloneManifest(t, c.Manifests[0])
 		m.Diagnostics = []Diagnostic{{ID: "diagnostic", Group: "zone", Label: Label{Key: "diagnostic", Default: "Diagnostic"}, MemberID: memberID, Kind: "field", Order: 1}}
-		idx.NativeMembers[nativeMemberKey{asNativeContractKey(m.Contributor.NativeContract), "field", memberID}] = true
+		idx.AddNativeMember(m.Contributor.NativeContract, "field", memberID)
 		if err := Validate(m, idx); err == nil || !strings.Contains(err.Error(), "diagnostic member_id") {
 			t.Fatalf("member_id=%q error=%v", memberID, err)
 		}
@@ -501,7 +535,7 @@ func TestOrderUsesPortableSigned32BitRange(t *testing.T) {
 		m.Groups[0].Order, m.Fields[0].Order, m.Views[0].Order, m.Actions[0].Order = int32(value), int32(value), int32(value), int32(value)
 		m.Diagnostics = []Diagnostic{{ID: "boundary-diagnostic", Group: "zone", Label: Label{Key: "boundary-diagnostic", Default: "Boundary diagnostic"}, MemberID: "boundary-member", Kind: "field", Order: int32(value)}}
 		idx := indexFromCatalog(c)
-		idx.NativeMembers[nativeMemberKey{asNativeContractKey(m.Contributor.NativeContract), "field", "boundary-member"}] = true
+		idx.AddNativeMember(m.Contributor.NativeContract, "field", "boundary-member")
 		if err := Validate(m, idx); err != nil {
 			t.Fatalf("typed boundary %d rejected: %v", value, err)
 		}
@@ -606,8 +640,8 @@ func TestCanonicalDigestBoundsDirectManifestAndCanonicalizesUnorderedArrays(t *t
 	first.Views[0].FieldIDs = []string{"temperature", "temperature-copy"}
 	first.Diagnostics = []Diagnostic{{ID: "d-a", Group: "zone", Label: Label{Key: "d.a", Default: "A"}, MemberID: "a", Kind: "field", Order: 10}, {ID: "d-b", Group: "zone", Label: Label{Key: "d.b", Default: "B"}, MemberID: "b", Kind: "field", Order: 20}}
 	first.Views[0].DiagnosticIDs = []string{"d-a", "d-b"}
-	idx.NativeMembers[nativeMemberKey{asNativeContractKey(first.Contributor.NativeContract), "field", "a"}] = true
-	idx.NativeMembers[nativeMemberKey{asNativeContractKey(first.Contributor.NativeContract), "field", "b"}] = true
+	idx.AddNativeMember(first.Contributor.NativeContract, "field", "a")
+	idx.AddNativeMember(first.Contributor.NativeContract, "field", "b")
 	second := cloneManifest(t, first)
 	second.Requires.Packs[0], second.Requires.Packs[1] = second.Requires.Packs[1], second.Requires.Packs[0]
 	second.Views[0].FieldIDs[0], second.Views[0].FieldIDs[1] = second.Views[0].FieldIDs[1], second.Views[0].FieldIDs[0]
@@ -636,7 +670,14 @@ func TestStaticIndexTypedKeysDoNotAliasDelimitedValues(t *testing.T) {
 	packA, packB := PackRef{ID: "a@b", Version: "c"}, PackRef{ID: "a", Version: "b@c"}
 	definitionA, definitionB := DefinitionRef{Pack: packA, ID: "d/e", Version: "f"}, DefinitionRef{Pack: PackRef{ID: "a@b", Version: "c/d"}, ID: "e", Version: "f"}
 	nativeA, nativeB := NativeContractRef{Owner: "a", Contract: "b/c", Version: "d"}, NativeContractRef{Owner: "a/b", Contract: "c", Version: "d"}
-	index := StaticIndex{Packs: map[packKey]bool{asPackKey(packA): true}, Definitions: map[definitionKey]bool{asDefinitionKey(definitionA): true}, Units: map[definitionKey]DefinitionRef{asDefinitionKey(definitionA): definitionA}, ServiceCapabilities: map[serviceCapabilityKey]bool{serviceCapabilityKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, FieldRelations: map[fieldRelationKey]bool{fieldRelationKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, Operations: map[operationKey]bool{operationKey{asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA), asDefinitionKey(definitionA)}: true}, NativeMembers: map[nativeMemberKey]bool{nativeMemberKey{asNativeContractKey(nativeA), "field", "x"}: true}}
+	index := NewStaticIndex()
+	index.AddPack(packA)
+	index.AddDefinition(definitionA)
+	index.AddCanonicalUnit(definitionA, definitionA)
+	index.AddServiceCapability(definitionA, definitionA)
+	index.AddFieldRelation(definitionA, definitionA, definitionA)
+	index.AddOperation(definitionA, definitionA, definitionA, definitionA, definitionA)
+	index.AddNativeMember(nativeA, "field", "x")
 	if index.HasPack(packB) || index.HasDefinition(definitionB) {
 		t.Fatal("delimiter aliases matched static keys")
 	}

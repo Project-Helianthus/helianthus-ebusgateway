@@ -34,19 +34,32 @@ func Decode(data []byte) (Manifest, error) {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return Manifest{}, err
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	rawDecoder := json.NewDecoder(bytes.NewReader(data))
+	rawDecoder.UseNumber()
+	if err := rawDecoder.Decode(&raw); err != nil {
 		return Manifest{}, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if err := ensureEOF(rawDecoder); err != nil {
+		return Manifest{}, err
 	}
 	if _, ok := raw.(map[string]any); !ok {
 		return Manifest{}, fmt.Errorf("closed manifest: top-level value must be an object")
 	}
-	if err := requireManifestMembers(raw.(map[string]any)); err != nil {
+	root := raw.(map[string]any)
+	if err := requireManifestMembers(root); err != nil {
 		return Manifest{}, err
 	}
 	if err := rejectForbidden(raw); err != nil {
 		return Manifest{}, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := normalizeWireOrders(root); err != nil {
+		return Manifest{}, err
+	}
+	normalized, err := json.Marshal(root)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("closed manifest: normalize wire order: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(normalized))
 	dec.DisallowUnknownFields()
 	var m Manifest
 	if err := dec.Decode(&m); err != nil {
@@ -85,9 +98,154 @@ func requiredString(object map[string]any, path, name string) error {
 }
 func orderInRange(value int64) bool { return value >= int64(MinOrder) && value <= int64(MaxOrder) }
 func requiredInteger(object map[string]any, path, name string) error {
-	number, ok := object[name].(float64)
-	if !ok || number != float64(int64(number)) || !orderInRange(int64(number)) {
+	number, ok := object[name].(json.Number)
+	if !ok {
 		return fmt.Errorf("closed manifest: required integer %s.%s is null or wrong type", path, name)
+	}
+	if _, err := parseWireOrder(number); err != nil {
+		return fmt.Errorf("closed manifest: required integer %s.%s is null, fractional, or out of range", path, name)
+	}
+	return nil
+}
+
+// parseWireOrder accepts every JSON Schema integer spelling that has an exact
+// signed 32-bit value, including decimal and exponent forms. It works directly
+// on the lexical JSON number so float conversion cannot narrow or round it.
+func parseWireOrder(number json.Number) (int32, error) {
+	literal := number.String()
+	if literal == "" {
+		return 0, fmt.Errorf("empty number")
+	}
+	negative := false
+	if literal[0] == '-' {
+		negative, literal = true, literal[1:]
+	}
+	if literal == "" {
+		return 0, fmt.Errorf("missing number digits")
+	}
+	exponent := 0
+	if exponentAt := strings.IndexAny(literal, "eE"); exponentAt >= 0 {
+		var err error
+		exponent, err = parseWireOrderExponent(literal[exponentAt+1:])
+		if err != nil {
+			return 0, err
+		}
+		literal = literal[:exponentAt]
+	}
+	integer, fraction, hasDecimal := literal, "", false
+	if decimalAt := strings.IndexByte(literal, '.'); decimalAt >= 0 {
+		integer, fraction, hasDecimal = literal[:decimalAt], literal[decimalAt+1:], true
+	}
+	if integer == "" || (hasDecimal && fraction == "") {
+		return 0, fmt.Errorf("invalid decimal")
+	}
+	digits := integer + fraction
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return 0, fmt.Errorf("invalid decimal digit")
+		}
+	}
+	significant := strings.TrimLeft(digits, "0")
+	if significant == "" {
+		return 0, nil
+	}
+	scale := exponent - len(fraction)
+	if scale < 0 {
+		trailing := -scale
+		if trailing >= len(significant) {
+			return 0, fmt.Errorf("fractional number")
+		}
+		for _, digit := range significant[len(significant)-trailing:] {
+			if digit != '0' {
+				return 0, fmt.Errorf("fractional number")
+			}
+		}
+		significant = significant[:len(significant)-trailing]
+	} else if scale > 0 {
+		if len(significant)+scale > 10 {
+			return 0, fmt.Errorf("out of range")
+		}
+		significant += strings.Repeat("0", scale)
+	}
+	if len(significant) > 10 {
+		return 0, fmt.Errorf("out of range")
+	}
+	var absolute int64
+	for _, digit := range significant {
+		absolute = absolute*10 + int64(digit-'0')
+	}
+	limit := int64(MaxOrder)
+	if negative {
+		limit = -int64(MinOrder)
+	}
+	if absolute > limit {
+		return 0, fmt.Errorf("out of range")
+	}
+	if negative {
+		absolute = -absolute
+	}
+	return int32(absolute), nil
+}
+
+func parseWireOrderExponent(raw string) (int, error) {
+	if raw == "" {
+		return 0, fmt.Errorf("missing exponent")
+	}
+	negative := false
+	if raw[0] == '+' || raw[0] == '-' {
+		negative, raw = raw[0] == '-', raw[1:]
+	}
+	if raw == "" {
+		return 0, fmt.Errorf("missing exponent digits")
+	}
+	for _, digit := range raw {
+		if digit < '0' || digit > '9' {
+			return 0, fmt.Errorf("invalid exponent digit")
+		}
+	}
+	raw = strings.TrimLeft(raw, "0")
+	if raw == "" {
+		return 0, nil
+	}
+	// A nonzero exponent beyond the bounded wire size cannot be cancelled by
+	// the coefficient and therefore cannot yield a signed-32-bit integer.
+	if len(raw) > 6 {
+		return 0, fmt.Errorf("exponent out of range")
+	}
+	value := 0
+	for _, digit := range raw {
+		value = value*10 + int(digit-'0')
+		if value > MaxManifestBytes {
+			return 0, fmt.Errorf("exponent out of range")
+		}
+	}
+	if negative {
+		return -value, nil
+	}
+	return value, nil
+}
+
+func normalizeWireOrders(root map[string]any) error {
+	for _, collection := range []string{"groups", "fields", "views", "actions", "diagnostics"} {
+		items, ok := root[collection].([]any)
+		if !ok {
+			return fmt.Errorf("closed manifest: required array %s is absent or not an array", collection)
+		}
+		for i, item := range items {
+			object, ok := item.(map[string]any)
+			if !ok {
+				return fmt.Errorf("closed manifest: required object %s[%d] is absent or not an object", collection, i)
+			}
+			number, ok := object["order"].(json.Number)
+			if !ok {
+				return fmt.Errorf("closed manifest: required integer %s[%d].order is null or wrong type", collection, i)
+			}
+			order, err := parseWireOrder(number)
+			if err != nil {
+				return fmt.Errorf("closed manifest: required integer %s[%d].order is null, fractional, or out of range", collection, i)
+			}
+			object["order"] = order
+		}
 	}
 	return nil
 }

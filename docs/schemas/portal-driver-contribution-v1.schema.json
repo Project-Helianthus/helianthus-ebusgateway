@@ -20,7 +20,7 @@
   "$defs": {
     "id": {"type": "string", "minLength": 1, "maxLength": 128},
     "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 128},
-    "order": {"type": "integer"},
+    "order": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
     "label": {"type": "object", "additionalProperties": false, "required": ["key", "default"], "properties": {"key": {"$ref": "#/$defs/id"}, "default": {"type": "string", "minLength": 1}}},
     "packRef": {"type": "object", "additionalProperties": false, "required": ["id", "version"], "properties": {"id": {"$ref": "#/$defs/id"}, "version": {"$ref": "#/$defs/version"}}},
     "definitionRef": {"type": "object", "additionalProperties": false, "required": ["pack", "id", "version"], "properties": {"pack": {"$ref": "#/$defs/packRef"}, "id": {"$ref": "#/$defs/id"}, "version": {"$ref": "#/$defs/version"}}},

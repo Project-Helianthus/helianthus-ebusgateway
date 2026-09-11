@@ -30,6 +30,8 @@ test("INT-09 schema is closed and matches the host renderer boundary", async () 
   assert.ok(!("ref" in parsed.$defs.action.properties));
   assert.ok(!parsed.$defs.action.required.includes("ref"));
   assert.ok(parsed.$defs.action.required.includes("operation_ref"));
+  assert.equal(parsed.$defs.order.minimum, -2147483648);
+  assert.equal(parsed.$defs.order.maximum, 2147483647);
 });
 
 test("INT-09 prototype is fixture-only and reads perspectives from the fixture", async () => {
@@ -50,7 +52,8 @@ test("INT-09 fixture navigation handles changed state and a valid sixth contribu
   let state = mod.initialNavigation(catalog);
   state = mod.reduceNavigation(catalog, state, {kind: "perspective", id: "provenance"});
   assert.equal(state.perspective, "provenance");
-  state = mod.reduceNavigation(catalog, state, {kind: "resource", id: "storage-pack"});
+  state = mod.reduceNavigation(catalog, state, {kind: "capability", resource: "storage-pack", id: "storage-read"});
+  assert.equal(state.resource, "storage-pack");
   assert.equal(state.capability, "storage-read");
   assert.equal(mod.visibleContributions(catalog, state)[0].state, "partial");
 

@@ -23,8 +23,8 @@ export function reduceNavigation(catalog, state, selection) {
     const resource = findResource(catalog, selection.id);
     if (resource) return {...state, resource: resource.id, capability: resource.capabilities[0].id};
   }
-  const resource = findResource(catalog, state.resource);
-  if (selection.kind === "capability" && resource?.capabilities.some((item) => item.id === selection.id)) return {...state, capability: selection.id};
+  const resource = findResource(catalog, selection.resource);
+  if (selection.kind === "capability" && resource?.capabilities.some((item) => item.id === selection.id)) return {...state, resource: resource.id, capability: selection.id};
   return state;
 }
 
@@ -48,7 +48,7 @@ function renderResources(catalog, state, select) {
     resourceButton.addEventListener("click", () => select({kind: "resource", id: resource.id}));
     const capabilities = element("div", {class: "capabilities", "aria-label": `${resource.domain} capabilities`}, resource.capabilities.map((capability) => {
       const button = element("button", {type: "button", "aria-pressed": String(resource.id === state.resource && capability.id === state.capability), "data-state": capability.state}, [capability.label]);
-      button.addEventListener("click", () => select({kind: "capability", id: capability.id}));
+      button.addEventListener("click", () => select({kind: "capability", resource: resource.id, id: capability.id}));
       return button;
     }));
     return element("article", {class: "resource-domain", "data-state": resource.state, "data-resource": resource.id}, [resourceButton, element("ul", {}, resource.items.map((item) => element("li", {}, [item]))), element("p", {}, [resource.detail]), capabilities]);

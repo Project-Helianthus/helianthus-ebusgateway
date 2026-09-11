@@ -467,6 +467,57 @@ func TestIDLimitUsesUnicodeCodePoints(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsUnpairedSurrogateEscapes(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	b := rawBytes(t, c.Manifests[0])
+	for _, needle := range [][]byte{[]byte(`"manifest_id":"portal.thermal"`), []byte(`"id":"thermal.temperature.zone"`)} {
+		for _, escaped := range [][]byte{[]byte(`"\ud800"`), []byte(`"\udc00"`)} {
+			bad := bytes.Replace(b, needle, append([]byte(`"manifest_id":`), escaped...), 1)
+			if bytes.Equal(needle, []byte(`"id":"thermal.temperature.zone"`)) {
+				bad = bytes.Replace(b, needle, append([]byte(`"id":`), escaped...), 1)
+			}
+			if _, err := Decode(bad); err == nil || !strings.Contains(err.Error(), "unpaired UTF-16") {
+				t.Fatalf("needle=%s escape=%s error=%v", needle, escaped, err)
+			}
+		}
+	}
+	paired := bytes.Replace(b, []byte(`"manifest_id":"portal.thermal"`), []byte(`"manifest_id":"\ud83d\ude00"`), 1)
+	if _, err := Decode(paired); err != nil {
+		t.Fatalf("paired surrogate rejected: %v", err)
+	}
+}
+
+func TestOrderUsesPortableSigned32BitRange(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	for _, value := range []int64{int64(MinOrder), int64(MaxOrder)} {
+		raw := rawManifest(t, c.Manifests[0])
+		raw["groups"].([]any)[0].(map[string]any)["order"] = value
+		if _, err := Decode(rawBytes(t, raw)); err != nil {
+			t.Fatalf("raw boundary %d rejected: %v", value, err)
+		}
+		m := cloneManifest(t, c.Manifests[0])
+		m.Groups[0].Order, m.Fields[0].Order, m.Views[0].Order, m.Actions[0].Order = int32(value), int32(value), int32(value), int32(value)
+		m.Diagnostics = []Diagnostic{{ID: "boundary-diagnostic", Group: "zone", Label: Label{Key: "boundary-diagnostic", Default: "Boundary diagnostic"}, MemberID: "boundary-member", Kind: "field", Order: int32(value)}}
+		idx := indexFromCatalog(c)
+		idx.NativeMembers[nativeMemberKey{asNativeContractKey(m.Contributor.NativeContract), "field", "boundary-member"}] = true
+		if err := Validate(m, idx); err != nil {
+			t.Fatalf("typed boundary %d rejected: %v", value, err)
+		}
+	}
+	for _, value := range []int64{int64(MinOrder) - 1, int64(MaxOrder) + 1} {
+		raw := rawManifest(t, c.Manifests[0])
+		raw["groups"].([]any)[0].(map[string]any)["order"] = value
+		if _, err := Decode(rawBytes(t, raw)); err == nil || !strings.Contains(err.Error(), "required integer") {
+			t.Fatalf("raw out-of-range %d error=%v", value, err)
+		}
+		if orderInRange(value) {
+			t.Fatalf("typed range accepted %d", value)
+		}
+	}
+}
+
 func TestNilIndexFailsClosed(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

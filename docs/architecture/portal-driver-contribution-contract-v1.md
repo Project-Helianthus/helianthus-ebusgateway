@@ -52,6 +52,10 @@ catalog generation. A rejected
 manifest is isolated to that contribution; Portal Core and other valid drivers
 remain available.
 
+Every record order is a signed 32-bit integer from `-2147483648` through
+`2147483647`. The JSON Schema, raw wire decoder and typed Go validation use this
+same portable range, including Linux 32-bit builds.
+
 The wire decoder rejects invalid UTF-8 before JSON parsing, duplicate object
 keys, non-object top-level values, unknown members, and every missing member
 required by the schema; deliberately empty arrays and a present `order: 0` are
@@ -61,6 +65,8 @@ decode. Direct typed admission requires each schema-required array to be a
 non-nil slice, while explicitly empty arrays remain valid where the schema
 permits them. Native diagnostic member IDs follow the same non-empty,
 128-code-point identifier rule as every other public ID.
+It also rejects escaped unpaired UTF-16 high or low surrogates before JSON
+normalization; a valid high/low surrogate pair remains a valid JSON string.
 Canonical order is `(order,id)` for descriptor records, `(id,version)` for
 required PackRefs, and lexical identifier order for view field/diagnostic
 reference lists. Direct typed admission applies the same 256 KiB bound to the

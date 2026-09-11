@@ -7,12 +7,14 @@ const Contract = "helianthus.gateway.portal-contribution/v1"
 const SemanticKernel = "helianthus.semantic.kernel/v1"
 
 const (
-	MaxManifestBytes = 256 << 10
-	MaxGroups        = 64
-	MaxViews         = 64
-	MaxFields        = 512
-	MaxActions       = 64
-	MaxDiagnostics   = 128
+	MaxManifestBytes       = 256 << 10
+	MaxGroups              = 64
+	MaxViews               = 64
+	MaxFields              = 512
+	MaxActions             = 64
+	MaxDiagnostics         = 128
+	MinOrder         int32 = -2147483648
+	MaxOrder         int32 = 2147483647
 )
 
 type PackRef struct {
@@ -51,7 +53,7 @@ type Group struct {
 	ID              string `json:"id"`
 	Label           Label  `json:"label"`
 	ResourceContext string `json:"resource_context"`
-	Order           int    `json:"order"`
+	Order           int32  `json:"order"`
 }
 
 type Field struct {
@@ -62,7 +64,7 @@ type Field struct {
 	ServiceRef    DefinitionRef `json:"service_ref"`
 	CapabilityRef DefinitionRef `json:"capability_ref"`
 	UnitRef       DefinitionRef `json:"unit_ref"`
-	Order         int           `json:"order"`
+	Order         int32         `json:"order"`
 }
 
 type View struct {
@@ -73,7 +75,7 @@ type View struct {
 	Slot          string   `json:"slot"`
 	FieldIDs      []string `json:"field_ids"`
 	DiagnosticIDs []string `json:"diagnostic_ids"`
-	Order         int      `json:"order"`
+	Order         int32    `json:"order"`
 }
 
 type Action struct {
@@ -85,7 +87,7 @@ type Action struct {
 	ServiceRef    DefinitionRef `json:"service_ref"`
 	ArgumentRef   DefinitionRef `json:"argument_ref"`
 	EffectRef     DefinitionRef `json:"effect_ref"`
-	Order         int           `json:"order"`
+	Order         int32         `json:"order"`
 }
 
 type Diagnostic struct {
@@ -94,7 +96,7 @@ type Diagnostic struct {
 	Label    Label  `json:"label"`
 	MemberID string `json:"member_id"`
 	Kind     string `json:"kind"`
-	Order    int    `json:"order"`
+	Order    int32  `json:"order"`
 }
 
 type Manifest struct {

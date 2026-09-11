@@ -27,6 +27,9 @@ func Decode(data []byte) (Manifest, error) {
 	if !utf8.Valid(data) {
 		return Manifest{}, fmt.Errorf("manifest contains invalid UTF-8")
 	}
+	if err := rejectUnpairedSurrogateEscapes(data); err != nil {
+		return Manifest{}, err
+	}
 	var raw any
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return Manifest{}, err
@@ -80,12 +83,79 @@ func requiredString(object map[string]any, path, name string) error {
 	}
 	return nil
 }
+func orderInRange(value int64) bool { return value >= int64(MinOrder) && value <= int64(MaxOrder) }
 func requiredInteger(object map[string]any, path, name string) error {
 	number, ok := object[name].(float64)
-	if !ok || number != float64(int64(number)) {
+	if !ok || number != float64(int64(number)) || !orderInRange(int64(number)) {
 		return fmt.Errorf("closed manifest: required integer %s.%s is null or wrong type", path, name)
 	}
 	return nil
+}
+
+func rejectUnpairedSurrogateEscapes(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		if !inString {
+			if data[i] == '"' {
+				inString = true
+			}
+			continue
+		}
+		if data[i] == '"' {
+			inString = false
+			continue
+		}
+		if data[i] != '\\' {
+			continue
+		}
+		if i+1 >= len(data) {
+			break
+		}
+		if data[i+1] != 'u' {
+			i++
+			continue
+		}
+		if i+5 >= len(data) {
+			return fmt.Errorf("manifest has malformed unicode escape")
+		}
+		code, ok := escapedCodeUnit(data[i+2 : i+6])
+		if !ok {
+			return fmt.Errorf("manifest has malformed unicode escape")
+		}
+		if code >= 0xD800 && code <= 0xDBFF {
+			if i+11 >= len(data) || data[i+6] != '\\' || data[i+7] != 'u' {
+				return fmt.Errorf("manifest has unpaired UTF-16 surrogate escape")
+			}
+			low, ok := escapedCodeUnit(data[i+8 : i+12])
+			if !ok || low < 0xDC00 || low > 0xDFFF {
+				return fmt.Errorf("manifest has unpaired UTF-16 surrogate escape")
+			}
+			i += 11
+			continue
+		}
+		if code >= 0xDC00 && code <= 0xDFFF {
+			return fmt.Errorf("manifest has unpaired UTF-16 surrogate escape")
+		}
+		i += 5
+	}
+	return nil
+}
+func escapedCodeUnit(value []byte) (uint16, bool) {
+	var code uint16
+	for _, c := range value {
+		code <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			code |= uint16(c - '0')
+		case c >= 'a' && c <= 'f':
+			code |= uint16(c - 'a' + 10)
+		case c >= 'A' && c <= 'F':
+			code |= uint16(c - 'A' + 10)
+		default:
+			return 0, false
+		}
+	}
+	return code, true
 }
 func requireRef(value any, path string) error {
 	object, err := requiredObject(value, path, "pack", "id", "version")
@@ -458,6 +528,12 @@ func version(name, value string) error {
 	}
 	return nil
 }
+func orderValue(name string, value int32) error {
+	if !orderInRange(int64(value)) {
+		return fmt.Errorf("invalid %s", name)
+	}
+	return nil
+}
 func label(l Label) error {
 	if err := id("label.key", l.Key); err != nil {
 		return err
@@ -520,7 +596,7 @@ func uniquePacks(packs []PackRef, index SemanticIndex) error {
 }
 
 func validateGroups(groups []Group) (map[string]bool, error) {
-	ids, orders := map[string]bool{}, map[int]bool{}
+	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, g := range groups {
 		if err := id("group id", g.ID); err != nil {
 			return nil, err
@@ -529,6 +605,9 @@ func validateGroups(groups []Group) (map[string]bool, error) {
 			return nil, err
 		}
 		if err := id("resource_context", g.ResourceContext); err != nil {
+			return nil, err
+		}
+		if err := orderValue("group order", g.Order); err != nil {
 			return nil, err
 		}
 		if ids[g.ID] {
@@ -542,7 +621,7 @@ func validateGroups(groups []Group) (map[string]bool, error) {
 	return ids, nil
 }
 func validateFields(fields []Field, groups map[string]bool, packs []PackRef, index SemanticIndex) (map[string]bool, error) {
-	ids, orders := map[string]bool{}, map[int]bool{}
+	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, f := range fields {
 		if err := id("field id", f.ID); err != nil {
 			return nil, err
@@ -551,6 +630,9 @@ func validateFields(fields []Field, groups map[string]bool, packs []PackRef, ind
 			return nil, fmt.Errorf("field %q has dangling group", f.ID)
 		}
 		if err := label(f.Label); err != nil {
+			return nil, err
+		}
+		if err := orderValue("field order", f.Order); err != nil {
 			return nil, err
 		}
 		for _, r := range []DefinitionRef{f.Ref, f.ServiceRef, f.CapabilityRef, f.UnitRef} {
@@ -579,7 +661,7 @@ func validateFields(fields []Field, groups map[string]bool, packs []PackRef, ind
 	return ids, nil
 }
 func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract NativeContractRef, index SemanticIndex) (map[string]bool, error) {
-	ids, orders := map[string]bool{}, map[int]bool{}
+	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, d := range items {
 		if err := id("diagnostic id", d.ID); err != nil {
 			return nil, err
@@ -591,6 +673,9 @@ func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract Na
 			return nil, err
 		}
 		if err := id("diagnostic member_id", d.MemberID); err != nil {
+			return nil, err
+		}
+		if err := orderValue("diagnostic order", d.Order); err != nil {
 			return nil, err
 		}
 		if !diagnosticKinds[d.Kind] {
@@ -610,7 +695,7 @@ func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract Na
 	return ids, nil
 }
 func validateViews(views []View, groups, fields, diagnostics map[string]bool) error {
-	ids, orders := map[string]bool{}, map[int]bool{}
+	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, v := range views {
 		if err := id("view id", v.ID); err != nil {
 			return err
@@ -619,6 +704,9 @@ func validateViews(views []View, groups, fields, diagnostics map[string]bool) er
 			return fmt.Errorf("view %q has dangling group", v.ID)
 		}
 		if err := label(v.Label); err != nil {
+			return err
+		}
+		if err := orderValue("view order", v.Order); err != nil {
 			return err
 		}
 		if !renderers[v.Renderer] {
@@ -651,7 +739,7 @@ func validateViews(views []View, groups, fields, diagnostics map[string]bool) er
 	return nil
 }
 func validateActions(actions []Action, groups map[string]bool, packs []PackRef, index SemanticIndex) error {
-	ids, orders := map[string]bool{}, map[int]bool{}
+	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, a := range actions {
 		if err := id("action id", a.ID); err != nil {
 			return err
@@ -660,6 +748,9 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 			return fmt.Errorf("action %q has dangling group", a.ID)
 		}
 		if err := label(a.Label); err != nil {
+			return err
+		}
+		if err := orderValue("action order", a.Order); err != nil {
 			return err
 		}
 		for _, r := range []DefinitionRef{a.OperationRef, a.CapabilityRef, a.ServiceRef, a.ArgumentRef, a.EffectRef} {
@@ -799,7 +890,7 @@ func Canonicalize(m Manifest, index SemanticIndex) (Manifest, error) {
 	return out, nil
 }
 
-func ordered(leftOrder int, leftID string, rightOrder int, rightID string) bool {
+func ordered(leftOrder int32, leftID string, rightOrder int32, rightID string) bool {
 	if leftOrder != rightOrder {
 		return leftOrder < rightOrder
 	}

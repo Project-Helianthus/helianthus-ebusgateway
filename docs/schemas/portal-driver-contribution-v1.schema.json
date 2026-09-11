@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/schemas/portal-driver-contribution-v1.schema.json",
+  "title": "Helianthus Portal Driver Contribution v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "manifest_id", "manifest_version", "contributor", "requires", "groups", "fields", "views", "actions", "diagnostics"],
+  "properties": {
+    "contract": {"const": "helianthus.gateway.portal-contribution/v1"},
+    "manifest_id": {"$ref": "#/$defs/id"},
+    "manifest_version": {"$ref": "#/$defs/version"},
+    "contributor": {"$ref": "#/$defs/contributor"},
+    "requires": {"$ref": "#/$defs/requirements"},
+    "groups": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/group"}},
+    "fields": {"type": "array", "maxItems": 512, "items": {"$ref": "#/$defs/field"}},
+    "views": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/view"}},
+    "actions": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/action"}},
+    "diagnostics": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/diagnostic"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "maxLength": 128},
+    "order": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+    "label": {"type": "object", "additionalProperties": false, "required": ["key", "default"], "properties": {"key": {"$ref": "#/$defs/id"}, "default": {"type": "string", "minLength": 1}}},
+    "packRef": {"type": "object", "additionalProperties": false, "required": ["id", "version"], "properties": {"id": {"$ref": "#/$defs/id"}, "version": {"$ref": "#/$defs/version"}}},
+    "definitionRef": {"type": "object", "additionalProperties": false, "required": ["pack", "id", "version"], "properties": {"pack": {"$ref": "#/$defs/packRef"}, "id": {"$ref": "#/$defs/id"}, "version": {"$ref": "#/$defs/version"}}},
+    "nativeContract": {"type": "object", "additionalProperties": false, "required": ["owner", "contract", "version"], "properties": {"owner": {"$ref": "#/$defs/id"}, "contract": {"$ref": "#/$defs/id"}, "version": {"$ref": "#/$defs/version"}}},
+    "contributor": {"type": "object", "additionalProperties": false, "required": ["driver_id", "native_contract"], "properties": {"driver_id": {"$ref": "#/$defs/id"}, "native_contract": {"$ref": "#/$defs/nativeContract"}}},
+    "requirements": {"type": "object", "additionalProperties": false, "required": ["semantic_kernel", "packs"], "properties": {"semantic_kernel": {"const": "helianthus.semantic.kernel/v1"}, "packs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/packRef"}}}},
+    "group": {"type": "object", "additionalProperties": false, "required": ["id", "label", "resource_context", "order"], "properties": {"id": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/label"}, "resource_context": {"$ref": "#/$defs/id"}, "order": {"$ref": "#/$defs/order"}}},
+    "field": {"type": "object", "additionalProperties": false, "required": ["id", "group", "label", "ref", "service_ref", "capability_ref", "unit_ref", "order"], "properties": {"id": {"$ref": "#/$defs/id"}, "group": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/label"}, "ref": {"$ref": "#/$defs/definitionRef"}, "service_ref": {"$ref": "#/$defs/definitionRef"}, "capability_ref": {"$ref": "#/$defs/definitionRef"}, "unit_ref": {"$ref": "#/$defs/definitionRef"}, "order": {"$ref": "#/$defs/order"}}},
+    "view": {"type": "object", "additionalProperties": false, "required": ["id", "group", "label", "renderer", "slot", "field_ids", "diagnostic_ids", "order"], "properties": {"id": {"$ref": "#/$defs/id"}, "group": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/label"}, "renderer": {"enum": ["summary", "field_table", "relationship_graph", "state_strip", "timeline", "evidence_table", "session_controls"]}, "slot": {"enum": ["lens", "native_diagnostics"]}, "field_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "diagnostic_ids": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "order": {"$ref": "#/$defs/order"}}},
+    "action": {"type": "object", "additionalProperties": false, "required": ["id", "group", "label", "operation_ref", "capability_ref", "service_ref", "argument_ref", "effect_ref", "order"], "properties": {"id": {"$ref": "#/$defs/id"}, "group": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/label"}, "operation_ref": {"$ref": "#/$defs/definitionRef"}, "capability_ref": {"$ref": "#/$defs/definitionRef"}, "service_ref": {"$ref": "#/$defs/definitionRef"}, "argument_ref": {"$ref": "#/$defs/definitionRef"}, "effect_ref": {"$ref": "#/$defs/definitionRef"}, "order": {"$ref": "#/$defs/order"}}},
+    "diagnostic": {"type": "object", "additionalProperties": false, "required": ["id", "group", "label", "member_id", "kind", "order"], "properties": {"id": {"$ref": "#/$defs/id"}, "group": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/label"}, "member_id": {"$ref": "#/$defs/id"}, "kind": {"enum": ["field", "action"]}, "order": {"$ref": "#/$defs/order"}}}
+  }
+}

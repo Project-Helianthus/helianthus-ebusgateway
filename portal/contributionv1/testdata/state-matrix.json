@@ -1,0 +1,19 @@
+{
+  "states":[
+    {"id":"unavailable","text":"Unavailable — no current source; never shown as zero."},
+    {"id":"stale","text":"Stale — retained value with age, never current."},
+    {"id":"conflict","text":"Conflict — compare candidate sources before use."},
+    {"id":"partial","text":"Partial — valid siblings and PV/BMS counter/loss evidence stay visible."},
+    {"id":"unknown","text":"Unknown — owner cannot determine state."},
+    {"id":"unsupported","text":"Unsupported — capability is not supported."},
+    {"id":"withdrawn","text":"Withdrawn — a prior candidate was withdrawn."},
+    {"id":"withheld","text":"Withheld — projection intentionally omits the value."},
+    {"id":"invalid-contribution","text":"Invalid contribution — isolated from other drivers."}
+  ],
+  "actions":[
+    {"id":"unauthorized-hidden","visible":false,"enabled":false,"text":"Unauthorized discovery: HVAC mode action is hidden."},
+    {"id":"authorized-disabled","visible":true,"enabled":false,"text":"Authorized discovery: Tesla allocated-current and interlock-gated actions have no sender/admission and are disabled."},
+    {"id":"admitted-enabled","visible":true,"enabled":true,"text":"HVAC setpoint has current capability, authority, route and deadline admitted."}
+  ],
+  "b503":{"target_context":"resource-scoped","availability":["AVAILABLE","NOT_SUPPORTED","TRANSPORT_DOWN","SESSION_BUSY","UNKNOWN"],"test_ids":["M8-TGT-01","M8-TGT-02","M8-TGT-03","M8-TGT-04","F1","F2","F3","F4","F5","F6","F7","F8"],"transport":"graphql-only","issue":"#552 remains open"}
+}

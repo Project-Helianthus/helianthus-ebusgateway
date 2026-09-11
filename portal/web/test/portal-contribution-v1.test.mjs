@@ -1,0 +1,137 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import test from "node:test";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const prototype = path.resolve(here, "../prototype");
+const fixture = path.resolve(here, "../../contributionv1/testdata/five-domain-catalog.json");
+const states = path.resolve(here, "../../contributionv1/testdata/state-matrix.json");
+const schema = path.resolve(here, "../../../docs/schemas/portal-driver-contribution-v1.schema.json");
+
+test("INT-09 fixture pins all five domains and the exact pack versions", async () => {
+  const catalog = JSON.parse(await readFile(fixture, "utf8"));
+  assert.equal(catalog.manifests.length, 5);
+  assert.deepEqual(catalog.index.packs.map((p) => `${p.id}@${p.version}`), [
+    "helianthus.pack.thermal@1.0.0", "helianthus.pack.pv@1.0.0", "helianthus.pack.storage@1.1.0", "helianthus.pack.evse@1.0.0", "helianthus.pack.infrastructure@1.0.0"
+  ]);
+  assert.equal(catalog.resources.length, 5);
+  assert.equal(catalog.contribution_states.length, 5);
+  assert.equal(catalog.navigation.default_resource, "thermal-system");
+});
+
+test("INT-09 schema is closed and matches the host renderer boundary", async () => {
+  const parsed = JSON.parse(await readFile(schema, "utf8"));
+  assert.equal(parsed.additionalProperties, false);
+  assert.equal(parsed.properties.contract.const, "helianthus.gateway.portal-contribution/v1");
+  assert.deepEqual(parsed.$defs.view.properties.renderer.enum, ["summary", "field_table", "relationship_graph", "state_strip", "timeline", "evidence_table", "session_controls"]);
+  assert.deepEqual(parsed.$defs.view.properties.slot.enum, ["lens", "native_diagnostics"]);
+  assert.ok(!("ref" in parsed.$defs.action.properties));
+  assert.ok(!parsed.$defs.action.required.includes("ref"));
+  assert.ok(parsed.$defs.action.required.includes("operation_ref"));
+  assert.equal(parsed.$defs.order.minimum, -2147483648);
+  assert.equal(parsed.$defs.order.maximum, 2147483647);
+});
+
+test("INT-09 prototype is fixture-only and reads perspectives from the fixture", async () => {
+  const [html, js] = await Promise.all([readFile(path.join(prototype, "int09.html"), "utf8"), readFile(path.join(prototype, "int09.js"), "utf8")]);
+  assert.match(html, /href="#main"/);
+  assert.match(html, /role="status" aria-live="polite"/);
+  assert.match(js, /five-domain-catalog\.json/);
+  assert.match(js, /state-matrix\.json/);
+  const catalog = JSON.parse(await readFile(fixture, "utf8"));
+  assert.deepEqual(catalog.navigation.perspectives.map((item) => item.label), ["Registry", "Plane", "Lens", "Compare", "Provenance", "History", "Native"]);
+  assert.doesNotMatch(js, /manifest\.manifest_id\s*===\s*["']portal/);
+  assert.doesNotMatch(js, /fetch\(\s*["']\/(api|graphql)/i);
+});
+
+test("INT-09 fixture navigation handles changed state and a valid sixth contribution generically", async () => {
+  const catalog = JSON.parse(await readFile(fixture, "utf8"));
+  const mod = await import(pathToFileURL(path.join(prototype, "int09.js")).href);
+  let state = mod.initialNavigation(catalog);
+  state = mod.reduceNavigation(catalog, state, {kind: "perspective", id: "provenance"});
+  assert.equal(state.perspective, "provenance");
+  state = mod.reduceNavigation(catalog, state, {kind: "capability", resource: "storage-pack", id: "storage-read"});
+  assert.equal(state.resource, "storage-pack");
+  assert.equal(state.capability, "storage-read");
+  assert.equal(mod.visibleContributions(catalog, state)[0].state, "partial");
+
+  const sixth = structuredClone(catalog.manifests[0]);
+  sixth.manifest_id = "portal.fixture.sixth";
+  sixth.contributor.driver_id = "fixture.sixth";
+  catalog.manifests.push(sixth);
+  const identity = {driver_id: sixth.contributor.driver_id, manifest_id: sixth.manifest_id, manifest_version: sixth.manifest_version};
+  catalog.resources.push({id: "sixth-resource", domain: "Fixture", items: ["resource"], detail: "Generic fixture contribution.", state: "stale", contribution: identity, capabilities: [{id: "sixth-read", label: "Fixture read", state: "stale"}]});
+  catalog.contribution_states.push({contribution: identity, resource_id: "sixth-resource", capability_id: "sixth-read", state: "stale"});
+  state = mod.reduceNavigation(catalog, state, {kind: "resource", id: "sixth-resource"});
+  const visible = mod.visibleContributions(catalog, state);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].manifest.manifest_id, sixth.manifest_id);
+  assert.equal(visible[0].state, "stale");
+});
+
+test("INT-09 binds catalog state to full registry identity", async () => {
+  const catalog = JSON.parse(await readFile(fixture, "utf8"));
+  const mod = await import(pathToFileURL(path.join(prototype, "int09.js")).href);
+  const primary = catalog.manifests[0];
+  const colliding = structuredClone(primary);
+  colliding.contributor.driver_id = "thermal.secondary";
+  colliding.manifest_version = "2.0.0";
+  colliding.fields[0].label.default = "Secondary-only field";
+  catalog.manifests.push(colliding);
+  const primaryIdentity = {driver_id: primary.contributor.driver_id, manifest_id: primary.manifest_id, manifest_version: primary.manifest_version};
+  const secondaryIdentity = {driver_id: colliding.contributor.driver_id, manifest_id: colliding.manifest_id, manifest_version: colliding.manifest_version};
+
+  let state = mod.initialNavigation(catalog);
+  let visible = mod.visibleContributions(catalog, state);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].manifest.fields[0].label.default, "Temperature");
+
+  catalog.resources.push({id: "thermal-secondary", domain: "Thermal secondary", items: ["zone"], detail: "Colliding manifest fixture.", state: "available", contribution: secondaryIdentity, capabilities: [{id: "secondary-read", label: "Secondary read", state: "available"}]});
+  catalog.contribution_states.push({contribution: primaryIdentity, resource_id: "thermal-secondary", capability_id: "secondary-read", state: "conflict"});
+  state = mod.reduceNavigation(catalog, state, {kind: "resource", id: "thermal-secondary"});
+  assert.deepEqual(mod.visibleContributions(catalog, state), []);
+
+  catalog.contribution_states.at(-1).contribution = secondaryIdentity;
+  visible = mod.visibleContributions(catalog, state);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].manifest.contributor.driver_id, "thermal.secondary");
+  assert.equal(visible[0].manifest.fields[0].label.default, "Secondary-only field");
+});
+
+test("INT-09 preserves every requested state and caller-scoped action outcome", async () => {
+  const matrix = JSON.parse(await readFile(states, "utf8"));
+  assert.deepEqual(matrix.states.map((s) => s.id), ["unavailable", "stale", "conflict", "partial", "unknown", "unsupported", "withdrawn", "withheld", "invalid-contribution"]);
+  assert.deepEqual(matrix.actions.map((a) => a.id), ["unauthorized-hidden", "authorized-disabled", "admitted-enabled"]);
+  assert.equal(matrix.b503.transport, "graphql-only");
+  assert.match(matrix.b503.issue, /remains open/);
+});
+
+test("INT-09 unauthorized actions create no DOM node or descriptive leak", async () => {
+  const [catalog, matrix] = await Promise.all([readFile(fixture, "utf8").then(JSON.parse), readFile(states, "utf8").then(JSON.parse)]);
+  const mod = await import(pathToFileURL(path.join(prototype, "int09.js")).href);
+  assert.deepEqual(mod.discoverableActions(matrix.actions).map((action) => action.id), ["authorized-disabled", "admitted-enabled"]);
+  class FakeNode {
+    constructor(textContent = "") { this.children = []; this.attributes = {}; this.textContent = textContent; }
+    setAttribute(key, value) { this.attributes[key] = String(value); }
+    append(child) { this.children.push(child); }
+    replaceChildren(...children) { this.children = children; }
+    addEventListener() {}
+  }
+  const nodes = new Map([["#perspectives", new FakeNode()], ["#resources", new FakeNode()], ["#catalog", new FakeNode()], ["#states", new FakeNode()], ["#actions", new FakeNode()], ["#b503", new FakeNode()], ["#announcement", new FakeNode()]]);
+  const previousDocument = globalThis.document; const previousNode = globalThis.Node;
+  globalThis.Node = FakeNode;
+  globalThis.document = { createElement: () => new FakeNode(), createTextNode: (value) => new FakeNode(String(value)), querySelector: (selector) => nodes.get(selector) };
+  try { mod.render(catalog, matrix); } finally { globalThis.document = previousDocument; globalThis.Node = previousNode; }
+  const stringify = (node) => `${node.textContent || ""} ${Object.values(node.attributes).join(" ")} ${node.children.map(stringify).join(" ")}`;
+  const rendered = stringify(nodes.get("#actions"));
+  assert.doesNotMatch(rendered, /unauthorized-hidden|Unauthorized discovery|HVAC mode/i);
+});
+
+test("INT-09 prototype uses focus-visible and non-color text state cues", async () => {
+  const css = await readFile(path.join(prototype, "int09.css"), "utf8");
+  assert.match(css, /:focus-visible/);
+  const matrix = JSON.parse(await readFile(states, "utf8"));
+  for (const state of matrix.states) assert.ok(state.text.length > state.id.length, `${state.id} needs textual cue`);
+});

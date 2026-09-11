@@ -21,6 +21,14 @@ type fencedSourceFake struct {
 	fence string
 }
 
+type volatileEvaluationSource struct{ captures int }
+
+func (s *volatileEvaluationSource) Capture(time.Time) ([]Resource, []Field, error) {
+	s.captures++
+	evaluation := json.RawMessage(`{"context":{"evaluated_at":"2026-09-11T00:00:0` + string(rune('0'+s.captures)) + `Z","evaluate_monotonic":{"nanoseconds":"` + string(rune('0'+s.captures)) + `"}},"facts":[{"freshness":"fresh"}]}`)
+	return []Resource{{ID: "asset", Domain: "test.pack", Source: Source{AssetID: "asset", SnapshotID: "snapshot", Revision: "revision", EvaluationDigest: "digest-" + string(rune('0'+s.captures)), BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, Evaluation: evaluation}, State: "CURRENT"}}, nil, nil
+}
+
 func (s *fencedSourceFake) Fence() string { return s.fence }
 
 func (s *sourceFake) Capture(time.Time) ([]Resource, []Field, error) {
@@ -112,7 +120,7 @@ func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	}
 }
 func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
-	s := &sourceFake{resources: []Resource{{ID: "pv-1", Domain: "helianthus.pv", State: "CURRENT"}}}
+	s := &sourceFake{resources: []Resource{{ID: "pv-1", Domain: "helianthus.pack.pv", State: "CURRENT"}}}
 	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0).UTC() }
 	got, err := c.Catalog("caller")
@@ -120,10 +128,10 @@ func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, domain := range got.Domains {
-		if domain.Pack.ID == "helianthus.pv" && domain.SourceState != "PRESENT" {
+		if domain.Pack.ID == "helianthus.pack.pv" && domain.SourceState != "PRESENT" {
 			t.Fatalf("pv domain=%+v", domain)
 		}
-		if domain.Pack.ID != "helianthus.pv" && domain.SourceState != "ABSENT" {
+		if domain.Pack.ID != "helianthus.pack.pv" && domain.SourceState != "ABSENT" {
 			t.Fatalf("absent domain=%+v", domain)
 		}
 	}
@@ -132,7 +140,7 @@ func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
 func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker := &invokeFake{}
-	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "helianthus.pv"}}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "helianthus.pack.pv"}}}, authFake{}, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	revalidator := &revalidateFake{}
 	c.SetRevalidator(revalidator)
@@ -192,6 +200,29 @@ func TestInvokeCatalogRevisionIgnoresResponseEvaluationInstant(t *testing.T) {
 	}
 }
 
+func TestInvokeCatalogRevisionNormalizesProductionSourceEvaluationClock(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	invoker, revalidator := &invokeFake{}, &revalidateFake{}
+	source := &volatileEvaluationSource{}
+	c := New(idx, source, authFake{}, invoker)
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	c.SetRevalidator(revalidator)
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := Claims{CatalogRevision: first.CatalogRevision, Digest: first.Contributions[0].Digest, DriverID: "test.driver", ManifestID: "test.manifest", ManifestVersion: "1.0.0", ActionID: "action", ResourceID: "asset", CapabilityID: "test.capability", SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, IdempotencyKey: "once", Deadline: time.Unix(100, 0)}
+	if _, err := c.Invoke("caller", claim); err != nil {
+		t.Fatalf("volatile production-source evaluation clock made action stale: %v", err)
+	}
+	if source.captures != 2 || invoker.calls.Load() != 1 {
+		t.Fatalf("captures/native=%d/%d", source.captures, invoker.calls.Load())
+	}
+}
+
 func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	base := Catalog{Contract: Contract, Domains: []Domain{}, Contributions: []Identity{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}, Resources: []Resource{{ID: "same", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Fields: []Field{{ID: "same", ResourceID: "r", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ResourceID: "r", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Actions: []Action{}, Quarantines: []Quarantine{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}}
 	want, _ := CanonicalJSON(base)
@@ -206,7 +237,7 @@ func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 			t.Fatalf("noncanonical iteration %d", i)
 		}
 	}
-	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{{ID: "r", Domain: "helianthus.pv"}}, fields: []Field{{ID: "f", ResourceID: "r", Value: json.RawMessage(`1`)}}}, fence: "one"}
+	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{{ID: "r", Domain: "helianthus.pack.pv"}}, fields: []Field{{ID: "f", ResourceID: "r", Value: json.RawMessage(`1`)}}}, fence: "one"}
 	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0) }
 	first, err := c.Catalog("c")

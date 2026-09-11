@@ -1,17 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://project-helianthus.org/schemas/portal-catalog-v1.schema.json",
-  "title": "Helianthus Gateway Portal Catalog v1",
-  "type": "object",
-  "additionalProperties": false,
+  "title": "Helianthus Gateway Portal Catalog v1", "type": "object", "additionalProperties": false,
   "required": ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope", "domains", "contributions", "resources", "fields", "actions", "quarantines"],
   "properties": {
-    "contract": {"const": "helianthus.gateway.portal-catalog/v1"},
-    "catalog_revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "catalog_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "evaluation_instant": {"type": "string", "format": "date-time"},
-    "authorization_scope": {"type": "string"},
-    "domains": {"type": "array", "minItems": 5, "items": {"type": "object", "required": ["pack", "source_state"], "properties": {"pack": {"type": "object", "required": ["id", "version"], "properties": {"id": {"type": "string"}, "version": {"type": "string"}}}, "source_state": {"enum": ["PRESENT", "ABSENT"]}, "reason": {"type": "string"}}}},
-    "contributions": {"type": "array"}, "resources": {"type": "array"}, "fields": {"type": "array"}, "actions": {"type": "array"}, "quarantines": {"type": "array"}
+    "contract": {"const": "helianthus.gateway.portal-catalog/v1"}, "catalog_revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "catalog_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "evaluation_instant": {"type": "string", "format": "date-time"}, "authorization_scope": {"type": "string"},
+    "domains": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/domain"}}, "contributions": {"type": "array", "items": {"$ref": "#/$defs/contribution"}}, "resources": {"type": "array", "items": {"$ref": "#/$defs/resource"}}, "fields": {"type": "array", "items": {"$ref": "#/$defs/field"}}, "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}}, "quarantines": {"type": "array", "items": {"$ref": "#/$defs/quarantine"}}
+  },
+  "$defs": {
+    "pack_ref": {"type": "object", "additionalProperties": false, "required": ["id", "version"], "properties": {"id": {"type": "string"}, "version": {"type": "string"}}},
+    "domain": {"type": "object", "additionalProperties": false, "required": ["pack", "source_state"], "properties": {"pack": {"$ref": "#/$defs/pack_ref"}, "source_state": {"enum": ["PRESENT", "ABSENT"]}, "reason": {"type": "string"}}},
+    "contribution": {"type": "object", "additionalProperties": false, "required": ["driver_id", "manifest_id", "manifest_version", "digest"], "properties": {"driver_id": {"type": "string"}, "manifest_id": {"type": "string"}, "manifest_version": {"type": "string"}, "digest": {"type": "string"}}},
+    "source": {"type": "object", "additionalProperties": false, "required": ["asset_id", "snapshot_id", "revision", "evaluation_digest", "binding_id", "source_epoch", "driver_generation", "snapshot", "evaluation", "selections", "projection"], "properties": {"asset_id": {"type": "string"}, "snapshot_id": {"type": "string"}, "revision": {"type": "string"}, "evaluation_digest": {"type": "string"}, "binding_id": {"type": "string"}, "source_epoch": {"type": "string"}, "driver_generation": {"type": "integer", "minimum": 0}, "snapshot": {"type": "object"}, "evaluation": {"type": "object"}, "selections": {"type": "array"}, "projection": {"type": "object"}}},
+    "resource": {"type": "object", "additionalProperties": false, "required": ["id", "domain", "service_id", "capability_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "source", "state"], "properties": {"id": {"type": "string"}, "domain": {"type": "string"}, "service_id": {"type": "string"}, "capability_id": {"type": "string"}, "contribution_driver_id": {"type": "string"}, "contribution_manifest_id": {"type": "string"}, "contribution_manifest_version": {"type": "string"}, "source": {"$ref": "#/$defs/source"}, "state": {"type": "string"}}},
+    "field": {"type": "object", "additionalProperties": false, "required": ["id", "resource_id", "definition_id", "unit_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "value", "quality", "projection"], "properties": {"id": {"type": "string"}, "resource_id": {"type": "string"}, "definition_id": {"type": "string"}, "unit_id": {"type": "string"}, "contribution_driver_id": {"type": "string"}, "contribution_manifest_id": {"type": "string"}, "contribution_manifest_version": {"type": "string"}, "value": {}, "quality": {"type": "string"}, "projection": {"type": "string"}}},
+    "action": {"type": "object", "additionalProperties": false, "required": ["id", "resource_id", "service_id", "capability_id", "operation_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "source", "discoverable", "enabled"], "properties": {"id": {"type": "string"}, "resource_id": {"type": "string"}, "service_id": {"type": "string"}, "capability_id": {"type": "string"}, "operation_id": {"type": "string"}, "contribution_driver_id": {"type": "string"}, "contribution_manifest_id": {"type": "string"}, "contribution_manifest_version": {"type": "string"}, "source": {"$ref": "#/$defs/source"}, "discoverable": {"type": "boolean"}, "enabled": {"type": "boolean"}, "reason": {"type": "string"}}},
+    "quarantine": {"type": "object", "additionalProperties": false, "required": ["driver_id", "manifest_id", "manifest_version", "reason"], "properties": {"driver_id": {"type": "string"}, "manifest_id": {"type": "string"}, "manifest_version": {"type": "string"}, "reason": {"type": "string"}}}
   }
 }

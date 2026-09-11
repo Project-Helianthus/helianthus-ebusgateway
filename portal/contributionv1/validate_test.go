@@ -813,6 +813,33 @@ func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	unchanged := NewRegistry(indexFromCatalog(c))
+	if err := unchanged.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unchanged.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{first}); err != nil {
+		t.Fatalf("unchanged successor rejected: %v", err)
+	}
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed"
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{changed}); err == nil {
+		t.Fatal("changed descriptor replaced across generation")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("conflict snapshot=%+v", snapshot)
+	}
+}
+
 func TestCanonicalizePreservesExplicitEmptyRequiredArrays(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

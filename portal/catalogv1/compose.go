@@ -1,6 +1,7 @@
 package catalogv1
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"time"
@@ -145,7 +146,53 @@ func catalogRevisionView(c Catalog) Catalog {
 	c.EvaluationInstant = time.Time{}
 	c.CatalogRevision = ""
 	c.CatalogDigest = ""
+	for i := range c.Resources {
+		c.Resources[i].Source = sourceRevisionView(c.Resources[i].Source)
+	}
+	for i := range c.Actions {
+		c.Actions[i].Source = sourceRevisionView(c.Actions[i].Source)
+	}
 	return c
+}
+
+func sourceRevisionView(source Source) Source {
+	source.EvaluationDigest = ""
+	source.Evaluation = normalizeEvaluationClock(source.Evaluation)
+	return source
+}
+
+// normalizeEvaluationClock removes only the volatile wall/monotonic coordinates
+// from the action-stability view.  Facts, quality, provenance, projection
+// dispositions and every lifecycle/source identity remain part of the claim.
+func normalizeEvaluationClock(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return raw
+	}
+	stripEvaluationClock(value)
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(normalized)
+}
+
+func stripEvaluationClock(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		delete(typed, "evaluated_at")
+		delete(typed, "evaluate_monotonic")
+		for _, child := range typed {
+			stripEvaluationClock(child)
+		}
+	case []any:
+		for _, child := range typed {
+			stripEvaluationClock(child)
+		}
+	}
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {

@@ -959,6 +959,7 @@ type Registry struct {
 	digests    map[registryKey]string
 	conflicts  map[registryKey]bool
 	accepted   map[registryKey]AcceptedDescriptor
+	history    map[registryKey]string
 	generation map[string]uint64
 	revision   uint64
 }
@@ -966,7 +967,7 @@ type Registry struct {
 type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
 
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, generation: map[string]uint64{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generation: map[string]uint64{}}
 }
 
 // DriverGeneration fences a driver's complete descriptor publication.  A
@@ -1041,6 +1042,16 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		}
 		return nil
 	}
+	for key, item := range staged {
+		if digest, ok := r.history[key]; ok && digest != item.Digest {
+			delete(r.accepted, key)
+			delete(r.digests, key)
+			r.conflicts[key] = true
+			r.generation[owner.DriverID] = owner.Generation
+			r.revision++
+			return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
+		}
+	}
 	for key := range r.accepted {
 		if key.DriverID == owner.DriverID {
 			delete(r.accepted, key)
@@ -1049,7 +1060,7 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		}
 	}
 	for key, item := range staged {
-		r.accepted[key], r.digests[key] = item, item.Digest
+		r.accepted[key], r.digests[key], r.history[key] = item, item.Digest, item.Digest
 	}
 	r.generation[owner.DriverID] = owner.Generation
 	r.revision++

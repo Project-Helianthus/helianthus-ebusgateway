@@ -104,3 +104,30 @@ regressions remain covered.
   Modbus RTU transport, and passive mapping gates. Durable log:
   `author-evidence/issue973-portal-catalog-admission/ci_local-d0ad038-followup.log`,
   SHA-256 `ab158b10d536dd82571f2a4023a8bb30bf1b948b3be95c7aecc54ecf1c9da59a`.
+
+## Second exact-HEAD follow-up
+
+The next connector review found that the action-stability view still included
+the detached source evaluation clock and its derived digest. It now normalizes
+only those volatile clock coordinates and the derived digest for the catalog
+revision, while retaining facts, dispositions, loss, quality, provenance,
+source, binding, epoch, generation and eligibility records. A source-backed
+advancing-clock invocation regression proves the native invoker remains
+reachable when only those clock values advance.
+
+The contribution registry retains historical canonical digests across a driver
+generation boundary: an unchanged descriptor is accepted by a successor
+generation; changed bytes for the same identity are quarantined instead of
+silently replacing the prior value. The catalog JSON Schema now has closed item
+schemas for every populated array and source/ref-bearing record, with a
+populated and malformed-document regression. The five-domain fixture and tests
+now use the accepted `helianthus.pack.*` IDs.
+
+- Focused normal/race/schema tests: PASS.
+- Portal Node suite: 101 passed, 0 failed.
+- Linux 386 package compilation: PASS; generated binaries were moved outside
+  the worktree.
+- `GOWORK=off ./scripts/ci_local.sh`: PASS, including race, lint, Modbus RTU
+  transport, and passive mapping. Durable log:
+  `author-evidence/issue973-portal-catalog-admission/ci_local-aa26889-followup.log`,
+  SHA-256 `ff6ce20df1cfef40c7b8117bd5151885df6ef9a47b9b0dc527c13b5f4c73ed56`.

@@ -789,8 +789,8 @@ func validateGroups(groups []Group) (map[string]bool, error) {
 	}
 	return ids, nil
 }
-func validateFields(fields []Field, groups map[string]bool, packs []PackRef, index SemanticIndex) (map[string]bool, error) {
-	ids, orders := map[string]bool{}, map[int32]bool{}
+func validateFields(fields []Field, groups map[string]bool, packs []PackRef, index SemanticIndex) (map[string]string, error) {
+	ids, orders := map[string]string{}, map[int32]bool{}
 	for _, f := range fields {
 		if err := id("field id", f.ID); err != nil {
 			return nil, err
@@ -819,18 +819,18 @@ func validateFields(fields []Field, groups map[string]bool, packs []PackRef, ind
 		if !index.FieldMatches(f.Ref, f.ServiceRef, f.CapabilityRef) {
 			return nil, fmt.Errorf("field %q field/service/capability mismatch", f.ID)
 		}
-		if ids[f.ID] {
+		if _, exists := ids[f.ID]; exists {
 			return nil, fmt.Errorf("duplicate field id %q", f.ID)
 		}
 		if orders[f.Order] {
 			return nil, fmt.Errorf("duplicate field order %d", f.Order)
 		}
-		ids[f.ID], orders[f.Order] = true, true
+		ids[f.ID], orders[f.Order] = f.Group, true
 	}
 	return ids, nil
 }
-func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract NativeContractRef, index SemanticIndex) (map[string]bool, error) {
-	ids, orders := map[string]bool{}, map[int32]bool{}
+func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract NativeContractRef, index SemanticIndex) (map[string]string, error) {
+	ids, orders := map[string]string{}, map[int32]bool{}
 	for _, d := range items {
 		if err := id("diagnostic id", d.ID); err != nil {
 			return nil, err
@@ -853,17 +853,17 @@ func validateDiagnostics(items []Diagnostic, groups map[string]bool, contract Na
 		if !index.HasNativeMember(contract, d.Kind, d.MemberID) {
 			return nil, fmt.Errorf("dangling native diagnostic %q", d.MemberID)
 		}
-		if ids[d.ID] {
+		if _, exists := ids[d.ID]; exists {
 			return nil, fmt.Errorf("duplicate diagnostic id %q", d.ID)
 		}
 		if orders[d.Order] {
 			return nil, fmt.Errorf("duplicate diagnostic order %d", d.Order)
 		}
-		ids[d.ID], orders[d.Order] = true, true
+		ids[d.ID], orders[d.Order] = d.Group, true
 	}
 	return ids, nil
 }
-func validateViews(views []View, groups, fields, diagnostics map[string]bool) error {
+func validateViews(views []View, groups map[string]bool, fields, diagnostics map[string]string) error {
 	ids, orders := map[string]bool{}, map[int32]bool{}
 	for _, v := range views {
 		if err := id("view id", v.ID); err != nil {
@@ -888,13 +888,21 @@ func validateViews(views []View, groups, fields, diagnostics map[string]bool) er
 			return fmt.Errorf("view %q schema-required reference array is nil", v.ID)
 		}
 		for _, f := range v.FieldIDs {
-			if !fields[f] {
+			fieldGroup, ok := fields[f]
+			if !ok {
 				return fmt.Errorf("view %q has dangling field %q", v.ID, f)
+			}
+			if fieldGroup != v.Group {
+				return fmt.Errorf("view %q field group mismatch for %q", v.ID, f)
 			}
 		}
 		for _, d := range v.DiagnosticIDs {
-			if !diagnostics[d] {
+			diagnosticGroup, ok := diagnostics[d]
+			if !ok {
 				return fmt.Errorf("view %q has dangling diagnostic %q", v.ID, d)
+			}
+			if diagnosticGroup != v.Group {
+				return fmt.Errorf("view %q diagnostic group mismatch for %q", v.ID, d)
 			}
 		}
 		if ids[v.ID] {

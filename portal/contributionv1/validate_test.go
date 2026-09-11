@@ -227,6 +227,52 @@ func TestInvalidManifestsFailClosed(t *testing.T) {
 	}
 }
 
+func TestViewsRequireFieldsAndDiagnosticsFromTheirOwnGroup(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	m := cloneManifest(t, c.Manifests[0])
+	m.Groups = append(m.Groups, Group{ID: "system", Label: Label{Key: "thermal.system", Default: "System"}, ResourceContext: "system", Order: 20})
+	systemField := m.Fields[0]
+	systemField.ID, systemField.Group, systemField.Order = "system-temperature", "system", 20
+	m.Fields = append(m.Fields, systemField)
+	m.Diagnostics = []Diagnostic{
+		{ID: "zone-diagnostic", Group: "zone", Label: Label{Key: "thermal.zone.diagnostic", Default: "Zone diagnostic"}, MemberID: "zone-member", Kind: "field", Order: 10},
+		{ID: "system-diagnostic", Group: "system", Label: Label{Key: "thermal.system.diagnostic", Default: "System diagnostic"}, MemberID: "system-member", Kind: "field", Order: 20},
+	}
+	idx.AddNativeMember(m.Contributor.NativeContract, "field", "zone-member")
+	idx.AddNativeMember(m.Contributor.NativeContract, "field", "system-member")
+	m.Views[0].DiagnosticIDs = []string{"zone-diagnostic"}
+	m.Views = append(m.Views, View{ID: "system-summary", Group: "system", Label: Label{Key: "thermal.system.summary", Default: "System summary"}, Renderer: "summary", Slot: "lens", FieldIDs: []string{"system-temperature"}, DiagnosticIDs: []string{"system-diagnostic"}, Order: 20})
+	if err := Validate(m, idx); err != nil {
+		t.Fatalf("same-group references rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Manifest)
+		want   string
+	}{
+		{"cross-group-field", func(v *Manifest) { v.Views[1].FieldIDs = []string{"temperature"} }, "field group mismatch"},
+		{"cross-group-diagnostic", func(v *Manifest) { v.Views[1].DiagnosticIDs = []string{"zone-diagnostic"} }, "diagnostic group mismatch"},
+		{"dangling-field-precedes-group", func(v *Manifest) { v.Views[1].FieldIDs = []string{"missing"} }, "dangling field"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := cloneManifest(t, m)
+			tc.mutate(&bad)
+			if err := Validate(bad, idx); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("direct error=%v want=%q", err, tc.want)
+			}
+			decoded, err := Decode(rawBytes(t, bad))
+			if err != nil {
+				t.Fatalf("wire Decode rejected structurally valid cross-group fixture: %v", err)
+			}
+			if err := Validate(decoded, idx); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("wire Validate error=%v want=%q", err, tc.want)
+			}
+		})
+	}
+}
+
 func cloneManifest(t *testing.T, source Manifest) Manifest {
 	t.Helper()
 	b, err := json.Marshal(source)

@@ -31,6 +31,9 @@ Views select only `summary`, `field_table`, `relationship_graph`, `state_strip`,
 `lens` and `native_diagnostics`. Actions carry presentation metadata and exact
 operation, capability, service, argument and effect refs. Diagnostics identify a
 typed native-contract field/action member. They never describe decoding.
+A view may reference only fields and diagnostics owned by its own group; a
+missing reference remains a dangling-reference rejection before group ownership
+is evaluated.
 
 The host owns localization, installation/resource/capability navigation,
 Registry/Plane/Lens/Compare/Provenance/History/Native perspectives, rendering,

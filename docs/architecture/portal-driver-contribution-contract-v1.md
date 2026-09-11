@@ -78,6 +78,8 @@ required PackRefs, and lexical identifier order for view field/diagnostic
 reference lists. Direct typed admission applies the same 256 KiB bound to the
 trusted canonical JSON encoding. Registry and fixture-index lookups use typed
 tuples, never delimiter-concatenated identity strings.
+Canonicalization keeps every schema-required explicit empty collection as a
+non-nil empty slice, so its canonical JSON remains `[]`, never `null`.
 `StaticIndex` keeps those tuple keys private and exposes `NewStaticIndex` plus
 typed add methods for each pack, definition, unit, service-capability, field,
 operation and native-member relation; its zero value initializes safely on the

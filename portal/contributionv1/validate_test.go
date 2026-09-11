@@ -668,6 +668,102 @@ func TestRegistryTupleKeysDoNotAliasDelimitedIdentities(t *testing.T) {
 	}
 }
 
+func TestCanonicalizePreservesExplicitEmptyRequiredArrays(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	raw := rawManifest(t, c.Manifests[0])
+	raw["requires"].(map[string]any)["packs"] = []any{}
+	for _, name := range []string{"groups", "fields", "views", "actions", "diagnostics"} {
+		raw[name] = []any{}
+	}
+	decoded, err := Decode(rawBytes(t, raw))
+	if err != nil {
+		t.Fatalf("explicit schema-valid empty arrays rejected at decode: %v", err)
+	}
+	if decoded.Requires.Packs == nil || decoded.Groups == nil || decoded.Fields == nil || decoded.Views == nil || decoded.Actions == nil || decoded.Diagnostics == nil {
+		t.Fatal("Decode normalized an explicit empty top-level array to nil")
+	}
+
+	idx := indexFromCatalog(c)
+	topLevelEmpty := cloneManifest(t, c.Manifests[0])
+	topLevelEmpty.Groups, topLevelEmpty.Fields, topLevelEmpty.Views, topLevelEmpty.Actions, topLevelEmpty.Diagnostics = []Group{}, []Field{}, []View{}, []Action{}, []Diagnostic{}
+	canonical, err := Canonicalize(topLevelEmpty, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(canonical, idx); err != nil {
+		t.Fatalf("canonical top-level empty arrays became invalid: %v", err)
+	}
+	if canonical.Requires.Packs == nil || canonical.Groups == nil || canonical.Fields == nil || canonical.Views == nil || canonical.Actions == nil || canonical.Diagnostics == nil {
+		t.Fatal("Canonicalize normalized a required top-level array to nil")
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"groups":[]`, `"fields":[]`, `"views":[]`, `"actions":[]`, `"diagnostics":[]`} {
+		if !bytes.Contains(encoded, []byte(want)) {
+			t.Fatalf("canonical JSON does not retain %s: %s", want, encoded)
+		}
+	}
+	if _, err := CanonicalDigest(canonical, idx); err != nil {
+		t.Fatalf("canonical digest rejected explicit empty arrays: %v", err)
+	}
+
+	withEmptyViewRefs := cloneManifest(t, c.Manifests[0])
+	withEmptyViewRefs.Actions, withEmptyViewRefs.Diagnostics = []Action{}, []Diagnostic{}
+	withEmptyViewRefs.Views[0].FieldIDs, withEmptyViewRefs.Views[0].DiagnosticIDs = []string{}, []string{}
+	canonicalView, err := Canonicalize(withEmptyViewRefs, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(canonicalView, idx); err != nil {
+		t.Fatalf("canonical view empty arrays became invalid: %v", err)
+	}
+	if canonicalView.Views[0].FieldIDs == nil || canonicalView.Views[0].DiagnosticIDs == nil {
+		t.Fatal("Canonicalize normalized a required view array to nil")
+	}
+	encoded, err = json.Marshal(canonicalView)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"field_ids":[]`, `"diagnostic_ids":[]`, `"actions":[]`, `"diagnostics":[]`} {
+		if !bytes.Contains(encoded, []byte(want)) {
+			t.Fatalf("canonical JSON does not retain %s: %s", want, encoded)
+		}
+	}
+	firstDigest, err := CanonicalDigest(withEmptyViewRefs, idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := CanonicalDigest(cloneManifest(t, withEmptyViewRefs), idx)
+	if err != nil || firstDigest != secondDigest {
+		t.Fatalf("equivalent empty-array descriptors differ: %s %s %v", firstDigest, secondDigest, err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{"requires-packs", func(m *Manifest) { m.Requires.Packs = nil }},
+		{"top-level-groups", func(m *Manifest) { m.Groups = nil }},
+		{"top-level-fields", func(m *Manifest) { m.Fields = nil }},
+		{"top-level-views", func(m *Manifest) { m.Views = nil }},
+		{"top-level-actions", func(m *Manifest) { m.Actions = nil }},
+		{"top-level-diagnostics", func(m *Manifest) { m.Diagnostics = nil }},
+		{"view-field-ids", func(m *Manifest) { m.Views[0].FieldIDs = nil }},
+		{"view-diagnostic-ids", func(m *Manifest) { m.Views[0].DiagnosticIDs = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := cloneManifest(t, c.Manifests[0])
+			tc.mutate(&m)
+			if _, err := Canonicalize(m, idx); err == nil || !strings.Contains(err.Error(), "nil") {
+				t.Fatalf("typed nil input was canonicalized: %v", err)
+			}
+		})
+	}
+}
+
 func TestCanonicalDigestBoundsDirectManifestAndCanonicalizesUnorderedArrays(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

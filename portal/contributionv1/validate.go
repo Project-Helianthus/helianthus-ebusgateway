@@ -1019,15 +1019,15 @@ func Canonicalize(m Manifest, index SemanticIndex) (Manifest, error) {
 		return Manifest{}, err
 	}
 	out := m
-	out.Requires.Packs = append([]PackRef(nil), m.Requires.Packs...)
-	out.Groups = append([]Group(nil), m.Groups...)
-	out.Fields = append([]Field(nil), m.Fields...)
-	out.Views = append([]View(nil), m.Views...)
-	out.Actions = append([]Action(nil), m.Actions...)
-	out.Diagnostics = append([]Diagnostic(nil), m.Diagnostics...)
+	out.Requires.Packs = append(make([]PackRef, 0, len(m.Requires.Packs)), m.Requires.Packs...)
+	out.Groups = append(make([]Group, 0, len(m.Groups)), m.Groups...)
+	out.Fields = append(make([]Field, 0, len(m.Fields)), m.Fields...)
+	out.Views = append(make([]View, 0, len(m.Views)), m.Views...)
+	out.Actions = append(make([]Action, 0, len(m.Actions)), m.Actions...)
+	out.Diagnostics = append(make([]Diagnostic, 0, len(m.Diagnostics)), m.Diagnostics...)
 	for i := range out.Views {
-		out.Views[i].FieldIDs = append([]string(nil), out.Views[i].FieldIDs...)
-		out.Views[i].DiagnosticIDs = append([]string(nil), out.Views[i].DiagnosticIDs...)
+		out.Views[i].FieldIDs = append(make([]string, 0, len(out.Views[i].FieldIDs)), out.Views[i].FieldIDs...)
+		out.Views[i].DiagnosticIDs = append(make([]string, 0, len(out.Views[i].DiagnosticIDs)), out.Views[i].DiagnosticIDs...)
 		sort.Strings(out.Views[i].FieldIDs)
 		sort.Strings(out.Views[i].DiagnosticIDs)
 	}

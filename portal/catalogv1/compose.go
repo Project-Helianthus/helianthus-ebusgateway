@@ -71,6 +71,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 				resourceOwnerCounts[sourceResourceOwnerKey{owner, resource.ID}]++
 				out.Resources = append(out.Resources, resource)
 			}
+			fieldIdentities := make(map[sourceFieldKey]bool, len(fields))
 			for _, field := range fields {
 				owner := identity{field.ContributionDriverID, field.ContributionManifestID, field.ContributionManifestVersion}
 				if !accepted[owner] {
@@ -79,6 +80,11 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 				if resourceOwnerCounts[sourceResourceOwnerKey{owner, field.ResourceID}] != 1 {
 					return Catalog{}, errors.New("field has no exact detached resource context")
 				}
+				fieldKey := sourceFieldKey{owner, field.ResourceID, field.ID}
+				if fieldIdentities[fieldKey] {
+					return Catalog{}, errors.New("ambiguous detached field identity")
+				}
+				fieldIdentities[fieldKey] = true
 				out.Fields = append(out.Fields, field)
 			}
 			present := map[string]bool{}
@@ -227,6 +233,12 @@ type sourceResourceKey struct {
 type sourceResourceOwnerKey struct {
 	owner identity
 	id    string
+}
+
+type sourceFieldKey struct {
+	owner      identity
+	resourceID string
+	id         string
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {

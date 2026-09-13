@@ -461,6 +461,23 @@ func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.
 	}
 }
 
+func TestCatalogRejectsDuplicateAcceptedFieldIdentity(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	first := Field{ID: "field", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	second := first
+	second.Value = json.RawMessage(`2`)
+	source := &sourceFake{resources: []Resource{resource}, fields: []Field{second, first}}
+	c := New(idx, source, authFake{}, nil)
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Catalog("caller"); err == nil || !strings.Contains(err.Error(), "ambiguous detached field identity") {
+		t.Fatalf("duplicate field identity err=%v", err)
+	}
+}
+
 func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	base := Catalog{Contract: Contract, Domains: []Domain{}, Contributions: []Identity{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}, Resources: []Resource{{ID: "same", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Fields: []Field{{ID: "same", ResourceID: "r", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ResourceID: "r", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Actions: []Action{}, Quarantines: []Quarantine{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}}
 	want, _ := CanonicalJSON(base)

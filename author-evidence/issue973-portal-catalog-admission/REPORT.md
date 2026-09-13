@@ -398,3 +398,20 @@ Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
 and passive smoke. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-db68bbb-all-31-feedback.log`,
 SHA-256 `2a5d441e38a0bdc50b2276ca6189821dc10aa31b5099e7c7d856f48a457048ff`.
+
+## Final duplicate-field identity correction
+
+The next live review found one P2 defect against the preceding head. Source
+field admission now requires a unique `(driver, manifest, version, resource,
+field)` identity after contribution and resource validation. A duplicate is
+rejected before sorting and hashing, so differing values or qualities cannot
+inherit nondeterministic source order. The regression supplies the same field
+identity twice with distinct values and requires the closed error.
+
+Focused normal and race validation passed for `portal/catalogv1`. The final
+complete SDK-backed CI passed Node 101/101, build/vet, Linux builds,
+repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU transport,
+Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
+log
+`author-evidence/issue973-portal-catalog-admission/ci_local-12c87fd-all-32-feedback.log`,
+SHA-256 `117534a5268e1c9295bf6649d23d75aebfcbd0ae00faf18e302b54e61a3f77d0`.

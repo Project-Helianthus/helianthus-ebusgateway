@@ -35,6 +35,10 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		at := now().UTC()
 		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
+		accepted := make(map[identity]bool, len(descriptors))
+		for _, descriptor := range descriptors {
+			accepted[identity{descriptor.Manifest.Contributor.DriverID, descriptor.Manifest.ManifestID, descriptor.Manifest.ManifestVersion}] = true
+		}
 		for _, p := range FivePacks {
 			out.Domains = append(out.Domains, Domain{Pack: p, SourceState: "ABSENT", Reason: "source_unavailable"})
 		}
@@ -52,10 +56,33 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			if err != nil {
 				return Catalog{}, err
 			}
-			out.Resources = append(out.Resources, resources...)
-			out.Fields = append(out.Fields, fields...)
+			resourceCounts := make(map[sourceResourceKey]int, len(resources))
+			resourceOwnerCounts := make(map[sourceResourceOwnerKey]int, len(resources))
+			for _, resource := range resources {
+				owner := identity{resource.ContributionDriverID, resource.ContributionManifestID, resource.ContributionManifestVersion}
+				if !accepted[owner] {
+					continue
+				}
+				key := sourceResourceKey{owner, resource.ID, resource.ServiceID, resource.CapabilityID}
+				resourceCounts[key]++
+				if resourceCounts[key] != 1 {
+					return Catalog{}, errors.New("ambiguous detached resource context")
+				}
+				resourceOwnerCounts[sourceResourceOwnerKey{owner, resource.ID}]++
+				out.Resources = append(out.Resources, resource)
+			}
+			for _, field := range fields {
+				owner := identity{field.ContributionDriverID, field.ContributionManifestID, field.ContributionManifestVersion}
+				if !accepted[owner] {
+					continue
+				}
+				if resourceOwnerCounts[sourceResourceOwnerKey{owner, field.ResourceID}] != 1 {
+					return Catalog{}, errors.New("field has no exact detached resource context")
+				}
+				out.Fields = append(out.Fields, field)
+			}
 			present := map[string]bool{}
-			for _, r := range resources {
+			for _, r := range out.Resources {
 				present[canonicalDomain(r.Domain)] = true
 			}
 			for i := range out.Domains {
@@ -183,6 +210,7 @@ func stripEvaluationClock(value any) {
 	case map[string]any:
 		delete(typed, "evaluated_at")
 		delete(typed, "evaluate_monotonic")
+		delete(typed, "evaluation_digest")
 		for _, child := range typed {
 			stripEvaluationClock(child)
 		}
@@ -191,6 +219,18 @@ func stripEvaluationClock(value any) {
 			stripEvaluationClock(child)
 		}
 	}
+}
+
+type sourceResourceKey struct {
+	owner      identity
+	id         string
+	service    string
+	capability string
+}
+
+type sourceResourceOwnerKey struct {
+	owner identity
+	id    string
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {

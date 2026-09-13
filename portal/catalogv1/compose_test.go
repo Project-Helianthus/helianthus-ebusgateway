@@ -25,7 +25,7 @@ type volatileEvaluationSource struct{ captures int }
 
 func (s *volatileEvaluationSource) Capture(time.Time) ([]Resource, []Field, error) {
 	s.captures++
-	evaluation := json.RawMessage(`{"context":{"evaluated_at":"2026-09-11T00:00:0` + string(rune('0'+s.captures)) + `Z","evaluate_monotonic":{"nanoseconds":"` + string(rune('0'+s.captures)) + `"}},"facts":[{"freshness":"fresh"}]}`)
+	evaluation := json.RawMessage(`{"context":{"evaluated_at":"2026-09-11T00:00:0` + string(rune('0'+s.captures)) + `Z","evaluate_monotonic":{"nanoseconds":"` + string(rune('0'+s.captures)) + `"}},"facts":[{"freshness":"fresh"}],"evaluation_digest":"digest-` + string(rune('0'+s.captures)) + `"}`)
 	resource := actionResource()
 	resource.Source = Source{AssetID: "asset", SnapshotID: "snapshot", Revision: "revision", EvaluationDigest: "digest-" + string(rune('0'+s.captures)), BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, Evaluation: evaluation}
 	resource.State = "CURRENT"
@@ -208,9 +208,15 @@ func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	}
 }
 func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
-	s := &sourceFake{resources: []Resource{{ID: "pv-1", Domain: "helianthus.pack.pv", State: "CURRENT"}}}
-	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	resource.Domain = "helianthus.pack.pv"
+	s := &sourceFake{resources: []Resource{resource}}
+	c := New(idx, s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
 	got, err := c.Catalog("caller")
 	if err != nil {
 		t.Fatal(err)
@@ -399,6 +405,37 @@ func TestCatalogScopesCollidingResourceIDsByContribution(t *testing.T) {
 	}
 }
 
+func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	field := Field{ID: "field", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	source := &sourceFake{resources: []Resource{resource}, fields: []Field{field}}
+	c := New(idx, source, authFake{}, nil)
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	before, err := c.Catalog("caller")
+	if err != nil || len(before.Resources) != 1 || len(before.Fields) != 1 {
+		t.Fatalf("accepted rows missing: catalog=%+v err=%v", before, err)
+	}
+	c.Withdraw(m.Contributor.DriverID, m.ManifestID, m.ManifestVersion)
+	after, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Resources) != 0 || len(after.Fields) != 0 {
+		t.Fatalf("withdrawn source rows remained visible: %+v", after)
+	}
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	source.resources = nil
+	if _, err := c.Catalog("caller"); err == nil || !strings.Contains(err.Error(), "field has no exact") {
+		t.Fatalf("dangling accepted field err=%v", err)
+	}
+}
+
 func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	base := Catalog{Contract: Contract, Domains: []Domain{}, Contributions: []Identity{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}, Resources: []Resource{{ID: "same", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Fields: []Field{{ID: "same", ResourceID: "r", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ResourceID: "r", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Actions: []Action{}, Quarantines: []Quarantine{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}}
 	want, _ := CanonicalJSON(base)
@@ -413,9 +450,16 @@ func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 			t.Fatalf("noncanonical iteration %d", i)
 		}
 	}
-	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{{ID: "r", Domain: "helianthus.pack.pv"}}, fields: []Field{{ID: "f", ResourceID: "r", Value: json.RawMessage(`1`)}}}, fence: "one"}
-	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	resource.Domain = "helianthus.pack.pv"
+	field := Field{ID: "f", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{resource}, fields: []Field{field}}, fence: "one"}
+	c := New(idx, s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0) }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
 	first, err := c.Catalog("c")
 	if err != nil {
 		t.Fatal(err)

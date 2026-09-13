@@ -350,3 +350,28 @@ transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive
 smoke. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-8cd9569-all-27-feedback.log`,
 SHA-256 `10d53a99bfbaa91c287d140f43ff384f0d4d7b1a359b19b373415e2309ef581d`.
+
+## Final action-revision digest and source-row admission correction
+
+The next live review reported one P1 and one P2 against the preceding head.
+Action revision normalization now removes the embedded SemReg
+`evaluation_digest` together with its volatile evaluation clocks while preserving
+all non-clock facts. The existing production-shaped regression now changes both
+the clocks and embedded/outer digests and still requires a stable action claim;
+the adjacent large non-clock counter regression continues to require a changed
+revision.
+
+Source rows are now filtered through the exact accepted contribution identity
+captured for the same catalog attempt. Resource uniqueness is scoped to the
+contribution and resource ID, so equal asset IDs across separate contributors
+remain valid. Fields must be accepted and point to exactly one resource
+with the same contribution identity and resource ID. Rows retained after
+withdrawal/quarantine are omitted, and a dangling accepted field fails closed.
+
+Focused normal and race validation passed for the affected catalog and Gateway
+packages. The final complete SDK-backed CI passed Node 101/101, build/vet,
+Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU
+transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive
+smoke. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-042bfb6-all-29-feedback.log`,
+SHA-256 `38f88cdea48e6015b1ba657c82f0c9321ae6b262147cf2579149b5784ab29b89`.

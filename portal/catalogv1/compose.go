@@ -1,6 +1,7 @@
 package catalogv1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -168,8 +169,10 @@ func normalizeEvaluationClock(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
 	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	var value any
-	if json.Unmarshal(raw, &value) != nil {
+	if decoder.Decode(&value) != nil {
 		return raw
 	}
 	stripEvaluationClock(value)

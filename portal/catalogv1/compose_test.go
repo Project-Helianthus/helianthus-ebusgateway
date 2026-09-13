@@ -274,6 +274,30 @@ func TestInvokeCatalogRevisionNormalizesProductionSourceEvaluationClock(t *testi
 	}
 }
 
+func TestCatalogRevisionPreservesLargeNonClockEvaluationIntegers(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	resource.Source = Source{SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, EvaluationDigest: "volatile", Evaluation: json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:00Z"},"facts":[{"counter":9007199254740992}]}`)}
+	source := &sourceFake{resources: []Resource{resource}}
+	c := New(idx, source, authFake{}, &invokeFake{})
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.resources[0].Source.Evaluation = json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:01Z"},"facts":[{"counter":9007199254740993}]}`)
+	second, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogRevision == second.CatalogRevision {
+		t.Fatal("adjacent large non-clock integers collapsed into one action revision")
+	}
+}
+
 func TestCatalogActionRequiresExactContributionAndSemanticContext(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	valid := actionResource()

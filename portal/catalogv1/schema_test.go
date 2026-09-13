@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,8 +29,15 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	}
 	properties := schema["properties"].(map[string]any)
 	for _, name := range []string{"domains", "contributions", "resources", "fields", "actions", "quarantines"} {
-		item := properties[name].(map[string]any)["items"].(map[string]any)
-		if item["$ref"] == nil {
+		collection := properties[name].(map[string]any)
+		if name == "domains" {
+			if prefix, ok := collection["prefixItems"].([]any); !ok || len(prefix) != len(FivePacks) {
+				t.Fatalf("domains has no fixed item schemas")
+			}
+			continue
+		}
+		item, ok := collection["items"].(map[string]any)
+		if !ok || item["$ref"] == nil {
 			t.Fatalf("%s has no item schema", name)
 		}
 	}
@@ -49,6 +57,29 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	}
 	if err := validateCatalogSchema(schema, fixture); err != nil {
 		t.Fatalf("fixture rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"sixth", func(v map[string]any) { v["domains"] = append(v["domains"].([]any), v["domains"].([]any)[0]) }},
+		{"duplicate", func(v map[string]any) { v["domains"].([]any)[1] = v["domains"].([]any)[0] }},
+		{"arbitrary-id", func(v map[string]any) {
+			v["domains"].([]any)[2].(map[string]any)["pack"].(map[string]any)["id"] = "helianthus.pack.arbitrary"
+		}},
+		{"wrong-version", func(v map[string]any) {
+			v["domains"].([]any)[3].(map[string]any)["pack"].(map[string]any)["version"] = "9.9.9"
+		}},
+	} {
+		t.Run("fixed-domains-"+tc.name, func(t *testing.T) {
+			var candidate map[string]any
+			encoded, _ := json.Marshal(fixture)
+			_ = json.Unmarshal(encoded, &candidate)
+			tc.mutate(candidate)
+			if err := validateCatalogSchema(schema, candidate); err == nil {
+				t.Fatalf("invalid fixed domain catalog accepted")
+			}
+		})
 	}
 	var populated map[string]any
 	encoded, _ := json.Marshal(fixture)
@@ -76,7 +107,21 @@ func validateCatalogSchema(root map[string]any, value any) error {
 			name := strings.TrimPrefix(ref, "#/$defs/")
 			return validate(root["$defs"].(map[string]any)[name].(map[string]any), value)
 		}
-		switch schema["type"] {
+		if expected, ok := schema["const"]; ok && !reflect.DeepEqual(expected, value) {
+			return fmt.Errorf("const mismatch")
+		}
+		if all, ok := schema["allOf"].([]any); ok {
+			for _, item := range all {
+				if err := validate(item.(map[string]any), value); err != nil {
+					return err
+				}
+			}
+		}
+		typeName := schema["type"]
+		if typeName == nil && schema["properties"] != nil {
+			typeName = "object"
+		}
+		switch typeName {
 		case "object":
 			object, ok := value.(map[string]any)
 			if !ok {
@@ -108,6 +153,22 @@ func validateCatalogSchema(root map[string]any, value any) error {
 			items, ok := value.([]any)
 			if !ok {
 				return fmt.Errorf("array required")
+			}
+			if min, ok := schema["minItems"].(float64); ok && len(items) < int(min) {
+				return fmt.Errorf("too few items")
+			}
+			if max, ok := schema["maxItems"].(float64); ok && len(items) > int(max) {
+				return fmt.Errorf("too many items")
+			}
+			if prefix, ok := schema["prefixItems"].([]any); ok {
+				if len(items) < len(prefix) {
+					return fmt.Errorf("missing prefix item")
+				}
+				for i, child := range prefix {
+					if err := validate(child.(map[string]any), items[i]); err != nil {
+						return fmt.Errorf("item %d: %w", i, err)
+					}
+				}
 			}
 			if child, ok := schema["items"].(map[string]any); ok {
 				for _, item := range items {

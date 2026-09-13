@@ -278,3 +278,25 @@ Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
 and passive smoke. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-2517038-all-20-feedback.log`,
 SHA-256 `bbb03e99a5a49bf70bf1d16bb378d674694cf2a8c518ad2f4c1dc37a2d8c9e50`.
+
+## Final numeric-revision and fixed-domain schema correction
+
+The subsequent connector review supplied two P2 findings against the previous
+head. Evaluation normalization now decodes JSON with `UseNumber`, so removing
+volatile clock fields cannot round or alias non-clock integers above `2^53`.
+The regression varies adjacent large counter values while every source fence is
+stable and requires different action revisions; the existing clock-only test
+continues to require a stable revision.
+
+The v1 catalog schema now accepts exactly the producer's canonical ordered five
+domain tuples and exact pack versions. It rejects a sixth domain, a duplicate,
+an arbitrary pack ID, and a wrong version. The schema regression evaluates the
+actual `prefixItems`, `allOf`, `const`, `minItems`, and `maxItems` constraints.
+
+Focused normal and race validation passed for `portal/catalogv1`. The final
+complete SDK-backed CI passed Node 101/101, build/vet, Linux builds,
+repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU transport,
+Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
+log
+`author-evidence/issue973-portal-catalog-admission/ci_local-a8665ed-all-22-feedback.log`,
+SHA-256 `63f747ff390474b2b80531f22433b288e89ffccb72841a5520369d2d187ef728`.

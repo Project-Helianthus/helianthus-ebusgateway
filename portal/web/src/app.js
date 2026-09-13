@@ -3904,13 +3904,13 @@ class PortalShell extends HTMLElement {
       if (!payload) return;
       if (!this._isCurrentVaillantB503Context(context)) {
         if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
-          // M8-TGT-04: do not leak an enable that completed after target
-          // selection moved. This cleanup keeps the stale target ownership
-          // bounded without mutating the newly selected target's UI state.
-          await this._gqlRequest(
-            "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { disabled } }",
-            { action: "disable", issuerToken: payload.issuerToken, targetAddress: context.target },
-          );
+          // M8-TGT-04: retain a late enable's issuer token before its first
+          // cleanup attempt. If GraphQL cannot confirm disabled=true, the
+          // prior target remains recoverable for one later user-triggered
+          // navigation/target cleanup without changing the current target.
+          this._vaillantB503LiveToken = payload.issuerToken;
+          this._vaillantB503LiveTarget = context.target;
+          await this.handleVaillantB503NavAway(context.target);
         }
         return;
       }

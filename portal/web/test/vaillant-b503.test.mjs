@@ -424,6 +424,66 @@ test("VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError", async () => {
   assert.equal(fetchRequests.length, 1, "the handler must not auto-retry indefinitely");
 });
 
+test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement();
+  let resolveEnable;
+  let disableAttempts = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLive(") && variables.action === "enable") {
+        return new Promise((resolve) => {
+          resolveEnable = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-A", rawHex: null, disabled: false } } }),
+          });
+        });
+      }
+      if (query.includes("VaillantLiveDisable") && variables.action === "disable") {
+        disableAttempts += 1;
+        const reply = disableAttempts === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      throw new Error(`unexpected GraphQL request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  const lateA = proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  await flush();
+
+  // A completes only after the operator selected B. The canonical B context
+  // must remain untouched while A's token-bound cleanup is retained.
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  resolveEnable();
+  await lateA;
+
+  assert.equal(shell._vaillantB503TargetAddress, 21, "late A completion must not replace current B target");
+  assert.equal(shell._vaillantB503Epoch, 1, "late A completion must not mutate B epoch");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "failed A cleanup must retain A issuer token");
+  assert.equal(shell._vaillantB503LiveTarget, 8, "failed A cleanup must retain A target");
+  assert.match(status.textContent, /Disable pending: SESSION_BUSY/);
+  assert.equal(fetchRequests.length, 2, "late completion gets exactly one immediate cleanup attempt");
+  const firstDisable = parseGqlInit(fetchRequests[1].init).variables;
+  assert.deepEqual(firstDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    "late cleanup must use A's returned token and A target");
+
+  const cleaned = await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(cleaned, true, "one later cleanup may clear after disabled=true");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 21, "later A cleanup must still preserve B selection");
+  assert.equal(fetchRequests.length, 3, "later cleanup is bounded to one explicit attempt");
+  const secondDisable = parseGqlInit(fetchRequests[2].init).variables;
+  assert.deepEqual(secondDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 });
+});
+
 test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
   const { source, sourcePath } = await loadShellSource();
   for (const [reason, selector, required] of [

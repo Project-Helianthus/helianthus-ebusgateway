@@ -91,6 +91,25 @@ func (p *b503GraphQLProvider) ErrorHistory(ctx context.Context, target *byte, in
 	return historyToGraphQL(rec), nil
 }
 
+func (p *b503GraphQLProvider) ErrorsHistory(ctx context.Context, target *byte, limit int) ([]graphql.VaillantB503HistoryRecord, error) {
+	if p == nil || p.mcpServer == nil {
+		return nil, errors.New("vaillant B503 MCP provider unavailable")
+	}
+	records, err := p.mcpServer.VaillantB503ErrorsHistoryList(ctx, target, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]graphql.VaillantB503HistoryRecord, len(records))
+	for index, record := range records {
+		out[index] = graphql.VaillantB503HistoryRecord{
+			Index:            record.Index,
+			FirstActiveError: cloneInt(record.FirstActiveError),
+			Slots:            cloneIntPointers(record.Slots),
+		}
+	}
+	return out, nil
+}
+
 func (p *b503GraphQLProvider) ServiceHistory(ctx context.Context, target *byte, index *byte) (graphql.VaillantB503HistoryRecord, error) {
 	payload := b503.EncodeServiceHistory()
 	if index != nil {
@@ -167,11 +186,31 @@ func (p *b503GraphQLProvider) Availability(ctx context.Context, target *byte) st
 	return string(p.mcpServer.VaillantB503AvailabilityAtCtx(ctx, *target))
 }
 
-func (p *b503GraphQLProvider) LiveMonitorSession(_ context.Context, _ *byte) graphql.VaillantB503Session {
-	if p == nil || p.mgr == nil {
-		return graphql.VaillantB503Session{State: "Idle"}
+func (p *b503GraphQLProvider) LiveMonitorSession(ctx context.Context, target *byte) (graphql.VaillantB503Session, error) {
+	if p == nil || p.mcpServer == nil {
+		return graphql.VaillantB503Session{}, errors.New("vaillant B503 MCP provider unavailable")
 	}
-	return graphql.VaillantB503Session{State: p.mgr.State().String(), Owned: p.mgr.IsOwned()}
+	session, err := p.mcpServer.VaillantB503LiveMonitorSession(ctx, target)
+	if err != nil {
+		return graphql.VaillantB503Session{}, err
+	}
+	return graphql.VaillantB503Session{State: session.State, Owned: session.Owned}, nil
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneIntPointers(values []*int) []*int {
+	out := make([]*int, len(values))
+	for index, value := range values {
+		out[index] = cloneInt(value)
+	}
+	return out
 }
 
 func slotsToGraphQL(s b503.ErrorSlots) graphql.VaillantB503Errors {

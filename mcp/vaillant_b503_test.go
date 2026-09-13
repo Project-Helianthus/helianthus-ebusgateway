@@ -38,7 +38,7 @@ func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []
 	return nil, errors.New("stubB503Dispatcher: no canned response")
 }
 
-// newB503Server builds a gateway MCP Server, attaches the five Vaillant B503
+// newB503Server builds a gateway MCP Server, attaches the Vaillant B503
 // tools, and returns server + dispatcher stub + session manager so tests can
 // manipulate wire responses and FSM state.
 func newB503Server(t *testing.T, disp *stubB503Dispatcher, mgr *b503session.Manager) *Server {
@@ -82,9 +82,11 @@ func TestVaillantB503_ToolRegistration(t *testing.T) {
 	wants := []string{
 		toolVaillantB503ErrorsGetName,
 		toolVaillantB503ErrorsHistoryGetName,
+		toolVaillantB503ErrorsHistoryListName,
 		toolVaillantB503ServiceCurrentGetName,
 		toolVaillantB503ServiceHistoryGetName,
 		toolVaillantB503LiveMonitorName,
+		toolVaillantB503LiveSessionGetName,
 	}
 	for _, want := range wants {
 		if !hasToolName(tools, want) {

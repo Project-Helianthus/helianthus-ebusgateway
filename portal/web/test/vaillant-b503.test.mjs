@@ -64,9 +64,17 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
     }
   }
   const fetchRequests = [];
+  const createdElements = [];
   const sandbox = {
     console: { error() {}, log() {}, warn() {} },
-    document: { documentElement: { setAttribute() {} } },
+    document: {
+      documentElement: { setAttribute() {} },
+      createElement() {
+        const element = makeAuditedElement({ addEventListener() {}, append() {} });
+        createdElements.push(element);
+        return element;
+      },
+    },
     customElements: { define() {} },
     HTMLElement: FakeHTMLElement,
     localStorage: { getItem: () => null, setItem() {} },
@@ -96,7 +104,7 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   shell.bindEvents = () => {};
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
-  return { shell, fetchRequests };
+  return { shell, fetchRequests, createdElements };
 }
 
 // Parse a GraphQL fetch call and return {query, variables} from the init body.
@@ -392,7 +400,7 @@ test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
     ["AVAILABLE", "b503-state-available", "Live-Monitor"],
     ["NOT_SUPPORTED", "b503-state-not-supported", "Support limitation"],
     ["TRANSPORT_DOWN", "b503-state-transport-down", "Transport warning"],
-    ["SESSION_BUSY", "b503-state-session-busy", "Ownership warning"],
+    ["SESSION_BUSY", "b503-state-session-busy", "Session contention"],
     ["UNKNOWN", "b503-state-unknown", "Probe failure hint"],
   ]) {
     const paneBody = makeAuditedElement();
@@ -401,7 +409,87 @@ test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
     const rendered = paneBody.innerHTML;
     assert.ok(rendered.includes(`data-testid=\"${selector}\"`), `${reason} must expose ${selector}`);
     assert.ok(rendered.includes(required), `${reason} must expose its documented helpful artefact`);
+    assert.ok(rendered.includes('data-role="vaillant-b503-target"'), `${reason} must retain the target selector`);
   }
+});
+
+test("VaillantB503Pane_empty_target_preserves_configured_default_for_every_request", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "" });
+  const elements = new Map([
+    ['[data-role="vaillant-b503-target"]', target],
+    ['[data-role="vaillant-b503-errors-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-service-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-history-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-live-status"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-live-output"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-session-strip"]', makeAuditedElement()],
+  ]);
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: [] } } },
+      { match: "VaillantErrors", reply: { data: { vaillantErrors: { firstActiveError: null, slots: [] } } } },
+      { match: "VaillantServiceCurrent", reply: { data: { vaillantServiceCurrent: { firstActiveError: null, slots: [] } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
+      { match: "VaillantLive", reply: { data: { vaillantLiveMonitor: { rawHex: "", issuerToken: null, disabled: false } } } },
+    ]),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  await proto.refreshVaillantErrors.call(shell);
+  await proto.refreshVaillantServiceCurrent.call(shell);
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  await proto.invokeVaillantLiveMonitor.call(shell, "read");
+
+  assert.equal(proto._vaillantB503Target.call(shell), null, "empty selection must mean configured default");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.length, 6, "live-monitor read also refreshes the session strip");
+  for (const call of calls) {
+    assert.equal(call.variables.targetAddress, null, `${call.query} must preserve null/default target`);
+  }
+});
+
+test("VaillantB503ProjectionCard_renders_without_projection_planes", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+    ]),
+  });
+  shell.projectionDevices = [{ address: 8, display_name: "Boiler", projections: [] }];
+  await Object.getPrototypeOf(shell).loadAllProjectionPlanes.call(shell);
+  assert.match(grid.innerHTML, /No non-empty projection planes/);
+  assert.equal(appended.length, 1, "capability card must be appended even without graph planes");
+  assert.match(appended[0].textContent, /Vaillant B503/);
+});
+
+test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const target = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-target"]', target],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Gateway session gate is held/);
+  assert.doesNotMatch(strip.innerHTML.toLowerCase(), /another client|foreign owner/);
+  assert.match(strip.innerHTML, /data-testid="b503-session-state-label"/);
 });
 
 test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {

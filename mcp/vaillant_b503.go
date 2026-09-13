@@ -42,13 +42,32 @@ type VaillantB503Options struct {
 	DefaultTarget  byte
 }
 
+// VaillantB503HistoryRecord is the stable MCP view of one bounded B503
+// history record. Empty native slots remain nil so JSON preserves the
+// established null representation.
+type VaillantB503HistoryRecord struct {
+	Index            int    `json:"index"`
+	FirstActiveError *int   `json:"first_active_error"`
+	Slots            []*int `json:"slots"`
+}
+
+// VaillantB503SessionStatus is the stable read-only ownership view. Owned
+// means the gateway session gate is held; it does not identify a client and
+// deliberately exposes no issuer token or transport key.
+type VaillantB503SessionStatus struct {
+	State string `json:"state"`
+	Owned bool   `json:"owned"`
+}
+
 // Public tool names (spec §3 / plan AD02).
 const (
 	toolVaillantB503ErrorsGetName         = "ebus.v1.vaillant.errors.get"
 	toolVaillantB503ErrorsHistoryGetName  = "ebus.v1.vaillant.errors.history.get"
+	toolVaillantB503ErrorsHistoryListName = "ebus.v1.vaillant.errors.history.list"
 	toolVaillantB503ServiceCurrentGetName = "ebus.v1.vaillant.service.current.get"
 	toolVaillantB503ServiceHistoryGetName = "ebus.v1.vaillant.service.history.get"
 	toolVaillantB503LiveMonitorName       = "ebus.v1.vaillant.live_monitor.get"
+	toolVaillantB503LiveSessionGetName    = "ebus.v1.vaillant.live_monitor.session.get"
 )
 
 // --- server-side state ----------------------------------------------------
@@ -78,7 +97,7 @@ func b503StateFor(s *Server) (*b503State, bool) {
 	return st, ok
 }
 
-// RegisterVaillantB503Tools installs the 5 Vaillant B503 tools on s.
+// RegisterVaillantB503Tools installs the 7 Vaillant B503 tools on s.
 //
 // Options validation: Dispatcher and SessionManager MUST be non-nil. A
 // misconfigured bootstrap that passes a zero-value VaillantB503Options
@@ -129,6 +148,17 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 			},
 		},
 		Tool{
+			Name:        toolVaillantB503ErrorsHistoryListName,
+			Description: "List a bounded prefix of Vaillant error-history records in ascending index order (READ).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": mergeProps(targetProp, map[string]any{
+					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 16},
+				}),
+				"additionalProperties": false,
+			},
+		},
+		Tool{
 			Name:        toolVaillantB503ServiceCurrentGetName,
 			Description: "Get current Vaillant service-message slots via B503 family=0x00 selector=0x02 (READ).",
 			InputSchema: map[string]any{
@@ -161,6 +191,15 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 				"additionalProperties": false,
 			},
 		},
+		Tool{
+			Name:        toolVaillantB503LiveSessionGetName,
+			Description: "Get the gateway-held Vaillant live-monitor session state without exposing authority (READ).",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"properties":           targetProp,
+				"additionalProperties": false,
+			},
+		},
 	)
 }
 
@@ -189,12 +228,16 @@ func (s *Server) handleVaillantB503Call(ctx context.Context, name string, args m
 		return st.handleErrorsGet(ctx, args), true
 	case toolVaillantB503ErrorsHistoryGetName:
 		return st.handleErrorsHistoryGet(ctx, args), true
+	case toolVaillantB503ErrorsHistoryListName:
+		return st.handleErrorsHistoryList(ctx, args), true
 	case toolVaillantB503ServiceCurrentGetName:
 		return st.handleServiceCurrentGet(ctx, args), true
 	case toolVaillantB503ServiceHistoryGetName:
 		return st.handleServiceHistoryGet(ctx, args), true
 	case toolVaillantB503LiveMonitorName:
 		return st.handleLiveMonitor(ctx, args), true
+	case toolVaillantB503LiveSessionGetName:
+		return st.handleLiveMonitorSession(ctx, args), true
 	}
 	return nil, false
 }
@@ -233,6 +276,18 @@ func historyIndex(args map[string]any) (byte, bool, error) {
 		return 0, false, fmt.Errorf("%w: index must be an unsigned 8-bit integer (0-255)", errInvalidArgument)
 	}
 	return v, true, nil
+}
+
+func historyLimit(args map[string]any) (int, error) {
+	raw, ok := args["limit"]
+	if !ok || raw == nil {
+		return 5, nil
+	}
+	value, ok := raw.(float64)
+	if !ok || value != float64(int(value)) || value < 1 || value > 16 {
+		return 0, fmt.Errorf("%w: limit must be an integer between 1 and 16", errInvalidArgument)
+	}
+	return int(value), nil
 }
 
 func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) map[string]any {
@@ -287,6 +342,87 @@ func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string
 		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
 	return st.okEnvelope(ctx, historyToMap(rec))
+}
+
+func (st *b503State) handleErrorsHistoryList(ctx context.Context, args map[string]any) map[string]any {
+	target, err := st.target(args)
+	if err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	limit, err := historyLimit(args)
+	if err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	records, err := st.errorsHistoryList(ctx, target, limit)
+	if err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	return st.okEnvelope(ctx, records)
+}
+
+func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit int) ([]VaillantB503HistoryRecord, error) {
+	if limit < 1 || limit > 16 {
+		return nil, fmt.Errorf("%w: limit must be between 1 and 16", errInvalidArgument)
+	}
+	records := make([]VaillantB503HistoryRecord, 0, limit)
+	for index := 0; index < limit; index++ {
+		payload := append(b503.EncodeErrorHistory(), byte(index))
+		resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err)
+		}
+		record, err := b503.DecodeErrorHistory(resp)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errDecodeFailed, err)
+		}
+		if record.Index != byte(index) {
+			return nil, fmt.Errorf("%w: requested history index %d, device echoed %d", errDecodeFailed, index, record.Index)
+		}
+		records = append(records, historyToRecord(record))
+	}
+	return records, nil
+}
+
+func (st *b503State) handleLiveMonitorSession(ctx context.Context, args map[string]any) map[string]any {
+	if _, err := st.target(args); err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	return st.okEnvelope(ctx, st.liveMonitorSession())
+}
+
+func (st *b503State) liveMonitorSession() VaillantB503SessionStatus {
+	if st == nil || st.opts.SessionManager == nil {
+		return VaillantB503SessionStatus{State: "Idle"}
+	}
+	return VaillantB503SessionStatus{
+		State: st.opts.SessionManager.State().String(),
+		Owned: st.opts.SessionManager.IsOwned(),
+	}
+}
+
+// VaillantB503ErrorsHistoryList exposes the exact stable MCP aggregate to the
+// GraphQL adapter. A nil target uses the registered default target.
+func (s *Server) VaillantB503ErrorsHistoryList(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return nil, errNotSupported
+	}
+	resolved := st.opts.DefaultTarget
+	if target != nil {
+		resolved = *target
+	}
+	return st.errorsHistoryList(ctx, resolved, limit)
+}
+
+// VaillantB503LiveMonitorSession exposes the exact stable MCP session-status
+// contract to the GraphQL adapter. The session gate is gateway-global, while
+// the optional target is validated by GraphQL before this method is called.
+func (s *Server) VaillantB503LiveMonitorSession(_ context.Context, _ *byte) (VaillantB503SessionStatus, error) {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return VaillantB503SessionStatus{}, errNotSupported
+	}
+	return st.liveMonitorSession(), nil
 }
 
 func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[string]any) map[string]any {
@@ -458,6 +594,25 @@ func historyToMap(r b503.ErrorHistoryRecord) map[string]any {
 		out["first_active_error"] = nil
 	}
 	return out
+}
+
+func historyToRecord(r b503.ErrorHistoryRecord) VaillantB503HistoryRecord {
+	record := VaillantB503HistoryRecord{
+		Index: int(r.Index),
+		Slots: make([]*int, len(r.Slots)),
+	}
+	for index, slot := range r.Slots {
+		if slot == b503.EmptySlot {
+			continue
+		}
+		value := int(slot)
+		record.Slots[index] = &value
+	}
+	if value, ok := r.FirstActive(); ok {
+		first := int(value)
+		record.FirstActiveError = &first
+	}
+	return record
 }
 
 func hexString(b []byte) string {

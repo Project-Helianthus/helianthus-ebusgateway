@@ -1901,6 +1901,7 @@ class PortalShell extends HTMLElement {
       : [];
     if (nonEmpty.length === 0) {
       gridEl.innerHTML = `<p class="projection-empty">No non-empty projection planes for this device.</p>`;
+      await this.renderVaillantB503ProjectionCard(gridEl, Number(device.address));
       return true;
     }
     gridEl.innerHTML = `<p class="projection-empty">Loading ${nonEmpty.length} plane(s)...</p>`;
@@ -2004,7 +2005,11 @@ class PortalShell extends HTMLElement {
         this.activateSection("section-vaillant-b503");
       });
       const grid = gridEl.querySelector?.(".uml-grid");
-      if (grid?.append) grid.append(card);
+      if (grid?.append) {
+        grid.append(card);
+      } else if (gridEl.append) {
+        gridEl.append(card);
+      }
     } catch {
       // Projection remains truthful without a B503 card when capability cannot
       // be established. The card never manufactures native support.
@@ -3577,7 +3582,9 @@ class PortalShell extends HTMLElement {
 
   _vaillantB503Target() {
     const select = this.querySelector('[data-role="vaillant-b503-target"]');
-    const value = select ? Number(select.value) : Number(this._vaillantB503TargetAddress);
+    const raw = select ? String(select.value ?? "").trim() : this._vaillantB503TargetAddress;
+    if (raw === "" || raw === null || raw === undefined) return null;
+    const value = Number(raw);
     return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
   }
 
@@ -3643,10 +3650,13 @@ class PortalShell extends HTMLElement {
     const body = bodyEl || this.querySelector('[data-role="vaillant-b503-body"]');
     if (!body) return;
     const sanitized = typeof reason === "string" ? reason : "UNKNOWN";
+    const hasTargets = (Array.isArray(this.projectionDevices) ? this.projectionDevices : [])
+      .some((device) => Number.isInteger(Number(device.address)) && Number(device.address) >= 0 && Number(device.address) <= 255);
+    const targetPicker = `<label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target"${hasTargets ? "" : " disabled"}>${this._vaillantB503TargetOptions()}</select></label>`;
     if (sanitized === "AVAILABLE") {
       const activeTab = this._vaillantB503ActiveTab || "errors";
       body.innerHTML = `
-        <label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target">${this._vaillantB503TargetOptions()}</select></label>
+        ${targetPicker}
         <div class="bus-banner bus-state-unavailable" data-testid="b503-install-writes-banner">Installation writes require an admitted action and current authorization. <a id="b503-ad02-tooltip-anchor" href="https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/vaillant-b503-namespace-w17-26.implementing/13-amendment-1-dispatcher-portal-ux.md#f6--ad02-install-writes-banner" aria-label="Installation write safety details">?</a></div>
         <div data-testid="b503-state-available">
         <div class="snapshot-controls" data-role="vaillant-b503-tabs">
@@ -3664,17 +3674,24 @@ class PortalShell extends HTMLElement {
       this._bindVaillantB503ActiveTabEvents(activeTab);
     } else if (sanitized === "TRANSPORT_DOWN") {
       body.innerHTML = `
+        ${targetPicker}
         <div class="bus-banner bus-state-unavailable" data-testid="b503-state-transport-down">
           Transport warning: adapter health is down. Retry after transport recovery.
         </div>
       `;
     } else if (sanitized === "SESSION_BUSY") {
-      body.innerHTML = `<div class="bus-banner bus-state-unavailable" data-testid="b503-state-session-busy">Ownership warning: another client owns the live-monitor session. Retry after it releases.</div>`;
+      body.innerHTML = `${targetPicker}<div class="bus-banner bus-state-unavailable" data-testid="b503-state-session-busy">Session contention: the live-monitor session is busy or changing lifecycle state. Retry when it becomes available.</div>`;
     } else if (sanitized === "NOT_SUPPORTED") {
-      body.innerHTML = `<div class="muted-inline" data-testid="b503-state-not-supported">Support limitation: this device family does not implement B503.</div>`;
+      body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-not-supported">Support limitation: this device family does not implement B503.</div>`;
     } else {
-      body.innerHTML = `<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
+      body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
     }
+    if (sanitized !== "AVAILABLE") this._bindVaillantB503TargetEvent();
+  }
+
+  _bindVaillantB503TargetEvent() {
+    const target = this.querySelector('[data-role="vaillant-b503-target"]');
+    if (target && typeof target.addEventListener === "function") target.addEventListener("change", () => void this.changeVaillantB503Target());
   }
 
   _vaillantB503TabMarkup(activeTab) {
@@ -3693,7 +3710,7 @@ class PortalShell extends HTMLElement {
     }
     if (activeTab === "live-monitor") {
       return `
-        <div class="muted-inline" data-role="vaillant-b503-session-strip" role="status" aria-live="polite">Session state: loading.</div>
+        <div class="muted-inline" data-role="vaillant-b503-session-strip" data-testid="b503-session-strip" role="status" aria-live="polite"><span data-testid="b503-session-state-label">Session state: loading.</span></div>
         <div class="snapshot-controls">
           <button class="button" data-role="vaillant-b503-live-enable" type="button">Enable</button>
           <button class="button" data-role="vaillant-b503-live-read" type="button">Read</button>
@@ -3719,8 +3736,7 @@ class PortalShell extends HTMLElement {
     const serviceTab = this.querySelector('[data-role="vaillant-b503-tab-service"]');
     const liveTab = this.querySelector('[data-role="vaillant-b503-tab-live-monitor"]');
     const historyTab = this.querySelector('[data-role="vaillant-b503-tab-history"]');
-    const target = this.querySelector('[data-role="vaillant-b503-target"]');
-    if (target && typeof target.addEventListener === "function") target.addEventListener("change", () => void this.changeVaillantB503Target());
+    this._bindVaillantB503TargetEvent();
     const swap = async (name) => {
       const leavingLive =
         this._vaillantB503ActiveTab === "live-monitor" &&
@@ -3826,7 +3842,7 @@ class PortalShell extends HTMLElement {
       const payload = env && env.data && env.data.vaillantErrors;
       this._renderB503SlotList(body, payload || { firstActiveError: null, slots: [] });
     } catch (err) {
-      if (body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+      if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
     }
   }
 
@@ -3846,7 +3862,7 @@ class PortalShell extends HTMLElement {
       const payload = env && env.data && env.data.vaillantServiceCurrent;
       this._renderB503SlotList(body, payload || { firstActiveError: null, slots: [] });
     } catch (err) {
-      if (body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
+      if (this._isCurrentVaillantB503Context(context) && body) body.innerHTML = `<div class="error">${escapeHtml(String(err))}</div>`;
     }
   }
 
@@ -3920,7 +3936,8 @@ class PortalShell extends HTMLElement {
       const session = env?.data?.vaillantLiveMonitorSession;
       const state = typeof session?.state === "string" ? session.state : "Unknown";
       const owned = session?.owned === true;
-      strip.textContent = owned && !this._vaillantB503LiveToken ? `Session state: ${state}. Owned by another client.` : `Session state: ${state}.`;
+      const ownership = owned ? " Gateway session gate is held." : "";
+      strip.innerHTML = `<span data-testid="b503-session-state-label">Session state: ${escapeHtml(state)}.</span>${escapeHtml(ownership)}`;
       const enabling = state === "Enabling";
       for (const role of ["vaillant-b503-live-enable", "vaillant-b503-live-disable"]) {
         const control = this.querySelector(`[data-role="${role}"]`);

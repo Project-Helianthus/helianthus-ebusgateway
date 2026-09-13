@@ -1,0 +1,45 @@
+{
+  "data": [
+    {
+      "first_active_error": 281,
+      "index": 0,
+      "slots": [
+        281,
+        null,
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "first_active_error": 282,
+      "index": 1,
+      "slots": [
+        282,
+        null,
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "error": null,
+  "meta": {
+    "capabilities": {
+      "vaillant_b503": {
+        "available": true,
+        "reason": "AVAILABLE"
+      }
+    },
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "98ca41db85e96bc2aefcdd7ffdc9085d7b7c72991fd34311d6e56de0c7cba09c",
+    "data_timestamp": "\u003cruntime\u003e"
+  }
+}

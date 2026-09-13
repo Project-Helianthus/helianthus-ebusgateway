@@ -14,11 +14,12 @@ import (
 type fakeB503Provider struct {
 	errorsFn         func(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	errorHistoryFn   func(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
+	errorsHistoryFn  func(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error)
 	serviceCurrentFn func(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	serviceHistoryFn func(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	liveMonitorFn    func(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
 	availabilityFn   func(ctx context.Context, target *byte) string
-	sessionFn        func(ctx context.Context, target *byte) VaillantB503Session
+	sessionFn        func(ctx context.Context, target *byte) (VaillantB503Session, error)
 }
 
 func (f *fakeB503Provider) Errors(ctx context.Context, target *byte) (VaillantB503Errors, error) {
@@ -33,6 +34,13 @@ func (f *fakeB503Provider) ErrorHistory(ctx context.Context, target *byte, index
 		return VaillantB503HistoryRecord{}, errors.New("not stubbed")
 	}
 	return f.errorHistoryFn(ctx, target, index)
+}
+
+func (f *fakeB503Provider) ErrorsHistory(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+	if f.errorsHistoryFn == nil {
+		return nil, errors.New("not stubbed")
+	}
+	return f.errorsHistoryFn(ctx, target, limit)
 }
 
 func (f *fakeB503Provider) ServiceCurrent(ctx context.Context, target *byte) (VaillantB503Errors, error) {
@@ -63,9 +71,9 @@ func (f *fakeB503Provider) Availability(ctx context.Context, target *byte) strin
 	return f.availabilityFn(ctx, target)
 }
 
-func (f *fakeB503Provider) LiveMonitorSession(ctx context.Context, target *byte) VaillantB503Session {
+func (f *fakeB503Provider) LiveMonitorSession(ctx context.Context, target *byte) (VaillantB503Session, error) {
 	if f.sessionFn == nil {
-		return VaillantB503Session{State: "Idle"}
+		return VaillantB503Session{State: "Idle"}, nil
 	}
 	return f.sessionFn(ctx, target)
 }
@@ -292,17 +300,20 @@ func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 	first := 11
 	provider := &fakeB503Provider{
-		errorHistoryFn: func(_ context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error) {
-			if target == nil || *target != 0x15 || index == nil {
-				return VaillantB503HistoryRecord{}, errors.New("target or index was not threaded")
+		errorsHistoryFn: func(_ context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+			if target == nil || *target != 0x15 || limit != 2 {
+				return nil, errors.New("target or limit was not threaded")
 			}
-			return VaillantB503HistoryRecord{Index: int(*index), FirstActiveError: &first, Slots: []*int{&first}}, nil
+			return []VaillantB503HistoryRecord{
+				{Index: 0, FirstActiveError: &first, Slots: []*int{&first}},
+				{Index: 1, FirstActiveError: &first, Slots: []*int{&first}},
+			}, nil
 		},
-		sessionFn: func(_ context.Context, target *byte) VaillantB503Session {
+		sessionFn: func(_ context.Context, target *byte) (VaillantB503Session, error) {
 			if target == nil || *target != 0x15 {
-				return VaillantB503Session{State: "Unknown"}
+				return VaillantB503Session{State: "Unknown"}, nil
 			}
-			return VaillantB503Session{State: "Active", Owned: true}
+			return VaillantB503Session{State: "Active", Owned: true}, nil
 		},
 	}
 	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantErrorsHistory(targetAddress: 21, limit: 2) { index firstActiveError } vaillantLiveMonitorSession(targetAddress: 21) { state owned } }`)

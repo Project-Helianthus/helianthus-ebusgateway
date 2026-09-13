@@ -52,16 +52,17 @@ type VaillantB503Session struct {
 }
 
 // VaillantB503Provider abstracts the MCP B503 surface for GraphQL
-// resolvers. Production wires this to an adapter that delegates to the MCP
-// Server's handleVaillantB503Call path (never bypassing tool dispatch).
+// resolvers. Production wires new public aggregate/session fields to the same
+// typed operations used by their stable MCP tools, with executable parity.
 type VaillantB503Provider interface {
 	Errors(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	ErrorHistory(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
+	ErrorsHistory(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error)
 	ServiceCurrent(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	ServiceHistory(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	LiveMonitor(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
 	Availability(ctx context.Context, target *byte) string // returns string rendering of B503Availability
-	LiveMonitorSession(ctx context.Context, target *byte) VaillantB503Session
+	LiveMonitorSession(ctx context.Context, target *byte) (VaillantB503Session, error)
 }
 
 // SetVaillantB503Provider installs a provider. Nil providers are ignored so
@@ -422,16 +423,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 			if err != nil {
 				return nil, err
 			}
-			out := make([]VaillantB503HistoryRecord, 0, limit)
-			for i := 0; i < limit; i++ {
-				index := byte(i)
-				item, err := p.ErrorHistory(params.Context, target, &index)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, item)
-			}
-			return out, nil
+			return p.ErrorsHistory(params.Context, target, limit)
 		},
 	}
 
@@ -526,7 +518,7 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 			if p == nil {
 				return VaillantB503Session{State: "Idle"}, nil
 			}
-			return p.LiveMonitorSession(params.Context, target), nil
+			return p.LiveMonitorSession(params.Context, target)
 		},
 	}
 }

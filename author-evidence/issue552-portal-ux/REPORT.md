@@ -9,6 +9,8 @@
 - Initial evidence HEAD reviewed with blockers: `d283052ed1969582346505654d080c1109cf85e1`
 - Corrected source HEAD: `4a8bb9fdf2e4a451fc815583dcba2ef222dc01bf`
 - Corrected source tree: `3c5b400f6bfddc4edf5ea39b609efaf9289f5c11`
+- Final selector-aligned source HEAD: `d8364b4e9c727905b730ef4cf077bcfd8b544e3d`
+- Final selector-aligned source tree: `ae2ebd5a1aa006b67e5a3bfe8f26fb9fb2ede27b`
 
 ## Scope completed
 
@@ -55,11 +57,17 @@ token.
   and correctly non-triggered transport/passive-smoke gates. Durable log:
   `ci_local-correction-4a8bb9f.log`, SHA-256
   `6fb567bddf4c83a07aedd9475ac4b0a40a4a1f8258273c966950c08d2d0a5781`.
+- After the final docs contract retained `data-role="projection-b503-card"`,
+  `d8364b4...` added that public selector alongside the test selector and an
+  executable assertion. The complete CI command was rerun on that exact source
+  and passed with the same gate set. Durable log:
+  `ci_local-final-d8364b4.log`, SHA-256
+  `154962da1f28e76204551a160f386e58ca7eba88f8deaf9a8a5be757f5119aa5`.
 
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's
-PR #975 remain open. Docs #524 received two new P2 findings after its first
-corrected-head review and is being corrected. This source commit is not claimed
-merge-ready and has not been pushed; fresh exact-HEAD review remains required
-after the final evidence commit and accepted docs gate.
+PR #975 remain open. Docs #524 corrected its two new P2 findings at `7141cd6...`
+and is under fresh exact-HEAD review. This final selector-aligned source commit
+has not been pushed; fresh Gateway exact-HEAD review remains required after its
+evidence commit and accepted docs gate.

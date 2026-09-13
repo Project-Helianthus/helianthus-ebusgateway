@@ -132,6 +132,22 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-91eb2bc.log`, SHA-256
   `4275137a7f26f35310cf32b5479dbfc75118b5b36ebe7f0e075ec58b2527d582`.
+- The final hosted-review P2 found that an absent provider could still null an
+  entire mixed GraphQL query through the non-null
+  `vaillantLiveMonitorSession` root. `9442071...` makes that root nullable,
+  while `state` and `owned` remain non-null whenever a session object exists.
+  The mixed-root regression proves the field is null with a structured
+  `NOT_SUPPORTED` error and an intact `vaillantCapabilities` sibling reporting
+  `NOT_SUPPORTED`; the schema characterization digest and public runtime
+  contract record the intentional root-nullability change.
+- Focused GraphQL/MCP/gateway `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `9442071...`: PASS, including 110
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-9442071.log`, SHA-256
+  `aba3764450865181c5e51f24ca119aef461dc2a19585865c50e53a71b915ca66`.
 
 ## Gate boundary
 

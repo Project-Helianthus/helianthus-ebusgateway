@@ -4110,6 +4110,10 @@ class PortalShell extends HTMLElement {
   }
 
   async _refreshVaillantB503DeferredCleanupStatus() {
+	if (!this.isConnected) {
+	  this._stopVaillantB503DeferredCleanupStatusPolling();
+	  return;
+	}
 	const deferred = this._vaillantB503DeferredCleanup;
 	if (!deferred) {
 	  this._stopVaillantB503DeferredCleanupStatusPolling();
@@ -4124,6 +4128,10 @@ class PortalShell extends HTMLElement {
 		"query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
 		{ targetAddress: deferred.target },
 	  );
+	  // The status read can have started before a component disconnect.  Do not
+	  // turn that late result into a hidden cleanup write; preserve the pair for
+	  // the reconnect path instead.
+	  if (!this.isConnected) return;
 	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(env);
 	  if (!session) {
 		this._recordVaillantB503DeferredCleanupStatusFailure(deferred);

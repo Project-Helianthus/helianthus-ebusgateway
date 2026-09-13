@@ -1546,6 +1546,37 @@ test("VaillantB503Pane_disconnectStopsDeferredStatusReadWithoutDiscardingPair", 
   assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
 });
 
+test("VaillantB503Pane_disconnectFencesAnInFlightDeferredStatusResult", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let resolveStatus;
+  const statusResult = new Promise((resolve) => { resolveStatus = resolve; });
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) return statusResult;
+      throw new Error(`unexpected cleanup write ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  intervalCalls[0].callback();
+  await flush();
+  shell._isConnected = false;
+  proto.disconnectedCallback.call(shell);
+  resolveStatus({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "a late status result after disconnect must not emit a hidden cleanup write");
+});
+
 test("VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite", async () => {
   const { source, sourcePath } = await loadShellSource();
   const strip = makeAuditedElement();

@@ -331,6 +331,16 @@ func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 	}
 }
 
+func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
+	res := doGraphQL(t, newB503TestSchema(t, nil), `{ vaillantLiveMonitorSession { state owned } }`)
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "NOT_SUPPORTED") {
+		t.Fatalf("session without provider errors = %+v; want NOT_SUPPORTED", res.Errors)
+	}
+	if data, ok := res.Data.(map[string]any); ok && data["vaillantLiveMonitorSession"] != nil {
+		t.Fatalf("session without provider fabricated data: %#v", data["vaillantLiveMonitorSession"])
+	}
+}
+
 // TestVaillantB503GraphQL_EXPIREDAlwaysMasked — defense in depth: if provider
 // leaks the string "EXPIRED", the GraphQL layer must remap it to SESSION_BUSY
 // before serving to clients (plan AD14).

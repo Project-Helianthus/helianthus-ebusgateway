@@ -514,9 +514,9 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 			if err != nil {
 				return nil, err
 			}
-			p := builder.vaillantB503Provider()
-			if p == nil {
-				return VaillantB503Session{State: "Idle"}, nil
+			p, err := providerOrErr()
+			if err != nil {
+				return nil, err
 			}
 			return p.LiveMonitorSession(params.Context, target)
 		},

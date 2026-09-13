@@ -3599,12 +3599,14 @@ class PortalShell extends HTMLElement {
   _vaillantB503TargetOptions() {
     const devices = Array.isArray(this.projectionDevices) ? this.projectionDevices : [];
     const selected = this._vaillantB503Target();
-    return devices.map((device) => {
+    const defaultOption = selected === null ? '<option value="" selected>Configured default</option>' : '<option value="">Configured default</option>';
+    const deviceOptions = devices.map((device) => {
       const address = Number(device.address);
       if (!Number.isInteger(address) || address < 0 || address > 255) return "";
       const label = device.display_name || device.device_id || formatAddress(address);
       return `<option value="${address}"${address === selected ? " selected" : ""}>${escapeHtml(`${label} (${formatAddress(address)})`)}</option>`;
-    }).join("") || '<option value="">No target selected</option>';
+    }).join("");
+    return deviceOptions ? `${defaultOption}${deviceOptions}` : '<option value="" selected>No target selected</option>';
   }
 
   async changeVaillantB503Target() {

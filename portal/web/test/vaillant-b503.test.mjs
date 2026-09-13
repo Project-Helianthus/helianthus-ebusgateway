@@ -453,6 +453,23 @@ test("VaillantB503Pane_empty_target_preserves_configured_default_for_every_reque
   }
 });
 
+test("VaillantB503Pane_nonempty_targets_keep_the_probed_configured_default_selected", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  shell.projectionDevices = [
+    { address: 21, display_name: "Regulator" },
+    { address: 8, display_name: "Boiler" },
+  ];
+  const options = Object.getPrototypeOf(shell)._vaillantB503TargetOptions.call(shell);
+  assert.match(options, /^<option value="" selected>Configured default<\/option>/,
+    "a direct-open capability probe on configured default must keep null selected");
+  assert.match(options, /value="21"/);
+  assert.match(options, /value="8"/);
+});
+
 test("VaillantB503ProjectionCard_renders_without_projection_planes", async () => {
   const { source, sourcePath } = await loadShellSource();
   const appended = [];

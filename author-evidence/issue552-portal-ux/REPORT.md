@@ -224,6 +224,24 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-be8b51a.log`, SHA-256
   `2e8a554c78b1d8158b19c24f8fa6d4b8fed562239beba2b343192393d8bd0db9`.
+- Exact-head review found that a stale A enable could replace a newer B
+  token/target before routing cleanup. `6fc6d8b...` routes token-bound
+  disable through one pair-aware helper. A stale enable retains its captured
+  pair only when no current token exists; when B is already current, it sends
+  a direct A cleanup without publishing A or allowing its confirmed, failed,
+  or transport result to change B state/status. The prior no-current retention
+  regression remains in place. A deterministic A-enable -> B-active -> late-A
+  cleanup `SESSION_BUSY` regression proves the direct request uses A/8 while
+  B/21 and the active B status remain recoverable.
+- Focused Portal B503 tests passed 21/21 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `6fc6d8b...`: PASS, including 116
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-6fc6d8b.log`, SHA-256
+  `514eb6e8a390ad7be5910bfe5b2202aa726bb3b36f62eb8a43c419223f4c3301`.
 
 ## Gate boundary
 

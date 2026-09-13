@@ -43,6 +43,14 @@ type VaillantB503LiveMonitor struct {
 	Disabled    bool
 }
 
+// VaillantB503Session is the gateway-owned, read-only live-monitor ownership
+// view.  It deliberately exposes no token or native session key.  The browser
+// can therefore render ownership truthfully without acquiring authority.
+type VaillantB503Session struct {
+	State string
+	Owned bool
+}
+
 // VaillantB503Provider abstracts the MCP B503 surface for GraphQL
 // resolvers. Production wires this to an adapter that delegates to the MCP
 // Server's handleVaillantB503Call path (never bypassing tool dispatch).
@@ -52,7 +60,8 @@ type VaillantB503Provider interface {
 	ServiceCurrent(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	ServiceHistory(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	LiveMonitor(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
-	Availability(ctx context.Context) string // returns string rendering of B503Availability
+	Availability(ctx context.Context, target *byte) string // returns string rendering of B503Availability
+	LiveMonitorSession(ctx context.Context, target *byte) VaillantB503Session
 }
 
 // SetVaillantB503Provider installs a provider. Nil providers are ignored so
@@ -127,6 +136,7 @@ func buildVaillantB503Types() (
 	liveMonitorType *graphqlgo.Object,
 	capabilityType *graphqlgo.Object,
 	capabilitiesType *graphqlgo.Object,
+	sessionType *graphqlgo.Object,
 ) {
 	errorsType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "VaillantB503Errors",
@@ -261,7 +271,24 @@ func buildVaillantB503Types() (
 		},
 	})
 
-	return errorsType, historyType, liveMonitorType, capabilityType, capabilitiesType
+	sessionType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "VaillantB503Session",
+		Fields: graphqlgo.Fields{
+			"state": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				s, ok := params.Source.(VaillantB503Session)
+				if !ok || s.State == "" {
+					return "Idle", nil
+				}
+				return s.State, nil
+			}},
+			"owned": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				s, ok := params.Source.(VaillantB503Session)
+				return ok && s.Owned, nil
+			}},
+		},
+	})
+
+	return errorsType, historyType, liveMonitorType, capabilityType, capabilitiesType, sessionType
 }
 
 func parseTargetAddress(args map[string]any) (*byte, error) {
@@ -315,7 +342,7 @@ func parseHistoryIndex(args map[string]any) (*byte, error) {
 }
 
 func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
-	errorsType, historyType, liveMonitorType, _, capabilitiesType := buildVaillantB503Types()
+	errorsType, historyType, liveMonitorType, _, capabilitiesType, sessionType := buildVaillantB503Types()
 
 	targetArg := graphqlgo.FieldConfigArgument{
 		"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
@@ -366,6 +393,45 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 				return nil, err
 			}
 			return p.ErrorHistory(params.Context, target, idx)
+		},
+	}
+
+	// The plural query is intentionally bounded.  It is a browser-facing
+	// history view, not a replacement for native evidence or an unbounded scan.
+	fields["vaillantErrorsHistory"] = &graphqlgo.Field{
+		Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(historyType))),
+		Args: graphqlgo.FieldConfigArgument{
+			"limit":         &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+			"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+		},
+		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+			target, err := parseTargetAddress(params.Args)
+			if err != nil {
+				return nil, err
+			}
+			limit := 5
+			if raw, ok := params.Args["limit"]; ok && raw != nil {
+				if value, ok := raw.(int); ok {
+					limit = value
+				}
+			}
+			if limit < 1 || limit > 16 {
+				return nil, fmt.Errorf("INVALID_ARGUMENT: limit must be between 1 and 16")
+			}
+			p, err := providerOrErr()
+			if err != nil {
+				return nil, err
+			}
+			out := make([]VaillantB503HistoryRecord, 0, limit)
+			for i := 0; i < limit; i++ {
+				index := byte(i)
+				item, err := p.ErrorHistory(params.Context, target, &index)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, item)
+			}
+			return out, nil
 		},
 	}
 
@@ -434,13 +500,33 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 
 	fields["vaillantCapabilities"] = &graphqlgo.Field{
 		Type: graphqlgo.NewNonNull(capabilitiesType),
+		Args: targetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+			target, err := parseTargetAddress(params.Args)
+			if err != nil {
+				return nil, err
+			}
 			p := builder.vaillantB503Provider()
 			if p == nil {
 				return "NOT_SUPPORTED", nil
 			}
-			raw := p.Availability(params.Context)
+			raw := p.Availability(params.Context, target)
 			return raw, nil
+		},
+	}
+
+	fields["vaillantLiveMonitorSession"] = &graphqlgo.Field{
+		Type: graphqlgo.NewNonNull(sessionType), Args: targetArg,
+		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+			target, err := parseTargetAddress(params.Args)
+			if err != nil {
+				return nil, err
+			}
+			p := builder.vaillantB503Provider()
+			if p == nil {
+				return VaillantB503Session{State: "Idle"}, nil
+			}
+			return p.LiveMonitorSession(params.Context, target), nil
 		},
 	}
 }

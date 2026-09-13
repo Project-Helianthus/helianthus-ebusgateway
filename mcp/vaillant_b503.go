@@ -589,6 +589,17 @@ func (s *Server) VaillantB503AvailabilityCtx(ctx context.Context) B503Availabili
 	if !ok || st == nil {
 		return AvailabilityUnknown
 	}
+	return s.VaillantB503AvailabilityAtCtx(ctx, st.opts.DefaultTarget)
+}
+
+// VaillantB503AvailabilityAtCtx is the target-bound form of the capability
+// probe. It retains the same bounded current-error probe and is used by
+// GraphQL consumers that selected a target explicitly.
+func (s *Server) VaillantB503AvailabilityAtCtx(ctx context.Context, target byte) B503Availability {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return AvailabilityUnknown
+	}
 	if st.opts.Dispatcher == nil || st.opts.SessionManager == nil {
 		return AvailabilityUnknown
 	}
@@ -605,7 +616,7 @@ func (s *Server) VaillantB503AvailabilityCtx(ctx context.Context) B503Availabili
 		// expired window too.
 		return AvailabilitySessionBusy
 	}
-	_, err := st.opts.Dispatcher.Invoke(ctx, st.opts.DefaultTarget, b503.EncodeCurrentError())
+	_, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err == nil {
 		return AvailabilityAvailable
 	}

@@ -160,8 +160,18 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 // spec §11 enum. Sanitization defense-in-depth is implemented in the
 // GraphQL layer (sanitizeAvailability) so EXPIRED can never leak even if
 // a future MCP-side change returned it.
-func (p *b503GraphQLProvider) Availability(ctx context.Context) string {
-	return string(p.mcpServer.VaillantB503AvailabilityCtx(ctx))
+func (p *b503GraphQLProvider) Availability(ctx context.Context, target *byte) string {
+	if target == nil {
+		return string(p.mcpServer.VaillantB503AvailabilityCtx(ctx))
+	}
+	return string(p.mcpServer.VaillantB503AvailabilityAtCtx(ctx, *target))
+}
+
+func (p *b503GraphQLProvider) LiveMonitorSession(_ context.Context, _ *byte) graphql.VaillantB503Session {
+	if p == nil || p.mgr == nil {
+		return graphql.VaillantB503Session{State: "Idle"}
+	}
+	return graphql.VaillantB503Session{State: p.mgr.State().String(), Owned: p.mgr.IsOwned()}
 }
 
 func slotsToGraphQL(s b503.ErrorSlots) graphql.VaillantB503Errors {

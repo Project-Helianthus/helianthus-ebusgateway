@@ -17,7 +17,8 @@ type fakeB503Provider struct {
 	serviceCurrentFn func(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	serviceHistoryFn func(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	liveMonitorFn    func(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
-	availabilityFn   func(ctx context.Context) string
+	availabilityFn   func(ctx context.Context, target *byte) string
+	sessionFn        func(ctx context.Context, target *byte) VaillantB503Session
 }
 
 func (f *fakeB503Provider) Errors(ctx context.Context, target *byte) (VaillantB503Errors, error) {
@@ -55,11 +56,18 @@ func (f *fakeB503Provider) LiveMonitor(ctx context.Context, action string, issue
 	return f.liveMonitorFn(ctx, action, issuerToken, target)
 }
 
-func (f *fakeB503Provider) Availability(ctx context.Context) string {
+func (f *fakeB503Provider) Availability(ctx context.Context, target *byte) string {
 	if f.availabilityFn == nil {
 		return "UNKNOWN"
 	}
-	return f.availabilityFn(ctx)
+	return f.availabilityFn(ctx, target)
+}
+
+func (f *fakeB503Provider) LiveMonitorSession(ctx context.Context, target *byte) VaillantB503Session {
+	if f.sessionFn == nil {
+		return VaillantB503Session{State: "Idle"}
+	}
+	return f.sessionFn(ctx, target)
 }
 
 func newB503TestSchema(t *testing.T, provider VaillantB503Provider) graphqlgo.Schema {
@@ -97,12 +105,14 @@ func TestVaillantB503GraphQL_ErrorsGet_Schema(t *testing.T) {
 	qt, _ := sch["queryType"].(map[string]any)
 	fields, _ := qt["fields"].([]any)
 	want := map[string]bool{
-		"vaillantErrors":         false,
-		"vaillantErrorHistory":   false,
-		"vaillantServiceCurrent": false,
-		"vaillantServiceHistory": false,
-		"vaillantLiveMonitor":    false,
-		"vaillantCapabilities":   false,
+		"vaillantErrors":             false,
+		"vaillantErrorHistory":       false,
+		"vaillantErrorsHistory":      false,
+		"vaillantServiceCurrent":     false,
+		"vaillantServiceHistory":     false,
+		"vaillantLiveMonitor":        false,
+		"vaillantCapabilities":       false,
+		"vaillantLiveMonitorSession": false,
 	}
 	for _, f := range fields {
 		m, _ := f.(map[string]any)
@@ -254,7 +264,7 @@ func TestVaillantB503GraphQL_ErrorsGet_DecodesSpecFixture(t *testing.T) {
 
 func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 	provider := &fakeB503Provider{
-		availabilityFn: func(ctx context.Context) string { return "AVAILABLE" },
+		availabilityFn: func(ctx context.Context, target *byte) string { return "AVAILABLE" },
 	}
 	schema := newB503TestSchema(t, provider)
 	res := doGraphQL(t, schema, `{
@@ -279,12 +289,43 @@ func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 	}
 }
 
+func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
+	first := 11
+	provider := &fakeB503Provider{
+		errorHistoryFn: func(_ context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error) {
+			if target == nil || *target != 0x15 || index == nil {
+				return VaillantB503HistoryRecord{}, errors.New("target or index was not threaded")
+			}
+			return VaillantB503HistoryRecord{Index: int(*index), FirstActiveError: &first, Slots: []*int{&first}}, nil
+		},
+		sessionFn: func(_ context.Context, target *byte) VaillantB503Session {
+			if target == nil || *target != 0x15 {
+				return VaillantB503Session{State: "Unknown"}
+			}
+			return VaillantB503Session{State: "Active", Owned: true}
+		},
+	}
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantErrorsHistory(targetAddress: 21, limit: 2) { index firstActiveError } vaillantLiveMonitorSession(targetAddress: 21) { state owned } }`)
+	if len(res.Errors) > 0 {
+		t.Fatalf("query errors = %+v", res.Errors)
+	}
+	data := res.Data.(map[string]any)
+	history := data["vaillantErrorsHistory"].([]any)
+	if len(history) != 2 {
+		t.Fatalf("history length=%d; want 2", len(history))
+	}
+	session := data["vaillantLiveMonitorSession"].(map[string]any)
+	if session["state"] != "Active" || session["owned"] != true {
+		t.Fatalf("session=%+v; want active owned", session)
+	}
+}
+
 // TestVaillantB503GraphQL_EXPIREDAlwaysMasked — defense in depth: if provider
 // leaks the string "EXPIRED", the GraphQL layer must remap it to SESSION_BUSY
 // before serving to clients (plan AD14).
 func TestVaillantB503GraphQL_EXPIREDAlwaysMasked(t *testing.T) {
 	provider := &fakeB503Provider{
-		availabilityFn: func(ctx context.Context) string { return "EXPIRED" },
+		availabilityFn: func(ctx context.Context, target *byte) string { return "EXPIRED" },
 	}
 	schema := newB503TestSchema(t, provider)
 	res := doGraphQL(t, schema, `{

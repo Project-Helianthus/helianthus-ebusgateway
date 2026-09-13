@@ -10,7 +10,7 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-const querySchemaShapeSHA256 = "969216a8acdd7c5b0b5b0bb4b1661f3dfd0de01ad92501817385479c16ad7977"
+const querySchemaShapeSHA256 = "a56978b8a6a97205179c2beba1e79f177e3b92f041a095c4e8e0847f3483c422"
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()
@@ -45,8 +45,8 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 		"circuits", "cylinders", "daemonStatus", "daemon_status", "device", "devices", "dhw",
 		"energyTotals", "energy_totals", "fm5Interpretation", "fm5SemanticMode", "fm5_semantic_mode",
 		"gatewayIdentity", "gateway_identity", "methods", "planes", "radioDevices", "radio_devices",
-		"schedules", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors",
-		"vaillantLiveMonitor", "vaillantServiceCurrent", "vaillantServiceHistory", "vaillant_regulator_capability", "watchSummary", "zones",
+		"schedules", "solar", "system", "vaillantCapabilities", "vaillantErrorHistory", "vaillantErrors", "vaillantErrorsHistory",
+		"vaillantLiveMonitor", "vaillantLiveMonitorSession", "vaillantServiceCurrent", "vaillantServiceHistory", "vaillant_regulator_capability", "watchSummary", "zones",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("query root fields = %v; want %v", got, want)

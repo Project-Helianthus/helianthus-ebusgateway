@@ -157,7 +157,7 @@ test("VaillantB503Pane_NavItemRegistered", async () => {
 
 // ---- 2. Unavailable capability → empty-state placeholder ----
 
-test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
+test("VaillantB503Pane_Unknown_ShowsProbeFailureHint", async () => {
   const { source, sourcePath } = await loadShellSource();
   const paneBody = makeAuditedElement();
   const elements = new Map([
@@ -185,8 +185,8 @@ test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
   const htmlWrites = paneBody._audit.filter((e) => e.prop === "innerHTML");
   assert.ok(htmlWrites.length >= 1, "pane body should receive rendered HTML");
   const rendered = htmlWrites.map((e) => e.value).join("\n").toLowerCase();
-  assert.ok(rendered.includes("not supported"),
-    `unavailable state must render a 'not supported' placeholder; got: ${rendered}`);
+  assert.ok(rendered.includes("probe failure hint"),
+    `UNKNOWN state must render the probe-failure hint; got: ${rendered}`);
 });
 
 // ---- 3. Available capability → three tabs ----
@@ -384,4 +384,51 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
   // Token must be cleared after disable.
   assert.ok(!shell._vaillantB503LiveToken,
     "issuerToken must be cleared after auto-disable");
+});
+
+test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  for (const [reason, selector, required] of [
+    ["AVAILABLE", "b503-state-available", "Live-Monitor"],
+    ["NOT_SUPPORTED", "b503-state-not-supported", "Support limitation"],
+    ["TRANSPORT_DOWN", "b503-state-transport-down", "Transport warning"],
+    ["SESSION_BUSY", "b503-state-session-busy", "Ownership warning"],
+    ["UNKNOWN", "b503-state-unknown", "Probe failure hint"],
+  ]) {
+    const paneBody = makeAuditedElement();
+    const { shell } = buildSandbox({ source, sourcePath, elements: new Map([["[data-role=\"vaillant-b503-body\"]", paneBody]]), fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+    Object.getPrototypeOf(shell).renderVaillantB503Pane.call(shell, reason, paneBody);
+    const rendered = paneBody.innerHTML;
+    assert.ok(rendered.includes(`data-testid=\"${selector}\"`), `${reason} must expose ${selector}`);
+    assert.ok(rendered.includes(required), `${reason} must expose its documented helpful artefact`);
+  }
+});
+
+test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errorsBody = makeAuditedElement();
+  let resolveOld;
+  const old = new Promise((resolve) => { resolveOld = resolve; });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements: new Map([["[data-role=\"vaillant-b503-errors-body\"]", errorsBody]]),
+    fetchImpl: () => old,
+  });
+  shell._vaillantB503TargetAddress = 8;
+  const pending = Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
+  shell._vaillantB503Epoch = 1;
+  shell._vaillantB503TargetAddress = 21;
+  resolveOld({ ok: true, status: 200, json: async () => ({ data: { vaillantErrors: { firstActiveError: 281, slots: [281] } } }) });
+  await pending;
+  const { variables } = parseGqlInit(fetchRequests[0].init);
+  assert.equal(variables.targetAddress, 8, "request must bind the target selected at request time");
+  assert.equal(errorsBody.innerHTML, "", "old target response must not mutate the new target view");
+});
+
+test("VaillantB503Pane_uses_graphql_history_session_and_AD02_contract", async () => {
+  const { source } = await loadShellSource();
+  assert.match(source, /vaillantErrorsHistory\(targetAddress: \$targetAddress, limit: \$limit\)/);
+  assert.match(source, /vaillantLiveMonitorSession\(targetAddress: \$targetAddress\)/);
+  assert.match(source, /b503-install-writes-banner/);
+  assert.match(source, /b503-ad02-tooltip-anchor/);
+  assert.doesNotMatch(source, /api\/v1\/vaillant/);
 });

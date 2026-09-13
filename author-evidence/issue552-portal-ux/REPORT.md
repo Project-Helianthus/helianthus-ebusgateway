@@ -311,6 +311,44 @@ token.
   Durable log: `ci_local-final-1112637.log`, SHA-256
   `e0391a81eda06755da9ee69603d4edc248d947cecb748988f1eadd99752e69a4`.
 
+
+- Exact-head P2 `PRRT_kwDORGIw3c6h5TmQ` found a contradictory observation during
+  `OnEpochAdvance`: the internal refresh transition exposed `Disabled` while
+  retaining the live-monitor ownership gate. `f03619b...` replaces that
+  ambiguity with the stable public `Refreshing` state. `StatusSnapshot` now
+  captures `Refreshing, owned:true` atomically; `Read`, `Disable`, and a second
+  `Enable` return `SESSION_BUSY` while it is held. Successful refresh returns
+  `Active`; transport and other failures retain the existing release-to-`Idle`
+  behavior. MCP uses that snapshot, GraphQL exposes a closed
+  `B503SessionState` enum including `Refreshing`, and the Portal strip both
+  states that the gate is held and disables Enable, Read, and Disable.
+  Deterministic blocked-refresh manager, MCP, GraphQL, MCP-to-GraphQL parity,
+  and browser regressions cover the transitional state and terminal success.
+- The runtime-provider contract now records the five stable session labels and
+  the invariant that `Disabled` never has `owned: true`. The GraphQL
+  characterization digest is `63b8df876d8e00d98c26d4071d4ec532edc28ff07aa7c30aca0e55fa32f2ff28`.
+  The existing stable MCP output goldens remain byte-identical for the idle
+  snapshot; the new deterministic MCP test characterizes the additional
+  transient value without inventing a nondeterministic golden.
+- Required companion wording for docs-ebus #524, without editing that
+  repository: **“The gateway-owned B503 session strip has five stable states:
+  `Idle`, `Enabling`, `Active`, `Refreshing`, and `Disabled`. `Refreshing`
+  means an epoch refresh still holds the ownership gate and all live-monitor
+  operations are busy; success returns `Active`, refresh failure releases the
+  gate and returns `Idle`, and `Disabled` is never reported with `owned: true`.”**
+- Focused validation: `node --test portal/web/test/vaillant-b503.test.mjs`:
+  PASS, 27 tests. `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off go test -race ./internal/vaillant/b503session ./mcp ./graphql
+  ./cmd/gateway -run 'Test(Session|State|VaillantB503|Issue552VaillantB503|QuerySchema)' -count=1`:
+  PASS.
+- Final `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on source `f03619b...`: PASS, including 122
+  Portal Node tests, repository-wide `go test -race`, Python
+  168+6+26+11+6+2, zero `golangci-lint` issues, Modbus RTU transport
+  conformance, and green Storage/EVSE SemReg mapping gates. Passive smoke was
+  correctly not triggered. Durable log: `ci_local-final-f03619b.log`, SHA-256
+  `1e41c2ffcedf5b238daa337d49111178ec24f3bf7f89100282e702697c0d2331`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

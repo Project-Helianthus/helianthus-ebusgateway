@@ -204,6 +204,26 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-7a5879d.log`, SHA-256
   `af510496105509ea5ac084a0b2528dd42bb4e361870e9b43b4253c6c7a1212c1`.
+- Exact-head review then identified a target-qualification P1 and an explicit
+  disable ownership P2. `be8b51a...` synchronously publishes the selected B
+  target in a `PENDING` pane before old-target cleanup or the B capability
+  probe can yield. That pane unmounts every B503 operation, and pending guards
+  make stale A listeners inert until B is `AVAILABLE`; the deterministic
+  A-available -> B-probing regression clicks stale Enable, Read, and Disable
+  controls and proves only B's capability request leaves the browser before B
+  returns `NOT_SUPPORTED`. Explicit Disable now captures its submitted token
+  and target and clears state only if the same pair remains current. The
+  deterministic same-target race proves delayed A disable confirmation retains
+  newly enabled B's token/status and a later B disable clears exactly B.
+- Focused Portal B503 tests passed 20/20 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `be8b51a...`: PASS, including 115
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-be8b51a.log`, SHA-256
+  `2e8a554c78b1d8158b19c24f8fa6d4b8fed562239beba2b343192393d8bd0db9`.
 
 ## Gate boundary
 

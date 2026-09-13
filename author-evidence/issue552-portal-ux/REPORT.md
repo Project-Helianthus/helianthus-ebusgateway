@@ -327,9 +327,10 @@ token.
 - The runtime-provider contract now records the five stable session labels and
   the invariant that `Disabled` never has `owned: true`. The GraphQL
   characterization digest is `63b8df876d8e00d98c26d4071d4ec532edc28ff07aa7c30aca0e55fa32f2ff28`.
-  The existing stable MCP output goldens remain byte-identical for the idle
-  snapshot; the new deterministic MCP test characterizes the additional
-  transient value without inventing a nondeterministic golden.
+  The pre-existing idle golden remains byte-identical and the new deterministic
+  `vaillant_b503_live_monitor_session_refreshing.golden.json` freezes the
+  `Refreshing` state, ownership, `SESSION_BUSY` capability metadata, and stable
+  data hash.
 - Required companion wording for docs-ebus #524, without editing that
   repository: **“The gateway-owned B503 session strip has five stable states:
   `Idle`, `Enabling`, `Active`, `Refreshing`, and `Disabled`. `Refreshing`
@@ -348,6 +349,16 @@ token.
   conformance, and green Storage/EVSE SemReg mapping gates. Passive smoke was
   correctly not triggered. Durable log: `ci_local-final-f03619b.log`, SHA-256
   `1e41c2ffcedf5b238daa337d49111178ec24f3bf7f89100282e702697c0d2331`.
+
+
+- The final golden correction is source commit `35c41c9...` (tree
+  `c306f9bb35ad5a5d33fb6e4d63029e46cf24168e`). Its complete
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` run passed: Portal 122 tests,
+  repository-wide `go test -race`, Python 168+6+26+11+6+2, zero lint issues,
+  Modbus RTU transport conformance, and the Storage/EVSE SemReg gates; passive
+  smoke was not triggered. Durable log: `ci_local-final-35c41c9.log`, SHA-256
+  `405bf9731a64c307e81e5c0324ed57a13dcfe33c77183385df018e21a6f1996f`.
 
 ## Gate boundary
 

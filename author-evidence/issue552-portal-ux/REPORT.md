@@ -360,6 +360,33 @@ token.
   smoke was not triggered. Durable log: `ci_local-final-35c41c9.log`, SHA-256
   `405bf9731a64c307e81e5c0324ed57a13dcfe33c77183385df018e21a6f1996f`.
 
+
+- Independent exact-head review `gateway975-0eb0124-final-independent/REPORT.md`
+  (SHA-256 `2dbc1215ed1e25e956c6370913cfd633eb93d44183d9f9e0e3c0847e602c378d`)
+  found P2 `PRRT_kwDORGIw3c6h5aoM`: target/card navigation passed its previous
+  picker target into cleanup even when the retained issuer token was paired
+  with a different target. `59f9604...` makes navigation snapshot only the
+  held token and `_vaillantB503LiveTarget` together before awaiting disable;
+  the historical picker/card target cannot substitute for that recovery pair.
+  Confirmed closure therefore clears exactly the matching pair and preserves
+  the newly selected target.
+- Deterministic Portal regressions cover retained A/8 while B->C runs through
+  the picker and a retained configured-default (`null`) token while B->C runs
+  through a projection card. They prove emitted disable variables use A/8 and
+  `null` respectively, confirmation clears only the retained pair, and C stays
+  selected. Existing Refreshing behavior and all earlier ownership guards remain
+  unchanged.
+- Focused validation: `node --test portal/web/test/vaillant-b503.test.mjs`:
+  PASS, 29 tests. `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off go test -race ./internal/vaillant/b503session ./mcp ./graphql
+  ./cmd/gateway -run 'Test(Session|State|VaillantB503|Issue552VaillantB503|QuerySchema)' -count=1`:
+  PASS. Final `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `59f9604...`: PASS, including Portal
+  124, repository-wide `go test -race`, Python 168+6+26+11+6+2, zero lint
+  issues, Modbus RTU transport conformance, and Storage/EVSE SemReg gates.
+  Passive smoke was correctly not triggered. Durable log:
+  `ci_local-final-59f9604.log`, SHA-256 `9fe6ea29824a5d196a837ddd58d37d8861bcd49b55615210933e71914b1f2a0d`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

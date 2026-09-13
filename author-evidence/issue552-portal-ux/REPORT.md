@@ -487,6 +487,24 @@ token.
   `ci_local-final-serialized-session.log`, SHA-256
   `fdef53a393497a719f2468022516ac3c68bffe76a51d6f681caf79cc18d5d5cc`.
 
+
+- Exact-head P2s `PRRT_kwDORGIw3c6h52nk`, `PRRT_kwDORGIw3c6h52nm`, and
+  `PRRT_kwDORGIw3c6h52nn` are corrected by source
+  `4bdb42000fe8b3f4a582327a7df0e59b0a0438e9` (tree
+  `d619f051989e5347381ec602e838aa5e6d927c3d`). Optional empty-plane B503
+  card probes are detached from projection/bootstrap completion; late device
+  discovery rerenders only the active target picker against its existing
+  capability state; and history retention is a per-resolved-target map while
+  epoch continues solely as a stale-response fence.
+- Deterministic Portal regressions cover stalled optional probe completion,
+  late discovery without unqualified actions, and A complete -> B -> A partial
+  history retention. Focused `node --test portal/web/test/vaillant-b503.test.mjs`:
+  PASS, 45 tests. Complete configured CI: PASS, Portal 140 tests,
+  repository-wide `go test -race`, Python 168+6+26+11+6+2, zero lint issues,
+  Modbus transport, Storage/EVSE gates, and passive smoke not triggered.
+  Durable log `ci_local-final-projection-history.log`, SHA-256
+  `833cdabd5f5b6c4b18191f5681fbef3216c91b51a597c42cfa64f6a98251ee80`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

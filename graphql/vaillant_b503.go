@@ -127,6 +127,30 @@ var b503AvailabilityEnum = graphqlgo.NewEnum(graphqlgo.EnumConfig{
 	},
 })
 
+// b503SessionStateEnum makes the stable finite session state contract visible
+// in introspection. Refreshing is ownership-held and operation-busy while an
+// epoch refresh runs; Disabled never owns the gate.
+var b503SessionStateEnum = graphqlgo.NewEnum(graphqlgo.EnumConfig{
+	Name:        "B503SessionState",
+	Description: "Gateway-held Vaillant B503 session state. Refreshing holds ownership while operations are busy.",
+	Values: graphqlgo.EnumValueConfigMap{
+		"Idle":       {Value: "Idle"},
+		"Enabling":   {Value: "Enabling"},
+		"Active":     {Value: "Active"},
+		"Refreshing": {Value: "Refreshing"},
+		"Disabled":   {Value: "Disabled"},
+	},
+})
+
+func sanitizeSessionState(raw string) string {
+	switch raw {
+	case "Idle", "Enabling", "Active", "Refreshing", "Disabled":
+		return raw
+	default:
+		return "Idle"
+	}
+}
+
 func resolveIntPtr(ptr *int) (any, error) {
 	if ptr == nil {
 		return nil, nil
@@ -338,12 +362,12 @@ func buildVaillantB503Types() (
 	sessionType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "VaillantB503Session",
 		Fields: graphqlgo.Fields{
-			"state": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+			"state": &graphqlgo.Field{Type: graphqlgo.NewNonNull(b503SessionStateEnum), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 				s, ok := params.Source.(VaillantB503Session)
 				if !ok || s.State == "" {
 					return "Idle", nil
 				}
-				return s.State, nil
+				return sanitizeSessionState(s.State), nil
 			}},
 			"owned": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Boolean), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 				s, ok := params.Source.(VaillantB503Session)

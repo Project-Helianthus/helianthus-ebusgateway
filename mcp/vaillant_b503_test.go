@@ -95,6 +95,40 @@ func TestVaillantB503_ToolRegistration(t *testing.T) {
 	}
 }
 
+func TestVaillantB503LiveMonitorSession_RefreshingIsOwnedAndStable(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		time.Minute,
+		func(context.Context) (b503session.TransportKey, error) {
+			close(refreshStarted)
+			<-allowRefresh
+			return b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 2}, nil
+		},
+	)
+	if _, err := mgr.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	srv := newB503Server(t, &stubB503Dispatcher{}, mgr)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mgr.OnEpochAdvance(context.Background(), 2)
+	}()
+	<-refreshStarted
+
+	session, err := srv.VaillantB503LiveMonitorSession(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("VaillantB503LiveMonitorSession: %v", err)
+	}
+	if session.State != "Refreshing" || !session.Owned {
+		t.Fatalf("session=%+v; want Refreshing with ownership held", session)
+	}
+	close(allowRefresh)
+	<-done
+}
+
 // --- Test 2: Envelope determinism ----------------------------------------
 
 func TestVaillantB503_ErrorsGet_EnvelopeDeterminism(t *testing.T) {

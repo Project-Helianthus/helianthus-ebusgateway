@@ -184,7 +184,7 @@ func TestSession_GatewayRestart_DestroysState(t *testing.T) {
 }
 
 // 10. Epoch advance: refresh succeeds, Expired never publicly visible.
-func TestSession_EpochAdvance_RefreshSucceeds_NeverExposesExpired(t *testing.T) {
+func TestSession_EpochAdvance_RefreshSucceeds_NoUnknownStateLeaks(t *testing.T) {
 	m := b503session.New(newTK(testEpoch), 30*time.Second, okRefresh(testEpoch+1))
 	if _, err := m.Enable(context.Background()); err != nil {
 		t.Fatalf("Enable err=%v", err)
@@ -201,7 +201,7 @@ func TestSession_EpochAdvance_RefreshSucceeds_NeverExposesExpired(t *testing.T) 
 				return
 			default:
 				s := m.State()
-				if s.String() == "Expired" {
+				if s.String() == "Unknown" {
 					observed.Store(true)
 					return
 				}
@@ -212,7 +212,7 @@ func TestSession_EpochAdvance_RefreshSucceeds_NeverExposesExpired(t *testing.T) 
 	close(stop)
 	<-done
 	if v, ok := observed.Load().(bool); ok && v {
-		t.Fatal("Expired state leaked publicly via State()")
+		t.Fatal("unknown state leaked publicly via State()")
 	}
 	if s := m.State(); s != b503session.Active {
 		t.Fatalf("state=%v want Active post-refresh", s)
@@ -222,7 +222,7 @@ func TestSession_EpochAdvance_RefreshSucceeds_NeverExposesExpired(t *testing.T) 
 	}
 }
 
-func TestSession_StatusSnapshot_NormalizesExpiredAndKeepsOwnershipCoherent(t *testing.T) {
+func TestSession_StatusSnapshot_RefreshingKeepsOwnershipCoherentAndOperationsBusy(t *testing.T) {
 	refreshStarted := make(chan struct{})
 	allowRefresh := make(chan struct{})
 	m := b503session.New(newTK(testEpoch), time.Minute, func(context.Context) (b503session.TransportKey, error) {
@@ -230,7 +230,8 @@ func TestSession_StatusSnapshot_NormalizesExpiredAndKeepsOwnershipCoherent(t *te
 		<-allowRefresh
 		return newTK(testEpoch + 1), nil
 	})
-	if _, err := m.Enable(context.Background()); err != nil {
+	key, err := m.Enable(context.Background())
+	if err != nil {
 		t.Fatalf("Enable err=%v", err)
 	}
 
@@ -241,11 +242,19 @@ func TestSession_StatusSnapshot_NormalizesExpiredAndKeepsOwnershipCoherent(t *te
 	}()
 	<-refreshStarted
 
-	// During refresh the internal FSM is expired, but the public snapshot must
-	// expose its normalized state together with the still-held gate from one
-	// critical section.
-	if got := m.StatusSnapshot(); got.State != b503session.Disabled || !got.Owned {
-		t.Fatalf("snapshot during refresh = %+v; want Disabled with ownership held", got)
+	// The public transitional state and ownership must be captured atomically.
+	// Disabled releases ownership, so Disabled+owned must never be observable.
+	if got := m.StatusSnapshot(); got.State != b503session.Refreshing || !got.Owned {
+		t.Fatalf("snapshot during refresh = %+v; want Refreshing with ownership held", got)
+	}
+	if err := m.Read(newTK(testEpoch)); !errors.Is(err, b503session.ErrSessionBusy) {
+		t.Fatalf("Read during refresh err=%v; want ErrSessionBusy", err)
+	}
+	if err := m.Disable(key); !errors.Is(err, b503session.ErrSessionBusy) {
+		t.Fatalf("Disable during refresh err=%v; want ErrSessionBusy", err)
+	}
+	if _, err := m.Enable(context.Background()); !errors.Is(err, b503session.ErrSessionBusy) {
+		t.Fatalf("Enable during refresh err=%v; want ErrSessionBusy", err)
 	}
 	close(allowRefresh)
 	<-done
@@ -329,10 +338,11 @@ func TestSession_ConcurrentReadsAndPollerSim_NoDeadlock(t *testing.T) {
 // 14. State.String covers all public labels.
 func TestState_String_AllPublicValues(t *testing.T) {
 	cases := map[b503session.State]string{
-		b503session.Idle:     "Idle",
-		b503session.Enabling: "Enabling",
-		b503session.Active:   "Active",
-		b503session.Disabled: "Disabled",
+		b503session.Idle:       "Idle",
+		b503session.Enabling:   "Enabling",
+		b503session.Active:     "Active",
+		b503session.Refreshing: "Refreshing",
+		b503session.Disabled:   "Disabled",
 	}
 	for s, want := range cases {
 		if got := s.String(); got != want {

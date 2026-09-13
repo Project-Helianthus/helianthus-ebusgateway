@@ -776,7 +776,7 @@ func (s *Server) VaillantB503Availability() B503Availability {
 //
 // Probe ordering (first match wins):
 //  1. Manager reports LastRefreshTransportDown → TRANSPORT_DOWN.
-//  2. Manager.State() ∈ {Enabling, Active} → SESSION_BUSY (a second
+//  2. Manager.State() ∈ {Enabling, Active, Refreshing} → SESSION_BUSY (a second
 //     action=enable would fail with SESSION_BUSY; publishing
 //     AVAILABLE here would contradict the error code clients receive).
 //  3. Probe succeeds → AVAILABLE.
@@ -807,13 +807,11 @@ func (s *Server) VaillantB503AvailabilityAtCtx(ctx context.Context, target byte)
 		return AvailabilityTransportDown
 	}
 	if st.opts.SessionManager.IsOwned() {
-		// Live-monitor session gate is held (Enabling / Active / transient
-		// internal expired during epoch refresh) → enable/disable by
+		// Live-monitor session gate is held (Enabling / Active / Refreshing) → enable/disable by
 		// another client would return SESSION_BUSY. Surface that
 		// literally so preflight/backoff logic doesn't see AVAILABLE
 		// contradicted by a concurrent error.code=SESSION_BUSY. Using
-		// IsOwned() (rather than State()==Active) covers the transient
-		// expired window too.
+		// IsOwned() (rather than State()==Active) covers Refreshing too.
 		return AvailabilitySessionBusy
 	}
 	_, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())

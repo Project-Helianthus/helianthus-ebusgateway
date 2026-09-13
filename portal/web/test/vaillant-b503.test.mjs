@@ -1132,6 +1132,34 @@ test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () 
   assert.match(strip.innerHTML, /data-testid="b503-session-state-label"/);
 });
 
+test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const controls = new Map([
+    ["enable", makeAuditedElement({ disabled: false })],
+    ["read", makeAuditedElement({ disabled: false })],
+    ["disable", makeAuditedElement({ disabled: false })],
+  ]);
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-enable"]', controls.get("enable")],
+      ['[data-role="vaillant-b503-live-read"]', controls.get("read")],
+      ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Session state: Refreshing/);
+  assert.match(strip.innerHTML, /Gateway session gate is held/);
+  for (const [name, control] of controls) {
+    assert.equal(control.disabled, true, `${name} must be unavailable while refresh owns the gate`);
+  }
+});
+
 test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {
   const { source, sourcePath } = await loadShellSource();
   const errorsBody = makeAuditedElement();

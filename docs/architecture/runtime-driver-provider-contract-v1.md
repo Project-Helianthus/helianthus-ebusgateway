@@ -1594,6 +1594,11 @@ contract are:
   later indices. The same stable MCP list output is `{records, failure}`.
   An unavailable session or invalid-target capability failure is field-local
   and preserves unrelated root fields in the same query.
+  The stable gateway-owned live-monitor session state is one of `Idle`,
+  `Enabling`, `Active`, `Refreshing`, or `Disabled`. `Refreshing` means an
+  epoch refresh retains the ownership gate while every live-monitor operation
+  is busy; a successful refresh returns `Active`, while refresh failure releases
+  ownership and returns to `Idle`. `Disabled` never reports `owned: true`.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

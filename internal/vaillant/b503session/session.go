@@ -40,7 +40,7 @@ type RefreshFunc func(ctx context.Context) (TransportKey, error)
 //
 //   - mu (liveMonitorMu): the ownership gate. Acquired on the
 //     Idle->Enabling transition; released exactly once on entry to
-//     Disabled from a held-owner state (Enabling, Active, or expired).
+//     Disabled from a held-owner state (Enabling, Active, or Refreshing).
 //     This is distinct from the B524 readMu used by the poller. The
 //     lock lifecycle is tracked by mutexHeld so cleanup paths never
 //     double-release.
@@ -77,8 +77,7 @@ type Manager struct {
 }
 
 // StatusSnapshot is one coherent, public observation of the live-monitor
-// session. State is normalized so the internal expired transition is never
-// exposed; Owned reports the ownership gate from that same observation.
+// session. State and Owned are captured from that same observation.
 //
 // Callers that render or serialize both values must use StatusSnapshot rather
 // than combining State and IsOwned, because a lifecycle transition may occur
@@ -142,6 +141,9 @@ func (m *Manager) Disable(key SessionKey) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 
+	if m.state == Refreshing {
+		return ErrSessionBusy
+	}
 	if m.state != Active {
 		return ErrNotActive
 	}
@@ -163,7 +165,7 @@ func (m *Manager) Read(transport TransportKey) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 
-	if m.refreshFailed {
+	if m.refreshFailed || m.state == Refreshing {
 		return ErrSessionBusy
 	}
 	if m.state != Active {
@@ -176,19 +178,16 @@ func (m *Manager) Read(transport TransportKey) error {
 	return nil
 }
 
-// State returns the public FSM state. The internal expired state is
-// never returned here: if the FSM is transiently in expired (e.g. a
-// refresh is in-flight) it is normalised to Active or Disabled based on
-// the current refreshFailed flag.
+// State returns the public FSM state. Refreshing is visible while an epoch
+// refresh holds the gate, so a caller never observes Disabled with ownership.
 func (m *Manager) State() State {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	return m.normalizedStateLocked()
+	return m.state
 }
 
 // IsOwned reports whether the session gate is currently held by any
-// owner — true when FSM is Enabling, Active, OR the transient internal
-// `expired` state (during epoch-refresh). Resolver-layer code (e.g.
+// owner — true when FSM is Enabling, Active, or Refreshing. Resolver-layer code (e.g.
 // capability probe in mcp/vaillant_b503.go) uses this to classify the
 // surface as SESSION_BUSY during the full held-owner window, not just
 // when State() reports Active/Enabling. Without this, a slow refresh
@@ -200,14 +199,14 @@ func (m *Manager) IsOwned() bool {
 	return m.mutexHeld
 }
 
-// StatusSnapshot returns the normalized public state and ownership gate from
-// one stateMu critical section. This is the stable observation used by MCP and
+// StatusSnapshot returns the public state and ownership gate from one stateMu
+// critical section. This is the stable observation used by MCP and
 // GraphQL session-status surfaces.
 func (m *Manager) StatusSnapshot() StatusSnapshot {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	return StatusSnapshot{
-		State: m.normalizedStateLocked(),
+		State: m.state,
 		Owned: m.mutexHeld,
 	}
 }
@@ -232,7 +231,7 @@ func (m *Manager) LastRefreshTransportDown() bool {
 }
 
 // OnTransportDisconnect performs owner-conditional cleanup (spec §7.4).
-// If the FSM holds the ownership gate (Enabling/Active/expired), releases
+// If the FSM holds the ownership gate (Enabling/Active/Refreshing), releases
 // it and transitions to Disabled -> Idle. Otherwise no-op.
 func (m *Manager) OnTransportDisconnect() {
 	m.stateMu.Lock()
@@ -246,7 +245,7 @@ func (m *Manager) OnTransportDisconnect() {
 
 // OnEpochAdvance handles a transport reconnect whose epoch has advanced.
 // If no session is held, updates the tracked transport and returns.
-// Otherwise: state -> expired, invokes refresh once.
+// Otherwise: state -> Refreshing, invokes refresh once.
 //
 //   - refresh success -> state -> Active, transport updated.
 //   - ErrTransportDown -> state -> Disabled -> Idle, gate released.
@@ -268,9 +267,9 @@ func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
 		m.stateMu.Unlock()
 		return
 	}
-	// Owner held. Transition to expired and release the state lock for the
+	// Owner held. Transition to Refreshing and release the state lock for the
 	// duration of the refresh so observers (State(), Read()) don't block.
-	m.state = expired
+	m.state = Refreshing
 	refresh := m.refresh
 	m.stateMu.Unlock()
 
@@ -337,15 +336,6 @@ func (m *Manager) ResetForRestart() {
 }
 
 // --- internal helpers (all require stateMu held) ---
-
-func (m *Manager) normalizedStateLocked() State {
-	if m.state == expired {
-		// OnEpochAdvance may deliberately release stateMu while a refresh is
-		// in flight. That transient state is never a public session state.
-		return Disabled
-	}
-	return m.state
-}
 
 // toDisabledLocked transitions to Disabled from any held-owner state and
 // releases the ownership gate exactly once. Bumps idleTimerGen so any

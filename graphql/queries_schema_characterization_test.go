@@ -10,7 +10,7 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-const querySchemaShapeSHA256 = "1d37f71d3da0610a3b4e91190d2e2801b429da52fe6106d527c116a25ae12496"
+const querySchemaShapeSHA256 = "63b8df876d8e00d98c26d4071d4ec532edc28ff07aa7c30aca0e55fa32f2ff28"
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()

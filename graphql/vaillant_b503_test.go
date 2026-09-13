@@ -398,6 +398,22 @@ func TestVaillantB503GraphQL_InvalidCapabilityTargetIsFieldLocal(t *testing.T) {
 	}
 }
 
+func TestVaillantB503GraphQL_RefreshingSessionIsOwnedAndTyped(t *testing.T) {
+	provider := &fakeB503Provider{
+		sessionFn: func(context.Context, *byte) (VaillantB503Session, error) {
+			return VaillantB503Session{State: "Refreshing", Owned: true}, nil
+		},
+	}
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantLiveMonitorSession { state owned } }`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("query errors = %+v", res.Errors)
+	}
+	session := res.Data.(map[string]any)["vaillantLiveMonitorSession"].(map[string]any)
+	if session["state"] != "Refreshing" || session["owned"] != true {
+		t.Fatalf("session=%#v; want Refreshing with ownership held", session)
+	}
+}
+
 func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
 	res := doGraphQL(t, newB503TestSchema(t, nil), `{
 		vaillantLiveMonitorSession { state owned }

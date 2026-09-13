@@ -4010,10 +4010,10 @@ class PortalShell extends HTMLElement {
       const owned = session?.owned === true;
       const ownership = owned ? " Gateway session gate is held." : "";
       strip.innerHTML = `<span data-testid="b503-session-state-label">Session state: ${escapeHtml(state)}.</span>${escapeHtml(ownership)}`;
-      const enabling = state === "Enabling";
-      for (const role of ["vaillant-b503-live-enable", "vaillant-b503-live-disable"]) {
+      const operationsBusy = state === "Enabling" || state === "Refreshing";
+      for (const role of ["vaillant-b503-live-enable", "vaillant-b503-live-read", "vaillant-b503-live-disable"]) {
         const control = this.querySelector(`[data-role="${role}"]`);
-        if (control) control.disabled = enabling;
+        if (control) control.disabled = operationsBusy;
       }
     } catch {
       if (this._isCurrentVaillantB503Context(context) && strip) strip.textContent = "Session state: unavailable.";

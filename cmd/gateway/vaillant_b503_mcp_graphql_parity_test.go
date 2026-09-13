@@ -38,20 +38,64 @@ func (dispatcher *b503ParityDispatcher) Invoke(_ context.Context, _ byte, payloa
 
 func newB503ParityRuntime(t *testing.T, dispatcher mcp.RPCDispatcher) (*b503Runtime, *b503GraphQLProvider) {
 	t.Helper()
+	return newB503ParityRuntimeWithManager(t, dispatcher, b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "parity", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	))
+}
+
+func newB503ParityRuntimeWithManager(t *testing.T, dispatcher mcp.RPCDispatcher, manager *b503session.Manager) (*b503Runtime, *b503GraphQLProvider) {
+	t.Helper()
 	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	manager := b503session.New(
-		b503session.TransportKey{AdapterInstanceID: "parity", TransportEpoch: 1},
-		30*time.Second,
-		nil,
-	)
 	mcp.RegisterVaillantB503Tools(server, mcp.VaillantB503Options{
 		Dispatcher: dispatcher, SessionManager: manager, DefaultTarget: defaultVaillantTarget,
 	})
 	runtime := &b503Runtime{mcpServer: server, manager: manager, dispatcher: dispatcher}
 	return runtime, newB503GraphQLProvider(runtime)
+}
+
+func TestIssue552VaillantB503RefreshingSessionMCPGraphQLParity(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	manager := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "parity", TransportEpoch: 1},
+		time.Minute,
+		func(context.Context) (b503session.TransportKey, error) {
+			close(refreshStarted)
+			<-allowRefresh
+			return b503session.TransportKey{AdapterInstanceID: "parity", TransportEpoch: 2}, nil
+		},
+	)
+	runtime, provider := newB503ParityRuntimeWithManager(t, &b503ParityDispatcher{}, manager)
+	if _, err := manager.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable session: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.OnEpochAdvance(context.Background(), 2)
+	}()
+	<-refreshStarted
+
+	mcpSession := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus.v1.vaillant.live_monitor.session.get", `{"target_address":21}`)
+	graphSession := b503GraphQLResult(t, provider, `{ vaillantLiveMonitorSession(targetAddress:21) { state owned } }`)
+	if len(graphSession.Errors) != 0 {
+		t.Fatalf("GraphQL session errors: %+v", graphSession.Errors)
+	}
+	mcpState := mcpSession["data"].(map[string]any)
+	graphState := graphSession.Data.(map[string]any)["vaillantLiveMonitorSession"].(map[string]any)
+	if mcpState["state"] != "Refreshing" || mcpState["owned"] != true {
+		t.Fatalf("MCP session=%#v; want Refreshing with ownership held", mcpState)
+	}
+	if mcpState["state"] != graphState["state"] || mcpState["owned"] != graphState["owned"] {
+		t.Fatalf("session drift: MCP=%#v GraphQL=%#v", mcpState, graphState)
+	}
+	close(allowRefresh)
+	<-done
 }
 
 func b503GraphQLResult(t *testing.T, provider *b503GraphQLProvider, query string) *graphqlgo.Result {

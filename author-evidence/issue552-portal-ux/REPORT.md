@@ -287,6 +287,29 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-275c75c.log`, SHA-256
   `f1d3aab8e1cdba6690e7a353278026a7f407bca5e651520c4af00c17daeb24be`.
+- Exact-head review found that the stable bounded history list discarded a
+  verified prefix whenever a later indexed read failed. `1112637...` changes
+  the stable MCP data contract to `{records, failure}`. `records` is the
+  ascending verified prefix; nullable `failure {index, code, message}` names
+  the first failed native read, and no later index is attempted or fabricated.
+  The MCP output/tool goldens and deterministic data-hash test cover this
+  shape. GraphQL now projects the same typed result with non-null records and
+  failure children when present, so partial failure remains data rather than
+  nulling the root. Production MCP-to-GraphQL parity covers the complete and
+  partial paths. Portal renders a first-load prefix with its warning and, on a
+  later partial/network failure, merges verified updates into its current
+  target/epoch cache rather than replacing a valid table wholesale. The public
+  runtime-provider contract and schema-characterization digest record this
+  stable partial-result behavior.
+- Focused Portal B503 tests passed 26/26 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `1112637...`: PASS, including 121
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-1112637.log`, SHA-256
+  `e0391a81eda06755da9ee69603d4edc248d947cecb748988f1eadd99752e69a4`.
 
 ## Gate boundary
 

@@ -717,6 +717,73 @@ test("VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification", async ()
   assert.match(body.innerHTML, /b503-state-not-supported/);
 });
 
+test("VaillantB503Pane_targetSwitchCleansRetainedAPairRatherThanPreviousPicker", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "34", addEventListener() {} });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 21; // B selected in the picker.
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8; // Retained A recovery pair.
+
+  await proto.changeVaillantB503Target.call(shell); // B -> C.
+  const disable = fetchRequests.map((request) => parseGqlInit(request.init))
+    .find(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disable.variables, { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    "target-switch cleanup must submit the retained A token with its paired A target");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed cleanup clears exactly A's pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "confirmed A cleanup must preserve selected C");
+});
+
+test("VaillantB503ProjectionTargetCleanupPreservesRetainedDefaultPair", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell.activateSection = () => {};
+  shell._vaillantB503TargetAddress = 21; // Prior picker/card context is B.
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-default";
+  shell._vaillantB503LiveTarget = null; // Token belongs to configured default.
+
+  await proto.openVaillantB503ProjectionTarget.call(shell, 34); // B -> C card.
+  const disable = fetchRequests.map((request) => parseGqlInit(request.init))
+    .find(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disable.variables, { action: "disable", issuerToken: "token-default", targetAddress: null },
+    "card cleanup must preserve null/default as the held token's paired target");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "default-pair cleanup must preserve selected C");
+});
+
 test("VaillantB503Pane_DelayedExplicitDisablePreservesNewSameTargetEnable", async () => {
   const { source, sourcePath } = await loadShellSource();
   const status = makeAuditedElement();

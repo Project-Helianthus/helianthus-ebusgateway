@@ -4054,8 +4054,13 @@ class PortalShell extends HTMLElement {
     // disable call is best-effort and never blocks navigation. Its token is
     // retained until GraphQL confirms disabled=true so a later bounded cleanup
     // attempt still has the issuer state it needs.
+    // Token and target form one recovery pair. Navigation callers may supply
+    // the previous picker/card target for their own context bookkeeping, but
+    // it is not authority for this cleanup: an earlier failed cleanup can
+    // retain a token belonging to a different target (including null/default).
+    // Snapshot the held pair together before awaiting its bounded disable.
     const token = this._vaillantB503LiveToken;
-    const target = arguments.length ? arguments[0] : this._vaillantB503LiveTarget;
+    const target = this._vaillantB503LiveTarget;
     const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
     if (!token) return true;
     return this._disableVaillantB503Pair(token, target, status);

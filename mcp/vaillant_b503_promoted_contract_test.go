@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 )
 
 type promotedB503Dispatcher struct {
@@ -104,6 +107,42 @@ func TestVaillantB503PromotedToolsGolden(t *testing.T) {
 		t.Fatalf("promoted tool schema count = %d; want 2", len(selected))
 	}
 	assertB503Golden(t, "vaillant_b503_promoted_tools.golden.json", selected)
+}
+
+func TestVaillantB503LiveMonitorSessionRefreshingGolden(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	manager := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "golden", TransportEpoch: 1},
+		time.Minute,
+		func(context.Context) (b503session.TransportKey, error) {
+			close(refreshStarted)
+			<-allowRefresh
+			return b503session.TransportKey{AdapterInstanceID: "golden", TransportEpoch: 2}, nil
+		},
+	)
+	if _, err := manager.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	server := newB503Server(t, &stubB503Dispatcher{}, manager)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.OnEpochAdvance(context.Background(), 2)
+	}()
+	<-refreshStarted
+	defer func() {
+		close(allowRefresh)
+		<-done
+	}()
+
+	envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolVaillantB503LiveSessionGetName + `","arguments":{"target_address":21}}`),
+	}))
+	meta := envelope["meta"].(map[string]any)
+	meta["data_timestamp"] = "<runtime>"
+	assertB503Golden(t, "vaillant_b503_live_monitor_session_refreshing.golden.json", envelope)
 }
 
 func TestVaillantB503ErrorsHistoryListPreservesVerifiedPrefix(t *testing.T) {

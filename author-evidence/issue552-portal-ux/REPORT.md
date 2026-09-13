@@ -410,6 +410,36 @@ token.
   and Storage/EVSE SemReg gates; passive smoke not triggered. Durable log:
   `ci_local-final-95bebcd.log`, SHA-256 `f2da6ebf0636f77d766c806df6ea1470b04791d76f74d6e62778fb19bb5140a5`.
 
+
+- Exact-head P2s `PRRT_kwDORGIw3c6h5rxh` and `PRRT_kwDORGIw3c6h5rxj`
+  are corrected by source commit `eeee737e3635fe4d83c8aa4c465f02148cb03daf`
+  (tree `4280d64c6cb09d743eb6d9d2fe5b498a14c07d7d`). When nav/tab exit
+  encounters a locally owned `Refreshing` session, Portal now keeps the
+  captured issuer-token/target pair and starts a distinct five-second,
+  read-only status task. It is independent of visible-tab polling, issues at
+  most one cleanup write after `Active`, clears only after `Idle`/`Disabled`
+  release or `disabled:true`, and stops on pair replacement, three status
+  failures, twelve non-terminal status reads, or component disconnect. A
+  disconnect retains the pair and reconnect resumes the bounded read task.
+- Session GraphQL envelopes with `errors`, a null root, or malformed state are
+  refresh failures. Portal leaves the last valid state/ownership and exact
+  retained token-target pair intact; it never infers `Unknown, owned:false` or
+  clears a session from that response. The public runtime-provider contract
+  records these bounded cleanup and error semantics.
+- Deterministic fake-timer Portal regressions prove hidden/nav-away
+  `Refreshing -> Active` cleanup uses the captured A/8 pair exactly once,
+  GraphQL error/null preservation and finite failure termination without a
+  write, finite non-terminal `Refreshing` termination, and disconnect timer
+  shutdown without discarding the recovery pair. Focused
+  `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 39 tests.
+- Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 134 tests,
+  repository-wide `go test -race`, Python 168+6+26+11+6+2, zero
+  `golangci-lint` issues, Modbus RTU transport conformance, Storage/EVSE
+  SemReg gates, and a correctly non-triggered passive smoke gate. Durable log:
+  `ci_local-final-deferred-cleanup.log`, SHA-256
+  `da796579a0901a97bb7f40dfa8772a142477fbea3d91235ef976eda95a200d7d`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

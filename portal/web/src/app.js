@@ -3628,6 +3628,12 @@ class PortalShell extends HTMLElement {
     if (next === previous) return;
     this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
     this._vaillantB503TargetAddress = next;
+    // The new canonical target has no qualification result yet. Unmount every
+    // B503 operation immediately, before the old target's cleanup or the new
+    // capability request can yield, so stale A controls cannot issue a B
+    // SERVICE_WRITE/read while B is still unqualified.
+    this._vaillantB503CapabilityReason = "PENDING";
+    this.renderVaillantB503Pane("PENDING");
     // A target change invalidates every target-bound response before any new
     // request starts. If the old target completed enable concurrently, its
     // result handler uses its captured context to issue an immediate disable.
@@ -3699,6 +3705,8 @@ class PortalShell extends HTMLElement {
       body.innerHTML = `${targetPicker}<div class="bus-banner bus-state-unavailable" data-testid="b503-state-session-busy">Session contention: the live-monitor session is busy or changing lifecycle state. Retry when it becomes available.</div>`;
     } else if (sanitized === "NOT_SUPPORTED") {
       body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-not-supported">Support limitation: this device family does not implement B503.</div>`;
+    } else if (sanitized === "PENDING") {
+      body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-pending" role="status" aria-live="polite">Checking B503 support for the selected target. Operations are unavailable until qualification completes.</div>`;
     } else {
       body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
     }
@@ -3840,6 +3848,7 @@ class PortalShell extends HTMLElement {
 
   async refreshVaillantErrors() {
     const body = this.querySelector('[data-role="vaillant-b503-errors-body"]');
+    if (this._vaillantB503CapabilityReason === "PENDING") return;
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
@@ -3860,6 +3869,7 @@ class PortalShell extends HTMLElement {
 
   async refreshVaillantServiceCurrent() {
     const body = this.querySelector('[data-role="vaillant-b503-service-body"]');
+    if (this._vaillantB503CapabilityReason === "PENDING") return;
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
@@ -3881,11 +3891,20 @@ class PortalShell extends HTMLElement {
   async invokeVaillantLiveMonitor(action) {
     const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
     const output = this.querySelector('[data-role="vaillant-b503-live-output"]');
+    if (this._vaillantB503CapabilityReason === "PENDING") {
+      if (status) status.textContent = "Checking B503 support for the selected target.";
+      return;
+    }
     const context = this._vaillantB503RequestContext();
     const variables = { action: String(action), targetAddress: context.target };
     if (action === "disable" && this._vaillantB503LiveToken) {
       variables.issuerToken = this._vaillantB503LiveToken;
     }
+    // Explicit disable, like nav-away cleanup, owns only the pair submitted
+    // with this request. A same-target enable can replace that pair while the
+    // disable response is pending.
+    const submittedToken = action === "disable" ? variables.issuerToken : null;
+    const submittedTarget = action === "disable" ? context.target : null;
     try {
       const env = await this._gqlRequest(
         "query VaillantLive($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
@@ -3929,9 +3948,11 @@ class PortalShell extends HTMLElement {
           if (status) status.textContent = "Disable pending: gateway did not confirm session closure.";
           return;
         }
-        this._vaillantB503LiveToken = null;
-        this._vaillantB503LiveTarget = null;
-        if (status) status.textContent = "Session disabled.";
+        if (this._vaillantB503LiveToken === submittedToken && this._vaillantB503LiveTarget === submittedTarget) {
+          this._vaillantB503LiveToken = null;
+          this._vaillantB503LiveTarget = null;
+          if (status) status.textContent = "Session disabled.";
+        }
       }
       await this.refreshVaillantLiveMonitorSession();
     } catch (err) {
@@ -3941,6 +3962,10 @@ class PortalShell extends HTMLElement {
 
   async refreshVaillantLiveMonitorSession() {
     const strip = this.querySelector('[data-role="vaillant-b503-session-strip"]');
+    if (this._vaillantB503CapabilityReason === "PENDING") {
+      if (strip) strip.textContent = "Session state: qualification pending.";
+      return;
+    }
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(
@@ -4002,6 +4027,7 @@ class PortalShell extends HTMLElement {
 
   async refreshVaillantErrorsHistory() {
     const body = this.querySelector('[data-role="vaillant-b503-history-body"]');
+    if (this._vaillantB503CapabilityReason === "PENDING") return;
     const context = this._vaillantB503RequestContext();
     try {
       const env = await this._gqlRequest(

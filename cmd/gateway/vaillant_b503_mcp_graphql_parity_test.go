@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -127,13 +128,23 @@ func TestIssue552VaillantB503HistoryMCPGraphQLFailureParity(t *testing.T) {
 		t.Fatalf("MCP aggregate did not fail closed: %s", content)
 	}
 
-	graphResult := b503GraphQLResult(t, provider, `{ vaillantErrorsHistory(limit:2) { index } }`)
+	graphResult := b503GraphQLResult(t, provider, `{
+		vaillantErrorsHistory(limit:2) { index }
+		vaillantCapabilities { vaillantB503 { reason available } }
+	}`)
 	if len(graphResult.Errors) != 1 || !strings.Contains(graphResult.Errors[0].Message, "UPSTREAM_RPC_FAILED") {
 		t.Fatalf("GraphQL aggregate error drift: %+v", graphResult.Errors)
 	}
 	if data, ok := graphResult.Data.(map[string]any); ok {
-		if rows := data["vaillantErrorsHistory"]; rows != nil {
-			t.Fatalf("GraphQL returned partial aggregate: %#v", rows)
+		encoded, err := json.Marshal(data)
+		if err != nil || !strings.Contains(string(encoded), `"vaillantErrorsHistory":null`) {
+			t.Fatalf("GraphQL returned non-null aggregate data: %s (%v)", encoded, err)
 		}
+		capability := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+		if capability["reason"] != "AVAILABLE" || capability["available"] != true {
+			t.Fatalf("GraphQL lost sibling capability after aggregate failure: %#v", capability)
+		}
+	} else {
+		t.Fatalf("GraphQL aggregate failure discarded all root data: %#v", graphResult.Data)
 	}
 }

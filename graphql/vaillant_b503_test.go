@@ -331,6 +331,34 @@ func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 	}
 }
 
+func TestVaillantB503GraphQL_ErrorsHistoryFailureIsFieldLocal(t *testing.T) {
+	provider := &fakeB503Provider{
+		errorsHistoryFn: func(context.Context, *byte, int) ([]VaillantB503HistoryRecord, error) {
+			return nil, errors.New("UPSTREAM_RPC_FAILED: indexed history read failed")
+		},
+		availabilityFn: func(context.Context, *byte) string { return "AVAILABLE" },
+	}
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{
+		vaillantErrorsHistory(limit: 2) { index }
+		vaillantCapabilities { vaillantB503 { reason available } }
+	}`)
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "UPSTREAM_RPC_FAILED") {
+		t.Fatalf("history failure errors = %+v; want one UPSTREAM_RPC_FAILED", res.Errors)
+	}
+	data, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("data=%#v; want root object with preserved sibling", res.Data)
+	}
+	history, ok := data["vaillantErrorsHistory"].([]VaillantB503HistoryRecord)
+	if !ok || history != nil {
+		t.Fatalf("history data=%#v; want null all-or-nothing aggregate", data["vaillantErrorsHistory"])
+	}
+	caps := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+	if caps["reason"] != "AVAILABLE" || caps["available"] != true {
+		t.Fatalf("sibling capability=%#v; want preserved AVAILABLE", caps)
+	}
+}
+
 func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
 	res := doGraphQL(t, newB503TestSchema(t, nil), `{ vaillantLiveMonitorSession { state owned } }`)
 	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "NOT_SUPPORTED") {

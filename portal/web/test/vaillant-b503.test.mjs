@@ -496,6 +496,51 @@ test("VaillantB503ProjectionCard_renders_without_projection_planes", async () =>
     "projection card must retain the public data-role selector");
 });
 
+test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const pending = [];
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: (_url, init) => new Promise((resolve) => {
+      pending.push({
+        target: parseGqlInit(init).variables.targetAddress,
+        resolve: () => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } }) }),
+      });
+    }),
+  });
+  shell.projectionDevices = [
+    { address: 8, display_name: "A", projections: [] },
+    { address: 21, display_name: "B", projections: [] },
+  ];
+  const proto = Object.getPrototypeOf(shell);
+
+  const firstA = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  deviceSelect.value = "21";
+  const B = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  deviceSelect.value = "8";
+  const newestA = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  assert.deepEqual(pending.map((request) => request.target), [8, 21, 8]);
+
+  pending[0].resolve();
+  await firstA;
+  pending[1].resolve();
+  await B;
+  assert.equal(appended.length, 0, "superseded A and B requests must not append cards");
+  pending[2].resolve();
+  await newestA;
+  assert.equal(appended.length, 1, "only the newest A invocation may append its card");
+});
+
 test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async () => {
   const { source, sourcePath } = await loadShellSource();
   const appended = [];

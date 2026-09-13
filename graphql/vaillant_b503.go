@@ -400,7 +400,11 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 	// The plural query is intentionally bounded.  It is a browser-facing
 	// history view, not a replacement for native evidence or an unbounded scan.
 	fields["vaillantErrorsHistory"] = &graphqlgo.Field{
-		Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(historyType))),
+		// Keep the root nullable, like the singular read fields. An indexed
+		// dispatcher failure is field-local: the aggregate remains all-or-
+		// nothing, but unrelated root fields in the same GraphQL operation
+		// remain available to the caller.
+		Type: graphqlgo.NewList(graphqlgo.NewNonNull(historyType)),
 		Args: graphqlgo.FieldConfigArgument{
 			"limit":         &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 			"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},

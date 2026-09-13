@@ -1879,7 +1879,13 @@ class PortalShell extends HTMLElement {
   }
 
   async loadAllProjectionPlanes(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    // Every invocation owns one projection-load generation. Device selection can
+    // return A -> B -> A while an earlier A capability request is pending; the
+    // address alone is therefore not enough to identify the latest render.
+    const loadGeneration = (this._projectionLoadGeneration || 0) + 1;
+    this._projectionLoadGeneration = loadGeneration;
     const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
+    const isCurrent = () => isActive() && loadGeneration === (this._projectionLoadGeneration || 0);
     const gridEl = this.querySelector('[data-role="projection-uml-grid"]');
     const deviceSelect = this.querySelector('[data-role="projection-device-select"]');
     if (!gridEl || !deviceSelect) {
@@ -1901,8 +1907,8 @@ class PortalShell extends HTMLElement {
       : [];
     if (nonEmpty.length === 0) {
       gridEl.innerHTML = `<p class="projection-empty">No non-empty projection planes for this device.</p>`;
-      await this.renderVaillantB503ProjectionCard(gridEl, Number(device.address));
-      return true;
+      await this.renderVaillantB503ProjectionCard(gridEl, Number(device.address), loadGeneration);
+      return isCurrent();
     }
     gridEl.innerHTML = `<p class="projection-empty">Loading ${nonEmpty.length} plane(s)...</p>`;
     try {
@@ -1915,16 +1921,16 @@ class PortalShell extends HTMLElement {
           .catch(() => null);
       });
       const graphs = await Promise.all(fetches);
-      if (!isActive()) {
+      if (!isCurrent()) {
         return false;
       }
       const results = nonEmpty
         .map((p, i) => ({ plane: p.plane, graph: graphs[i] }))
         .filter((r) => r.graph);
       this.renderProjectionUML(gridEl, device, results);
-      void this.renderVaillantB503ProjectionCard(gridEl, Number(device.address));
+      void this.renderVaillantB503ProjectionCard(gridEl, Number(device.address), loadGeneration);
     } catch (err) {
-      if (!isActive()) {
+      if (!isCurrent()) {
         return false;
       }
       gridEl.innerHTML = `<p class="projection-empty">Projection graph request failed.</p>`;
@@ -1981,7 +1987,7 @@ class PortalShell extends HTMLElement {
     target.innerHTML = `${metaHtml}<div class="uml-grid">${boxesHtml}</div>`;
   }
 
-  async renderVaillantB503ProjectionCard(gridEl, targetAddress) {
+  async renderVaillantB503ProjectionCard(gridEl, targetAddress, loadGeneration = this._projectionLoadGeneration || 0) {
     if (!gridEl || !Number.isInteger(targetAddress)) return;
     const epoch = this._vaillantB503Epoch || 0;
     try {
@@ -1991,7 +1997,7 @@ class PortalShell extends HTMLElement {
       );
       // Projection selection may have changed while this request was in flight.
       const selected = Number(this.querySelector('[data-role="projection-device-select"]')?.value);
-      if (epoch !== (this._vaillantB503Epoch || 0) || selected !== targetAddress || env?.data?.vaillantCapabilities?.vaillantB503?.reason !== "AVAILABLE") return;
+      if (loadGeneration !== (this._projectionLoadGeneration || 0) || epoch !== (this._vaillantB503Epoch || 0) || selected !== targetAddress || env?.data?.vaillantCapabilities?.vaillantB503?.reason !== "AVAILABLE") return;
       const card = document.createElement ? document.createElement("button") : null;
       if (!card) return;
       card.type = "button";

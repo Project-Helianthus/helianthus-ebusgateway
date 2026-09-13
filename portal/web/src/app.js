@@ -205,6 +205,8 @@ function explorerDecode(rawHex, rawLen, type) {
   }
 }
 
+const vaillantB503LiveSessionPollIntervalMs = 5000;
+
 class PortalShell extends HTMLElement {
   connectedCallback() {
     const lifecycleToken = this.beginBootstrapLifecycle();
@@ -217,6 +219,7 @@ class PortalShell extends HTMLElement {
 
   disconnectedCallback() {
     this.endBootstrapLifecycle();
+	this._stopVaillantB503LiveMonitorSessionPolling();
 	this.clearEEBusVisibilityAuthority();
 	this.clearEEBusSPINETree();
 	this.clearEEBusPendingMutation();
@@ -582,6 +585,7 @@ class PortalShell extends HTMLElement {
     // follow-up render reflects the cleared token state.
     const previousTarget = this._activeSectionTarget;
     if (previousTarget === "section-vaillant-b503" && targetID !== "section-vaillant-b503") {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       if (typeof this.handleVaillantB503NavAway === "function") {
         this.handleVaillantB503NavAway();
       }
@@ -3696,6 +3700,7 @@ class PortalShell extends HTMLElement {
     const targetPicker = `<label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target"${hasTargets ? "" : " disabled"}>${this._vaillantB503TargetOptions()}</select></label>`;
     if (sanitized === "AVAILABLE") {
       const activeTab = this._vaillantB503ActiveTab || "errors";
+	  if (activeTab !== "live-monitor") this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `
         ${targetPicker}
         <div class="bus-banner bus-state-unavailable" data-testid="b503-install-writes-banner">Installation writes require an admitted action and current authorization. <a id="b503-ad02-tooltip-anchor" href="https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/vaillant-b503-namespace-w17-26.implementing/13-amendment-1-dispatcher-portal-ux.md#f6--ad02-install-writes-banner" aria-label="Installation write safety details">?</a></div>
@@ -3714,6 +3719,7 @@ class PortalShell extends HTMLElement {
       this._bindVaillantB503TabEvents();
       this._bindVaillantB503ActiveTabEvents(activeTab);
     } else if (sanitized === "TRANSPORT_DOWN") {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `
         ${targetPicker}
         <div class="bus-banner bus-state-unavailable" data-testid="b503-state-transport-down">
@@ -3721,12 +3727,16 @@ class PortalShell extends HTMLElement {
         </div>
       `;
     } else if (sanitized === "SESSION_BUSY") {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `${targetPicker}<div class="bus-banner bus-state-unavailable" data-testid="b503-state-session-busy">Session contention: the live-monitor session is busy or changing lifecycle state. Retry when it becomes available.</div>`;
     } else if (sanitized === "NOT_SUPPORTED") {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-not-supported">Support limitation: this device family does not implement B503.</div>`;
     } else if (sanitized === "PENDING") {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-pending" role="status" aria-live="polite">Checking B503 support for the selected target. Operations are unavailable until qualification completes.</div>`;
     } else {
+	  this._stopVaillantB503LiveMonitorSessionPolling();
       body.innerHTML = `${targetPicker}<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
     }
     if (sanitized !== "AVAILABLE") this._bindVaillantB503TargetEvent();
@@ -3791,6 +3801,9 @@ class PortalShell extends HTMLElement {
         // session is held does not leave the token active.
         await this.handleVaillantB503NavAway();
       }
+	  if (this._vaillantB503ActiveTab === "live-monitor" && name !== "live-monitor") {
+		this._stopVaillantB503LiveMonitorSessionPolling();
+	  }
       this._vaillantB503ActiveTab = name;
       // Re-render the pane body to swap tab contents. The capability
       // reason is cached on the shell instance, so we don't re-fetch.
@@ -3830,6 +3843,7 @@ class PortalShell extends HTMLElement {
         disable.addEventListener("click", () => this.invokeVaillantLiveMonitor("disable"));
       }
       void this.refreshVaillantLiveMonitorSession();
+	  this._startVaillantB503LiveMonitorSessionPolling();
       return;
     }
     if (activeTab === "history") {
@@ -3936,6 +3950,7 @@ class PortalShell extends HTMLElement {
         if (action === "disable") {
           throw new Error(env.errors[0].message || "disable failed");
         }
+		if (this._isVaillantB503LiveMonitorSessionVisible()) await this.refreshVaillantLiveMonitorSession();
         return;
       }
       const payload = env && env.data && env.data.vaillantLiveMonitor;
@@ -3988,7 +4003,50 @@ class PortalShell extends HTMLElement {
       await this.refreshVaillantLiveMonitorSession();
     } catch (err) {
       if (status) status.textContent = `Error: ${err}`;
+	  if (this._isVaillantB503LiveMonitorSessionVisible()) await this.refreshVaillantLiveMonitorSession();
     }
+  }
+
+  _isVaillantB503LiveMonitorSessionVisible() {
+	if (!this.isConnected) return false;
+	if (this._activeSectionTarget !== "section-vaillant-b503" || this._vaillantB503ActiveTab !== "live-monitor") return false;
+	return typeof document === "undefined" || !document.visibilityState || document.visibilityState === "visible";
+  }
+
+  _pauseVaillantB503LiveMonitorSessionPolling() {
+	if (this._vaillantB503LiveSessionPollTimer) {
+	  clearInterval(this._vaillantB503LiveSessionPollTimer);
+	  this._vaillantB503LiveSessionPollTimer = undefined;
+	}
+  }
+
+  _startVaillantB503LiveMonitorSessionPolling() {
+	if (!this._vaillantB503LiveSessionVisibilityHandler && typeof document !== "undefined" && typeof document.addEventListener === "function") {
+	  this._vaillantB503LiveSessionVisibilityHandler = () => {
+		if (this._isVaillantB503LiveMonitorSessionVisible()) {
+		  this._startVaillantB503LiveMonitorSessionPolling();
+		} else {
+		  this._pauseVaillantB503LiveMonitorSessionPolling();
+		}
+	  };
+	  document.addEventListener("visibilitychange", this._vaillantB503LiveSessionVisibilityHandler);
+	}
+	if (!this._isVaillantB503LiveMonitorSessionVisible() || this._vaillantB503LiveSessionPollTimer) return;
+	this._vaillantB503LiveSessionPollTimer = setInterval(() => {
+	  if (!this._isVaillantB503LiveMonitorSessionVisible()) {
+		this._pauseVaillantB503LiveMonitorSessionPolling();
+		return;
+	  }
+	  void this.refreshVaillantLiveMonitorSession();
+	}, vaillantB503LiveSessionPollIntervalMs);
+  }
+
+  _stopVaillantB503LiveMonitorSessionPolling() {
+	this._pauseVaillantB503LiveMonitorSessionPolling();
+	if (this._vaillantB503LiveSessionVisibilityHandler && typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+	  document.removeEventListener("visibilitychange", this._vaillantB503LiveSessionVisibilityHandler);
+	}
+	this._vaillantB503LiveSessionVisibilityHandler = undefined;
   }
 
   async refreshVaillantLiveMonitorSession() {

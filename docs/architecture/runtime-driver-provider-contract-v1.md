@@ -1599,6 +1599,10 @@ contract are:
   epoch refresh retains the ownership gate while every live-monitor operation
   is busy; a successful refresh returns `Active`, while refresh failure releases
   ownership and returns to `Idle`. `Disabled` never reports `owned: true`.
+  While the Live-Monitor tab is visible, Portal refreshes this read-only session
+  strip every five seconds so idle expiry and external clients become visible;
+  it stops that polling on tab/section exit, document hiding, or component
+  disconnect, and every result remains fenced to the selected target and epoch.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

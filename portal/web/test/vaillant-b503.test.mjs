@@ -65,26 +65,39 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   }
   const fetchRequests = [];
   const createdElements = [];
+	const intervalCalls = [];
+	const clearedIntervals = [];
+	const documentListeners = new Map();
+	const documentState = {
+	  visibilityState: "visible",
+	  documentElement: { setAttribute() {} },
+	  createElement() {
+		const element = makeAuditedElement({
+		  _listeners: new Map(),
+		  addEventListener(type, listener) { this._listeners.set(type, listener); },
+		  append() {},
+		  setAttribute(name, value) { this._audit.push({ prop: String(name), value: String(value) }); },
+		});
+		createdElements.push(element);
+		return element;
+	  },
+	  addEventListener(type, listener) { documentListeners.set(type, listener); },
+	  removeEventListener(type, listener) {
+		if (documentListeners.get(type) === listener) documentListeners.delete(type);
+	  },
+	};
   const sandbox = {
     console: { error() {}, log() {}, warn() {} },
-    document: {
-      documentElement: { setAttribute() {} },
-      createElement() {
-        const element = makeAuditedElement({
-          _listeners: new Map(),
-          addEventListener(type, listener) { this._listeners.set(type, listener); },
-          append() {},
-          setAttribute(name, value) { this._audit.push({ prop: String(name), value: String(value) }); },
-        });
-        createdElements.push(element);
-        return element;
-      },
-    },
+	  document: documentState,
     customElements: { define() {} },
     HTMLElement: FakeHTMLElement,
     localStorage: { getItem: () => null, setItem() {} },
-    setInterval: () => ({}),
-    clearInterval: () => {},
+	  setInterval(callback, delay) {
+		const timer = { callback, delay, id: intervalCalls.length + 1 };
+		intervalCalls.push(timer);
+		return timer;
+	  },
+	  clearInterval(timer) { clearedIntervals.push(timer); },
     setTimeout,
     clearTimeout,
     AbortController,
@@ -109,7 +122,7 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   shell.bindEvents = () => {};
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
-  return { shell, fetchRequests, createdElements };
+	return { shell, fetchRequests, createdElements, intervalCalls, clearedIntervals, documentState, documentListeners };
 }
 
 // Parse a GraphQL fetch call and return {query, variables} from the init body.
@@ -1225,6 +1238,102 @@ test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operation
   for (const [name, control] of controls) {
     assert.equal(control.disabled, true, `${name} must be unavailable while refresh owns the gate`);
   }
+});
+
+test("VaillantB503Pane_visibleLiveSessionPollShowsExternalIdleExpiry", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  let sessionCalls = 0;
+  const { shell, intervalCalls } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      sessionCalls += 1;
+      const session = sessionCalls === 1
+        ? { state: "Active", owned: true }
+        : { state: "Idle", owned: false };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Session state: Active/);
+
+  proto._startVaillantB503LiveMonitorSessionPolling.call(shell);
+  assert.equal(intervalCalls.length, 1, "visible live tab starts one bounded session refresh interval");
+  assert.equal(intervalCalls[0].delay, 5000);
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  assert.equal(sessionCalls, 2, "poll performs only the read-only session query");
+  assert.match(strip.innerHTML, /Session state: Idle/,
+    "idle expiry or another client closure must replace stale active/owned strip state");
+});
+
+test("VaillantB503Pane_sessionPollStopsHiddenAndOnNavigation", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals, documentState, documentListeners } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  proto._startVaillantB503LiveMonitorSessionPolling.call(shell);
+  const firstTimer = intervalCalls[0];
+  assert.ok(documentListeners.has("visibilitychange"));
+
+  documentState.visibilityState = "hidden";
+  documentListeners.get("visibilitychange")();
+  assert.deepEqual(clearedIntervals, [firstTimer], "hidden document clears the live session interval");
+  firstTimer.callback();
+  await flush();
+  assert.equal(fetchRequests.length, 0, "hidden tab issues no session request");
+
+  documentState.visibilityState = "visible";
+  documentListeners.get("visibilitychange")();
+  const resumedTimer = intervalCalls[1];
+  assert.ok(resumedTimer, "visible live tab resumes one bounded session interval");
+  proto.activateSection.call(shell, "section-registry");
+  assert.ok(clearedIntervals.includes(resumedTimer), "navigating away stops the resumed interval");
+  assert.equal(documentListeners.has("visibilitychange"), false, "navigation removes the visibility listener");
+});
+
+test("VaillantB503Pane_failedLiveActionRefreshesVisibleSessionStrip", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  await proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1,
+    "failed local live action must refresh the visible session state once");
+  assert.match(strip.innerHTML, /Session state: Idle/);
+  assert.equal(status.textContent, "SESSION_BUSY");
 });
 
 test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {

@@ -534,6 +534,27 @@ tests, zero `golangci-lint` issues, Modbus RTU production conformance, and
 Storage/EVSE SemReg mapping gates; passive smoke was not triggered. Durable
 log: `ci_local-final-authoritative-deferred-cleanup.log`.
 
+### Bounded serialized session-status correction
+
+Exact-head P2 `PRRT_kwDORGIw3c6h5__E` is corrected by making every serialized
+session-status read abortable and time-bounded. Invalidating a target,
+visibility, or component generation aborts and releases its current logical
+slot immediately; a five-second timeout also releases a transport that ignores
+abort. A late response is detached from the logical request, so it cannot
+update state, clear the retained token-target pair, or emit a cleanup write.
+
+Deterministic Portal tests cover a never-settling status fetch timing out before
+the next generation reads Active, and component disconnect aborting a stalled
+request before reconnect succeeds. They assert timeout-handle cleanup, aborted
+signal delivery, retained pair state, and zero late cleanup writes. Focused
+`node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 49 tests.
+
+Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+GOWORK=off ./scripts/ci_local.sh`: PASS, with Portal 144, repository-wide race
+tests, Python script tests, zero lint findings, Modbus RTU conformance,
+Storage/EVSE SemReg gates, and non-triggered passive smoke. Durable log:
+`ci_local-final-bounded-session-status.log`.
+
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's
 PR #975 remain open. A fresh Gateway exact-HEAD review remains required after
 this evidence commit and the accepted docs gate. No live/private action was

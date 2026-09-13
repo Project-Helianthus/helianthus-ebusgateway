@@ -67,6 +67,8 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   const createdElements = [];
 	const intervalCalls = [];
 	const clearedIntervals = [];
+	const timeoutCalls = [];
+	const clearedTimeouts = [];
 	const documentListeners = new Map();
 	const documentState = {
 	  visibilityState: "visible",
@@ -98,8 +100,12 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
 		return timer;
 	  },
 	  clearInterval(timer) { clearedIntervals.push(timer); },
-    setTimeout,
-    clearTimeout,
+	  setTimeout(callback, delay) {
+		const timer = { callback, delay, id: timeoutCalls.length + 1 };
+		timeoutCalls.push(timer);
+		return timer;
+	  },
+	  clearTimeout(timer) { clearedTimeouts.push(timer); },
     AbortController,
     URLSearchParams,
     TextDecoder,
@@ -122,7 +128,7 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   shell.bindEvents = () => {};
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
-	return { shell, fetchRequests, createdElements, intervalCalls, clearedIntervals, documentState, documentListeners };
+	return { shell, fetchRequests, createdElements, intervalCalls, clearedIntervals, timeoutCalls, clearedTimeouts, documentState, documentListeners };
 }
 
 // Parse a GraphQL fetch call and return {query, variables} from the init body.
@@ -1374,6 +1380,78 @@ test("VaillantB503Pane_visibleAndDeferredSessionReadsSerializeAndIgnoreSupersede
   assert.equal(shell._vaillantB503LiveToken, null, "the queued deferred Active result performs one confirmed cleanup");
   assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 1,
     "serialized status processing emits no duplicate cleanup write");
+});
+
+test("VaillantB503Pane_sessionStatusTimeoutReleasesTheNextGeneration", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let sessionCalls = 0;
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      sessionCalls += 1;
+      if (sessionCalls === 1) return new Promise(() => {});
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  const stalled = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  assert.equal(timeoutCalls.length, 1);
+  timeoutCalls[0].callback();
+  assert.equal(await stalled, false, "timeout cannot publish a session result");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "timeout clears its scheduled handle");
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+  assert.equal(sessionCalls, 2, "a newer generation proceeds after the timeout");
+  assert.match(strip.innerHTML, /Session state: Active/);
+  assert.equal(fetchRequests.length, 2);
+});
+
+test("VaillantB503Pane_disconnectAbortsStalledStatusAndReconnectsWithoutLateWrite", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let firstSignal;
+  let sessionCalls = 0;
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected cleanup write ${query}`);
+      sessionCalls += 1;
+      if (sessionCalls === 1) {
+        firstSignal = init.signal;
+        return new Promise(() => {});
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  const stalled = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  shell._isConnected = false;
+  proto.disconnectedCallback.call(shell);
+  assert.equal(firstSignal?.aborted, true, "disconnect aborts the stalled status transport");
+  assert.equal(await stalled, false, "invalidated status cannot mutate the detached component");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "disconnect clears the status timeout");
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+
+  shell._isConnected = true;
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true, "reconnect starts a new status generation");
+  assert.equal(sessionCalls, 2);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "late/stale status work never emits a cleanup write");
 });
 
 test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operations", async () => {

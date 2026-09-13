@@ -206,6 +206,7 @@ function explorerDecode(rawHex, rawLen, type) {
 }
 
 const vaillantB503LiveSessionPollIntervalMs = 5000;
+const vaillantB503SessionStatusTimeoutMs = 5000;
 // Deferred cleanup has a separate, read-only status loop.  It deliberately
 // outlives the visible Live-Monitor tab because navigation can occur while the
 // gateway is refreshing an owned session.  The loop has a finite failure
@@ -3593,14 +3594,16 @@ class PortalShell extends HTMLElement {
   // live-monitor session went active.
   // ---------------------------------------------------------------------
 
-  async _gqlRequest(query, variables) {
+  async _gqlRequest(query, variables, options) {
     const endpoint = this._graphqlEndpoint || "/graphql";
     const body = JSON.stringify({ query, variables: variables || {} });
-    const resp = await fetch(endpoint, {
+    const request = {
       method: "POST",
       headers: { "content-type": "application/json", "accept": "application/json" },
       body,
-    });
+    };
+    if (options?.signal) request.signal = options.signal;
+    const resp = await fetch(endpoint, request);
     return resp.json();
   }
 
@@ -4090,6 +4093,10 @@ class PortalShell extends HTMLElement {
 
   _invalidateVaillantB503SessionStatusRequests() {
 	this._vaillantB503SessionStatusRequestVersion = (this._vaillantB503SessionStatusRequestVersion || 0) + 1;
+	const active = this._vaillantB503SessionStatusInFlight;
+	if (active) active.cancel();
+	this._vaillantB503SessionStatusInFlight = undefined;
+	this._vaillantB503QueuedSessionStatusRequest = undefined;
   }
 
   async _requestVaillantB503SessionStatus(target) {
@@ -4097,24 +4104,44 @@ class PortalShell extends HTMLElement {
 	this._vaillantB503SessionStatusRequestVersion = request.version;
 	while (this._vaillantB503SessionStatusInFlight) {
 	  this._vaillantB503QueuedSessionStatusRequest = request;
-	  await this._vaillantB503SessionStatusInFlight;
+	  await this._vaillantB503SessionStatusInFlight.promise;
 	  if (this._vaillantB503QueuedSessionStatusRequest !== request) return { current: false };
 	  this._vaillantB503QueuedSessionStatusRequest = undefined;
 	}
-	const inFlight = (async () => {
-	  try {
-		return { env: await this._gqlRequest(
-		  "query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
-		  { targetAddress: request.target },
-		) };
-	  } catch (error) {
-		return { error };
-	  }
-	})();
+	const controller = typeof AbortController === "function" ? new AbortController() : null;
+	let resolveBounded;
+	let settled = false;
+	const finish = (result) => {
+	  if (settled) return;
+	  settled = true;
+	  clearTimeout(timeout);
+	  resolveBounded(result);
+	};
+	const bounded = new Promise((resolve) => { resolveBounded = resolve; });
+	const timeout = setTimeout(() => {
+	  if (controller) controller.abort();
+	  finish({ error: new Error("B503 session-status request timed out") });
+	}, vaillantB503SessionStatusTimeoutMs);
+	Promise.resolve(this._gqlRequest(
+	  "query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
+	  { targetAddress: request.target },
+	  controller ? { signal: controller.signal } : undefined,
+	)).then(
+	  (env) => finish({ env }),
+	  (error) => finish({ error }),
+	);
+	const inFlight = {
+	  request,
+	  promise: bounded,
+	  cancel: () => {
+		if (controller) controller.abort();
+		finish({ cancelled: true });
+	  },
+	};
 	this._vaillantB503SessionStatusInFlight = inFlight;
 	try {
-	  const result = await inFlight;
-	  return { ...result, current: request.version === this._vaillantB503SessionStatusRequestVersion };
+	  const result = await inFlight.promise;
+	  return { ...result, current: !result.cancelled && request.version === this._vaillantB503SessionStatusRequestVersion };
 	} finally {
 	  if (this._vaillantB503SessionStatusInFlight === inFlight) this._vaillantB503SessionStatusInFlight = undefined;
 	}

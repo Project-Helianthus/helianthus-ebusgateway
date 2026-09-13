@@ -148,6 +148,24 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-9442071.log`, SHA-256
   `aba3764450865181c5e51f24ca119aef461dc2a19585865c50e53a71b915ca66`.
+- The final exact-head Portal P2 found that nav-away cleanup cleared the local
+  issuer token after an HTTP-successful GraphQL error. `6aa2f01...` now clears
+  the token and remembered target only when GraphQL returns `disabled: true`.
+  A GraphQL error, absent confirmation, or transport failure retains them and
+  reports `Disable pending` without automatic retry; tab swaps and target
+  changes use the same bounded cleanup behavior. The browser regression uses
+  an HTTP-successful `SESSION_BUSY` GraphQL error and proves token/target
+  retention, truthful pending status, and exactly one request. The existing
+  success regression continues to prove confirmed disable clears the token.
+- Focused Portal B503 tests passed 16/16 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `6aa2f01...`: PASS, including 111
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-6aa2f01.log`, SHA-256
+  `fa0f3dd7b2b079922b69b81a28c41a74ea3f9413e8d5118bfcda8c378201cfbd`.
 
 ## Gate boundary
 

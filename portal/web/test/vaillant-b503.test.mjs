@@ -70,7 +70,10 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
     document: {
       documentElement: { setAttribute() {} },
       createElement() {
-        const element = makeAuditedElement({ addEventListener() {}, append() {} });
+        const element = makeAuditedElement({
+          addEventListener() {}, append() {},
+          setAttribute(name, value) { this._audit.push({ prop: String(name), value: String(value) }); },
+        });
         createdElements.push(element);
         return element;
       },
@@ -470,6 +473,8 @@ test("VaillantB503ProjectionCard_renders_without_projection_planes", async () =>
   assert.match(grid.innerHTML, /No non-empty projection planes/);
   assert.equal(appended.length, 1, "capability card must be appended even without graph planes");
   assert.match(appended[0].textContent, /Vaillant B503/);
+  assert.ok(appended[0]._audit.some((entry) => entry.prop === "data-role" && entry.value === "projection-b503-card"),
+    "projection card must retain the public data-role selector");
 });
 
 test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () => {

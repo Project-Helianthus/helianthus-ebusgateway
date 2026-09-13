@@ -1995,6 +1995,7 @@ class PortalShell extends HTMLElement {
       if (!card) return;
       card.type = "button";
       card.className = "uml-box";
+      card.setAttribute("data-role", "projection-b503-card");
       card.setAttribute("data-testid", "b503-projection-card");
       card.setAttribute("aria-label", "Open Vaillant B503 diagnostics");
       card.textContent = "Vaillant B503: errors, service-current, service-history, live-monitor";

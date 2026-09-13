@@ -300,3 +300,25 @@ Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
 log
 `author-evidence/issue973-portal-catalog-admission/ci_local-a8665ed-all-22-feedback.log`,
 SHA-256 `63f747ff390474b2b80531f22433b288e89ffccb72841a5520369d2d187ef728`.
+
+## Final cross-admission history and no-op withdrawal correction
+
+The next connector review supplied two P2 findings against the preceding head.
+`Registry.Accept` now records its trusted canonical digest in the same retained
+history consulted by `ReplaceGeneration`. Divergent content submitted through
+the reverse `Accept(A)` then first `ReplaceGeneration(B)` order is quarantined;
+an identical descriptor may enter the first generation normally. The regression
+requires exclusive accepted-or-quarantined state in both cases.
+
+`Composer.Withdraw` now increments its revision only when the exact descriptor
+or quarantine existed. Repeating a withdrawal or naming an absent identity is a
+no-op and cannot invalidate an issued action claim; removing a present identity
+still advances the revision. Focused normal and race regressions cover all three
+transitions.
+
+The final complete SDK-backed CI passed Node 101/101, build/vet, Linux builds,
+repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU transport,
+Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
+log
+`author-evidence/issue973-portal-catalog-admission/ci_local-bf521f7-all-24-feedback.log`,
+SHA-256 `b575ce1d37f2f342269d588b204fa9b2de147b30893a771b86b722695243b825`.

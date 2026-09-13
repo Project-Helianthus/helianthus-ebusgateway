@@ -149,6 +149,43 @@ func TestPublishDetachesCanonicalManifestAndNoopsOnIdenticalDigest(t *testing.T)
 		t.Fatal("composer retained caller-owned manifest slice")
 	}
 }
+
+func TestWithdrawAbsentOrRepeatedIdentityIsRevisionNoop(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	c := New(idx, nil, authFake{}, nil)
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Withdraw("missing.driver", "missing.manifest", "1.0.0")
+	afterMissing, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogRevision != afterMissing.CatalogRevision {
+		t.Fatal("absent withdrawal changed catalog revision")
+	}
+	c.Withdraw("test.driver", "test.manifest", "1.0.0")
+	afterPresent, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogRevision == afterPresent.CatalogRevision {
+		t.Fatal("present withdrawal did not change catalog revision")
+	}
+	c.Withdraw("test.driver", "test.manifest", "1.0.0")
+	afterRepeated, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterPresent.CatalogRevision != afterRepeated.CatalogRevision {
+		t.Fatal("repeated withdrawal changed catalog revision")
+	}
+}
 func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	s := &sourceFake{}
 	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)

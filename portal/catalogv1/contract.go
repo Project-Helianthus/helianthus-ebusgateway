@@ -221,6 +221,11 @@ func (c *Composer) Withdraw(driver, manifest, version string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	k := identity{driver, manifest, version}
+	_, descriptorExists := c.descriptors[k]
+	_, quarantineExists := c.quarantined[k]
+	if !descriptorExists && !quarantineExists {
+		return
+	}
 	delete(c.descriptors, k)
 	delete(c.quarantined, k)
 	c.revision++

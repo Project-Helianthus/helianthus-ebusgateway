@@ -900,6 +900,38 @@ func TestRegistryAcceptConflictRemovesGenerationAcceptedIdentity(t *testing.T) {
 	}
 }
 
+func TestRegistryAcceptHistoryConstrainsFirstGenerationReplacement(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed after Accept"
+
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.Accept(first, "untrusted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{changed}); err == nil {
+		t.Fatal("first generation replacement bypassed Accept digest history")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("reverse cross-path conflict is not exclusive: %+v", snapshot)
+	}
+
+	unchanged := NewRegistry(indexFromCatalog(c))
+	if err := unchanged.Accept(first, "untrusted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unchanged.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatalf("matching first generation replacement rejected: %v", err)
+	}
+	if got := unchanged.Snapshot(); len(got.Accepted) != 1 || len(got.Quarantined) != 0 {
+		t.Fatalf("matching reverse cross-path result=%+v", got)
+	}
+}
+
 func TestRegistryQuarantinesEveryChangedIdentityInSuccessorGeneration(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

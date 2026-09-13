@@ -1204,6 +1204,9 @@ func (r *Registry) Accept(m Manifest, suppliedDigest string) error {
 		return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
 	}
 	r.digests[key] = digest
+	if _, exists := r.history[key]; !exists {
+		r.history[key] = digest
+	}
 	return nil
 }
 

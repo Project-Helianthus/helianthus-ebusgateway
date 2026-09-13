@@ -17,38 +17,30 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs"
 )
 
-// newPortalCatalogV1Handler starts with an intentionally empty, truthful
-// registry. Gateway composition may publish only accepted descriptors and
-// detached sources; no legacy/public API is consulted as a fallback.
+type gatewayPortalCatalogContributionOwner interface {
+	PortalCatalogContributions() *gatewayPortalCatalogContributions
+}
+
+// newPortalCatalogV1Handler captures the long-lived Gateway contribution
+// registry on every request. Gateway composition may publish only accepted
+// descriptors and detached sources; no legacy/public API is consulted as a
+// fallback.
 func newPortalCatalogV1Handler(source catalogv1.SourceCapture) http.Handler {
-	index, err := newGatewayPortalSemanticIndex()
-	if err != nil {
+	owner, ok := source.(gatewayPortalCatalogContributionOwner)
+	if !ok || owner.PortalCatalogContributions() == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "portal semantic registry unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "portal contribution registry unavailable", http.StatusServiceUnavailable)
 		})
 	}
-	composer := catalogv1.New(index, source, nil, nil)
-	registry := contributionv1.NewRegistry(index)
-	byDriver := map[string][]contributionv1.Manifest{}
-	for _, m := range acceptedPortalCatalogDescriptors() {
-		byDriver[m.Contributor.DriverID] = append(byDriver[m.Contributor.DriverID], m)
-	}
-	for driver, manifests := range byDriver {
-		if err := registry.ReplaceGeneration(contributionv1.DriverGeneration{DriverID: driver, Generation: 1}, manifests); err != nil {
-			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				http.Error(w, "portal descriptor registry unavailable", http.StatusServiceUnavailable)
-			})
+	contributions := owner.PortalCatalogContributions()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		composer, err := contributions.composer(source)
+		if err != nil {
+			http.Error(w, "portal descriptor registry unavailable", http.StatusServiceUnavailable)
+			return
 		}
-	}
-	for _, descriptor := range registry.Snapshot().Accepted {
-		m := descriptor.Manifest
-		if err := composer.Publish(m); err != nil {
-			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				http.Error(w, "portal descriptor registry unavailable", http.StatusServiceUnavailable)
-			})
-		}
-	}
-	return portalgraphql.Handler{Catalog: composer}
+		portalgraphql.Handler{Catalog: composer}.ServeHTTP(w, r)
+	})
 }
 
 // gatewayPortalSemanticIndex is deliberately thin: SemReg owns every semantic
@@ -105,33 +97,40 @@ func (*gatewayPortalSemanticIndex) HasNativeMember(contributionv1.NativeContract
 	return false
 }
 
-func acceptedPortalCatalogDescriptors() []contributionv1.Manifest {
-	items := []struct {
-		driver, id, group, field, service, capability, unit string
-		pack                                                contributionv1.PackRef
-	}{
-		{"pv.primary", "portal.pv", "inverter", "pv.ac.frequency", "pv.service.inverter", "pv.capability.read.inverter", "unit.hertz", catalogv1.FivePacks[1]},
-		{"storage.primary", "portal.storage", "pack", "storage.state.soc", "storage.service.pack", "storage.capability.read.pack", "unit.percent", catalogv1.FivePacks[2]},
-		{"evse.primary", "portal.evse", "evse", "evse.limit.configured_current", "evse.service.evse", "evse.capability.read.evse", "unit.ampere", catalogv1.FivePacks[3]},
+func gatewayPortalPVDescriptor() contributionv1.Manifest {
+	return newGatewayPortalDescriptor("pv.primary", "portal.pv", "inverter", "pv.ac.frequency", "pv.service.inverter", "pv.capability.read.inverter", "unit.hertz", catalogv1.FivePacks[1])
+}
+
+func gatewayPortalStorageDescriptor() contributionv1.Manifest {
+	return newGatewayPortalDescriptor("storage.primary", "portal.storage", "pack", "storage.state.soc", "storage.service.pack", "storage.capability.read.pack", "unit.percent", catalogv1.FivePacks[2])
+}
+
+func gatewayPortalEVSEDescriptor() contributionv1.Manifest {
+	return newGatewayPortalDescriptor("evse.primary", "portal.evse", "evse", "evse.limit.configured_current", "evse.service.evse", "evse.capability.read.evse", "unit.ampere", catalogv1.FivePacks[3])
+}
+
+func newGatewayPortalDescriptor(driver, id, group, field, service, capability, unit string, pack contributionv1.PackRef) contributionv1.Manifest {
+	ref := func(id string) contributionv1.DefinitionRef {
+		return contributionv1.DefinitionRef{Pack: pack, ID: id, Version: pack.Version}
 	}
-	out := make([]contributionv1.Manifest, 0, len(items))
-	for _, x := range items {
-		ref := func(id string) contributionv1.DefinitionRef {
-			return contributionv1.DefinitionRef{Pack: x.pack, ID: id, Version: x.pack.Version}
-		}
-		out = append(out, contributionv1.Manifest{Contract: contributionv1.Contract, ManifestID: x.id, ManifestVersion: "1.0.0", Contributor: contributionv1.Contributor{DriverID: x.driver, NativeContract: contributionv1.NativeContractRef{Owner: "helianthus", Contract: "portal-catalog", Version: "1.0.0"}}, Requires: contributionv1.Requirements{SemanticKernel: contributionv1.SemanticKernel, Packs: []contributionv1.PackRef{x.pack}}, Groups: []contributionv1.Group{{ID: x.group, Label: contributionv1.Label{Key: x.id + ".group", Default: x.group}, ResourceContext: x.group}}, Fields: []contributionv1.Field{{ID: x.field, Group: x.group, Label: contributionv1.Label{Key: x.id + ".field", Default: x.field}, Ref: ref(x.field), ServiceRef: ref(x.service), CapabilityRef: ref(x.capability), UnitRef: ref(x.unit)}}, Views: []contributionv1.View{{ID: x.id + ".summary", Group: x.group, Label: contributionv1.Label{Key: x.id + ".summary", Default: "Summary"}, Renderer: "summary", Slot: "lens", FieldIDs: []string{x.field}, DiagnosticIDs: []string{}}}, Actions: []contributionv1.Action{}, Diagnostics: []contributionv1.Diagnostic{}})
-	}
-	return out
+	return contributionv1.Manifest{Contract: contributionv1.Contract, ManifestID: id, ManifestVersion: "1.0.0", Contributor: contributionv1.Contributor{DriverID: driver, NativeContract: contributionv1.NativeContractRef{Owner: "helianthus", Contract: "portal-catalog", Version: "1.0.0"}}, Requires: contributionv1.Requirements{SemanticKernel: contributionv1.SemanticKernel, Packs: []contributionv1.PackRef{pack}}, Groups: []contributionv1.Group{{ID: group, Label: contributionv1.Label{Key: id + ".group", Default: group}, ResourceContext: group}}, Fields: []contributionv1.Field{{ID: field, Group: group, Label: contributionv1.Label{Key: id + ".field", Default: field}, Ref: ref(field), ServiceRef: ref(service), CapabilityRef: ref(capability), UnitRef: ref(unit)}}, Views: []contributionv1.View{{ID: id + ".summary", Group: group, Label: contributionv1.Label{Key: id + ".summary", Default: "Summary"}, Renderer: "summary", Slot: "lens", FieldIDs: []string{field}, DiagnosticIDs: []string{}}}, Actions: []contributionv1.Action{}, Diagnostics: []contributionv1.Diagnostic{}}
 }
 
 type gatewayPortalCatalogSource struct {
-	pv      *modbusadapter.Adapter
-	storage *growattStoragePublication
-	evse    *teslaHSCRetainedOwner
+	pv            *modbusadapter.Adapter
+	storage       *growattStoragePublication
+	evse          *teslaHSCRetainedOwner
+	contributions *gatewayPortalCatalogContributions
 }
 
-func newGatewayPortalCatalogSource(pv *modbusadapter.Adapter, storage *growattStoragePublication, evse *teslaHSCRetainedOwner) catalogv1.SourceCapture {
-	return &gatewayPortalCatalogSource{pv: pv, storage: storage, evse: evse}
+func newGatewayPortalCatalogSource(pv *modbusadapter.Adapter, storage *growattStoragePublication, evse *teslaHSCRetainedOwner, contributions *gatewayPortalCatalogContributions) catalogv1.SourceCapture {
+	return &gatewayPortalCatalogSource{pv: pv, storage: storage, evse: evse, contributions: contributions}
+}
+func (s *gatewayPortalCatalogSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
+	if s == nil {
+		return nil
+	}
+	return s.contributions
 }
 
 func gatewayPortalStoragePublication(provider *growattBMSRS485ProductionProvider) *growattStoragePublication {
@@ -146,17 +145,17 @@ func (s *gatewayPortalCatalogSource) Capture(at time.Time) ([]catalogv1.Resource
 	if s == nil {
 		return resources, fields, nil
 	}
-	if s.pv != nil {
+	if s.pv != nil && s.contributions != nil && s.contributions.accepts("pv.primary", "portal.pv") {
 		if v, ok := s.pv.SemanticPVCurrentSingleAt(at); ok {
 			resources, fields = appendPortalPV(resources, fields, v)
 		}
 	}
-	if s.storage != nil {
+	if s.storage != nil && s.contributions != nil && s.contributions.accepts("storage.primary", "portal.storage") {
 		if v, ok := s.storage.CurrentAt(string(s.storage.assetID), at); ok {
 			resources, fields = appendPortalStorage(resources, fields, v)
 		}
 	}
-	if s.evse != nil {
+	if s.evse != nil && s.contributions != nil && s.contributions.accepts("evse.primary", "portal.evse") {
 		if v, ok := s.evse.SemanticEVSECurrentAt(at); ok {
 			resources, fields = appendPortalEVSE(resources, fields, v)
 		}

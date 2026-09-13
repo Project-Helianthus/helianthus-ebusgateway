@@ -10,6 +10,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -167,14 +168,15 @@ func (session *growattBMSRTUSession) complete(observationID string, revision uin
 }
 
 type growattBMSRS485ProductionProvider struct {
-	mu      sync.Mutex
-	gate    chan struct{}
-	runtime *mcp.GrowattBMSRS485V202Runtime
-	session *growattBMSRTUSession
-	storage *growattStoragePublication
-	next    uint64
-	last    GrowattBMSRS485ObservationEvidence
-	have    bool
+	mu           sync.Mutex
+	gate         chan struct{}
+	runtime      *mcp.GrowattBMSRS485V202Runtime
+	session      *growattBMSRTUSession
+	storage      *growattStoragePublication
+	contribution *gatewayPortalContributionLifecycle
+	next         uint64
+	last         GrowattBMSRS485ObservationEvidence
+	have         bool
 }
 
 func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
@@ -278,6 +280,9 @@ func (provider *growattBMSRS485ProductionProvider) Close() error {
 	if provider == nil || provider.session == nil || provider.session.endpoint == nil {
 		return nil
 	}
+	if provider.contribution != nil {
+		provider.contribution.Stop()
+	}
 	if err := provider.acquire(context.Background()); err != nil {
 		return err
 	}
@@ -285,6 +290,21 @@ func (provider *growattBMSRS485ProductionProvider) Close() error {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	return provider.session.endpoint.Close()
+}
+
+func attachGatewayPortalStorageContribution(provider *growattBMSRS485ProductionProvider, contributions *gatewayPortalCatalogContributions) error {
+	if provider == nil {
+		return nil
+	}
+	if provider.session == nil || provider.session.driverGeneration == 0 {
+		return errors.New("growatt storage contribution generation unavailable")
+	}
+	lease, err := startGatewayPortalContributionLifecycle(contributions, contributionv1.DriverGeneration{DriverID: "storage.primary", Generation: provider.session.driverGeneration}, []contributionv1.Manifest{gatewayPortalStorageDescriptor()})
+	if err != nil {
+		return err
+	}
+	provider.contribution = lease
+	return nil
 }
 
 var openGrowattBMSRTUEndpoint = func(config modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {

@@ -48,6 +48,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 		}()
 	}
+	portalContributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		return fmt.Errorf("create portal contribution registry: %w", err)
+	}
 
 	modbusAdapter, err := startModbusRuntime(
 		ctx,
@@ -60,7 +64,15 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		modbusAdapter = nil
 	}
 	if modbusAdapter != nil {
+		pvContribution, err := startGatewayPortalPVContribution(modbusAdapter, portalContributions)
+		if err != nil {
+			_ = modbusAdapter.Close()
+			return fmt.Errorf("publish PV portal contribution: %w", err)
+		}
 		defer func() {
+			if pvContribution != nil {
+				pvContribution.Stop()
+			}
 			if err := modbusAdapter.Close(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown Modbus TCP sidecar: %w", err))
 			}
@@ -77,6 +89,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		growattBMSRuntime = nil
 	}
 	if growattBMSRuntime != nil {
+		if err := attachGatewayPortalStorageContribution(growattBMSRuntime, portalContributions); err != nil {
+			_ = growattBMSRuntime.Close()
+			return fmt.Errorf("publish Storage portal contribution: %w", err)
+		}
 		defer func() {
 			if err := growattBMSRuntime.Close(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown Growatt BMS RS-485 sidecar: %w", err))
@@ -88,6 +104,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		return fmt.Errorf("tesla HSC retained owner: %w", err)
 	}
 	if teslaHSCRetained != nil {
+		if err := attachGatewayPortalEVSEContribution(teslaHSCRetained, portalContributions); err != nil {
+			_ = teslaHSCRetained.Close()
+			return fmt.Errorf("publish EVSE portal contribution: %w", err)
+		}
 		defer func() {
 			if err := teslaHSCRetained.Close(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown Tesla HSC retained owner: %w", err))
@@ -530,6 +550,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err := builder.Start(ctx); err != nil {
 		return err
 	}
+	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)
 	var (
 		listener      *ebusgateway.BroadcastListener
 		reconstructor *ebusgateway.PassiveTransactionReconstructor
@@ -572,7 +593,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
 		newGatewayModbusMCPProviderWithRuntimes(modbusAdapter, growattBMSRuntime, teslaHSCRetained),
-		newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained),
+		portalCatalogSource,
 		lateScheduleWriter,
 		lateConfigWriter,
 		busObservability,

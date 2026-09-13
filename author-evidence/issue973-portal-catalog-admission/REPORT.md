@@ -188,3 +188,30 @@ run passed Node 101/101, build/vet, Linux builds, repository-wide race, Python
 EVSE 6 outputs/9 rejects, and the passive-smoke gate. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-218ce63-p2-final.log`,
 SHA-256 `f992988b51380e44de28b1d2a47bc400d545d28d50386a5cf4bb9bf100cdbd51`.
+
+## Provider-owned contribution lifecycle correction
+
+The Portal handler now takes a detached snapshot from a long-lived Gateway
+contribution registry for each request. PV, Storage, and EVSE publish a complete
+descriptor generation only after their existing provider startup succeeds. The
+PV adapter lease retains its explicit semantic generation `1`; Storage uses its
+RTU session generation; EVSE uses its retained-owner configuration generation.
+Each provider close, and Tesla's existing fence/successor seam, withdraws the
+exact generation before its cached reader can remain visible. Source capture is
+cache-only and binds the registry revision before and after capture, returning
+`ErrCatalogChanged` rather than a mixed catalog when a contribution lifecycle
+changes mid-capture.
+
+Focused normal and race regressions cover a new fixture lease beside unrelated
+contributions, exact withdrawal, complete replacement sets, and the blocked
+capture barrier. The direct exported `catalogv1.Composer.Publish` caller-slice
+retention observation remains a P3 backlog item: it is not reachable from this
+HTTP path because only deep-detached `Registry.Snapshot` manifests reach the
+request-local composer.
+
+`SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off ./scripts/ci_local.sh`:
+PASS. It completed Node 101/101, build/vet, Linux builds, repository-wide race,
+Python 168+6+26+11+6+2, lint, Modbus RTU transport, Storage and EVSE SemReg
+mapping, and passive smoke. Durable log:
+`author-evidence/issue973-portal-catalog-admission/ci_local-4d1b7ab-provider-leases.log`,
+SHA-256 `12074280766d5ace1fafe02aed489d6bcdc3b1a08ab36e46e8b9f29748d54a6f`.

@@ -211,6 +211,46 @@ func (c *Composer) Withdraw(driver, manifest, version string) {
 	c.revision++
 }
 
+// InstallDetachedRegistrySnapshot replaces the catalog's descriptor view with
+// one Gateway registry snapshot. Callers must supply Registry.Snapshot output:
+// that boundary has already canonicalized and detached the manifests from a
+// driver's memory. Replacing the complete view makes generation withdrawal
+// atomic for a catalog capture while preserving registry quarantines.
+func (c *Composer) InstallDetachedRegistrySnapshot(accepted []contributionv1.AcceptedDescriptor, quarantined []contributionv1.DescriptorKey) error {
+	if c == nil || c.index == nil {
+		return errors.New("catalog composer missing")
+	}
+	nextDescriptors := make(map[identity]Descriptor, len(accepted))
+	for _, item := range accepted {
+		digest, err := contributionv1.CanonicalDigest(item.Manifest, c.index)
+		if err != nil {
+			return err
+		}
+		if digest != item.Digest {
+			return errors.New("detached descriptor digest does not match manifest")
+		}
+		key := identity{item.Key.DriverID, item.Key.ManifestID, item.Key.ManifestVersion}
+		if _, exists := nextDescriptors[key]; exists {
+			return errors.New("duplicate detached descriptor identity")
+		}
+		nextDescriptors[key] = Descriptor{Manifest: item.Manifest, Digest: item.Digest}
+	}
+	nextQuarantined := make(map[identity]bool, len(quarantined))
+	for _, item := range quarantined {
+		key := identity{item.DriverID, item.ManifestID, item.ManifestVersion}
+		if _, accepted := nextDescriptors[key]; accepted {
+			return errors.New("detached descriptor is both accepted and quarantined")
+		}
+		nextQuarantined[key] = true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.descriptors = nextDescriptors
+	c.quarantined = nextQuarantined
+	c.revision++
+	return nil
+}
+
 func canonical(v any) ([]byte, error) { return json.Marshal(v) }
 func hash(v any) (string, error) {
 	b, err := canonical(v)

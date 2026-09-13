@@ -16,6 +16,14 @@ into zero.
 The host computes contribution digests from canonical validated descriptors.
 Two descriptors with equal `(driver_id, manifest_id, manifest_version)` and a
 different computed digest are quarantined together and neither is rendered.
+Gateway retains those accepted descriptors in a long-lived generation-fenced
+contribution registry. A detached source owner publishes its complete generation
+when it starts and withdraws that exact generation before it stops; a stale
+shutdown cannot remove a successor. Each catalog read takes one detached
+registry snapshot, so a driver addition, replacement, or withdrawal cannot
+produce a partial contribution set. A new valid driver uses this registry
+publication boundary and does not require a Portal handler or bootstrap switch
+edit.
 The action-stability catalog revision binds accepted contributions and
 quarantines, all resource and field bytes, action eligibility, source
 snapshot/revision/binding/epoch/generation vectors, lifecycle fence, pack refs,

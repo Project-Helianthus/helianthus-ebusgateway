@@ -186,6 +186,24 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-0426b0d.log`, SHA-256
   `def443fdd01f9bbc51526cb2f7537db5306b4bad6aa2b4ce31fd9a96c8bc2192`.
+- Late exact-head review then identified a concurrent cleanup ownership gap.
+  `7a5879d...` snapshots the old token/target pair before awaiting its disable
+  result and clears local recovery state only when that captured pair is still
+  current. A delayed confirmed cleanup for A therefore cannot erase a B token
+  and target installed by a reopened pane/new enable. The deterministic browser
+  regression starts A cleanup, installs B while A is pending, confirms A,
+  verifies B and its active status survive, then confirms the later explicit B
+  cleanup uses `token-B` on target 21 and clears only B. Previous late-enable
+  and failure-retention behavior remains covered.
+- Focused Portal B503 tests passed 18/18 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `7a5879d...`: PASS, including 113
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-7a5879d.log`, SHA-256
+  `af510496105509ea5ac084a0b2528dd42bb4e361870e9b43b4253c6c7a1212c1`.
 
 ## Gate boundary
 

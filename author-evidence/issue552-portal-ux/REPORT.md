@@ -74,12 +74,30 @@ token.
   on this source and passed with Portal 108 and the same full gate set. Durable
   log: `ci_local-final-ffa8335.log`, SHA-256
   `5a1d8c5368b2e0e381a44addaae7086cbeb84ff087af6b5adf43c8cfb07cfc84`.
+- Review feedback then identified two further P2 gaps. `27d323f...` makes the
+  MCP-owned session status use one `stateMu` snapshot for its normalized state
+  and ownership gate, so the GraphQL adapter receives the same coherent view.
+  Its deterministic manager test observes the blocked epoch-refresh state and
+  confirms that the internal `expired` state is normalized while ownership
+  remains held. The Portal now treats the state written by a projection card as
+  canonical; a stale hidden B503 target picker cannot replace it. The browser
+  regression clicks a card for target 21 while the stale picker contains 8 and
+  verifies both capability and later error requests use 21. The no-provider
+  GraphQL `NOT_SUPPORTED` behavior remains covered by its existing test.
+- Focused validation on `27d323f...`: `node --test
+  portal/web/test/vaillant-b503.test.mjs` passed 14 tests; `go test -race`
+  across B503 session, MCP, GraphQL, and gateway focused cases passed.
+- Final `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on the source tree of `27d323f...`: PASS.
+  It includes 109 Portal Node tests, repository-wide race tests, source schema
+  validation, Python 168+6+26+11+6+2, zero lint findings, Storage and EVSE
+  SemReg mapping gates, and correctly non-triggered transport/passive-smoke
+  gates. Durable log: `ci_local-final-27d323f.log`, SHA-256
+  `e0bb37189fce8078bf6e7c4db13b2f9f4b254b5e22c2257a3593f8f2e3f7f7cd`.
 
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's
-PR #975 remain open. Docs #524 corrected its two new P2 findings at `7141cd6...`,
-has a fresh dependency-aware `NO_BLOCKING_FINDINGS` review, and awaits its final
-hosted check. This final feedback-corrected source commit has not been pushed;
-fresh Gateway exact-HEAD review remains required after its evidence commit and
-accepted docs gate.
+PR #975 remain open. A fresh Gateway exact-HEAD review remains required after
+this evidence commit and the accepted docs gate. No live/private action was
+performed.

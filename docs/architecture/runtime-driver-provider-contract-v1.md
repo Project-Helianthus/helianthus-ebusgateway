@@ -1612,6 +1612,12 @@ contract are:
   non-terminal attempt budgets.  A GraphQL error or null session root is a
   failed refresh: it leaves the last valid state and retained pair intact
   rather than inferring an unowned `Unknown` session.
+  Target qualification publishes `PENDING` before it schedules old-pair
+  cleanup and never waits for that cleanup RPC; repeated navigation shares a
+  blocked cleanup for the same exact pair. Visible and deferred session status
+  reads share one serialized request slot. A newer target, epoch, visibility,
+  or lifecycle transition supersedes an older result before it may update
+  state or issue cleanup.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

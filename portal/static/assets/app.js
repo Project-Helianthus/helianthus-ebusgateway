@@ -3637,6 +3637,7 @@ class PortalShell extends HTMLElement {
   }
 
   _beginVaillantB503TargetQualification(target) {
+	this._invalidateVaillantB503SessionStatusRequests();
     this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
     this._vaillantB503TargetAddress = target;
     // Publish the target-bound pending state before any cleanup/probe await so
@@ -3660,7 +3661,12 @@ class PortalShell extends HTMLElement {
     // A target change invalidates every target-bound response before any new
     // request starts. If the old target completed enable concurrently, its
     // result handler uses its captured context to issue an immediate disable.
-    await this.handleVaillantB503NavAway(previous);
+    // Cleanup is token-pair serialized but intentionally detached from the
+    // qualification path: an unresponsive old session must not leave the new
+    // target in PENDING forever.  Yield once so a rapid newer selection can
+    // supersede this capability probe before it begins.
+    void this.handleVaillantB503NavAway(previous);
+    await Promise.resolve();
     // Keep an unconfirmed old-target token so a later explicit navigation or
     // target cleanup can retry. handleVaillantB503NavAway clears it only after
     // GraphQL confirms disabled=true.
@@ -3676,7 +3682,8 @@ class PortalShell extends HTMLElement {
     }
     const qualification = this._beginVaillantB503TargetQualification(target);
     this.activateSection("section-vaillant-b503");
-    await this.handleVaillantB503NavAway(previous);
+    void this.handleVaillantB503NavAway(previous);
+    await Promise.resolve();
     if (!this._isCurrentVaillantB503Context(qualification)) return;
     await this.refreshVaillantB503Capability(qualification);
   }
@@ -4037,6 +4044,7 @@ class PortalShell extends HTMLElement {
   }
 
   _pauseVaillantB503LiveMonitorSessionPolling() {
+	this._invalidateVaillantB503SessionStatusRequests();
 	if (this._vaillantB503LiveSessionPollTimer) {
 	  clearInterval(this._vaillantB503LiveSessionPollTimer);
 	  this._vaillantB503LiveSessionPollTimer = undefined;
@@ -4070,6 +4078,38 @@ class PortalShell extends HTMLElement {
 	  document.removeEventListener("visibilitychange", this._vaillantB503LiveSessionVisibilityHandler);
 	}
 	this._vaillantB503LiveSessionVisibilityHandler = undefined;
+  }
+
+  _invalidateVaillantB503SessionStatusRequests() {
+	this._vaillantB503SessionStatusRequestVersion = (this._vaillantB503SessionStatusRequestVersion || 0) + 1;
+  }
+
+  async _requestVaillantB503SessionStatus(target) {
+	const request = { target, version: (this._vaillantB503SessionStatusRequestVersion || 0) + 1 };
+	this._vaillantB503SessionStatusRequestVersion = request.version;
+	while (this._vaillantB503SessionStatusInFlight) {
+	  this._vaillantB503QueuedSessionStatusRequest = request;
+	  await this._vaillantB503SessionStatusInFlight;
+	  if (this._vaillantB503QueuedSessionStatusRequest !== request) return { current: false };
+	  this._vaillantB503QueuedSessionStatusRequest = undefined;
+	}
+	const inFlight = (async () => {
+	  try {
+		return { env: await this._gqlRequest(
+		  "query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
+		  { targetAddress: request.target },
+		) };
+	  } catch (error) {
+		return { error };
+	  }
+	})();
+	this._vaillantB503SessionStatusInFlight = inFlight;
+	try {
+	  const result = await inFlight;
+	  return { ...result, current: request.version === this._vaillantB503SessionStatusRequestVersion };
+	} finally {
+	  if (this._vaillantB503SessionStatusInFlight === inFlight) this._vaillantB503SessionStatusInFlight = undefined;
+	}
   }
 
   _stopVaillantB503DeferredCleanupStatusPolling() {
@@ -4124,15 +4164,16 @@ class PortalShell extends HTMLElement {
 	  return;
 	}
 	try {
-	  const env = await this._gqlRequest(
-		"query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
-		{ targetAddress: deferred.target },
-	  );
+	  const result = await this._requestVaillantB503SessionStatus(deferred.target);
 	  // The status read can have started before a component disconnect.  Do not
 	  // turn that late result into a hidden cleanup write; preserve the pair for
 	  // the reconnect path instead.
-	  if (!this.isConnected) return;
-	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(env);
+	  if (!this.isConnected || !result.current) return;
+	  if (result.error) {
+		this._recordVaillantB503DeferredCleanupStatusFailure(deferred);
+		return;
+	  }
+	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(result.env);
 	  if (!session) {
 		this._recordVaillantB503DeferredCleanupStatusFailure(deferred);
 		return;
@@ -4165,12 +4206,13 @@ class PortalShell extends HTMLElement {
     }
     const context = this._vaillantB503RequestContext();
     try {
-      const env = await this._gqlRequest(
-        "query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
-        { targetAddress: context.target },
-      );
-      if (!this._isCurrentVaillantB503Context(context) || !strip) return;
-	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(env);
+	  const result = await this._requestVaillantB503SessionStatus(context.target);
+      if (!result.current || !this._isCurrentVaillantB503Context(context) || !strip) return false;
+	  if (result.error) {
+		strip.textContent = "Session state: unavailable.";
+		return false;
+	  }
+	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(result.env);
 	  // A GraphQL error or a null/malformed root is a failed refresh, not an
 	  // observed unowned Unknown state.  Retain the last valid state and exact
 	  // cleanup pair so this UI result can never release a live server session.
@@ -4262,13 +4304,24 @@ class PortalShell extends HTMLElement {
     const target = this._vaillantB503LiveTarget;
     const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
     if (!token) return true;
-	const disabled = await this._disableVaillantB503Pair(token, target, status);
-	if (!disabled && this._vaillantB503SessionState === "Refreshing" &&
+	const active = this._vaillantB503NavAwayCleanupInFlight;
+	if (active && active.token === token && active.target === target) return active.promise;
+	const cleanup = (async () => {
+	  const disabled = await this._disableVaillantB503Pair(token, target, status);
+	  if (!disabled && this._vaillantB503SessionState === "Refreshing" &&
 		this._vaillantB503LiveToken === token && this._vaillantB503LiveTarget === target) {
-	  this._vaillantB503DeferredCleanup = { token, target, attempted: false, statusFailures: 0, statusAttempts: 0 };
-	  this._startVaillantB503DeferredCleanupStatusPolling();
+		this._vaillantB503DeferredCleanup = { token, target, attempted: false, statusFailures: 0, statusAttempts: 0 };
+		this._startVaillantB503DeferredCleanupStatusPolling();
+	  }
+	  return disabled;
+	})();
+	const entry = { token, target, promise: cleanup };
+	this._vaillantB503NavAwayCleanupInFlight = entry;
+	try {
+	  return await cleanup;
+	} finally {
+	  if (this._vaillantB503NavAwayCleanupInFlight === entry) this._vaillantB503NavAwayCleanupInFlight = undefined;
 	}
-	return disabled;
   }
 
   async refreshVaillantErrorsHistory() {

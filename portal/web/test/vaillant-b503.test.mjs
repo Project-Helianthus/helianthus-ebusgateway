@@ -730,6 +730,48 @@ test("VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification", async ()
   assert.match(body.innerHTML, /b503-state-not-supported/);
 });
 
+test("VaillantB503Pane_targetQualificationDoesNotWaitForBlockedOldCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const target = makeAuditedElement({ value: "21", addEventListener() {} });
+  let cleanupCalls = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-target"]', target],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        cleanupCalls += 1;
+        return new Promise(() => {}); // Simulates a transport that never settles.
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query} ${JSON.stringify(variables)}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+
+  await proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED", "B qualification progresses despite a blocked A cleanup");
+  assert.match(body.innerHTML, /b503-state-not-supported/);
+  target.value = "34";
+  await proto.changeVaillantB503Target.call(shell);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantB503Cap")).map(({ variables }) => variables.targetAddress), [21, 34]);
+  assert.equal(cleanupCalls, 1, "repeated selections reuse one blocked cleanup for the retained A pair");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "the unconfirmed pair remains recoverable");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+});
+
 test("VaillantB503Pane_targetSwitchCleansRetainedAPairRatherThanPreviousPicker", async () => {
   const { source, sourcePath } = await loadShellSource();
   const target = makeAuditedElement({ value: "34", addEventListener() {} });
@@ -1210,6 +1252,63 @@ test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () 
   assert.match(strip.innerHTML, /Gateway session gate is held/);
   assert.doesNotMatch(strip.innerHTML.toLowerCase(), /another client|foreign owner/);
   assert.match(strip.innerHTML, /data-testid="b503-session-state-label"/);
+});
+
+test("VaillantB503Pane_visibleAndDeferredSessionReadsSerializeAndIgnoreSupersededResult", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  let resolveFirst;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let sessionCalls = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        sessionCalls += 1;
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        if (sessionCalls === 1) {
+          return new Promise((resolve) => {
+            resolveFirst = () => {
+              inFlight -= 1;
+              resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+            };
+          });
+        }
+        inFlight -= 1;
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+
+  const visible = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  const deferred = proto._refreshVaillantB503DeferredCleanupStatus.call(shell);
+  await flush();
+  assert.equal(sessionCalls, 1, "deferred polling queues behind the visible status read");
+  resolveFirst();
+  await visible;
+  await deferred;
+
+  assert.equal(maxInFlight, 1, "visible and deferred status polling share one request slot");
+  assert.equal(sessionCalls, 2, "the newest queued status read runs once after the slow predecessor");
+  assert.doesNotMatch(strip.innerHTML, /Session state: Idle/, "superseded visible Idle result never overwrites the newer status");
+  assert.equal(shell._vaillantB503SessionState, "Active");
+  assert.equal(shell._vaillantB503LiveToken, null, "the queued deferred Active result performs one confirmed cleanup");
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 1,
+    "serialized status processing emits no duplicate cleanup write");
 });
 
 test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operations", async () => {

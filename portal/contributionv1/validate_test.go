@@ -824,6 +824,35 @@ func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {
 	}
 }
 
+func TestRegistryGenerationReplayIncludesQuarantinedKeys(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	r := NewRegistry(indexFromCatalog(c))
+	initial := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(initial, []Manifest{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	changedSecond := cloneManifest(t, second)
+	changedSecond.Groups[0].Label.Default = "changed"
+	successor := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 2}
+	if err := r.ReplaceGeneration(successor, []Manifest{first, changedSecond}); err == nil {
+		t.Fatal("changed successor was accepted")
+	}
+	if err := r.ReplaceGeneration(successor, []Manifest{first}); err == nil {
+		t.Fatal("same-generation replay omitted quarantined identity")
+	}
+	if err := r.ReplaceGeneration(successor, []Manifest{first, changedSecond}); err != nil {
+		t.Fatalf("exact conflicted generation replay rejected: %v", err)
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 1 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("conflicted generation replay changed state: %+v", snapshot)
+	}
+}
+
 func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

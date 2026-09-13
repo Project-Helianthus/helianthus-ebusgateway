@@ -415,3 +415,32 @@ Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
 log
 `author-evidence/issue973-portal-catalog-admission/ci_local-12c87fd-all-32-feedback.log`,
 SHA-256 `117534a5268e1c9295bf6649d23d75aebfcbd0ae00faf18e302b54e61a3f77d0`.
+
+## Final manifest-resource and complete-generation replay correction
+
+The next live review supplied two P2 findings against the preceding head.
+Accepted source resources are now checked against the exact admitted manifest:
+their resource ID must be one declared group context, and their domain plus
+service/capability pair must match a field or action in that group. Undeclared
+resource context, domain, service or capability rows are omitted before domain
+presence and action composition.
+
+Production resources now use the descriptor's declared resource context as the
+catalog resource ID while retaining the real SemReg asset ID in the complete
+source/provenance envelope. Their exact service/capability instance link and
+generation requirements are unchanged.
+
+The contribution registry retains the complete canonical digest set submitted
+for each active generation, including identities that entered quarantine.
+Same-generation replay requires that exact full key/digest set; replaying only
+accepted rows cannot mask a quarantined identity. An exact replay of the
+original conflicted publication is a no-op, and a withdrawn inactive generation
+cannot be reopened.
+
+Focused normal and race validation passed for the affected catalog, registry
+and Gateway packages. The final complete SDK-backed CI passed Node 101/101,
+build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
+and passive smoke. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-d9d0a74-all-34-feedback.log`,
+SHA-256 `8613753691b4f63f02bf91365a2b6c8d88d1971e51da75e6c54b016a0f81a172`.

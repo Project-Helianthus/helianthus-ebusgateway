@@ -35,9 +35,9 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		at := now().UTC()
 		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
-		accepted := make(map[identity]bool, len(descriptors))
+		accepted := make(map[identity]Descriptor, len(descriptors))
 		for _, descriptor := range descriptors {
-			accepted[identity{descriptor.Manifest.Contributor.DriverID, descriptor.Manifest.ManifestID, descriptor.Manifest.ManifestVersion}] = true
+			accepted[identity{descriptor.Manifest.Contributor.DriverID, descriptor.Manifest.ManifestID, descriptor.Manifest.ManifestVersion}] = descriptor
 		}
 		for _, p := range FivePacks {
 			out.Domains = append(out.Domains, Domain{Pack: p, SourceState: "ABSENT", Reason: "source_unavailable"})
@@ -60,7 +60,8 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			resourceOwnerCounts := make(map[sourceResourceOwnerKey]int, len(resources))
 			for _, resource := range resources {
 				owner := identity{resource.ContributionDriverID, resource.ContributionManifestID, resource.ContributionManifestVersion}
-				if !accepted[owner] {
+				descriptor, admitted := accepted[owner]
+				if !admitted || !resourceMatchesManifest(resource, descriptor.Manifest) {
 					continue
 				}
 				key := sourceResourceKey{owner, resource.ID, resource.ServiceID, resource.CapabilityID}
@@ -74,7 +75,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			fieldIdentities := make(map[sourceFieldKey]bool, len(fields))
 			for _, field := range fields {
 				owner := identity{field.ContributionDriverID, field.ContributionManifestID, field.ContributionManifestVersion}
-				if !accepted[owner] {
+				if _, admitted := accepted[owner]; !admitted {
 					continue
 				}
 				if resourceOwnerCounts[sourceResourceOwnerKey{owner, field.ResourceID}] != 1 {
@@ -239,6 +240,26 @@ type sourceFieldKey struct {
 	owner      identity
 	resourceID string
 	id         string
+}
+
+func resourceMatchesManifest(resource Resource, manifest contributionv1.Manifest) bool {
+	groups := make(map[string]bool, len(manifest.Groups))
+	for _, group := range manifest.Groups {
+		if group.ResourceContext == resource.ID {
+			groups[group.ID] = true
+		}
+	}
+	for _, field := range manifest.Fields {
+		if groups[field.Group] && field.ServiceRef.ID == resource.ServiceID && field.CapabilityRef.ID == resource.CapabilityID && field.ServiceRef.Pack.ID == resource.Domain && field.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	for _, action := range manifest.Actions {
+		if groups[action.Group] && action.ServiceRef.ID == resource.ServiceID && action.CapabilityRef.ID == resource.CapabilityID && action.ServiceRef.Pack.ID == resource.Domain && action.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {

@@ -64,7 +64,10 @@ func (r *rejectRevalidate) Revalidate(Action, Claims) error {
 }
 
 func actionManifestAndIndex() (contributionv1.Manifest, *contributionv1.StaticIndex) {
-	p := contributionv1.PackRef{ID: "test.pack", Version: "1.0.0"}
+	return actionManifestAndIndexForPack(contributionv1.PackRef{ID: "test.pack", Version: "1.0.0"})
+}
+
+func actionManifestAndIndexForPack(p contributionv1.PackRef) (contributionv1.Manifest, *contributionv1.StaticIndex) {
 	ref := func(id string) contributionv1.DefinitionRef {
 		return contributionv1.DefinitionRef{Pack: p, ID: id, Version: "1.0.0"}
 	}
@@ -208,9 +211,10 @@ func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	}
 }
 func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
-	m, idx := actionManifestAndIndex()
+	p := contributionv1.PackRef{ID: "helianthus.pack.pv", Version: "1.0.0"}
+	m, idx := actionManifestAndIndexForPack(p)
 	resource := actionResource()
-	resource.Domain = "helianthus.pack.pv"
+	resource.Domain = p.ID
 	s := &sourceFake{resources: []Resource{resource}}
 	c := New(idx, s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0).UTC() }
@@ -430,6 +434,38 @@ func TestCatalogScopesCollidingResourceIDsByContribution(t *testing.T) {
 	}
 }
 
+func TestCatalogFiltersAcceptedOwnerWithUndeclaredResourceSemantics(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	valid := actionResource()
+	cases := []struct {
+		name   string
+		mutate func(*Resource)
+	}{
+		{"resource-context", func(r *Resource) { r.ID = "undeclared" }},
+		{"domain", func(r *Resource) { r.Domain = "helianthus.pack.pv" }},
+		{"service", func(r *Resource) { r.ServiceID = "undeclared.service" }},
+		{"capability", func(r *Resource) { r.CapabilityID = "undeclared.capability" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resource := valid
+			tc.mutate(&resource)
+			c := New(idx, &sourceFake{resources: []Resource{resource}}, authFake{}, nil)
+			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+			if err := c.Publish(m); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := c.Catalog("caller")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(catalog.Resources) != 0 || len(catalog.Actions) != 0 {
+				t.Fatalf("undeclared source semantics exposed: %+v", catalog)
+			}
+		})
+	}
+}
+
 func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	resource := actionResource()
@@ -494,7 +530,6 @@ func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	}
 	m, idx := actionManifestAndIndex()
 	resource := actionResource()
-	resource.Domain = "helianthus.pack.pv"
 	field := Field{ID: "f", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
 	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{resource}, fields: []Field{field}}, fence: "one"}
 	c := New(idx, s, authFake{}, nil)

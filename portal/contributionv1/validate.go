@@ -954,21 +954,22 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 
 // Registry detects non-deterministic publication of the same driver manifest.
 type Registry struct {
-	mu         sync.Mutex
-	index      SemanticIndex
-	digests    map[registryKey]string
-	conflicts  map[registryKey]bool
-	accepted   map[registryKey]AcceptedDescriptor
-	history    map[registryKey]string
-	generation map[string]uint64
-	active     map[string]uint64
-	revision   uint64
+	mu            sync.Mutex
+	index         SemanticIndex
+	digests       map[registryKey]string
+	conflicts     map[registryKey]bool
+	accepted      map[registryKey]AcceptedDescriptor
+	history       map[registryKey]string
+	generationSet map[string]map[registryKey]string
+	generation    map[string]uint64
+	active        map[string]uint64
+	revision      uint64
 }
 
 type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
 
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generation: map[string]uint64{}, active: map[string]uint64{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generationSet: map[string]map[registryKey]string{}, generation: map[string]uint64{}, active: map[string]uint64{}}
 }
 
 // DriverGeneration fences a driver's complete descriptor publication.  A
@@ -1027,17 +1028,15 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		return fmt.Errorf("descriptor generation is stale")
 	}
 	if current == owner.Generation {
-		existing := 0
-		for key := range r.accepted {
-			if key.DriverID == owner.DriverID {
-				existing++
-			}
+		if r.active[owner.DriverID] != owner.Generation {
+			return fmt.Errorf("descriptor generation is inactive")
 		}
-		if existing != len(staged) {
+		published := r.generationSet[owner.DriverID]
+		if len(published) != len(staged) {
 			return fmt.Errorf("descriptor generation replay key set differs")
 		}
 		for key, item := range staged {
-			if prior, ok := r.accepted[key]; !ok || prior.Digest != item.Digest {
+			if prior, ok := published[key]; !ok || prior != item.Digest {
 				return fmt.Errorf("descriptor generation replay differs")
 			}
 		}
@@ -1068,6 +1067,10 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 	}
 	r.generation[owner.DriverID] = owner.Generation
 	r.active[owner.DriverID] = owner.Generation
+	r.generationSet[owner.DriverID] = make(map[registryKey]string, len(staged))
+	for key, item := range staged {
+		r.generationSet[owner.DriverID][key] = item.Digest
+	}
 	r.revision++
 	if len(conflicts) != 0 {
 		keys := make([]registryKey, 0, len(conflicts))

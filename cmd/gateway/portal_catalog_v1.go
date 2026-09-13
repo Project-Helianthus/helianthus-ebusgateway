@@ -181,6 +181,16 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	if len(descriptor.Requires.Packs) != 1 || len(descriptor.Fields) == 0 {
 		return resources, fields
 	}
+	resourceID := ""
+	for _, group := range descriptor.Groups {
+		if group.ID == descriptor.Fields[0].Group {
+			resourceID = group.ResourceContext
+			break
+		}
+	}
+	if resourceID == "" {
+		return resources, fields
+	}
 	serviceID, capabilityID, generation, ok := portalSnapshotContext(snapshot, descriptor.Fields[0].ServiceRef, descriptor.Fields[0].CapabilityRef)
 	if !ok {
 		return resources, fields
@@ -193,7 +203,7 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	bindings, bindingText := rawPortal(snapshot.Bindings)
 	sources, sourceText := rawPortal(snapshot.Sources)
 	source := catalogv1.Source{AssetID: string(snapshot.AssetID), SnapshotID: string(snapshot.SnapshotID), Revision: revisionText, EvaluationDigest: portalDigest(evaluation), BindingID: bindingText, SourceEpoch: sourceText, DriverGeneration: generation, Snapshot: snap, Evaluation: eval, Selections: sels, Projection: proj}
-	r := catalogv1.Resource{ID: string(snapshot.AssetID), Domain: descriptor.Requires.Packs[0].ID, ServiceID: serviceID, CapabilityID: capabilityID, State: "CURRENT", Source: source, ContributionDriverID: descriptor.Contributor.DriverID, ContributionManifestID: descriptor.ManifestID, ContributionManifestVersion: descriptor.ManifestVersion}
+	r := catalogv1.Resource{ID: resourceID, Domain: descriptor.Requires.Packs[0].ID, ServiceID: serviceID, CapabilityID: capabilityID, State: "CURRENT", Source: source, ContributionDriverID: descriptor.Contributor.DriverID, ContributionManifestID: descriptor.ManifestID, ContributionManifestVersion: descriptor.ManifestVersion}
 	if len(revisions) == 0 || len(evalText) == 0 || len(bindings) == 0 || len(sources) == 0 {
 		return resources, fields
 	}

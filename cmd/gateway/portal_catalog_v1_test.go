@@ -88,7 +88,7 @@ func TestPortalCatalogProductionResourcesBindExactSemanticContext(t *testing.T) 
 				}},
 			}
 			resources, _ := appendPortalSnapshot(nil, nil, descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
-			if len(resources) != 1 || resources[0].ServiceID != descriptor.Fields[0].ServiceRef.ID || resources[0].CapabilityID != descriptor.Fields[0].CapabilityRef.ID || resources[0].Source.DriverGeneration != 7 {
+			if len(resources) != 1 || resources[0].ID != descriptor.Groups[0].ResourceContext || resources[0].Source.AssetID != "asset" || resources[0].ServiceID != descriptor.Fields[0].ServiceRef.ID || resources[0].CapabilityID != descriptor.Fields[0].CapabilityRef.ID || resources[0].Source.DriverGeneration != 7 {
 				t.Fatalf("resource context=%+v", resources)
 			}
 			snapshot.Capabilities = nil

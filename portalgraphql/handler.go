@@ -3,9 +3,11 @@ package portalgraphql
 
 import (
 	"encoding/json"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
+	"io"
 	"net/http"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 )
 
 const Path = "/graphql/portal/v1"
@@ -33,6 +35,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&q) != nil {
+		http.Error(w, "invalid portal graphql request", http.StatusBadRequest)
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		http.Error(w, "invalid portal graphql request", http.StatusBadRequest)
 		return
 	}

@@ -25,3 +25,20 @@ func TestPortalCatalogV1IsDedicatedAndBounded(t *testing.T) {
 		t.Fatalf("unexpected operation status=%d", badRes.Code)
 	}
 }
+
+func TestPortalRequestRejectsTrailingJSONBeforeCallerResolution(t *testing.T) {
+	callerResolved := false
+	h := Handler{
+		Catalog: catalogv1.New(contributionv1.NewStaticIndex(), nil, nil, nil),
+		Caller: func(*http.Request) (any, error) {
+			callerResolved = true
+			return "caller", nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, Path, bytes.NewBufferString(`{"operationName":"PortalCatalogV1","variables":{}} {"operationName":"PortalCatalogV1","variables":{}}`))
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest || callerResolved {
+		t.Fatalf("trailing JSON status=%d callerResolved=%v body=%s", res.Code, callerResolved, res.Body.String())
+	}
+}

@@ -206,18 +206,14 @@ func normalizeEvaluationClock(raw json.RawMessage) json.RawMessage {
 }
 
 func stripEvaluationClock(value any) {
-	switch typed := value.(type) {
-	case map[string]any:
-		delete(typed, "evaluated_at")
-		delete(typed, "evaluate_monotonic")
-		delete(typed, "evaluation_digest")
-		for _, child := range typed {
-			stripEvaluationClock(child)
-		}
-	case []any:
-		for _, child := range typed {
-			stripEvaluationClock(child)
-		}
+	root, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(root, "evaluation_digest")
+	if context, ok := root["context"].(map[string]any); ok {
+		delete(context, "evaluated_at")
+		delete(context, "evaluate_monotonic")
 	}
 }
 

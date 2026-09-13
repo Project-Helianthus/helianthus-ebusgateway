@@ -341,6 +341,31 @@ func TestCatalogRevisionPreservesLargeNonClockEvaluationIntegers(t *testing.T) {
 	}
 }
 
+func TestCatalogRevisionPreservesSameNamedNonContextEvidence(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	resource.Source = Source{SnapshotID: "snapshot", Revision: "revision", BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, EvaluationDigest: "outer-1", Evaluation: json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:00Z","evaluate_monotonic":{"nanoseconds":"1"}},"facts":[{"evaluated_at":"native-evidence-1","evaluate_monotonic":{"counter":"1"}}],"evaluation_digest":"inner-1"}`)}
+	source := &sourceFake{resources: []Resource{resource}}
+	c := New(idx, source, authFake{}, &invokeFake{})
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.resources[0].Source.EvaluationDigest = "outer-2"
+	source.resources[0].Source.Evaluation = json.RawMessage(`{"context":{"evaluated_at":"2026-09-13T00:00:01Z","evaluate_monotonic":{"nanoseconds":"2"}},"facts":[{"evaluated_at":"native-evidence-2","evaluate_monotonic":{"counter":"2"}}],"evaluation_digest":"inner-2"}`)
+	second, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogRevision == second.CatalogRevision {
+		t.Fatal("same-named non-context evidence was stripped from action revision")
+	}
+}
+
 func TestCatalogActionRequiresExactContributionAndSemanticContext(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	valid := actionResource()

@@ -375,3 +375,26 @@ transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive
 smoke. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-042bfb6-all-29-feedback.log`,
 SHA-256 `38f88cdea48e6015b1ba657c82f0c9321ae6b262147cf2579149b5784ab29b89`.
+
+## Final scoped-clock and single-document request correction
+
+The next connector review supplied two P2 findings against the preceding head.
+Evaluation normalization is now structural rather than recursive: it removes
+only root `evaluation_digest`, `context.evaluated_at`, and
+`context.evaluate_monotonic`. Same-named members in facts, provenance or other
+evidence stay bound to the action revision. A regression varies both the
+volatile context and same-named fact evidence and requires the evidence change
+to advance the revision.
+
+The Portal GraphQL handler now decodes once more after the closed request and
+requires EOF before caller resolution or dispatch. A valid envelope followed
+by any second JSON value returns HTTP 400 and the regression proves the caller
+resolver was not invoked.
+
+Focused normal and race validation passed for `portal/catalogv1` and
+`portalgraphql`. The final complete SDK-backed CI passed Node 101/101,
+build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
+and passive smoke. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-db68bbb-all-31-feedback.log`,
+SHA-256 `2a5d441e38a0bdc50b2276ca6189821dc10aa31b5099e7c7d856f48a457048ff`.

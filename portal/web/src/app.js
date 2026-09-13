@@ -3923,13 +3923,17 @@ class PortalShell extends HTMLElement {
       if (!payload) return;
       if (!this._isCurrentVaillantB503Context(context)) {
         if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
-          // M8-TGT-04: retain a late enable's issuer token before its first
-          // cleanup attempt. If GraphQL cannot confirm disabled=true, the
-          // prior target remains recoverable for one later user-triggered
-          // navigation/target cleanup without changing the current target.
-          this._vaillantB503LiveToken = payload.issuerToken;
-          this._vaillantB503LiveTarget = context.target;
-          await this.handleVaillantB503NavAway(context.target);
+          // A stale enable still needs token-bound cleanup. Retain its pair
+          // only when no newer session is held. Otherwise clean up the old
+          // pair directly so its response cannot overwrite or clear the
+          // current session's recovery handle.
+          if (this._vaillantB503LiveToken) {
+            await this._disableVaillantB503Pair(payload.issuerToken, context.target);
+          } else {
+            this._vaillantB503LiveToken = payload.issuerToken;
+            this._vaillantB503LiveTarget = context.target;
+            await this.handleVaillantB503NavAway(context.target);
+          }
         }
         return;
       }
@@ -3988,16 +3992,7 @@ class PortalShell extends HTMLElement {
     }
   }
 
-  async handleVaillantB503NavAway() {
-    // Auto-disable on nav-away. Only fires if an issuer token is held,
-    // which implies the live-monitor tab entered the Active state. The
-    // disable call is best-effort and never blocks navigation. Its token is
-    // retained until GraphQL confirms disabled=true so a later bounded cleanup
-    // attempt still has the issuer state it needs.
-    const token = this._vaillantB503LiveToken;
-    const target = arguments.length ? arguments[0] : this._vaillantB503LiveTarget;
-    const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
-    if (!token) return true;
+  async _disableVaillantB503Pair(token, target, status) {
     try {
       const env = await this._gqlRequest(
         "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { disabled } }",
@@ -4023,6 +4018,19 @@ class PortalShell extends HTMLElement {
       if (status) status.textContent = `Disable pending: ${err}`;
       return false;
     }
+  }
+
+  async handleVaillantB503NavAway() {
+    // Auto-disable on nav-away. Only fires if an issuer token is held,
+    // which implies the live-monitor tab entered the Active state. The
+    // disable call is best-effort and never blocks navigation. Its token is
+    // retained until GraphQL confirms disabled=true so a later bounded cleanup
+    // attempt still has the issuer state it needs.
+    const token = this._vaillantB503LiveToken;
+    const target = arguments.length ? arguments[0] : this._vaillantB503LiveTarget;
+    const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
+    if (!token) return true;
+    return this._disableVaillantB503Pair(token, target, status);
   }
 
   async refreshVaillantErrorsHistory() {

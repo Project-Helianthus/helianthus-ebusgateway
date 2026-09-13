@@ -11,6 +11,8 @@
 - Corrected source tree: `3c5b400f6bfddc4edf5ea39b609efaf9289f5c11`
 - Final selector-aligned source HEAD: `d8364b4e9c727905b730ef4cf077bcfd8b544e3d`
 - Final selector-aligned source tree: `ae2ebd5a1aa006b67e5a3bfe8f26fb9fb2ede27b`
+- Final feedback-corrected source HEAD: `ffa83350b80dd4f763ff7138e8664dcb6390a8de`
+- Final feedback-corrected source tree: `661e4ce09f43b2013408246936c4757637d0c036`
 
 ## Scope completed
 
@@ -63,11 +65,21 @@ token.
   and passed with the same gate set. Durable log:
   `ci_local-final-d8364b4.log`, SHA-256
   `154962da1f28e76204551a160f386e58ca7eba88f8deaf9a8a5be757f5119aa5`.
+- Live feedback then identified two reachable gaps: a nonempty discovered-device
+  list could auto-select a different target after probing the configured default,
+  and an absent GraphQL provider fabricated an Idle session. `ffa8335...` keeps
+  an explicit selected configured-default option until a target change triggers
+  a new probe, and returns `NOT_SUPPORTED` when the session provider is absent.
+  Focused browser and GraphQL tests cover both. The complete CI command was rerun
+  on this source and passed with Portal 108 and the same full gate set. Durable
+  log: `ci_local-final-ffa8335.log`, SHA-256
+  `5a1d8c5368b2e0e381a44addaae7086cbeb84ff087af6b5adf43c8cfb07cfc84`.
 
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's
-PR #975 remain open. Docs #524 corrected its two new P2 findings at `7141cd6...`
-and is under fresh exact-HEAD review. This final selector-aligned source commit
-has not been pushed; fresh Gateway exact-HEAD review remains required after its
-evidence commit and accepted docs gate.
+PR #975 remain open. Docs #524 corrected its two new P2 findings at `7141cd6...`,
+has a fresh dependency-aware `NO_BLOCKING_FINDINGS` review, and awaits its final
+hosted check. This final feedback-corrected source commit has not been pushed;
+fresh Gateway exact-HEAD review remains required after its evidence commit and
+accepted docs gate.

@@ -1618,6 +1618,14 @@ contract are:
   reads share one serialized request slot. A newer target, epoch, visibility,
   or lifecycle transition supersedes an older result before it may update
   state or issue cleanup.
+  Projection B503 capability cards are optional decoration: their probes never
+  block projection/bootstrap completion and remain generation-fenced. When
+  projection discovery later supplies target addresses to an already-open B503
+  pane, Portal rerenders only the picker against the existing qualified state;
+  it does not promote or expose actions for an unqualified target. Portal
+  history retention is keyed by resolved target identity (including the
+  configured-default identity), while qualification epoch only rejects stale
+  responses; returning from B to A can therefore retain A's verified rows.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

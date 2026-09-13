@@ -1837,6 +1837,12 @@ class PortalShell extends HTMLElement {
       }
       const items = Array.isArray(payload.items) ? payload.items : [];
       this.projectionDevices = items;
+	  // The B503 pane can be opened before projection discovery completes. Its
+	  // canonical capability result remains authoritative; re-render only to
+	  // replace the disabled/no-target picker with discovered addresses.
+	  if (this._activeSectionTarget === "section-vaillant-b503" && typeof this._vaillantB503CapabilityReason === "string") {
+		this.renderVaillantB503Pane(this._vaillantB503CapabilityReason);
+	  }
       if (items.length === 0) {
         listEl.innerHTML = "<li>No projection graphs available from current registry snapshot.</li>";
         if (controls) {
@@ -1926,8 +1932,10 @@ class PortalShell extends HTMLElement {
       : [];
     if (nonEmpty.length === 0) {
       gridEl.innerHTML = `<p class="projection-empty">No non-empty projection planes for this device.</p>`;
-      await this.renderVaillantB503ProjectionCard(gridEl, Number(device.address), loadGeneration);
-      return isCurrent();
+	  // Capability cards are optional decoration. A stalled B503 probe must not
+	  // hold the projection preview or the broader bootstrap lifecycle hostage.
+	  void this.renderVaillantB503ProjectionCard(gridEl, Number(device.address), loadGeneration);
+	  return isCurrent();
     }
     gridEl.innerHTML = `<p class="projection-empty">Loading ${nonEmpty.length} plane(s)...</p>`;
     try {
@@ -4327,7 +4335,9 @@ class PortalShell extends HTMLElement {
     const body = this.querySelector('[data-role="vaillant-b503-history-body"]');
     if (this._vaillantB503CapabilityReason === "PENDING") return;
     const context = this._vaillantB503RequestContext();
-    const cacheKey = `${context.epoch}:${context.target === null ? "default" : context.target}`;
+    // Epoch fences responses, but a verified history belongs to the resolved
+    // target identity. Returning A after B must retain A's last-known rows.
+    const cacheKey = context.target === null ? "default" : String(context.target);
     try {
       const env = await this._gqlRequest(
         "query VaillantErrorsHistory($targetAddress: Int, $limit: Int) { vaillantErrorsHistory(targetAddress: $targetAddress, limit: $limit) { records { index firstActiveError slots } failure { index code message } } }",
@@ -4335,24 +4345,37 @@ class PortalShell extends HTMLElement {
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
       if (env?.errors?.length) {
-        const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+        const prior = this._vaillantB503HistoryRows(cacheKey);
         this._renderVaillantErrorsHistory(body, prior, { code: "UPSTREAM_RPC_FAILED", message: env.errors[0].message || "History unavailable" });
         return;
       }
       const result = env?.data?.vaillantErrorsHistory;
       const rows = Array.isArray(result?.records) ? result.records : [];
       const failure = result?.failure && typeof result.failure === "object" ? result.failure : null;
-      const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+      const prior = this._vaillantB503HistoryRows(cacheKey);
       const visible = failure && prior.length
         ? Array.from(new Map([...prior, ...rows].map((record) => [record.index, record])).values()).sort((a, b) => Number(a.index) - Number(b.index))
         : rows;
-      this._vaillantB503HistoryCache = { key: cacheKey, rows: visible };
+      this._storeVaillantB503HistoryRows(cacheKey, visible);
       this._renderVaillantErrorsHistory(body, visible, failure);
     } catch (error) {
       if (!this._isCurrentVaillantB503Context(context)) return;
-      const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+      const prior = this._vaillantB503HistoryRows(cacheKey);
       this._renderVaillantErrorsHistory(body, prior, { code: "UPSTREAM_RPC_FAILED", message: "History unavailable" });
     }
+  }
+
+  _vaillantB503HistoryRows(cacheKey) {
+	const cache = this._vaillantB503HistoryCache;
+	if (cache instanceof Map) return cache.get(cacheKey) || [];
+	// Compatibility with a pre-map in-memory value during a live component
+	// upgrade; no epoch-keyed state is retained going forward.
+	return cache?.key === cacheKey && Array.isArray(cache.rows) ? cache.rows : [];
+  }
+
+  _storeVaillantB503HistoryRows(cacheKey, rows) {
+	if (!(this._vaillantB503HistoryCache instanceof Map)) this._vaillantB503HistoryCache = new Map();
+	this._vaillantB503HistoryCache.set(cacheKey, rows);
   }
 
   _renderVaillantErrorsHistory(body, rows, failure) {

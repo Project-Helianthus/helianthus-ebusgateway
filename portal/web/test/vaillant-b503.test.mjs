@@ -1063,11 +1063,68 @@ test("VaillantB503ProjectionCard_renders_without_projection_planes", async () =>
   });
   shell.projectionDevices = [{ address: 8, display_name: "Boiler", projections: [] }];
   await Object.getPrototypeOf(shell).loadAllProjectionPlanes.call(shell);
+	await flush();
   assert.match(grid.innerHTML, /No non-empty projection planes/);
   assert.equal(appended.length, 1, "capability card must be appended even without graph planes");
   assert.match(appended[0].textContent, /Vaillant B503/);
   assert.ok(appended[0]._audit.some((entry) => entry.prop === "data-role" && entry.value === "projection-b503-card"),
     "projection card must retain the public data-role selector");
+});
+
+test("VaillantB503ProjectionCard_stalledOptionalProbeDoesNotBlockPreview", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const list = makeAuditedElement();
+  const grid = makeAuditedElement();
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: (url, init) => {
+      if (String(url).includes("projection/devices")) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 8, display_name: "Boiler", projections: [] }] }) });
+      }
+      if (parseGqlInit(init).query.includes("VaillantB503Projection")) return new Promise(() => {});
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  shell.isActiveBootstrapLifecycle = () => true;
+  const loaded = await Object.getPrototypeOf(shell).loadProjectionPreview.call(shell, list, 1, null);
+  assert.equal(loaded, true, "optional B503 card probe cannot hold projection/bootstrap completion");
+  assert.match(grid.innerHTML, /No non-empty projection planes/);
+});
+
+test("VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const list = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+    ]),
+    fetchImpl: (url) => {
+      if (String(url).includes("projection/devices")) return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 21, display_name: "Regulator", projections: [] }] }) });
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.isActiveBootstrapLifecycle = () => true;
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503CapabilityReason = "NOT_SUPPORTED";
+  shell.projectionDevices = [];
+  proto.renderVaillantB503Pane.call(shell, "NOT_SUPPORTED", body);
+  assert.match(body.innerHTML, /vaillant-b503-target[^>]*disabled/);
+  shell.loadAllProjectionPlanes = async () => true;
+  await proto.loadProjectionPreview.call(shell, list, 1, null);
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+  assert.match(body.innerHTML, /value="21"/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "discovery may update the picker but cannot expose actions for an unqualified target");
 });
 
 test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results", async () => {
@@ -1112,6 +1169,7 @@ test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results",
   assert.equal(appended.length, 0, "superseded A and B requests must not append cards");
   pending[2].resolve();
   await newestA;
+	await flush();
   assert.equal(appended.length, 1, "only the newest A invocation may append its card");
 });
 
@@ -1769,6 +1827,38 @@ test("VaillantB503Pane_historyPartialFailureRetainsPriorTableRows", async () => 
     "later partial failure must retain last-known valid row instead of replacing the table wholesale");
   assert.match(body.innerHTML, /b503-history-partial/);
   assert.match(body.innerHTML, /UPSTREAM_RPC_FAILED/);
+});
+
+test("VaillantB503Pane_historyRetentionIsByTargetNotQualificationEpoch", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const replies = [
+    { records: [{ index: 0, firstActiveError: 281, slots: [281] }, { index: 1, firstActiveError: 282, slots: [282] }], failure: null },
+    { records: [{ index: 0, firstActiveError: 901, slots: [901] }], failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "B failure" } },
+    { records: [{ index: 0, firstActiveError: 281, slots: [281] }], failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "A failure" } },
+  ];
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantErrorsHistory")) throw new Error(`unexpected request ${query}`);
+      const history = replies.shift();
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  await proto.refreshVaillantErrorsHistory.call(shell); // A complete.
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  await proto.refreshVaillantErrorsHistory.call(shell); // B partial.
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503Epoch = 2;
+  await proto.refreshVaillantErrorsHistory.call(shell); // A partial, new epoch.
+  assert.match(body.innerHTML, /<td>1<\/td>/, "returning to A retains A's verified index 1 despite B and an epoch change");
+  assert.match(body.innerHTML, /A failure/);
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init).variables.targetAddress), [8, 21, 8]);
 });
 
 test("VaillantB503Pane_uses_graphql_history_session_and_AD02_contract", async () => {

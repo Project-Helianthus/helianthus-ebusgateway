@@ -360,12 +360,23 @@ func TestVaillantB503GraphQL_ErrorsHistoryFailureIsFieldLocal(t *testing.T) {
 }
 
 func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
-	res := doGraphQL(t, newB503TestSchema(t, nil), `{ vaillantLiveMonitorSession { state owned } }`)
+	res := doGraphQL(t, newB503TestSchema(t, nil), `{
+		vaillantLiveMonitorSession { state owned }
+		vaillantCapabilities { vaillantB503 { reason available } }
+	}`)
 	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "NOT_SUPPORTED") {
 		t.Fatalf("session without provider errors = %+v; want NOT_SUPPORTED", res.Errors)
 	}
-	if data, ok := res.Data.(map[string]any); ok && data["vaillantLiveMonitorSession"] != nil {
+	data, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("session without provider discarded root data: %#v", res.Data)
+	}
+	if data["vaillantLiveMonitorSession"] != nil {
 		t.Fatalf("session without provider fabricated data: %#v", data["vaillantLiveMonitorSession"])
+	}
+	capability := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
+	if capability["reason"] != "NOT_SUPPORTED" || capability["available"] != false {
+		t.Fatalf("session failure lost structured sibling capability: %#v", capability)
 	}
 }
 

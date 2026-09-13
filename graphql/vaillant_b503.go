@@ -512,7 +512,11 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 	}
 
 	fields["vaillantLiveMonitorSession"] = &graphqlgo.Field{
-		Type: graphqlgo.NewNonNull(sessionType), Args: targetArg,
+		// The provider may be absent. Keep that NOT_SUPPORTED result local to
+		// this root field so an operator can still receive sibling capability
+		// data in the same query; the session object's child fields remain
+		// non-null when a session exists.
+		Type: sessionType, Args: targetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 			target, err := parseTargetAddress(params.Args)
 			if err != nil {

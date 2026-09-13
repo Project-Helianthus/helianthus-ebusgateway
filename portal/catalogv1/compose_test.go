@@ -26,7 +26,10 @@ type volatileEvaluationSource struct{ captures int }
 func (s *volatileEvaluationSource) Capture(time.Time) ([]Resource, []Field, error) {
 	s.captures++
 	evaluation := json.RawMessage(`{"context":{"evaluated_at":"2026-09-11T00:00:0` + string(rune('0'+s.captures)) + `Z","evaluate_monotonic":{"nanoseconds":"` + string(rune('0'+s.captures)) + `"}},"facts":[{"freshness":"fresh"}]}`)
-	return []Resource{{ID: "asset", Domain: "test.pack", Source: Source{AssetID: "asset", SnapshotID: "snapshot", Revision: "revision", EvaluationDigest: "digest-" + string(rune('0'+s.captures)), BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, Evaluation: evaluation}, State: "CURRENT"}}, nil, nil
+	resource := actionResource()
+	resource.Source = Source{AssetID: "asset", SnapshotID: "snapshot", Revision: "revision", EvaluationDigest: "digest-" + string(rune('0'+s.captures)), BindingID: "binding", SourceEpoch: "epoch", DriverGeneration: 1, Evaluation: evaluation}
+	resource.State = "CURRENT"
+	return []Resource{resource}, nil, nil
 }
 
 func (s *fencedSourceFake) Fence() string { return s.fence }
@@ -77,10 +80,22 @@ func actionManifestAndIndex() (contributionv1.Manifest, *contributionv1.StaticIn
 	return m, idx
 }
 
+func actionResource() Resource {
+	return Resource{
+		ID:                          "asset",
+		Domain:                      "test.pack",
+		ServiceID:                   "test.service",
+		CapabilityID:                "test.capability",
+		ContributionDriverID:        "test.driver",
+		ContributionManifestID:      "test.manifest",
+		ContributionManifestVersion: "1.0.0",
+	}
+}
+
 func TestInvokeDoesNotReachNativeOwnerAfterFailedRevalidation(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker, reject := &invokeFake{}, &rejectRevalidate{}
-	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "test.pack"}}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	c.SetRevalidator(reject)
 	if err := c.Publish(m); err != nil {
@@ -176,7 +191,7 @@ func TestCatalogMakesSourcePresenceTruthful(t *testing.T) {
 func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker := &invokeFake{}
-	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "helianthus.pack.pv"}}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
 	revalidator := &revalidateFake{}
 	c.SetRevalidator(revalidator)
@@ -216,7 +231,7 @@ func TestConflictQuarantinesBothAndInvocationIsExactlyOnce(t *testing.T) {
 func TestInvokeCatalogRevisionIgnoresResponseEvaluationInstant(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	invoker, revalidator := &invokeFake{}, &revalidateFake{}
-	c := New(idx, &sourceFake{resources: []Resource{{ID: "asset", Domain: "test.pack"}}}, authFake{}, invoker)
+	c := New(idx, &sourceFake{resources: []Resource{actionResource()}}, authFake{}, invoker)
 	now := time.Unix(10, 0).UTC()
 	c.now = func() time.Time { now = now.Add(time.Second); return now }
 	c.SetRevalidator(revalidator)
@@ -256,6 +271,41 @@ func TestInvokeCatalogRevisionNormalizesProductionSourceEvaluationClock(t *testi
 	}
 	if source.captures != 2 || invoker.calls.Load() != 1 {
 		t.Fatalf("captures/native=%d/%d", source.captures, invoker.calls.Load())
+	}
+}
+
+func TestCatalogActionRequiresExactContributionAndSemanticContext(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	valid := actionResource()
+	cases := []struct {
+		name   string
+		mutate func(*Resource)
+	}{
+		{"driver", func(r *Resource) { r.ContributionDriverID = "other.driver" }},
+		{"manifest", func(r *Resource) { r.ContributionManifestID = "other.manifest" }},
+		{"version", func(r *Resource) { r.ContributionManifestVersion = "2.0.0" }},
+		{"missing-service", func(r *Resource) { r.ServiceID = "" }},
+		{"service", func(r *Resource) { r.ServiceID = "other.service" }},
+		{"missing-capability", func(r *Resource) { r.CapabilityID = "" }},
+		{"capability", func(r *Resource) { r.CapabilityID = "other.capability" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resource := valid
+			tc.mutate(&resource)
+			c := New(idx, &sourceFake{resources: []Resource{resource}}, authFake{}, &invokeFake{})
+			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+			if err := c.Publish(m); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := c.Catalog("caller")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(catalog.Actions) != 0 {
+				t.Fatalf("mismatched source exposed action: %+v", catalog.Actions)
+			}
+		})
 	}
 }
 

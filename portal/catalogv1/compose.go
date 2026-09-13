@@ -96,7 +96,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 					return Catalog{}, errors.New("action group has no resource context")
 				}
 				resource, exists := findResource(out.Resources, resourceID)
-				if !exists {
+				if !exists || resource.ContributionDriverID != d.Manifest.Contributor.DriverID || resource.ContributionManifestID != d.Manifest.ManifestID || resource.ContributionManifestVersion != d.Manifest.ManifestVersion || resource.ServiceID != a.ServiceRef.ID || resource.CapabilityID != a.CapabilityRef.ID {
 					continue
 				}
 				action := Action{ID: a.ID, ResourceID: resourceID, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID, ContributionDriverID: d.Manifest.Contributor.DriverID, ContributionManifestID: d.Manifest.ManifestID, ContributionManifestVersion: d.Manifest.ManifestVersion, Source: resource.Source}

@@ -1048,7 +1048,7 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 	// changed descriptor accepted and expose it to the compositor.
 	conflicts := make(map[registryKey]bool)
 	for key, item := range staged {
-		if digest, ok := r.history[key]; ok && digest != item.Digest {
+		if r.conflicts[key] || func() bool { digest, ok := r.history[key]; return ok && digest != item.Digest }() {
 			conflicts[key] = true
 		}
 	}
@@ -1056,11 +1056,6 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		if key.DriverID == owner.DriverID {
 			delete(r.accepted, key)
 			delete(r.digests, key)
-			delete(r.conflicts, key)
-		}
-	}
-	for key := range r.conflicts {
-		if key.DriverID == owner.DriverID {
 			delete(r.conflicts, key)
 		}
 	}

@@ -1,12 +1,12 @@
 # Issue 973 Portal catalog admission v1 author evidence
 
-## Candidate
+## Initial candidate
 
 - Repository: `Project-Helianthus/helianthus-ebusgateway`
 - Issue: #973
 - Branch: `issue/973-portal-catalog-admission`
 - Base: `0828afa6221197c01cca85abc2344d2b41899b92`
-- Candidate: `08425eea4c87c0eeb7ab6236fef56b22a820e5c9`
+- Initial candidate: `08425eea4c87c0eeb7ab6236fef56b22a820e5c9`
 - Tree: `53ee08ae8286c7f3438aed89eb9f2d576ab1560b`
 - PR: https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/974
 
@@ -255,3 +255,26 @@ build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
 Modbus RTU transport, Storage and EVSE SemReg mapping, and passive smoke. Final
 log `author-evidence/issue973-portal-catalog-admission/ci_local-157a8ca-all-18-feedback.log`,
 SHA-256 `5a7bc7a8e026327630a1acbd31edb0ff86e67775acd3831c2519eddf07bf7cb8`.
+
+## Final action-binding and sticky-quarantine correction
+
+The latest complete feedback read found two further P2 reports. Catalog action
+composition now requires the source resource to match the descriptor's exact
+driver/manifest/version tuple and the action's exact service/capability
+context. Missing context fails closed. A table-driven regression varies every
+member independently and proves no mismatched source can expose an action or
+lend its provenance fence to another contribution.
+
+Generation conflict quarantine is now sticky for an identity until the exact
+active generation is withdrawn. A later successor carrying either the changed
+or original historical digest remains quarantined and cannot restore an
+accepted descriptor. The regression exercises original A, conflicting B, then
+original A again and requires zero accepted descriptors and one quarantine.
+
+Focused normal and race validation passed for `portal/catalogv1` and
+`portal/contributionv1`. The final complete SDK-backed CI passed Node 101/101,
+build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
+and passive smoke. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-2517038-all-20-feedback.log`,
+SHA-256 `bbb03e99a5a49bf70bf1d16bb378d674694cf2a8c518ad2f4c1dc37a2d8c9e50`.

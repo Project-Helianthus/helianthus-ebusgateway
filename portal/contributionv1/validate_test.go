@@ -854,6 +854,29 @@ func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
 	}
 }
 
+func TestRegistryGenerationConflictRemainsQuarantinedAcrossLaterMatchingDigest(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	r := NewRegistry(indexFromCatalog(c))
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed"
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{changed}); err == nil {
+		t.Fatal("changed successor was accepted")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 3}, []Manifest{first}); err == nil {
+		t.Fatal("original digest reopened a quarantined identity")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("sticky quarantine became ambiguous: %+v", snapshot)
+	}
+}
+
 func TestRegistryAcceptConflictRemovesGenerationAcceptedIdentity(t *testing.T) {
 	var c fixtureCatalog
 	readFixture(t, "five-domain-catalog.json", &c)

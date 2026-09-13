@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -757,6 +758,250 @@ func TestRegistryTupleKeysDoNotAliasDelimitedIdentities(t *testing.T) {
 	}
 	if err := r.Accept(second, "spoof"); err != nil {
 		t.Fatalf("distinct tuple collided: %v", err)
+	}
+}
+
+func TestRegistryGenerationSnapshotIsEnumerableAndFenced(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	idx := indexFromCatalog(c)
+	r := NewRegistry(idx)
+	m := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: m.Contributor.DriverID, Generation: 2}
+	if err := r.ReplaceGeneration(owner, []Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	s := r.Snapshot()
+	if s.Revision != 1 || len(s.Accepted) != 1 || s.Accepted[0].Generation != 2 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+	if r.WithdrawGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}) {
+		t.Fatal("older withdrawal removed a successor")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}, []Manifest{m}); err == nil {
+		t.Fatal("older replacement was accepted")
+	}
+	if !r.WithdrawGeneration(owner) || len(r.Snapshot().Accepted) != 0 {
+		t.Fatal("current generation was not withdrawn")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}, []Manifest{m}); err == nil {
+		t.Fatal("withdrawal reopened a stale generation")
+	}
+	revision := r.Snapshot().Revision
+	if r.WithdrawGeneration(owner) || r.Snapshot().Revision != revision {
+		t.Fatal("duplicate withdrawal changed an inactive generation")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 3}, []Manifest{m}); err != nil {
+		t.Fatalf("successor after withdrawal rejected: %v", err)
+	}
+}
+
+func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	r := NewRegistry(indexFromCatalog(c))
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{second, first}); err != nil {
+		t.Fatalf("reordered exact replay: %v", err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err == nil {
+		t.Fatal("omitted accepted descriptor replayed")
+	}
+	third := cloneManifest(t, first)
+	third.ManifestID = "portal.thermal-third"
+	if err := r.ReplaceGeneration(owner, []Manifest{first, second, third}); err == nil {
+		t.Fatal("added descriptor replayed")
+	}
+	first.Views[0].FieldIDs[0] = "mutated"
+	if got := r.Snapshot().Accepted[0].Manifest.Views[0].FieldIDs[0]; got == "mutated" {
+		t.Fatal("registry retained caller-owned nested slice")
+	}
+}
+
+func TestRegistryGenerationReplayIncludesQuarantinedKeys(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	r := NewRegistry(indexFromCatalog(c))
+	initial := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(initial, []Manifest{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	changedSecond := cloneManifest(t, second)
+	changedSecond.Groups[0].Label.Default = "changed"
+	successor := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 2}
+	if err := r.ReplaceGeneration(successor, []Manifest{first, changedSecond}); err == nil {
+		t.Fatal("changed successor was accepted")
+	}
+	if err := r.ReplaceGeneration(successor, []Manifest{first}); err == nil {
+		t.Fatal("same-generation replay omitted quarantined identity")
+	}
+	if err := r.ReplaceGeneration(successor, []Manifest{first, changedSecond}); err != nil {
+		t.Fatalf("exact conflicted generation replay rejected: %v", err)
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 1 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("conflicted generation replay changed state: %+v", snapshot)
+	}
+}
+
+func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	unchanged := NewRegistry(indexFromCatalog(c))
+	if err := unchanged.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unchanged.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{first}); err != nil {
+		t.Fatalf("unchanged successor rejected: %v", err)
+	}
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed"
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{changed}); err == nil {
+		t.Fatal("changed descriptor replaced across generation")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("conflict snapshot=%+v", snapshot)
+	}
+	if !r.WithdrawGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}) || len(r.Snapshot().Quarantined) != 0 {
+		t.Fatalf("withdraw did not clear conflict-only identity: %+v", r.Snapshot())
+	}
+}
+
+func TestRegistryGenerationConflictRemainsQuarantinedAcrossLaterMatchingDigest(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	r := NewRegistry(indexFromCatalog(c))
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	if err := r.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed"
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}, []Manifest{changed}); err == nil {
+		t.Fatal("changed successor was accepted")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 3}, []Manifest{first}); err == nil {
+		t.Fatal("original digest reopened a quarantined identity")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("sticky quarantine became ambiguous: %+v", snapshot)
+	}
+}
+
+func TestRegistryAcceptConflictRemovesGenerationAcceptedIdentity(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	beforeConflict := r.Snapshot().Revision
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed through Accept"
+	if err := r.Accept(changed, "untrusted"); err == nil {
+		t.Fatal("Accept accepted divergent generation descriptor")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("cross-path conflict is not exclusive: %+v", snapshot)
+	}
+	if snapshot.Revision != beforeConflict+1 {
+		t.Fatalf("cross-path visible conflict did not advance registry revision: before=%d after=%d", beforeConflict, snapshot.Revision)
+	}
+}
+
+func TestRegistryAcceptHistoryConstrainsFirstGenerationReplacement(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed after Accept"
+
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.Accept(first, "untrusted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReplaceGeneration(owner, []Manifest{changed}); err == nil {
+		t.Fatal("first generation replacement bypassed Accept digest history")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("reverse cross-path conflict is not exclusive: %+v", snapshot)
+	}
+
+	unchanged := NewRegistry(indexFromCatalog(c))
+	if err := unchanged.Accept(first, "untrusted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unchanged.ReplaceGeneration(owner, []Manifest{first}); err != nil {
+		t.Fatalf("matching first generation replacement rejected: %v", err)
+	}
+	if got := unchanged.Snapshot(); len(got.Accepted) != 1 || len(got.Quarantined) != 0 {
+		t.Fatalf("matching reverse cross-path result=%+v", got)
+	}
+}
+
+func TestRegistryQuarantinesEveryChangedIdentityInSuccessorGeneration(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	third := cloneManifest(t, first)
+	third.ManifestID = "portal.thermal-third"
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	successor := DriverGeneration{DriverID: owner.DriverID, Generation: 2}
+	changedSecond := cloneManifest(t, second)
+	changedSecond.Groups[0].Label.Default = "second changed"
+	changedThird := cloneManifest(t, third)
+	changedThird.Groups[0].Label.Default = "third changed"
+
+	installAndConflict := func(t *testing.T, manifests []Manifest) RegistrySnapshot {
+		t.Helper()
+		r := NewRegistry(indexFromCatalog(c))
+		if err := r.ReplaceGeneration(owner, []Manifest{first, second, third}); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.ReplaceGeneration(successor, manifests); err == nil || !strings.Contains(err.Error(), "manifest digest conflicts") {
+			t.Fatalf("successor conflicts err=%v", err)
+		}
+		return r.Snapshot()
+	}
+
+	forward := installAndConflict(t, []Manifest{first, changedSecond, changedThird})
+	reversed := installAndConflict(t, []Manifest{changedThird, first, changedSecond})
+	if !reflect.DeepEqual(forward, reversed) {
+		t.Fatalf("successor conflict result depends on input order:\nforward=%+v\nreversed=%+v", forward, reversed)
+	}
+	if len(forward.Accepted) != 1 || forward.Accepted[0].Key.ManifestID != first.ManifestID {
+		t.Fatalf("unchanged descriptor not retained alone: %+v", forward.Accepted)
+	}
+	wantQuarantined := []DescriptorKey{
+		{DriverID: owner.DriverID, ManifestID: second.ManifestID, ManifestVersion: second.ManifestVersion},
+		{DriverID: owner.DriverID, ManifestID: third.ManifestID, ManifestVersion: third.ManifestVersion},
+	}
+	if !reflect.DeepEqual(forward.Quarantined, wantQuarantined) {
+		t.Fatalf("changed identities remain exposed or quarantine is incomplete:\ngot=%+v\nwant=%+v", forward.Quarantined, wantQuarantined)
 	}
 }
 

@@ -1,0 +1,361 @@
+package catalogv1
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"sort"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
+)
+
+// Catalog is a bounded optimistic detached capture. Sources are called once per
+// attempt and must themselves be committed-state readers with no I/O.
+func (c *Composer) Catalog(caller any) (Catalog, error) {
+	if c == nil {
+		return Catalog{}, errors.New("catalog composer missing")
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		c.mu.RLock()
+		rev := c.revision
+		descriptors := make([]Descriptor, 0, len(c.descriptors))
+		for _, d := range c.descriptors {
+			descriptors = append(descriptors, d)
+		}
+		quarantined := make([]identity, 0, len(c.quarantined))
+		for k := range c.quarantined {
+			quarantined = append(quarantined, k)
+		}
+		source, auth, now := c.source, c.auth, c.now
+		c.mu.RUnlock()
+		fence := ""
+		if fenced, ok := source.(FencedSourceCapture); ok {
+			fence = fenced.Fence()
+		}
+		at := now().UTC()
+		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
+		accepted := make(map[identity]Descriptor, len(descriptors))
+		for _, descriptor := range descriptors {
+			accepted[identity{descriptor.Manifest.Contributor.DriverID, descriptor.Manifest.ManifestID, descriptor.Manifest.ManifestVersion}] = descriptor
+		}
+		for _, p := range FivePacks {
+			out.Domains = append(out.Domains, Domain{Pack: p, SourceState: "ABSENT", Reason: "source_unavailable"})
+		}
+		if auth != nil {
+			scope, err := auth.Scope(caller)
+			if err != nil {
+				return Catalog{}, ErrUnauthorized
+			}
+			out.AuthorizationScope = scope
+		} else {
+			out.AuthorizationScope = "public-read/no-actions"
+		}
+		if source != nil {
+			resources, fields, err := source.Capture(at)
+			if err != nil {
+				return Catalog{}, err
+			}
+			resourceCounts := make(map[sourceResourceKey]int, len(resources))
+			resourceOwnerCounts := make(map[sourceResourceOwnerKey]int, len(resources))
+			resourceByOwner := make(map[sourceResourceOwnerKey]Resource, len(resources))
+			for _, resource := range resources {
+				owner := identity{resource.ContributionDriverID, resource.ContributionManifestID, resource.ContributionManifestVersion}
+				descriptor, admitted := accepted[owner]
+				if !admitted || !resourceMatchesManifest(resource, descriptor.Manifest) {
+					continue
+				}
+				key := sourceResourceKey{owner, resource.ID, resource.ServiceID, resource.CapabilityID}
+				resourceCounts[key]++
+				if resourceCounts[key] != 1 {
+					return Catalog{}, errors.New("ambiguous detached resource context")
+				}
+				ownerKey := sourceResourceOwnerKey{owner, resource.ID}
+				resourceOwnerCounts[ownerKey]++
+				if resourceOwnerCounts[ownerKey] == 1 {
+					resourceByOwner[ownerKey] = resource
+				} else {
+					delete(resourceByOwner, ownerKey)
+				}
+				out.Resources = append(out.Resources, resource)
+			}
+			fieldIdentities := make(map[sourceFieldKey]bool, len(fields))
+			for _, field := range fields {
+				owner := identity{field.ContributionDriverID, field.ContributionManifestID, field.ContributionManifestVersion}
+				descriptor, admitted := accepted[owner]
+				if !admitted {
+					continue
+				}
+				ownerKey := sourceResourceOwnerKey{owner, field.ResourceID}
+				if resourceOwnerCounts[ownerKey] != 1 {
+					return Catalog{}, errors.New("field has no exact detached resource context")
+				}
+				if !fieldMatchesManifest(field, resourceByOwner[ownerKey], descriptor.Manifest) {
+					continue
+				}
+				fieldKey := sourceFieldKey{owner, field.ResourceID, field.ID}
+				if fieldIdentities[fieldKey] {
+					return Catalog{}, errors.New("ambiguous detached field identity")
+				}
+				fieldIdentities[fieldKey] = true
+				out.Fields = append(out.Fields, field)
+			}
+			present := map[string]bool{}
+			for _, r := range out.Resources {
+				present[canonicalDomain(r.Domain)] = true
+			}
+			for i := range out.Domains {
+				if present[out.Domains[i].Pack.ID] {
+					out.Domains[i].SourceState = "PRESENT"
+					out.Domains[i].Reason = ""
+				}
+			}
+			if fenced, ok := source.(FencedSourceCapture); ok && fence != fenced.Fence() {
+				continue
+			}
+		}
+		for _, d := range descriptors {
+			out.Contributions = append(out.Contributions, Identity{DriverID: d.Manifest.Contributor.DriverID, ManifestID: d.Manifest.ManifestID, ManifestVersion: d.Manifest.ManifestVersion, Digest: d.Digest})
+			groups := make(map[string]string, len(d.Manifest.Groups))
+			invalid := false
+			for _, g := range d.Manifest.Groups {
+				if g.ID == "" || g.ResourceContext == "" {
+					invalid = true
+					break
+				}
+				if _, exists := groups[g.ID]; exists {
+					invalid = true
+					break
+				}
+				groups[g.ID] = g.ResourceContext
+			}
+			if invalid {
+				return Catalog{}, errors.New("contribution group resource mapping is invalid")
+			}
+			for _, a := range d.Manifest.Actions {
+				resourceID, ok := groups[a.Group]
+				if !ok {
+					return Catalog{}, errors.New("action group has no resource context")
+				}
+				resource, exists := findResource(out.Resources, resourceID, d.Manifest, a)
+				if !exists {
+					continue
+				}
+				action := Action{ID: a.ID, ResourceID: resourceID, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID, ContributionDriverID: d.Manifest.Contributor.DriverID, ContributionManifestID: d.Manifest.ManifestID, ContributionManifestVersion: d.Manifest.ManifestVersion, Source: resource.Source}
+				if auth != nil {
+					action.Discoverable = auth.Discover(caller, action)
+					action.Enabled = action.Discoverable && auth.Invoke(caller, action)
+				}
+				if action.Discoverable {
+					out.Actions = append(out.Actions, action)
+				}
+			}
+		}
+		for _, k := range quarantined {
+			out.Quarantines = append(out.Quarantines, Quarantine{DriverID: k.driver, ManifestID: k.manifest, ManifestVersion: k.version, Reason: "digest_conflict"})
+		}
+		sortCatalog(&out)
+		structural := struct {
+			Revision uint64
+			Fence    string
+			Catalog  Catalog
+		}{rev, fence, catalogRevisionView(out)}
+		revisionDigest, err := hash(structural)
+		if err != nil {
+			return Catalog{}, err
+		}
+		out.CatalogRevision = revisionDigest
+		out.CatalogDigest = ""
+		catalogDigest, err := hash(out)
+		if err != nil {
+			return Catalog{}, err
+		}
+		out.CatalogDigest = catalogDigest
+		c.mu.RLock()
+		unchanged := rev == c.revision
+		c.mu.RUnlock()
+		if unchanged {
+			return clone(out), nil
+		}
+	}
+	return Catalog{}, ErrCatalogChanged
+}
+
+// catalogRevisionView excludes response-time decoration from the action claim.
+// It retains descriptors, source records, caller scope, and lifecycle fences;
+// native admission still revalidates freshness and expiry immediately before I/O.
+func catalogRevisionView(c Catalog) Catalog {
+	c.EvaluationInstant = time.Time{}
+	c.CatalogRevision = ""
+	c.CatalogDigest = ""
+	for i := range c.Resources {
+		c.Resources[i].Source = sourceRevisionView(c.Resources[i].Source)
+	}
+	for i := range c.Actions {
+		c.Actions[i].Source = sourceRevisionView(c.Actions[i].Source)
+	}
+	return c
+}
+
+func sourceRevisionView(source Source) Source {
+	source.EvaluationDigest = ""
+	source.Evaluation = normalizeEvaluationClock(source.Evaluation)
+	return source
+}
+
+// normalizeEvaluationClock removes only the volatile wall/monotonic coordinates
+// from the action-stability view.  Facts, quality, provenance, projection
+// dispositions and every lifecycle/source identity remain part of the claim.
+func normalizeEvaluationClock(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return raw
+	}
+	stripEvaluationClock(value)
+	normalized, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(normalized)
+}
+
+func stripEvaluationClock(value any) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(root, "evaluation_digest")
+	if context, ok := root["context"].(map[string]any); ok {
+		delete(context, "evaluated_at")
+		delete(context, "evaluate_monotonic")
+	}
+}
+
+type sourceResourceKey struct {
+	owner      identity
+	id         string
+	service    string
+	capability string
+}
+
+type sourceResourceOwnerKey struct {
+	owner identity
+	id    string
+}
+
+type sourceFieldKey struct {
+	owner      identity
+	resourceID string
+	id         string
+}
+
+func resourceMatchesManifest(resource Resource, manifest contributionv1.Manifest) bool {
+	groups := make(map[string]bool, len(manifest.Groups))
+	for _, group := range manifest.Groups {
+		if group.ResourceContext == resource.ID {
+			groups[group.ID] = true
+		}
+	}
+	for _, field := range manifest.Fields {
+		if groups[field.Group] && field.ServiceRef.ID == resource.ServiceID && field.CapabilityRef.ID == resource.CapabilityID && field.ServiceRef.Pack.ID == resource.Domain && field.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	for _, action := range manifest.Actions {
+		if groups[action.Group] && action.ServiceRef.ID == resource.ServiceID && action.CapabilityRef.ID == resource.CapabilityID && action.ServiceRef.Pack.ID == resource.Domain && action.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	return false
+}
+
+func fieldMatchesManifest(field Field, resource Resource, manifest contributionv1.Manifest) bool {
+	groups := make(map[string]string, len(manifest.Groups))
+	for _, group := range manifest.Groups {
+		groups[group.ID] = group.ResourceContext
+	}
+	for _, declared := range manifest.Fields {
+		if declared.ID == field.ID && groups[declared.Group] == field.ResourceID && declared.Ref.ID == field.DefinitionID && declared.UnitRef.ID == field.UnitID && declared.ServiceRef.ID == resource.ServiceID && declared.CapabilityRef.ID == resource.CapabilityID && declared.Ref.Pack.ID == resource.Domain && declared.ServiceRef.Pack.ID == resource.Domain && declared.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
+	if c == nil || claim.Deadline.IsZero() || !c.now().Before(claim.Deadline) || claim.IdempotencyKey == "" {
+		return nil, ErrStale
+	}
+	catalog, err := c.Catalog(caller)
+	if err != nil {
+		return nil, err
+	}
+	if catalog.CatalogRevision != claim.CatalogRevision {
+		return nil, ErrStale
+	}
+	var action *Action
+	for i := range catalog.Actions {
+		if matchesClaim(catalog.Actions[i], claim) {
+			action = &catalog.Actions[i]
+			break
+		}
+	}
+	if action == nil {
+		return nil, ErrUnauthorized
+	}
+	if !matchesDigest(catalog.Contributions, claim) {
+		return nil, ErrStale
+	}
+	c.mu.RLock()
+	invoker, revalidator := c.invoker, c.revalidator
+	c.mu.RUnlock()
+	if invoker == nil {
+		return nil, ErrUnauthorized
+	}
+	if c.auth == nil || !c.auth.Invoke(caller, *action) {
+		return nil, ErrUnauthorized
+	}
+	if revalidator == nil {
+		return nil, ErrUnauthorized
+	}
+	if err := revalidator.Revalidate(*action, claim); err != nil {
+		return nil, err
+	}
+	return invoker.Invoke(*action, claim)
+}
+
+func findResource(resources []Resource, id string, manifest contributionv1.Manifest, action contributionv1.Action) (Resource, bool) {
+	var found Resource
+	matched := false
+	for _, r := range resources {
+		if r.ID != id || r.ContributionDriverID != manifest.Contributor.DriverID || r.ContributionManifestID != manifest.ManifestID || r.ContributionManifestVersion != manifest.ManifestVersion || r.ServiceID != action.ServiceRef.ID || r.CapabilityID != action.CapabilityRef.ID {
+			continue
+		}
+		if matched {
+			return Resource{}, false
+		}
+		found, matched = r, true
+	}
+	return found, matched
+}
+func matchesClaim(a Action, c Claims) bool {
+	return a.ID == c.ActionID && a.ResourceID == c.ResourceID && a.CapabilityID == c.CapabilityID && a.ContributionDriverID == c.DriverID && a.ContributionManifestID == c.ManifestID && a.ContributionManifestVersion == c.ManifestVersion && a.Source.SnapshotID == c.SnapshotID && a.Source.Revision == c.Revision && a.Source.BindingID == c.BindingID && a.Source.SourceEpoch == c.SourceEpoch && a.Source.DriverGeneration == c.DriverGeneration && c.Digest != ""
+}
+func matchesDigest(items []Identity, c Claims) bool {
+	for _, i := range items {
+		if i.DriverID == c.DriverID && i.ManifestID == c.ManifestID && i.ManifestVersion == c.ManifestVersion && i.Digest == c.Digest {
+			return true
+		}
+	}
+	return false
+}
+
+// CanonicalJSON is public for transport and fixed wire tests.
+func CanonicalJSON(c Catalog) ([]byte, error) { sortCatalog(&c); return canonical(c) }
+
+var _ = sort.Strings

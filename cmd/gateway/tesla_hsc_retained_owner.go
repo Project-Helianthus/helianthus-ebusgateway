@@ -10,6 +10,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -96,6 +97,7 @@ type teslaHSCRetainedOwner struct {
 	lastCorrelation   uint64
 	lastReceiptWall   time.Time
 	lastReceiptMono   time.Duration
+	contribution      *gatewayPortalContributionLifecycle
 }
 
 func startTeslaHSCRetainedOwner(config ebusgateway.TeslaGen3HSCRetainedConfig) (*teslaHSCRetainedOwner, error) {
@@ -389,6 +391,9 @@ func (owner *teslaHSCRetainedOwner) Fence(current, next uint64) error {
 	if !owner.active || current != owner.cfg.DriverGeneration || current == ^uint64(0) || next != current+1 {
 		return errors.New("tesla HSC generation fence is invalid")
 	}
+	if owner.contribution != nil {
+		owner.contribution.Stop()
+	}
 	owner.active, owner.nextGeneration = false, next
 	return nil
 }
@@ -419,6 +424,11 @@ func (owner *teslaHSCRetainedOwner) Successor(config ebusgateway.TeslaGen3HSCRet
 	if successor == nil {
 		return nil, errors.New("tesla HSC successor construction returned no owner")
 	}
+	if owner.contribution != nil {
+		if err := attachGatewayPortalEVSEContribution(successor, owner.contribution.registry); err != nil {
+			return nil, err
+		}
+	}
 	owner.successorConsumed = true
 	return successor, nil
 }
@@ -429,7 +439,25 @@ func (owner *teslaHSCRetainedOwner) Close() error {
 	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
+	if owner.contribution != nil {
+		owner.contribution.Stop()
+	}
 	owner.active = false
+	return nil
+}
+
+func attachGatewayPortalEVSEContribution(owner *teslaHSCRetainedOwner, contributions *gatewayPortalCatalogContributions) error {
+	if owner == nil {
+		return nil
+	}
+	if owner.cfg.DriverGeneration == 0 {
+		return errors.New("tesla EVSE contribution generation unavailable")
+	}
+	lease, err := startGatewayPortalContributionLifecycle(contributions, contributionv1.DriverGeneration{DriverID: "evse.primary", Generation: owner.cfg.DriverGeneration}, []contributionv1.Manifest{gatewayPortalEVSEDescriptor()})
+	if err != nil {
+		return err
+	}
+	owner.contribution = lease
 	return nil
 }
 

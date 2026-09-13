@@ -954,16 +954,229 @@ func validateActions(actions []Action, groups map[string]bool, packs []PackRef, 
 
 // Registry detects non-deterministic publication of the same driver manifest.
 type Registry struct {
-	mu        sync.Mutex
-	index     SemanticIndex
-	digests   map[registryKey]string
-	conflicts map[registryKey]bool
+	mu            sync.Mutex
+	index         SemanticIndex
+	digests       map[registryKey]string
+	conflicts     map[registryKey]bool
+	accepted      map[registryKey]AcceptedDescriptor
+	history       map[registryKey]string
+	generationSet map[string]map[registryKey]string
+	generation    map[string]uint64
+	active        map[string]uint64
+	revision      uint64
 }
 
 type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
 
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generationSet: map[string]map[registryKey]string{}, generation: map[string]uint64{}, active: map[string]uint64{}}
+}
+
+// DriverGeneration fences a driver's complete descriptor publication.  A
+// delayed shutdown/publication cannot replace a newer accepted generation.
+type DriverGeneration struct {
+	DriverID   string
+	Generation uint64
+}
+type DescriptorKey struct{ DriverID, ManifestID, ManifestVersion string }
+type AcceptedDescriptor struct {
+	Key        DescriptorKey
+	Manifest   Manifest
+	Digest     string
+	Generation uint64
+}
+type RegistrySnapshot struct {
+	Revision    uint64
+	Accepted    []AcceptedDescriptor
+	Quarantined []DescriptorKey
+}
+
+// ReplaceGeneration atomically installs one complete canonical descriptor set
+// for a driver.  It is enumerable so a compositor has no hidden digest-only
+// second registry.
+func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifest) error {
+	if r == nil || nilIndex(r.index) || owner.DriverID == "" || owner.Generation == 0 {
+		return fmt.Errorf("descriptor generation is invalid")
+	}
+	staged := make(map[registryKey]AcceptedDescriptor, len(manifests))
+	for _, m := range manifests {
+		if m.Contributor.DriverID != owner.DriverID {
+			return fmt.Errorf("descriptor driver does not match generation owner")
+		}
+		canonical, err := Canonicalize(m, r.index)
+		if err != nil {
+			return err
+		}
+		canonical, err = detachedCanonicalManifest(canonical)
+		if err != nil {
+			return err
+		}
+		digest, err := CanonicalDigest(canonical, r.index)
+		if err != nil {
+			return err
+		}
+		key := registryKey{owner.DriverID, canonical.ManifestID, canonical.ManifestVersion}
+		if prior, ok := staged[key]; ok && prior.Digest != digest {
+			return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
+		}
+		staged[key] = AcceptedDescriptor{Key: DescriptorKey{owner.DriverID, canonical.ManifestID, canonical.ManifestVersion}, Manifest: canonical, Digest: digest, Generation: owner.Generation}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.generation[owner.DriverID]
+	if current > owner.Generation {
+		return fmt.Errorf("descriptor generation is stale")
+	}
+	if current == owner.Generation {
+		if r.active[owner.DriverID] != owner.Generation {
+			return fmt.Errorf("descriptor generation is inactive")
+		}
+		published := r.generationSet[owner.DriverID]
+		if len(published) != len(staged) {
+			return fmt.Errorf("descriptor generation replay key set differs")
+		}
+		for key, item := range staged {
+			if prior, ok := published[key]; !ok || prior != item.Digest {
+				return fmt.Errorf("descriptor generation replay differs")
+			}
+		}
+		return nil
+	}
+	// A successor must quarantine every changed identity as one atomic
+	// publication. Returning at the first map iteration would leave a later
+	// changed descriptor accepted and expose it to the compositor.
+	conflicts := make(map[registryKey]bool)
+	for key, item := range staged {
+		if r.conflicts[key] || func() bool { digest, ok := r.history[key]; return ok && digest != item.Digest }() {
+			conflicts[key] = true
+		}
+	}
+	for key := range r.accepted {
+		if key.DriverID == owner.DriverID {
+			delete(r.accepted, key)
+			delete(r.digests, key)
+			delete(r.conflicts, key)
+		}
+	}
+	for key, item := range staged {
+		if conflicts[key] {
+			r.conflicts[key] = true
+			continue
+		}
+		r.accepted[key], r.digests[key], r.history[key] = item, item.Digest, item.Digest
+	}
+	r.generation[owner.DriverID] = owner.Generation
+	r.active[owner.DriverID] = owner.Generation
+	r.generationSet[owner.DriverID] = make(map[registryKey]string, len(staged))
+	for key, item := range staged {
+		r.generationSet[owner.DriverID][key] = item.Digest
+	}
+	r.revision++
+	if len(conflicts) != 0 {
+		keys := make([]registryKey, 0, len(conflicts))
+		for key := range conflicts {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].DriverID != keys[j].DriverID {
+				return keys[i].DriverID < keys[j].DriverID
+			}
+			if keys[i].ManifestID != keys[j].ManifestID {
+				return keys[i].ManifestID < keys[j].ManifestID
+			}
+			return keys[i].ManifestVersion < keys[j].ManifestVersion
+		})
+		identities := make([]string, 0, len(keys))
+		for _, key := range keys {
+			identities = append(identities, fmt.Sprintf("%q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion))
+		}
+		return fmt.Errorf("manifest digest conflicts for %s", strings.Join(identities, ", "))
+	}
+	return nil
+}
+
+// detachedCanonicalManifest severs nested slices from the caller-owned input.
+// Registry state remains immutable if a publisher mutates its descriptor later.
+func detachedCanonicalManifest(m Manifest) (Manifest, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("canonical descriptor copy: %w", err)
+	}
+	copy, err := Decode(raw)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("canonical descriptor copy: %w", err)
+	}
+	return copy, nil
+}
+
+func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {
+	if r == nil || owner.DriverID == "" || owner.Generation == 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active[owner.DriverID] != owner.Generation {
+		return false
+	}
+	for key := range r.accepted {
+		if key.DriverID == owner.DriverID {
+			delete(r.accepted, key)
+			delete(r.digests, key)
+			delete(r.conflicts, key)
+		}
+	}
+	for key := range r.conflicts {
+		if key.DriverID == owner.DriverID {
+			delete(r.conflicts, key)
+		}
+	}
+	// Keep generation as a high-water mark after active membership is removed.
+	// A delayed publication from an already-withdrawn generation must not reopen
+	// a driver that has been superseded or stopped.
+	delete(r.active, owner.DriverID)
+	r.revision++
+	return true
+}
+
+func (r *Registry) Snapshot() RegistrySnapshot {
+	if r == nil {
+		return RegistrySnapshot{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := RegistrySnapshot{Revision: r.revision, Accepted: make([]AcceptedDescriptor, 0, len(r.accepted)), Quarantined: make([]DescriptorKey, 0, len(r.conflicts))}
+	for _, item := range r.accepted {
+		copy, err := Canonicalize(item.Manifest, r.index)
+		if err != nil {
+			continue
+		}
+		item.Manifest = copy
+		out.Accepted = append(out.Accepted, item)
+	}
+	for key := range r.conflicts {
+		out.Quarantined = append(out.Quarantined, DescriptorKey(key))
+	}
+	sort.Slice(out.Accepted, func(i, j int) bool {
+		a, b := out.Accepted[i].Key, out.Accepted[j].Key
+		if a.DriverID != b.DriverID {
+			return a.DriverID < b.DriverID
+		}
+		if a.ManifestID != b.ManifestID {
+			return a.ManifestID < b.ManifestID
+		}
+		return a.ManifestVersion < b.ManifestVersion
+	})
+	sort.Slice(out.Quarantined, func(i, j int) bool {
+		a, b := out.Quarantined[i], out.Quarantined[j]
+		if a.DriverID != b.DriverID {
+			return a.DriverID < b.DriverID
+		}
+		if a.ManifestID != b.ManifestID {
+			return a.ManifestID < b.ManifestID
+		}
+		return a.ManifestVersion < b.ManifestVersion
+	})
+	return out
 }
 
 // Accept derives the authoritative digest from the validated canonical
@@ -986,9 +1199,17 @@ func (r *Registry) Accept(m Manifest, suppliedDigest string) error {
 	if prior, ok := r.digests[key]; ok && prior != digest {
 		r.conflicts[key] = true
 		delete(r.digests, key)
+		delete(r.accepted, key)
+		// Accepted membership became a quarantine. Advance the registry fence
+		// so an in-flight catalog capture cannot combine the old descriptor
+		// snapshot with the new conflict state.
+		r.revision++
 		return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
 	}
 	r.digests[key] = digest
+	if _, exists := r.history[key]; !exists {
+		r.history[key] = digest
+	}
 	return nil
 }
 

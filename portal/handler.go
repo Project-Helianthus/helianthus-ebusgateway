@@ -59,6 +59,7 @@ var (
 
 type Options struct {
 	GraphQLPath            string
+	PortalCatalogPath      string
 	SnapshotPath           string
 	SubscriptionPath       string
 	MCPPath                string
@@ -575,6 +576,9 @@ func NewHandler(opts Options) http.Handler {
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
 	}
+	if opts.PortalCatalogPath == "" {
+		opts.PortalCatalogPath = "/graphql/portal/v1"
+	}
 	if opts.SnapshotPath == "" {
 		opts.SnapshotPath = "/snapshot"
 	}
@@ -1031,6 +1035,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			},
 			"endpoints": map[string]string{
 				"graphql":                  h.opts.GraphQLPath,
+				"portal_catalog":           h.opts.PortalCatalogPath,
 				"snapshot":                 h.opts.SnapshotPath,
 				"subscriptions":            h.opts.SubscriptionPath,
 				"mcp":                      h.opts.MCPPath,

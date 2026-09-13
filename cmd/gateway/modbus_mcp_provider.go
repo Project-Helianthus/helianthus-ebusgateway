@@ -21,12 +21,13 @@ import (
 )
 
 type gatewayModbusMCPProvider struct {
-	adapter modbusMCPAdapter
-	nextID  atomic.Uint64
-	rateMu  sync.Mutex
-	rateAt  time.Time
-	rateN   int
-	now     func() time.Time
+	adapter  modbusMCPAdapter
+	portalPV *modbusadapter.Adapter
+	nextID   atomic.Uint64
+	rateMu   sync.Mutex
+	rateAt   time.Time
+	rateN    int
+	now      func() time.Time
 }
 
 type modbusMCPAdapter interface {
@@ -53,6 +54,7 @@ func newGatewayModbusMCPProviderWithGrowatt(adapter *modbusadapter.Adapter, grow
 	core := &gatewayModbusMCPProvider{now: time.Now}
 	if adapter != nil {
 		core.adapter = adapter
+		core.portalPV = adapter
 	}
 	if growatt == nil {
 		return core
@@ -76,6 +78,7 @@ func newGatewayModbusMCPProviderWithRuntimes(adapter *modbusadapter.Adapter, gro
 	core := &gatewayModbusMCPProvider{now: time.Now}
 	if adapter != nil {
 		core.adapter = adapter
+		core.portalPV = adapter
 	}
 	return &gatewayModbusRuntimeProvider{gatewayModbusMCPProvider: core, growatt: growatt, tesla: tesla}
 }

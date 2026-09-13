@@ -2,8 +2,8 @@
   "generatedBy": "portal/web/scripts/build.mjs",
   "assets": {
     "app.js": {
-      "bytes": 193030,
-      "sha256": "f755249ddc07a85267b2db1253f5ed9ee75140fbd6c032b93ebc7d44fca91e65"
+      "bytes": 193417,
+      "sha256": "9ee7bf6460a6f2a65d5c5122aa28645aa6a9bb59cc7b75b12c55d3432d13dd82"
     },
     "app.css": {
       "bytes": 10903,

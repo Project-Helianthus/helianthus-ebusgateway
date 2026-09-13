@@ -3984,9 +3984,15 @@ class PortalShell extends HTMLElement {
         if (status) status.textContent = `Disable pending: ${message || "gateway did not confirm session closure."}`;
         return false;
       }
-      this._vaillantB503LiveToken = null;
-      this._vaillantB503LiveTarget = null;
-      if (status) status.textContent = "Session disabled.";
+      // The request owns only the token/target pair it captured before the
+      // await. A new enable may have stored a replacement pair while this
+      // older cleanup was in flight; its successful confirmation must not
+      // erase that newer recoverable cleanup state.
+      if (this._vaillantB503LiveToken === token && this._vaillantB503LiveTarget === target) {
+        this._vaillantB503LiveToken = null;
+        this._vaillantB503LiveTarget = null;
+        if (status) status.textContent = "Session disabled.";
+      }
       return true;
     } catch (err) {
       if (status) status.textContent = `Disable pending: ${err}`;

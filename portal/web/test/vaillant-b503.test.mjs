@@ -484,6 +484,71 @@ test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", a
   assert.deepEqual(secondDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 });
 });
 
+test("VaillantB503Pane_DelayedOldCleanupPreservesReplacementToken", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement({ textContent: "Live-monitor session active." });
+  let resolveOldCleanup;
+  let disableAttempts = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveDisable") || variables.action !== "disable") {
+        throw new Error(`unexpected GraphQL request ${query}`);
+      }
+      disableAttempts += 1;
+      if (disableAttempts === 1) {
+        return new Promise((resolve) => {
+          resolveOldCleanup = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+      });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503TargetAddress = 8;
+
+  const oldCleanup = proto.handleVaillantB503NavAway.call(shell);
+  await flush();
+
+  // The pane reopens and a current B enable replaces the recoverable cleanup
+  // pair while the old A disable response remains pending.
+  shell._vaillantB503LiveToken = "token-B";
+  shell._vaillantB503LiveTarget = 21;
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  resolveOldCleanup();
+  assert.equal(await oldCleanup, true, "old cleanup was confirmed by the gateway");
+
+  assert.equal(shell._vaillantB503LiveToken, "token-B",
+    "confirmed old A cleanup must not erase a newer B cleanup token");
+  assert.equal(shell._vaillantB503LiveTarget, 21,
+    "confirmed old A cleanup must not erase B's paired target");
+  assert.equal(shell._vaillantB503TargetAddress, 21,
+    "old completion must not mutate the current B target");
+  assert.equal(status.textContent, "Live-monitor session active.",
+    "old completion must not replace B's current session status");
+  assert.deepEqual(parseGqlInit(fetchRequests[0].init).variables,
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 });
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), true,
+    "the replacement B pair remains available for one later bounded cleanup");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(fetchRequests.length, 2, "cleanup attempts remain explicit and bounded");
+  assert.deepEqual(parseGqlInit(fetchRequests[1].init).variables,
+    { action: "disable", issuerToken: "token-B", targetAddress: 21 });
+});
+
 test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
   const { source, sourcePath } = await loadShellSource();
   for (const [reason, selector, required] of [

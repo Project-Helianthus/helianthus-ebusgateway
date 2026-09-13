@@ -4359,12 +4359,14 @@ class PortalShell extends HTMLElement {
 	// Do not infer lifecycle state from the visible tab's last poll. A
 	// SESSION_BUSY disable can race a gateway transition into Refreshing.
 	// Errors and malformed/null roots intentionally retain the pair without
-	// starting a write-capable task; only a valid authoritative Refreshing
-	// observation starts bounded read-only recovery.
+	// starting a write-capable task; only a valid authoritative owned lifecycle
+	// observation starts bounded read-only recovery. A same-pair Refreshing
+	// transition may have settled to Active by the time this serialized read
+	// returns, so both states are safe inputs to the captured-token retry.
 	const result = await this._requestVaillantB503SessionStatus(target);
 	if (!result.current || result.error) return;
 	const session = this._vaillantB503LiveMonitorSessionFromEnvelope(result.env);
-	if (!session || session.state !== "Refreshing" || !session.owned) return;
+	if (!session || !session.owned || (session.state !== "Refreshing" && session.state !== "Active")) return;
 	if (this._vaillantB503LiveToken !== token || this._vaillantB503LiveTarget !== target) return;
 	const existing = this._vaillantB503DeferredCleanup;
 	if (existing && existing.token === token && existing.target === target) return;

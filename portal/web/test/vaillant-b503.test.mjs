@@ -1681,6 +1681,53 @@ test("VaillantB503Pane_navAwayUsesAuthoritativeRefreshingStatusNotCachedActive",
   assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1);
 });
 
+test("VaillantB503Pane_navAwayRetriesWhenAuthoritativeStatusAlreadySettledActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
+        const reply = disables.length === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantLiveMonitorSession: { state: "Active", owned: true } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), false);
+  assert.deepEqual(shell._vaillantB503DeferredCleanup && {
+    token: shell._vaillantB503DeferredCleanup.token,
+    target: shell._vaillantB503DeferredCleanup.target,
+  }, { token: "token-A", target: 8 }, "authoritative same-pair Active status retains the exact recovery pair");
+  assert.equal(intervalCalls.length, 1, "settled Active starts the bounded read-only retry path");
+
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disables.map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "only the captured same-token pair is retried after Active");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed retry clears the captured token without a leak");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+});
+
 test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {
   const { source, sourcePath } = await loadShellSource();
   const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });

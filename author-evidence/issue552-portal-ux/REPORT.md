@@ -559,3 +559,32 @@ Storage/EVSE SemReg gates, and non-triggered passive smoke. Durable log:
 PR #975 remain open. A fresh Gateway exact-HEAD review remains required after
 this evidence commit and the accepted docs gate. No live/private action was
 performed.
+
+### Settled-Active deferred cleanup and evidence-path correction
+
+Exact-head P2 `4000150752` is corrected by admitting an authoritative,
+same-pair `Active, owned:true` status result to the existing bounded deferred
+cleanup path, alongside `Refreshing, owned:true`. A status read can legitimately
+observe Active after the earlier disable collided with Refreshing; the retained
+captured token-target pair is then retried only through the serialized deferred
+cleanup mechanism. All target, token, generation, attachment, timeout, and
+single-write fences remain unchanged.
+
+The deterministic Portal regression starts with a `SESSION_BUSY` disable,
+returns owned Active for both bounded status reads, and proves exactly one retry
+uses the captured `token-A`/target 8 pair, then clears that pair only after
+`disabled:true`. It covers the settled transition without publishing another
+target or leaking the issuer token. Focused
+`node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 50 tests.
+
+All previously tracked raw Issue 552 `ci_local*.log` artifacts were removed
+because they exposed an operator workstation path. The retained final artifact
+is generated from the current complete CI run with only that path redacted;
+test and gate output are otherwise unchanged. Complete
+`SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 145 tests,
+repository-wide race tests, Python 168+6+26+11+6+2, zero lint issues, Modbus
+RTU production conformance, Storage/EVSE SemReg mapping gates, and a
+non-triggered passive smoke gate. Durable sanitized log:
+`ci_local-final-active-cleanup.log`, SHA-256
+`36c957fbaab98855e33b04221036184ef1e5de63aa801259184a513077ba77b4`.

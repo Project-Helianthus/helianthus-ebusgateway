@@ -444,3 +444,25 @@ Modbus RTU transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects,
 and passive smoke. Final log
 `author-evidence/issue973-portal-catalog-admission/ci_local-d9d0a74-all-34-feedback.log`,
 SHA-256 `8613753691b4f63f02bf91365a2b6c8d88d1971e51da75e6c54b016a0f81a172`.
+
+## Final manifest-field binding correction
+
+The fresh independent review found one remaining P2 defect against the
+preceding head. An accepted source field is now published only when its exact
+descriptor declares the same field ID, group-to-resource context, definition,
+canonical unit, service/capability pair and domain pack. Ownership alone is not
+sufficient. Undeclared IDs, definitions and units are isolated without
+removing valid sibling resources or fields.
+
+The catalog regression manifest now carries a validated semantic field, and
+hostile controls independently vary its field ID, definition and unit. Existing
+controls retain dangling-resource rejection, duplicate-field rejection, and
+revision changes for an admitted field value.
+
+Focused normal and race validation passed for `portal/catalogv1`. The final
+complete SDK-backed CI passed Node 101/101, build/vet, Linux builds,
+repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU transport,
+Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
+log
+`author-evidence/issue973-portal-catalog-admission/ci_local-4a3a0b5-all-35-feedback.log`,
+SHA-256 `4aa18da42060e6ad272bada079c563992a4db864e5dde51a7fc4b61c56308acc`.

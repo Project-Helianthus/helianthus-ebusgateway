@@ -72,14 +72,17 @@ func actionManifestAndIndexForPack(p contributionv1.PackRef) (contributionv1.Man
 		return contributionv1.DefinitionRef{Pack: p, ID: id, Version: "1.0.0"}
 	}
 	service, capability, operation, argument, effect := ref("test.service"), ref("test.capability"), ref("test.operation"), ref("test.argument"), ref("test.effect")
+	fieldRef, unit := ref("test.field"), ref("unit.test")
 	idx := contributionv1.NewStaticIndex()
 	idx.AddPack(p)
-	for _, r := range []contributionv1.DefinitionRef{service, capability, operation, argument, effect} {
+	for _, r := range []contributionv1.DefinitionRef{service, capability, operation, argument, effect, fieldRef, unit} {
 		idx.AddDefinition(r)
 	}
 	idx.AddServiceCapability(service, capability)
+	idx.AddFieldRelation(fieldRef, service, capability)
+	idx.AddCanonicalUnit(fieldRef, unit)
 	idx.AddOperation(operation, capability, service, argument, effect)
-	m := contributionv1.Manifest{Contract: contributionv1.Contract, ManifestID: "test.manifest", ManifestVersion: "1.0.0", Contributor: contributionv1.Contributor{DriverID: "test.driver", NativeContract: contributionv1.NativeContractRef{Owner: "test", Contract: "test-contract", Version: "1.0.0"}}, Requires: contributionv1.Requirements{SemanticKernel: contributionv1.SemanticKernel, Packs: []contributionv1.PackRef{p}}, Groups: []contributionv1.Group{{ID: "group", Label: contributionv1.Label{Key: "test.group", Default: "Group"}, ResourceContext: "asset", Order: 0}}, Fields: []contributionv1.Field{}, Views: []contributionv1.View{}, Actions: []contributionv1.Action{{ID: "action", Group: "group", Label: contributionv1.Label{Key: "test.action", Default: "Action"}, OperationRef: operation, CapabilityRef: capability, ServiceRef: service, ArgumentRef: argument, EffectRef: effect, Order: 0}}, Diagnostics: []contributionv1.Diagnostic{}}
+	m := contributionv1.Manifest{Contract: contributionv1.Contract, ManifestID: "test.manifest", ManifestVersion: "1.0.0", Contributor: contributionv1.Contributor{DriverID: "test.driver", NativeContract: contributionv1.NativeContractRef{Owner: "test", Contract: "test-contract", Version: "1.0.0"}}, Requires: contributionv1.Requirements{SemanticKernel: contributionv1.SemanticKernel, Packs: []contributionv1.PackRef{p}}, Groups: []contributionv1.Group{{ID: "group", Label: contributionv1.Label{Key: "test.group", Default: "Group"}, ResourceContext: "asset", Order: 0}}, Fields: []contributionv1.Field{{ID: "field", Group: "group", Label: contributionv1.Label{Key: "test.field", Default: "Field"}, Ref: fieldRef, ServiceRef: service, CapabilityRef: capability, UnitRef: unit, Order: 0}}, Views: []contributionv1.View{}, Actions: []contributionv1.Action{{ID: "action", Group: "group", Label: contributionv1.Label{Key: "test.action", Default: "Action"}, OperationRef: operation, CapabilityRef: capability, ServiceRef: service, ArgumentRef: argument, EffectRef: effect, Order: 0}}, Diagnostics: []contributionv1.Diagnostic{}}
 	return m, idx
 }
 
@@ -93,6 +96,11 @@ func actionResource() Resource {
 		ContributionManifestID:      "test.manifest",
 		ContributionManifestVersion: "1.0.0",
 	}
+}
+
+func actionField() Field {
+	resource := actionResource()
+	return Field{ID: "field", ResourceID: resource.ID, DefinitionID: "test.field", UnitID: "unit.test", ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
 }
 
 func TestInvokeDoesNotReachNativeOwnerAfterFailedRevalidation(t *testing.T) {
@@ -469,7 +477,7 @@ func TestCatalogFiltersAcceptedOwnerWithUndeclaredResourceSemantics(t *testing.T
 func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	resource := actionResource()
-	field := Field{ID: "field", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	field := actionField()
 	source := &sourceFake{resources: []Resource{resource}, fields: []Field{field}}
 	c := New(idx, source, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
@@ -500,7 +508,7 @@ func TestCatalogFiltersWithdrawnRowsAndRejectsDanglingAcceptedFields(t *testing.
 func TestCatalogRejectsDuplicateAcceptedFieldIdentity(t *testing.T) {
 	m, idx := actionManifestAndIndex()
 	resource := actionResource()
-	first := Field{ID: "field", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	first := actionField()
 	second := first
 	second.Value = json.RawMessage(`2`)
 	source := &sourceFake{resources: []Resource{resource}, fields: []Field{second, first}}
@@ -511,6 +519,38 @@ func TestCatalogRejectsDuplicateAcceptedFieldIdentity(t *testing.T) {
 	}
 	if _, err := c.Catalog("caller"); err == nil || !strings.Contains(err.Error(), "ambiguous detached field identity") {
 		t.Fatalf("duplicate field identity err=%v", err)
+	}
+}
+
+func TestCatalogFieldsRequireExactManifestDeclaration(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	resource := actionResource()
+	valid := actionField()
+	cases := []struct {
+		name   string
+		mutate func(*Field)
+	}{
+		{"field-id", func(f *Field) { f.ID = "undeclared" }},
+		{"definition", func(f *Field) { f.DefinitionID = "undeclared.definition" }},
+		{"unit", func(f *Field) { f.UnitID = "undeclared.unit" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			field := valid
+			tc.mutate(&field)
+			c := New(idx, &sourceFake{resources: []Resource{resource}, fields: []Field{field}}, authFake{}, nil)
+			c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+			if err := c.Publish(m); err != nil {
+				t.Fatal(err)
+			}
+			catalog, err := c.Catalog("caller")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(catalog.Fields) != 0 {
+				t.Fatalf("undeclared field exposed: %+v", catalog.Fields)
+			}
+		})
 	}
 }
 
@@ -530,7 +570,7 @@ func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	}
 	m, idx := actionManifestAndIndex()
 	resource := actionResource()
-	field := Field{ID: "f", ResourceID: resource.ID, ContributionDriverID: resource.ContributionDriverID, ContributionManifestID: resource.ContributionManifestID, ContributionManifestVersion: resource.ContributionManifestVersion, Value: json.RawMessage(`1`)}
+	field := actionField()
 	s := &fencedSourceFake{sourceFake: sourceFake{resources: []Resource{resource}, fields: []Field{field}}, fence: "one"}
 	c := New(idx, s, authFake{}, nil)
 	c.now = func() time.Time { return time.Unix(1, 0) }

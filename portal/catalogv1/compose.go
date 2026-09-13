@@ -58,6 +58,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			}
 			resourceCounts := make(map[sourceResourceKey]int, len(resources))
 			resourceOwnerCounts := make(map[sourceResourceOwnerKey]int, len(resources))
+			resourceByOwner := make(map[sourceResourceOwnerKey]Resource, len(resources))
 			for _, resource := range resources {
 				owner := identity{resource.ContributionDriverID, resource.ContributionManifestID, resource.ContributionManifestVersion}
 				descriptor, admitted := accepted[owner]
@@ -69,17 +70,28 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 				if resourceCounts[key] != 1 {
 					return Catalog{}, errors.New("ambiguous detached resource context")
 				}
-				resourceOwnerCounts[sourceResourceOwnerKey{owner, resource.ID}]++
+				ownerKey := sourceResourceOwnerKey{owner, resource.ID}
+				resourceOwnerCounts[ownerKey]++
+				if resourceOwnerCounts[ownerKey] == 1 {
+					resourceByOwner[ownerKey] = resource
+				} else {
+					delete(resourceByOwner, ownerKey)
+				}
 				out.Resources = append(out.Resources, resource)
 			}
 			fieldIdentities := make(map[sourceFieldKey]bool, len(fields))
 			for _, field := range fields {
 				owner := identity{field.ContributionDriverID, field.ContributionManifestID, field.ContributionManifestVersion}
-				if _, admitted := accepted[owner]; !admitted {
+				descriptor, admitted := accepted[owner]
+				if !admitted {
 					continue
 				}
-				if resourceOwnerCounts[sourceResourceOwnerKey{owner, field.ResourceID}] != 1 {
+				ownerKey := sourceResourceOwnerKey{owner, field.ResourceID}
+				if resourceOwnerCounts[ownerKey] != 1 {
 					return Catalog{}, errors.New("field has no exact detached resource context")
+				}
+				if !fieldMatchesManifest(field, resourceByOwner[ownerKey], descriptor.Manifest) {
+					continue
 				}
 				fieldKey := sourceFieldKey{owner, field.ResourceID, field.ID}
 				if fieldIdentities[fieldKey] {
@@ -256,6 +268,19 @@ func resourceMatchesManifest(resource Resource, manifest contributionv1.Manifest
 	}
 	for _, action := range manifest.Actions {
 		if groups[action.Group] && action.ServiceRef.ID == resource.ServiceID && action.CapabilityRef.ID == resource.CapabilityID && action.ServiceRef.Pack.ID == resource.Domain && action.CapabilityRef.Pack.ID == resource.Domain {
+			return true
+		}
+	}
+	return false
+}
+
+func fieldMatchesManifest(field Field, resource Resource, manifest contributionv1.Manifest) bool {
+	groups := make(map[string]string, len(manifest.Groups))
+	for _, group := range manifest.Groups {
+		groups[group.ID] = group.ResourceContext
+	}
+	for _, declared := range manifest.Fields {
+		if declared.ID == field.ID && groups[declared.Group] == field.ResourceID && declared.Ref.ID == field.DefinitionID && declared.UnitRef.ID == field.UnitID && declared.ServiceRef.ID == resource.ServiceID && declared.CapabilityRef.ID == resource.CapabilityID && declared.Ref.Pack.ID == resource.Domain && declared.ServiceRef.Pack.ID == resource.Domain && declared.CapabilityRef.Pack.ID == resource.Domain {
 			return true
 		}
 	}

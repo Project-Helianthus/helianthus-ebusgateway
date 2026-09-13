@@ -177,7 +177,14 @@ func portalDigest(v any) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
-func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Field, domain, driver, manifest string, snapshot semreg.Snapshot, evaluation any, selections any, projection any) ([]catalogv1.Resource, []catalogv1.Field) {
+func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Field, descriptor contributionv1.Manifest, snapshot semreg.Snapshot, evaluation any, selections any, projection any) ([]catalogv1.Resource, []catalogv1.Field) {
+	if len(descriptor.Requires.Packs) != 1 || len(descriptor.Fields) == 0 {
+		return resources, fields
+	}
+	serviceID, capabilityID, generation, ok := portalSnapshotContext(snapshot, descriptor.Fields[0].ServiceRef, descriptor.Fields[0].CapabilityRef)
+	if !ok {
+		return resources, fields
+	}
 	snap, _ := rawPortal(snapshot)
 	eval, evalText := rawPortal(evaluation)
 	sels, _ := rawPortal(selections)
@@ -185,19 +192,8 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	revisions, revisionText := rawPortal(snapshot.Revisions)
 	bindings, bindingText := rawPortal(snapshot.Bindings)
 	sources, sourceText := rawPortal(snapshot.Sources)
-	generation := uint64(0)
-	for _, service := range snapshot.Services {
-		if n, err := strconv.ParseUint(string(service.DriverGeneration), 10, 64); err == nil && n > generation {
-			generation = n
-		}
-	}
-	for _, capability := range snapshot.Capabilities {
-		if n, err := strconv.ParseUint(string(capability.DriverGeneration), 10, 64); err == nil && n > generation {
-			generation = n
-		}
-	}
 	source := catalogv1.Source{AssetID: string(snapshot.AssetID), SnapshotID: string(snapshot.SnapshotID), Revision: revisionText, EvaluationDigest: portalDigest(evaluation), BindingID: bindingText, SourceEpoch: sourceText, DriverGeneration: generation, Snapshot: snap, Evaluation: eval, Selections: sels, Projection: proj}
-	r := catalogv1.Resource{ID: string(snapshot.AssetID), Domain: domain, State: "CURRENT", Source: source, ContributionDriverID: driver, ContributionManifestID: manifest, ContributionManifestVersion: "1.0.0"}
+	r := catalogv1.Resource{ID: string(snapshot.AssetID), Domain: descriptor.Requires.Packs[0].ID, ServiceID: serviceID, CapabilityID: capabilityID, State: "CURRENT", Source: source, ContributionDriverID: descriptor.Contributor.DriverID, ContributionManifestID: descriptor.ManifestID, ContributionManifestVersion: descriptor.ManifestVersion}
 	if len(revisions) == 0 || len(evalText) == 0 || len(bindings) == 0 || len(sources) == 0 {
 		return resources, fields
 	}
@@ -205,12 +201,42 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	// a second, lossy field table with null values or reconstructed quality.
 	return append(resources, r), fields
 }
+
+func portalSnapshotContext(snapshot semreg.Snapshot, serviceRef, capabilityRef contributionv1.DefinitionRef) (string, string, uint64, bool) {
+	wantService, wantCapability := semanticRef(serviceRef), semanticRef(capabilityRef)
+	var service semreg.ServiceInstance
+	serviceMatches := 0
+	for _, candidate := range snapshot.Services {
+		if candidate.AssetID == snapshot.AssetID && candidate.Definition == wantService {
+			service, serviceMatches = candidate, serviceMatches+1
+		}
+	}
+	if serviceMatches != 1 {
+		return "", "", 0, false
+	}
+	var capability semreg.CapabilityInstance
+	capabilityMatches := 0
+	for _, candidate := range snapshot.Capabilities {
+		if candidate.AssetID == snapshot.AssetID && candidate.Definition == wantCapability && candidate.ServiceInstance == service.InstanceID && candidate.BindingID == service.BindingID && candidate.SourceEpochID == service.SourceEpochID && candidate.DriverGeneration == service.DriverGeneration {
+			capability, capabilityMatches = candidate, capabilityMatches+1
+		}
+	}
+	if capabilityMatches != 1 {
+		return "", "", 0, false
+	}
+	generation, err := strconv.ParseUint(string(capability.DriverGeneration), 10, 64)
+	if err != nil || generation == 0 {
+		return "", "", 0, false
+	}
+	return string(service.Definition.ID), string(capability.Definition.ID), generation, true
+}
+
 func appendPortalPV(resources []catalogv1.Resource, fields []catalogv1.Field, v modbusadapter.SemanticPVCurrent) ([]catalogv1.Resource, []catalogv1.Field) {
-	return appendPortalSnapshot(resources, fields, "helianthus.pack.pv", "pv.primary", "portal.pv", v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+	return appendPortalSnapshot(resources, fields, gatewayPortalPVDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 }
 func appendPortalStorage(resources []catalogv1.Resource, fields []catalogv1.Field, v growattStorageCurrent) ([]catalogv1.Resource, []catalogv1.Field) {
-	return appendPortalSnapshot(resources, fields, "helianthus.pack.storage", "storage.primary", "portal.storage", v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
+	return appendPortalSnapshot(resources, fields, gatewayPortalStorageDescriptor(), v.Snapshot, v.Evaluation, []semreg.Selection{}, v.Projection)
 }
 func appendPortalEVSE(resources []catalogv1.Resource, fields []catalogv1.Field, v mcp.SemanticEVSECurrent) ([]catalogv1.Resource, []catalogv1.Field) {
-	return appendPortalSnapshot(resources, fields, "helianthus.pack.evse", "evse.primary", "portal.evse", v.Snapshot, v.Evaluation, v.Selections, v.Projection)
+	return appendPortalSnapshot(resources, fields, gatewayPortalEVSEDescriptor(), v.Snapshot, v.Evaluation, v.Selections, v.Projection)
 }

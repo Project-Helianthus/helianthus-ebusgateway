@@ -322,3 +322,31 @@ Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive smoke. Final
 log
 `author-evidence/issue973-portal-catalog-admission/ci_local-bf521f7-all-24-feedback.log`,
 SHA-256 `b575ce1d37f2f342269d588b204fa9b2de147b30893a771b86b722695243b825`.
+
+## Final resource-context and digest-schema correction
+
+The latest live review found three more P2 defects. Catalog composition now
+resolves a resource with the complete contribution identity, service,
+capability and resource ID. Equal asset IDs owned by separate contributions no
+longer reject the catalog or lend one source fence to another action; a
+duplicate within the exact same context remains ambiguous and fails closed.
+
+Production PV, Storage and EVSE resource rows now derive their service and
+capability definitions from one exact SemReg service/capability instance link.
+The asset, definition pack/version, service instance, binding, source epoch and
+driver generation must all agree, and the generation must be a positive
+integer. Missing or ambiguous context omits the resource instead of publishing
+empty semantic identifiers or a borrowed generation.
+
+The public catalog schema now restricts contribution digests to the canonical
+`sha256:` plus 64 lowercase hexadecimal form. Regressions cover cross-driver
+asset collisions, exact production context for all three current providers,
+missing capability context, and schema rejection of a malformed digest.
+
+Focused normal and race validation passed for the affected catalog and Gateway
+packages. The final complete SDK-backed CI passed Node 101/101, build/vet,
+Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint, Modbus RTU
+transport, Storage 2 outputs/13 rejects, EVSE 6 outputs/9 rejects, and passive
+smoke. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-8cd9569-all-27-feedback.log`,
+SHA-256 `10d53a99bfbaa91c287d140f43ff384f0d4d7b1a359b19b373415e2309ef581d`.

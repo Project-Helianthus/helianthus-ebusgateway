@@ -10,6 +10,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 type portalCatalogBarrierSource struct {
@@ -66,6 +67,36 @@ func TestPortalCatalogDescriptorsUseAcceptedSemRegMetadata(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing production descriptor fields: %v", want)
+	}
+}
+
+func TestPortalCatalogProductionResourcesBindExactSemanticContext(t *testing.T) {
+	for _, descriptor := range []contributionv1.Manifest{gatewayPortalPVDescriptor(), gatewayPortalStorageDescriptor(), gatewayPortalEVSEDescriptor()} {
+		t.Run(descriptor.ManifestID, func(t *testing.T) {
+			serviceRef := semanticRef(descriptor.Fields[0].ServiceRef)
+			capabilityRef := semanticRef(descriptor.Fields[0].CapabilityRef)
+			snapshot := semreg.Snapshot{
+				AssetID:    "asset",
+				SnapshotID: "snapshot",
+				Services: []semreg.ServiceInstance{{
+					InstanceID: "service-instance", AssetID: "asset", Definition: serviceRef,
+					BindingID: "binding", SourceEpochID: "epoch", DriverGeneration: "7",
+				}},
+				Capabilities: []semreg.CapabilityInstance{{
+					InstanceID: "capability-instance", AssetID: "asset", Definition: capabilityRef,
+					ServiceInstance: "service-instance", BindingID: "binding", SourceEpochID: "epoch", DriverGeneration: "7",
+				}},
+			}
+			resources, _ := appendPortalSnapshot(nil, nil, descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+			if len(resources) != 1 || resources[0].ServiceID != descriptor.Fields[0].ServiceRef.ID || resources[0].CapabilityID != descriptor.Fields[0].CapabilityRef.ID || resources[0].Source.DriverGeneration != 7 {
+				t.Fatalf("resource context=%+v", resources)
+			}
+			snapshot.Capabilities = nil
+			resources, _ = appendPortalSnapshot(nil, nil, descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+			if len(resources) != 0 {
+				t.Fatalf("resource emitted without exact capability context: %+v", resources)
+			}
+		})
 	}
 }
 

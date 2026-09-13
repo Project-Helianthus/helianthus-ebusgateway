@@ -370,6 +370,35 @@ func TestCatalogActionRequiresExactContributionAndSemanticContext(t *testing.T) 
 	}
 }
 
+func TestCatalogScopesCollidingResourceIDsByContribution(t *testing.T) {
+	first, idx := actionManifestAndIndex()
+	second := first
+	second.Contributor.DriverID = "other.driver"
+	second.ManifestID = "other.manifest"
+	firstResource := actionResource()
+	secondResource := firstResource
+	secondResource.ContributionDriverID = second.Contributor.DriverID
+	secondResource.ContributionManifestID = second.ManifestID
+	c := New(idx, &sourceFake{resources: []Resource{firstResource, secondResource}}, authFake{}, &invokeFake{})
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Publish(second); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Resources) != 2 || len(catalog.Actions) != 2 {
+		t.Fatalf("cross-contribution resource collision hid valid rows: resources=%+v actions=%+v", catalog.Resources, catalog.Actions)
+	}
+	if catalog.Actions[0].ContributionDriverID == catalog.Actions[1].ContributionDriverID {
+		t.Fatalf("actions lost contribution ownership: %+v", catalog.Actions)
+	}
+}
+
 func TestCanonicalOrderUsesCompleteTuplesAndRevisionBindsFields(t *testing.T) {
 	base := Catalog{Contract: Contract, Domains: []Domain{}, Contributions: []Identity{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}, Resources: []Resource{{ID: "same", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Fields: []Field{{ID: "same", ResourceID: "r", ContributionDriverID: "a", ContributionManifestID: "bc", ContributionManifestVersion: "1"}, {ID: "same", ResourceID: "r", ContributionDriverID: "ab", ContributionManifestID: "c", ContributionManifestVersion: "1"}}, Actions: []Action{}, Quarantines: []Quarantine{{DriverID: "a", ManifestID: "bc", ManifestVersion: "1"}, {DriverID: "ab", ManifestID: "c", ManifestVersion: "1"}}}
 	want, _ := CanonicalJSON(base)

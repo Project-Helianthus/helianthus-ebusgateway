@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -85,7 +86,7 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	encoded, _ := json.Marshal(fixture)
 	_ = json.Unmarshal(encoded, &populated)
 	source := map[string]any{"asset_id": "asset", "snapshot_id": "snapshot", "revision": "revision", "evaluation_digest": "digest", "binding_id": "binding", "source_epoch": "epoch", "driver_generation": float64(1), "snapshot": map[string]any{}, "evaluation": map[string]any{}, "selections": []any{}, "projection": map[string]any{}}
-	populated["contributions"] = []any{map[string]any{"driver_id": "driver", "manifest_id": "manifest", "manifest_version": "1", "digest": "digest"}}
+	populated["contributions"] = []any{map[string]any{"driver_id": "driver", "manifest_id": "manifest", "manifest_version": "1", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	populated["resources"] = []any{map[string]any{"id": "asset", "domain": "helianthus.pack.pv", "service_id": "service", "capability_id": "capability", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "source": source, "state": "CURRENT"}}
 	populated["fields"] = []any{map[string]any{"id": "field", "resource_id": "asset", "definition_id": "definition", "unit_id": "unit", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "value": float64(1), "quality": "PRESENT", "projection": "projection"}}
 	populated["actions"] = []any{map[string]any{"id": "action", "resource_id": "asset", "service_id": "service", "capability_id": "capability", "operation_id": "operation", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "source": source, "discoverable": true, "enabled": false}}
@@ -93,6 +94,11 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	if err := validateCatalogSchema(schema, populated); err != nil {
 		t.Fatalf("populated catalog rejected: %v", err)
 	}
+	populated["contributions"].([]any)[0].(map[string]any)["digest"] = "invalid"
+	if err := validateCatalogSchema(schema, populated); err == nil {
+		t.Fatal("noncanonical contribution digest accepted")
+	}
+	populated["contributions"].([]any)[0].(map[string]any)["digest"] = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	populated["resources"].([]any)[0].(map[string]any)["unknown"] = true
 	if err := validateCatalogSchema(schema, populated); err == nil {
 		t.Fatal("malformed populated resource accepted")
@@ -178,8 +184,15 @@ func validateCatalogSchema(root map[string]any, value any) error {
 				}
 			}
 		case "string":
-			if _, ok := value.(string); !ok {
+			text, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("string required")
+			}
+			if pattern, ok := schema["pattern"].(string); ok {
+				matched, err := regexp.MatchString(pattern, text)
+				if err != nil || !matched {
+					return fmt.Errorf("pattern mismatch")
+				}
 			}
 		case "boolean":
 			if _, ok := value.(bool); !ok {

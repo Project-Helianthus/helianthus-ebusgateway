@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sort"
 	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 )
 
 // Catalog is a bounded optimistic detached capture. Sources are called once per
@@ -66,13 +68,6 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 				continue
 			}
 		}
-		available := make(map[string]bool, len(out.Resources))
-		for _, r := range out.Resources {
-			if available[r.ID] {
-				return Catalog{}, errors.New("ambiguous detached resource context")
-			}
-			available[r.ID] = true
-		}
 		for _, d := range descriptors {
 			out.Contributions = append(out.Contributions, Identity{DriverID: d.Manifest.Contributor.DriverID, ManifestID: d.Manifest.ManifestID, ManifestVersion: d.Manifest.ManifestVersion, Digest: d.Digest})
 			groups := make(map[string]string, len(d.Manifest.Groups))
@@ -96,8 +91,8 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 				if !ok {
 					return Catalog{}, errors.New("action group has no resource context")
 				}
-				resource, exists := findResource(out.Resources, resourceID)
-				if !exists || resource.ContributionDriverID != d.Manifest.Contributor.DriverID || resource.ContributionManifestID != d.Manifest.ManifestID || resource.ContributionManifestVersion != d.Manifest.ManifestVersion || resource.ServiceID != a.ServiceRef.ID || resource.CapabilityID != a.CapabilityRef.ID {
+				resource, exists := findResource(out.Resources, resourceID, d.Manifest, a)
+				if !exists {
 					continue
 				}
 				action := Action{ID: a.ID, ResourceID: resourceID, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID, ContributionDriverID: d.Manifest.Contributor.DriverID, ContributionManifestID: d.Manifest.ManifestID, ContributionManifestVersion: d.Manifest.ManifestVersion, Source: resource.Source}
@@ -105,7 +100,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 					action.Discoverable = auth.Discover(caller, action)
 					action.Enabled = action.Discoverable && auth.Invoke(caller, action)
 				}
-				if action.Discoverable && available[action.ResourceID] {
+				if action.Discoverable {
 					out.Actions = append(out.Actions, action)
 				}
 			}
@@ -240,13 +235,19 @@ func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
 	return invoker.Invoke(*action, claim)
 }
 
-func findResource(resources []Resource, id string) (Resource, bool) {
+func findResource(resources []Resource, id string, manifest contributionv1.Manifest, action contributionv1.Action) (Resource, bool) {
+	var found Resource
+	matched := false
 	for _, r := range resources {
-		if r.ID == id {
-			return r, true
+		if r.ID != id || r.ContributionDriverID != manifest.Contributor.DriverID || r.ContributionManifestID != manifest.ManifestID || r.ContributionManifestVersion != manifest.ManifestVersion || r.ServiceID != action.ServiceRef.ID || r.CapabilityID != action.CapabilityRef.ID {
+			continue
 		}
+		if matched {
+			return Resource{}, false
+		}
+		found, matched = r, true
 	}
-	return Resource{}, false
+	return found, matched
 }
 func matchesClaim(a Action, c Claims) bool {
 	return a.ID == c.ActionID && a.ResourceID == c.ResourceID && a.CapabilityID == c.CapabilityID && a.ContributionDriverID == c.DriverID && a.ContributionManifestID == c.ManifestID && a.ContributionManifestVersion == c.ManifestVersion && a.Source.SnapshotID == c.SnapshotID && a.Source.Revision == c.Revision && a.Source.BindingID == c.BindingID && a.Source.SourceEpoch == c.SourceEpoch && a.Source.DriverGeneration == c.DriverGeneration && c.Digest != ""

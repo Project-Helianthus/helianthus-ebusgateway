@@ -460,6 +460,33 @@ token.
   `ci_local-final-disconnect-fence.log`, SHA-256
   `80efccf09fd506269c0332526e6587b99d0a80c6a9171e4a1b4af8980eef4a2e`.
 
+
+- Exact-head P2s `PRRT_kwDORGIw3c6h5zjz` and `PRRT_kwDORGIw3c6h5zj5`
+  are corrected by source commit `9c1324ecf55597d26dc7da7e33af0468e14fc8be`
+  (tree `e14a73f666d204ea5b246ebb6622d282912e38c8`). Target/card navigation
+  still synchronously publishes target-bound `PENDING`, then detaches the
+  old-pair cleanup and yields once before qualification. A never-settling old
+  cleanup therefore cannot block B/C capability qualification; repeated
+  selections reuse one in-flight cleanup for the same retained token-target
+  pair and do not issue duplicate writes.
+- Visible and deferred session reads now enter one serialized request slot.
+  Every status intent carries a monotonically advancing version, so a newer
+  target, epoch, visibility, or lifecycle change suppresses an older result
+  before state/UI mutation or deferred cleanup. The latest queued read runs
+  only after the slow predecessor releases the slot.
+- Deterministic Portal regressions cover a never-resolving A cleanup followed
+  by B/C qualification with one cleanup request, and a slow visible status
+  read superseded by deferred status: maximum one request in flight, no stale
+  `Idle` overwrite, and exactly one confirmed cleanup write. Focused
+  `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 42 tests.
+- Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 137 tests,
+  repository-wide `go test -race`, Python 168+6+26+11+6+2, zero
+  `golangci-lint` issues, Modbus RTU transport conformance, Storage/EVSE
+  SemReg gates, and a correctly non-triggered passive smoke gate. Durable log:
+  `ci_local-final-serialized-session.log`, SHA-256
+  `fdef53a393497a719f2468022516ac3c68bffe76a51d6f681caf79cc18d5d5cc`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

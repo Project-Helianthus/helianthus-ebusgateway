@@ -1129,10 +1129,12 @@ test("VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState", a
   const { source, sourcePath } = await loadShellSource();
   const body = makeAuditedElement();
   const list = makeAuditedElement();
+  const picker = makeAuditedElement({ value: "", disabled: true });
   const { shell } = buildSandbox({
     source, sourcePath,
     elements: new Map([
       ['[data-role="vaillant-b503-body"]', body],
+	  ['[data-role="vaillant-b503-target"]', picker],
       ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
     ]),
     fetchImpl: (url) => {
@@ -1150,9 +1152,34 @@ test("VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState", a
   shell.loadAllProjectionPlanes = async () => true;
   await proto.loadProjectionPreview.call(shell, list, 1, null);
   assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
-  assert.match(body.innerHTML, /value="21"/);
-  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
-    "discovery may update the picker but cannot expose actions for an unqualified target");
+	  assert.match(picker.innerHTML, /value="21"/);
+	  assert.equal(picker.disabled, false);
+});
+
+test("VaillantB503Pane_discoveryKeepsActiveResultNodeAttached", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const picker = makeAuditedElement({ value: "", disabled: true });
+  const errorsBody = makeAuditedElement();
+  let resolveErrors;
+  const { shell } = buildSandbox({ source, sourcePath, elements: new Map([
+    ['[data-role="vaillant-b503-body"]', body], ['[data-role="vaillant-b503-target"]', picker],
+    ['[data-role="vaillant-b503-errors-body"]', errorsBody], ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+  ]), fetchImpl: (url, init) => {
+    if (String(url).includes("projection/devices")) return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 21, projections: [] }] }) });
+    if (parseGqlInit(init).query.includes("VaillantErrors")) return new Promise((resolve) => { resolveErrors = resolve; });
+    throw new Error(`unexpected ${url}`);
+  }});
+  const proto = Object.getPrototypeOf(shell);
+  shell.isActiveBootstrapLifecycle = () => true;
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  const pending = proto.refreshVaillantErrors.call(shell);
+  await proto.loadProjectionPreview.call(shell, makeAuditedElement(), 1, null);
+  resolveErrors({ ok: true, json: async () => ({ data: { vaillantErrors: { firstActiveError: 281, slots: [281] } } }) });
+  await pending;
+  assert.match(errorsBody.innerHTML, /281/, "discovery must not detach the active errors result node");
+  assert.match(picker.innerHTML, /value="21"/);
 });
 
 test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results", async () => {

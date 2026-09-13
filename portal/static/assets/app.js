@@ -1840,10 +1840,11 @@ class PortalShell extends HTMLElement {
       const items = Array.isArray(payload.items) ? payload.items : [];
       this.projectionDevices = items;
 	  // The B503 pane can be opened before projection discovery completes. Its
-	  // canonical capability result remains authoritative; re-render only to
-	  // replace the disabled/no-target picker with discovered addresses.
+	  // canonical capability result remains authoritative. Refresh only the
+	  // picker: replacing the pane would detach an active tab's result node
+	  // while its already-issued request can still resolve.
 	  if (this._activeSectionTarget === "section-vaillant-b503" && typeof this._vaillantB503CapabilityReason === "string") {
-		this.renderVaillantB503Pane(this._vaillantB503CapabilityReason);
+		this._refreshVaillantB503TargetPicker();
 	  }
       if (items.length === 0) {
         listEl.innerHTML = "<li>No projection graphs available from current registry snapshot.</li>";
@@ -3648,6 +3649,16 @@ class PortalShell extends HTMLElement {
     // has no alternative addresses. Do not claim that no target is selected
     // while reads or a live-monitor operation resolve to that default.
     return `${defaultOption}${deviceOptions}`;
+  }
+
+  _refreshVaillantB503TargetPicker() {
+    const picker = this.querySelector('[data-role="vaillant-b503-target"]');
+    if (!picker) return;
+    const hasTargets = (Array.isArray(this.projectionDevices) ? this.projectionDevices : [])
+      .some((device) => Number.isInteger(Number(device.address)) && Number(device.address) >= 0 && Number(device.address) <= 255);
+    picker.innerHTML = this._vaillantB503TargetOptions();
+    picker.disabled = !hasTargets;
+    picker.value = this._vaillantB503Target() === null ? "" : String(this._vaillantB503Target());
   }
 
   _beginVaillantB503TargetQualification(target) {

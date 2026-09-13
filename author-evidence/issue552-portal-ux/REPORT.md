@@ -641,3 +641,24 @@ RTU production conformance, Storage/EVSE SemReg mapping gates, and a
 non-triggered passive smoke gate. Durable sanitized log:
 `ci_local-final-pending-cleanup-reprobe.log`, SHA-256
 `2add6afd5f896554b4b98ec696ef42c48e26e9bae94d7bd43df82bda182b6558`.
+
+### Discovery picker preservation correction
+
+Exact-head P2 `PRRT_kwDORGIw3c6h6sfY` is corrected by updating only the active
+B503 target picker when projection discovery completes. Portal no longer
+wholesale-renders the B503 pane, so Errors, Service, History, and Live Monitor
+tab nodes and their in-flight request targets remain attached. Picker refresh
+does not change the selected target, capability reason, or epoch.
+
+The deterministic regression opens B503 before discovery, starts an Errors
+request, completes discovery, then completes the request and proves it still
+writes to the active result node while the picker gains the discovered target.
+Focused `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 54 tests.
+
+Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 149 tests,
+repository-wide race tests, Python 168+6+26+11+6+2, zero lint issues, Modbus
+RTU production conformance, Storage/EVSE SemReg mapping gates, and a
+non-triggered passive smoke gate. Durable sanitized log:
+`ci_local-final-picker-preservation.log`, SHA-256
+`6ee355ca625dd8b426e467fa78613e5bbd02fff7b681eef037229846828bb202`.

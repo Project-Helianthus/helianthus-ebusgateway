@@ -3626,6 +3626,7 @@ class PortalShell extends HTMLElement {
     // send an operation against the newly selected unqualified target.
     this._vaillantB503CapabilityReason = "PENDING";
     this.renderVaillantB503Pane("PENDING");
+    return this._vaillantB503RequestContext();
   }
 
   async changeVaillantB503Target() {
@@ -3637,7 +3638,7 @@ class PortalShell extends HTMLElement {
     const parsed = Number(raw);
     const next = raw !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= 255 ? parsed : null;
     if (next === previous) return;
-    this._beginVaillantB503TargetQualification(next);
+    const qualification = this._beginVaillantB503TargetQualification(next);
     // A target change invalidates every target-bound response before any new
     // request starts. If the old target completed enable concurrently, its
     // result handler uses its captured context to issue an immediate disable.
@@ -3645,7 +3646,8 @@ class PortalShell extends HTMLElement {
     // Keep an unconfirmed old-target token so a later explicit navigation or
     // target cleanup can retry. handleVaillantB503NavAway clears it only after
     // GraphQL confirms disabled=true.
-    await this.refreshVaillantB503Capability();
+    if (!this._isCurrentVaillantB503Context(qualification)) return;
+    await this.refreshVaillantB503Capability(qualification);
   }
 
   async openVaillantB503ProjectionTarget(target) {
@@ -3654,15 +3656,16 @@ class PortalShell extends HTMLElement {
       this.activateSection("section-vaillant-b503");
       return;
     }
-    this._beginVaillantB503TargetQualification(target);
+    const qualification = this._beginVaillantB503TargetQualification(target);
     this.activateSection("section-vaillant-b503");
     await this.handleVaillantB503NavAway(previous);
-    await this.refreshVaillantB503Capability();
+    if (!this._isCurrentVaillantB503Context(qualification)) return;
+    await this.refreshVaillantB503Capability(qualification);
   }
 
-  async refreshVaillantB503Capability() {
+  async refreshVaillantB503Capability(requestContext) {
     const body = this.querySelector('[data-role="vaillant-b503-body"]');
-    const context = this._vaillantB503RequestContext();
+    const context = requestContext || this._vaillantB503RequestContext();
     let reason = "UNKNOWN";
     try {
       const env = await this._gqlRequest(
@@ -3938,6 +3941,14 @@ class PortalShell extends HTMLElement {
       const payload = env && env.data && env.data.vaillantLiveMonitor;
       if (!payload) return;
       if (!this._isCurrentVaillantB503Context(context)) {
+        if (action === "disable" && payload.disabled === true &&
+          this._vaillantB503LiveToken === submittedToken && this._vaillantB503LiveTarget === submittedTarget) {
+          // The request's view can be stale after a target switch, while its
+          // submitted pair remains the only held recovery handle. Release that
+          // exact pair; never touch a replacement pair.
+          this._vaillantB503LiveToken = null;
+          this._vaillantB503LiveTarget = null;
+        }
         if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
           // A stale enable still needs token-bound cleanup. Retain its pair
           // only when no newer session is held. Otherwise clean up the old

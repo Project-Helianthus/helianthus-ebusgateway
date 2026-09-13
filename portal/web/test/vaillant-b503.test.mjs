@@ -1336,6 +1336,97 @@ test("VaillantB503Pane_failedLiveActionRefreshesVisibleSessionStrip", async () =
   assert.equal(status.textContent, "SESSION_BUSY");
 });
 
+test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabilityUnknown", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath, elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503CapabilityReason = "UNKNOWN";
+  proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+  assert.match(body.innerHTML, /b503-session-strip/, "Refreshing ownership remains observable during capability uncertainty");
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "unknown capability must not expose live-monitor operations while refresh owns the gate");
+  assert.doesNotMatch(body.innerHTML, /projection-b503-card/, "unknown capability must not expose a projection card");
+});
+
+test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
+        const reply = disables.length === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503TargetAddress = 34; // C stays selected.
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  const first = await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(first, false, "Refreshing rejects immediate cleanup without discarding its pair");
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.attempted, false);
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disables.map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "post-refresh cleanup retries exactly once with the captured token-target pair");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "deferred A cleanup must preserve selected C");
+});
+
+test("VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503TargetAddress = 34;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false };
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.equal(shell._vaillantB503LiveToken, null, "released session clears its deferred recovery pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "released session performs no unnecessary cleanup write");
+});
+
 test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {
   const { source, sourcePath } = await loadShellSource();
   const errorsBody = makeAuditedElement();

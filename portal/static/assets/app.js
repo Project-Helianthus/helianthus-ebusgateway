@@ -3633,8 +3633,9 @@ class PortalShell extends HTMLElement {
     // request starts. If the old target completed enable concurrently, its
     // result handler uses its captured context to issue an immediate disable.
     await this.handleVaillantB503NavAway(previous);
-    this._vaillantB503LiveToken = null;
-    this._vaillantB503LiveTarget = null;
+    // Keep an unconfirmed old-target token so a later explicit navigation or
+    // target cleanup can retry. handleVaillantB503NavAway clears it only after
+    // GraphQL confirms disabled=true.
     await this.refreshVaillantB503Capability();
   }
 
@@ -3762,11 +3763,7 @@ class PortalShell extends HTMLElement {
         // Fire a best-effort disable before swapping. Matches the
         // nav-away semantics so clicking Errors/Service while a live
         // session is held does not leave the token active.
-        try {
-          await this.invokeVaillantLiveMonitor("disable");
-        } catch {
-          this._vaillantB503LiveToken = null;
-        }
+        await this.handleVaillantB503NavAway();
       }
       this._vaillantB503ActiveTab = name;
       // Re-render the pane body to swap tab contents. The capability
@@ -3897,10 +3894,8 @@ class PortalShell extends HTMLElement {
       );
       if (env && env.errors && env.errors.length) {
         if (status) status.textContent = env.errors[0].message || "error";
-        // For the nav-away / tab-swap cleanup path: a disable that the
-        // backend rejects MUST still surface as an error so the caller
-        // can clear its stale token. Swallowing here caused the
-        // nav-away catch() never to run.
+        // A rejected explicit disable must remain visible while retaining its
+        // issuer token for a later, bounded cleanup attempt.
         if (action === "disable") {
           throw new Error(env.errors[0].message || "disable failed");
         }
@@ -3931,7 +3926,12 @@ class PortalShell extends HTMLElement {
         if (status) status.textContent = hex ? "OK" : "No frame available yet.";
       }
       if (action === "disable") {
+        if (payload.disabled !== true) {
+          if (status) status.textContent = "Disable pending: gateway did not confirm session closure.";
+          return;
+        }
         this._vaillantB503LiveToken = null;
+        this._vaillantB503LiveTarget = null;
         if (status) status.textContent = "Session disabled.";
       }
       await this.refreshVaillantLiveMonitorSession();
@@ -3967,22 +3967,31 @@ class PortalShell extends HTMLElement {
   async handleVaillantB503NavAway() {
     // Auto-disable on nav-away. Only fires if an issuer token is held,
     // which implies the live-monitor tab entered the Active state. The
-    // disable call is best-effort — failures are swallowed so a stuck
-    // backend does not block nav.
+    // disable call is best-effort and never blocks navigation. Its token is
+    // retained until GraphQL confirms disabled=true so a later bounded cleanup
+    // attempt still has the issuer state it needs.
     const token = this._vaillantB503LiveToken;
     const target = arguments.length ? arguments[0] : this._vaillantB503LiveTarget;
-    if (!token) return;
+    const status = this.querySelector('[data-role="vaillant-b503-live-status"]');
+    if (!token) return true;
     try {
-      await this._gqlRequest(
+      const env = await this._gqlRequest(
         "query VaillantLiveDisable($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { disabled } }",
         { action: "disable", issuerToken: token, targetAddress: target },
       );
+      const message = env?.errors?.[0]?.message;
+      const disabled = env?.data?.vaillantLiveMonitor?.disabled === true;
+      if (message || !disabled) {
+        if (status) status.textContent = `Disable pending: ${message || "gateway did not confirm session closure."}`;
+        return false;
+      }
       this._vaillantB503LiveToken = null;
       this._vaillantB503LiveTarget = null;
-    } catch {
-      // Fail-open on nav: clear the token anyway so a stale session
-      // cannot be mistaken for a live one.
-      this._vaillantB503LiveToken = null;
+      if (status) status.textContent = "Session disabled.";
+      return true;
+    } catch (err) {
+      if (status) status.textContent = `Disable pending: ${err}`;
+      return false;
     }
   }
 

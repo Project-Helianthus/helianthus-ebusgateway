@@ -399,6 +399,31 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
     "issuerToken must be cleared after auto-disable");
 });
 
+test("VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    // HTTP transport succeeds, but GraphQL rejects the disable request.
+    fetchImpl: makeGqlFetchImpl([
+      { match: "vaillantLiveMonitor", reply: { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] } },
+    ]),
+  });
+  shell._vaillantB503LiveToken = "tok-still-needed";
+  shell._vaillantB503LiveTarget = 8;
+
+  const cleaned = await Object.getPrototypeOf(shell).handleVaillantB503NavAway.call(shell);
+  assert.equal(cleaned, false, "GraphQL error must leave cleanup pending");
+  assert.equal(shell._vaillantB503LiveToken, "tok-still-needed",
+    "HTTP-successful GraphQL failure must retain issuer token for a later bounded cleanup");
+  assert.equal(shell._vaillantB503LiveTarget, 8,
+    "failure must retain the old target paired with the issuer token");
+  assert.match(status.textContent, /Disable pending: SESSION_BUSY/,
+    "the UI must state that session closure was not confirmed");
+  assert.equal(fetchRequests.length, 1, "the handler must not auto-retry indefinitely");
+});
+
 test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
   const { source, sourcePath } = await loadShellSource();
   for (const [reason, selector, required] of [

@@ -351,13 +351,13 @@ func (st *b503State) handleErrorsHistoryList(ctx context.Context, args map[strin
 	}
 	limit, err := historyLimit(args)
 	if err != nil {
-		return st.errEnvelope(ctx, err)
+		return st.errEnvelopeAt(ctx, target, err)
 	}
 	records, err := st.errorsHistoryList(ctx, target, limit)
 	if err != nil {
-		return st.errEnvelope(ctx, err)
+		return st.errEnvelopeAt(ctx, target, err)
 	}
-	return st.okEnvelope(ctx, records)
+	return st.okEnvelopeAt(ctx, target, records)
 }
 
 func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit int) ([]VaillantB503HistoryRecord, error) {
@@ -384,10 +384,11 @@ func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit i
 }
 
 func (st *b503State) handleLiveMonitorSession(ctx context.Context, args map[string]any) map[string]any {
-	if _, err := st.target(args); err != nil {
+	target, err := st.target(args)
+	if err != nil {
 		return st.errEnvelope(ctx, err)
 	}
-	return st.okEnvelope(ctx, st.liveMonitorSession())
+	return st.okEnvelopeAt(ctx, target, st.liveMonitorSession())
 }
 
 func (st *b503State) liveMonitorSession() VaillantB503SessionStatus {
@@ -688,10 +689,22 @@ func classifyB503Error(err error) (string, bool) {
 // probe honors the request context so a slow dispatcher cannot hang
 // tools/call after the main handler has already produced a result.
 func (st *b503State) b503Envelope(ctx context.Context, data any, err error, isError bool) map[string]any {
+	return st.b503EnvelopeFor(ctx, nil, data, err, isError)
+}
+
+// b503EnvelopeFor binds capability metadata to target when a tool has already
+// resolved one. The established tools retain b503Envelope's default-target
+// behavior; the two newly promoted target-aware tools must not report a
+// different device's probe result in their stable output metadata.
+func (st *b503State) b503EnvelopeFor(ctx context.Context, target *byte, data any, err error, isError bool) map[string]any {
 	env := newToolEnvelope(data, err)
 	reason := AvailabilityUnknown
 	if st != nil && st.server != nil {
-		reason = st.server.VaillantB503AvailabilityCtx(ctx)
+		if target == nil {
+			reason = st.server.VaillantB503AvailabilityCtx(ctx)
+		} else {
+			reason = st.server.VaillantB503AvailabilityAtCtx(ctx, *target)
+		}
 	}
 	if meta, ok := env["meta"].(map[string]any); ok {
 		caps, _ := meta["capabilities"].(map[string]any)
@@ -711,8 +724,16 @@ func (st *b503State) okEnvelope(ctx context.Context, data any) map[string]any {
 	return st.b503Envelope(ctx, data, nil, false)
 }
 
+func (st *b503State) okEnvelopeAt(ctx context.Context, target byte, data any) map[string]any {
+	return st.b503EnvelopeFor(ctx, &target, data, nil, false)
+}
+
 func (st *b503State) errEnvelope(ctx context.Context, err error) map[string]any {
 	return st.b503Envelope(ctx, nil, err, true)
+}
+
+func (st *b503State) errEnvelopeAt(ctx context.Context, target byte, err error) map[string]any {
+	return st.b503EnvelopeFor(ctx, &target, nil, err, true)
 }
 
 // --- capability -----------------------------------------------------------

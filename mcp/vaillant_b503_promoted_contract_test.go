@@ -13,6 +13,26 @@ type promotedB503Dispatcher struct {
 	failIndex *byte
 }
 
+type targetAwarePromotedB503Dispatcher struct {
+	availableTarget byte
+}
+
+func (dispatcher *targetAwarePromotedB503Dispatcher) Invoke(_ context.Context, target byte, payload []byte) ([]byte, error) {
+	if target != dispatcher.availableTarget || len(payload) < 2 {
+		return nil, errors.New("target unavailable")
+	}
+	switch {
+	case payload[0] == 0x00 && payload[1] == 0x01:
+		return []byte{0x19, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, nil
+	case payload[0] == 0x01 && payload[1] == 0x01 && len(payload) == 3:
+		index := payload[2]
+		value := uint16(0x0119) + uint16(index)
+		return []byte{index, byte(value), byte(value >> 8), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, nil
+	default:
+		return nil, errors.New("unsupported request")
+	}
+}
+
 func (dispatcher *promotedB503Dispatcher) Invoke(_ context.Context, _ byte, payload []byte) ([]byte, error) {
 	if len(payload) < 2 {
 		return nil, errors.New("short request")
@@ -120,6 +140,38 @@ func TestVaillantB503ErrorsHistoryListRejectsEchoedIndexDrift(t *testing.T) {
 	errorObject := envelope["error"].(map[string]any)
 	if errorObject["code"] != "DECODE_FAILED" {
 		t.Fatalf("error code = %#v; want DECODE_FAILED", errorObject["code"])
+	}
+}
+
+func TestVaillantB503PromotedTools_CapabilityMetadataUsesRequestedTarget(t *testing.T) {
+	const (
+		defaultTarget   = byte(8)
+		requestedTarget = byte(21)
+	)
+	server := newB503Server(t, &stubB503Dispatcher{}, newDefaultMgr())
+	state, ok := b503StateFor(server)
+	if !ok {
+		t.Fatal("B503 state unavailable")
+	}
+	state.opts.DefaultTarget = defaultTarget
+	state.opts.Dispatcher = &targetAwarePromotedB503Dispatcher{availableTarget: requestedTarget}
+
+	for _, call := range []struct {
+		name string
+		args string
+	}{
+		{name: toolVaillantB503ErrorsHistoryListName, args: `{"target_address":21,"limit":1}`},
+		{name: toolVaillantB503LiveSessionGetName, args: `{"target_address":21}`},
+	} {
+		envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0", ID: 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"` + call.name + `","arguments":` + call.args + `}`),
+		}))
+		meta := envelope["meta"].(map[string]any)
+		capability := meta["capabilities"].(map[string]any)["vaillant_b503"].(map[string]any)
+		if capability["reason"] != string(AvailabilityAvailable) || capability["available"] != true {
+			t.Fatalf("%s capability=%#v; want requested target AVAILABLE", call.name, capability)
+		}
 	}
 }
 

@@ -849,6 +849,32 @@ func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
 	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
 		t.Fatalf("conflict snapshot=%+v", snapshot)
 	}
+	if !r.WithdrawGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 2}) || len(r.Snapshot().Quarantined) != 0 {
+		t.Fatalf("withdraw did not clear conflict-only identity: %+v", r.Snapshot())
+	}
+}
+
+func TestRegistryAcceptConflictRemovesGenerationAcceptedIdentity(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	r := NewRegistry(indexFromCatalog(c))
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}, []Manifest{first}); err != nil {
+		t.Fatal(err)
+	}
+	beforeConflict := r.Snapshot().Revision
+	changed := cloneManifest(t, first)
+	changed.Groups[0].Label.Default = "changed through Accept"
+	if err := r.Accept(changed, "untrusted"); err == nil {
+		t.Fatal("Accept accepted divergent generation descriptor")
+	}
+	snapshot := r.Snapshot()
+	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
+		t.Fatalf("cross-path conflict is not exclusive: %+v", snapshot)
+	}
+	if snapshot.Revision != beforeConflict+1 {
+		t.Fatalf("cross-path visible conflict did not advance registry revision: before=%d after=%d", beforeConflict, snapshot.Revision)
+	}
 }
 
 func TestRegistryQuarantinesEveryChangedIdentityInSuccessorGeneration(t *testing.T) {

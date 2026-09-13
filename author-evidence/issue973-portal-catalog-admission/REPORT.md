@@ -231,8 +231,27 @@ caller-slice backlog rather than carrying it forward.
 The first full run after these changes was interrupted once the duplicate-
 withdrawal review exposed the missing active-membership distinction and is not
 acceptance evidence. Focused race then passed for contribution registry,
-composer and Gateway Portal lifecycle tests. The final complete SDK-backed CI passed Node 101/101,
-build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+composer and Gateway Portal lifecycle tests. The final complete SDK-backed CI
+passed Node 101/101, build/vet, Linux builds, repository-wide race, Python
+168+6+26+11+6+2, lint,
 Modbus RTU transport, Storage and EVSE SemReg mapping, and passive smoke. Final
 log `author-evidence/issue973-portal-catalog-admission/ci_local-07943ef-final-all-feedback.log`,
 SHA-256 `b7a990166a8e7d911ee3bb19a6329a8c83c9cd9d90d6c09509e68b4d805f65e9`.
+
+## Final registry cross-path correction
+
+The next connector review supplied two more P2 findings against the previous
+provider-lifecycle head. Exact generation withdrawal now removes conflict-only
+quarantine keys as well as accepted descriptors. The legacy `Accept` admission
+path now removes a generation-accepted descriptor when divergent canonical
+content quarantines the same identity, and increments the registry revision so
+an in-flight catalog capture detects the visible transition. Regressions prove
+conflict-only withdrawal, exclusive accepted-or-quarantined state across
+`ReplaceGeneration` then `Accept`, and the revision fence.
+
+Focused race validation passed for contribution registry, composer and Gateway
+Portal lifecycle tests. The final complete SDK-backed CI passed Node 101/101,
+build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+Modbus RTU transport, Storage and EVSE SemReg mapping, and passive smoke. Final
+log `author-evidence/issue973-portal-catalog-admission/ci_local-157a8ca-all-18-feedback.log`,
+SHA-256 `5a7bc7a8e026327630a1acbd31edb0ff86e67775acd3831c2519eddf07bf7cb8`.

@@ -1059,6 +1059,11 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 			delete(r.conflicts, key)
 		}
 	}
+	for key := range r.conflicts {
+		if key.DriverID == owner.DriverID {
+			delete(r.conflicts, key)
+		}
+	}
 	for key, item := range staged {
 		if conflicts[key] {
 			r.conflicts[key] = true
@@ -1119,6 +1124,11 @@ func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {
 		if key.DriverID == owner.DriverID {
 			delete(r.accepted, key)
 			delete(r.digests, key)
+			delete(r.conflicts, key)
+		}
+	}
+	for key := range r.conflicts {
+		if key.DriverID == owner.DriverID {
 			delete(r.conflicts, key)
 		}
 	}
@@ -1191,6 +1201,11 @@ func (r *Registry) Accept(m Manifest, suppliedDigest string) error {
 	if prior, ok := r.digests[key]; ok && prior != digest {
 		r.conflicts[key] = true
 		delete(r.digests, key)
+		delete(r.accepted, key)
+		// Accepted membership became a quarantine. Advance the registry fence
+		// so an in-flight catalog capture cannot combine the old descriptor
+		// snapshot with the new conflict state.
+		r.revision++
 		return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
 	}
 	r.digests[key] = digest

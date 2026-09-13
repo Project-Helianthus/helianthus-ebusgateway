@@ -94,6 +94,24 @@ token.
   SemReg mapping gates, and correctly non-triggered transport/passive-smoke
   gates. Durable log: `ci_local-final-27d323f.log`, SHA-256
   `e0bb37189fce8078bf6e7c4db13b2f9f4b254b5e22c2257a3593f8f2e3f7f7cd`.
+- A final full inventory found two more P2 gaps. `3dc72ce...` keeps the
+  established default-target envelope behavior for unrelated B503 tools, but
+  binds `errors.history.list` and `live_monitor.session.get` metadata to their
+  already-resolved `target_address` through `VaillantB503AvailabilityAtCtx`.
+  The multi-device regression makes only target 21 available while the default
+  target 8 fails, then proves both promoted tools report target 21 as
+  `AVAILABLE`. The canonical runtime-provider inventory now names all seven
+  stable B503 operations, including the core-stable history aggregate and
+  gateway-held session read; it keeps `live_monitor.get` distinct as the
+  bounded session action surface. No docs-ebus artifact was changed.
+- Focused `go test -race` across MCP, GraphQL, and gateway B503 cases passed.
+  Final `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `3dc72ce...`: PASS, including 109
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-3dc72ce.log`, SHA-256
+  `9877795bd87c898a968d6daf65e8dbcabade87ca1cffa9550b4dec35485907df`.
 
 ## Gate boundary
 

@@ -1793,6 +1793,53 @@ test("VaillantB503Pane_targetReprobesAfterDetachedCleanupReleasesSession", async
   ], "detached cleanup writes only the captured A token-target pair");
 });
 
+test("VaillantB503Pane_pendingCapabilityConsumesEarlierConfirmedCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "21" });
+  let resolveBusyCapability;
+  let capabilityReads = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        capabilityReads += 1;
+        if (capabilityReads === 1) return new Promise((resolve) => { resolveBusyCapability = resolve; });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  const switched = proto.changeVaillantB503Target.call(shell);
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "PENDING", "B remains pending while its first capability response is delayed");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed detached A cleanup clears only its captured pair before B responds");
+  resolveBusyCapability({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "SESSION_BUSY" } } },
+  }) });
+  await switched;
+  await flush();
+  await flush();
+
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE",
+    "a delayed busy B response consumes the earlier exact-context cleanup confirmation and is requalified");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init)).filter(({ query }) => query.includes("VaillantB503Cap"))
+    .map(({ variables }) => variables.targetAddress), [21, 21], "the reprobe remains target-bound to B");
+});
+
 test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {
   const { source, sourcePath } = await loadShellSource();
   const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });

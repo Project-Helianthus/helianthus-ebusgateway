@@ -3652,6 +3652,7 @@ class PortalShell extends HTMLElement {
 
   _beginVaillantB503TargetQualification(target) {
 	this._invalidateVaillantB503SessionStatusRequests();
+    this._vaillantB503ConfirmedCleanupContext = undefined;
     this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
     this._vaillantB503TargetAddress = target;
     // Publish the target-bound pending state before any cleanup/probe await so
@@ -3667,8 +3668,18 @@ class PortalShell extends HTMLElement {
     // settle. When that detached request does close the old session, invalidate
     // the earlier SESSION_BUSY result and probe only the same current target.
     if (!this._isCurrentVaillantB503Context(context) || this._vaillantB503CapabilityReason !== "SESSION_BUSY") return;
+    this._vaillantB503ConfirmedCleanupContext = undefined;
     const reprobe = this._beginVaillantB503TargetQualification(context.target);
     void this.refreshVaillantB503Capability(reprobe);
+  }
+
+  _recordVaillantB503ConfirmedCleanup(context) {
+    // Cleanup and the initial target probe are deliberately unordered. Keep
+    // confirmation only for this exact current qualification; a later busy
+    // response can then consume it without waiting for any cleanup request.
+    if (!this._isCurrentVaillantB503Context(context)) return;
+    this._vaillantB503ConfirmedCleanupContext = context;
+    this._reprobeVaillantB503CapabilityAfterCleanup(context);
   }
 
   async changeVaillantB503Target() {
@@ -3689,7 +3700,7 @@ class PortalShell extends HTMLElement {
     // target in PENDING forever.  Yield once so a rapid newer selection can
     // supersede this capability probe before it begins.
     void this.handleVaillantB503NavAway(previous).then((disabled) => {
-      if (disabled) this._reprobeVaillantB503CapabilityAfterCleanup(qualification);
+      if (disabled) this._recordVaillantB503ConfirmedCleanup(qualification);
     });
     await Promise.resolve();
     // Keep an unconfirmed old-target token so a later explicit navigation or
@@ -3708,7 +3719,7 @@ class PortalShell extends HTMLElement {
     const qualification = this._beginVaillantB503TargetQualification(target);
     this.activateSection("section-vaillant-b503");
     void this.handleVaillantB503NavAway(previous).then((disabled) => {
-      if (disabled) this._reprobeVaillantB503CapabilityAfterCleanup(qualification);
+      if (disabled) this._recordVaillantB503ConfirmedCleanup(qualification);
     });
     await Promise.resolve();
     if (!this._isCurrentVaillantB503Context(qualification)) return;
@@ -3737,6 +3748,10 @@ class PortalShell extends HTMLElement {
     if (!this._isCurrentVaillantB503Context(context)) return;
     this._vaillantB503CapabilityReason = reason;
     this.renderVaillantB503Pane(reason, body);
+    const confirmed = this._vaillantB503ConfirmedCleanupContext;
+    if (confirmed && confirmed.epoch === context.epoch && confirmed.target === context.target) {
+      this._reprobeVaillantB503CapabilityAfterCleanup(context);
+    }
   }
 
   renderVaillantB503Pane(reason, bodyEl) {

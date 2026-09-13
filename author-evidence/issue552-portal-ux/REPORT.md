@@ -618,3 +618,26 @@ RTU production conformance, Storage/EVSE SemReg mapping gates, and a
 non-triggered passive smoke gate. Durable sanitized log:
 `ci_local-final-reprobe-default.log`, SHA-256
 `8881f65637a139e1a87211ebda96939940e1e56331d99db72f60f81e93ba5bae`.
+
+### Pending capability and confirmed-cleanup ordering correction
+
+Exact-head P2 `PRRT_kwDORGIw3c6h6mKo` is corrected for the inverse ordering:
+the captured old-pair cleanup may confirm while the selected target's first
+capability request is still pending. Portal records that confirmation only for
+the exact current target and epoch. If the later pending response reports
+`SESSION_BUSY`, it consumes the confirmation, advances the epoch, and starts a
+new target-bound probe. New target selection clears the pending confirmation;
+failed, stale, or unbounded cleanup never delays or triggers qualification.
+
+The deterministic Portal regression confirms A/8 cleanup before delayed B/21
+capability returns `SESSION_BUSY`, then proves exactly one B-only reprobe
+reaches `AVAILABLE`. Focused
+`node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 53 tests.
+
+Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 148 tests,
+repository-wide race tests, Python 168+6+26+11+6+2, zero lint issues, Modbus
+RTU production conformance, Storage/EVSE SemReg mapping gates, and a
+non-triggered passive smoke gate. Durable sanitized log:
+`ci_local-final-pending-cleanup-reprobe.log`, SHA-256
+`2add6afd5f896554b4b98ec696ef42c48e26e9bae94d7bd43df82bda182b6558`.

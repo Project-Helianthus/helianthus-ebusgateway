@@ -507,6 +507,33 @@ token.
 
 ## Gate boundary
 
+### Final authoritative deferred-cleanup correction
+
+Exact-head P2s `PRRT_kwDORGIw3c6h573v` and
+`PRRT_kwDORGIw3c6h573y` are corrected in the Portal source and generated
+asset. An unconfirmed disable now obtains one serialized, read-only
+`vaillantLiveMonitorSession` result for the captured token-target pair. Only a
+valid `Refreshing, owned:true` result starts the existing bounded deferred
+status loop; GraphQL errors, null/malformed roots, stale requests, pair
+replacement, and disconnect retain the pair and never cause a cleanup write.
+The tab click detaches cleanup before changing from Live Monitor, so a stalled
+disable cannot delay Errors, Service, or History selection.
+
+Focused browser validation is `node --test portal/web/test/vaillant-b503.test.mjs`:
+PASS, 47 tests. New deterministic cases prove cached `Active` cannot suppress
+authoritative `Refreshing` recovery, exactly one status read and one disable
+write occur, a hung disable still selects Errors immediately, and the retained
+pair remains isolated. Existing regressions retain the finite status-failure
+and non-terminal budgets, no duplicate/late write behavior, and target,
+epoch, and disconnect fences.
+
+Complete validation:
+`SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off ./scripts/ci_local.sh`:
+PASS. It includes Portal 142, repository-wide `go test -race`, Python script
+tests, zero `golangci-lint` issues, Modbus RTU production conformance, and
+Storage/EVSE SemReg mapping gates; passive smoke was not triggered. Durable
+log: `ci_local-final-authoritative-deferred-cleanup.log`.
+
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's
 PR #975 remain open. A fresh Gateway exact-HEAD review remains required after
 this evidence commit and the accepted docs gate. No live/private action was

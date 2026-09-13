@@ -434,7 +434,11 @@ test("VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError", async () => {
     "failure must retain the old target paired with the issuer token");
   assert.match(status.textContent, /Disable pending: SESSION_BUSY/,
     "the UI must state that session closure was not confirmed");
-  assert.equal(fetchRequests.length, 1, "the handler must not auto-retry indefinitely");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).length, 1,
+    "the handler must not auto-retry indefinitely");
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1,
+    "an unconfirmed disable checks authoritative status once without clearing the pair");
 });
 
 test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", async () => {
@@ -462,6 +466,9 @@ test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", a
           : { data: { vaillantLiveMonitor: { disabled: true } } };
         return Promise.resolve({ ok: true, status: 200, json: async () => reply });
       }
+	  if (query.includes("VaillantLiveMonitorSession")) {
+		return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+	  }
       throw new Error(`unexpected GraphQL request ${query}`);
     },
   });
@@ -482,7 +489,7 @@ test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", a
   assert.equal(shell._vaillantB503LiveToken, "token-A", "failed A cleanup must retain A issuer token");
   assert.equal(shell._vaillantB503LiveTarget, 8, "failed A cleanup must retain A target");
   assert.match(status.textContent, /Disable pending: SESSION_BUSY/);
-  assert.equal(fetchRequests.length, 2, "late completion gets exactly one immediate cleanup attempt");
+  assert.equal(fetchRequests.length, 3, "late completion gets one cleanup attempt and one authoritative status read");
   const firstDisable = parseGqlInit(fetchRequests[1].init).variables;
   assert.deepEqual(firstDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 },
     "late cleanup must use A's returned token and A target");
@@ -492,8 +499,8 @@ test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", a
   assert.equal(shell._vaillantB503LiveToken, null);
   assert.equal(shell._vaillantB503LiveTarget, null);
   assert.equal(shell._vaillantB503TargetAddress, 21, "later A cleanup must still preserve B selection");
-  assert.equal(fetchRequests.length, 3, "later cleanup is bounded to one explicit attempt");
-  const secondDisable = parseGqlInit(fetchRequests[2].init).variables;
+  assert.equal(fetchRequests.length, 4, "later cleanup is bounded to one explicit attempt");
+  const secondDisable = parseGqlInit(fetchRequests[3].init).variables;
   assert.deepEqual(secondDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 });
 });
 
@@ -966,7 +973,7 @@ test("VaillantB503Pane_StaleExplicitDisableClearsItsStillCurrentPair", async () 
     "successful stale explicit disable must clear its still-current A pair");
   assert.equal(shell._vaillantB503LiveTarget, null);
   const liveCalls = fetchRequests.map((request) => parseGqlInit(request.init))
-    .filter(({ query }) => query.includes("VaillantLive"));
+    .filter(({ query }) => query.includes("VaillantLive(") || query.includes("VaillantLiveDisable"));
   assert.deepEqual(liveCalls.map(({ variables }) => variables), [
     { action: "disable", targetAddress: 8, issuerToken: "token-A" },
     { action: "disable", issuerToken: "token-A", targetAddress: 8 },
@@ -1516,13 +1523,18 @@ test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabil
 test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async () => {
   const { source, sourcePath } = await loadShellSource();
   const strip = makeAuditedElement();
+  let sessionReads = 0;
   const { shell, fetchRequests } = buildSandbox({
     source, sourcePath,
     elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+        sessionReads += 1;
+        const session = sessionReads === 1
+          ? { state: "Refreshing", owned: true }
+          : { state: "Active", owned: true };
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
       }
       if (query.includes("VaillantLiveDisable")) {
         const disables = fetchRequests.map((request) => parseGqlInit(request.init))
@@ -1561,14 +1573,81 @@ test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async 
   assert.equal(shell._vaillantB503TargetAddress, 34, "deferred A cleanup must preserve selected C");
 });
 
+test("VaillantB503Pane_navAwayUsesAuthoritativeRefreshingStatusNotCachedActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503SessionState = "Active"; // Last visible poll is stale.
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), false);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+  assert.equal(intervalCalls.length, 1, "authoritative Refreshing state starts bounded read-only recovery");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).length, 1);
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1);
+});
+
+test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const service = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const live = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const history = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-tab-errors"]', errors],
+      ['[data-role="vaillant-b503-tab-service"]', service],
+      ['[data-role="vaillant-b503-tab-live-monitor"]', live],
+      ['[data-role="vaillant-b503-tab-history"]', history],
+    ]),
+    fetchImpl: () => new Promise(() => {}),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  let rendered = 0;
+  shell.renderVaillantB503Pane = () => { rendered += 1; };
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  proto._bindVaillantB503TabEvents.call(shell);
+
+  errors._listeners.get("click")();
+  assert.equal(shell._vaillantB503ActiveTab, "errors", "requested tab is selected before a stalled disable settles");
+  assert.equal(rendered, 1);
+  await flush();
+  assert.equal(fetchRequests.length, 1, "cleanup remains detached and owns one disable request");
+});
+
 test("VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce", async () => {
   const { source, sourcePath } = await loadShellSource();
+  let sessionReads = 0;
   const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
     source, sourcePath, elements: new Map(),
     fetchImpl: (_url, init) => {
       const { query } = parseGqlInit(init);
       if (query.includes("VaillantLiveMonitorSession")) {
-        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+        sessionReads += 1;
+        const session = sessionReads === 1
+          ? { state: "Refreshing", owned: true }
+          : { state: "Active", owned: true };
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
       }
       if (query.includes("VaillantLiveDisable")) {
         const count = fetchRequests.map((request) => parseGqlInit(request.init))

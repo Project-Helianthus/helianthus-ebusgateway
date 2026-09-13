@@ -3834,10 +3834,11 @@ class PortalShell extends HTMLElement {
         name !== "live-monitor" &&
         this._vaillantB503LiveToken;
       if (leavingLive) {
-        // Fire a best-effort disable before swapping. Matches the
-        // nav-away semantics so clicking Errors/Service while a live
-        // session is held does not leave the token active.
-        await this.handleVaillantB503NavAway();
+        // Cleanup owns the captured recovery pair, but must never hold the
+        // requested tab hostage: _gqlRequest has no transport deadline.
+        // handleVaillantB503NavAway retains and recovers the exact pair if a
+        // later authoritative session read observes Refreshing.
+        void this.handleVaillantB503NavAway();
       }
 	  if (this._vaillantB503ActiveTab === "live-monitor" && name !== "live-monitor") {
 		this._stopVaillantB503LiveMonitorSessionPolling();
@@ -4316,11 +4317,7 @@ class PortalShell extends HTMLElement {
 	if (active && active.token === token && active.target === target) return active.promise;
 	const cleanup = (async () => {
 	  const disabled = await this._disableVaillantB503Pair(token, target, status);
-	  if (!disabled && this._vaillantB503SessionState === "Refreshing" &&
-		this._vaillantB503LiveToken === token && this._vaillantB503LiveTarget === target) {
-		this._vaillantB503DeferredCleanup = { token, target, attempted: false, statusFailures: 0, statusAttempts: 0 };
-		this._startVaillantB503DeferredCleanupStatusPolling();
-	  }
+	  if (!disabled) await this._deferVaillantB503RefreshingCleanup(token, target);
 	  return disabled;
 	})();
 	const entry = { token, target, promise: cleanup };
@@ -4330,6 +4327,23 @@ class PortalShell extends HTMLElement {
 	} finally {
 	  if (this._vaillantB503NavAwayCleanupInFlight === entry) this._vaillantB503NavAwayCleanupInFlight = undefined;
 	}
+  }
+
+  async _deferVaillantB503RefreshingCleanup(token, target) {
+	// Do not infer lifecycle state from the visible tab's last poll. A
+	// SESSION_BUSY disable can race a gateway transition into Refreshing.
+	// Errors and malformed/null roots intentionally retain the pair without
+	// starting a write-capable task; only a valid authoritative Refreshing
+	// observation starts bounded read-only recovery.
+	const result = await this._requestVaillantB503SessionStatus(target);
+	if (!result.current || result.error) return;
+	const session = this._vaillantB503LiveMonitorSessionFromEnvelope(result.env);
+	if (!session || session.state !== "Refreshing" || !session.owned) return;
+	if (this._vaillantB503LiveToken !== token || this._vaillantB503LiveTarget !== target) return;
+	const existing = this._vaillantB503DeferredCleanup;
+	if (existing && existing.token === token && existing.target === target) return;
+	this._vaillantB503DeferredCleanup = { token, target, attempted: false, statusFailures: 0, statusAttempts: 0 };
+	this._startVaillantB503DeferredCleanupStatusPolling();
   }
 
   async refreshVaillantErrorsHistory() {

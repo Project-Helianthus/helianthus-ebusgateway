@@ -1,0 +1,293 @@
+==> terminology gate
+Source-selection M4 retained legacy spellings:
+  - cmd/gateway/gateway_cli.go:199: retained source-addr: locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection
+  - cmd/gateway/gateway_cli.go:211: retained source-addr: locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection
+  - cmd/gateway/main_test.go:48: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:49: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:63: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:64: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:78: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:79: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - scripts/passive_matrix_case_ha.sh:356: retained -source-addr: HA matrix script passes auto so current gateway selects/validates the source
+Source-selection M4 public API gate passed.
+==> gofmt
+==> portal node tests
+✔ L7 catalog services list renders via escapeHtml (safe) for catalog strings (6.822708ms)
+✔ L7 decode sandbox output uses textContent, never innerHTML, for user-controlled bytes (1.79075ms)
+✔ L7 command view renders unknown safety_class as 'unknown' fallback (1.452916ms)
+✔ L7 Standard Catalog section is emitted by render() with required data-role elements (1.878959ms)
+✔ L7 decode click-through flow renders output via textContent (XSS hardening preserved) (1.811666ms)
+✔ L7 decode form dropdown option values are catalog-canonical (legacy terminology rejected) (1.103333ms)
+✔ L7 decode click forwards canonical direction/frame_type to fetch (1.465125ms)
+✔ L7 decode click fails closed on unknown direction/frame_type (no fetch, inline error) (0.9ms)
+✔ L7 PB filter blocks refreshL7Commands on malformed PB and surfaces inline error (4.522667ms)
+✔ L7 PB filter parses well-formed hex/decimal and forwards to refreshL7Commands (3.128833ms)
+✔ L7 nav button is disabled when capabilities.ebus_standard=false (2.263292ms)
+✔ L7 nav button is enabled when capabilities.ebus_standard=true (2.027792ms)
+✔ activateSection(section-l7-catalog) no-ops when ebus_standard=false (no refreshL7Services call) (0.927083ms)
+✔ activateSection(section-l7-catalog) triggers refreshL7Services when ebus_standard=true (0.916833ms)
+✔ L7 commands PB filter forwards 0x-prefixed hex verbatim (ui=0xff → pb=0xff, NOT pb=255) (1.370459ms)
+✔ L7 commands PB filter preserves 0x prefix verbatim (ui=0x10 → pb=0x10) (0.905375ms)
+✔ L7 commands PB filter rejects non-hex locally and does not fetch (ui=banana) (1.222292ms)
+✔ L7 decode submit forwards pb/sb verbatim (ui=0xff,8 → pb=0xff,sb=8, NOT Number()-round-tripped) (0.897625ms)
+✔ L7 PB filter forwards decimal 10 verbatim (ui=10 → pb=10, NOT pb=0x10) (1.00225ms)
+✔ INT-09 fixture pins all five domains and the exact pack versions (3.871125ms)
+✔ INT-09 schema is closed and matches the host renderer boundary (0.582917ms)
+✔ INT-09 prototype is fixture-only and reads perspectives from the fixture (1.993709ms)
+(node:14106) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/razvan/Desktop/Helianthus%20Project/work/helianthus-stabilization-20260904/wave12/run/helianthus-ebusgateway-552/portal/web/prototype/int09.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/razvan/Desktop/Helianthus Project/work/helianthus-stabilization-20260904/wave12/run/helianthus-ebusgateway-552/portal/web/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ INT-09 fixture navigation handles changed state and a valid sixth contribution generically (2.414709ms)
+✔ INT-09 binds catalog state to full registry identity (0.92125ms)
+✔ INT-09 preserves every requested state and caller-scoped action outcome (0.74575ms)
+✔ INT-09 unauthorized actions create no DOM node or descriptive leak (1.620166ms)
+✔ INT-09 prototype uses focus-visible and non-color text state cues (0.681375ms)
+✔ PortalShell ignores stale bootstrap completions when arming bus observability polling (7.229792ms)
+✔ PortalShell renders the gateway version in the topbar status (1.872084ms)
+✔ PortalShell renders unsupported adapter info with an unsupported label (35.341709ms)
+✔ PortalShell renders promoted false and zero values distinctly from unavailable (1.912084ms)
+✔ PortalShell renders the provider-owned FM5 degraded verdict (1.582291ms)
+✔ Portal source contains no eeBUS login, credential, session, or CSRF surface (7.289667ms)
+✔ Portal status and all four partner views use one state_revision envelope without auth headers (1.986084ms)
+▶ Portal emits the exact closed mutation matrix with revision and Idempotency-Key only
+  ✔ open (1.991084ms)
+  ✔ close (1.124209ms)
+  ✔ cancel (1.357458ms)
+  ✔ retry (0.973042ms)
+  ✔ untrust (1.124625ms)
+  ✔ connect (1.063167ms)
+  ✔ confirm (1.172875ms)
+✔ Portal emits the exact closed mutation matrix with revision and Idempotency-Key only (9.636666ms)
+✔ selection requires independently entered complete OOB SKI and connect keeps only selection_id (1.11725ms)
+✔ PIN connect never enters generic pending replay and clears the password field immediately (1.050125ms)
+✔ Portal renders only the six documented terminal PIN outcomes (1.81125ms)
+✔ network retry reuses the exact body and Idempotency-Key without session state (1.079875ms)
+✔ candidate and raw SPINE remain active-memory only and clear on visibility loss (1.111875ms)
+▶ newest candidate survives delayed unrelated admin responses and older candidate refreshes
+  ✔ delayed status (1.330792ms)
+  ✔ delayed partners (1.027958ms)
+  ✔ delayed discovery (0.915541ms)
+  ✔ delayed selection (0.971291ms)
+  ✔ delayed readiness (1.046958ms)
+  ✔ older candidate response (1.352375ms)
+✔ newest candidate survives delayed unrelated admin responses and older candidate refreshes (7.17875ms)
+✔ eeBUS renders three separate Pairing SHIP and SPINE workspaces (1.321083ms)
+✔ trusted offline rows show reconnect required and never expose Browse SPINE (1.702666ms)
+✔ SPINE peer refresh requests only the connected view and Browse stays GET-only (0.922333ms)
+✔ workspace navigation clears only the departing workspace volatile authority (0.837125ms)
+▶ Pairing to SHIP and Pairing to SPINE clear every transient pairing authority
+  ✔ ship (0.903875ms)
+  ✔ spine (0.950458ms)
+✔ Pairing to SHIP and Pairing to SPINE clear every transient pairing authority (2.046375ms)
+▶ visibility loss, component disconnect, and leaving eeBUS clear pairing authority
+  ✔ visibility loss (0.859416ms)
+  ✔ component disconnect (0.870334ms)
+  ✔ leave eeBUS section (0.77475ms)
+✔ visibility loss, component disconnect, and leaving eeBUS clear pairing authority (2.791ms)
+✔ candidate, pending replay, and active action expiry retire their volatile caches (1.138042ms)
+✔ successive pairing actions ignore stale status and render each terminal only once (0.796125ms)
+▶ status requests may retire only the action that was current when the request started
+  ✔ missing active action (0.919833ms)
+  ✔ mismatched terminal (0.863708ms)
+✔ status requests may retire only the action that was current when the request started (1.991167ms)
+▶ terminal PIN outcomes and action expiry abort every pairing authority
+  ✔ pin required (0.869541ms)
+  ✔ pin optional (0.887833ms)
+  ✔ expired (1.273917ms)
+  ✔ stale terminal cannot abort the next selection (0.71ms)
+✔ terminal PIN outcomes and action expiry abort every pairing authority (4.077917ms)
+✔ no-PIN Connect may reselect after pin_required and submit one transient exact PIN (1.130791ms)
+▶ late Select and Connect completions cannot escape pairing retirement boundaries
+  ✔ select then navigate SHIP (0.954792ms)
+  ✔ select then navigate SPINE (0.743ms)
+  ✔ select then visibility loss (0.863833ms)
+  ✔ select then component disconnect (0.892542ms)
+  ✔ select then leave eeBUS component (0.778375ms)
+  ✔ connect then navigate SHIP (0.927125ms)
+  ✔ connect then navigate SPINE (1.109916ms)
+  ✔ connect then visibility loss (0.828541ms)
+  ✔ connect then component disconnect (0.650334ms)
+  ✔ connect then leave eeBUS component (0.64875ms)
+✔ late Select and Connect completions cannot escape pairing retirement boundaries (8.9875ms)
+▶ late predecessor Select and Connect completions cannot overwrite a successor flow
+  ✔ Select predecessor (0.89375ms)
+  ✔ Connect predecessor (0.776916ms)
+✔ late predecessor Select and Connect completions cannot overwrite a successor flow (1.832583ms)
+✔ raw Modbus browser call uses the fixed Portal route (3.199583ms)
+✔ PV and raw panels follow all independent capability combinations (4.168417ms)
+✔ PV polling interval is cleared during teardown (2.203042ms)
+✔ raw Modbus renders bounded unavailable text for network and non-JSON failures (3.007875ms)
+✔ raw Modbus rejects a range crossing 65536 before fetch (1.289833ms)
+✔ VaillantB503Pane_NavItemRegistered (7.303417ms)
+✔ VaillantB503Pane_Unknown_ShowsProbeFailureHint (1.861917ms)
+✔ VaillantB503Pane_Available_ShowsThreeTabs (1.680708ms)
+✔ VaillantB503Pane_ErrorsTab_RendersSlots (1.129541ms)
+✔ VaillantB503Pane_NoInstallWriteAffordance (1.749083ms)
+✔ VaillantB503Pane_LiveMonitor_AutoDisableOnLeave (1.428834ms)
+✔ VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError (1.062125ms)
+✔ VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup (1.680084ms)
+✔ VaillantB503Pane_StaleEnableKeepsNewerSessionWhenOldCleanupIsBusy (0.98ms)
+✔ VaillantB503Pane_DelayedOldCleanupPreservesReplacementToken (1.172958ms)
+✔ VaillantB503Pane_TargetProbeUnmountsOldLiveControlsBeforeBQualification (1.171042ms)
+✔ VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification (0.897167ms)
+✔ VaillantB503Pane_targetQualificationDoesNotWaitForBlockedOldCleanup (1.235833ms)
+✔ VaillantB503Pane_targetSwitchCleansRetainedAPairRatherThanPreviousPicker (1.015416ms)
+✔ VaillantB503ProjectionTargetCleanupPreservesRetainedDefaultPair (1.087833ms)
+✔ VaillantB503Pane_DelayedExplicitDisablePreservesNewSameTargetEnable (1.067958ms)
+✔ VaillantB503Pane_StaleExplicitDisableClearsItsStillCurrentPair (1.764708ms)
+✔ VaillantB503Pane_reason_matrix_has_stable_state_selectors (2.814667ms)
+✔ VaillantB503Pane_empty_target_preserves_configured_default_for_every_request (1.989042ms)
+✔ VaillantB503Pane_nonempty_targets_keep_the_probed_configured_default_selected (0.903125ms)
+✔ VaillantB503ProjectionCard_renders_without_projection_planes (1.023458ms)
+✔ VaillantB503ProjectionCard_stalledOptionalProbeDoesNotBlockPreview (0.891708ms)
+✔ VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState (1.001084ms)
+✔ VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results (1.129ms)
+✔ VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker (0.987375ms)
+✔ VaillantB503ProjectionCard_qualifiesTargetBeforeStaleLiveControlsCanRun (1.261459ms)
+✔ VaillantB503Pane_session_status_does_not_infer_a_foreign_owner (0.839875ms)
+✔ VaillantB503Pane_visibleAndDeferredSessionReadsSerializeAndIgnoreSupersededResult (1.581416ms)
+✔ VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operations (0.802333ms)
+✔ VaillantB503Pane_visibleLiveSessionPollShowsExternalIdleExpiry (0.947209ms)
+✔ VaillantB503Pane_sessionPollStopsHiddenAndOnNavigation (0.839084ms)
+✔ VaillantB503Pane_failedLiveActionRefreshesVisibleSessionStrip (0.8515ms)
+✔ VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabilityUnknown (0.775542ms)
+✔ VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive (0.947125ms)
+✔ VaillantB503Pane_navAwayUsesAuthoritativeRefreshingStatusNotCachedActive (0.929959ms)
+✔ VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup (0.792292ms)
+✔ VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce (1.168625ms)
+✔ VaillantB503Pane_sessionEnvelopeFailureRetainsPairAndBoundsDeferredStatusRetries (1.559167ms)
+✔ VaillantB503Pane_deferredRefreshingStatusLoopHasFiniteAttemptBound (1.435166ms)
+✔ VaillantB503Pane_disconnectStopsDeferredStatusReadWithoutDiscardingPair (0.866334ms)
+✔ VaillantB503Pane_disconnectFencesAnInFlightDeferredStatusResult (0.870167ms)
+✔ VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite (0.703709ms)
+✔ VaillantB503Pane_threads_target_and_discards_stale_error_response (0.742458ms)
+✔ VaillantB503Pane_historyFirstLoadRendersVerifiedPartialPrefix (0.837166ms)
+✔ VaillantB503Pane_historyPartialFailureRetainsPriorTableRows (0.8685ms)
+✔ VaillantB503Pane_historyRetentionIsByTargetNotQualificationEpoch (0.837833ms)
+✔ VaillantB503Pane_uses_graphql_history_session_and_AD02_contract (0.511958ms)
+ℹ tests 142
+ℹ suites 0
+ℹ pass 142
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 126.748042
+==> portal assets
+==> portal asset build
+
+> @helianthus/portal-web@0.1.0 build
+> node ./scripts/build.mjs
+
+portal assets built:
+- app.js: 213032 bytes sha256=c72bf6ed261c9b32adcc818dfa7d337f27c57d416ab6161124f133d2b8e3d1c4
+- app.css: 10903 bytes sha256=62955b2dd57cda99273002f7b96ac6e45eb394ed4de683759cb9b59b92d62fc2
+portal assets are up to date
+==> go vet
+==> go build
+==> linux 32-bit build
+==> go test (race)
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway	9.594s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/ebusdscan	1.343s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway	148.636s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/matrix-runner	1.254s
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/smoke	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/graphql	2.360s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux	114.023s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier	1.840s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adversarial	2.815s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adversarialpackaging	6.701s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts	23.425s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts/cmd/rawfirst	1.560s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence	60.352s
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence/cmd/msp08harness	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager	1.717s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebusdscan	1.264s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin	1.497s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand	1.312s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy	1.238s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcecapture	1.469s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcecapture/cmd/m8sourcecapture	1.228s
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/matrix	1.387s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter	129.291s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime	1.336s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture	2.470s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture/cmd/leafpromotionartifacts	1.230s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotionlock	3.866s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck	1.258s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source	1.211s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate	1.368s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence	24.727s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session	1.478s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql	1.323s
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/matter	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mcp	31.249s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard	1.447s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mdns	1.233s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal	3.430s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1	1.303s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1	1.550s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portalgraphql	1.231s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/ui	1.263s
+==> validating source-selection artifact schema coverage
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway	0.441s
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/ebusdscan	0.348s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway	0.459s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/matrix-runner	0.227s [no tests to run]
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/smoke	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/graphql	0.338s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux	0.452s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier	0.227s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adversarial	0.241s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/adversarialpackaging	0.231s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts	0.296s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts/cmd/rawfirst	0.483s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence	0.498s [no tests to run]
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence/cmd/msp08harness	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager	0.438s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebusdscan	0.457s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin	0.261s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand	0.249s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/execution_policy	0.205s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcecapture	0.198s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcecapture/cmd/m8sourcecapture	0.418s [no tests to run]
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/internal/m8sourcestate	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/matrix	0.192s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter	0.233s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/nm_runtime	0.293s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture	0.197s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture/cmd/leafpromotionartifacts	0.192s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotionlock	0.255s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck	0.218s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/rpc_source	0.194s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate	0.194s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence	0.252s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session	0.190s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql	0.206s [no tests to run]
+?   	github.com/Project-Helianthus/helianthus-ebusgateway/matter	[no test files]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mcp	0.298s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard	0.202s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/mdns	0.198s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal	0.261s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1	0.194s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1	0.194s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/portalgraphql	0.221s [no tests to run]
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/ui	0.229s [no tests to run]
+==> python script tests
+==> golangci-lint
+0 issues.
+==> transport gate
+transport gate: Modbus RTU production conformance.
+ok  	github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway	5.698s
+ok  	github.com/Project-Helianthus/helianthus-modbus	0.243s
+transport gate: PASS (Modbus RTU production composition and pinned endpoint conformance).
+==> Growatt storage SemReg mapping gate
+Growatt BMS RS-485 v2.02 storage mapping: PASS; 2 executable outputs and 13 rejected scenarios
+ok  	github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/storage	0.392s
+==> Tesla EVSE SemReg mapping gate
+Tesla Gen3 WC3 24.44.3 EVSE current-limit mapping: PASS; 6 executable outputs and 9 rejected scenarios
+ok  	github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse	0.302s
+==> passive smoke gate
+passive smoke gate: not triggered.

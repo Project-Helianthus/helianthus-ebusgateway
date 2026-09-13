@@ -387,6 +387,29 @@ token.
   Passive smoke was correctly not triggered. Durable log:
   `ci_local-final-59f9604.log`, SHA-256 `9fe6ea29824a5d196a837ddd58d37d8861bcd49b55615210933e71914b1f2a0d`.
 
+
+- Exact-head P2 `PRRT_kwDORGIw3c6h5iU9` found that the visible Portal
+  Live-Monitor strip could remain stale after idle expiry, another client change,
+  or a failed local action. `aef8f57...` adds a bounded five-second read-only
+  session refresh only while the B503 live tab is visible; it stops on tab or
+  section exit, document hiding, and component disconnect, retaining the
+  existing target/epoch fence and adding no write.
+- Compatible docs524 refinement in `95bebcd...`: while a locally owned session
+  is `Refreshing`, the ownership strip remains observable even if capability is
+  temporarily unknown, with no operations or projection card exposed. A
+  target/nav cleanup rejected during Refreshing retains its token-target pair,
+  retries once only after `Active`, and clears the pair locally if the refresh
+  instead releases to `Idle` or `Disabled`.
+- Fake-timer Portal regressions cover external idle transition, hidden/nav timer
+  cleanup, failed-action refresh, Refreshing visibility under unknown capability,
+  deferred exact-pair cleanup after Active, and release without an unnecessary
+  cleanup write. Focused Portal validation: PASS, 35 tests. Focused B503 Go
+  `-race` suites: PASS. Final `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `95bebcd...`: PASS, including Portal 130,
+  repository-wide race, Python 168+6+26+11+6+2, zero lint, Modbus RTU transport,
+  and Storage/EVSE SemReg gates; passive smoke not triggered. Durable log:
+  `ci_local-final-95bebcd.log`, SHA-256 `f2da6ebf0636f77d766c806df6ea1470b04791d76f74d6e62778fb19bb5140a5`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

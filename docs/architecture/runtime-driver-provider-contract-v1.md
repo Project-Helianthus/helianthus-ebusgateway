@@ -1603,6 +1603,15 @@ contract are:
   strip every five seconds so idle expiry and external clients become visible;
   it stops that polling on tab/section exit, document hiding, or component
   disconnect, and every result remains fenced to the selected target and epoch.
+  If navigation occurs while an owned session is `Refreshing`, Portal retains
+  the exact issuer-token/target pair and uses a separate bounded, read-only
+  status check after the visible poll has stopped.  It performs at most one
+  token-bound cleanup write after an `Active` confirmation, clears the local
+  pair only after a released `Idle`/`Disabled` confirmation or that write's
+  `disabled: true`, and stops on pair replacement or finite status-failure and
+  non-terminal attempt budgets.  A GraphQL error or null session root is a
+  failed refresh: it leaves the last valid state and retained pair intact
+  rather than inferring an unowned `Unknown` session.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

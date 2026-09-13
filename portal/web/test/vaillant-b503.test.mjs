@@ -1404,6 +1404,148 @@ test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async 
   assert.equal(shell._vaillantB503TargetAddress, 34, "deferred A cleanup must preserve selected C");
 });
 
+test("VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        const count = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable")).length;
+        const reply = count === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-registry"; // The visible tab poll is intentionally absent.
+  shell._vaillantB503ActiveTab = "errors";
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(intervalCalls.length, 1, "nav-away installs a separate read-only deferred-cleanup status loop");
+  assert.equal(intervalCalls[0].delay, 5000);
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503LiveToken, null, "Active confirmation completes cleanup after the tab is gone");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+  assert.ok(clearedIntervals.includes(intervalCalls[0]), "confirmed cleanup stops the detached status loop");
+  const writesBeforeRepeat = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable")).length;
+  intervalCalls[0].callback();
+  await flush();
+  const writesAfterRepeat = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable")).length;
+  assert.equal(writesBeforeRepeat, 2, "one immediate and one post-Active cleanup write are expected");
+  assert.equal(writesAfterRepeat, writesBeforeRepeat, "a completed deferred cleanup never writes twice");
+});
+
+test("VaillantB503Pane_sessionEnvelopeFailureRetainsPairAndBoundsDeferredStatusRetries", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: null }, errors: [{ message: "UPSTREAM_RPC_FAILED" }] }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0 };
+
+  const refreshed = await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.equal(refreshed, false, "GraphQL errors/null roots are refresh failures, not an unowned Unknown state");
+  assert.equal(shell._vaillantB503SessionState, "Refreshing");
+  assert.equal(shell._vaillantB503SessionOwned, true);
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.match(strip.textContent, /unavailable/);
+
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    intervalCalls[0].callback();
+    await flush();
+    await flush();
+  }
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined, "bounded status failures stop the detached retry task");
+  assert.ok(clearedIntervals.includes(intervalCalls[0]));
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "failed status reads retain the exact later-retry pair");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "status envelope failures issue no cleanup write");
+});
+
+test("VaillantB503Pane_deferredRefreshingStatusLoopHasFiniteAttemptBound", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    intervalCalls[0].callback();
+    await flush();
+    await flush();
+  }
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined, "a perpetually Refreshing hidden session reaches the finite read bound");
+  assert.ok(clearedIntervals.includes(intervalCalls[0]));
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "timeout keeps the recoverable pair for a later bounded action");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0);
+});
+
+test("VaillantB503Pane_disconnectStopsDeferredStatusReadWithoutDiscardingPair", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  proto.disconnectedCallback.call(shell);
+  assert.ok(clearedIntervals.includes(intervalCalls[0]), "disconnect stops the local status timer");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "disconnect never claims that the server-owned session was released");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+});
+
 test("VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite", async () => {
   const { source, sourcePath } = await loadShellSource();
   const strip = makeAuditedElement();

@@ -206,6 +206,13 @@ function explorerDecode(rawHex, rawLen, type) {
 }
 
 const vaillantB503LiveSessionPollIntervalMs = 5000;
+// Deferred cleanup has a separate, read-only status loop.  It deliberately
+// outlives the visible Live-Monitor tab because navigation can occur while the
+// gateway is refreshing an owned session.  The loop has a finite failure
+// budget and attempts at most one cleanup write for its captured pair.
+const vaillantB503DeferredCleanupStatusPollIntervalMs = 5000;
+const vaillantB503DeferredCleanupMaxStatusFailures = 3;
+const vaillantB503DeferredCleanupMaxStatusAttempts = 12;
 
 class PortalShell extends HTMLElement {
   connectedCallback() {
@@ -214,12 +221,18 @@ class PortalShell extends HTMLElement {
     this.render();
     setTheme(loadTheme());
     this.bindEvents();
+	// A disconnect only pauses a locally scheduled read.  If a token-bound
+	// cleanup was already deferred, resume its bounded status check when this
+	// same component is attached again; never discard the server-owned session
+	// merely because the Portal surface was temporarily absent.
+	this._startVaillantB503DeferredCleanupStatusPolling();
     void this.loadStatus(lifecycleToken, lifecycleAbort);
   }
 
   disconnectedCallback() {
     this.endBootstrapLifecycle();
 	this._stopVaillantB503LiveMonitorSessionPolling();
+	this._stopVaillantB503DeferredCleanupStatusPolling();
 	this.clearEEBusVisibilityAuthority();
 	this.clearEEBusSPINETree();
 	this.clearEEBusPendingMutation();
@@ -4058,6 +4071,83 @@ class PortalShell extends HTMLElement {
 	this._vaillantB503LiveSessionVisibilityHandler = undefined;
   }
 
+  _stopVaillantB503DeferredCleanupStatusPolling() {
+	if (this._vaillantB503DeferredCleanupStatusPollTimer) {
+	  clearInterval(this._vaillantB503DeferredCleanupStatusPollTimer);
+	  this._vaillantB503DeferredCleanupStatusPollTimer = undefined;
+	}
+  }
+
+  _finishVaillantB503DeferredCleanup(deferred) {
+	if (this._vaillantB503DeferredCleanup !== deferred) return;
+	this._vaillantB503DeferredCleanup = undefined;
+	this._stopVaillantB503DeferredCleanupStatusPolling();
+  }
+
+  _startVaillantB503DeferredCleanupStatusPolling() {
+	if (!this.isConnected || !this._vaillantB503DeferredCleanup || this._vaillantB503DeferredCleanupStatusPollTimer) return;
+	this._vaillantB503DeferredCleanupStatusPollTimer = setInterval(() => {
+	  void this._refreshVaillantB503DeferredCleanupStatus();
+	}, vaillantB503DeferredCleanupStatusPollIntervalMs);
+  }
+
+  _recordVaillantB503DeferredCleanupStatusFailure(deferred) {
+	if (this._vaillantB503DeferredCleanup !== deferred) return;
+	deferred.statusFailures = (deferred.statusFailures || 0) + 1;
+	if (deferred.statusFailures >= vaillantB503DeferredCleanupMaxStatusFailures) {
+	  // Keep the exact token-target recovery pair.  The bounded read task has
+	  // stopped, but an explicit later navigation/action can still clean it up.
+	  this._finishVaillantB503DeferredCleanup(deferred);
+	}
+  }
+
+  _vaillantB503LiveMonitorSessionFromEnvelope(env) {
+	if (env?.errors?.length) return null;
+	const session = env?.data?.vaillantLiveMonitorSession;
+	if (!session || typeof session.state !== "string" || typeof session.owned !== "boolean") return null;
+	return session;
+  }
+
+  async _refreshVaillantB503DeferredCleanupStatus() {
+	const deferred = this._vaillantB503DeferredCleanup;
+	if (!deferred) {
+	  this._stopVaillantB503DeferredCleanupStatusPolling();
+	  return;
+	}
+	if (this._vaillantB503LiveToken !== deferred.token || this._vaillantB503LiveTarget !== deferred.target) {
+	  this._finishVaillantB503DeferredCleanup(deferred);
+	  return;
+	}
+	try {
+	  const env = await this._gqlRequest(
+		"query VaillantLiveMonitorSession($targetAddress: Int) { vaillantLiveMonitorSession(targetAddress: $targetAddress) { state owned } }",
+		{ targetAddress: deferred.target },
+	  );
+	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(env);
+	  if (!session) {
+		this._recordVaillantB503DeferredCleanupStatusFailure(deferred);
+		return;
+	  }
+	  if (this._vaillantB503DeferredCleanup !== deferred ||
+		this._vaillantB503LiveToken !== deferred.token || this._vaillantB503LiveTarget !== deferred.target) {
+		this._finishVaillantB503DeferredCleanup(deferred);
+		return;
+	  }
+	  this._vaillantB503SessionState = session.state;
+	  this._vaillantB503SessionOwned = session.owned;
+	  deferred.statusAttempts = (deferred.statusAttempts || 0) + 1;
+	  await this._reconcileVaillantB503DeferredCleanup(deferred);
+	  if (this._vaillantB503DeferredCleanup === deferred &&
+		deferred.statusAttempts >= vaillantB503DeferredCleanupMaxStatusAttempts) {
+		// A valid but non-terminal state (for example a refresh that never
+		// settles) must not leave an invisible timer running indefinitely.
+		this._finishVaillantB503DeferredCleanup(deferred);
+	  }
+	} catch {
+	  this._recordVaillantB503DeferredCleanupStatusFailure(deferred);
+	}
+  }
+
   async refreshVaillantLiveMonitorSession() {
     const strip = this.querySelector('[data-role="vaillant-b503-session-strip"]');
     if (this._vaillantB503CapabilityReason === "PENDING" && this._vaillantB503SessionState !== "Refreshing") {
@@ -4071,9 +4161,15 @@ class PortalShell extends HTMLElement {
         { targetAddress: context.target },
       );
       if (!this._isCurrentVaillantB503Context(context) || !strip) return;
-      const session = env?.data?.vaillantLiveMonitorSession;
-      const state = typeof session?.state === "string" ? session.state : "Unknown";
-      const owned = session?.owned === true;
+	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(env);
+	  // A GraphQL error or a null/malformed root is a failed refresh, not an
+	  // observed unowned Unknown state.  Retain the last valid state and exact
+	  // cleanup pair so this UI result can never release a live server session.
+	  if (!session) {
+		strip.textContent = "Session state: unavailable.";
+		return false;
+	  }
+	  const { state, owned } = session;
 	  this._vaillantB503SessionState = state;
 	  this._vaillantB503SessionOwned = owned;
       const ownership = owned ? " Gateway session gate is held." : "";
@@ -4084,31 +4180,34 @@ class PortalShell extends HTMLElement {
         if (control) control.disabled = operationsBusy;
       }
 	  await this._reconcileVaillantB503DeferredCleanup();
+	  return true;
     } catch {
       if (this._isCurrentVaillantB503Context(context) && strip) strip.textContent = "Session state: unavailable.";
+	  return false;
     }
   }
 
-  async _reconcileVaillantB503DeferredCleanup() {
-	const deferred = this._vaillantB503DeferredCleanup;
+  async _reconcileVaillantB503DeferredCleanup(candidate) {
+	const deferred = candidate || this._vaillantB503DeferredCleanup;
 	if (!deferred || deferred.attempted) return;
+	if (this._vaillantB503DeferredCleanup !== deferred) return;
+	if (this._vaillantB503LiveToken !== deferred.token || this._vaillantB503LiveTarget !== deferred.target) {
+	  this._finishVaillantB503DeferredCleanup(deferred);
+	  return;
+	}
 	if (this._vaillantB503SessionState === "Refreshing") return;
-	if (!this._vaillantB503SessionOwned || this._vaillantB503SessionState === "Idle" || this._vaillantB503SessionState === "Disabled") {
+	if ((this._vaillantB503SessionState === "Idle" || this._vaillantB503SessionState === "Disabled") && !this._vaillantB503SessionOwned) {
 	  if (this._vaillantB503LiveToken === deferred.token && this._vaillantB503LiveTarget === deferred.target) {
 		this._vaillantB503LiveToken = null;
 		this._vaillantB503LiveTarget = null;
 	  }
-	  this._vaillantB503DeferredCleanup = undefined;
+	  this._finishVaillantB503DeferredCleanup(deferred);
 	  return;
 	}
-	if (this._vaillantB503SessionState !== "Active") return;
-	if (this._vaillantB503LiveToken !== deferred.token || this._vaillantB503LiveTarget !== deferred.target) {
-	  this._vaillantB503DeferredCleanup = undefined;
-	  return;
-	}
+	if (this._vaillantB503SessionState !== "Active" || !this._vaillantB503SessionOwned) return;
 	deferred.attempted = true;
 	await this._disableVaillantB503Pair(deferred.token, deferred.target);
-	this._vaillantB503DeferredCleanup = undefined;
+	this._finishVaillantB503DeferredCleanup(deferred);
   }
 
   async _disableVaillantB503Pair(token, target, status) {
@@ -4157,7 +4256,8 @@ class PortalShell extends HTMLElement {
 	const disabled = await this._disableVaillantB503Pair(token, target, status);
 	if (!disabled && this._vaillantB503SessionState === "Refreshing" &&
 		this._vaillantB503LiveToken === token && this._vaillantB503LiveTarget === target) {
-	  this._vaillantB503DeferredCleanup = { token, target, attempted: false };
+	  this._vaillantB503DeferredCleanup = { token, target, attempted: false, statusFailures: 0, statusAttempts: 0 };
+	  this._startVaillantB503DeferredCleanupStatusPolling();
 	}
 	return disabled;
   }

@@ -394,9 +394,10 @@ func (st *b503State) liveMonitorSession() VaillantB503SessionStatus {
 	if st == nil || st.opts.SessionManager == nil {
 		return VaillantB503SessionStatus{State: "Idle"}
 	}
+	snapshot := st.opts.SessionManager.StatusSnapshot()
 	return VaillantB503SessionStatus{
-		State: st.opts.SessionManager.State().String(),
-		Owned: st.opts.SessionManager.IsOwned(),
+		State: snapshot.State.String(),
+		Owned: snapshot.Owned,
 	}
 }
 

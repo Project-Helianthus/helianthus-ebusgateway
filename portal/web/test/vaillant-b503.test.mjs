@@ -71,7 +71,9 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
       documentElement: { setAttribute() {} },
       createElement() {
         const element = makeAuditedElement({
-          addEventListener() {}, append() {},
+          _listeners: new Map(),
+          addEventListener(type, listener) { this._listeners.set(type, listener); },
+          append() {},
           setAttribute(name, value) { this._audit.push({ prop: String(name), value: String(value) }); },
         });
         createdElements.push(element);
@@ -492,6 +494,47 @@ test("VaillantB503ProjectionCard_renders_without_projection_planes", async () =>
   assert.match(appended[0].textContent, /Vaillant B503/);
   assert.ok(appended[0]._audit.some((entry) => entry.prop === "data-role" && entry.value === "projection-b503-card"),
     "projection card must retain the public data-role selector");
+});
+
+test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const staleTarget = makeAuditedElement({ value: "8" });
+  const paneBody = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-device-select"]', makeAuditedElement({ value: "21" })],
+      ['[data-role="vaillant-b503-target"]', staleTarget],
+      ['[data-role="vaillant-b503-body"]', paneBody],
+      ['[data-role="vaillant-b503-errors-body"]', makeAuditedElement()],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+      { match: "vaillantCapabilities", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+      { match: "VaillantErrors", reply: { data: { vaillantErrors: { firstActiveError: null, slots: [] } } } },
+    ]),
+  });
+
+  await Object.getPrototypeOf(shell).renderVaillantB503ProjectionCard.call(shell, grid, 21);
+  assert.equal(appended.length, 1, "the admitted card must be rendered");
+  const click = appended[0]._listeners.get("click");
+  assert.equal(typeof click, "function", "the projection card must be navigable");
+  click();
+  await flush();
+
+  assert.equal(Object.getPrototypeOf(shell)._vaillantB503Target.call(shell), 21,
+    "the card target must remain canonical despite the stale picker");
+  await Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
+  const b503Calls = fetchRequests
+    .map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("vaillantCapabilities") || query.includes("VaillantErrors"));
+  assert.ok(b503Calls.length >= 2, "card navigation must probe capability and issue later B503 requests");
+  for (const call of b503Calls) {
+    assert.equal(call.variables.targetAddress, 21,
+      `stale picker must not override ${call.query}`);
+  }
 });
 
 test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () => {

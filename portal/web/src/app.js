@@ -3581,8 +3581,10 @@ class PortalShell extends HTMLElement {
   }
 
   _vaillantB503Target() {
-    const select = this.querySelector('[data-role="vaillant-b503-target"]');
-    const raw = select ? String(select.value ?? "").trim() : this._vaillantB503TargetAddress;
+    // The canonical target belongs to the pane state. A projection card can
+    // navigate here while a previously-rendered, now-hidden picker is still
+    // in the DOM; that stale control must not override the card target.
+    const raw = this._vaillantB503TargetAddress;
     if (raw === "" || raw === null || raw === undefined) return null;
     const value = Number(raw);
     return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
@@ -3611,7 +3613,12 @@ class PortalShell extends HTMLElement {
 
   async changeVaillantB503Target() {
     const previous = this._vaillantB503TargetAddress;
-    const next = this._vaillantB503Target();
+    // Read the current, visible picker exactly at its change event, then
+    // publish that value as the pane's canonical target for every request.
+    const select = this.querySelector('[data-role="vaillant-b503-target"]');
+    const raw = select ? String(select.value ?? "").trim() : "";
+    const parsed = Number(raw);
+    const next = raw !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= 255 ? parsed : null;
     if (next === previous) return;
     this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
     this._vaillantB503TargetAddress = next;

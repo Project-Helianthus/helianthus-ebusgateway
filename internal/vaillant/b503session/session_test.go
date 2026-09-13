@@ -222,6 +222,38 @@ func TestSession_EpochAdvance_RefreshSucceeds_NeverExposesExpired(t *testing.T) 
 	}
 }
 
+func TestSession_StatusSnapshot_NormalizesExpiredAndKeepsOwnershipCoherent(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	m := b503session.New(newTK(testEpoch), time.Minute, func(context.Context) (b503session.TransportKey, error) {
+		close(refreshStarted)
+		<-allowRefresh
+		return newTK(testEpoch + 1), nil
+	})
+	if _, err := m.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable err=%v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.OnEpochAdvance(context.Background(), testEpoch+1)
+	}()
+	<-refreshStarted
+
+	// During refresh the internal FSM is expired, but the public snapshot must
+	// expose its normalized state together with the still-held gate from one
+	// critical section.
+	if got := m.StatusSnapshot(); got.State != b503session.Disabled || !got.Owned {
+		t.Fatalf("snapshot during refresh = %+v; want Disabled with ownership held", got)
+	}
+	close(allowRefresh)
+	<-done
+	if got := m.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("snapshot after refresh = %+v; want Active with ownership held", got)
+	}
+}
+
 // 11. Epoch advance: refresh returns TransportDown -> Disabled outcome.
 func TestSession_EpochAdvance_RefreshTransportDown_DisabledOutcome(t *testing.T) {
 	m := b503session.New(newTK(testEpoch), 30*time.Second, downRefresh())

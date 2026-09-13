@@ -76,6 +76,18 @@ type Manager struct {
 	lastRefreshTransportDown bool
 }
 
+// StatusSnapshot is one coherent, public observation of the live-monitor
+// session. State is normalized so the internal expired transition is never
+// exposed; Owned reports the ownership gate from that same observation.
+//
+// Callers that render or serialize both values must use StatusSnapshot rather
+// than combining State and IsOwned, because a lifecycle transition may occur
+// between separate calls to those accessors.
+type StatusSnapshot struct {
+	State State
+	Owned bool
+}
+
 // New constructs a Manager bound to the initial transport incarnation.
 // idleTimeout is the Active->Disabled auto-disable window (spec §7.6;
 // production value 30s). refresh is invoked during epoch-advance handling.
@@ -171,13 +183,7 @@ func (m *Manager) Read(transport TransportKey) error {
 func (m *Manager) State() State {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	s := m.state
-	if s == expired {
-		// Should be unreachable in steady state — OnEpochAdvance resolves
-		// expired before returning control. Surface a conservative Disabled.
-		return Disabled
-	}
-	return s
+	return m.normalizedStateLocked()
 }
 
 // IsOwned reports whether the session gate is currently held by any
@@ -192,6 +198,18 @@ func (m *Manager) IsOwned() bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	return m.mutexHeld
+}
+
+// StatusSnapshot returns the normalized public state and ownership gate from
+// one stateMu critical section. This is the stable observation used by MCP and
+// GraphQL session-status surfaces.
+func (m *Manager) StatusSnapshot() StatusSnapshot {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return StatusSnapshot{
+		State: m.normalizedStateLocked(),
+		Owned: m.mutexHeld,
+	}
 }
 
 // TransportKey returns the manager's current transport key. Exposed so
@@ -319,6 +337,15 @@ func (m *Manager) ResetForRestart() {
 }
 
 // --- internal helpers (all require stateMu held) ---
+
+func (m *Manager) normalizedStateLocked() State {
+	if m.state == expired {
+		// OnEpochAdvance may deliberately release stateMu while a refresh is
+		// in flight. That transient state is never a public session state.
+		return Disabled
+	}
+	return m.state
+}
 
 // toDisabledLocked transitions to Disabled from any held-owner state and
 // releases the ownership gate exactly once. Bumps idleTimerGen so any

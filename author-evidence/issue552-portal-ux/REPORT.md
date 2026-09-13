@@ -440,6 +440,26 @@ token.
   `ci_local-final-deferred-cleanup.log`, SHA-256
   `da796579a0901a97bb7f40dfa8772a142477fbea3d91235ef976eda95a200d7d`.
 
+
+- Follow-up source commit `0e49b3019bfbfc438b1141a08f6c2872a2e21142`
+  (tree `28030ec72ab9d48dfc219e9f3371ce42f840ac9c`) closes the remaining
+  component-lifecycle race in the same P2 correction. A detached deferred
+  status task now exits before its request and rechecks attachment after its
+  await, so a late `Active` response after disconnect cannot emit a hidden
+  cleanup write. The exact retained token-target pair and deferred recovery
+  state remain available if that component reconnects.
+- The deterministic fake-timer regression starts a status read, disconnects the
+  component before the `Active` result resolves, and proves zero disable writes
+  with the pair still retained. Focused
+  `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 40 tests.
+  The complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` run passed: Portal 135 tests,
+  repository-wide `go test -race`, Python 168+6+26+11+6+2, zero lint issues,
+  Modbus RTU transport conformance, Storage/EVSE SemReg gates, and passive
+  smoke correctly not triggered. Durable log:
+  `ci_local-final-disconnect-fence.log`, SHA-256
+  `80efccf09fd506269c0332526e6587b99d0a80c6a9171e4a1b4af8980eef4a2e`.
+
 ## Gate boundary
 
 `Project-Helianthus/helianthus-docs-ebus#523` / PR #524 and this repository's

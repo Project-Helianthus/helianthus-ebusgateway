@@ -242,6 +242,29 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-6fc6d8b.log`, SHA-256
   `514eb6e8a390ad7be5910bfe5b2202aa726bb3b36f62eb8a43c419223f4c3301`.
+- Exact-head review found that projection-card navigation published B directly
+  without the target-switch pending fence, and that invalid capability target
+  parsing could null an otherwise valid GraphQL query. `eb9478d...` factors
+  synchronous target qualification into one path used by both the picker and
+  projection cards. Card clicks now publish B `PENDING`, withdraw old controls,
+  avoid a duplicate activation probe, then run cleanup/probe in order. The
+  deterministic A-available -> click-B-card -> B-NOT_SUPPORTED regression
+  clicks stale Enable/Read/Disable controls and proves no B live operation is
+  dispatched. `vaillantCapabilities` is now a nullable root while its returned
+  capability child fields remain non-null. The mixed-root regression sends
+  target 256, receives the structured `INVALID_ARGUMENT`, observes only that
+  root as null, and retains its valid `vaillantErrors` sibling. The public
+  runtime-provider contract and schema characterization digest record the
+  deliberate root nullability.
+- Focused Portal B503 tests passed 22/22 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `eb9478d...`: PASS, including 117
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-eb9478d.log`, SHA-256
+  `6c5054a71c4bc96f118ad8e9db50632c97efd667f2fe20b896ad37648cbba6a6`.
 
 ## Gate boundary
 

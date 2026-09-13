@@ -1,28 +1,31 @@
 {
-  "data": [
-    {
-      "first_active_error": 281,
-      "index": 0,
-      "slots": [
-        281,
-        null,
-        null,
-        null,
-        null
-      ]
-    },
-    {
-      "first_active_error": 282,
-      "index": 1,
-      "slots": [
-        282,
-        null,
-        null,
-        null,
-        null
-      ]
-    }
-  ],
+  "data": {
+    "failure": null,
+    "records": [
+      {
+        "first_active_error": 281,
+        "index": 0,
+        "slots": [
+          281,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "first_active_error": 282,
+        "index": 1,
+        "slots": [
+          282,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    ]
+  },
   "error": null,
   "meta": {
     "capabilities": {
@@ -39,7 +42,7 @@
       "minor": 0,
       "name": "helianthus-ebus-mcp"
     },
-    "data_hash": "98ca41db85e96bc2aefcdd7ffdc9085d7b7c72991fd34311d6e56de0c7cba09c",
+    "data_hash": "63f7d1247ff3330618641b3e5a1f8d299c9c3371d59307b2e81cf0264da22c2c",
     "data_timestamp": "\u003cruntime\u003e"
   }
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -69,13 +68,15 @@ func b503GraphQLResult(t *testing.T, provider *b503GraphQLProvider, query string
 func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {
 	runtime, provider := newB503ParityRuntime(t, &b503ParityDispatcher{})
 	mcpHistory := mcpCallToolEnvelope(t, runtime.mcpServer.Handler(), "ebus.v1.vaillant.errors.history.list", `{"target_address":21,"limit":2}`)
-	graphResult := b503GraphQLResult(t, provider, `{ vaillantErrorsHistory(targetAddress:21, limit:2) { index firstActiveError slots } }`)
+	graphResult := b503GraphQLResult(t, provider, `{ vaillantErrorsHistory(targetAddress:21, limit:2) { records { index firstActiveError slots } failure { index code message } } }`)
 	if len(graphResult.Errors) != 0 {
 		t.Fatalf("GraphQL history errors: %+v", graphResult.Errors)
 	}
 
-	mcpRows := mcpHistory["data"].([]any)
-	graphRows := graphResult.Data.(map[string]any)["vaillantErrorsHistory"].([]any)
+	mcpData := mcpHistory["data"].(map[string]any)
+	mcpRows := mcpData["records"].([]any)
+	graphHistory := graphResult.Data.(map[string]any)["vaillantErrorsHistory"].(map[string]any)
+	graphRows := graphHistory["records"].([]any)
 	if len(mcpRows) != len(graphRows) {
 		t.Fatalf("history lengths MCP=%d GraphQL=%d", len(mcpRows), len(graphRows))
 	}
@@ -124,21 +125,23 @@ func TestIssue552VaillantB503HistoryMCPGraphQLFailureParity(t *testing.T) {
 		t.Fatalf("MCP RPC error: %+v", response.Error)
 	}
 	content := response.Result["content"].([]any)[0].(map[string]any)["text"].(string)
-	if !strings.Contains(content, `"code":"UPSTREAM_RPC_FAILED"`) || !strings.Contains(content, `"data":null`) {
-		t.Fatalf("MCP aggregate did not fail closed: %s", content)
+	if !strings.Contains(content, `"records":[{`) || !strings.Contains(content, `"failure":{"index":1,"code":"UPSTREAM_RPC_FAILED"`) {
+		t.Fatalf("MCP partial aggregate contract drift: %s", content)
 	}
 
 	graphResult := b503GraphQLResult(t, provider, `{
-		vaillantErrorsHistory(limit:2) { index }
+		vaillantErrorsHistory(limit:2) { records { index } failure { index code message } }
 		vaillantCapabilities { vaillantB503 { reason available } }
 	}`)
-	if len(graphResult.Errors) != 1 || !strings.Contains(graphResult.Errors[0].Message, "UPSTREAM_RPC_FAILED") {
-		t.Fatalf("GraphQL aggregate error drift: %+v", graphResult.Errors)
+	if len(graphResult.Errors) != 0 {
+		t.Fatalf("GraphQL partial aggregate must remain typed data: %+v", graphResult.Errors)
 	}
 	if data, ok := graphResult.Data.(map[string]any); ok {
-		encoded, err := json.Marshal(data)
-		if err != nil || !strings.Contains(string(encoded), `"vaillantErrorsHistory":null`) {
-			t.Fatalf("GraphQL returned non-null aggregate data: %s (%v)", encoded, err)
+		history := data["vaillantErrorsHistory"].(map[string]any)
+		records := history["records"].([]any)
+		failure := history["failure"].(map[string]any)
+		if len(records) != 1 || records[0].(map[string]any)["index"] != 0 || failure["index"] != 1 || failure["code"] != "UPSTREAM_RPC_FAILED" {
+			t.Fatalf("GraphQL partial history=%#v; want prefix and structured failure", history)
 		}
 		capability := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
 		if capability["reason"] != "AVAILABLE" || capability["available"] != true {

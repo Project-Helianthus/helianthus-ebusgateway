@@ -1152,9 +1152,62 @@ test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async 
   assert.equal(errorsBody.innerHTML, "", "old target response must not mutate the new target view");
 });
 
+test("VaillantB503Pane_historyFirstLoadRendersVerifiedPartialPrefix", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: {
+        records: [{ index: 0, firstActiveError: 281, slots: [281, null] }],
+        failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" },
+      } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>0<\/td>/, "first successful indexed row must render");
+  assert.match(body.innerHTML, /b503-history-partial/);
+  assert.match(body.innerHTML, /index 1: UPSTREAM_RPC_FAILED/);
+  assert.doesNotMatch(body.innerHTML, /<td>1<\/td>/, "later unprobed rows must not be fabricated");
+});
+
+test("VaillantB503Pane_historyPartialFailureRetainsPriorTableRows", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  let calls = 0;
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantErrorsHistory")) throw new Error(`unexpected request ${query}`);
+      calls += 1;
+      const history = calls === 1
+        ? { records: [
+          { index: 0, firstActiveError: 281, slots: [281] },
+          { index: 1, firstActiveError: 282, slots: [282] },
+        ], failure: null }
+        : { records: [{ index: 0, firstActiveError: 281, slots: [281] }],
+          failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" } };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>1<\/td>/, "baseline table contains index 1");
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>0<\/td>/);
+  assert.match(body.innerHTML, /<td>1<\/td>/,
+    "later partial failure must retain last-known valid row instead of replacing the table wholesale");
+  assert.match(body.innerHTML, /b503-history-partial/);
+  assert.match(body.innerHTML, /UPSTREAM_RPC_FAILED/);
+});
+
 test("VaillantB503Pane_uses_graphql_history_session_and_AD02_contract", async () => {
   const { source } = await loadShellSource();
-  assert.match(source, /vaillantErrorsHistory\(targetAddress: \$targetAddress, limit: \$limit\)/);
+  assert.match(source, /vaillantErrorsHistory\(targetAddress: \$targetAddress, limit: \$limit\) \{ records/);
+  assert.match(source, /b503-history-partial/);
   assert.match(source, /vaillantLiveMonitorSession\(targetAddress: \$targetAddress\)/);
   assert.match(source, /b503-install-writes-banner/);
   assert.match(source, /b503-ad02-tooltip-anchor/);

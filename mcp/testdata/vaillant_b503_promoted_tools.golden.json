@@ -1,6 +1,6 @@
 [
   {
-    "description": "List a bounded prefix of Vaillant error-history records in ascending index order (READ).",
+    "description": "List a bounded Vaillant error-history prefix in ascending index order; returns verified records and a first-failure marker without probing later indices (READ).",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {

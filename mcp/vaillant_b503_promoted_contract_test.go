@@ -11,6 +11,7 @@ import (
 
 type promotedB503Dispatcher struct {
 	failIndex *byte
+	calls     []byte
 }
 
 type targetAwarePromotedB503Dispatcher struct {
@@ -42,6 +43,7 @@ func (dispatcher *promotedB503Dispatcher) Invoke(_ context.Context, _ byte, payl
 		return []byte{0x19, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, nil
 	case payload[0] == 0x01 && payload[1] == 0x01 && len(payload) == 3:
 		index := payload[2]
+		dispatcher.calls = append(dispatcher.calls, index)
 		if dispatcher.failIndex != nil && index == *dispatcher.failIndex {
 			return nil, errors.New("history transport failure")
 		}
@@ -104,7 +106,7 @@ func TestVaillantB503PromotedToolsGolden(t *testing.T) {
 	assertB503Golden(t, "vaillant_b503_promoted_tools.golden.json", selected)
 }
 
-func TestVaillantB503ErrorsHistoryListFailsWithoutPartialData(t *testing.T) {
+func TestVaillantB503ErrorsHistoryListPreservesVerifiedPrefix(t *testing.T) {
 	failIndex := byte(1)
 	server := newB503Server(t, &stubB503Dispatcher{}, newDefaultMgr())
 	state, _ := b503StateFor(server)
@@ -114,12 +116,45 @@ func TestVaillantB503ErrorsHistoryListFailsWithoutPartialData(t *testing.T) {
 		JSONRPC: "2.0", ID: 1, Method: "tools/call",
 		Params: json.RawMessage(`{"name":"` + toolVaillantB503ErrorsHistoryListName + `","arguments":{"limit":2}}`),
 	}))
-	if envelope["data"] != nil {
-		t.Fatalf("partial aggregate data = %#v; want nil", envelope["data"])
+	data := envelope["data"].(map[string]any)
+	records := data["records"].([]any)
+	if len(records) != 1 || int(records[0].(map[string]any)["index"].(float64)) != 0 {
+		t.Fatalf("partial records = %#v; want verified index 0 prefix", records)
 	}
-	errorObject := envelope["error"].(map[string]any)
-	if errorObject["code"] != "UPSTREAM_RPC_FAILED" {
-		t.Fatalf("error code = %#v; want UPSTREAM_RPC_FAILED", errorObject["code"])
+	failure := data["failure"].(map[string]any)
+	if int(failure["index"].(float64)) != 1 || failure["code"] != "UPSTREAM_RPC_FAILED" {
+		t.Fatalf("failure = %#v; want index 1 UPSTREAM_RPC_FAILED", failure)
+	}
+	if envelope["error"] != nil {
+		t.Fatalf("typed partial result must not hide rows behind envelope error: %#v", envelope["error"])
+	}
+}
+
+func TestVaillantB503ErrorsHistoryListPartialHashAndOrderingAreDeterministic(t *testing.T) {
+	failIndex := byte(2)
+	server := newB503Server(t, &stubB503Dispatcher{}, newDefaultMgr())
+	state, _ := b503StateFor(server)
+	state.opts.Dispatcher = &promotedB503Dispatcher{failIndex: &failIndex}
+	call := rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolVaillantB503ErrorsHistoryListName + `","arguments":{"limit":4}}`),
+	}
+	first := envelopeFromResult(t, doRPC(t, server.Handler(), call))
+	second := envelopeFromResult(t, doRPC(t, server.Handler(), call))
+	if first["meta"].(map[string]any)["data_hash"] != second["meta"].(map[string]any)["data_hash"] {
+		t.Fatalf("partial history data_hash must be deterministic: %#v vs %#v", first["meta"], second["meta"])
+	}
+	data := first["data"].(map[string]any)
+	records := data["records"].([]any)
+	if len(records) != 2 || int(records[0].(map[string]any)["index"].(float64)) != 0 || int(records[1].(map[string]any)["index"].(float64)) != 1 {
+		t.Fatalf("partial history records=%#v; want deterministic ordered prefix 0,1", records)
+	}
+	failure := data["failure"].(map[string]any)
+	if int(failure["index"].(float64)) != 2 || failure["code"] != "UPSTREAM_RPC_FAILED" {
+		t.Fatalf("partial history failure=%#v; want first failed index 2", failure)
+	}
+	if got := state.opts.Dispatcher.(*promotedB503Dispatcher).calls; len(got) != 6 || got[0] != 0 || got[1] != 1 || got[2] != 2 || got[3] != 0 || got[4] != 1 || got[5] != 2 {
+		t.Fatalf("history calls=%v; each request must stop at failed index without probing later rows", got)
 	}
 }
 
@@ -134,12 +169,13 @@ func TestVaillantB503ErrorsHistoryListRejectsEchoedIndexDrift(t *testing.T) {
 		JSONRPC: "2.0", ID: 1, Method: "tools/call",
 		Params: json.RawMessage(`{"name":"` + toolVaillantB503ErrorsHistoryListName + `","arguments":{"limit":1}}`),
 	}))
-	if envelope["data"] != nil {
-		t.Fatalf("drifted aggregate data = %#v; want nil", envelope["data"])
+	data := envelope["data"].(map[string]any)
+	if records := data["records"].([]any); len(records) != 0 {
+		t.Fatalf("drifted aggregate records = %#v; want no fabricated rows", records)
 	}
-	errorObject := envelope["error"].(map[string]any)
-	if errorObject["code"] != "DECODE_FAILED" {
-		t.Fatalf("error code = %#v; want DECODE_FAILED", errorObject["code"])
+	failure := data["failure"].(map[string]any)
+	if int(failure["index"].(float64)) != 0 || failure["code"] != "DECODE_FAILED" {
+		t.Fatalf("failure = %#v; want index 0 DECODE_FAILED", failure)
 	}
 }
 

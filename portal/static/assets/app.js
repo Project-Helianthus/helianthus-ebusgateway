@@ -4065,18 +4065,43 @@ class PortalShell extends HTMLElement {
     const body = this.querySelector('[data-role="vaillant-b503-history-body"]');
     if (this._vaillantB503CapabilityReason === "PENDING") return;
     const context = this._vaillantB503RequestContext();
+    const cacheKey = `${context.epoch}:${context.target === null ? "default" : context.target}`;
     try {
       const env = await this._gqlRequest(
-        "query VaillantErrorsHistory($targetAddress: Int, $limit: Int) { vaillantErrorsHistory(targetAddress: $targetAddress, limit: $limit) { index firstActiveError slots } }",
+        "query VaillantErrorsHistory($targetAddress: Int, $limit: Int) { vaillantErrorsHistory(targetAddress: $targetAddress, limit: $limit) { records { index firstActiveError slots } failure { index code message } } }",
         { targetAddress: context.target, limit: 5 },
       );
       if (!this._isCurrentVaillantB503Context(context)) return;
-      if (env?.errors?.length) { if (body) body.textContent = env.errors[0].message || "History unavailable"; return; }
-      const rows = Array.isArray(env?.data?.vaillantErrorsHistory) ? env.data.vaillantErrorsHistory : [];
-      if (body) body.innerHTML = rows.length ? `<table class="table"><thead><tr><th>Index</th><th>First active error</th><th>Slots</th></tr></thead><tbody>${rows.map((record) => `<tr><td>${escapeHtml(record.index)}</td><td>${escapeHtml(record.firstActiveError ?? "—")}</td><td>${escapeHtml((record.slots || []).map((slot) => slot ?? "—").join(", "))}</td></tr>`).join("")}</tbody></table>` : "<div class=\"muted-inline\">No history records.</div>";
+      if (env?.errors?.length) {
+        const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+        this._renderVaillantErrorsHistory(body, prior, { code: "UPSTREAM_RPC_FAILED", message: env.errors[0].message || "History unavailable" });
+        return;
+      }
+      const result = env?.data?.vaillantErrorsHistory;
+      const rows = Array.isArray(result?.records) ? result.records : [];
+      const failure = result?.failure && typeof result.failure === "object" ? result.failure : null;
+      const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+      const visible = failure && prior.length
+        ? Array.from(new Map([...prior, ...rows].map((record) => [record.index, record])).values()).sort((a, b) => Number(a.index) - Number(b.index))
+        : rows;
+      this._vaillantB503HistoryCache = { key: cacheKey, rows: visible };
+      this._renderVaillantErrorsHistory(body, visible, failure);
     } catch (error) {
-      if (this._isCurrentVaillantB503Context(context) && body) body.textContent = "History unavailable";
+      if (!this._isCurrentVaillantB503Context(context)) return;
+      const prior = this._vaillantB503HistoryCache?.key === cacheKey ? this._vaillantB503HistoryCache.rows : [];
+      this._renderVaillantErrorsHistory(body, prior, { code: "UPSTREAM_RPC_FAILED", message: "History unavailable" });
     }
+  }
+
+  _renderVaillantErrorsHistory(body, rows, failure) {
+    if (!body) return;
+    const table = rows.length
+      ? `<table class="table"><thead><tr><th>Index</th><th>First active error</th><th>Slots</th></tr></thead><tbody>${rows.map((record) => `<tr><td>${escapeHtml(record.index)}</td><td>${escapeHtml(record.firstActiveError ?? "—")}</td><td>${escapeHtml((record.slots || []).map((slot) => slot ?? "—").join(", "))}</td></tr>`).join("")}</tbody></table>`
+      : "<div class=\"muted-inline\">No history records.</div>";
+    const warning = failure
+      ? `<div class="error" data-testid="b503-history-partial">History stopped at index ${escapeHtml(failure.index ?? "unknown")}: ${escapeHtml(failure.code || "UPSTREAM_RPC_FAILED")} — ${escapeHtml(failure.message || "unavailable")}</div>`
+      : "";
+    body.innerHTML = `${table}${warning}`;
   }
 }
 

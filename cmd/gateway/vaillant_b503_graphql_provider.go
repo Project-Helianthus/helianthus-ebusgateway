@@ -91,23 +91,29 @@ func (p *b503GraphQLProvider) ErrorHistory(ctx context.Context, target *byte, in
 	return historyToGraphQL(rec), nil
 }
 
-func (p *b503GraphQLProvider) ErrorsHistory(ctx context.Context, target *byte, limit int) ([]graphql.VaillantB503HistoryRecord, error) {
+func (p *b503GraphQLProvider) ErrorsHistory(ctx context.Context, target *byte, limit int) (graphql.VaillantB503HistoryList, error) {
 	if p == nil || p.mcpServer == nil {
-		return nil, errors.New("vaillant B503 MCP provider unavailable")
+		return graphql.VaillantB503HistoryList{}, errors.New("vaillant B503 MCP provider unavailable")
 	}
-	records, err := p.mcpServer.VaillantB503ErrorsHistoryList(ctx, target, limit)
+	result, err := p.mcpServer.VaillantB503ErrorsHistoryList(ctx, target, limit)
 	if err != nil {
-		return nil, err
+		return graphql.VaillantB503HistoryList{}, err
 	}
-	out := make([]graphql.VaillantB503HistoryRecord, len(records))
-	for index, record := range records {
+	out := make([]graphql.VaillantB503HistoryRecord, len(result.Records))
+	for index, record := range result.Records {
 		out[index] = graphql.VaillantB503HistoryRecord{
 			Index:            record.Index,
 			FirstActiveError: cloneInt(record.FirstActiveError),
 			Slots:            cloneIntPointers(record.Slots),
 		}
 	}
-	return out, nil
+	var failure *graphql.VaillantB503HistoryFailure
+	if result.Failure != nil {
+		failure = &graphql.VaillantB503HistoryFailure{
+			Index: result.Failure.Index, Code: result.Failure.Code, Message: result.Failure.Message,
+		}
+	}
+	return graphql.VaillantB503HistoryList{Records: out, Failure: failure}, nil
 }
 
 func (p *b503GraphQLProvider) ServiceHistory(ctx context.Context, target *byte, index *byte) (graphql.VaillantB503HistoryRecord, error) {

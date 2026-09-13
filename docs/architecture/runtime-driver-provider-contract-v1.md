@@ -1586,11 +1586,14 @@ contract are:
   `ebus.v1.vaillant.live_monitor.session.get`. The bounded
   `ebus.v1.vaillant.live_monitor.get` session action is separate; no B503
   install-write tool is present. GraphQL singular reads, the bounded
-  `vaillantErrorsHistory` aggregate, `vaillantLiveMonitorSession`, and
-  `vaillantCapabilities` use nullable roots with non-null aggregate/session/
-  capability child elements: a history, unavailable-session, or invalid-target
-  capability failure is field-local and preserves unrelated root fields in the
-  same query.
+  `vaillantErrorsHistory`, `vaillantLiveMonitorSession`, and
+  `vaillantCapabilities` use nullable roots with non-null returned child
+  elements. The history root returns a typed `records` prefix plus nullable
+  `failure { index, code, message }`: it stops at the first failed indexed
+  read, preserves earlier verified rows, and neither fabricates nor probes
+  later indices. The same stable MCP list output is `{records, failure}`.
+  An unavailable session or invalid-target capability failure is field-local
+  and preserves unrelated root fields in the same query.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

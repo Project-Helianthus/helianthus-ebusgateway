@@ -35,6 +35,21 @@ type VaillantB503HistoryRecord struct {
 	Slots            []*int
 }
 
+// VaillantB503HistoryFailure identifies the first unsuccessful indexed read
+// in a bounded history request. Rows after Index are unknown and omitted.
+type VaillantB503HistoryFailure struct {
+	Index   int
+	Code    string
+	Message string
+}
+
+// VaillantB503HistoryList preserves the verified ordered record prefix and
+// makes an indexed failure explicit instead of discarding earlier evidence.
+type VaillantB503HistoryList struct {
+	Records []VaillantB503HistoryRecord
+	Failure *VaillantB503HistoryFailure
+}
+
 // VaillantB503LiveMonitor is the GraphQL view of a live-monitor read/enable
 // response. IssuerToken is populated on enable; RawHex on read.
 type VaillantB503LiveMonitor struct {
@@ -57,7 +72,7 @@ type VaillantB503Session struct {
 type VaillantB503Provider interface {
 	Errors(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	ErrorHistory(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
-	ErrorsHistory(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error)
+	ErrorsHistory(ctx context.Context, target *byte, limit int) (VaillantB503HistoryList, error)
 	ServiceCurrent(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	ServiceHistory(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	LiveMonitor(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
@@ -134,6 +149,7 @@ func resolveSlots(slots []*int) (any, error) {
 func buildVaillantB503Types() (
 	errorsType *graphqlgo.Object,
 	historyType *graphqlgo.Object,
+	historyListType *graphqlgo.Object,
 	liveMonitorType *graphqlgo.Object,
 	capabilityType *graphqlgo.Object,
 	capabilitiesType *graphqlgo.Object,
@@ -198,6 +214,53 @@ func buildVaillantB503Types() (
 					return resolveSlots(s.Slots)
 				},
 			},
+		},
+	})
+
+	historyFailureType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "VaillantB503HistoryFailure",
+		Fields: graphqlgo.Fields{
+			"index": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.Int), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				failure, _ := params.Source.(*VaillantB503HistoryFailure)
+				if failure == nil {
+					return 0, nil
+				}
+				return failure.Index, nil
+			}},
+			"code": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				failure, _ := params.Source.(*VaillantB503HistoryFailure)
+				if failure == nil {
+					return "UNKNOWN", nil
+				}
+				return failure.Code, nil
+			}},
+			"message": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.String), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				failure, _ := params.Source.(*VaillantB503HistoryFailure)
+				if failure == nil {
+					return "", nil
+				}
+				return failure.Message, nil
+			}},
+		},
+	})
+
+	historyListType = graphqlgo.NewObject(graphqlgo.ObjectConfig{
+		Name: "VaillantB503HistoryList",
+		Fields: graphqlgo.Fields{
+			"records": &graphqlgo.Field{Type: graphqlgo.NewNonNull(graphqlgo.NewList(graphqlgo.NewNonNull(historyType))), Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				list, ok := params.Source.(VaillantB503HistoryList)
+				if !ok {
+					return []VaillantB503HistoryRecord{}, nil
+				}
+				return list.Records, nil
+			}},
+			"failure": &graphqlgo.Field{Type: historyFailureType, Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+				list, ok := params.Source.(VaillantB503HistoryList)
+				if !ok {
+					return nil, nil
+				}
+				return list.Failure, nil
+			}},
 		},
 	})
 
@@ -289,7 +352,7 @@ func buildVaillantB503Types() (
 		},
 	})
 
-	return errorsType, historyType, liveMonitorType, capabilityType, capabilitiesType, sessionType
+	return errorsType, historyType, historyListType, liveMonitorType, capabilityType, capabilitiesType, sessionType
 }
 
 func parseTargetAddress(args map[string]any) (*byte, error) {
@@ -343,7 +406,7 @@ func parseHistoryIndex(args map[string]any) (*byte, error) {
 }
 
 func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
-	errorsType, historyType, liveMonitorType, _, capabilitiesType, sessionType := buildVaillantB503Types()
+	errorsType, historyType, historyListType, liveMonitorType, _, capabilitiesType, sessionType := buildVaillantB503Types()
 
 	targetArg := graphqlgo.FieldConfigArgument{
 		"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
@@ -400,11 +463,10 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 	// The plural query is intentionally bounded.  It is a browser-facing
 	// history view, not a replacement for native evidence or an unbounded scan.
 	fields["vaillantErrorsHistory"] = &graphqlgo.Field{
-		// Keep the root nullable, like the singular read fields. An indexed
-		// dispatcher failure is field-local: the aggregate remains all-or-
-		// nothing, but unrelated root fields in the same GraphQL operation
-		// remain available to the caller.
-		Type: graphqlgo.NewList(graphqlgo.NewNonNull(historyType)),
+		// The root remains nullable for validation/provider failures. Indexed
+		// read failure is represented inside a non-null history-list result so
+		// the verified record prefix and failed index remain visible.
+		Type: historyListType,
 		Args: graphqlgo.FieldConfigArgument{
 			"limit":         &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
 			"targetAddress": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},

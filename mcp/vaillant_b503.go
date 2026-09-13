@@ -51,6 +51,23 @@ type VaillantB503HistoryRecord struct {
 	Slots            []*int `json:"slots"`
 }
 
+// VaillantB503HistoryFailure describes the first failed read in the bounded,
+// ordered history prefix. Records before Index are verified native reads;
+// later indices are deliberately not fabricated or attempted.
+type VaillantB503HistoryFailure struct {
+	Index   int    `json:"index"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// VaillantB503HistoryList is the stable partial-result contract for the
+// history list tool. Failure is nil only when every requested index was read.
+// A non-nil Failure preserves the successful ordered prefix in Records.
+type VaillantB503HistoryList struct {
+	Records []VaillantB503HistoryRecord `json:"records"`
+	Failure *VaillantB503HistoryFailure `json:"failure"`
+}
+
 // VaillantB503SessionStatus is the stable read-only ownership view. Owned
 // means the gateway session gate is held; it does not identify a client and
 // deliberately exposes no issuer token or transport key.
@@ -149,7 +166,7 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 		},
 		Tool{
 			Name:        toolVaillantB503ErrorsHistoryListName,
-			Description: "List a bounded prefix of Vaillant error-history records in ascending index order (READ).",
+			Description: "List a bounded Vaillant error-history prefix in ascending index order; returns verified records and a first-failure marker without probing later indices (READ).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": mergeProps(targetProp, map[string]any{
@@ -353,34 +370,40 @@ func (st *b503State) handleErrorsHistoryList(ctx context.Context, args map[strin
 	if err != nil {
 		return st.errEnvelopeAt(ctx, target, err)
 	}
-	records, err := st.errorsHistoryList(ctx, target, limit)
+	result, err := st.errorsHistoryList(ctx, target, limit)
 	if err != nil {
 		return st.errEnvelopeAt(ctx, target, err)
 	}
-	return st.okEnvelopeAt(ctx, target, records)
+	return st.okEnvelopeAt(ctx, target, result)
 }
 
-func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit int) ([]VaillantB503HistoryRecord, error) {
+func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit int) (VaillantB503HistoryList, error) {
 	if limit < 1 || limit > 16 {
-		return nil, fmt.Errorf("%w: limit must be between 1 and 16", errInvalidArgument)
+		return VaillantB503HistoryList{}, fmt.Errorf("%w: limit must be between 1 and 16", errInvalidArgument)
 	}
 	records := make([]VaillantB503HistoryRecord, 0, limit)
 	for index := 0; index < limit; index++ {
 		payload := append(b503.EncodeErrorHistory(), byte(index))
 		resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err)
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: "UPSTREAM_RPC_FAILED", Message: err.Error(),
+			}}, nil
 		}
 		record, err := b503.DecodeErrorHistory(resp)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", errDecodeFailed, err)
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: "DECODE_FAILED", Message: err.Error(),
+			}}, nil
 		}
 		if record.Index != byte(index) {
-			return nil, fmt.Errorf("%w: requested history index %d, device echoed %d", errDecodeFailed, index, record.Index)
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: "DECODE_FAILED", Message: fmt.Sprintf("requested history index %d, device echoed %d", index, record.Index),
+			}}, nil
 		}
 		records = append(records, historyToRecord(record))
 	}
-	return records, nil
+	return VaillantB503HistoryList{Records: records}, nil
 }
 
 func (st *b503State) handleLiveMonitorSession(ctx context.Context, args map[string]any) map[string]any {
@@ -404,10 +427,10 @@ func (st *b503State) liveMonitorSession() VaillantB503SessionStatus {
 
 // VaillantB503ErrorsHistoryList exposes the exact stable MCP aggregate to the
 // GraphQL adapter. A nil target uses the registered default target.
-func (s *Server) VaillantB503ErrorsHistoryList(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+func (s *Server) VaillantB503ErrorsHistoryList(ctx context.Context, target *byte, limit int) (VaillantB503HistoryList, error) {
 	st, ok := b503StateFor(s)
 	if !ok || st == nil {
-		return nil, errNotSupported
+		return VaillantB503HistoryList{}, errNotSupported
 	}
 	resolved := st.opts.DefaultTarget
 	if target != nil {

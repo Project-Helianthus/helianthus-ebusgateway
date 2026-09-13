@@ -14,7 +14,7 @@ import (
 type fakeB503Provider struct {
 	errorsFn         func(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	errorHistoryFn   func(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
-	errorsHistoryFn  func(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error)
+	errorsHistoryFn  func(ctx context.Context, target *byte, limit int) (VaillantB503HistoryList, error)
 	serviceCurrentFn func(ctx context.Context, target *byte) (VaillantB503Errors, error)
 	serviceHistoryFn func(ctx context.Context, target *byte, index *byte) (VaillantB503HistoryRecord, error)
 	liveMonitorFn    func(ctx context.Context, action string, issuerToken *string, target *byte) (VaillantB503LiveMonitor, error)
@@ -36,9 +36,9 @@ func (f *fakeB503Provider) ErrorHistory(ctx context.Context, target *byte, index
 	return f.errorHistoryFn(ctx, target, index)
 }
 
-func (f *fakeB503Provider) ErrorsHistory(ctx context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+func (f *fakeB503Provider) ErrorsHistory(ctx context.Context, target *byte, limit int) (VaillantB503HistoryList, error) {
 	if f.errorsHistoryFn == nil {
-		return nil, errors.New("not stubbed")
+		return VaillantB503HistoryList{}, errors.New("not stubbed")
 	}
 	return f.errorsHistoryFn(ctx, target, limit)
 }
@@ -300,14 +300,14 @@ func TestVaillantB503GraphQL_Capability_Available(t *testing.T) {
 func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 	first := 11
 	provider := &fakeB503Provider{
-		errorsHistoryFn: func(_ context.Context, target *byte, limit int) ([]VaillantB503HistoryRecord, error) {
+		errorsHistoryFn: func(_ context.Context, target *byte, limit int) (VaillantB503HistoryList, error) {
 			if target == nil || *target != 0x15 || limit != 2 {
-				return nil, errors.New("target or limit was not threaded")
+				return VaillantB503HistoryList{}, errors.New("target or limit was not threaded")
 			}
-			return []VaillantB503HistoryRecord{
+			return VaillantB503HistoryList{Records: []VaillantB503HistoryRecord{
 				{Index: 0, FirstActiveError: &first, Slots: []*int{&first}},
 				{Index: 1, FirstActiveError: &first, Slots: []*int{&first}},
-			}, nil
+			}}, nil
 		},
 		sessionFn: func(_ context.Context, target *byte) (VaillantB503Session, error) {
 			if target == nil || *target != 0x15 {
@@ -316,12 +316,12 @@ func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 			return VaillantB503Session{State: "Active", Owned: true}, nil
 		},
 	}
-	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantErrorsHistory(targetAddress: 21, limit: 2) { index firstActiveError } vaillantLiveMonitorSession(targetAddress: 21) { state owned } }`)
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{ vaillantErrorsHistory(targetAddress: 21, limit: 2) { records { index firstActiveError } failure { index code message } } vaillantLiveMonitorSession(targetAddress: 21) { state owned } }`)
 	if len(res.Errors) > 0 {
 		t.Fatalf("query errors = %+v", res.Errors)
 	}
 	data := res.Data.(map[string]any)
-	history := data["vaillantErrorsHistory"].([]any)
+	history := data["vaillantErrorsHistory"].(map[string]any)["records"].([]any)
 	if len(history) != 2 {
 		t.Fatalf("history length=%d; want 2", len(history))
 	}
@@ -331,27 +331,39 @@ func TestVaillantB503GraphQL_TargetBoundHistoryAndSession(t *testing.T) {
 	}
 }
 
-func TestVaillantB503GraphQL_ErrorsHistoryFailureIsFieldLocal(t *testing.T) {
+func TestVaillantB503GraphQL_ErrorsHistoryPartialFailureIsStructured(t *testing.T) {
+	first := 281
 	provider := &fakeB503Provider{
-		errorsHistoryFn: func(context.Context, *byte, int) ([]VaillantB503HistoryRecord, error) {
-			return nil, errors.New("UPSTREAM_RPC_FAILED: indexed history read failed")
+		errorsHistoryFn: func(context.Context, *byte, int) (VaillantB503HistoryList, error) {
+			return VaillantB503HistoryList{
+				Records: []VaillantB503HistoryRecord{{Index: 0, FirstActiveError: &first, Slots: []*int{&first}}},
+				Failure: &VaillantB503HistoryFailure{Index: 1, Code: "UPSTREAM_RPC_FAILED", Message: "indexed history read failed"},
+			}, nil
 		},
 		availabilityFn: func(context.Context, *byte) string { return "AVAILABLE" },
 	}
 	res := doGraphQL(t, newB503TestSchema(t, provider), `{
-		vaillantErrorsHistory(limit: 2) { index }
+		vaillantErrorsHistory(limit: 2) { records { index firstActiveError } failure { index code message } }
 		vaillantCapabilities { vaillantB503 { reason available } }
 	}`)
-	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "UPSTREAM_RPC_FAILED") {
-		t.Fatalf("history failure errors = %+v; want one UPSTREAM_RPC_FAILED", res.Errors)
+	if len(res.Errors) != 0 {
+		t.Fatalf("history partial failure must remain typed data, errors = %+v", res.Errors)
 	}
 	data, ok := res.Data.(map[string]any)
 	if !ok {
 		t.Fatalf("data=%#v; want root object with preserved sibling", res.Data)
 	}
-	history, ok := data["vaillantErrorsHistory"].([]VaillantB503HistoryRecord)
-	if !ok || history != nil {
-		t.Fatalf("history data=%#v; want null all-or-nothing aggregate", data["vaillantErrorsHistory"])
+	history, ok := data["vaillantErrorsHistory"].(map[string]any)
+	if !ok {
+		t.Fatalf("history data=%#v; want typed partial result", data["vaillantErrorsHistory"])
+	}
+	records := history["records"].([]any)
+	if len(records) != 1 || records[0].(map[string]any)["index"] != 0 {
+		t.Fatalf("history records=%#v; want verified prefix through index 0", records)
+	}
+	failure := history["failure"].(map[string]any)
+	if failure["index"] != 1 || failure["code"] != "UPSTREAM_RPC_FAILED" {
+		t.Fatalf("history failure=%#v; want structured index 1 upstream failure", failure)
 	}
 	caps := data["vaillantCapabilities"].(map[string]any)["vaillantB503"].(map[string]any)
 	if caps["reason"] != "AVAILABLE" || caps["available"] != true {

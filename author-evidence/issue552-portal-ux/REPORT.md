@@ -265,6 +265,28 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-eb9478d.log`, SHA-256
   `6c5054a71c4bc96f118ad8e9db50632c97efd667f2fe20b896ad37648cbba6a6`.
+- Exact-head review found two remaining async ownership gaps. `275c75c...`
+  makes the shared synchronous target-qualification entry return its captured
+  epoch/target. Picker and card paths now proceed past awaited cleanup only
+  when that exact context remains current, and the capability probe consumes
+  that captured context instead of rereading newer state. The deterministic
+  A->B->C regression delays A cleanup, lets C qualify, then completes B's
+  cleanup and proves C is the single capability request/result. Explicit
+  Disable now handles a stale response specially: when its submitted token and
+  target are still the held pair, a confirmed `disabled: true` clears them even
+  after a target-epoch change; a replacement pair still remains protected. The
+  deterministic pending Disable-A plus target switch makes concurrent nav-away
+  cleanup return `SESSION_BUSY`, then confirms explicit A cleanup clears its
+  otherwise unusable recovery pair.
+- Focused Portal B503 tests passed 24/24 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `275c75c...`: PASS, including 119
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-275c75c.log`, SHA-256
+  `f1d3aab8e1cdba6690e7a353278026a7f407bca5e651520c4af00c17daeb24be`.
 
 ## Gate boundary
 

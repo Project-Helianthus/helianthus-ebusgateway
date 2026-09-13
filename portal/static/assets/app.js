@@ -3644,7 +3644,10 @@ class PortalShell extends HTMLElement {
       const label = device.display_name || device.device_id || formatAddress(address);
       return `<option value="${address}"${address === selected ? " selected" : ""}>${escapeHtml(`${label} (${formatAddress(address)})`)}</option>`;
     }).join("");
-    return deviceOptions ? `${defaultOption}${deviceOptions}` : '<option value="" selected>No target selected</option>';
+    // A null target is a real configured-default request, even when discovery
+    // has no alternative addresses. Do not claim that no target is selected
+    // while reads or a live-monitor operation resolve to that default.
+    return `${defaultOption}${deviceOptions}`;
   }
 
   _beginVaillantB503TargetQualification(target) {
@@ -3657,6 +3660,15 @@ class PortalShell extends HTMLElement {
     this._vaillantB503CapabilityReason = "PENDING";
     this.renderVaillantB503Pane("PENDING");
     return this._vaillantB503RequestContext();
+  }
+
+  _reprobeVaillantB503CapabilityAfterCleanup(context) {
+    // Target qualification must not wait for a cleanup request that may never
+    // settle. When that detached request does close the old session, invalidate
+    // the earlier SESSION_BUSY result and probe only the same current target.
+    if (!this._isCurrentVaillantB503Context(context) || this._vaillantB503CapabilityReason !== "SESSION_BUSY") return;
+    const reprobe = this._beginVaillantB503TargetQualification(context.target);
+    void this.refreshVaillantB503Capability(reprobe);
   }
 
   async changeVaillantB503Target() {
@@ -3676,7 +3688,9 @@ class PortalShell extends HTMLElement {
     // qualification path: an unresponsive old session must not leave the new
     // target in PENDING forever.  Yield once so a rapid newer selection can
     // supersede this capability probe before it begins.
-    void this.handleVaillantB503NavAway(previous);
+    void this.handleVaillantB503NavAway(previous).then((disabled) => {
+      if (disabled) this._reprobeVaillantB503CapabilityAfterCleanup(qualification);
+    });
     await Promise.resolve();
     // Keep an unconfirmed old-target token so a later explicit navigation or
     // target cleanup can retry. handleVaillantB503NavAway clears it only after
@@ -3693,7 +3707,9 @@ class PortalShell extends HTMLElement {
     }
     const qualification = this._beginVaillantB503TargetQualification(target);
     this.activateSection("section-vaillant-b503");
-    void this.handleVaillantB503NavAway(previous);
+    void this.handleVaillantB503NavAway(previous).then((disabled) => {
+      if (disabled) this._reprobeVaillantB503CapabilityAfterCleanup(qualification);
+    });
     await Promise.resolve();
     if (!this._isCurrentVaillantB503Context(qualification)) return;
     await this.refreshVaillantB503Capability(qualification);

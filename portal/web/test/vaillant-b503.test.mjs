@@ -1059,6 +1059,21 @@ test("VaillantB503Pane_nonempty_targets_keep_the_probed_configured_default_selec
   assert.match(options, /value="8"/);
 });
 
+test("VaillantB503Pane_empty_discovery_keeps_configured_default_target_option", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  shell.projectionDevices = [];
+  Object.getPrototypeOf(shell).renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /<option value="" selected>Configured default<\/option>/,
+    "empty discovery must describe the null target that Portal operations resolve through the configured default");
+  assert.doesNotMatch(body.innerHTML, /No target selected/);
+});
+
 test("VaillantB503ProjectionCard_renders_without_projection_planes", async () => {
   const { source, sourcePath } = await loadShellSource();
   const appended = [];
@@ -1726,6 +1741,56 @@ test("VaillantB503Pane_navAwayRetriesWhenAuthoritativeStatusAlreadySettledActive
   assert.equal(shell._vaillantB503LiveToken, null, "confirmed retry clears the captured token without a leak");
   assert.equal(shell._vaillantB503LiveTarget, null);
   assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+});
+
+test("VaillantB503Pane_targetReprobesAfterDetachedCleanupReleasesSession", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "21" });
+  let resolveDisable;
+  let capabilityReads = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return new Promise((resolve) => { resolveDisable = resolve; });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        capabilityReads += 1;
+        const reason = capabilityReads === 1 ? "SESSION_BUSY" : "AVAILABLE";
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantCapabilities: { vaillantB503: { reason } } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  await proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503CapabilityReason, "SESSION_BUSY",
+    "the initial B probe may observe the old A session before detached cleanup reaches the gateway");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  resolveDisable({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+  await flush();
+  await flush();
+
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE",
+    "confirmed detached cleanup requalifies the same selected target instead of leaving SESSION_BUSY stuck");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantB503Cap")).map(({ variables }) => variables.targetAddress), [21, 21],
+    "both probes remain bound to B and the cleanup cannot overwrite the selected target");
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "detached cleanup writes only the captured A token-target pair");
 });
 
 test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {

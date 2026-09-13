@@ -588,3 +588,33 @@ RTU production conformance, Storage/EVSE SemReg mapping gates, and a
 non-triggered passive smoke gate. Durable sanitized log:
 `ci_local-final-active-cleanup.log`, SHA-256
 `36c957fbaab98855e33b04221036184ef1e5de63aa801259184a513077ba77b4`.
+
+### Detached cleanup reprobe and configured-default picker correction
+
+Exact-head P2s `4000300567` and `4000300571` are corrected without coupling
+target qualification to cleanup completion. A target switch starts its normal
+target-bound probe immediately. If that probe observes `SESSION_BUSY` while
+the old captured token-target cleanup is still in flight, a later confirmed
+cleanup first verifies the original target/epoch context, advances the epoch,
+and reprobes only that same selected target. A new target selection, failed or
+never-settling cleanup, replacement token, and stale completion cannot trigger
+or overwrite the reprobe.
+
+The B503 target picker now retains `Configured default` for an empty discovery
+result. This truthfully represents `targetAddress: null`, which the gateway
+resolves through its configured target for reads and live-monitor writes; no
+unqualified discovered alternative is implied.
+
+Deterministic Portal regressions prove an A cleanup remains detached while B
+first observes `SESSION_BUSY`, then successfully requalifies only B after the
+captured A/8 token closes; they also prove an empty discovery picker does not
+claim that no target is selected. Focused
+`node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 52 tests.
+
+Complete `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+GOWORK=off ./scripts/ci_local.sh`: PASS, including Portal 147 tests,
+repository-wide race tests, Python 168+6+26+11+6+2, zero lint issues, Modbus
+RTU production conformance, Storage/EVSE SemReg mapping gates, and a
+non-triggered passive smoke gate. Durable sanitized log:
+`ci_local-final-reprobe-default.log`, SHA-256
+`8881f65637a139e1a87211ebda96939940e1e56331d99db72f60f81e93ba5bae`.

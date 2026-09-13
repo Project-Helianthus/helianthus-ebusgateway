@@ -635,7 +635,10 @@ class PortalShell extends HTMLElement {
       }
     }
     if (targetID === "section-vaillant-b503") {
-      if (typeof this.refreshVaillantB503Capability === "function") {
+      // Target-selection paths publish PENDING synchronously and complete their
+      // own ordered cleanup/probe sequence. A second refresh here would race
+      // that sequence and defeat its generation fence.
+      if (this._vaillantB503CapabilityReason !== "PENDING" && typeof this.refreshVaillantB503Capability === "function") {
         this.refreshVaillantB503Capability();
       }
     }
@@ -2006,9 +2009,7 @@ class PortalShell extends HTMLElement {
       card.setAttribute("aria-label", "Open Vaillant B503 diagnostics");
       card.textContent = "Vaillant B503: errors, service-current, service-history, live-monitor";
       card.addEventListener("click", () => {
-        this._vaillantB503TargetAddress = targetAddress;
-        this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
-        this.activateSection("section-vaillant-b503");
+        void this.openVaillantB503ProjectionTarget(targetAddress);
       });
       const grid = gridEl.querySelector?.(".uml-grid");
       if (grid?.append) {
@@ -3617,6 +3618,16 @@ class PortalShell extends HTMLElement {
     return deviceOptions ? `${defaultOption}${deviceOptions}` : '<option value="" selected>No target selected</option>';
   }
 
+  _beginVaillantB503TargetQualification(target) {
+    this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
+    this._vaillantB503TargetAddress = target;
+    // Publish the target-bound pending state before any cleanup/probe await so
+    // old controls, including those hidden behind projection navigation, cannot
+    // send an operation against the newly selected unqualified target.
+    this._vaillantB503CapabilityReason = "PENDING";
+    this.renderVaillantB503Pane("PENDING");
+  }
+
   async changeVaillantB503Target() {
     const previous = this._vaillantB503TargetAddress;
     // Read the current, visible picker exactly at its change event, then
@@ -3626,14 +3637,7 @@ class PortalShell extends HTMLElement {
     const parsed = Number(raw);
     const next = raw !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= 255 ? parsed : null;
     if (next === previous) return;
-    this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
-    this._vaillantB503TargetAddress = next;
-    // The new canonical target has no qualification result yet. Unmount every
-    // B503 operation immediately, before the old target's cleanup or the new
-    // capability request can yield, so stale A controls cannot issue a B
-    // SERVICE_WRITE/read while B is still unqualified.
-    this._vaillantB503CapabilityReason = "PENDING";
-    this.renderVaillantB503Pane("PENDING");
+    this._beginVaillantB503TargetQualification(next);
     // A target change invalidates every target-bound response before any new
     // request starts. If the old target completed enable concurrently, its
     // result handler uses its captured context to issue an immediate disable.
@@ -3641,6 +3645,18 @@ class PortalShell extends HTMLElement {
     // Keep an unconfirmed old-target token so a later explicit navigation or
     // target cleanup can retry. handleVaillantB503NavAway clears it only after
     // GraphQL confirms disabled=true.
+    await this.refreshVaillantB503Capability();
+  }
+
+  async openVaillantB503ProjectionTarget(target) {
+    const previous = this._vaillantB503Target();
+    if (target === previous) {
+      this.activateSection("section-vaillant-b503");
+      return;
+    }
+    this._beginVaillantB503TargetQualification(target);
+    this.activateSection("section-vaillant-b503");
+    await this.handleVaillantB503NavAway(previous);
     await this.refreshVaillantB503Capability();
   }
 

@@ -495,7 +495,10 @@ func addVaillantB503Queries(fields graphqlgo.Fields, builder *Builder) {
 	}
 
 	fields["vaillantCapabilities"] = &graphqlgo.Field{
-		Type: graphqlgo.NewNonNull(capabilitiesType),
+		// Invalid target arguments are field-local validation failures. Keep this
+		// root nullable so a malformed capability probe does not discard sibling
+		// reads; capability child fields remain non-null when it resolves.
+		Type: capabilitiesType,
 		Args: targetArg,
 		Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 			target, err := parseTargetAddress(params.Args)

@@ -931,6 +931,84 @@ test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async 
   }
 });
 
+test("VaillantB503ProjectionCard_qualifiesTargetBeforeStaleLiveControlsCanRun", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const paneBody = makeAuditedElement();
+  const staleTarget = makeAuditedElement({ value: "8", addEventListener() {} });
+  const status = makeAuditedElement();
+  const output = makeAuditedElement();
+  const controls = new Map();
+  for (const role of ["enable", "read", "disable"]) {
+    const listeners = new Map();
+    controls.set(role, makeAuditedElement({
+      _listeners: listeners,
+      addEventListener(type, listener) { listeners.set(type, listener); },
+    }));
+  }
+  let resolveBProbe;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-device-select"]', makeAuditedElement({ value: "21" })],
+      ['[data-role="vaillant-b503-target"]', staleTarget],
+      ['[data-role="vaillant-b503-body"]', paneBody],
+      ['[data-role="vaillant-b503-live-status"]', status],
+      ['[data-role="vaillant-b503-live-output"]', output],
+      ['[data-role="vaillant-b503-live-enable"]', controls.get("enable")],
+      ['[data-role="vaillant-b503-live-read"]', controls.get("read")],
+      ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantB503Projection")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        assert.equal(variables.targetAddress, 21, "card target B must be the only target qualified");
+        return new Promise((resolve) => {
+          resolveBProbe = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }),
+          });
+        });
+      }
+      throw new Error(`unexpected B503 operation while card target qualifies: ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+  controls.get("enable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "enable"));
+  controls.get("read").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "read"));
+  controls.get("disable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "disable"));
+
+  await proto.renderVaillantB503ProjectionCard.call(shell, grid, 21);
+  assert.equal(appended.length, 1, "available projection capability must expose a card");
+  appended[0]._listeners.get("click")();
+  assert.equal(shell._vaillantB503CapabilityReason, "PENDING",
+    "card navigation must publish pending before any cleanup/probe await");
+  assert.equal(proto._vaillantB503Target.call(shell), 21);
+  assert.match(paneBody.innerHTML, /b503-state-pending/);
+  assert.doesNotMatch(paneBody.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "pending card navigation must withdraw old live controls");
+  for (const role of ["enable", "read", "disable"]) controls.get(role)._listeners.get("click")();
+  await flush();
+
+  const liveOperations = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLive("));
+  assert.equal(liveOperations.length, 0,
+    "stale A controls after clicking B card must not dispatch a B service operation");
+  assert.equal(fetchRequests.length, 2, "only card availability and B qualification requests may occur");
+  resolveBProbe();
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+  assert.match(paneBody.innerHTML, /b503-state-not-supported/);
+});
+
 test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () => {
   const { source, sourcePath } = await loadShellSource();
   const strip = makeAuditedElement();

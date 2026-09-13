@@ -359,6 +359,33 @@ func TestVaillantB503GraphQL_ErrorsHistoryFailureIsFieldLocal(t *testing.T) {
 	}
 }
 
+func TestVaillantB503GraphQL_InvalidCapabilityTargetIsFieldLocal(t *testing.T) {
+	first := 281
+	provider := &fakeB503Provider{
+		errorsFn: func(context.Context, *byte) (VaillantB503Errors, error) {
+			return VaillantB503Errors{FirstActiveError: &first, Slots: []*int{&first}}, nil
+		},
+	}
+	res := doGraphQL(t, newB503TestSchema(t, provider), `{
+		vaillantCapabilities(targetAddress: 256) { vaillantB503 { reason available } }
+		vaillantErrors { firstActiveError }
+	}`)
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Message, "INVALID_ARGUMENT: targetAddress must be 0-255") {
+		t.Fatalf("invalid capability target errors = %+v; want one structured validation error", res.Errors)
+	}
+	data, ok := res.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("invalid capability target discarded root data: %#v", res.Data)
+	}
+	if data["vaillantCapabilities"] != nil {
+		t.Fatalf("invalid capability target data=%#v; want field-local null", data["vaillantCapabilities"])
+	}
+	errors, ok := data["vaillantErrors"].(map[string]any)
+	if !ok || errors["firstActiveError"] != 281 {
+		t.Fatalf("invalid capability target lost sibling errors data: %#v", data["vaillantErrors"])
+	}
+}
+
 func TestVaillantB503GraphQL_SessionWithoutProviderFailsClosed(t *testing.T) {
 	res := doGraphQL(t, newB503TestSchema(t, nil), `{
 		vaillantLiveMonitorSession { state owned }

@@ -182,14 +182,29 @@ func New(index contributionv1.SemanticIndex, source SourceCapture, auth Authoriz
 // Publish validates and binds the digest itself. A same identity with divergent
 // content remains quarantined until that manifest identity/version changes.
 func (c *Composer) Publish(m contributionv1.Manifest) error {
-	digest, err := contributionv1.CanonicalDigest(m, c.index)
+	canonical, err := contributionv1.Canonicalize(m, c.index)
 	if err != nil {
 		return err
 	}
-	k := identity{m.Contributor.DriverID, m.ManifestID, m.ManifestVersion}
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return err
+	}
+	detached, err := contributionv1.Decode(raw)
+	if err != nil {
+		return err
+	}
+	digest, err := contributionv1.CanonicalDigest(detached, c.index)
+	if err != nil {
+		return err
+	}
+	k := identity{detached.Contributor.DriverID, detached.ManifestID, detached.ManifestVersion}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if old, ok := c.descriptors[k]; ok && old.Digest != digest {
+	if old, ok := c.descriptors[k]; ok {
+		if old.Digest == digest {
+			return nil
+		}
 		delete(c.descriptors, k)
 		c.quarantined[k] = true
 		c.revision++
@@ -198,7 +213,7 @@ func (c *Composer) Publish(m contributionv1.Manifest) error {
 	if c.quarantined[k] {
 		return errors.New("contribution identity quarantined")
 	}
-	c.descriptors[k] = Descriptor{Manifest: m, Digest: digest}
+	c.descriptors[k] = Descriptor{Manifest: detached, Digest: digest}
 	c.revision++
 	return nil
 }

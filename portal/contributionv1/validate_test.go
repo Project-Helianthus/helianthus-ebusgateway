@@ -784,6 +784,16 @@ func TestRegistryGenerationSnapshotIsEnumerableAndFenced(t *testing.T) {
 	if !r.WithdrawGeneration(owner) || len(r.Snapshot().Accepted) != 0 {
 		t.Fatal("current generation was not withdrawn")
 	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 1}, []Manifest{m}); err == nil {
+		t.Fatal("withdrawal reopened a stale generation")
+	}
+	revision := r.Snapshot().Revision
+	if r.WithdrawGeneration(owner) || r.Snapshot().Revision != revision {
+		t.Fatal("duplicate withdrawal changed an inactive generation")
+	}
+	if err := r.ReplaceGeneration(DriverGeneration{DriverID: owner.DriverID, Generation: 3}, []Manifest{m}); err != nil {
+		t.Fatalf("successor after withdrawal rejected: %v", err)
+	}
 }
 
 func TestRegistryGenerationReplayRequiresExactDetachedKeySet(t *testing.T) {

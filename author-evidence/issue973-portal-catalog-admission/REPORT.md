@@ -204,10 +204,7 @@ changes mid-capture.
 
 Focused normal and race regressions cover a new fixture lease beside unrelated
 contributions, exact withdrawal, complete replacement sets, and the blocked
-capture barrier. The direct exported `catalogv1.Composer.Publish` caller-slice
-retention observation remains a P3 backlog item: it is not reachable from this
-HTTP path because only deep-detached `Registry.Snapshot` manifests reach the
-request-local composer.
+capture barrier.
 
 `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off ./scripts/ci_local.sh`:
 PASS. It completed Node 101/101, build/vet, Linux builds, repository-wide race,
@@ -215,3 +212,27 @@ Python 168+6+26+11+6+2, lint, Modbus RTU transport, Storage and EVSE SemReg
 mapping, and passive smoke. Durable log:
 `author-evidence/issue973-portal-catalog-admission/ci_local-4d1b7ab-provider-leases.log`,
 SHA-256 `12074280766d5ace1fafe02aed489d6bcdc3b1a08ab36e46e8b9f29748d54a6f`.
+
+## Final complete-feedback correction
+
+The complete live feedback read found two connector P2 reports submitted after
+the prior inventory snapshot. Registry generation is now a retained high-water
+mark separate from active membership. Exact withdrawal clears active membership
+and descriptors while rejecting delayed stale/equal generations; a duplicate
+withdrawal is a no-op, and a later successor generation can activate normally.
+
+`catalogv1.Composer.Publish` now canonicalizes and deep-detaches its input before
+storage. Replaying the identical canonical digest returns without changing the
+revision, while divergent bytes retain the existing quarantine behavior. The
+same regression mutates the caller's nested action label after publication and
+proves the stored descriptor is unchanged. This also closes the earlier P3
+caller-slice backlog rather than carrying it forward.
+
+The first full run after these changes was interrupted once the duplicate-
+withdrawal review exposed the missing active-membership distinction and is not
+acceptance evidence. Focused race then passed for contribution registry,
+composer and Gateway Portal lifecycle tests. The final complete SDK-backed CI passed Node 101/101,
+build/vet, Linux builds, repository-wide race, Python 168+6+26+11+6+2, lint,
+Modbus RTU transport, Storage and EVSE SemReg mapping, and passive smoke. Final
+log `author-evidence/issue973-portal-catalog-admission/ci_local-07943ef-final-all-feedback.log`,
+SHA-256 `b7a990166a8e7d911ee3bb19a6329a8c83c9cd9d90d6c09509e68b4d805f65e9`.

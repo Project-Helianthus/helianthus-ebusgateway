@@ -961,13 +961,14 @@ type Registry struct {
 	accepted   map[registryKey]AcceptedDescriptor
 	history    map[registryKey]string
 	generation map[string]uint64
+	active     map[string]uint64
 	revision   uint64
 }
 
 type registryKey struct{ DriverID, ManifestID, ManifestVersion string }
 
 func NewRegistry(index SemanticIndex) *Registry {
-	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generation: map[string]uint64{}}
+	return &Registry{index: index, digests: map[registryKey]string{}, conflicts: map[registryKey]bool{}, accepted: map[registryKey]AcceptedDescriptor{}, history: map[registryKey]string{}, generation: map[string]uint64{}, active: map[string]uint64{}}
 }
 
 // DriverGeneration fences a driver's complete descriptor publication.  A
@@ -1066,6 +1067,7 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		r.accepted[key], r.digests[key], r.history[key] = item, item.Digest, item.Digest
 	}
 	r.generation[owner.DriverID] = owner.Generation
+	r.active[owner.DriverID] = owner.Generation
 	r.revision++
 	if len(conflicts) != 0 {
 		keys := make([]registryKey, 0, len(conflicts))
@@ -1110,7 +1112,7 @@ func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.generation[owner.DriverID] != owner.Generation {
+	if r.active[owner.DriverID] != owner.Generation {
 		return false
 	}
 	for key := range r.accepted {
@@ -1120,7 +1122,10 @@ func (r *Registry) WithdrawGeneration(owner DriverGeneration) bool {
 			delete(r.conflicts, key)
 		}
 	}
-	delete(r.generation, owner.DriverID)
+	// Keep generation as a high-water mark after active membership is removed.
+	// A delayed publication from an already-withdrawn generation must not reopen
+	// a driver that has been superseded or stopped.
+	delete(r.active, owner.DriverID)
 	r.revision++
 	return true
 }

@@ -98,6 +98,42 @@ func TestInvokeDoesNotReachNativeOwnerAfterFailedRevalidation(t *testing.T) {
 		t.Fatalf("revalidation/native calls = %d/%d", reject.calls.Load(), invoker.calls.Load())
 	}
 }
+
+func TestPublishDetachesCanonicalManifestAndNoopsOnIdenticalDigest(t *testing.T) {
+	m, idx := actionManifestAndIndex()
+	c := New(idx, nil, authFake{}, nil)
+	c.now = func() time.Time { return time.Unix(10, 0).UTC() }
+	if err := c.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := contributionv1.Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Publish(replayed); err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Catalog("caller")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.CatalogRevision != second.CatalogRevision {
+		t.Fatalf("identical publication changed revision: %s != %s", first.CatalogRevision, second.CatalogRevision)
+	}
+	m.Actions[0].Label.Default = "caller mutation"
+	key := identity{driver: "test.driver", manifest: "test.manifest", version: "1.0.0"}
+	if got := c.descriptors[key].Manifest.Actions[0].Label.Default; got == "caller mutation" {
+		t.Fatal("composer retained caller-owned manifest slice")
+	}
+}
 func TestCatalogFivePacksAbsentAndDeterministic(t *testing.T) {
 	s := &sourceFake{}
 	c := New(contributionv1.NewStaticIndex(), s, authFake{}, nil)

@@ -112,6 +112,26 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-3dc72ce.log`, SHA-256
   `9877795bd87c898a968d6daf65e8dbcabade87ca1cffa9550b4dec35485907df`.
+- Hosted-review feedback then found two final field-isolation gaps.
+  `91eb2bc...` makes the `vaillantErrorsHistory` GraphQL root nullable while
+  retaining non-null list elements. An indexed aggregate failure still returns
+  no partial history and `UPSTREAM_RPC_FAILED`, but now nulls only that root
+  field and preserves siblings. The mixed-root GraphQL and production
+  MCP-to-GraphQL parity regressions prove that behavior; the schema
+  characterization digest and public runtime contract record the deliberate
+  nullability change. Portal projection loading now assigns every invocation a
+  generation. The deterministic A->B->A test delays all three capability
+  replies, resolves the first two after they are stale, and proves only the
+  latest A invocation appends a card.
+- Focused `go test -race` across GraphQL, MCP, and gateway B503 cases passed;
+  focused Portal B503 tests passed 15/15. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `91eb2bc...`: PASS, including 110
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-91eb2bc.log`, SHA-256
+  `4275137a7f26f35310cf32b5479dbfc75118b5b36ebe7f0e075ec58b2527d582`.
 
 ## Gate boundary
 

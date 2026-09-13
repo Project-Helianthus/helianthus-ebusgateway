@@ -16,10 +16,15 @@ into zero.
 The host computes contribution digests from canonical validated descriptors.
 Two descriptors with equal `(driver_id, manifest_id, manifest_version)` and a
 different computed digest are quarantined together and neither is rendered.
-The catalog revision binds accepted contributions and quarantines, all resource
-and field bytes, action eligibility, source snapshot/revision/evaluation/binding/
-epoch/generation vectors, lifecycle fence, pack refs, authorization scope and
-evaluation instant. The
+The action-stability catalog revision binds accepted contributions and
+quarantines, all resource and field bytes, action eligibility, source
+snapshot/revision/binding/epoch/generation vectors, lifecycle fence, pack refs,
+authorization scope, and every nonvolatile evaluation fact. It deliberately
+excludes the top-level `evaluation_instant`, each source evaluation
+`evaluated_at` and `evaluate_monotonic` clock coordinate, and the derived
+`evaluation_digest`; equivalent detached reads therefore remain invocable while
+their source evaluation clocks advance. Freshness, expiry, source revisions and
+all other evaluation facts remain bound and are revalidated at invocation. The
 catalog digest additionally binds all caller-visible bytes and evaluation time.
 
 Actions are caller-scoped previews. A hidden action is omitted. Invocation

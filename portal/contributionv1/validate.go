@@ -1042,14 +1042,13 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		}
 		return nil
 	}
+	// A successor must quarantine every changed identity as one atomic
+	// publication. Returning at the first map iteration would leave a later
+	// changed descriptor accepted and expose it to the compositor.
+	conflicts := make(map[registryKey]bool)
 	for key, item := range staged {
 		if digest, ok := r.history[key]; ok && digest != item.Digest {
-			delete(r.accepted, key)
-			delete(r.digests, key)
-			r.conflicts[key] = true
-			r.generation[owner.DriverID] = owner.Generation
-			r.revision++
-			return fmt.Errorf("manifest digest conflict for %q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion)
+			conflicts[key] = true
 		}
 	}
 	for key := range r.accepted {
@@ -1060,10 +1059,34 @@ func (r *Registry) ReplaceGeneration(owner DriverGeneration, manifests []Manifes
 		}
 	}
 	for key, item := range staged {
+		if conflicts[key] {
+			r.conflicts[key] = true
+			continue
+		}
 		r.accepted[key], r.digests[key], r.history[key] = item, item.Digest, item.Digest
 	}
 	r.generation[owner.DriverID] = owner.Generation
 	r.revision++
+	if len(conflicts) != 0 {
+		keys := make([]registryKey, 0, len(conflicts))
+		for key := range conflicts {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].DriverID != keys[j].DriverID {
+				return keys[i].DriverID < keys[j].DriverID
+			}
+			if keys[i].ManifestID != keys[j].ManifestID {
+				return keys[i].ManifestID < keys[j].ManifestID
+			}
+			return keys[i].ManifestVersion < keys[j].ManifestVersion
+		})
+		identities := make([]string, 0, len(keys))
+		for _, key := range keys {
+			identities = append(identities, fmt.Sprintf("%q/%q@%q", key.DriverID, key.ManifestID, key.ManifestVersion))
+		}
+		return fmt.Errorf("manifest digest conflicts for %s", strings.Join(identities, ", "))
+	}
 	return nil
 }
 

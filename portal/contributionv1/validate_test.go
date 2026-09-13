@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -837,6 +838,50 @@ func TestRegistryRejectsChangedDescriptorAcrossGeneration(t *testing.T) {
 	snapshot := r.Snapshot()
 	if len(snapshot.Accepted) != 0 || len(snapshot.Quarantined) != 1 {
 		t.Fatalf("conflict snapshot=%+v", snapshot)
+	}
+}
+
+func TestRegistryQuarantinesEveryChangedIdentityInSuccessorGeneration(t *testing.T) {
+	var c fixtureCatalog
+	readFixture(t, "five-domain-catalog.json", &c)
+	first := cloneManifest(t, c.Manifests[0])
+	second := cloneManifest(t, first)
+	second.ManifestID = "portal.thermal-second"
+	third := cloneManifest(t, first)
+	third.ManifestID = "portal.thermal-third"
+	owner := DriverGeneration{DriverID: first.Contributor.DriverID, Generation: 1}
+	successor := DriverGeneration{DriverID: owner.DriverID, Generation: 2}
+	changedSecond := cloneManifest(t, second)
+	changedSecond.Groups[0].Label.Default = "second changed"
+	changedThird := cloneManifest(t, third)
+	changedThird.Groups[0].Label.Default = "third changed"
+
+	installAndConflict := func(t *testing.T, manifests []Manifest) RegistrySnapshot {
+		t.Helper()
+		r := NewRegistry(indexFromCatalog(c))
+		if err := r.ReplaceGeneration(owner, []Manifest{first, second, third}); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.ReplaceGeneration(successor, manifests); err == nil || !strings.Contains(err.Error(), "manifest digest conflicts") {
+			t.Fatalf("successor conflicts err=%v", err)
+		}
+		return r.Snapshot()
+	}
+
+	forward := installAndConflict(t, []Manifest{first, changedSecond, changedThird})
+	reversed := installAndConflict(t, []Manifest{changedThird, first, changedSecond})
+	if !reflect.DeepEqual(forward, reversed) {
+		t.Fatalf("successor conflict result depends on input order:\nforward=%+v\nreversed=%+v", forward, reversed)
+	}
+	if len(forward.Accepted) != 1 || forward.Accepted[0].Key.ManifestID != first.ManifestID {
+		t.Fatalf("unchanged descriptor not retained alone: %+v", forward.Accepted)
+	}
+	wantQuarantined := []DescriptorKey{
+		{DriverID: owner.DriverID, ManifestID: second.ManifestID, ManifestVersion: second.ManifestVersion},
+		{DriverID: owner.DriverID, ManifestID: third.ManifestID, ManifestVersion: third.ManifestVersion},
+	}
+	if !reflect.DeepEqual(forward.Quarantined, wantQuarantined) {
+		t.Fatalf("changed identities remain exposed or quarantine is incomplete:\ngot=%+v\nwant=%+v", forward.Quarantined, wantQuarantined)
 	}
 }
 

@@ -127,7 +127,64 @@ now use the accepted `helianthus.pack.*` IDs.
 - Portal Node suite: 101 passed, 0 failed.
 - Linux 386 package compilation: PASS; generated binaries were moved outside
   the worktree.
-- `GOWORK=off ./scripts/ci_local.sh`: PASS, including race, lint, Modbus RTU
-  transport, and passive mapping. Durable log:
+- The recorded `GOWORK=off ./scripts/ci_local.sh` run completed race, lint,
+  Python and the Modbus RTU transport gate but then failed closed because the
+  Storage mapping gate still named the superseded SemReg runtime. Durable log:
   `author-evidence/issue973-portal-catalog-admission/ci_local-aa26889-followup.log`,
   SHA-256 `ff6ce20df1cfef40c7b8117bd5151885df6ef9a47b9b0dc527c13b5f4c73ed56`.
+
+## Third exact-HEAD P2 correction
+
+`ReplaceGeneration` now first identifies every successor descriptor whose
+identity has a different historical canonical digest, then atomically removes
+all accepted descriptors for that driver, retains unchanged staged descriptors,
+and quarantines every changed identity before returning one lexically ordered
+conflict error. The new regression publishes one unchanged and two changed
+descriptors, verifies that neither changed descriptor remains accepted, and
+verifies the forward and reversed successor inputs produce the same snapshot.
+
+The public admission transport contract now accurately distinguishes the action
+stability revision from the caller-visible catalog digest: the former excludes
+only top-level `evaluation_instant`, source `evaluated_at` and
+`evaluate_monotonic` coordinates, and their derived `evaluation_digest`.
+Nonvolatile evaluation facts, freshness/expiry, source revisions and all other
+action admission inputs remain bound and are revalidated before invocation.
+
+- `GOWORK=off go test ./portal/contributionv1 -run 'TestRegistry(RejectsChangedDescriptorAcrossGeneration|QuarantinesEveryChangedIdentityInSuccessorGeneration)' -count=1`: PASS.
+- `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off go test -race ./portal/contributionv1 ./portal/catalogv1 ./portalgraphql -count=1`: PASS.
+- The matching `cmd/gateway` normal test passed with that Xcode SDK override;
+  its focused race run was interrupted after the three affected Portal packages
+  passed because the Delivery Lead directed an immediate return rather than an
+  indefinite wait through the long-running host gateway test.
+- `node --test portal/web/test/*.test.mjs`: 101 passed, 0 failed.
+- `GOWORK=off GOOS=linux GOARCH=386 go build -o /dev/null ./cmd/gateway`: PASS.
+- The required unmodified-host `GOWORK=off ./scripts/ci_local.sh` attempt
+  reached `go build` and failed before repository code tests because the
+  macOS CommandLineTools 27.0 SDK `.tbd` files contain the unsupported
+  `arm64e.x1-*` architecture label for the installed linker. This is an
+  OS/toolchain defect, not a source failure; the durable failure log is
+  `author-evidence/issue973-portal-catalog-admission/ci_local-218ce63-p2-followup.log`,
+  SHA-256 `644a3a045352ff2fda88e6d11da9130692a2f005ca64a5290a24233685445b75`.
+- One complete repeat with the existing Xcode SDK path,
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off ./scripts/ci_local.sh`, completed formatting, Node,
+  vet/build, Linux builds, repository-wide race, Python, lint, and transport
+  gates, then failed the declared Growatt Storage SemReg mapping gate with
+  `pinned SemReg storage runtime is not selected`. No retry or source correction
+  followed. Durable log:
+  `author-evidence/issue973-portal-catalog-admission/ci_local-218ce63-p2-sdkroot.log`,
+  SHA-256 `f003408accfc21e2f548f48ef3fdf8490558bb78ec98eefba373330664e3aba1`.
+
+The branch pins accepted SemReg main
+`089ed6ae9004cfba8aff27f1e54d579aeccc0b4c`, but the existing Storage and EVSE
+mapping gates still required superseded `f3f761bc67e1`. Both gate pins now
+match the selected accepted runtime; their public docs pins and executable
+mapping cases remain unchanged. A first complete repeat proved the Storage gate
+green and exposed the equivalent EVSE drift (log SHA-256
+`6868382e29c486c5b1ab6ce6611b1b39dfd8e77ba95965d3772bf8a78fc70d50`).
+After both corrections, the final
+`SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off ./scripts/ci_local.sh`
+run passed Node 101/101, build/vet, Linux builds, repository-wide race, Python
+168+6+26+11+6+2, lint, Modbus RTU transport, Storage 2 outputs/13 rejects,
+EVSE 6 outputs/9 rejects, and the passive-smoke gate. Final log
+`author-evidence/issue973-portal-catalog-admission/ci_local-218ce63-p2-final.log`,
+SHA-256 `f992988b51380e44de28b1d2a47bc400d545d28d50386a5cf4bb9bf100cdbd51`.

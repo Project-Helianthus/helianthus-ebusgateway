@@ -1,0 +1,233 @@
+==> terminology gate
+Source-selection M4 retained legacy spellings:
+  - cmd/gateway/gateway_cli.go:199: retained source-addr: locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection
+  - cmd/gateway/gateway_cli.go:211: retained source-addr: locked plan keeps CLI -source-addr as explicit source config input; it no longer bypasses selection
+  - cmd/gateway/main_test.go:48: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:49: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:63: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:64: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:78: retained -source-addr: CLI compatibility tests document retained explicit source config input
+  - cmd/gateway/main_test.go:79: retained source-addr: CLI compatibility tests document retained explicit source config input
+  - scripts/passive_matrix_case_ha.sh:356: retained -source-addr: HA matrix script passes auto so current gateway selects/validates the source
+Source-selection M4 public API gate passed.
+==> gofmt
+==> portal node tests
+✔ L7 catalog services list renders via escapeHtml (safe) for catalog strings (5.751959ms)
+✔ L7 decode sandbox output uses textContent, never innerHTML, for user-controlled bytes (1.797125ms)
+✔ L7 command view renders unknown safety_class as 'unknown' fallback (2.002208ms)
+✔ L7 Standard Catalog section is emitted by render() with required data-role elements (1.280667ms)
+✔ L7 decode click-through flow renders output via textContent (XSS hardening preserved) (1.621541ms)
+✔ L7 decode form dropdown option values are catalog-canonical (legacy terminology rejected) (1.371333ms)
+✔ L7 decode click forwards canonical direction/frame_type to fetch (1.17525ms)
+✔ L7 decode click fails closed on unknown direction/frame_type (no fetch, inline error) (1.199416ms)
+✔ L7 PB filter blocks refreshL7Commands on malformed PB and surfaces inline error (3.983833ms)
+✔ L7 PB filter parses well-formed hex/decimal and forwards to refreshL7Commands (3.001042ms)
+✔ L7 nav button is disabled when capabilities.ebus_standard=false (1.415041ms)
+✔ L7 nav button is enabled when capabilities.ebus_standard=true (1.568417ms)
+✔ activateSection(section-l7-catalog) no-ops when ebus_standard=false (no refreshL7Services call) (0.707375ms)
+✔ activateSection(section-l7-catalog) triggers refreshL7Services when ebus_standard=true (0.69375ms)
+✔ L7 commands PB filter forwards 0x-prefixed hex verbatim (ui=0xff → pb=0xff, NOT pb=255) (0.852292ms)
+✔ L7 commands PB filter preserves 0x prefix verbatim (ui=0x10 → pb=0x10) (0.861ms)
+✔ L7 commands PB filter rejects non-hex locally and does not fetch (ui=banana) (1.01525ms)
+✔ L7 decode submit forwards pb/sb verbatim (ui=0xff,8 → pb=0xff,sb=8, NOT Number()-round-tripped) (0.82675ms)
+✔ L7 PB filter forwards decimal 10 verbatim (ui=10 → pb=10, NOT pb=0x10) (0.915625ms)
+✔ INT-09 fixture pins all five domains and the exact pack versions (4.697792ms)
+✔ INT-09 schema is closed and matches the host renderer boundary (1.065ms)
+✔ INT-09 prototype is fixture-only and reads perspectives from the fixture (1.478666ms)
+(node:46892) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///Users/razvan/Desktop/Helianthus%20Project/work/helianthus-stabilization-20260904/wave12/run/helianthus-ebusgateway-973/portal/web/prototype/int09.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /Users/razvan/Desktop/Helianthus Project/work/helianthus-stabilization-20260904/wave12/run/helianthus-ebusgateway-973/portal/web/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ INT-09 fixture navigation handles changed state and a valid sixth contribution generically (2.397667ms)
+✔ INT-09 binds catalog state to full registry identity (1.009042ms)
+✔ INT-09 preserves every requested state and caller-scoped action outcome (0.439792ms)
+✔ INT-09 unauthorized actions create no DOM node or descriptive leak (1.78825ms)
+✔ INT-09 prototype uses focus-visible and non-color text state cues (0.581958ms)
+✔ PortalShell ignores stale bootstrap completions when arming bus observability polling (7.279958ms)
+✔ PortalShell renders the gateway version in the topbar status (1.893708ms)
+✔ PortalShell renders unsupported adapter info with an unsupported label (33.192625ms)
+✔ PortalShell renders promoted false and zero values distinctly from unavailable (1.575708ms)
+✔ PortalShell renders the provider-owned FM5 degraded verdict (1.218208ms)
+✔ Portal source contains no eeBUS login, credential, session, or CSRF surface (5.911709ms)
+✔ Portal status and all four partner views use one state_revision envelope without auth headers (1.932959ms)
+▶ Portal emits the exact closed mutation matrix with revision and Idempotency-Key only
+  ✔ open (1.836916ms)
+  ✔ close (0.976875ms)
+  ✔ cancel (1.256917ms)
+  ✔ retry (1.204875ms)
+  ✔ untrust (0.849ms)
+  ✔ connect (1.1155ms)
+  ✔ confirm (0.904917ms)
+✔ Portal emits the exact closed mutation matrix with revision and Idempotency-Key only (8.917ms)
+✔ selection requires independently entered complete OOB SKI and connect keeps only selection_id (1.163083ms)
+✔ PIN connect never enters generic pending replay and clears the password field immediately (0.97475ms)
+✔ Portal renders only the six documented terminal PIN outcomes (3.729834ms)
+✔ network retry reuses the exact body and Idempotency-Key without session state (1.221208ms)
+✔ candidate and raw SPINE remain active-memory only and clear on visibility loss (1.158167ms)
+▶ newest candidate survives delayed unrelated admin responses and older candidate refreshes
+  ✔ delayed status (0.901625ms)
+  ✔ delayed partners (0.794125ms)
+  ✔ delayed discovery (0.719667ms)
+  ✔ delayed selection (0.792791ms)
+  ✔ delayed readiness (1.051ms)
+  ✔ older candidate response (1.162541ms)
+✔ newest candidate survives delayed unrelated admin responses and older candidate refreshes (5.92625ms)
+✔ eeBUS renders three separate Pairing SHIP and SPINE workspaces (1.802333ms)
+✔ trusted offline rows show reconnect required and never expose Browse SPINE (0.689208ms)
+✔ SPINE peer refresh requests only the connected view and Browse stays GET-only (0.745167ms)
+✔ workspace navigation clears only the departing workspace volatile authority (0.718708ms)
+▶ Pairing to SHIP and Pairing to SPINE clear every transient pairing authority
+  ✔ ship (0.705833ms)
+  ✔ spine (0.75875ms)
+✔ Pairing to SHIP and Pairing to SPINE clear every transient pairing authority (1.619084ms)
+▶ visibility loss, component disconnect, and leaving eeBUS clear pairing authority
+  ✔ visibility loss (0.728083ms)
+  ✔ component disconnect (0.614917ms)
+  ✔ leave eeBUS section (0.592334ms)
+✔ visibility loss, component disconnect, and leaving eeBUS clear pairing authority (2.124334ms)
+✔ candidate, pending replay, and active action expiry retire their volatile caches (0.791208ms)
+✔ successive pairing actions ignore stale status and render each terminal only once (0.734583ms)
+▶ status requests may retire only the action that was current when the request started
+  ✔ missing active action (0.978417ms)
+  ✔ mismatched terminal (0.635708ms)
+✔ status requests may retire only the action that was current when the request started (1.80975ms)
+▶ terminal PIN outcomes and action expiry abort every pairing authority
+  ✔ pin required (0.639292ms)
+  ✔ pin optional (0.592917ms)
+  ✔ expired (0.551375ms)
+  ✔ stale terminal cannot abort the next selection (0.7755ms)
+✔ terminal PIN outcomes and action expiry abort every pairing authority (2.825625ms)
+✔ no-PIN Connect may reselect after pin_required and submit one transient exact PIN (1.0345ms)
+▶ late Select and Connect completions cannot escape pairing retirement boundaries
+  ✔ select then navigate SHIP (0.71725ms)
+  ✔ select then navigate SPINE (0.602792ms)
+  ✔ select then visibility loss (0.586333ms)
+  ✔ select then component disconnect (0.6595ms)
+  ✔ select then leave eeBUS component (0.662ms)
+  ✔ connect then navigate SHIP (0.773417ms)
+  ✔ connect then navigate SPINE (0.666208ms)
+  ✔ connect then visibility loss (0.648834ms)
+  ✔ connect then component disconnect (0.611666ms)
+  ✔ connect then leave eeBUS component (0.653833ms)
+✔ late Select and Connect completions cannot escape pairing retirement boundaries (7.042792ms)
+▶ late predecessor Select and Connect completions cannot overwrite a successor flow
+  ✔ Select predecessor (1.208417ms)
+  ✔ Connect predecessor (0.762417ms)
+✔ late predecessor Select and Connect completions cannot overwrite a successor flow (2.161041ms)
+✔ raw Modbus browser call uses the fixed Portal route (2.983292ms)
+✔ PV and raw panels follow all independent capability combinations (2.906833ms)
+✔ PV polling interval is cleared during teardown (1.711125ms)
+✔ raw Modbus renders bounded unavailable text for network and non-JSON failures (2.3445ms)
+✔ raw Modbus rejects a range crossing 65536 before fetch (0.999792ms)
+✔ VaillantB503Pane_NavItemRegistered (5.121667ms)
+✔ VaillantB503Pane_Unavailable_ShowsPlaceholder (2.5055ms)
+✔ VaillantB503Pane_Available_ShowsThreeTabs (1.364333ms)
+✔ VaillantB503Pane_ErrorsTab_RendersSlots (1.528209ms)
+✔ VaillantB503Pane_NoInstallWriteAffordance (1.745709ms)
+✔ VaillantB503Pane_LiveMonitor_AutoDisableOnLeave (1.441ms)
+ℹ tests 101
+ℹ suites 0
+ℹ pass 101
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 122.745875
+==> portal assets
+==> portal asset build
+
+> @helianthus/portal-web@0.1.0 build
+> node ./scripts/build.mjs
+
+portal assets built:
+- app.js: 179318 bytes sha256=1abf09d469c7ab9a9e3e8ccd84f4e69502ce7a4cb62ac109873790c0d99493b5
+- app.css: 10903 bytes sha256=62955b2dd57cda99273002f7b96ac6e45eb394ed4de683759cb9b59b92d62fc2
+portal assets are up to date
+==> go vet
+==> go build
+# github.com/Project-Helianthus/helianthus-ebusgateway/internal/coexistence/cmd/msp08harness
+/opt/homebrew/Cellar/go/1.26.2/libexec/pkg/tool/darwin_arm64/link: running cc failed: exit status 1
+/usr/bin/cc -arch arm64 -Wl,-headerpad,1144 -o $WORK/b333/exe/a.out /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/go.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000000.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000001.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000002.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000003.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000004.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000005.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000006.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000007.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000008.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000009.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000010.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-4172629137/000011.o -lresolv -O2 -g -framework CoreFoundation -framework Security -O2 -g -framework CoreFoundation
+ld: multiple errors: tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libresolv.9.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libresolv.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd:4:54: error: unknown architecture
+                   arm64e-macos, arm64e-maccatalyst, arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                                                     ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/Security.framework/Versions/A/Security.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Security.framework/Security.tbd'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+# github.com/Project-Helianthus/helianthus-ebusgateway/internal/candidatefacts/cmd/rawfirst
+/opt/homebrew/Cellar/go/1.26.2/libexec/pkg/tool/darwin_arm64/link: running cc failed: exit status 1
+/usr/bin/cc -arch arm64 -Wl,-headerpad,1144 -o $WORK/b331/exe/a.out /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/go.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000000.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000001.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000002.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000003.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000004.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000005.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000006.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000007.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000008.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000009.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000010.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1838936609/000011.o -lresolv -O2 -g -framework CoreFoundation -framework Security -O2 -g -framework CoreFoundation
+ld: multiple errors: tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libresolv.9.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libresolv.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd:4:54: error: unknown architecture
+                   arm64e-macos, arm64e-maccatalyst, arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                                                     ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/Security.framework/Versions/A/Security.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Security.framework/Security.tbd'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+
+# github.com/Project-Helianthus/helianthus-ebusgateway/cmd/smoke
+/opt/homebrew/Cellar/go/1.26.2/libexec/pkg/tool/darwin_arm64/link: running cc failed: exit status 1
+/usr/bin/cc -arch arm64 -Wl,-headerpad,1144 -o $WORK/b328/exe/a.out /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/go.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000000.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000001.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000002.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000003.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000004.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000005.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000006.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000007.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000008.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000009.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000010.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-1878800658/000011.o -lresolv -framework CoreFoundation -framework Security -O2 -g -O2 -g -framework CoreFoundation
+ld: multiple errors: tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libresolv.9.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libresolv.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd:4:54: error: unknown architecture
+                   arm64e-macos, arm64e-maccatalyst, arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                                                     ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/Security.framework/Versions/A/Security.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Security.framework/Security.tbd'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+
+# github.com/Project-Helianthus/helianthus-ebusgateway/cmd/gateway
+/opt/homebrew/Cellar/go/1.26.2/libexec/pkg/tool/darwin_arm64/link: running cc failed: exit status 1
+/usr/bin/cc -arch arm64 -Wl,-headerpad,1144 -o $WORK/b277/exe/a.out /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/go.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000000.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000001.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000002.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000003.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000004.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000005.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000006.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000007.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000008.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000009.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000010.o /var/folders/j0/fll68z4j1cj5vxb3sspz0svc0000gp/T/go-link-938190060/000011.o -lresolv -framework CoreFoundation -framework Security -O2 -g -O2 -g -framework CoreFoundation
+ld: multiple errors: tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libresolv.9.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libresolv.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libSystem.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation.tbd:4:54: error: unknown architecture
+                   arm64e-macos, arm64e-maccatalyst, arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                                                     ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd'; tapi error: malformed file
+/Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk/System/Library/Frameworks/Security.framework/Versions/A/Security.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+                   ^~~~~~~~~~~~~~~
+ in '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Security.framework/Security.tbd'
+clang: error: linker command failed with exit code 1 (use -v to see invocation)

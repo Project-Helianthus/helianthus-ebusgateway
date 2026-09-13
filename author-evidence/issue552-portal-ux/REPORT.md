@@ -166,6 +166,26 @@ token.
   mapping gates. Transport and passive-smoke were correctly not triggered.
   Durable log: `ci_local-final-6aa2f01.log`, SHA-256
   `fa0f3dd7b2b079922b69b81a28c41a74ea3f9413e8d5118bfcda8c378201cfbd`.
+- Independent exact-HEAD review identified one remaining late-enable P2. A
+  target-A enable response arriving after selection moved to B supplied an
+  issuer token that was used only for one direct cleanup attempt; an
+  unconfirmed result discarded the only browser recovery handle. `0426b0d...`
+  stores the late A token with its captured A target before routing cleanup
+  through the confirmation-aware helper. Failed GraphQL/transport/absent
+  confirmation retains that pair for a later user-triggered bounded cleanup;
+  `disabled: true` clears it without changing B's selection or epoch. The
+  deterministic A->B regression injects a late A enable, fails its first A
+  disable, verifies A token/target retention and B isolation, then confirms a
+  single later cleanup clears exactly that A pair.
+- Focused Portal B503 tests passed 17/17 and focused GraphQL/MCP/gateway
+  `go test -race` passed. Final
+  `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  GOWORK=off ./scripts/ci_local.sh` on `0426b0d...`: PASS, including 112
+  Portal Node tests, repository-wide race tests, source schema validation,
+  Python 168+6+26+11+6+2, zero lint findings, and green Storage/EVSE SemReg
+  mapping gates. Transport and passive-smoke were correctly not triggered.
+  Durable log: `ci_local-final-0426b0d.log`, SHA-256
+  `def443fdd01f9bbc51526cb2f7537db5306b4bad6aa2b4ce31fd9a96c8bc2192`.
 
 ## Gate boundary
 

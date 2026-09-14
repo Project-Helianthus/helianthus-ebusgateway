@@ -407,6 +407,12 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 	pending.Emitted = outcome.Emitted
 	m.pendingOperation = nil
 	if outcome.Err != nil {
+		if errors.Is(outcome.Err, ErrTransportDown) {
+			epoch := m.transport.TransportEpoch
+			m.toDisabledLocked()
+			m.createCleanupLocked(target, epoch, pending.OperationID)
+			m.lastRefreshTransportDown = true
+		}
 		m.stateMu.Unlock()
 		return nil, outcome.Err
 	}

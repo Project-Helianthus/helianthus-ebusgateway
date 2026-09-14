@@ -266,6 +266,33 @@ func TestOperationActiveDisconnectReleasesOwnerAndRetainsCleanup(t *testing.T) {
 	}
 }
 
+func TestOperationRefreshedReadDisconnectReleasesOwnerAndRetainsCleanup(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, okRefresh(testEpoch+1))
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	_, err := manager.ReadOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{
+			Err: b503session.ErrTransportDown, Emitted: true,
+			Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch + 1),
+		}
+	})
+	if !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("refreshed read error = %v, want ErrTransportDown", err)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("refreshed read disconnect snapshot = %+v", got)
+	}
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.Target != operationTarget || obligation.TransportEpoch != testEpoch+1 {
+		t.Fatalf("refreshed read disconnect cleanup = %+v, present=%v", obligation, ok)
+	}
+}
+
 func TestOperationRestartFencesQualifiedTargetWithoutAutomaticWrite(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	writes := &dispatchRecorder{}

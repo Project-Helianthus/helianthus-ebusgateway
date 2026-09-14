@@ -17,6 +17,12 @@ type b503ParityDispatcher struct {
 	failIndex *byte
 }
 
+type b503GraphQLErrorDispatcher struct{ err error }
+
+func (dispatcher b503GraphQLErrorDispatcher) Invoke(_ context.Context, _ byte, _ []byte) ([]byte, error) {
+	return nil, dispatcher.err
+}
+
 func (dispatcher *b503ParityDispatcher) Invoke(_ context.Context, _ byte, payload []byte) ([]byte, error) {
 	if len(payload) < 2 {
 		return nil, errors.New("short request")
@@ -107,6 +113,28 @@ func b503GraphQLResult(t *testing.T, provider *b503GraphQLProvider, query string
 		t.Fatalf("NewQuerySchema: %v", err)
 	}
 	return graphqlgo.Do(graphqlgo.Params{Schema: schema, RequestString: query})
+}
+
+func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "context cancellation before turnaround", err: errRawFrameUpstreamTimeout, code: "UPSTREAM_TIMEOUT"},
+		{name: "nak crc or protocol failure", err: errRawFrameUpstreamRPCFailed, code: "UPSTREAM_RPC_FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, provider := newB503ParityRuntime(t, b503GraphQLErrorDispatcher{err: tc.err})
+			result := b503GraphQLResult(t, provider, `{ vaillantErrors(targetAddress:21) { firstActiveError } }`)
+			if len(result.Errors) != 1 {
+				t.Fatalf("GraphQL errors=%+v; want one field-local error", result.Errors)
+			}
+			if !strings.Contains(result.Errors[0].Message, tc.code) {
+				t.Fatalf("GraphQL error=%q; want public code %q", result.Errors[0].Message, tc.code)
+			}
+		})
+	}
 }
 
 func TestIssue552VaillantB503PromotedMCPGraphQLParity(t *testing.T) {

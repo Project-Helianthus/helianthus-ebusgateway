@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
@@ -51,10 +52,28 @@ func (p *b503GraphQLProvider) targetOr(target *byte) byte {
 	return p.defTarget
 }
 
+// publicB503GraphQLError preserves the public operation code at the GraphQL
+// boundary.  The dispatcher owns wire-level classification; GraphQL must not
+// replace its timeout and protocol-failure distinctions with an implementation
+// string that Portal cannot present truthfully.
+func publicB503GraphQLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, errRawFrameUpstreamTimeout):
+		return fmt.Errorf("UPSTREAM_TIMEOUT: %w", err)
+	case errors.Is(err, errRawFrameUpstreamRPCFailed):
+		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
+	default:
+		return err
+	}
+}
+
 func (p *b503GraphQLProvider) Errors(ctx context.Context, target *byte) (graphql.VaillantB503Errors, error) {
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), b503.EncodeCurrentError())
 	if err != nil {
-		return graphql.VaillantB503Errors{}, err
+		return graphql.VaillantB503Errors{}, publicB503GraphQLError(err)
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
@@ -66,7 +85,7 @@ func (p *b503GraphQLProvider) Errors(ctx context.Context, target *byte) (graphql
 func (p *b503GraphQLProvider) ServiceCurrent(ctx context.Context, target *byte) (graphql.VaillantB503Errors, error) {
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), b503.EncodeCurrentService())
 	if err != nil {
-		return graphql.VaillantB503Errors{}, err
+		return graphql.VaillantB503Errors{}, publicB503GraphQLError(err)
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
@@ -82,7 +101,7 @@ func (p *b503GraphQLProvider) ErrorHistory(ctx context.Context, target *byte, in
 	}
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), payload)
 	if err != nil {
-		return graphql.VaillantB503HistoryRecord{}, err
+		return graphql.VaillantB503HistoryRecord{}, publicB503GraphQLError(err)
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
@@ -123,7 +142,7 @@ func (p *b503GraphQLProvider) ServiceHistory(ctx context.Context, target *byte, 
 	}
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), payload)
 	if err != nil {
-		return graphql.VaillantB503HistoryRecord{}, err
+		return graphql.VaillantB503HistoryRecord{}, publicB503GraphQLError(err)
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {
@@ -143,7 +162,7 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 		if _, err := p.dispatcher.Invoke(ctx, t, b503.EncodeLiveMonitorMain()); err != nil {
 			rebuilt := b503session.SessionKey{Transport: p.mgr.TransportKey(), IssuerToken: key.IssuerToken}
 			_ = p.mgr.Disable(rebuilt)
-			return graphql.VaillantB503LiveMonitor{}, err
+			return graphql.VaillantB503LiveMonitor{}, publicB503GraphQLError(err)
 		}
 		// The GraphQL type has a dedicated issuerToken field (see
 		// graphql/vaillant_b503.go buildVaillantB503Types). Use it so
@@ -160,7 +179,7 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 		}
 		resp, err := p.dispatcher.Invoke(ctx, t, b503.EncodeLiveMonitorMain())
 		if err != nil {
-			return graphql.VaillantB503LiveMonitor{}, err
+			return graphql.VaillantB503LiveMonitor{}, publicB503GraphQLError(err)
 		}
 		return graphql.VaillantB503LiveMonitor{RawHex: hex.EncodeToString(resp)}, nil
 	case "disable":

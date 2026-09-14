@@ -321,6 +321,9 @@ func TestM6Dispatcher_TransportDown_FiresOnTransportDisconnect(t *testing.T) {
 func TestIssue851B503StaleSendErrorCannotDisconnectRecoveredIssuer(t *testing.T) {
 	disp, bus, mgr := newTestDispatcher(t)
 	runtime := &b503Runtime{manager: mgr}
+	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	})
 	disp.disconnectIfCurrent = runtime.disconnectIfCurrent
 	if _, err := mgr.Enable(context.Background()); err != nil {
 		t.Fatalf("old generation Enable() error = %v", err)
@@ -396,6 +399,37 @@ func TestM6Dispatcher_CtxCanceled_MapsToUpstreamTimeout(t *testing.T) {
 	}
 	if !errors.Is(err, errRawFrameUpstreamTimeout) {
 		t.Fatalf("err = %v; want errors.Is(_, errRawFrameUpstreamTimeout)", err)
+	}
+}
+
+func TestIssue552B503OutcomePreCanceledIsNotEmitted(t *testing.T) {
+	disp, bus, _ := newTestDispatcher(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome := disp.InvokeB503Outcome(ctx, 0x15, []byte{0x00, 0x03})
+	if outcome.Emitted {
+		t.Fatal("pre-canceled outcome marked emitted")
+	}
+	if outcome.Err == nil || !errors.Is(outcome.Err, errRawFrameUpstreamTimeout) {
+		t.Fatalf("pre-canceled outcome error = %v", outcome.Err)
+	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("pre-canceled bus.Send count = %d, want 0", calls)
+	}
+}
+
+func TestIssue552B503OutcomeNAKIsEmittedAndNativeNAK(t *testing.T) {
+	disp, bus, _ := newTestDispatcher(t)
+	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: NAK from target"))
+	outcome := disp.InvokeB503Outcome(context.Background(), 0x15, []byte{0x00, 0x03})
+	if !outcome.Emitted || outcome.Native != b503session.NativeNAK {
+		t.Fatalf("NAK outcome = %+v, want emitted NativeNAK", outcome)
+	}
+	if outcome.Err == nil || !errors.Is(outcome.Err, errRawFrameUpstreamRPCFailed) {
+		t.Fatalf("NAK outcome error = %v", outcome.Err)
+	}
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("NAK bus.Send count = %d, want 1", calls)
 	}
 }
 
@@ -494,6 +528,9 @@ func TestIssue851B503StaleSourceFallbackCannotDisconnectRecoveredIssuer(t *testi
 		t.Fatalf("old generation Enable() error = %v", err)
 	}
 	runtime := &b503Runtime{manager: mgr}
+	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	})
 	var recovered b503session.SessionKey
 	disp := newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
 		// Invoke already captured epoch 7. Complete the exact lifecycle

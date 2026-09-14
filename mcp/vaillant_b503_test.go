@@ -111,10 +111,13 @@ func TestVaillantB503LiveMonitorSession_RefreshingIsOwnedAndStable(t *testing.T)
 		t.Fatalf("Enable: %v", err)
 	}
 	srv := newB503Server(t, &stubB503Dispatcher{}, mgr)
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
 		mgr.OnEpochAdvance(context.Background(), 2)
+		_, err := mgr.ReadOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+		})
+		done <- err
 	}()
 	<-refreshStarted
 
@@ -126,7 +129,9 @@ func TestVaillantB503LiveMonitorSession_RefreshingIsOwnedAndStable(t *testing.T)
 		t.Fatalf("session=%+v; want Refreshing with ownership held", session)
 	}
 	close(allowRefresh)
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("triggering read: %v", err)
+	}
 }
 
 // --- Test 2: Envelope determinism ----------------------------------------

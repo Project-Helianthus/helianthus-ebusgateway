@@ -38,6 +38,13 @@ func failRefresh() b503session.RefreshFunc {
 	}
 }
 
+func ackDispatch(_ context.Context, target byte) b503session.DispatchOutcome {
+	return b503session.DispatchOutcome{
+		Response: []byte{0x01, 0x00}, Emitted: true, Native: b503session.NativeACK,
+		Transport: newTK(testEpoch),
+	}
+}
+
 // 1. Enable then Disable happy path.
 func TestSession_EnableThenDisable_Happy(t *testing.T) {
 	m := b503session.New(newTK(testEpoch), 30*time.Second, okRefresh(testEpoch))
@@ -177,9 +184,9 @@ func TestSession_GatewayRestart_DestroysState(t *testing.T) {
 	if err := m.Disable(oldKey); err == nil {
 		t.Fatalf("Disable with stale key should fail")
 	}
-	// Fresh enable works.
-	if _, err := m.Enable(context.Background()); err != nil {
-		t.Fatalf("fresh Enable err=%v", err)
+	// A public re-enable is fenced until separately authorized recovery.
+	if _, err := m.EnableOperation(context.Background(), 0, ackDispatch); !errors.Is(err, b503session.ErrCleanupPending) {
+		t.Fatalf("fresh Enable err=%v want ErrCleanupPending", err)
 	}
 }
 
@@ -214,11 +221,11 @@ func TestSession_EpochAdvance_RefreshSucceeds_NoUnknownStateLeaks(t *testing.T) 
 	if v, ok := observed.Load().(bool); ok && v {
 		t.Fatal("unknown state leaked publicly via State()")
 	}
-	if s := m.State(); s != b503session.Active {
-		t.Fatalf("state=%v want Active post-refresh", s)
+	if _, err := m.ReadOperation(context.Background(), 0, ackDispatch); err != nil {
+		t.Fatalf("triggering Read on new epoch err=%v", err)
 	}
-	if err := m.Read(newTK(testEpoch + 1)); err != nil {
-		t.Fatalf("Read on new epoch err=%v", err)
+	if s := m.State(); s != b503session.Active {
+		t.Fatalf("state=%v want Active after triggering refresh read", s)
 	}
 }
 
@@ -235,10 +242,11 @@ func TestSession_StatusSnapshot_RefreshingKeepsOwnershipCoherentAndOperationsBus
 		t.Fatalf("Enable err=%v", err)
 	}
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
 		m.OnEpochAdvance(context.Background(), testEpoch+1)
+		_, err := m.ReadOperation(context.Background(), 0, ackDispatch)
+		done <- err
 	}()
 	<-refreshStarted
 
@@ -257,7 +265,9 @@ func TestSession_StatusSnapshot_RefreshingKeepsOwnershipCoherentAndOperationsBus
 		t.Fatalf("Enable during refresh err=%v; want ErrSessionBusy", err)
 	}
 	close(allowRefresh)
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("triggering read after refresh: %v", err)
+	}
 	if got := m.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
 		t.Fatalf("snapshot after refresh = %+v; want Active with ownership held", got)
 	}
@@ -270,6 +280,10 @@ func TestSession_EpochAdvance_RefreshTransportDown_DisabledOutcome(t *testing.T)
 		t.Fatalf("Enable err=%v", err)
 	}
 	m.OnEpochAdvance(context.Background(), testEpoch+1)
+	_, err := m.ReadOperation(context.Background(), 0, ackDispatch)
+	if !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("triggering read err=%v want ErrTransportDown", err)
+	}
 	if s := m.State(); s != b503session.Disabled && s != b503session.Idle {
 		t.Fatalf("state=%v want Disabled/Idle", s)
 	}
@@ -282,12 +296,12 @@ func TestSession_EpochAdvance_RefreshFails_SubsequentReadBusy(t *testing.T) {
 		t.Fatalf("Enable err=%v", err)
 	}
 	m.OnEpochAdvance(context.Background(), testEpoch+1)
-	err := m.Read(newTK(testEpoch + 1))
+	_, err := m.ReadOperation(context.Background(), 0, ackDispatch)
 	if err == nil {
 		t.Fatalf("Read after failed refresh should error")
 	}
-	if !errors.Is(err, b503session.ErrSessionBusy) && !errors.Is(err, b503session.ErrNotActive) {
-		t.Fatalf("Read err=%v want ErrSessionBusy or ErrNotActive", err)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("Read err=%v want exact refresh error", err)
 	}
 }
 

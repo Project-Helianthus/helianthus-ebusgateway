@@ -80,10 +80,13 @@ func TestIssue552VaillantB503RefreshingSessionMCPGraphQLParity(t *testing.T) {
 	if _, err := manager.Enable(context.Background()); err != nil {
 		t.Fatalf("Enable session: %v", err)
 	}
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
 		manager.OnEpochAdvance(context.Background(), 2)
+		_, err := manager.ReadOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+		})
+		done <- err
 	}()
 	<-refreshStarted
 
@@ -101,7 +104,9 @@ func TestIssue552VaillantB503RefreshingSessionMCPGraphQLParity(t *testing.T) {
 		t.Fatalf("session drift: MCP=%#v GraphQL=%#v", mcpState, graphState)
 	}
 	close(allowRefresh)
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("triggering read: %v", err)
+	}
 }
 
 func b503GraphQLResult(t *testing.T, provider *b503GraphQLProvider, query string) *graphqlgo.Result {
@@ -123,6 +128,9 @@ func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
 	}{
 		{name: "context cancellation before turnaround", err: errRawFrameUpstreamTimeout, code: "UPSTREAM_TIMEOUT"},
 		{name: "nak crc or protocol failure", err: errRawFrameUpstreamRPCFailed, code: "UPSTREAM_RPC_FAILED"},
+		{name: "cleanup pending", err: b503session.ErrCleanupPending, code: "UNKNOWN"},
+		{name: "transport down", err: b503session.ErrTransportDown, code: "TRANSPORT_DOWN"},
+		{name: "session contention", err: b503session.ErrSessionBusy, code: "SESSION_BUSY"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, provider := newB503ParityRuntime(t, b503GraphQLErrorDispatcher{err: tc.err})

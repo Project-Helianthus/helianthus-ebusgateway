@@ -21,6 +21,54 @@ type RPCDispatcher interface {
 	Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error)
 }
 
+// B503DispatchOutcome records the conservative wire boundary for a B503
+// operation. Emitted means bus.Send was entered; it never claims a physical
+// receiver accepted the frame.
+type B503DispatchOutcome struct {
+	Response  []byte
+	Emitted   bool
+	Native    b503session.NativeResult
+	Err       error
+	Transport b503session.TransportKey
+}
+
+// B503OutcomeDispatcher is an optional internal extension. Generic reads keep
+// RPCDispatcher; only lifecycle ownership consumes this outcome.
+type B503OutcomeDispatcher interface {
+	RPCDispatcher
+	InvokeB503Outcome(ctx context.Context, target byte, payload []byte) B503DispatchOutcome
+}
+
+// InvokeB503Operation adapts the optional lifecycle-aware dispatcher to the
+// Manager's operation contract. Generic RPCDispatcher remains unchanged. A
+// fallback dispatcher is conservative once Invoke is entered and cannot claim
+// the special enable-NAK proof.
+func InvokeB503Operation(ctx context.Context, dispatcher RPCDispatcher, manager *b503session.Manager, target byte, payload []byte) b503session.DispatchOutcome {
+	if dispatcher == nil {
+		return b503session.DispatchOutcome{Err: errNotSupported}
+	}
+	if aware, ok := dispatcher.(B503OutcomeDispatcher); ok {
+		outcome := aware.InvokeB503Outcome(ctx, target, payload)
+		return b503session.DispatchOutcome{
+			Response: outcome.Response, Emitted: outcome.Emitted, Native: outcome.Native,
+			Err: outcome.Err, Transport: outcome.Transport,
+		}
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return b503session.DispatchOutcome{Err: ctx.Err()}
+	}
+	transport := b503session.TransportKey{}
+	if manager != nil {
+		transport = manager.TransportKey()
+	}
+	response, err := dispatcher.Invoke(ctx, target, payload)
+	native := b503session.NativeAmbiguous
+	if err == nil {
+		native = b503session.NativeACK
+	}
+	return b503session.DispatchOutcome{Response: response, Emitted: true, Native: native, Err: err, Transport: transport}
+}
+
 // B503Availability is the public capability-signal enum surfaced via
 // VaillantB503Availability(). Spec §11.
 type B503Availability string
@@ -502,26 +550,12 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		if err != nil {
 			return st.errEnvelope(ctx, err)
 		}
-		key, err := mgr.Enable(ctx)
-		if err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
-		// Emit the request so the device acknowledges live-monitor
-		// activation. Bound by SERVICE_WRITE safety class.
-		if _, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain()); err != nil {
-			// Dispatcher failure → release session and surface upstream
-			// error. Rebuild the SessionKey from the Manager's current
-			// TransportKey in case OnEpochAdvance re-homed the session
-			// between Enable and the failed Invoke. If even the rebuilt
-			// key no longer matches (session already disabled by refresh
-			// policy surfacing TRANSPORT_DOWN / SESSION_BUSY), Disable is
-			// a no-op — the session is already released.
-			rebuilt := b503session.SessionKey{
-				Transport:   mgr.TransportKey(),
-				IssuerToken: key.IssuerToken,
-			}
-			_ = mgr.Disable(rebuilt)
-			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		key, err := mgr.EnableOperation(ctx, target, dispatch)
+		if err != nil {
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		data := map[string]any{"issuer_token": key.IssuerToken}
 		return st.okEnvelope(ctx, data)
@@ -539,21 +573,21 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		if err != nil {
 			return st.errEnvelope(ctx, err)
 		}
-		if mgr.LastRefreshTransportDown() {
-			return st.errEnvelope(ctx, errTransportDown)
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
-		transport := mgr.TransportKey()
-		if err := mgr.Read(transport); err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
-		}
-		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
+		resp, err := mgr.ReadOperation(ctx, target, dispatch)
 		if err != nil {
-			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		data := map[string]any{"raw_hex": hexString(resp)}
 		return st.okEnvelope(ctx, data)
 
 	case "disable":
+		target, err := st.target(args)
+		if err != nil {
+			return st.errEnvelope(ctx, err)
+		}
 		// issuer_token is mandatory for disable. Silently treating a missing
 		// or non-string token as empty masks malformed client payloads as
 		// SESSION_BUSY (via ErrWrongToken → normalized), keeps the session
@@ -571,9 +605,12 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 			return st.errEnvelope(ctx, fmt.Errorf("%w: issuer_token must be non-empty", errInvalidArgument))
 		}
 		transport := mgr.TransportKey()
-		err := mgr.Disable(b503session.SessionKey{Transport: transport, IssuerToken: tok})
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
+		}
+		err = mgr.DisableOperation(ctx, b503session.SessionKey{Transport: transport, IssuerToken: tok}, target, dispatch)
 		if err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		return st.okEnvelope(ctx, map[string]any{"disabled": true})
 	}
@@ -655,6 +692,7 @@ func hexString(b []byte) string {
 var (
 	errSessionBusy       = errors.New("b503mcp: SESSION_BUSY")
 	errTransportDown     = errors.New("b503mcp: TRANSPORT_DOWN")
+	errUnknown           = errors.New("b503mcp: UNKNOWN")
 	errNotSupported      = errors.New("b503mcp: NOT_SUPPORTED")
 	errInvalidToken      = errors.New("b503mcp: INVALID_TOKEN")
 	errInvalidArgument   = errors.New("b503mcp: INVALID_ARGUMENT")
@@ -677,10 +715,31 @@ func normalizeSessionErr(err error) error {
 		// the public wire (disable-with-wrong-token is indistinguishable
 		// from second-claimant to the caller).
 		return errSessionBusy
+	case errors.Is(err, b503session.ErrTargetMismatch):
+		return errSessionBusy
+	case errors.Is(err, b503session.ErrCleanupPending):
+		return errUnknown
 	case errors.Is(err, b503session.ErrNotActive):
 		return errSessionBusy
 	default:
 		return errSessionBusy
+	}
+}
+
+func normalizeB503OperationErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, b503session.ErrTransportDown),
+		errors.Is(err, b503session.ErrSessionBusy),
+		errors.Is(err, b503session.ErrWrongToken),
+		errors.Is(err, b503session.ErrTargetMismatch),
+		errors.Is(err, b503session.ErrCleanupPending),
+		errors.Is(err, b503session.ErrNotActive):
+		return normalizeSessionErr(err)
+	default:
+		return fmt.Errorf("%w: %v", errUpstreamRPCFailed, err)
 	}
 }
 
@@ -691,6 +750,8 @@ func classifyB503Error(err error) (string, bool) {
 		return "SESSION_BUSY", true
 	case errors.Is(err, errTransportDown):
 		return "TRANSPORT_DOWN", true
+	case errors.Is(err, errUnknown):
+		return "UNKNOWN", true
 	case errors.Is(err, errNotSupported):
 		return "NOT_SUPPORTED", true
 	case errors.Is(err, errInvalidToken):
@@ -803,10 +864,18 @@ func (s *Server) VaillantB503AvailabilityAtCtx(ctx context.Context, target byte)
 	if st.opts.Dispatcher == nil || st.opts.SessionManager == nil {
 		return AvailabilityUnknown
 	}
+	st.opts.SessionManager.MarkQualifiedTarget(target)
+	if st.opts.SessionManager.TargetBlocked(target) {
+		return AvailabilityUnknown
+	}
 	if st.opts.SessionManager.LastRefreshTransportDown() {
 		return AvailabilityTransportDown
 	}
-	if st.opts.SessionManager.IsOwned() {
+	snapshot := st.opts.SessionManager.StatusSnapshot()
+	if snapshot.State == b503session.Refreshing {
+		return AvailabilityUnknown
+	}
+	if snapshot.Owned {
 		// Live-monitor session gate is held (Enabling / Active / Refreshing) → enable/disable by
 		// another client would return SESSION_BUSY. Surface that
 		// literally so preflight/backoff logic doesn't see AVAILABLE

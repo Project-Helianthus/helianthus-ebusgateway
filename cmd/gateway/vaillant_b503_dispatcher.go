@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -169,20 +170,31 @@ func newRawFrameDispatcherWithSourceProvider(bus b503Bus, sourceProvider func() 
 //   - On stale-epoch completion → wraps errRawFrameStaleEpoch (caller
 //     never sees data; capability stays last-known per AD18 row 8).
 func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error) {
+	outcome := d.invokeB503Outcome(ctx, target, payload)
+	return outcome.Response, outcome.Err
+}
+
+func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte, payload []byte) mcp.B503DispatchOutcome {
 	if d == nil || d.bus == nil || d.mgr == nil {
-		return nil, errRawFrameMisconfigured
+		return mcp.B503DispatchOutcome{Err: errRawFrameMisconfigured}
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	transportAtIssue := d.mgr.TransportKey()
+	if err := ctx.Err(); err != nil {
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err),
+			Transport: transportAtIssue,
+		}
 	}
 	// §12.2 explicit reject: payload must not include PB/SB. A naive
 	// caller that prepended `b5 03` would otherwise produce a wire frame
 	// with `b5 03 b5 03 …` after the Frame envelope adds its own primary/
 	// secondary bytes — silent corruption.
 	if len(payload) >= 2 && payload[0] == b503PrimaryByte && payload[1] == b503SecondaryByte {
-		return nil, errRawFrameMalformedPayload
+		return mcp.B503DispatchOutcome{Err: errRawFrameMalformedPayload, Transport: transportAtIssue}
 	}
-	transportAtIssue := d.mgr.TransportKey()
 	source, admitted := d.admittedSource()
 	if !admitted || source == 0 {
 		// Source admission is intersected with DriverManager capability. A
@@ -191,10 +203,13 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		// owner here as an idempotent fallback; the correlated lifecycle event
 		// may already have performed the same disconnect and never advances the
 		// B503 transport epoch.
-		if d.disconnectIfCurrent != nil {
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
 			d.disconnectIfCurrent(transportAtIssue)
 		}
-		return nil, fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown)
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown),
+			Transport: transportAtIssue,
+		}
 	}
 
 	// Capture the current epoch at issue-time. AD18 + R3 A2 fix: epoch
@@ -229,6 +244,9 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		Secondary: b503SecondaryByte,
 		Data:      payload,
 	}
+	// From this point onward every outcome is conservatively emitted. The
+	// transport API offers no finer acknowledgement boundary than entering
+	// bus.Send.
 	resp, sendErr := d.bus.Send(bsCtx, frame)
 	if d.readMu != nil {
 		d.readMu.Unlock()
@@ -240,7 +258,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	// belongs to a dead incarnation and must be discarded. We
 	// deliberately do not consult the Manager's other state for this
 	// decision — the stored epoch alone is sufficient.
-	endEpoch := d.mgr.TransportKey().TransportEpoch
+	endEpoch := d.mgr.DispatchEpoch()
 	if endEpoch != startEpoch {
 		// Discard regardless of success/error. The waiter (Invoke
 		// caller) sees errRawFrameStaleEpoch; consumer code path treats
@@ -248,18 +266,41 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		// per AD18 row 8). Do NOT call OnTransportDisconnect here — by
 		// the time the epoch advanced, the Manager has already been
 		// notified by whatever drove the rollover.
-		return nil, errRawFrameStaleEpoch
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: b503session.NativeAmbiguous,
+			Err: errRawFrameStaleEpoch, Transport: transportAtIssue,
+		}
 	}
 
 	if sendErr != nil {
-		return nil, d.classifySendErr(ctx, bsCtx, transportAtIssue, sendErr)
+		native := b503session.NativeAmbiguous
+		if strings.Contains(strings.ToLower(sendErr.Error()), "nak") {
+			native = b503session.NativeNAK
+		}
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: native,
+			Err: d.classifySendErr(ctx, bsCtx, transportAtIssue, sendErr), Transport: transportAtIssue,
+		}
 	}
 	if resp == nil {
 		// Defensive: bus.Send returned (nil, nil). Treat as protocol
 		// failure rather than panic on response.Data dereference.
-		return nil, fmt.Errorf("%w: nil response frame", errRawFrameUpstreamRPCFailed)
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: b503session.NativeAmbiguous,
+			Err: fmt.Errorf("%w: nil response frame", errRawFrameUpstreamRPCFailed), Transport: transportAtIssue,
+		}
 	}
-	return resp.Data, nil
+	return mcp.B503DispatchOutcome{
+		Response: resp.Data, Emitted: true, Native: b503session.NativeACK, Transport: transportAtIssue,
+	}
+}
+
+// InvokeB503Outcome is the B503-only lifecycle extension. The generic Invoke
+// contract remains unchanged. A pre-cancelled context cannot reach bus.Send;
+// after admission all other errors are conservatively may-have-emitted until
+// the transport API grows a stronger acknowledgement boundary.
+func (d *rawFrameDispatcher) InvokeB503Outcome(ctx context.Context, target byte, payload []byte) mcp.B503DispatchOutcome {
+	return d.invokeB503Outcome(ctx, target, payload)
 }
 
 func (d *rawFrameDispatcher) admittedSource() (byte, bool) {
@@ -301,7 +342,7 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 	// to transportAtIssue prevents a stale generation-N completion from
 	// disconnecting the issuer admitted on generation N+1.
 	if isTransportDownErr(sendErr) {
-		if d.disconnectIfCurrent != nil {
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
 			d.disconnectIfCurrent(transportAtIssue)
 		}
 		// errors.Join lets the resulting error chain match BOTH

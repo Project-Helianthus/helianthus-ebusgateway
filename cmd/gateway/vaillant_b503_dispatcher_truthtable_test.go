@@ -53,37 +53,32 @@ func TestM6TruthTable_Row2_PostFirstSuccess_Available(t *testing.T) {
 	}
 }
 
-// --- Row 3: disconnect during ACTIVE → TRANSPORT_DOWN literal ---
+// --- Row 3: disconnect during ACTIVE → in-flight TRANSPORT_DOWN, capability UNKNOWN ---
 
-func TestM6TruthTable_Row3_DisconnectDuringActive_TransportDownLiteral(t *testing.T) {
+func TestM6TruthTable_Row3_DisconnectDuringActive_UnknownWithCleanup(t *testing.T) {
 	srv, mgr, bus := newTruthTableHarness(t)
-	if _, err := mgr.Enable(context.Background()); err != nil {
+	if _, err := mgr.EnableOperation(context.Background(), defaultVaillantTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	}); err != nil {
 		t.Fatalf("Enable = %v", err)
 	}
-
-	// While ACTIVE, simulate transport-down: probe returns
-	// b503session.ErrTransportDown.
-	bus.setErr([2]byte{0x00, 0x01}, b503session.ErrTransportDown)
-
-	got := srv.VaillantB503AvailabilityCtx(context.Background())
-	// Note: while session is held (Active), the resolver may surface
-	// SESSION_BUSY first per §11 normalization. To assert the row 3
-	// "TRANSPORT_DOWN literal not collapsed" contract, we simulate the
-	// transport-down notification reaching the Manager BEFORE the probe.
-	if got != mcp.AvailabilitySessionBusy && got != mcp.AvailabilityTransportDown {
-		t.Fatalf("row 3 (active+disconnect): capability = %s; want SESSION_BUSY or TRANSPORT_DOWN", got)
+	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: transport closed"))
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
+	dispatcher.disconnectIfCurrent = func(b503session.TransportKey) { mgr.OnTransportDisconnect() }
+	_, err := mgr.ReadOperation(context.Background(), defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, dispatcher, mgr, target, []byte{0x00, 0x03})
+	})
+	if err == nil || !errors.Is(err, errRawFrameTransportDown) {
+		t.Fatalf("row 3 in-flight error = %v, want TRANSPORT_DOWN", err)
 	}
-
-	// Now formally release & latch transport-down via Manager.OnEpochAdvance
-	// path with refresh→ErrTransportDown.
-	mgr.OnTransportDisconnect()
-	// Manually mark refresh-down via the Manager's resolver path: dispatch
-	// while Manager.LastRefreshTransportDown() == false, but the bus error
-	// is ErrTransportDown. The capability code path checks
-	// errors.Is(err, b503session.ErrTransportDown) at the probe boundary.
-	got = srv.VaillantB503AvailabilityCtx(context.Background())
-	if got != mcp.AvailabilityTransportDown {
-		t.Fatalf("row 3 (post-disconnect, refresh-down): capability = %s; want TRANSPORT_DOWN literal (NOT SESSION_BUSY collapse)", got)
+	if mgr.IsOwned() {
+		t.Fatal("row 3 disconnect retained caller ownership")
+	}
+	if obligation, ok := mgr.CleanupObligation(); !ok || obligation.Target != defaultVaillantTarget {
+		t.Fatalf("row 3 cleanup = %+v, present=%v", obligation, ok)
+	}
+	if got := srv.VaillantB503AvailabilityCtx(context.Background()); got != mcp.AvailabilityUnknown {
+		t.Fatalf("row 3 capability = %s, want UNKNOWN while cleanup remains", got)
 	}
 }
 
@@ -158,47 +153,81 @@ func TestM6TruthTable_Row6_DispatchError_CapabilityStaysLastKnown(t *testing.T) 
 	}
 }
 
-// --- Row 7: session-expiry detected → AD14 1-retry → AVAILABLE OR TRANSPORT_DOWN ---
-
-func TestM6TruthTable_Row7_SessionExpiryRetryOutcome(t *testing.T) {
+func TestM6TruthTable_Row6_DisableFailurePublishesUnknownWithCleanup(t *testing.T) {
 	srv, mgr, bus := newTruthTableHarness(t)
+	key, err := mgr.EnableOperation(context.Background(), defaultVaillantTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	})
+	if err != nil {
+		t.Fatalf("enable = %v", err)
+	}
+	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: nak from target"))
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
+	err = mgr.DisableOperation(context.Background(), key, defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, dispatcher, mgr, target, []byte{0x00, 0x03})
+	})
+	if err == nil || !errors.Is(err, errRawFrameUpstreamRPCFailed) {
+		t.Fatalf("disable outcome = %v, want UPSTREAM_RPC_FAILED", err)
+	}
+	if _, ok := mgr.CleanupObligation(); !ok {
+		t.Fatal("disable NAK did not retain cleanup")
+	}
+	if got := srv.VaillantB503AvailabilityCtx(context.Background()); got != mcp.AvailabilityUnknown {
+		t.Fatalf("cleanup-bearing row 6 capability = %s, want UNKNOWN", got)
+	}
+}
 
-	// Build a Manager whose refresh resolves to a fresh epoch so AD14
-	// 1-retry succeeds.
+// --- Row 7: held-session epoch refresh → UNKNOWN, one triggering dispatch ---
+
+func TestM6TruthTable_Row7_RefreshingUnknownAndTriggerDispatchedOnce(t *testing.T) {
+	srv, _, bus := newTruthTableHarness(t)
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
 	freshTK := b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 99}
 	mgr2 := b503session.New(
 		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
 		30*time.Second,
 		func(ctx context.Context) (b503session.TransportKey, error) {
+			close(refreshStarted)
+			<-allowRefresh
 			return freshTK, nil
 		},
 	)
-	// Replace mgr in srv's b503State by re-registering.
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr2, time.Second)
 	mcp.RegisterVaillantB503Tools(srv, mcp.VaillantB503Options{
-		Dispatcher:     newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr2, time.Second),
+		Dispatcher:     dispatcher,
 		SessionManager: mgr2,
 		DefaultTarget:  defaultVaillantTarget,
 	})
-	bus.setResp([2]byte{0x00, 0x01}, []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
-
-	if _, err := mgr2.Enable(context.Background()); err != nil {
+	if _, err := mgr2.EnableOperation(context.Background(), defaultVaillantTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr2.TransportKey()}
+	}); err != nil {
 		t.Fatalf("Enable = %v", err)
 	}
 	mgr2.OnEpochAdvance(context.Background(), 99)
-
-	got := srv.VaillantB503AvailabilityCtx(context.Background())
-	// After successful refresh, the probe runs against the new epoch.
-	// Acceptable outcomes per §12.5 row 7: AVAILABLE (refresh succeeded
-	// + probe succeeded) or TRANSPORT_DOWN literal. SESSION_BUSY is
-	// allowed too while the session is held.
-	if got != mcp.AvailabilityAvailable && got != mcp.AvailabilityTransportDown && got != mcp.AvailabilitySessionBusy {
-		t.Fatalf("row 7: capability = %s; want AVAILABLE / TRANSPORT_DOWN / SESSION_BUSY", got)
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	before := bus.callCount()
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr2.ReadOperation(context.Background(), defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			return mcp.InvokeB503Operation(ctx, dispatcher, mgr2, target, []byte{0x00, 0x03})
+		})
+		done <- err
+	}()
+	<-refreshStarted
+	if got := srv.VaillantB503AvailabilityCtx(context.Background()); got != mcp.AvailabilityUnknown {
+		t.Fatalf("row 7 capability during refresh = %s, want UNKNOWN", got)
 	}
-	// Forbidden: must NEVER surface EXPIRED publicly.
-	if string(got) == "EXPIRED" {
-		t.Fatalf("row 7: EXPIRED leaked publicly")
+	if got := mgr2.StatusSnapshot(); got.State != b503session.Refreshing || !got.Owned {
+		t.Fatalf("row 7 session = %+v, want Refreshing owned", got)
 	}
-	_ = mgr // silence
+	close(allowRefresh)
+	if err := <-done; err != nil {
+		t.Fatalf("row 7 triggering read = %v", err)
+	}
+	if calls := bus.callCount() - before; calls != 1 {
+		t.Fatalf("row 7 triggering dispatch count = %d, want 1", calls)
+	}
 }
 
 // --- Row 8: stale-epoch in-flight completion → discarded; capability stays last-known ---

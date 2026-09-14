@@ -19,6 +19,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/vaillant/b503"
 )
 
 // defaultVaillantTarget is the BAI00 primary address used when a caller
@@ -173,5 +174,8 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 	})
 
 	runtime.dispatcher = disp
+	mgr.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, disp, mgr, target, b503.EncodeLiveMonitorMain())
+	})
 	return runtime
 }

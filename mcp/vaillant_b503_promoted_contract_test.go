@@ -125,15 +125,20 @@ func TestVaillantB503LiveMonitorSessionRefreshingGolden(t *testing.T) {
 		t.Fatalf("Enable: %v", err)
 	}
 	server := newB503Server(t, &stubB503Dispatcher{}, manager)
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
 		manager.OnEpochAdvance(context.Background(), 2)
+		_, err := manager.ReadOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+		})
+		done <- err
 	}()
 	<-refreshStarted
 	defer func() {
 		close(allowRefresh)
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("triggering read: %v", err)
+		}
 	}()
 
 	envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{

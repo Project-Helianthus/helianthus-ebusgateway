@@ -1408,6 +1408,9 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *
 				30*time.Second,
 				b503StubRefresh,
 			)}
+			b503rt.manager.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+			})
 			controller.SetLifecycleObserver(b503rt)
 			t.Cleanup(func() { _ = controller.Shutdown(context.Background()) })
 

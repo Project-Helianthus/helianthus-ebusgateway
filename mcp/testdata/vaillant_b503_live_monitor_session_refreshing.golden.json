@@ -8,7 +8,7 @@
     "capabilities": {
       "vaillant_b503": {
         "available": false,
-        "reason": "SESSION_BUSY"
+        "reason": "UNKNOWN"
       }
     },
     "consistency": {

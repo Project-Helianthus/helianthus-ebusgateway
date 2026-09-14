@@ -61,6 +61,15 @@ func publicB503GraphQLError(err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, b503session.ErrCleanupPending):
+		return fmt.Errorf("UNKNOWN: %w", err)
+	case errors.Is(err, b503session.ErrTransportDown):
+		return fmt.Errorf("TRANSPORT_DOWN: %w", err)
+	case errors.Is(err, b503session.ErrSessionBusy),
+		errors.Is(err, b503session.ErrWrongToken),
+		errors.Is(err, b503session.ErrTargetMismatch),
+		errors.Is(err, b503session.ErrNotActive):
+		return fmt.Errorf("SESSION_BUSY: %w", err)
 	case errors.Is(err, errRawFrameUpstreamTimeout):
 		return fmt.Errorf("UPSTREAM_TIMEOUT: %w", err)
 	case errors.Is(err, errRawFrameUpstreamRPCFailed):
@@ -155,13 +164,9 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 	t := p.targetOr(target)
 	switch action {
 	case "enable":
-		key, err := p.mgr.Enable(ctx)
+		dispatch := p.liveMonitorDispatch()
+		key, err := p.mgr.EnableOperation(ctx, t, dispatch)
 		if err != nil {
-			return graphql.VaillantB503LiveMonitor{}, err
-		}
-		if _, err := p.dispatcher.Invoke(ctx, t, b503.EncodeLiveMonitorMain()); err != nil {
-			rebuilt := b503session.SessionKey{Transport: p.mgr.TransportKey(), IssuerToken: key.IssuerToken}
-			_ = p.mgr.Disable(rebuilt)
 			return graphql.VaillantB503LiveMonitor{}, publicB503GraphQLError(err)
 		}
 		// The GraphQL type has a dedicated issuerToken field (see
@@ -171,13 +176,7 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 		// string from newIssuerToken()).
 		return graphql.VaillantB503LiveMonitor{IssuerToken: key.IssuerToken}, nil
 	case "read":
-		if p.mgr.LastRefreshTransportDown() {
-			return graphql.VaillantB503LiveMonitor{}, b503session.ErrTransportDown
-		}
-		if err := p.mgr.Read(p.mgr.TransportKey()); err != nil {
-			return graphql.VaillantB503LiveMonitor{}, err
-		}
-		resp, err := p.dispatcher.Invoke(ctx, t, b503.EncodeLiveMonitorMain())
+		resp, err := p.mgr.ReadOperation(ctx, t, p.liveMonitorDispatch())
 		if err != nil {
 			return graphql.VaillantB503LiveMonitor{}, publicB503GraphQLError(err)
 		}
@@ -192,12 +191,18 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 		// Hex-decoding here would mismatch the stored value and trap
 		// clients with SESSION_BUSY until idle timeout.
 		key := b503session.SessionKey{Transport: p.mgr.TransportKey(), IssuerToken: *issuerToken}
-		if err := p.mgr.Disable(key); err != nil {
-			return graphql.VaillantB503LiveMonitor{}, err
+		if err := p.mgr.DisableOperation(ctx, key, t, p.liveMonitorDispatch()); err != nil {
+			return graphql.VaillantB503LiveMonitor{}, publicB503GraphQLError(err)
 		}
 		return graphql.VaillantB503LiveMonitor{Disabled: true}, nil
 	}
 	return graphql.VaillantB503LiveMonitor{}, errors.New("invalid action (must be enable|read|disable)")
+}
+
+func (p *b503GraphQLProvider) liveMonitorDispatch() b503session.DispatchFunc {
+	return func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, p.dispatcher, p.mgr, target, b503.EncodeLiveMonitorMain())
+	}
 }
 
 // Availability mirrors the MCP-layer VaillantB503AvailabilityCtx with the

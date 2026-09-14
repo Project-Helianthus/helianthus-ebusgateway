@@ -1364,7 +1364,7 @@ func TestIssue851ProxyReadinessWithdrawsAndRecoversWithAdmittedListener(t *testi
 	}
 }
 
-func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *testing.T) {
+func TestIssue851B503SessionTracksDriverWithdrawalAndRetainsUnsettledCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		retryBudget    int
@@ -1408,7 +1408,9 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *
 				30*time.Second,
 				b503StubRefresh,
 			)}
+			var cleanupDispatches atomic.Int32
 			b503rt.manager.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+				cleanupDispatches.Add(1)
 				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
 			})
 			controller.SetLifecycleObserver(b503rt)
@@ -1446,6 +1448,10 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *
 			if got := b503rt.manager.TransportKey().TransportEpoch; got != first.Generation {
 				t.Fatalf("B503 withdrawal manufactured epoch %d, want %d", got, first.Generation)
 			}
+			beforeCleanup, ok := b503rt.manager.CleanupObligation()
+			if !ok || beforeCleanup.GatewayCleanupAttemptID == "" {
+				t.Fatalf("B503 withdrawal cleanup = %+v, present=%v", beforeCleanup, ok)
+			}
 			// A repeated fence for the same generation is a no-op.
 			runtime.FenceWithdrawal()
 			if got := b503rt.manager.TransportKey().TransportEpoch; got != first.Generation {
@@ -1465,12 +1471,20 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRecoveryWithoutRequests(t *
 			if err := b503rt.manager.Read(oldIssuer.Transport); !errors.Is(err, b503session.ErrNotActive) {
 				t.Fatalf("old generation issuer Read() error = %v, want ErrNotActive", err)
 			}
-			newIssuer, err := b503rt.manager.Enable(context.Background())
-			if err != nil {
-				t.Fatalf("new generation Enable() error = %v", err)
+			afterCleanup, ok := b503rt.manager.CleanupObligation()
+			if !ok || afterCleanup.GatewayCleanupAttemptID != beforeCleanup.GatewayCleanupAttemptID || afterCleanup.TransportEpoch != second.Generation || afterCleanup.LastNative != b503session.NativeACK {
+				t.Fatalf("B503 cleanup after recovery ACK = %+v, present=%v", afterCleanup, ok)
 			}
-			if newIssuer.Transport.TransportEpoch != second.Generation {
-				t.Fatalf("new issuer epoch = %d, want %d", newIssuer.Transport.TransportEpoch, second.Generation)
+			if got := cleanupDispatches.Load(); got != 1 {
+				t.Fatalf("B503 cleanup dispatches = %d, want one on later epoch", got)
+			}
+			var enableDispatches atomic.Int32
+			_, err = b503rt.manager.EnableOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+				enableDispatches.Add(1)
+				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+			})
+			if !errors.Is(err, b503session.ErrCleanupPending) || enableDispatches.Load() != 0 {
+				t.Fatalf("new generation EnableOperation() = %v, dispatches=%d; want cleanup-pending with no write", err, enableDispatches.Load())
 			}
 
 			rawsMu.Lock()

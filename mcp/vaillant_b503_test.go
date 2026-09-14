@@ -25,6 +25,13 @@ type stubB503Call struct {
 	payload []byte
 }
 
+type genericOnlyB503Dispatcher struct{ calls int }
+
+func (dispatcher *genericOnlyB503Dispatcher) Invoke(context.Context, byte, []byte) ([]byte, error) {
+	dispatcher.calls++
+	return []byte{0x01, 0x00}, nil
+}
+
 func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error) {
 	s.calls = append(s.calls, stubB503Call{target: target, payload: append([]byte{}, payload...)})
 	if s.err != nil {
@@ -36,6 +43,18 @@ func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []
 		}
 	}
 	return nil, errors.New("stubB503Dispatcher: no canned response")
+}
+
+func (s *stubB503Dispatcher) InvokeB503Outcome(ctx context.Context, target byte, payload []byte) B503DispatchOutcome {
+	if ctx != nil && ctx.Err() != nil {
+		return B503DispatchOutcome{Err: ctx.Err()}
+	}
+	response, err := s.Invoke(ctx, target, payload)
+	native := b503session.NativeAmbiguous
+	if err == nil {
+		native = b503session.NativeACK
+	}
+	return B503DispatchOutcome{Response: response, Emitted: true, Native: native, Err: err}
 }
 
 // newB503Server builds a gateway MCP Server, attaches the Vaillant B503
@@ -64,6 +83,17 @@ func newDefaultMgr() *b503session.Manager {
 			return b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 2}, nil
 		},
 	)
+}
+
+func TestVaillantB503LifecycleRejectsGenericDispatcherWithoutOutcomeFallback(t *testing.T) {
+	dispatcher := &genericOnlyB503Dispatcher{}
+	outcome := InvokeB503Operation(context.Background(), dispatcher, 0x15, []byte{0x00, 0x03})
+	if outcome.Emitted || !errors.Is(outcome.Err, errNotSupported) {
+		t.Fatalf("generic-only lifecycle outcome = %+v, want pre-emission NOT_SUPPORTED", outcome)
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("generic dispatcher calls = %d, want zero", dispatcher.calls)
+	}
 }
 
 // --- Test 1: ToolRegistration --------------------------------------------
@@ -273,9 +303,9 @@ func TestVaillantB503_LiveMonitor_Disable_WrongToken_SessionBusy(t *testing.T) {
 	assertToolErrorCode(t, res, "SESSION_BUSY")
 }
 
-// --- Test 6: second enable -> SESSION_BUSY -------------------------------
+// --- Test 6: emitted enable leaves settlement UNKNOWN --------------------
 
-func TestVaillantB503_LiveMonitor_SecondEnable_SessionBusy(t *testing.T) {
+func TestVaillantB503_LiveMonitor_SecondEnable_UnknownWhileSettlementUnproven(t *testing.T) {
 	disp := &stubB503Dispatcher{
 		respByPrefix: map[string][]byte{"\x00\x03": {0x01, 0x00}},
 	}
@@ -289,7 +319,7 @@ func TestVaillantB503_LiveMonitor_SecondEnable_SessionBusy(t *testing.T) {
 		JSONRPC: "2.0", ID: 2, Method: "tools/call",
 		Params: json.RawMessage(`{"name":"` + toolVaillantB503LiveMonitorName + `","arguments":{"action":"enable"}}`),
 	})
-	assertToolErrorCode(t, res, "SESSION_BUSY")
+	assertToolErrorCode(t, res, "UNKNOWN")
 }
 
 // --- Test 7: epoch advance EXPIRED never leaks ---------------------------

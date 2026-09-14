@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -318,7 +320,7 @@ func TestM6Dispatcher_TransportDown_FiresOnTransportDisconnect(t *testing.T) {
 	}
 }
 
-func TestIssue851B503StaleSendErrorCannotDisconnectRecoveredIssuer(t *testing.T) {
+func TestIssue851B503StaleSendErrorCannotClearUnsettledCleanup(t *testing.T) {
 	disp, bus, mgr := newTestDispatcher(t)
 	runtime := &b503Runtime{manager: mgr}
 	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
@@ -356,10 +358,22 @@ func TestIssue851B503StaleSendErrorCannotDisconnectRecoveredIssuer(t *testing.T)
 		t.Fatal("Invoke did not reach the post-epoch-check classification barrier")
 	}
 	runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 1})
+	before, ok := mgr.CleanupObligation()
+	if !ok {
+		t.Fatal("generation-1 withdrawal did not retain cleanup")
+	}
 	runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 2})
-	recovered, err := mgr.Enable(context.Background())
-	if err != nil {
-		t.Fatalf("recovered generation Enable() error = %v", err)
+	afterRecovery, ok := mgr.CleanupObligation()
+	if !ok || afterRecovery.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || afterRecovery.LastNative != b503session.NativeACK {
+		t.Fatalf("cleanup after native ACK = %+v, present=%v", afterRecovery, ok)
+	}
+	var reenableCalls int
+	_, err := mgr.EnableOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+		reenableCalls++
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	})
+	if !errors.Is(err, b503session.ErrCleanupPending) || reenableCalls != 0 {
+		t.Fatalf("re-enable = %v, dispatches=%d; want cleanup pending without write", err, reenableCalls)
 	}
 	close(continueClassify)
 
@@ -371,14 +385,15 @@ func TestIssue851B503StaleSendErrorCannotDisconnectRecoveredIssuer(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("stale Invoke did not finish classification")
 	}
-	if !mgr.IsOwned() {
-		t.Fatal("generation-1 send error disconnected the recovered generation-2 issuer")
+	if mgr.IsOwned() {
+		t.Fatal("generation-1 send error resurrected caller ownership")
 	}
 	if got := mgr.TransportKey().TransportEpoch; got != 2 {
 		t.Fatalf("recovered transport epoch = %d, want 2", got)
 	}
-	if recovered.Transport.TransportEpoch != 2 {
-		t.Fatalf("recovered issuer epoch = %d, want 2", recovered.Transport.TransportEpoch)
+	afterStale, ok := mgr.CleanupObligation()
+	if !ok || afterStale.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID {
+		t.Fatalf("stale error mutated cleanup = %+v, present=%v", afterStale, ok)
 	}
 }
 
@@ -420,7 +435,7 @@ func TestIssue552B503OutcomePreCanceledIsNotEmitted(t *testing.T) {
 
 func TestIssue552B503OutcomeNAKIsEmittedAndNativeNAK(t *testing.T) {
 	disp, bus, _ := newTestDispatcher(t)
-	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: NAK from target"))
+	bus.setErr([2]byte{0x00, 0x03}, fmt.Errorf("target rejected request: %w", ebuserrors.ErrNACK))
 	outcome := disp.InvokeB503Outcome(context.Background(), 0x15, []byte{0x00, 0x03})
 	if !outcome.Emitted || outcome.Native != b503session.NativeNAK {
 		t.Fatalf("NAK outcome = %+v, want emitted NativeNAK", outcome)
@@ -433,9 +448,30 @@ func TestIssue552B503OutcomeNAKIsEmittedAndNativeNAK(t *testing.T) {
 	}
 }
 
+func TestIssue552B503OutcomeNAKTextWithoutSentinelRemainsAmbiguous(t *testing.T) {
+	d, bus, _ := newTestDispatcher(t)
+	bus.setErr([2]byte{0x00, 0x03}, errors.New("proxy diagnostic contains NAK text only"))
+	outcome := d.InvokeB503Outcome(context.Background(), 0x15, []byte{0x00, 0x03})
+	if !outcome.Emitted || outcome.Native != b503session.NativeAmbiguous {
+		t.Fatalf("text-only NAK outcome = %+v, want emitted NativeAmbiguous", outcome)
+	}
+}
+
+func TestIssue552B503OutcomeACKIsNativeEvidenceOnly(t *testing.T) {
+	disp, bus, _ := newTestDispatcher(t)
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	outcome := disp.InvokeB503Outcome(context.Background(), 0x15, []byte{0x00, 0x03})
+	if outcome.Err != nil || !outcome.Emitted || outcome.Native != b503session.NativeACK {
+		t.Fatalf("ACK outcome = %+v, want exact emitted NativeACK", outcome)
+	}
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("ACK bus.Send count = %d, want 1", calls)
+	}
+}
+
 func TestM6Dispatcher_NAKErrors_MapToUpstreamRPCFailed(t *testing.T) {
 	disp, bus, _ := newTestDispatcher(t)
-	bus.setErr([2]byte{0x00, 0x01}, errors.New("ebus: nak from device 0x08"))
+	bus.setErr([2]byte{0x00, 0x01}, fmt.Errorf("device rejected request: %w", ebuserrors.ErrNACK))
 
 	_, err := disp.Invoke(context.Background(), 0x08, []byte{0x00, 0x01})
 	if err == nil {
@@ -517,7 +553,7 @@ func TestIssue851B503SourceNotAdmittedDisconnectsOwnerWithoutAdvancingEpoch(t *t
 	}
 }
 
-func TestIssue851B503StaleSourceFallbackCannotDisconnectRecoveredIssuer(t *testing.T) {
+func TestIssue851B503StaleSourceFallbackCannotClearUnsettledCleanup(t *testing.T) {
 	bus := newB503DispatcherMockBus()
 	mgr := b503session.New(
 		b503session.TransportKey{AdapterInstanceID: "gateway", TransportEpoch: 7},
@@ -531,17 +567,16 @@ func TestIssue851B503StaleSourceFallbackCannotDisconnectRecoveredIssuer(t *testi
 	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
 	})
-	var recovered b503session.SessionKey
+	var reenableErr error
 	disp := newRawFrameDispatcherWithSourceProvider(bus, func() (byte, bool) {
 		// Invoke already captured epoch 7. Complete the exact lifecycle
 		// withdrawal/recovery before returning the stale unavailable result.
 		runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 7})
 		runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 8})
-		var err error
-		recovered, err = mgr.Enable(context.Background())
-		if err != nil {
-			t.Fatalf("recovered generation Enable() error = %v", err)
-		}
+		_, reenableErr = mgr.EnableOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+			t.Fatal("cleanup-fenced re-enable reached dispatcher")
+			return b503session.DispatchOutcome{}
+		})
 		return 0, false
 	}, nil, mgr, 0)
 	disp.disconnectIfCurrent = runtime.disconnectIfCurrent
@@ -550,14 +585,17 @@ func TestIssue851B503StaleSourceFallbackCannotDisconnectRecoveredIssuer(t *testi
 	if err == nil || !errors.Is(err, errRawFrameSourceNotAdmitted) {
 		t.Fatalf("Invoke with stale unavailable result = %v, want errRawFrameSourceNotAdmitted", err)
 	}
-	if !mgr.IsOwned() {
-		t.Fatal("epoch-7 source fallback disconnected the recovered epoch-8 issuer")
+	if !errors.Is(reenableErr, b503session.ErrCleanupPending) {
+		t.Fatalf("epoch-8 re-enable = %v, want ErrCleanupPending", reenableErr)
+	}
+	if mgr.IsOwned() {
+		t.Fatal("epoch-7 source fallback resurrected caller ownership")
 	}
 	if got := mgr.TransportKey().TransportEpoch; got != 8 {
 		t.Fatalf("recovered transport epoch = %d, want 8", got)
 	}
-	if recovered.Transport.TransportEpoch != 8 {
-		t.Fatalf("recovered issuer epoch = %d, want 8", recovered.Transport.TransportEpoch)
+	if obligation, ok := mgr.CleanupObligation(); !ok || obligation.TransportEpoch != 8 || obligation.LastNative != b503session.NativeACK {
+		t.Fatalf("epoch-8 cleanup = %+v, present=%v", obligation, ok)
 	}
 	if bus.callCount() != 0 {
 		t.Fatalf("bus.Send calls = %d, want 0 for unavailable source", bus.callCount())

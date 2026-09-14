@@ -65,6 +65,10 @@ func TestOperationEnableBecomesActiveOnlyAfterNativeACK(t *testing.T) {
 	if got := manager.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
 		t.Fatalf("after native ACK = %+v, want Active owned", got)
 	}
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.Target != operationTarget || obligation.OriginNative != b503session.NativeACK || !obligation.OriginEmitted {
+		t.Fatalf("emitted enable ACK cleanup = %+v, present=%v", obligation, ok)
+	}
 }
 
 func TestOperationEnablePreEmissionCancellationNeedsNoCleanupWrite(t *testing.T) {
@@ -86,7 +90,7 @@ func TestOperationEnablePreEmissionCancellationNeedsNoCleanupWrite(t *testing.T)
 	}
 }
 
-func TestOperationEnableNAKProvesNoSession(t *testing.T) {
+func TestOperationEnableNAKRetainsUnsettledCleanup(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	nak := errors.New("native NAK")
 	_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
@@ -95,8 +99,12 @@ func TestOperationEnableNAKProvesNoSession(t *testing.T) {
 	if !errors.Is(err, nak) {
 		t.Fatalf("enable NAK = %v", err)
 	}
-	if _, ok := manager.CleanupObligation(); ok {
-		t.Fatal("enable NAK retained cleanup")
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.Target != operationTarget || obligation.OriginNative != b503session.NativeNAK || !errors.Is(obligation.OriginErr, nak) {
+		t.Fatalf("enable NAK cleanup = %+v, present=%v", obligation, ok)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("enable NAK state = %+v, want public Idle without owner", got)
 	}
 }
 
@@ -114,12 +122,13 @@ func TestOperationAmbiguousEnableRunsOneTargetBoundCleanup(t *testing.T) {
 	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
 		t.Fatalf("cleanup targets = %v, want [%#x]", got, operationTarget)
 	}
-	if _, ok := manager.CleanupObligation(); ok {
-		t.Fatal("valid cleanup ACK did not clear obligation")
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.LastNative != b503session.NativeACK || obligation.LastAttemptEpoch != testEpoch {
+		t.Fatalf("cleanup ACK must remain evidence, not settlement: %+v, present=%v", obligation, ok)
 	}
 }
 
-func TestOperationDisableACKIsOnlyCleanupSuccess(t *testing.T) {
+func TestOperationDisableACKRetainsUnsettledCleanup(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	ack := func(context.Context, byte) b503session.DispatchOutcome {
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
@@ -131,8 +140,9 @@ func TestOperationDisableACKIsOnlyCleanupSuccess(t *testing.T) {
 	if err := manager.DisableOperation(context.Background(), key, operationTarget, ack); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if _, ok := manager.CleanupObligation(); ok {
-		t.Fatal("disable ACK retained cleanup")
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.LastNative != b503session.NativeACK || obligation.LastAttemptEpoch != testEpoch {
+		t.Fatalf("disable ACK cleanup evidence = %+v, present=%v", obligation, ok)
 	}
 	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
 		t.Fatalf("after disable ACK = %+v", got)
@@ -243,8 +253,9 @@ func TestOperationDisableFailureRetriesOnceOnlyOnLaterEpoch(t *testing.T) {
 	if got := cleanup.snapshot(); len(got) != 2 || got[1] != operationTarget {
 		t.Fatalf("later-epoch cleanup targets = %v", got)
 	}
-	if _, ok := manager.CleanupObligation(); ok {
-		t.Fatal("later-epoch ACK did not clear cleanup")
+	after, ok := manager.CleanupObligation()
+	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttemptEpoch != testEpoch+2 || after.LastNative != b503session.NativeACK || after.LastErr != nil {
+		t.Fatalf("later-epoch ACK must retain unsettled cleanup: %+v, present=%v", after, ok)
 	}
 }
 
@@ -263,6 +274,38 @@ func TestOperationActiveDisconnectReleasesOwnerAndRetainsCleanup(t *testing.T) {
 	obligation, ok := manager.CleanupObligation()
 	if !ok || obligation.Target != operationTarget || obligation.TransportEpoch != testEpoch {
 		t.Fatalf("disconnect cleanup = %+v, present=%v", obligation, ok)
+	}
+}
+
+func TestOperationEnableDisconnectRetainsConservativeEmissionEvidence(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	enableErr := make(chan error, 1)
+	staleCompletion := errors.New("stale completion")
+	go func() {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+			close(entered)
+			<-release
+			return b503session.DispatchOutcome{
+				Err: staleCompletion, Emitted: true,
+				Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch),
+			}
+		})
+		enableErr <- err
+	}()
+	<-entered
+	manager.OnTransportDisconnect()
+	close(release)
+	if err := <-enableErr; !errors.Is(err, staleCompletion) {
+		t.Fatalf("enable error = %v, want exact stale completion", err)
+	}
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.Target != operationTarget || !obligation.OriginEmitted || obligation.OriginNative != b503session.NativeAmbiguous || obligation.OriginErr == nil {
+		t.Fatalf("disconnected enable cleanup = %+v, present=%v", obligation, ok)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("disconnect snapshot = %+v, want public Idle without owner", got)
 	}
 }
 

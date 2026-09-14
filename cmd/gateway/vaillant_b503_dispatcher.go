@@ -35,6 +35,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -274,7 +275,7 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 
 	if sendErr != nil {
 		native := b503session.NativeAmbiguous
-		if strings.Contains(strings.ToLower(sendErr.Error()), "nak") {
+		if errors.Is(sendErr, ebuserrors.ErrNACK) {
 			native = b503session.NativeNAK
 		}
 		return mcp.B503DispatchOutcome{

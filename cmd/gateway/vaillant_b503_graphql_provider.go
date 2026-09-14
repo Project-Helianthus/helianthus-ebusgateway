@@ -201,7 +201,7 @@ func (p *b503GraphQLProvider) LiveMonitor(ctx context.Context, action string, is
 
 func (p *b503GraphQLProvider) liveMonitorDispatch() b503session.DispatchFunc {
 	return func(ctx context.Context, target byte) b503session.DispatchOutcome {
-		return mcp.InvokeB503Operation(ctx, p.dispatcher, p.mgr, target, b503.EncodeLiveMonitorMain())
+		return mcp.InvokeB503Operation(ctx, p.dispatcher, target, b503.EncodeLiveMonitorMain())
 	}
 }
 

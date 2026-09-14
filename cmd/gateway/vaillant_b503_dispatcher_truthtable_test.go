@@ -18,6 +18,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 )
 
 // --- Row 1: cold-boot, no successful dispatch yet → UNKNOWN ---
@@ -66,7 +67,7 @@ func TestM6TruthTable_Row3_DisconnectDuringActive_UnknownWithCleanup(t *testing.
 	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
 	dispatcher.disconnectIfCurrent = func(b503session.TransportKey) { mgr.OnTransportDisconnect() }
 	_, err := mgr.ReadOperation(context.Background(), defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
-		return mcp.InvokeB503Operation(ctx, dispatcher, mgr, target, []byte{0x00, 0x03})
+		return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
 	})
 	if err == nil || !errors.Is(err, errRawFrameTransportDown) {
 		t.Fatalf("row 3 in-flight error = %v, want TRANSPORT_DOWN", err)
@@ -145,7 +146,7 @@ func TestM6TruthTable_Row6_DispatchError_CapabilityStaysLastKnown(t *testing.T) 
 	// invoke (e.g. errors.history). The capability probe re-runs against
 	// the 00 01 slot and still sees a successful response — capability
 	// MUST NOT regress merely because some unrelated dispatch NAK'd.
-	bus.setErr([2]byte{0x01, 0x01}, errors.New("ebus: nak"))
+	bus.setErr([2]byte{0x01, 0x01}, ebuserrors.ErrNACK)
 
 	got = srv.VaillantB503AvailabilityCtx(context.Background())
 	if got != mcp.AvailabilityAvailable {
@@ -161,10 +162,10 @@ func TestM6TruthTable_Row6_DisableFailurePublishesUnknownWithCleanup(t *testing.
 	if err != nil {
 		t.Fatalf("enable = %v", err)
 	}
-	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: nak from target"))
+	bus.setErr([2]byte{0x00, 0x03}, ebuserrors.ErrNACK)
 	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
 	err = mgr.DisableOperation(context.Background(), key, defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
-		return mcp.InvokeB503Operation(ctx, dispatcher, mgr, target, []byte{0x00, 0x03})
+		return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
 	})
 	if err == nil || !errors.Is(err, errRawFrameUpstreamRPCFailed) {
 		t.Fatalf("disable outcome = %v, want UPSTREAM_RPC_FAILED", err)
@@ -210,7 +211,7 @@ func TestM6TruthTable_Row7_RefreshingUnknownAndTriggerDispatchedOnce(t *testing.
 	done := make(chan error, 1)
 	go func() {
 		_, err := mgr2.ReadOperation(context.Background(), defaultVaillantTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
-			return mcp.InvokeB503Operation(ctx, dispatcher, mgr2, target, []byte{0x00, 0x03})
+			return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
 		})
 		done <- err
 	}()

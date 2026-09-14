@@ -47,6 +47,10 @@ func (b503StubDispatcher) Invoke(ctx context.Context, target byte, payload []byt
 	return nil, errRawFrameMisconfigured
 }
 
+func (b503StubDispatcher) InvokeB503Outcome(context.Context, byte, []byte) mcp.B503DispatchOutcome {
+	return mcp.B503DispatchOutcome{Err: errRawFrameMisconfigured}
+}
+
 // b503StubRefresh conservatively reports transport-down on every refresh.
 // Mirrors spec §7.3 behaviour when the refresh function is nil
 // (ErrTransportDown is the safe fallback). Kept explicit so the
@@ -175,7 +179,7 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 
 	runtime.dispatcher = disp
 	mgr.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
-		return mcp.InvokeB503Operation(ctx, disp, mgr, target, b503.EncodeLiveMonitorMain())
+		return mcp.InvokeB503Operation(ctx, disp, target, b503.EncodeLiveMonitorMain())
 	})
 	return runtime
 }

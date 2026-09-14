@@ -39,34 +39,23 @@ type B503OutcomeDispatcher interface {
 	InvokeB503Outcome(ctx context.Context, target byte, payload []byte) B503DispatchOutcome
 }
 
-// InvokeB503Operation adapts the optional lifecycle-aware dispatcher to the
-// Manager's operation contract. Generic RPCDispatcher remains unchanged. A
-// fallback dispatcher is conservative once Invoke is entered and cannot claim
-// the special enable-NAK proof.
-func InvokeB503Operation(ctx context.Context, dispatcher RPCDispatcher, manager *b503session.Manager, target byte, payload []byte) b503session.DispatchOutcome {
+// InvokeB503Operation adapts the lifecycle-aware dispatcher to the Manager's
+// operation contract. Generic RPCDispatcher remains unchanged, but lifecycle
+// operations fail closed before emission when the B503 outcome hook is absent;
+// they never infer native or settlement evidence from the generic API.
+func InvokeB503Operation(ctx context.Context, dispatcher RPCDispatcher, target byte, payload []byte) b503session.DispatchOutcome {
 	if dispatcher == nil {
 		return b503session.DispatchOutcome{Err: errNotSupported}
 	}
-	if aware, ok := dispatcher.(B503OutcomeDispatcher); ok {
-		outcome := aware.InvokeB503Outcome(ctx, target, payload)
-		return b503session.DispatchOutcome{
-			Response: outcome.Response, Emitted: outcome.Emitted, Native: outcome.Native,
-			Err: outcome.Err, Transport: outcome.Transport,
-		}
+	aware, ok := dispatcher.(B503OutcomeDispatcher)
+	if !ok {
+		return b503session.DispatchOutcome{Err: errNotSupported}
 	}
-	if ctx != nil && ctx.Err() != nil {
-		return b503session.DispatchOutcome{Err: ctx.Err()}
+	outcome := aware.InvokeB503Outcome(ctx, target, payload)
+	return b503session.DispatchOutcome{
+		Response: outcome.Response, Emitted: outcome.Emitted, Native: outcome.Native,
+		Err: outcome.Err, Transport: outcome.Transport,
 	}
-	transport := b503session.TransportKey{}
-	if manager != nil {
-		transport = manager.TransportKey()
-	}
-	response, err := dispatcher.Invoke(ctx, target, payload)
-	native := b503session.NativeAmbiguous
-	if err == nil {
-		native = b503session.NativeACK
-	}
-	return b503session.DispatchOutcome{Response: response, Emitted: true, Native: native, Err: err, Transport: transport}
 }
 
 // B503Availability is the public capability-signal enum surfaced via
@@ -551,7 +540,7 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 			return st.errEnvelope(ctx, err)
 		}
 		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
-			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
 		key, err := mgr.EnableOperation(ctx, target, dispatch)
 		if err != nil {
@@ -574,7 +563,7 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 			return st.errEnvelope(ctx, err)
 		}
 		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
-			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
 		resp, err := mgr.ReadOperation(ctx, target, dispatch)
 		if err != nil {
@@ -606,7 +595,7 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		}
 		transport := mgr.TransportKey()
 		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
-			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, mgr, dispatchTarget, b503.EncodeLiveMonitorMain())
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
 		err = mgr.DisableOperation(ctx, b503session.SessionKey{Transport: transport, IssuerToken: tok}, target, dispatch)
 		if err != nil {

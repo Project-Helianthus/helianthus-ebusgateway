@@ -36,10 +36,9 @@ type SessionKey struct {
 //     until the next Enable.
 type RefreshFunc func(ctx context.Context) (TransportKey, error)
 
-// NativeResult is the device-side result relevant to the B503 lifecycle.
-// A successful transport call is a valid ACK. NAK is distinct because an
-// enable NAK proves that no device session was created. Every other emitted
-// failure is ambiguous and therefore cleanup-bearing.
+// NativeResult is the exact device-side wire outcome relevant to the B503
+// lifecycle. ACK and NAK are evidence about the native exchange only; neither
+// proves that device-side session state has settled.
 type NativeResult uint8
 
 const (
@@ -68,7 +67,13 @@ type CleanupObligationSnapshot struct {
 	Target                  byte
 	GatewayCleanupAttemptID string
 	TransportEpoch          uint64
+	OriginEmitted           bool
+	OriginNative            NativeResult
+	OriginErr               error
 	LastAttemptEpoch        uint64
+	LastEmitted             bool
+	LastNative              NativeResult
+	LastErr                 error
 }
 
 type cleanupObligation struct {
@@ -282,11 +287,12 @@ func (m *Manager) Enable(ctx context.Context) (SessionKey, error) {
 	return SessionKey{Transport: m.transport, IssuerToken: token}, nil
 }
 
-// EnableOperation owns the target-bound enable handshake. The issuer token is
-// returned only after a valid native ACK. Pre-emission cancellation and enable
-// NAK release the slot without a defensive write. Every ambiguous emitted
-// failure creates one fresh cleanup obligation and attempts it once in the
-// current epoch.
+// EnableOperation owns the target-bound enable handshake. A pre-emission
+// cancellation returns to Idle with no cleanup. Every emitted outcome creates
+// a process-local cleanup obligation because native ACK/NAK does not prove the
+// device-side session state settled. An exact ACK may activate the caller
+// handle, while every emitted failure releases caller ownership and retains
+// cleanup under UNKNOWN.
 func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch DispatchFunc) (SessionKey, error) {
 	m.MarkQualifiedTarget(target)
 	m.stateMu.Lock()
@@ -343,11 +349,15 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 		m.transport.TransportEpoch = m.pendingEpoch
 	}
 	if m.state != Enabling {
-		if !outcome.Emitted || outcome.Native == NativeNAK {
+		if !outcome.Emitted {
 			m.clearCleanupForOperationLocked(opID)
 			if m.cleanup == nil {
 				m.state = Idle
 			}
+		} else if m.cleanup != nil && m.cleanup.sourceOperationID == opID {
+			m.cleanup.OriginEmitted = true
+			m.cleanup.OriginNative = outcome.Native
+			m.cleanup.OriginErr = outcome.Err
 		}
 		m.stateMu.Unlock()
 		if outcome.Err != nil {
@@ -356,35 +366,35 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 		return SessionKey{}, ErrTransportDown
 	}
 
-	switch {
-	case !outcome.Emitted:
+	if !outcome.Emitted {
 		m.releaseOwnerLocked()
 		m.state = Idle
 		m.stateMu.Unlock()
 		return SessionKey{}, outcome.Err
-	case outcome.Native == NativeNAK:
-		m.releaseOwnerLocked()
-		m.state = Idle
-		m.stateMu.Unlock()
-		return SessionKey{}, outcome.Err
-	case outcome.Native == NativeACK && outcome.Err == nil && !advanced:
+	}
+
+	// Once the enable enters bus.Send, retain a fresh target/epoch-bound
+	// cleanup obligation regardless of ACK, NAK, or ambiguous completion.
+	m.createCleanupLocked(target, m.transport.TransportEpoch, opID)
+	m.cleanup.OriginEmitted = outcome.Emitted
+	m.cleanup.OriginNative = outcome.Native
+	m.cleanup.OriginErr = outcome.Err
+	if outcome.Native == NativeACK && outcome.Err == nil && !advanced {
 		m.state = Active
 		m.armIdleTimerLocked()
 		key := SessionKey{Transport: m.transport, IssuerToken: token}
 		m.stateMu.Unlock()
 		return key, nil
-	default:
-		m.releaseOwnerLocked()
-		m.state = Disabled
-		m.createCleanupLocked(target, m.transport.TransportEpoch, opID)
-		epoch := m.transport.TransportEpoch
-		m.stateMu.Unlock()
-		m.attemptCleanup(ctx, epoch)
-		if outcome.Err != nil {
-			return SessionKey{}, outcome.Err
-		}
-		return SessionKey{}, ErrTransportDown
 	}
+	m.releaseOwnerLocked()
+	m.state = Disabled
+	epoch := m.transport.TransportEpoch
+	m.stateMu.Unlock()
+	m.attemptCleanup(ctx, epoch)
+	if outcome.Err != nil {
+		return SessionKey{}, outcome.Err
+	}
+	return SessionKey{}, ErrTransportDown
 }
 
 // ReadOperation validates the target-bound owner, performs at most one epoch
@@ -430,8 +440,8 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 }
 
 // DisableOperation owns the explicit native disable. The owner is released on
-// entry to internal Disabled, while the target remains fenced until a valid
-// disable ACK clears the cleanup obligation.
+// entry to internal Disabled. Its exact native outcome is recorded, but ACK or
+// NAK alone never clears the cleanup obligation or makes re-Enable admissible.
 func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target byte, dispatch DispatchFunc) error {
 	m.MarkQualifiedTarget(target)
 	pending, err := m.beginOwnerOperation(ctx, target, &key, OperationDisable)
@@ -459,7 +469,7 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 		m.pendingOperation = nil
 	}
 	m.stateMu.Unlock()
-	m.completeCleanupOutcome(attemptID, epoch, outcome)
+	m.recordCleanupOutcome(attemptID, epoch, outcome)
 	return outcome.Err
 }
 
@@ -787,6 +797,9 @@ func (m *Manager) beginOwnerOperation(ctx context.Context, target byte, key *Ses
 		m.pendingEpoch = 0
 		m.state = Active
 		pending.Transport = newTransport
+		if m.cleanup != nil {
+			m.cleanup.TransportEpoch = newTransport.TransportEpoch
+		}
 		m.armIdleTimerLocked()
 		m.stateMu.Unlock()
 		return pending, nil
@@ -864,20 +877,20 @@ func (m *Manager) attemptCleanup(ctx context.Context, epoch uint64) {
 	dispatch := m.cleanupDispatch
 	m.stateMu.Unlock()
 	outcome := dispatchOnce(ctx, target, dispatch)
-	m.completeCleanupOutcome(attemptID, epoch, outcome)
+	m.recordCleanupOutcome(attemptID, epoch, outcome)
 }
 
-func (m *Manager) completeCleanupOutcome(attemptID string, epoch uint64, outcome DispatchOutcome) {
+// recordCleanupOutcome retains exact native evidence without treating ACK or
+// NAK as proof that the device-side session settled.
+func (m *Manager) recordCleanupOutcome(attemptID string, epoch uint64, outcome DispatchOutcome) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	if m.cleanup == nil || m.cleanup.GatewayCleanupAttemptID != attemptID || m.cleanup.LastAttemptEpoch != epoch {
 		return
 	}
-	if outcome.Err == nil && outcome.Native == NativeACK {
-		m.cleanup = nil
-		m.state = Idle
-		m.lastRefreshTransportDown = false
-	}
+	m.cleanup.LastEmitted = outcome.Emitted
+	m.cleanup.LastNative = outcome.Native
+	m.cleanup.LastErr = outcome.Err
 }
 
 var fallbackAttemptID atomic.Uint64

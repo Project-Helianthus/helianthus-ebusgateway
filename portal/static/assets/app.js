@@ -3772,7 +3772,13 @@ class PortalShell extends HTMLElement {
     const hasTargets = (Array.isArray(this.projectionDevices) ? this.projectionDevices : [])
       .some((device) => Number.isInteger(Number(device.address)) && Number(device.address) >= 0 && Number(device.address) <= 255);
     const targetPicker = `<label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target"${hasTargets ? "" : " disabled"}>${this._vaillantB503TargetOptions()}</select></label>`;
-	const keepRefreshingSessionVisible = (this._vaillantB503ActiveTab || "errors") === "live-monitor" && this._vaillantB503SessionState === "Refreshing";
+	const liveTabSelected = (this._vaillantB503ActiveTab || "errors") === "live-monitor";
+	const keepRefreshingSessionVisible = sanitized === "UNKNOWN" && liveTabSelected &&
+	  this._vaillantB503SessionState === "Refreshing" && this._vaillantB503SessionOwned === true;
+	const keepCurrentOwnerControls = sanitized === "UNKNOWN" && liveTabSelected &&
+	  this._vaillantB503SessionState === "Active" && this._vaillantB503SessionOwned === true &&
+	  typeof this._vaillantB503LiveToken === "string" && this._vaillantB503LiveToken !== "" &&
+	  this._vaillantB503LiveTarget === this._vaillantB503Target();
     if (sanitized === "AVAILABLE") {
       const activeTab = this._vaillantB503ActiveTab || "errors";
 	  if (activeTab !== "live-monitor") this._stopVaillantB503LiveMonitorSessionPolling();
@@ -3812,12 +3818,15 @@ class PortalShell extends HTMLElement {
 	  if (!keepRefreshingSessionVisible) this._stopVaillantB503LiveMonitorSessionPolling();
 	  body.innerHTML = `${targetPicker}${keepRefreshingSessionVisible ? this._vaillantB503SessionStripMarkup() : ""}<div class="muted-inline" data-testid="b503-state-pending" role="status" aria-live="polite">Checking B503 support for the selected target. Operations are unavailable until qualification completes.</div>`;
     } else {
-	  if (!keepRefreshingSessionVisible) this._stopVaillantB503LiveMonitorSessionPolling();
-	  body.innerHTML = `${targetPicker}${keepRefreshingSessionVisible ? this._vaillantB503SessionStripMarkup() : ""}<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
+	  if (!keepRefreshingSessionVisible && !keepCurrentOwnerControls) this._stopVaillantB503LiveMonitorSessionPolling();
+	  const retainedLiveMonitor = keepCurrentOwnerControls
+	    ? this._vaillantB503CurrentOwnerUnknownMarkup()
+	    : (keepRefreshingSessionVisible ? this._vaillantB503SessionStripMarkup() : "");
+	  body.innerHTML = `${targetPicker}${retainedLiveMonitor}<div class="muted-inline" data-testid="b503-state-unknown">Probe failure hint: ${escapeHtml(sanitized)}. Inspect gateway diagnostics and retry.</div>`;
     }
 	if (sanitized !== "AVAILABLE") {
 	  this._bindVaillantB503TargetEvent();
-	  if (keepRefreshingSessionVisible) this._bindVaillantB503ActiveTabEvents("live-monitor");
+	  if (keepRefreshingSessionVisible || keepCurrentOwnerControls) this._bindVaillantB503ActiveTabEvents("live-monitor");
 	}
   }
 
@@ -3865,6 +3874,20 @@ class PortalShell extends HTMLElement {
 
   _vaillantB503SessionStripMarkup() {
 	return '<div class="muted-inline" data-role="vaillant-b503-session-strip" data-testid="b503-session-strip" role="status" aria-live="polite"><span data-testid="b503-session-state-label">Session state: loading.</span></div>';
+  }
+
+  _vaillantB503CurrentOwnerUnknownMarkup() {
+	return `
+	  <div data-testid="b503-active-owner-unknown-controls">
+	    ${this._vaillantB503SessionStripMarkup()}
+	    <div class="snapshot-controls">
+	      <button class="button" data-role="vaillant-b503-live-read" type="button">Read</button>
+	      <button class="button" data-role="vaillant-b503-live-disable" type="button">Disable</button>
+	    </div>
+	    <pre class="issue-preview" data-role="vaillant-b503-live-output"></pre>
+	    <div class="muted-inline" data-role="vaillant-b503-live-status" role="status" aria-live="polite">Current live-monitor owner retained.</div>
+	  </div>
+	`;
   }
 
   _bindVaillantB503TabEvents() {
@@ -4299,10 +4322,17 @@ class PortalShell extends HTMLElement {
 		return false;
 	  }
 	  const { state, owned } = session;
+	  const previousState = this._vaillantB503SessionState;
+	  const previousOwned = this._vaillantB503SessionOwned;
 	  this._vaillantB503SessionState = state;
 	  this._vaillantB503SessionOwned = owned;
       const ownership = owned ? " Gateway session gate is held." : "";
       strip.innerHTML = `<span data-testid="b503-session-state-label">Session state: ${escapeHtml(state)}.</span>${escapeHtml(ownership)}`;
+	  if (this._vaillantB503CapabilityReason === "UNKNOWN" &&
+	    (state !== previousState || owned !== previousOwned)) {
+		this.renderVaillantB503Pane("UNKNOWN");
+		return true;
+	  }
       const operationsBusy = state === "Enabling" || state === "Refreshing";
       for (const role of ["vaillant-b503-live-enable", "vaillant-b503-live-read", "vaillant-b503-live-disable"]) {
         const control = this.querySelector(`[data-role="${role}"]`);

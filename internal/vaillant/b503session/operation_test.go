@@ -128,6 +128,55 @@ func TestOperationAmbiguousEnableRunsOneTargetBoundCleanup(t *testing.T) {
 	}
 }
 
+func TestOperationEnablePostEmissionEpochAdvanceRunsAtMostOneLifecycleCleanup(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	cleanup := &dispatchRecorder{outcomes: []b503session.DispatchOutcome{{
+		Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1),
+	}}}
+	manager.SetCleanupDispatcher(cleanup.dispatch)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	staleCompletion := errors.New("stale epoch completion")
+	go func() {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+			close(entered)
+			<-release
+			return b503session.DispatchOutcome{Err: staleCompletion, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
+		})
+		done <- err
+	}()
+	<-entered
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	close(release)
+	if err := <-done; !errors.Is(err, staleCompletion) {
+		t.Fatalf("epoch-crossed enable = %v, want exact stale completion", err)
+	}
+	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
+		t.Fatalf("admitted-lifecycle cleanup targets = %v, want one %#x", got, operationTarget)
+	}
+	obligation, ok := manager.CleanupObligation()
+	if !ok || obligation.Target != operationTarget || obligation.TransportEpoch != testEpoch+1 || obligation.OriginNative != b503session.NativeAmbiguous || !errors.Is(obligation.OriginErr, staleCompletion) || obligation.LastAttemptEpoch != testEpoch+1 || obligation.LastNative != b503session.NativeACK {
+		t.Fatalf("epoch-crossed cleanup = %+v, present=%v", obligation, ok)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("epoch-crossed snapshot = %+v, want public Idle without owner", got)
+	}
+	manager.OnEpochAdvance(context.Background(), testEpoch+2)
+	manager.OnEpochAdvance(context.Background(), testEpoch+3)
+	if got := cleanup.snapshot(); len(got) != 1 {
+		t.Fatalf("automatic reconnect cleanup writes = %v, want only admitted-lifecycle write", got)
+	}
+	var reenableWrites int
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		reenableWrites++
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	}); !errors.Is(err, b503session.ErrCleanupPending) || reenableWrites != 0 {
+		t.Fatalf("post-cleanup re-enable = %v, writes=%d; want cleanup pending without dispatch", err, reenableWrites)
+	}
+}
+
 func TestOperationDisableACKRetainsUnsettledCleanup(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	ack := func(context.Context, byte) b503session.DispatchOutcome {

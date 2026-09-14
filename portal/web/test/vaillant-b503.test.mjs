@@ -1631,6 +1631,7 @@ test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabil
   shell._activeSectionTarget = "section-vaillant-b503";
   shell._vaillantB503ActiveTab = "live-monitor";
   shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
   shell._vaillantB503CapabilityReason = "UNKNOWN";
   proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
   assert.match(body.innerHTML, /b503-session-strip/, "Refreshing ownership remains observable during capability uncertainty");
@@ -1638,6 +1639,109 @@ test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabil
   assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
     "unknown capability must not expose live-monitor operations while refresh owns the gate");
   assert.doesNotMatch(body.innerHTML, /projection-b503-card/, "unknown capability must not expose a projection card");
+});
+
+test("VaillantB503Pane_activeCurrentOwnerRetainsOnlyReadDisableWhenCapabilityUnknown", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const read = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const disable = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-live-read"]', read],
+      ['[data-role="vaillant-b503-live-disable"]', disable],
+    ]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  const actions = [];
+  shell.invokeVaillantLiveMonitor = (action) => { actions.push(action); };
+  shell.refreshVaillantLiveMonitorSession = async () => true;
+  shell._startVaillantB503LiveMonitorSessionPolling = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+
+  proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+
+  assert.match(body.innerHTML, /b503-active-owner-unknown-controls/);
+  assert.match(body.innerHTML, /b503-session-strip/);
+  assert.match(body.innerHTML, /vaillant-b503-live-read/);
+  assert.match(body.innerHTML, /vaillant-b503-live-disable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/, "unproven cleanup must never admit a second Enable");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/, "UNKNOWN owner exception must not restore general B503 tabs");
+  assert.doesNotMatch(body.innerHTML, /projection-b503-card/, "UNKNOWN owner exception must not create a projection entry");
+  assert.equal(typeof read._listeners.get("click"), "function", "retained READ must be bound");
+  assert.equal(typeof disable._listeners.get("click"), "function", "retained DISABLE must be bound");
+  read._listeners.get("click")();
+  disable._listeners.get("click")();
+  assert.deepEqual(actions, ["read", "disable"]);
+});
+
+test("VaillantB503Pane_unknownOtherTargetOrNonOwnerGetsNoLiveControls", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  for (const variant of [
+    { name: "other target", target: 34, liveTarget: 21, token: "token-A", state: "Active", owned: true },
+    { name: "no browser token", target: 21, liveTarget: 21, token: null, state: "Active", owned: true },
+    { name: "not owned", target: 21, liveTarget: 21, token: "token-A", state: "Active", owned: false },
+    { name: "not active", target: 21, liveTarget: 21, token: "token-A", state: "Idle", owned: false },
+  ]) {
+    const body = makeAuditedElement();
+    const { shell } = buildSandbox({
+      source, sourcePath,
+      elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+    });
+    const proto = Object.getPrototypeOf(shell);
+    shell._vaillantB503TargetAddress = variant.target;
+    shell._vaillantB503ActiveTab = "live-monitor";
+    shell._vaillantB503SessionState = variant.state;
+    shell._vaillantB503SessionOwned = variant.owned;
+    shell._vaillantB503LiveToken = variant.token;
+    shell._vaillantB503LiveTarget = variant.liveTarget;
+
+    proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+
+    assert.match(body.innerHTML, /b503-state-unknown/, `${variant.name}: UNKNOWN state remains visible`);
+    assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/, `${variant.name}: live controls must remain absent`);
+    assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/, `${variant.name}: general tabs must remain absent`);
+  }
+});
+
+test("VaillantB503Pane_activeUnknownExceptionUnmountsOnOwnershipLoss", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement({ innerHTML: '<button data-role="vaillant-b503-live-read">Read</button><button data-role="vaillant-b503-live-disable">Disable</button>' });
+  const strip = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
+    ]),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "UNKNOWN";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "ownership loss must immediately unmount the Active owner exception");
 });
 
 test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async () => {

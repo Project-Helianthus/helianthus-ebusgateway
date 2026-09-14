@@ -69,7 +69,7 @@ func TestATRInserter_P82_ConcurrentLookupAndInsertRaceFree(t *testing.T) {
 				Addr:              addr,
 				Role:              "target",
 				DiscoverySource:   "passive_observed",
-				VerificationState: "corroborated_pending",
+				VerificationState: "corroborated",
 			}
 			table.slotsMu.Unlock()
 			atomic.AddUint64(&slotWrites, 1)

@@ -377,7 +377,7 @@ func (i *AddressTableInserter) maybeInsert(addr byte, role string, admittedSrc b
 		Addr:              addr,
 		Role:              role,
 		DiscoverySource:   "passive_observed",
-		VerificationState: "corroborated_pending",
+		VerificationState: "corroborated",
 		PriorityTier:      tier,
 		FreeUse:           free,
 		RegistrySlot:      registrySlot,

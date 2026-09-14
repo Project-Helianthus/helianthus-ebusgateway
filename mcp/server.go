@@ -2361,7 +2361,7 @@ type deviceInfo struct {
 	DiscoverySource string `json:"discovery_source,omitempty"`
 	// VerificationState encodes corroboration depth:
 	// "candidate" (e.g. just-seeded, no wire confirmation yet),
-	// "corroborated_pending" (passively observed atop a seed),
+	// "corroborated" (passively observed atop a seed),
 	// "identity_confirmed" (active scan response). Empty when the
 	// registry has no slot record.
 	VerificationState string `json:"verification_state,omitempty"`
@@ -3583,7 +3583,7 @@ func lookupDiscoveryLabels(reg Registry, addr byte) (discovery string, verificat
 	case registry.VerificationStateCandidate:
 		verification = "candidate"
 	case registry.VerificationStateCorroborated:
-		verification = "corroborated_pending"
+		verification = "corroborated"
 	case registry.VerificationStateIdentityConfirmed:
 		verification = "identity_confirmed"
 	}

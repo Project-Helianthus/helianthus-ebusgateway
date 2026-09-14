@@ -411,7 +411,7 @@ func projectGraphQLVerificationState(state registry.VerificationState) string {
 	case registry.VerificationStateCandidate:
 		return "candidate"
 	case registry.VerificationStateCorroborated:
-		return "corroborated_pending"
+		return "corroborated"
 	case registry.VerificationStateIdentityConfirmed:
 		return "identity_confirmed"
 	default:

@@ -1568,6 +1568,22 @@ contract are:
   Invoke permits `READ_ONLY` only for a known read-only
   registry method. `MUTATE` requires the current registry route, dangerous-
   operation acknowledgement, idempotency key, deadline, and a nonzero source.
+
+### Address-table provenance labels
+
+For the current SemReg public-surface cutover, GraphQL
+`Device.verificationState` and MCP `verification_state` on
+`ebus.v1.registry.devices.list`, `ebus.v1.registry.devices.get`, and
+`ebus.devices` project native `VerificationStateCorroborated` as
+`corroborated`. This is the exact normative lifecycle label in the public
+[Address Table Model](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/atr/01-address-table-model.md):
+`nil -> candidate -> corroborated -> identity_confirmed`.
+
+This is an in-place hard correction selected for gateway issue #607. The
+gateway has no alternate spelling, fallback projection, or compatibility-only
+semantic namespace for this state. It does not change native verification
+state, discovery provenance, lifecycle transitions, or the separate runtime
+confidence model.
 - eBUS named semantic mutation surfaces:
   `ebus.v1.semantic.schedules.set_zone_time_program`,
   `ebus.v1.semantic.schedules.set_dhw_time_program`,

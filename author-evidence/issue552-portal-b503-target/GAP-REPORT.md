@@ -99,3 +99,27 @@ Portal routing is unchanged; Gateway lifecycle ownership and the bounded
 current-owner presentation match the accepted docs tree. Full repository CI,
 current feedback reconciliation, and fresh independent exact-HEAD review remain
 downstream gates.
+
+## Delivery Lead full-CI reconciliation
+
+The repository CI first stopped at the declared generated-asset check because
+`portal/static/assets/app.js` and `manifest.json` still represented the prior
+Portal source. Commit `73001422d6b1a5518bcd6850b6311ccece75bc13`, tree
+`5bfea14350a70f3edda6e74dfa14e74b5317791a`, regenerates those tracked assets
+from the reviewed source; a second build produced no diff.
+
+Two local workspace/toolchain failures are retained as diagnostics, not green
+CI. The default workspace `go.work` does not include this isolated worktree, and
+standalone Go selected the post-upgrade CommandLineTools macOS 27 SDK whose TAPI
+files are not understood by the installed linker. The repository's standalone
+mode with the active Xcode SDK selected by `xcrun --sdk macosx --show-sdk-path`
+completed the entire declared `scripts/ci_local.sh` successfully at `7300142`:
+152 Portal tests; gofmt, vet, build, Linux 386/ARMv7/ARMv6 builds; the complete
+repository race suite; 168+6+26+11+6+2 Python tests; golangci-lint with zero
+issues; Modbus RTU transport conformance; Growatt Storage and Tesla EVSE SemReg
+mapping gates; and the expected not-triggered passive smoke gate. The complete
+PASS log SHA-256 is
+`6296e2c1259e6248dcae7d6904fcb9f07c4d8aec2d2d92f19df14db58d249d06`.
+
+The final evidence commit is self-referential. Its exact HEAD/tree and repeated
+complete-CI log identity are bound in the PR body and independent review bundle.

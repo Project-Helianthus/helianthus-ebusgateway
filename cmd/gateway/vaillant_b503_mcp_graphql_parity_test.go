@@ -23,6 +23,10 @@ func (dispatcher b503GraphQLErrorDispatcher) Invoke(_ context.Context, _ byte, _
 	return nil, dispatcher.err
 }
 
+func (dispatcher b503GraphQLErrorDispatcher) InvokeB503Outcome(_ context.Context, _ byte, _ []byte) mcp.B503DispatchOutcome {
+	return mcp.B503DispatchOutcome{Err: dispatcher.err}
+}
+
 func (dispatcher *b503ParityDispatcher) Invoke(_ context.Context, _ byte, payload []byte) ([]byte, error) {
 	if len(payload) < 2 {
 		return nil, errors.New("short request")
@@ -126,7 +130,7 @@ func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
 		err  error
 		code string
 	}{
-		{name: "context cancellation before turnaround", err: errRawFrameUpstreamTimeout, code: "UPSTREAM_TIMEOUT"},
+		{name: "context cancellation before turnaround", err: errRawFrameUpstreamTimeout, code: "UPSTREAM_RPC_FAILED"},
 		{name: "nak crc or protocol failure", err: errRawFrameUpstreamRPCFailed, code: "UPSTREAM_RPC_FAILED"},
 		{name: "cleanup pending", err: b503session.ErrCleanupPending, code: "UNKNOWN"},
 		{name: "transport down", err: b503session.ErrTransportDown, code: "TRANSPORT_DOWN"},
@@ -140,6 +144,50 @@ func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
 			}
 			if !strings.Contains(result.Errors[0].Message, tc.code) {
 				t.Fatalf("GraphQL error=%q; want public code %q", result.Errors[0].Message, tc.code)
+			}
+		})
+	}
+}
+
+func TestIssue552B503DispatcherTimeoutMCPGraphQLParity(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mcpTool    string
+		mcpArgs    string
+		graphQuery string
+	}{
+		{
+			name:       "errors get",
+			mcpTool:    "ebus.v1.vaillant.errors.get",
+			mcpArgs:    `{"target_address":21}`,
+			graphQuery: `{ vaillantErrors(targetAddress:21) { firstActiveError } }`,
+		},
+		{
+			name:       "live enable",
+			mcpTool:    "ebus.v1.vaillant.live_monitor.get",
+			mcpArgs:    `{"action":"enable","target_address":21}`,
+			graphQuery: `{ vaillantLiveMonitor(action:"enable", targetAddress:21) { issuerToken } }`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, provider := newB503ParityRuntime(t, b503GraphQLErrorDispatcher{err: errRawFrameUpstreamTimeout})
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tc.mcpTool + `","arguments":` + tc.mcpArgs + `}}`
+			response := mcpRPC(t, runtime.mcpServer.Handler(), body)
+			if response.Error != nil || response.Result == nil {
+				t.Fatalf("MCP response error=%+v result=%#v", response.Error, response.Result)
+			}
+			content := response.Result["content"].([]any)[0].(map[string]any)["text"].(string)
+			if !strings.Contains(content, `"code":"UPSTREAM_RPC_FAILED"`) || strings.Contains(content, `"code":"UPSTREAM_TIMEOUT"`) {
+				t.Fatalf("MCP timeout classification drift: %s", content)
+			}
+
+			result := b503GraphQLResult(t, provider, tc.graphQuery)
+			if len(result.Errors) != 1 {
+				t.Fatalf("GraphQL errors=%+v; want one field-local timeout", result.Errors)
+			}
+			message := result.Errors[0].Message
+			if !strings.Contains(message, "UPSTREAM_RPC_FAILED") || strings.Contains(message, "UPSTREAM_TIMEOUT") {
+				t.Fatalf("GraphQL timeout classification %q does not match MCP", message)
 			}
 		})
 	}

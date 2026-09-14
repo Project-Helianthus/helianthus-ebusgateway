@@ -3,6 +3,11 @@
 Reviewed Gateway source parent: `c9045ac9fa4ddeb1c8462662ace2314f3e1f39c7`,
 plus the emission-boundary correction described below.
 
+The latest live-review correction starts from pushed Gateway commit
+`04391a7661cf94d1272646e10ef8694c301c9c87` and covers public timeout parity,
+complete B503 native-emitter gate classification, and current-generation
+withdrawal before an owner-triggered refresh.
+
 Compared accepted documentation contract: `helianthus-docs-ebus` PR #524 merge
 `7a9a9d0501161a0b7a56522c3d4afa0677abcefd`, tree
 `05f8de4ffb3d09262fe4d8b822499fc1a6330d55`. The independently reviewed
@@ -42,6 +47,14 @@ not clear cleanup, permit re-Enable, or auto-recover the target. Terminal
 disconnect, reconnect, and restart emit no automatic recovery write while
 settlement remains unproven.
 
+GraphQL and MCP now expose the same stable `UPSTREAM_RPC_FAILED` code for a raw
+dispatcher timeout on both errors.get and live-monitor operations, while the
+existing transport/session precedence is unchanged. The transport gate now
+classifies the MCP B503 operation owner and GraphQL operation provider alongside
+the Manager, dispatcher, and wiring. Driver activation also records a distinct
+lifecycle-current generation: an owner can remain bound to N pending refresh,
+while withdrawal of admitted N+1 still releases it and retains cleanup.
+
 If an emitted Enable crosses an epoch during its admitted lifecycle, Manager
 fences the stale completion and invokes at most one target-bound defensive
 disable after the dispatch quiesces. That attempt remains evidence rather than
@@ -73,14 +86,18 @@ by the shared Gateway Manager and production dispatcher path.
 | Current-owner DISABLE disconnect before frame emission, including while waiting for poll quiescence, emits no disable and returns exact `TRANSPORT_DOWN`; Active retains the prior cleanup epoch and refreshed Disable retains the rebound epoch. | `DisableOperation` now holds ownership until the dispatch reaches its emission admission boundary. `TestIssue552B503DisableDisconnectBeforeEmissionRetainsFenceWithoutWrite` covers Active and refreshed paths at the real `readMu` boundary, exact error, zero sends, stable cleanup ID/target/epoch, owner release, repeated later epochs, and denied re-Enable. | Corrected |
 | Explicit disable after frame emission emits once, releases caller ownership, and remains fail-closed because ACK/NAK does not prove settlement. | MCP and GraphQL call `DisableOperation`, which records the exact emitted or terminal outcome while retaining internal cleanup evidence. Tests prove ACK, NAK, and timeout cannot clear cleanup or re-admit Enable. | Pass |
 | Post-emission ENABLING disconnect remains conservative and never becomes the pre-emission escape path. | The dispatcher marks the Manager operation emitted immediately before entering `bus.Send`. `TestIssue552B503EnableDisconnectAfterEmissionRetainsUnknownFence` disconnects while Send is in flight and proves one send, `OriginEmitted=true`, retained cleanup, ownerless public Idle, and zero later reconnect writes. | Corrected |
+| Activation of generation N+1 followed by withdrawal of N+1 before any owner operation releases an owner still bound to N without falsely rehoming it. | `LifecycleTransportKey` exposes the latest admitted lifecycle generation separately from the owner-facing `TransportKey`. Runtime activation and withdrawal correlate against the lifecycle key; the raw dispatcher still fences stale owner-generation completions. `TestIssue552B503CurrentLifecycleWithdrawalReleasesUnrefreshedOwner` proves stale N withdrawal is ignored, N+1 withdrawal releases the owner, and the exact prior cleanup identity/target/epoch survives. | Corrected |
 | Reconnect advances transport evidence but emits no automatic recovery write for a retained obligation, never reconstructs an owner, and keeps the target unavailable. | `OnEpochAdvance` updates the Manager transport epoch while preserving the exact cleanup snapshot and fence. Deterministic Manager and DriverManager lifecycle tests assert zero writes across repeated later epochs, stable cleanup evidence, `UNKNOWN`, denied re-Enable, and the restart no-write fence. | Pass |
 | Every successful Active read resets the idle timer. | `ReadOperation` rearms the generation-guarded timer only after exact native ACK and a still-current owner/transport check. `TestOperationSuccessfulReadResetsIdleTimer` proves the production operation remains owned beyond the original deadline; non-ACK failures leave the timer untouched. | Pass |
-| Field cancellation maps to `UPSTREAM_TIMEOUT`; NAK/CRC/arbitration maps to `UPSTREAM_RPC_FAILED`; neither replaces the last-known capability with `TRANSPORT_DOWN`. | `classifySendErr` preserves this distinction. The prior correction added `publicB503GraphQLError` at the GraphQL provider boundary and `TestIssue552B503GraphQLPreservesDispatcherErrorCodes`. | Pass |
+| Raw dispatcher timeout and non-transport upstream failures have one stable public classification across MCP and GraphQL, without weakening transport/session precedence. | The dispatcher retains its internal timeout sentinel, while stable MCP normalizers and `publicB503GraphQLError` both expose `UPSTREAM_RPC_FAILED`. `TestIssue552B503DispatcherTimeoutMCPGraphQLParity` executes errors.get and live Enable through both public surfaces; the broader error-code table preserves `TRANSPORT_DOWN`, `UNKNOWN`, and `SESSION_BUSY` precedence. | Corrected |
+| Every production file that constructs, invokes, emits, or fences native B503 operations triggers the eBUS matrix gate. | `requires_b503_native_transport_gate` explicitly includes Manager, dispatcher, wiring, MCP operation owner, and GraphQL provider. `TransportGateTests.test_transport_gate_fails_closed_for_b503_native_operation_sources` covers all five source paths and requires the matrix report for each. | Corrected |
 
 ## Validation
 
 - `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 60/60.
-- `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off go test -race ./internal/vaillant/b503session ./cmd/gateway ./mcp ./graphql -run 'Test(Operation|Session_|Issue552B503|Issue552VaillantB503|M6TruthTable|M6Conc|M6Dispatcher|VaillantB503|Issue851B503)' -count=1 -timeout=120s`: PASS, 100/100 selected top-level tests (28 Manager, 40 Gateway, 21 MCP, 11 GraphQL). The Gateway total includes an Active/refreshed subtest pair at the post-quiesce emission boundary.
+- `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off go test -race ./internal/vaillant/b503session ./cmd/gateway ./mcp ./graphql -run 'Test(Operation|Session_|Issue552B503|Issue552VaillantB503|M6TruthTable|M6Conc|M6Dispatcher|VaillantB503|Issue851B503)' -count=1 -timeout=120s`: PASS, 102/102 selected top-level tests (28 Manager, 42 Gateway, 21 MCP, 11 GraphQL). The Gateway total includes Active/refreshed emission-boundary subtests and executable MCP/GraphQL timeout-parity subtests.
+- `python3 -m unittest scripts.transport_gate_test`: PASS, 27/27.
+- `SDKROOT=$(xcrun --sdk macosx --show-sdk-path) GOWORK=off ./scripts/ci_local.sh`: all stages before the transport gate PASS, including 155 Portal tests, generated assets, gofmt, vet, native and Linux builds, the complete repository race suite, source-selection coverage, Python suites, and golangci-lint with zero issues. The run stops at the expected legitimate boundary: `transport gate: TRANSPORT_MATRIX_REPORT is required for eBUS transport/protocol changes.` No report or override was supplied.
 - `rg` over non-test Go files finds no legacy `Manager.Enable`, `Manager.Read`, or `Manager.Disable` production call site; MCP and GraphQL use only the operation-owned API.
 
 ## API/composition result

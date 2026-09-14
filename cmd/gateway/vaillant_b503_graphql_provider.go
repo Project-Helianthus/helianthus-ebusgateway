@@ -53,9 +53,9 @@ func (p *b503GraphQLProvider) targetOr(target *byte) byte {
 }
 
 // publicB503GraphQLError preserves the public operation code at the GraphQL
-// boundary.  The dispatcher owns wire-level classification; GraphQL must not
-// replace its timeout and protocol-failure distinctions with an implementation
-// string that Portal cannot present truthfully.
+// boundary. Stable B503 MCP reads and lifecycle operations normalize dispatcher
+// timeouts with other non-transport upstream failures, so GraphQL must preserve
+// that same public classification rather than expose a surface-specific code.
 func publicB503GraphQLError(err error) error {
 	if err == nil {
 		return nil
@@ -71,7 +71,7 @@ func publicB503GraphQLError(err error) error {
 		errors.Is(err, b503session.ErrNotActive):
 		return fmt.Errorf("SESSION_BUSY: %w", err)
 	case errors.Is(err, errRawFrameUpstreamTimeout):
-		return fmt.Errorf("UPSTREAM_TIMEOUT: %w", err)
+		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
 	case errors.Is(err, errRawFrameUpstreamRPCFailed):
 		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
 	default:

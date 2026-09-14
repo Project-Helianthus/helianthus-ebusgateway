@@ -73,16 +73,17 @@ type b503Runtime struct {
 	dispatcher  mcp.RPCDispatcher
 }
 
-// EBusDriverActivated advances the B503 transport epoch to the exact admitted
-// DriverManager generation. Duplicate or stale notifications are no-ops. This
-// callback performs no I/O and never calls back into DriverManager.
+// EBusDriverActivated records the exact admitted DriverManager generation.
+// A surviving owner remains bound to its prior transport key until its next
+// admitted Read/Disable refresh. Duplicate or stale notifications are no-ops.
+// This callback performs no I/O and never calls back into DriverManager.
 func (runtime *b503Runtime) EBusDriverActivated(correlation drivermanager.Correlation) {
 	if runtime == nil || runtime.manager == nil || correlation.Generation == 0 {
 		return
 	}
 	runtime.lifecycleMu.Lock()
 	defer runtime.lifecycleMu.Unlock()
-	if correlation.Generation <= runtime.manager.TransportKey().TransportEpoch {
+	if correlation.Generation <= runtime.manager.LifecycleTransportKey().TransportEpoch {
 		return
 	}
 	runtime.manager.OnEpochAdvance(context.Background(), correlation.Generation)
@@ -96,21 +97,23 @@ func (runtime *b503Runtime) EBusDriverWithdrawn(correlation drivermanager.Correl
 		return
 	}
 	runtime.disconnectIfCurrent(b503session.TransportKey{
-		AdapterInstanceID: runtime.manager.TransportKey().AdapterInstanceID,
+		AdapterInstanceID: runtime.manager.LifecycleTransportKey().AdapterInstanceID,
 		TransportEpoch:    correlation.Generation,
 	})
 }
 
 // disconnectIfCurrent serializes the request-side source-unavailable fallback
-// with DriverManager activation/withdrawal. An invocation that observed epoch
-// N cannot disconnect a newly enabled issuer after epoch N+1 becomes active.
+// with DriverManager activation/withdrawal. Correlation follows the latest
+// admitted lifecycle generation rather than the owner-bound key, so withdrawal
+// of N+1 releases an owner still awaiting bounded refresh from N, while a stale
+// completion from N cannot disconnect generation N+1.
 func (runtime *b503Runtime) disconnectIfCurrent(expected b503session.TransportKey) {
 	if runtime == nil || runtime.manager == nil {
 		return
 	}
 	runtime.lifecycleMu.Lock()
 	defer runtime.lifecycleMu.Unlock()
-	if runtime.manager.TransportKey() != expected {
+	if runtime.manager.LifecycleTransportKey() != expected {
 		return
 	}
 	runtime.manager.OnTransportDisconnect()

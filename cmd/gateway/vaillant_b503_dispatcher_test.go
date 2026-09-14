@@ -767,6 +767,51 @@ func TestIssue851B503SourceNotAdmittedDisconnectsOwnerWithoutAdvancingEpoch(t *t
 	}
 }
 
+func TestIssue552B503CurrentLifecycleWithdrawalReleasesUnrefreshedOwner(t *testing.T) {
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "gateway", TransportEpoch: 1},
+		30*time.Second,
+		func(context.Context) (b503session.TransportKey, error) {
+			t.Fatal("withdrawal before an owner operation must not invoke refresh")
+			return b503session.TransportKey{}, nil
+		},
+	)
+	runtime := &b503Runtime{manager: mgr}
+	if _, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{
+			Emitted: true, Native: b503session.NativeACK,
+			Transport: b503session.TransportKey{AdapterInstanceID: "gateway", TransportEpoch: 1},
+		}
+	}); err != nil {
+		t.Fatalf("EnableOperation() error = %v", err)
+	}
+	before, ok := mgr.CleanupObligation()
+	if !ok || before.GatewayCleanupAttemptID == "" || before.TransportEpoch != 1 {
+		t.Fatalf("active cleanup = %+v, present=%v", before, ok)
+	}
+
+	runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 2})
+	if got := mgr.TransportKey().TransportEpoch; got != 1 {
+		t.Fatalf("activation falsely rebound owner transport epoch = %d, want 1", got)
+	}
+	if got := mgr.LifecycleTransportKey().TransportEpoch; got != 2 {
+		t.Fatalf("lifecycle epoch = %d, want admitted generation 2", got)
+	}
+	runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 1})
+	if !mgr.IsOwned() {
+		t.Fatal("stale generation-1 withdrawal released generation-2 lifecycle owner")
+	}
+
+	runtime.EBusDriverWithdrawn(drivermanager.Correlation{Generation: 2})
+	if got := mgr.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("generation-2 withdrawal snapshot = %+v, want ownerless public Idle", got)
+	}
+	after, ok := mgr.CleanupObligation()
+	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.Target != before.Target || after.TransportEpoch != before.TransportEpoch {
+		t.Fatalf("withdrawal cleanup drift: before=%+v after=%+v present=%v", before, after, ok)
+	}
+}
+
 func TestIssue851B503StaleSourceFallbackCannotClearUnsettledCleanup(t *testing.T) {
 	bus := newB503DispatcherMockBus()
 	mgr := b503session.New(

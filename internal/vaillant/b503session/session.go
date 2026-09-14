@@ -294,6 +294,19 @@ func (m *Manager) DispatchEpoch() uint64 {
 	return m.observedEpoch
 }
 
+// LifecycleTransportKey identifies the latest admitted transport generation
+// without rebinding a surviving owner. Driver lifecycle withdrawal correlates
+// against this key; owner operations still use TransportKey and perform the
+// documented bounded refresh before dispatch.
+func (m *Manager) LifecycleTransportKey() TransportKey {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return TransportKey{
+		AdapterInstanceID: m.transport.AdapterInstanceID,
+		TransportEpoch:    m.observedEpoch,
+	}
+}
+
 // Enable transitions Idle -> Enabling -> Active and returns a SessionKey
 // with a freshly-minted 16-byte hex issuer_token. Returns ErrSessionBusy
 // if the FSM is not Idle.

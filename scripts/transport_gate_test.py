@@ -529,14 +529,17 @@ type Config struct {
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
     def test_transport_gate_fails_closed_for_b503_native_operation_sources(self) -> None:
-        # B503's session, dispatcher, and production installation wiring can
-        # select or emit native eBUS requests.  Each must make a current matrix
-        # report mandatory; this deliberately does not provide the test fixture
-        # report, so the failure proves the classifier fired.
+        # B503's session, dispatcher, provider operation paths, and production
+        # installation wiring can construct, select, or emit native eBUS
+        # requests. Each must make a current matrix report mandatory; this
+        # deliberately does not provide the fixture report, so failure proves
+        # the classifier fired.
         for changed_file in (
             "cmd/gateway/vaillant_b503_dispatcher.go",
+            "cmd/gateway/vaillant_b503_graphql_provider.go",
             "cmd/gateway/vaillant_b503_wiring.go",
             "internal/vaillant/b503session/session.go",
+            "mcp/vaillant_b503.go",
         ):
             with self.subTest(changed_file=changed_file):
                 repo_path, _ = self._create_temp_repo(changed_file)

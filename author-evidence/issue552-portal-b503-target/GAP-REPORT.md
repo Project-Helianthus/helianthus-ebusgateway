@@ -10,7 +10,12 @@ candidate `bc5cb66f7542e0618e03c70a82875d9ed641f813` has that same tree.
 
 ## Result
 
-The public GraphQL error-code and Portal presentation gaps remain closed. At
+The public GraphQL error-code and Portal presentation gaps remain closed. A
+successful Enable or Disable, and a session poll that observes idle expiry,
+now invalidate cached `AVAILABLE` before requalifying the same target. The
+intermediate conservative render immediately unmounts general tabs and Enable;
+an authoritative `UNKNOWN` result restores only the exact Active owner's
+READ/DISABLE controls. At
 the runtime boundary, a terminal disconnect while an Enable or current-owner
 Disable is still waiting for poll quiescence now invalidates the exact pending
 operation before `bus.Send`. A queued Enable returns exact `TRANSPORT_DOWN` to
@@ -50,7 +55,7 @@ documented cleanup rules without inferring wire state from a public error.
 
 ## Runtime/FSM comparison
 
-The first four rows are Portal behavior. The remaining rows are implemented
+The first five rows are Portal behavior. The remaining rows are implemented
 by the shared Gateway Manager and production dispatcher path.
 
 | Contract behavior | Reachable implementation and test evidence | Verdict |
@@ -58,6 +63,7 @@ by the shared Gateway Manager and production dispatcher path.
 | Target/nav changes invalidate old presentation before a new request and preserve an old token-target cleanup pair. | `_beginVaillantB503TargetQualification` publishes `PENDING`, advances the presentation epoch, starts detached cleanup, and fences the later probe. Browser tests cover stale enable, delayed cleanup, rapid target changes, and no blocked qualification. | Pass |
 | A `Refreshing` owner exposes only status while capability is `UNKNOWN`; no new B503 operation is rendered. | `renderVaillantB503Pane` retains the strip only for `Refreshing`/`owned:true` on the live-monitor view and omits all action markup. `VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabilityUnknown` covers the row. | Pass |
 | The same browser's selected-target `Active` owner retains only READ/DISABLE while capability is `UNKNOWN`. | `renderVaillantB503Pane` requires live-monitor view, `Active`, `owned:true`, a non-empty local token, and an exact token-target match before rendering the bounded owner markup. Tests prove READ/DISABLE are bound, Enable/tabs/projection stay absent, other targets and non-owners inherit nothing, and ownership loss immediately unmounts the exception. | Corrected |
+| A successful Enable or Disable, or observed idle expiry, cannot leave cached `AVAILABLE` controls mounted after Gateway capability becomes `UNKNOWN`. | `_requalifyVaillantB503CapabilityAfterLifecycle` invalidates the cache and renders `UNKNOWN` before follow-up I/O, refreshes session state when the action itself caused the transition, and requalifies only the same current target. Capability request versions prevent an older same-target response from restoring stale controls. Focused tests cover delayed Enable requalification, Disable, and polled idle expiry; only the exact Active owner retains READ/DISABLE and all paths unmount general tabs and Enable. | Corrected |
 | Refresh holds the gate; a later successful refresh continues the same owner and deferred cleanup is bounded/token-bound. | Session-status requests remain serialized and disable controls stay unavailable during `Enabling` or `Refreshing`; deferred cleanup retains only the captured pair. Focused tests cover authoritative Refreshing, settled Active retry, finite status bounds, and disconnect fences. | Pass |
 | ACTIVE disconnect returns `TRANSPORT_DOWN` only to the in-flight request, while availability remains `UNKNOWN` under retained cleanup. | `OnTransportDisconnect` releases only a held owner and retains target, fresh Gateway cleanup ID, and prior epoch. Corrected row-3 coverage proves the in-flight error, released ownership, retained target, and exact `UNKNOWN` capability. | Pass |
 | Restart destroys caller handles but fences each qualified target at `UNKNOWN`, with no Enable until authorized recovery. | `ResetForRestart` clears caller and process-local cleanup tuples, records qualified-target restart fences, and never invokes the cleanup dispatcher. Operation coverage proves later epoch advance emits no write and public Enable stays unavailable. | Pass |
@@ -73,7 +79,7 @@ by the shared Gateway Manager and production dispatcher path.
 
 ## Validation
 
-- `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 57/57.
+- `node --test portal/web/test/vaillant-b503.test.mjs`: PASS, 60/60.
 - `SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk GOWORK=off go test -race ./internal/vaillant/b503session ./cmd/gateway ./mcp ./graphql -run 'Test(Operation|Session_|Issue552B503|Issue552VaillantB503|M6TruthTable|M6Conc|M6Dispatcher|VaillantB503|Issue851B503)' -count=1 -timeout=120s`: PASS, 100/100 selected top-level tests (28 Manager, 40 Gateway, 21 MCP, 11 GraphQL). The Gateway total includes an Active/refreshed subtest pair at the post-quiesce emission boundary.
 - `rg` over non-test Go files finds no legacy `Manager.Enable`, `Manager.Read`, or `Manager.Disable` production call site; MCP and GraphQL use only the operation-owned API.
 

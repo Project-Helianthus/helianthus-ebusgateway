@@ -3740,6 +3740,8 @@ class PortalShell extends HTMLElement {
   async refreshVaillantB503Capability(requestContext) {
     const body = this.querySelector('[data-role="vaillant-b503-body"]');
     const context = requestContext || this._vaillantB503RequestContext();
+	const requestVersion = (this._vaillantB503CapabilityRequestVersion || 0) + 1;
+	this._vaillantB503CapabilityRequestVersion = requestVersion;
     let reason = "UNKNOWN";
     try {
       const env = await this._gqlRequest(
@@ -3756,13 +3758,27 @@ class PortalShell extends HTMLElement {
       // can click the nav entry again to retry.
       reason = "UNKNOWN";
     }
-    if (!this._isCurrentVaillantB503Context(context)) return;
+    if (!this._isCurrentVaillantB503Context(context) || requestVersion !== this._vaillantB503CapabilityRequestVersion) return;
     this._vaillantB503CapabilityReason = reason;
     this.renderVaillantB503Pane(reason, body);
     const confirmed = this._vaillantB503ConfirmedCleanupContext;
     if (confirmed && confirmed.epoch === context.epoch && confirmed.target === context.target) {
       this._reprobeVaillantB503CapabilityAfterCleanup(context);
     }
+  }
+
+  async _requalifyVaillantB503CapabilityAfterLifecycle(context, refreshSession) {
+	if (!this._isCurrentVaillantB503Context(context)) return false;
+	// A successful lifecycle operation or observed owner transition can make a
+	// cached AVAILABLE result stale immediately. Publish the conservative state
+	// before awaiting either follow-up query so general tabs and Enable cannot
+	// issue predictable cleanup-fenced requests.
+	this._vaillantB503CapabilityReason = "UNKNOWN";
+	this.renderVaillantB503Pane("UNKNOWN");
+	if (refreshSession) await this.refreshVaillantLiveMonitorSession();
+	if (!this._isCurrentVaillantB503Context(context)) return false;
+	await this.refreshVaillantB503Capability(context);
+	return this._isCurrentVaillantB503Context(context);
   }
 
   renderVaillantB503Pane(reason, bodyEl) {
@@ -4045,6 +4061,7 @@ class PortalShell extends HTMLElement {
     // disable response is pending.
     const submittedToken = action === "disable" ? variables.issuerToken : null;
     const submittedTarget = action === "disable" ? context.target : null;
+	let lifecycleChanged = false;
     try {
       const env = await this._gqlRequest(
         "query VaillantLive($action: String!, $issuerToken: String, $targetAddress: Int) { vaillantLiveMonitor(action: $action, issuerToken: $issuerToken, targetAddress: $targetAddress) { issuerToken rawHex disabled } }",
@@ -4089,6 +4106,7 @@ class PortalShell extends HTMLElement {
       if (action === "enable" && typeof payload.issuerToken === "string" && payload.issuerToken !== "") {
         this._vaillantB503LiveToken = payload.issuerToken;
         this._vaillantB503LiveTarget = context.target;
+		lifecycleChanged = true;
         if (status) status.textContent = "Live-monitor session active.";
       }
       if (action === "read") {
@@ -4106,8 +4124,13 @@ class PortalShell extends HTMLElement {
           this._vaillantB503LiveTarget = null;
           if (status) status.textContent = "Session disabled.";
         }
+		lifecycleChanged = true;
       }
-      await this.refreshVaillantLiveMonitorSession();
+	  if (lifecycleChanged) {
+		await this._requalifyVaillantB503CapabilityAfterLifecycle(context, true);
+	  } else {
+		await this.refreshVaillantLiveMonitorSession();
+	  }
     } catch (err) {
       if (status) status.textContent = `Error: ${err}`;
 	  if (this._isVaillantB503LiveMonitorSessionVisible()) await this.refreshVaillantLiveMonitorSession();
@@ -4308,9 +4331,9 @@ class PortalShell extends HTMLElement {
     const context = this._vaillantB503RequestContext();
     try {
 	  const result = await this._requestVaillantB503SessionStatus(context.target);
-      if (!result.current || !this._isCurrentVaillantB503Context(context) || !strip) return false;
+	  if (!result.current || !this._isCurrentVaillantB503Context(context)) return false;
 	  if (result.error) {
-		strip.textContent = "Session state: unavailable.";
+		if (strip) strip.textContent = "Session state: unavailable.";
 		return false;
 	  }
 	  const session = this._vaillantB503LiveMonitorSessionFromEnvelope(result.env);
@@ -4318,7 +4341,7 @@ class PortalShell extends HTMLElement {
 	  // observed unowned Unknown state.  Retain the last valid state and exact
 	  // cleanup pair so this UI result can never release a live server session.
 	  if (!session) {
-		strip.textContent = "Session state: unavailable.";
+		if (strip) strip.textContent = "Session state: unavailable.";
 		return false;
 	  }
 	  const { state, owned } = session;
@@ -4327,7 +4350,16 @@ class PortalShell extends HTMLElement {
 	  this._vaillantB503SessionState = state;
 	  this._vaillantB503SessionOwned = owned;
       const ownership = owned ? " Gateway session gate is held." : "";
-      strip.innerHTML = `<span data-testid="b503-session-state-label">Session state: ${escapeHtml(state)}.</span>${escapeHtml(ownership)}`;
+	  if (strip) strip.innerHTML = `<span data-testid="b503-session-state-label">Session state: ${escapeHtml(state)}.</span>${escapeHtml(ownership)}`;
+	  const hadSessionObservation = typeof previousState === "string" && typeof previousOwned === "boolean";
+	  const lifecycleChanged = hadSessionObservation && (state !== previousState || owned !== previousOwned);
+	  const currentTargetToken = typeof this._vaillantB503LiveToken === "string" && this._vaillantB503LiveToken !== "" &&
+		this._vaillantB503LiveTarget === context.target;
+	  const observedOwnerlessTerminal = currentTargetToken && !owned && (state === "Idle" || state === "Disabled");
+	  if (this._vaillantB503CapabilityReason === "AVAILABLE" && (lifecycleChanged || observedOwnerlessTerminal)) {
+		await this._requalifyVaillantB503CapabilityAfterLifecycle(context, false);
+		return true;
+	  }
 	  if (this._vaillantB503CapabilityReason === "UNKNOWN" &&
 	    (state !== previousState || owned !== previousOwned)) {
 		this.renderVaillantB503Pane("UNKNOWN");

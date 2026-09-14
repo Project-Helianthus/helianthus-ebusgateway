@@ -1683,6 +1683,177 @@ test("VaillantB503Pane_activeCurrentOwnerRetainsOnlyReadDisableWhenCapabilityUnk
   assert.deepEqual(actions, ["read", "disable"]);
 });
 
+test("VaillantB503Pane_successfulEnableRequalifiesAvailableToUnknownOwnerControls", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const resolveCapabilities = [];
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-current", rawHex: null, disabled: false } } }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return new Promise((resolve) => {
+          resolveCapabilities.push((reason) => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: reason === "AVAILABLE", reason } } } }) }));
+        });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Idle";
+  shell._vaillantB503SessionOwned = false;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+  assert.match(body.innerHTML, /vaillant-b503-live-enable/);
+
+  const staleQualification = proto.refreshVaillantB503Capability.call(shell);
+  const enable = proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN",
+    "successful Enable invalidates cached AVAILABLE before requalification settles");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/,
+    "Enable must unmount during the delayed authoritative capability query");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/,
+    "general tabs must unmount during the delayed authoritative capability query");
+  assert.equal(resolveCapabilities.length, 2, "lifecycle requalification supersedes the older same-target probe");
+  resolveCapabilities[1]("UNKNOWN");
+  await enable;
+  resolveCapabilities[0]("AVAILABLE");
+  await staleQualification;
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Active");
+  assert.equal(shell._vaillantB503SessionOwned, true);
+  assert.match(body.innerHTML, /b503-active-owner-unknown-controls/);
+  assert.match(body.innerHTML, /vaillant-b503-live-read/);
+  assert.match(body.innerHTML, /vaillant-b503-live-disable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 2);
+});
+
+test("VaillantB503Pane_successfulDisableRequalifiesAvailableAndUnmountsOperations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: null, rawHex: null, disabled: true } } }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "UNKNOWN" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+  assert.match(body.innerHTML, /vaillant-b503-live-enable/);
+
+  await proto.invokeVaillantLiveMonitor.call(shell, "disable");
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+});
+
+test("VaillantB503Pane_idleExpiryRequalifiesCachedAvailableAndUnmountsOperations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "UNKNOWN" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+});
+
 test("VaillantB503Pane_unknownOtherTargetOrNonOwnerGetsNoLiveControls", async () => {
   const { source, sourcePath } = await loadShellSource();
   for (const variant of [

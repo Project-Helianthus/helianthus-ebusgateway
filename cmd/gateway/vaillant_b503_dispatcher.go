@@ -237,6 +237,40 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	if d.readMu != nil {
 		d.readMu.Lock()
 	}
+	unlockReadMu := func() {
+		if d.readMu != nil {
+			d.readMu.Unlock()
+		}
+	}
+	// A context or admitted source can become invalid while this operation
+	// waits for B524 polling to quiesce. Revalidate both at the final
+	// pre-emission boundary so terminal disconnect never drains a stale queued
+	// B503 write after readMu becomes available.
+	if err := bsCtx.Err(); err != nil {
+		unlockReadMu()
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err),
+			Transport: transportAtIssue,
+		}
+	}
+	currentSource, currentAdmitted := d.admittedSource()
+	if !currentAdmitted || currentSource == 0 || currentSource != source {
+		unlockReadMu()
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
+			d.disconnectIfCurrent(transportAtIssue)
+		}
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown),
+			Transport: transportAtIssue,
+		}
+	}
+	if operationID, ok := b503session.PendingOperationIDFromContext(ctx); ok && !d.mgr.AdmitPendingEmission(operationID, target) {
+		unlockReadMu()
+		return mcp.B503DispatchOutcome{
+			Err:       b503session.ErrTransportDown,
+			Transport: transportAtIssue,
+		}
+	}
 	frame := protocol.Frame{
 		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
@@ -249,9 +283,7 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	// transport API offers no finer acknowledgement boundary than entering
 	// bus.Send.
 	resp, sendErr := d.bus.Send(bsCtx, frame)
-	if d.readMu != nil {
-		d.readMu.Unlock()
-	}
+	unlockReadMu()
 
 	// Stale-epoch discipline (§12.7): re-check the Manager's current
 	// epoch against the captured startEpoch BEFORE classifying or
@@ -297,9 +329,10 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 }
 
 // InvokeB503Outcome is the B503-only lifecycle extension. The generic Invoke
-// contract remains unchanged. A pre-cancelled context cannot reach bus.Send;
-// after admission all other errors are conservatively may-have-emitted until
-// the transport API grows a stronger acknowledgement boundary.
+// contract remains unchanged. A pre-cancelled or lifecycle-invalidated request
+// cannot reach bus.Send; after admission all other errors are conservatively
+// may-have-emitted until the transport API grows a stronger acknowledgement
+// boundary.
 func (d *rawFrameDispatcher) InvokeB503Outcome(ctx context.Context, target byte, payload []byte) mcp.B503DispatchOutcome {
 	return d.invokeB503Outcome(ctx, target, payload)
 }

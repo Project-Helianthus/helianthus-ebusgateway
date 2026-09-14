@@ -65,6 +65,25 @@ type b503DispatcherMockBus struct {
 	blockUntil <-chan struct{}
 }
 
+// b503BlockingReadLocker stops a dispatcher exactly where it has requested
+// poll quiescence but has not yet reached the B503 emission boundary.
+type b503BlockingReadLocker struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newB503BlockingReadLocker() *b503BlockingReadLocker {
+	return &b503BlockingReadLocker{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (l *b503BlockingReadLocker) Lock() {
+	l.once.Do(func() { close(l.entered) })
+	<-l.release
+}
+
+func (*b503BlockingReadLocker) Unlock() {}
+
 // issue851ClassifyBarrierError blocks the first Error call. bus.Send returns
 // the value without formatting it, so reaching this barrier proves Invoke has
 // already completed its post-Send epoch check and entered error classification.
@@ -472,6 +491,195 @@ func TestIssue552B503OutcomeACKIsNativeEvidenceOnly(t *testing.T) {
 	}
 	if calls := bus.callCount(); calls != 1 {
 		t.Fatalf("ACK bus.Send count = %d, want 1", calls)
+	}
+}
+
+func TestIssue552B503EnableDisconnectBeforeEmissionReturnsIdleWithoutCleanup(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	)
+	readMu := newB503BlockingReadLocker()
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.EnableOperation(context.Background(), 0x15, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
+		})
+		done <- err
+	}()
+	<-readMu.entered
+	if pending, ok := mgr.PendingOperation(); !ok || pending.Kind != b503session.OperationEnable || pending.Emitted {
+		t.Fatalf("pre-emission pending enable = %+v, present=%v", pending, ok)
+	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("pre-emission bus.Send count = %d, want 0", calls)
+	}
+
+	mgr.OnTransportDisconnect()
+	if got := mgr.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("pre-emission disconnect snapshot = %+v, want ownerless Idle", got)
+	}
+	if _, ok := mgr.PendingOperation(); ok {
+		t.Fatal("pre-emission disconnect retained pending enable")
+	}
+	if cleanup, ok := mgr.CleanupObligation(); ok {
+		t.Fatalf("pre-emission disconnect cleanup = %+v, want none", cleanup)
+	}
+	close(readMu.release)
+	if err := <-done; !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("pre-emission disconnect error = %v, want exact TRANSPORT_DOWN", err)
+	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("disconnected queued enable bus.Send count = %d, want 0", calls)
+	}
+
+	mgr.OnEpochAdvance(context.Background(), 2)
+	if cleanup, ok := mgr.CleanupObligation(); ok {
+		t.Fatalf("reconnect manufactured cleanup = %+v", cleanup)
+	}
+	if _, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	}); err != nil {
+		t.Fatalf("new explicit enable after reconnect = %v", err)
+	}
+}
+
+func TestIssue552B503DisableDisconnectBeforeEmissionRetainsFenceWithoutWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		refreshEpoch uint64
+	}{
+		{name: "active"},
+		{name: "refreshed", refreshEpoch: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := newB503DispatcherMockBus()
+			var refresh b503session.RefreshFunc
+			if tc.refreshEpoch != 0 {
+				refresh = func(context.Context) (b503session.TransportKey, error) {
+					return b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: tc.refreshEpoch}, nil
+				}
+			}
+			mgr := b503session.New(
+				b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+				100*time.Millisecond,
+				refresh,
+			)
+			key, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+			})
+			if err != nil {
+				t.Fatalf("setup enable = %v", err)
+			}
+			if tc.refreshEpoch != 0 {
+				mgr.OnEpochAdvance(context.Background(), tc.refreshEpoch)
+			}
+			readMu := newB503BlockingReadLocker()
+			dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
+			done := make(chan error, 1)
+			go func() {
+				done <- mgr.DisableOperation(context.Background(), key, 0x15, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+					return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
+				})
+			}()
+			<-readMu.entered
+			// The admitted explicit Disable owns the terminal path while it
+			// waits for quiescence; its former idle deadline must not race it.
+			time.Sleep(150 * time.Millisecond)
+			pending, ok := mgr.PendingOperation()
+			if !ok || pending.Kind != b503session.OperationDisable || pending.Emitted {
+				t.Fatalf("pre-emission pending disable = %+v, present=%v", pending, ok)
+			}
+			if got := mgr.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+				t.Fatalf("disable waiting past idle deadline = %+v, want owned Active", got)
+			}
+			before, ok := mgr.CleanupObligation()
+			if !ok || before.Target != 0x15 || before.GatewayCleanupAttemptID == "" {
+				t.Fatalf("pre-disconnect cleanup = %+v, present=%v", before, ok)
+			}
+			if tc.refreshEpoch != 0 && before.TransportEpoch != tc.refreshEpoch {
+				t.Fatalf("refreshed cleanup epoch = %d, want %d", before.TransportEpoch, tc.refreshEpoch)
+			}
+
+			mgr.OnTransportDisconnect()
+			close(readMu.release)
+			if err := <-done; !errors.Is(err, b503session.ErrTransportDown) {
+				t.Fatalf("pre-emission disable error = %v, want exact TRANSPORT_DOWN", err)
+			}
+			if calls := bus.callCount(); calls != 0 {
+				t.Fatalf("disconnected queued disable bus.Send count = %d, want 0", calls)
+			}
+			if got := mgr.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+				t.Fatalf("pre-emission disable snapshot = %+v, want ownerless Idle", got)
+			}
+			after, ok := mgr.CleanupObligation()
+			if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.Target != before.Target || after.TransportEpoch != before.TransportEpoch || after.LastEmitted || after.LastNative != b503session.NativeAmbiguous || !errors.Is(after.LastErr, b503session.ErrTransportDown) {
+				t.Fatalf("retained cleanup mismatch: before=%+v after=%+v present=%v", before, after, ok)
+			}
+			mgr.OnEpochAdvance(context.Background(), mgr.TransportKey().TransportEpoch+1)
+			mgr.OnEpochAdvance(context.Background(), mgr.TransportKey().TransportEpoch+1)
+			if calls := bus.callCount(); calls != 0 {
+				t.Fatalf("later epochs emitted recovery writes = %d, want 0", calls)
+			}
+			var reenableWrites int
+			if _, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+				reenableWrites++
+				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+			}); !errors.Is(err, b503session.ErrCleanupPending) || reenableWrites != 0 {
+				t.Fatalf("cleanup-fenced re-enable = %v, writes=%d", err, reenableWrites)
+			}
+		})
+	}
+}
+
+func TestIssue552B503EnableDisconnectAfterEmissionRetainsUnknownFence(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	bus.setErr([2]byte{0x00, 0x03}, errors.New("ebus: transport closed"))
+	enteredSend := make(chan struct{})
+	releaseSend := make(chan struct{})
+	bus.onSend = func(protocol.Frame, *b503DispatcherMockBus) { close(enteredSend) }
+	bus.blockUntil = releaseSend
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	)
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.EnableOperation(context.Background(), 0x15, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
+		})
+		done <- err
+	}()
+	<-enteredSend
+	if pending, ok := mgr.PendingOperation(); !ok || !pending.Emitted {
+		t.Fatalf("in-flight emitted enable = %+v, present=%v", pending, ok)
+	}
+	mgr.OnTransportDisconnect()
+	close(releaseSend)
+	if err := <-done; !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("post-emission disconnect error = %v, want TRANSPORT_DOWN", err)
+	}
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("post-emission enable bus.Send count = %d, want 1", calls)
+	}
+	cleanup, ok := mgr.CleanupObligation()
+	if !ok || cleanup.Target != 0x15 || !cleanup.OriginEmitted || cleanup.OriginNative != b503session.NativeAmbiguous || cleanup.GatewayCleanupAttemptID == "" {
+		t.Fatalf("post-emission cleanup = %+v, present=%v", cleanup, ok)
+	}
+	if got := mgr.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("post-emission snapshot = %+v, want ownerless public Idle", got)
+	}
+	mgr.OnEpochAdvance(context.Background(), 2)
+	mgr.OnEpochAdvance(context.Background(), 3)
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("automatic reconnect writes raised count to %d, want 1", calls)
 	}
 }
 

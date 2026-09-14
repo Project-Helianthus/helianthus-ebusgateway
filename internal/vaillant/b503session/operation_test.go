@@ -139,7 +139,11 @@ func TestOperationEnablePostEmissionEpochAdvanceRunsAtMostOneLifecycleCleanup(t 
 	done := make(chan error, 1)
 	staleCompletion := errors.New("stale epoch completion")
 	go func() {
-		_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+			if !ok || !manager.AdmitPendingEmission(operationID, target) {
+				panic("post-emission epoch test could not admit pending enable")
+			}
 			close(entered)
 			<-release
 			return b503session.DispatchOutcome{Err: staleCompletion, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
@@ -233,6 +237,28 @@ func TestOperationReadInFlightRejectsConcurrentDisable(t *testing.T) {
 	close(release)
 	if err := <-readDone; err != nil {
 		t.Fatalf("read completion: %v", err)
+	}
+}
+
+func TestOperationSuccessfulReadResetsIdleTimer(t *testing.T) {
+	const idleTimeout = 300 * time.Millisecond
+	manager := b503session.New(newTK(testEpoch), idleTimeout, nil)
+	defer manager.ResetForRestart()
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: manager.TransportKey()}
+	}
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("enable = %v", err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if _, err := manager.ReadOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("successful read = %v", err)
+	}
+	// Total elapsed time exceeds the original timer, while elapsed time since
+	// the successful read does not. The owner must therefore still be Active.
+	time.Sleep(180 * time.Millisecond)
+	if got := manager.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("post-read idle snapshot = %+v, want owned Active", got)
 	}
 }
 
@@ -333,7 +359,11 @@ func TestOperationEnableDisconnectRetainsConservativeEmissionEvidence(t *testing
 	enableErr := make(chan error, 1)
 	staleCompletion := errors.New("stale completion")
 	go func() {
-		_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+			if !ok || !manager.AdmitPendingEmission(operationID, target) {
+				panic("post-emission disconnect test could not admit pending enable")
+			}
 			close(entered)
 			<-release
 			return b503session.DispatchOutcome{

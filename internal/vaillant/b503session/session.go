@@ -61,6 +61,27 @@ type DispatchOutcome struct {
 // DispatchFunc emits exactly one target-bound native operation.
 type DispatchFunc func(context.Context, byte) DispatchOutcome
 
+type pendingOperationContextKey struct{}
+
+// PendingOperationIDFromContext returns the process-local lifecycle operation
+// identity installed by Manager immediately before it invokes a dispatcher.
+// Dispatchers use it only to reject an operation invalidated while waiting for
+// transport quiescence; it grants no caller authority.
+func PendingOperationIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	operationID, ok := ctx.Value(pendingOperationContextKey{}).(string)
+	return operationID, ok && operationID != ""
+}
+
+func withPendingOperation(ctx context.Context, operationID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, pendingOperationContextKey{}, operationID)
+}
+
 // CleanupObligationSnapshot is read-only evidence for deterministic tests and
 // diagnostics. It carries no caller authority.
 type CleanupObligationSnapshot struct {
@@ -238,6 +259,32 @@ func (m *Manager) PendingOperation() (PendingOperationSnapshot, bool) {
 	return m.pendingOperation.PendingOperationSnapshot, true
 }
 
+// AdmitPendingEmission marks the exact pending lifecycle operation as emitted
+// at the dispatcher's post-quiesce boundary. A transport lifecycle event that
+// already invalidated the operation makes admission fail without wire I/O.
+func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	pending := m.pendingOperation
+	if pending == nil || pending.OperationID != operationID || pending.Target != target || !m.mutexHeld {
+		return false
+	}
+	switch pending.Kind {
+	case OperationEnable:
+		if m.state != Enabling {
+			return false
+		}
+	case OperationRead, OperationDisable:
+		if m.state != Active {
+			return false
+		}
+	default:
+		return false
+	}
+	pending.Emitted = true
+	return true
+}
+
 // DispatchEpoch is the latest transport epoch observed by lifecycle routing.
 // Dispatchers compare this value with request-side issue metadata so a stale
 // completion cannot be rescued by a still-bound old owner key.
@@ -332,7 +379,7 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 	m.lastRefreshTransportDown = false
 	m.stateMu.Unlock()
 
-	outcome := dispatchOnce(ctx, target, dispatch)
+	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
 
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
@@ -405,7 +452,7 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 	if err != nil {
 		return nil, err
 	}
-	outcome := dispatchOnce(ctx, target, dispatch)
+	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
 		m.stateMu.Unlock()
@@ -439,35 +486,47 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 	return outcome.Response, nil
 }
 
-// DisableOperation owns the explicit native disable. The owner is released on
-// entry to internal Disabled. Its exact native outcome is recorded, but ACK or
-// NAK alone never clears the cleanup obligation or makes re-Enable admissible.
+// DisableOperation owns the explicit native disable. The owner remains held
+// while the dispatcher waits for poll quiescence, then is released after the
+// emitted or pre-emission terminal outcome. Its exact outcome is recorded, but
+// ACK or NAK alone never clears cleanup or makes re-Enable admissible.
 func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target byte, dispatch DispatchFunc) error {
 	m.MarkQualifiedTarget(target)
 	pending, err := m.beginOwnerOperation(ctx, target, &key, OperationDisable)
 	if err != nil {
 		return err
 	}
+	// Once the current owner has admitted an explicit Disable, idle expiry
+	// must not race it to a second terminal path while it waits for poll
+	// quiescence. The owner remains held until emission or invalidation.
 	m.stateMu.Lock()
-	if m.pendingOperation != pending || m.state != Active || !m.mutexHeld {
+	if m.pendingOperation == pending && m.mutexHeld {
+		if m.idleTimer != nil {
+			m.idleTimer.Stop()
+			m.idleTimer = nil
+		}
+		m.idleTimerGen++
+	}
+	m.stateMu.Unlock()
+	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
+	m.stateMu.Lock()
+	if m.pendingOperation != pending {
 		m.stateMu.Unlock()
+		if outcome.Err != nil {
+			return outcome.Err
+		}
 		return ErrTransportDown
 	}
-	attemptID := newCleanupAttemptID()
+	pending.Emitted = pending.Emitted || outcome.Emitted
+	m.pendingOperation = nil
 	epoch := m.transport.TransportEpoch
-	m.releaseOwnerLocked()
-	m.state = Disabled
-	m.createCleanupLocked(target, epoch, attemptID)
-	attemptID = m.cleanup.GatewayCleanupAttemptID
-	m.cleanup.LastAttemptEpoch = epoch
-	m.stateMu.Unlock()
-
-	outcome := dispatchOnce(ctx, target, dispatch)
-	m.stateMu.Lock()
-	if m.pendingOperation == pending {
-		pending.Emitted = outcome.Emitted
-		m.pendingOperation = nil
+	if m.mutexHeld {
+		m.releaseOwnerLocked()
 	}
+	m.state = Disabled
+	m.createCleanupLocked(target, epoch, pending.OperationID)
+	attemptID := m.cleanup.GatewayCleanupAttemptID
+	m.cleanup.LastAttemptEpoch = epoch
 	m.stateMu.Unlock()
 	m.recordCleanupOutcome(attemptID, epoch, outcome)
 	return outcome.Err
@@ -585,12 +644,21 @@ func (m *Manager) LastRefreshTransportDown() bool {
 }
 
 // OnTransportDisconnect performs owner-conditional cleanup (spec §7.4).
-// If the FSM holds the ownership gate (Enabling/Active/Refreshing), releases
-// it and transitions to Disabled -> Idle. Otherwise no-op.
+// A pre-emission Enable returns directly to Idle without cleanup. Every other
+// held-owner state releases into internal Disabled with retained cleanup.
+// An ownerless state is unchanged.
 func (m *Manager) OnTransportDisconnect() {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	if !m.mutexHeld {
+		return
+	}
+	if pending := m.pendingOperation; pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
+		m.pendingOperation = nil
+		m.pendingEpoch = 0
+		m.releaseOwnerLocked()
+		m.clearCleanupForOperationLocked(pending.OperationID)
+		m.state = Idle
 		return
 	}
 	target := m.activeTarget
@@ -617,6 +685,16 @@ func (m *Manager) OnEpochAdvance(_ context.Context, newEpoch uint64) {
 	}
 	m.observedEpoch = newEpoch
 	m.lastRefreshTransportDown = false
+	if pending := m.pendingOperation; m.state == Enabling && pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
+		m.transport.TransportEpoch = newEpoch
+		m.pendingEpoch = 0
+		m.pendingOperation = nil
+		m.releaseOwnerLocked()
+		m.clearCleanupForOperationLocked(pending.OperationID)
+		m.state = Idle
+		m.stateMu.Unlock()
+		return
+	}
 	if m.mutexHeld {
 		// A surviving owner is rebound only by its next admitted READ or
 		// current-owner DISABLE. ENABLE is never a refresh trigger.

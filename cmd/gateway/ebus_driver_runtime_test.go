@@ -1472,11 +1472,11 @@ func TestIssue851B503SessionTracksDriverWithdrawalAndRetainsUnsettledCleanup(t *
 				t.Fatalf("old generation issuer Read() error = %v, want ErrNotActive", err)
 			}
 			afterCleanup, ok := b503rt.manager.CleanupObligation()
-			if !ok || afterCleanup.GatewayCleanupAttemptID != beforeCleanup.GatewayCleanupAttemptID || afterCleanup.TransportEpoch != second.Generation || afterCleanup.LastNative != b503session.NativeACK {
-				t.Fatalf("B503 cleanup after recovery ACK = %+v, present=%v", afterCleanup, ok)
+			if !ok || afterCleanup != beforeCleanup {
+				t.Fatalf("B503 recovery mutated cleanup: before=%+v after=%+v present=%v", beforeCleanup, afterCleanup, ok)
 			}
-			if got := cleanupDispatches.Load(); got != 1 {
-				t.Fatalf("B503 cleanup dispatches = %d, want one on later epoch", got)
+			if got := cleanupDispatches.Load(); got != 0 {
+				t.Fatalf("B503 cleanup dispatches = %d, want zero on recovery", got)
 			}
 			var enableDispatches atomic.Int32
 			_, err = b503rt.manager.EnableOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {

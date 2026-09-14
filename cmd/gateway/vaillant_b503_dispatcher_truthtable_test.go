@@ -75,11 +75,37 @@ func TestM6TruthTable_Row3_DisconnectDuringActive_UnknownWithCleanup(t *testing.
 	if mgr.IsOwned() {
 		t.Fatal("row 3 disconnect retained caller ownership")
 	}
-	if obligation, ok := mgr.CleanupObligation(); !ok || obligation.Target != defaultVaillantTarget {
-		t.Fatalf("row 3 cleanup = %+v, present=%v", obligation, ok)
+	beforeCleanup, ok := mgr.CleanupObligation()
+	if !ok || beforeCleanup.Target != defaultVaillantTarget {
+		t.Fatalf("row 3 cleanup = %+v, present=%v", beforeCleanup, ok)
 	}
 	if got := srv.VaillantB503AvailabilityCtx(context.Background()); got != mcp.AvailabilityUnknown {
 		t.Fatalf("row 3 capability = %s, want UNKNOWN while cleanup remains", got)
+	}
+	beforeBusCalls := bus.callCount()
+	var recoveryWrites int
+	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		recoveryWrites++
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	})
+	mgr.OnEpochAdvance(context.Background(), 99)
+	mgr.OnEpochAdvance(context.Background(), 99)
+	mgr.OnEpochAdvance(context.Background(), 100)
+	if recoveryWrites != 0 {
+		t.Fatalf("row 3 reconnect recovery writes = %d, want zero", recoveryWrites)
+	}
+	afterCleanup, ok := mgr.CleanupObligation()
+	if !ok || afterCleanup.GatewayCleanupAttemptID != beforeCleanup.GatewayCleanupAttemptID || afterCleanup.Target != beforeCleanup.Target || afterCleanup.TransportEpoch != beforeCleanup.TransportEpoch || afterCleanup.OriginEmitted != beforeCleanup.OriginEmitted || afterCleanup.OriginNative != beforeCleanup.OriginNative || afterCleanup.OriginErr != beforeCleanup.OriginErr || afterCleanup.LastAttemptEpoch != beforeCleanup.LastAttemptEpoch || afterCleanup.LastEmitted != beforeCleanup.LastEmitted || afterCleanup.LastNative != beforeCleanup.LastNative || afterCleanup.LastErr != beforeCleanup.LastErr {
+		t.Fatalf("row 3 reconnect mutated cleanup: before=%+v after=%+v present=%v", beforeCleanup, afterCleanup, ok)
+	}
+	if got := mgr.TransportKey().TransportEpoch; got != 100 {
+		t.Fatalf("row 3 transport epoch = %d, want 100", got)
+	}
+	if got := srv.VaillantB503AvailabilityCtx(context.Background()); got != mcp.AvailabilityUnknown {
+		t.Fatalf("row 3 post-reconnect capability = %s, want UNKNOWN", got)
+	}
+	if got := bus.callCount(); got != beforeBusCalls {
+		t.Fatalf("row 3 post-reconnect probe bus calls = %d, want unchanged %d", got, beforeBusCalls)
 	}
 }
 

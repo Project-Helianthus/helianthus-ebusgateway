@@ -213,7 +213,7 @@ func TestOperationRefreshedDisableUsesOldAuthenticatedKeyAndDispatchesOnce(t *te
 	}
 }
 
-func TestOperationDisableFailureRetriesOnceOnlyOnLaterEpoch(t *testing.T) {
+func TestOperationDisableFailureReconnectEmitsNoRecoveryWrite(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	ack := func(context.Context, byte) b503session.DispatchOutcome {
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
@@ -235,27 +235,27 @@ func TestOperationDisableFailureRetriesOnceOnlyOnLaterEpoch(t *testing.T) {
 	if _, err := manager.EnableOperation(context.Background(), operationTarget+1, ack); !errors.Is(err, b503session.ErrCleanupPending) {
 		t.Fatalf("enable while cleanup pending = %v, want ErrCleanupPending", err)
 	}
-	cleanup := &dispatchRecorder{outcomes: []b503session.DispatchOutcome{
-		{Err: failure, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch + 1)},
-		{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 2)},
-	}}
+	cleanup := &dispatchRecorder{}
 	manager.SetCleanupDispatcher(cleanup.dispatch)
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
-	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
-		t.Fatalf("same-epoch cleanup targets = %v", got)
-	}
-	middle, ok := manager.CleanupObligation()
-	if !ok || middle.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || middle.LastAttemptEpoch != testEpoch+1 {
-		t.Fatalf("retained cleanup = %+v, present=%v", middle, ok)
-	}
 	manager.OnEpochAdvance(context.Background(), testEpoch+2)
-	if got := cleanup.snapshot(); len(got) != 2 || got[1] != operationTarget {
-		t.Fatalf("later-epoch cleanup targets = %v", got)
+	if got := cleanup.snapshot(); len(got) != 0 {
+		t.Fatalf("reconnect recovery writes = %v, want none", got)
 	}
 	after, ok := manager.CleanupObligation()
-	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttemptEpoch != testEpoch+2 || after.LastNative != b503session.NativeACK || after.LastErr != nil {
-		t.Fatalf("later-epoch ACK must retain unsettled cleanup: %+v, present=%v", after, ok)
+	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.Target != before.Target || after.TransportEpoch != before.TransportEpoch || after.OriginEmitted != before.OriginEmitted || after.OriginNative != before.OriginNative || after.OriginErr != before.OriginErr || after.LastAttemptEpoch != before.LastAttemptEpoch || after.LastEmitted != before.LastEmitted || after.LastNative != before.LastNative || !errors.Is(after.LastErr, failure) {
+		t.Fatalf("reconnect mutated retained cleanup: before=%+v after=%+v present=%v", before, after, ok)
+	}
+	if got := manager.TransportKey().TransportEpoch; got != testEpoch+2 {
+		t.Fatalf("transport epoch = %d, want %d", got, testEpoch+2)
+	}
+	var reenableWrites int
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		reenableWrites++
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	}); !errors.Is(err, b503session.ErrCleanupPending) || reenableWrites != 0 {
+		t.Fatalf("post-reconnect enable = %v, writes=%d; want cleanup pending without write", err, reenableWrites)
 	}
 }
 

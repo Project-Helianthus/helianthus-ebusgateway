@@ -21,9 +21,10 @@ and restart fence. Every enable that enters `bus.Send` creates that cleanup
 obligation. An exact enable ACK may establish the current process owner, but it
 does not remove cleanup or publish capability `AVAILABLE`. An emitted NAK or
 other failure releases caller ownership while retaining cleanup and
-`UNKNOWN`. Disable and later-epoch cleanup ACK/NAK outcomes are recorded and
-returned exactly; they do not clear cleanup, permit re-Enable, or auto-recover
-the target.
+`UNKNOWN`. Disable ACK/NAK outcomes are recorded and returned exactly; they do
+not clear cleanup, permit re-Enable, or auto-recover the target. Terminal
+disconnect, reconnect, and restart emit no automatic recovery write while
+settlement remains unproven.
 
 The generic `mcp.RPCDispatcher` interface is unchanged. Its optional
 `B503OutcomeDispatcher` extension reports `Emitted=false` only before
@@ -45,7 +46,7 @@ by the shared Gateway Manager and production dispatcher path.
 | Restart destroys caller handles but fences each qualified target at `UNKNOWN`, with no Enable until authorized recovery. | `ResetForRestart` clears caller and process-local cleanup tuples, records qualified-target restart fences, and never invokes the cleanup dispatcher. Operation coverage proves later epoch advance emits no write and public Enable stays unavailable. | Pass |
 | Enable stays `Enabling` until its exact native outcome; every emitted outcome retains cleanup, while pre-emission cancellation returns Idle without cleanup. | `EnableOperation` creates cleanup for emitted ACK, NAK, and ambiguous outcomes. ACK may install the current owner without claiming settlement; NAK/error releases it. Deterministic tests cover pending state, zero-write pre-emission cancellation, exact ACK/NAK evidence, retained cleanup, and denied re-Enable. | Pass |
 | Explicit disable emits one native disable, releases caller ownership, and remains fail-closed because ACK/NAK does not prove settlement. | MCP and GraphQL call `DisableOperation`, which records the attempt before dispatch and retains its exact outcome in internal cleanup evidence. Tests prove ACK, NAK, and timeout cannot clear cleanup or re-admit Enable. | Pass |
-| Reconnect makes one bounded cleanup attempt per later epoch for a retained obligation, never reconstructs an owner, and never treats ACK/NAK as recovery. | `OnEpochAdvance` records each exact cleanup outcome and preserves the same target/attempt fence. Tests assert dispatch target/count, stable cleanup ID, no same-epoch retry, later-epoch ACK retention, and the restart no-write fence. | Pass |
+| Reconnect advances transport evidence but emits no automatic recovery write for a retained obligation, never reconstructs an owner, and keeps the target unavailable. | `OnEpochAdvance` updates the Manager transport epoch while preserving the exact cleanup snapshot and fence. Deterministic Manager and DriverManager lifecycle tests assert zero writes across repeated later epochs, stable cleanup evidence, `UNKNOWN`, denied re-Enable, and the restart no-write fence. | Pass |
 | Field cancellation maps to `UPSTREAM_TIMEOUT`; NAK/CRC/arbitration maps to `UPSTREAM_RPC_FAILED`; neither replaces the last-known capability with `TRANSPORT_DOWN`. | Dispatcher classification at lines 275-328 already makes this distinction. This review added `publicB503GraphQLError` at the GraphQL provider boundary and `TestIssue552B503GraphQLPreservesDispatcherErrorCodes`. | Corrected |
 
 ## Validation
@@ -59,10 +60,10 @@ by the shared Gateway Manager and production dispatcher path.
 The correction keeps the Manager-owned design. `DispatchOutcome` carries
 response, emitted boundary, native result, exact error, and issuing transport.
 `CleanupObligationSnapshot` retains target, fresh Gateway cleanup attempt ID,
-origin outcome, later cleanup outcome, epoch evidence, and no issuer token.
+origin outcome, explicit cleanup outcome, epoch evidence, and no issuer token.
 The process-local hook is installed once by Gateway wiring and is used for idle
-and defensive cleanup. Lifecycle calls fail closed before emission when that
-outcome-aware hook is absent; there is no generic dispatcher fallback. Restart
+expiry and same-operation ambiguous cleanup. Lifecycle calls fail closed before
+emission when that outcome-aware hook is absent; there is no generic dispatcher fallback. Restart
 clears the process-local tuple, creates per-qualified-target fences, and invokes
 no write.
 
@@ -75,4 +76,6 @@ repository CI, current feedback reconciliation, and fresh independent
 exact-HEAD review remain downstream gates. The Board-approved conservative
 settlement correction supersedes documentation rows that treat native ACK or
 NAK as settlement proof; reconciling those rows is outside this Gateway-only
-write set.
+write set. The final accepted documentation SHA remains a Delivery Lead
+integration step; this evidence does not pin pending PR #524 candidate
+`f6672dc` as accepted.

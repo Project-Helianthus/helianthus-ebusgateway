@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,7 +324,9 @@ func TestM6Dispatcher_TransportDown_FiresOnTransportDisconnect(t *testing.T) {
 func TestIssue851B503StaleSendErrorCannotClearUnsettledCleanup(t *testing.T) {
 	disp, bus, mgr := newTestDispatcher(t)
 	runtime := &b503Runtime{manager: mgr}
+	var cleanupWrites atomic.Int32
 	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		cleanupWrites.Add(1)
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
 	})
 	disp.disconnectIfCurrent = runtime.disconnectIfCurrent
@@ -364,8 +367,11 @@ func TestIssue851B503StaleSendErrorCannotClearUnsettledCleanup(t *testing.T) {
 	}
 	runtime.EBusDriverActivated(drivermanager.Correlation{Generation: 2})
 	afterRecovery, ok := mgr.CleanupObligation()
-	if !ok || afterRecovery.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || afterRecovery.LastNative != b503session.NativeACK {
-		t.Fatalf("cleanup after native ACK = %+v, present=%v", afterRecovery, ok)
+	if !ok || afterRecovery != before {
+		t.Fatalf("reconnect mutated cleanup: before=%+v after=%+v present=%v", before, afterRecovery, ok)
+	}
+	if got := cleanupWrites.Load(); got != 0 {
+		t.Fatalf("reconnect cleanup writes = %d, want zero", got)
 	}
 	var reenableCalls int
 	_, err := mgr.EnableOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
@@ -564,7 +570,9 @@ func TestIssue851B503StaleSourceFallbackCannotClearUnsettledCleanup(t *testing.T
 		t.Fatalf("old generation Enable() error = %v", err)
 	}
 	runtime := &b503Runtime{manager: mgr}
+	var cleanupWrites atomic.Int32
 	mgr.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		cleanupWrites.Add(1)
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
 	})
 	var reenableErr error
@@ -594,8 +602,11 @@ func TestIssue851B503StaleSourceFallbackCannotClearUnsettledCleanup(t *testing.T
 	if got := mgr.TransportKey().TransportEpoch; got != 8 {
 		t.Fatalf("recovered transport epoch = %d, want 8", got)
 	}
-	if obligation, ok := mgr.CleanupObligation(); !ok || obligation.TransportEpoch != 8 || obligation.LastNative != b503session.NativeACK {
+	if obligation, ok := mgr.CleanupObligation(); !ok || obligation.TransportEpoch != 7 || obligation.LastNative != b503session.NativeAmbiguous || obligation.LastAttemptEpoch != 0 {
 		t.Fatalf("epoch-8 cleanup = %+v, present=%v", obligation, ok)
+	}
+	if got := cleanupWrites.Load(); got != 0 {
+		t.Fatalf("epoch-8 recovery cleanup writes = %d, want zero", got)
 	}
 	if bus.callCount() != 0 {
 		t.Fatalf("bus.Send calls = %d, want 0 for unavailable source", bus.callCount())

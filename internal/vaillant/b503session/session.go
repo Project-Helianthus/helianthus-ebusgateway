@@ -185,7 +185,7 @@ func New(transport TransportKey, idleTimeout time.Duration, refresh RefreshFunc)
 }
 
 // SetCleanupDispatcher installs the process-local native disable hook used by
-// idle expiry and later-epoch defensive cleanup. It does not itself emit I/O.
+// idle expiry and ambiguous enable cleanup. It does not itself emit I/O.
 func (m *Manager) SetCleanupDispatcher(dispatch DispatchFunc) {
 	m.stateMu.Lock()
 	m.cleanupDispatch = dispatch
@@ -606,9 +606,10 @@ func (m *Manager) OnTransportDisconnect() {
 
 // OnEpochAdvance records the latest transport epoch. A surviving owner is
 // rebound only when its next admitted ReadOperation or current-owner
-// DisableOperation invokes refreshOwner. With no owner, a retained cleanup is
-// attempted once on this later epoch; restart fences never emit automatically.
-func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
+// DisableOperation invokes refreshOwner. With no owner, retained cleanup is
+// fenced without emitting any recovery write; reconnect and restart cannot
+// establish settlement or reconstruct caller ownership.
+func (m *Manager) OnEpochAdvance(_ context.Context, newEpoch uint64) {
 	m.stateMu.Lock()
 	if newEpoch <= m.observedEpoch {
 		m.stateMu.Unlock()
@@ -625,11 +626,7 @@ func (m *Manager) OnEpochAdvance(ctx context.Context, newEpoch uint64) {
 	}
 	m.transport.TransportEpoch = newEpoch
 	m.pendingEpoch = 0
-	shouldCleanup := m.cleanup != nil && !m.restarted
 	m.stateMu.Unlock()
-	if shouldCleanup {
-		m.attemptCleanup(ctx, newEpoch)
-	}
 }
 
 // ResetForRestart destroys caller handles and process-local cleanup, releases

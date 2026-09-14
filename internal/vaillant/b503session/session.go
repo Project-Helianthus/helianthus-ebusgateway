@@ -246,8 +246,9 @@ func (m *Manager) DispatchEpoch() uint64 {
 // with a freshly-minted 16-byte hex issuer_token. Returns ErrSessionBusy
 // if the FSM is not Idle.
 //
-// Deprecated: retained for legacy unit-test setup. Production B503 paths must
-// use EnableOperation so native ACK/NAK and emission state own the transition.
+// This lower-level transition remains available to tests that isolate the
+// owner gate. Production B503 paths use EnableOperation so native ACK/NAK and
+// emission state own the transition.
 func (m *Manager) Enable(ctx context.Context) (SessionKey, error) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -460,8 +461,9 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 // SessionKey match. ErrWrongToken for issuer_token mismatch; ErrNotActive
 // if the FSM is not currently Active.
 //
-// Deprecated: retained for legacy unit-test assertions. Production paths must
-// use DisableOperation so a native disable is emitted and evidenced.
+// This lower-level transition remains available to tests that isolate the
+// owner gate. Production paths use DisableOperation so a native disable is
+// emitted and evidenced.
 func (m *Manager) Disable(key SessionKey) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
@@ -487,8 +489,9 @@ func (m *Manager) Disable(key SessionKey) error {
 // resets the idle timer. issuer_token is intentionally not part of the
 // Read contract (spec §6.2).
 //
-// Deprecated: retained for legacy unit-test assertions. Production paths must
-// use ReadOperation so refresh and the triggering dispatch remain atomic.
+// This lower-level transition remains available to tests that isolate the
+// owner gate. Production paths use ReadOperation so refresh and the triggering
+// dispatch remain atomic.
 func (m *Manager) Read(transport TransportKey) error {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()

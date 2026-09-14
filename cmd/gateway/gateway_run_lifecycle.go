@@ -432,7 +432,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// Phase A.5 runtime wire-up: AddressTable + AddressTableInserter consume
 	// the PassiveTransactionReconstructor's classified events to insert
 	// passively-observed addresses (e.g. NETX3 0xF6/0x04, SOL00 0xEC) into
-	// the registry as passive_observed/corroborated_pending. The inserter is
+	// the registry as passive_observed/corroborated. The inserter is
 	// idle until subscribeAddressTableInserter binds it to the reconstructor.
 	//
 	// Inject a live AdmittedSource closure tied to builder.AdmittedMutationSource

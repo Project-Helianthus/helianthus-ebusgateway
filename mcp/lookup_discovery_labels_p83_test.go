@@ -75,8 +75,8 @@ func TestLookupDiscoveryLabels_UsesSnapshotPath(t *testing.T) {
 	if discovery != "passive_observed" {
 		t.Errorf("discovery = %q; want passive_observed", discovery)
 	}
-	if verification != "corroborated_pending" {
-		t.Errorf("verification = %q; want corroborated_pending", verification)
+	if verification != "corroborated" {
+		t.Errorf("verification = %q; want corroborated", verification)
 	}
 }
 

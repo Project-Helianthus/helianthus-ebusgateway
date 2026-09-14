@@ -16,8 +16,8 @@ func TestFirstObservation_PositiveACKOnly(t *testing.T) {
 	inserter.OnPassiveClassifiedEvent(event)
 
 	slot := requireATRSlot(t, table, 0x99)
-	if slot.VerificationState != "corroborated_pending" {
-		t.Fatalf("slot[0x99].VerificationState = %q; want corroborated_pending", slot.VerificationState)
+	if slot.VerificationState != "corroborated" {
+		t.Fatalf("slot[0x99].VerificationState = %q; want corroborated", slot.VerificationState)
 	}
 }
 
@@ -84,8 +84,8 @@ func TestFirstObservation_SourceInserted(t *testing.T) {
 	if srcSlot.DiscoverySource != "passive_observed" {
 		t.Fatalf("slot[0xF1].DiscoverySource = %q; want passive_observed", srcSlot.DiscoverySource)
 	}
-	if srcSlot.VerificationState != "corroborated_pending" {
-		t.Fatalf("slot[0xF1].VerificationState = %q; want corroborated_pending", srcSlot.VerificationState)
+	if srcSlot.VerificationState != "corroborated" {
+		t.Fatalf("slot[0xF1].VerificationState = %q; want corroborated", srcSlot.VerificationState)
 	}
 
 	dstSlot := requireATRSlot(t, table, 0x99)

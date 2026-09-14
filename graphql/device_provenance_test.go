@@ -93,7 +93,7 @@ func TestDeviceProvenance_DevicesExposeCandidatePassiveAndConfirmedStates(t *tes
 	devices := data["devices"].([]any)
 	want := map[int][2]string{
 		0x04: {"static_seed", "candidate"},
-		0xF1: {"passive_observed", "corroborated_pending"},
+		0xF1: {"passive_observed", "corroborated"},
 		0x15: {"active_confirmed", "identity_confirmed"},
 	}
 	candidates := 0
@@ -139,8 +139,8 @@ func TestDeviceProvenance_DeviceAddressArgumentSelectsAliasFaceWithoutChangingId
 	if primaryResult["discoverySource"] != "static_seed" || primaryResult["verificationState"] != "candidate" {
 		t.Fatalf("primary provenance = %+v; want static_seed/candidate", primaryResult)
 	}
-	if aliasResult["discoverySource"] != "passive_observed" || aliasResult["verificationState"] != "corroborated_pending" {
-		t.Fatalf("alias provenance = %+v; want passive_observed/corroborated_pending", aliasResult)
+	if aliasResult["discoverySource"] != "passive_observed" || aliasResult["verificationState"] != "corroborated" {
+		t.Fatalf("alias provenance = %+v; want passive_observed/corroborated", aliasResult)
 	}
 	if data["missing"] != nil {
 		t.Fatalf("missing arbitrary address = %+v; want null", data["missing"])
@@ -173,6 +173,44 @@ func TestDeviceProvenance_AddressZeroParityWithMCP(t *testing.T) {
 	}
 }
 
+func TestDeviceProvenance_CorroboratedUsesNormativeLiteralOnEveryPublicWire(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	now := time.Date(2026, time.September, 15, 9, 0, 0, 0, time.UTC)
+	reg.RegisterPassiveObserved(
+		registry.DeviceInfo{Address: 0xF1, Manufacturer: "passive", DeviceID: "observed"},
+		registry.SlotRoleMaster,
+		now,
+	)
+
+	graphqlDevice := executeDeviceProvenanceQuery(t, reg, `{ device(address: 241) { verificationState } }`).Data.(map[string]any)["device"].(map[string]any)
+	if got := graphqlDevice["verificationState"]; got != "corroborated" {
+		t.Fatalf("GraphQL verificationState = %q; want corroborated", got)
+	}
+
+	getDevice := queryMCPDeviceProvenance(t, reg, 0xF1)
+	if got := getDevice["verification_state"]; got != "corroborated" {
+		t.Fatalf("ebus.v1.registry.devices.get verification_state = %q; want corroborated", got)
+	}
+
+	list := queryMCPDeviceListProvenance(t, reg)
+	if len(list) != 1 {
+		t.Fatalf("ebus.v1.registry.devices.list length = %d; want 1", len(list))
+	}
+	listDevice := list[0].(map[string]any)
+	if got := listDevice["verification_state"]; got != "corroborated" {
+		t.Fatalf("ebus.v1.registry.devices.list verification_state = %q; want corroborated", got)
+	}
+
+	legacyData, ok := queryMCPDeviceTool(t, reg, "ebus.devices", map[string]any{}).([]any)
+	if !ok || len(legacyData) != 1 {
+		t.Fatalf("ebus.devices data = %#v; want one device", legacyData)
+	}
+	legacyDevice := legacyData[0].(map[string]any)
+	if got := legacyDevice["verification_state"]; got != "corroborated" {
+		t.Fatalf("ebus.devices verification_state = %q; want corroborated", got)
+	}
+}
+
 func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *testing.T) {
 	reg := registry.NewDeviceRegistry(nil)
 	now := time.Date(2026, time.September, 6, 9, 0, 0, 0, time.UTC)
@@ -190,7 +228,7 @@ func TestDeviceProvenance_CrossSurfaceParityForListGetAliasesAndAllStates(t *tes
 
 	want := map[int][2]string{
 		0x04: {"static_seed", "candidate"},
-		0xF1: {"passive_observed", "corroborated_pending"},
+		0xF1: {"passive_observed", "corroborated"},
 		0x15: {"active_confirmed", "identity_confirmed"},
 		0x21: {"active_confirmed", "identity_confirmed"},
 	}

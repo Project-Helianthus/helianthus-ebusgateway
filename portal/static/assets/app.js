@@ -4426,6 +4426,12 @@ class PortalShell extends HTMLElement {
         this._vaillantB503LiveTarget = null;
         if (status) status.textContent = "Session disabled.";
       }
+	  const context = this._vaillantB503RequestContext();
+	  // Nav-away cleanup is detached from a tab swap, so it bypasses the normal
+	  // live-monitor action path. Requalify the same current target after either
+	  // its immediate or deferred confirmation; this publishes UNKNOWN before the
+	  // bounded capability refresh without adding a visible-pane/session request.
+	  if (context.target === target) void this._requalifyVaillantB503CapabilityAfterLifecycle(context, false);
       return true;
     } catch (err) {
       if (status) status.textContent = `Disable pending: ${err}`;

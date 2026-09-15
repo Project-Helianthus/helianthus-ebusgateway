@@ -624,7 +624,8 @@ test("VaillantB503Pane_DelayedOldCleanupPreservesReplacementToken", async () => 
     "the replacement B pair remains available for one later bounded cleanup");
   assert.equal(shell._vaillantB503LiveToken, null);
   assert.equal(shell._vaillantB503LiveTarget, null);
-  assert.equal(fetchRequests.length, 2, "cleanup attempts remain explicit and bounded");
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 2,
+    "cleanup write attempts remain explicit and bounded");
   assert.deepEqual(parseGqlInit(fetchRequests[1].init).variables,
     { action: "disable", issuerToken: "token-B", targetAddress: 21 });
 });
@@ -2184,6 +2185,52 @@ test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {
   assert.equal(rendered, 1);
   await flush();
   assert.equal(fetchRequests.length, 1, "cleanup remains detached and owns one disable request");
+});
+
+test("VaillantB503Pane_tabSwapConfirmedCleanupRequalifiesCurrentTarget", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const service = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const live = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const history = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-tab-errors"]', errors],
+      ['[data-role="vaillant-b503-tab-service"]', service],
+      ['[data-role="vaillant-b503-tab-live-monitor"]', live],
+      ['[data-role="vaillant-b503-tab-history"]', history],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      if (query.includes("VaillantB503Cap")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "UNKNOWN" } } } }) });
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  const rendered = [];
+  shell.renderVaillantB503Pane = (reason) => { rendered.push(reason); };
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  proto._bindVaillantB503TabEvents.call(shell);
+
+  errors._listeners.get("click")();
+  assert.equal(shell._vaillantB503ActiveTab, "errors", "the selected tab changes before detached cleanup resolves");
+  await flush();
+  await flush();
+
+  const queries = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(queries.filter((query) => query.includes("VaillantLiveDisable")).length, 1, "confirmed cleanup retains its one captured disable request");
+  assert.equal(queries.filter((query) => query.includes("VaillantB503Cap")).length, 1, "confirmed cleanup performs one target-bound capability requalification");
+  assert.equal(queries.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 0, "tab cleanup adds no visible-pane session request");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.ok(rendered.includes("UNKNOWN"), "cleanup confirmation immediately fences the cached AVAILABLE pane");
 });
 
 test("VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce", async () => {

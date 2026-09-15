@@ -128,6 +128,7 @@ type pendingOperation struct {
 	token       string
 	cancel      context.CancelCauseFunc
 	invalidated bool
+	cleanup     bool
 }
 
 // Manager is the single-owner live-monitor session FSM.
@@ -269,7 +270,7 @@ func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	pending := m.pendingOperation
-	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target || (!m.mutexHeld && m.state != Disabled) {
+	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target {
 		return false
 	}
 	switch pending.Kind {
@@ -277,8 +278,21 @@ func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 		if m.state != Enabling {
 			return false
 		}
-	case OperationRead, OperationDisable:
-		if m.state != Active && m.state != Disabled {
+	case OperationRead:
+		if m.state != Active {
+			return false
+		}
+	case OperationDisable:
+		// A normal Disable retains the current owner's Active gate. The only
+		// ownerless disable admission is the Manager-created defensive cleanup
+		// after an emitted lifecycle operation left settlement unproven.
+		if pending.cleanup {
+			if m.state != Disabled || m.mutexHeld {
+				return false
+			}
+			break
+		}
+		if m.state != Active || !m.mutexHeld {
 			return false
 		}
 	default:
@@ -1114,7 +1128,7 @@ func (m *Manager) attemptCleanup(_ context.Context, epoch uint64) {
 	m.cleanup.LastAttempted = true
 	m.cleanup.TransportEpoch = epoch
 	dispatch := m.cleanupDispatch
-	pending := &pendingOperation{PendingOperationSnapshot: PendingOperationSnapshot{OperationID: newCleanupAttemptID(), Kind: OperationDisable, Target: target, Transport: m.transport}}
+	pending := &pendingOperation{PendingOperationSnapshot: PendingOperationSnapshot{OperationID: newCleanupAttemptID(), Kind: OperationDisable, Target: target, Transport: m.transport}, cleanup: true}
 	m.pendingOperation = pending
 	m.stateMu.Unlock()
 	cleanupCtx, timeout := context.WithTimeout(context.Background(), 5*time.Second)

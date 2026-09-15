@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,6 +179,84 @@ func TestOperationEnablePostEmissionEpochAdvanceRunsAtMostOneLifecycleCleanup(t 
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
 	}); !errors.Is(err, b503session.ErrCleanupPending) || reenableWrites != 0 {
 		t.Fatalf("post-cleanup re-enable = %v, writes=%d; want cleanup pending without dispatch", err, reenableWrites)
+	}
+}
+
+func TestOperationDefensiveCleanupAdmissionIsCanceledBeforeNewEpochEmission(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	cleanupEntered := make(chan struct{})
+	allowAdmission := make(chan struct{})
+	cleanupDone := make(chan struct{})
+	var writes atomic.Int32
+	manager.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		defer close(cleanupDone)
+		operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+		if !ok {
+			t.Fatal("defensive cleanup must carry a typed pending operation")
+		}
+		close(cleanupEntered)
+		<-allowAdmission
+		if ctx.Err() == nil {
+			t.Fatal("epoch advance must cancel the defensive cleanup context")
+		}
+		if manager.AdmitPendingEmission(operationID, target) {
+			writes.Add(1)
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+		}
+		return b503session.DispatchOutcome{Err: b503session.ErrTransportDown, Transport: newTK(testEpoch)}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+			return b503session.DispatchOutcome{Err: errors.New("post-emission timeout"), Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
+		})
+		done <- err
+	}()
+	<-cleanupEntered
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	close(allowAdmission)
+	<-cleanupDone
+	if err := <-done; err == nil {
+		t.Fatal("emitted enable failure must retain its exact failure")
+	}
+	if got := writes.Load(); got != 0 {
+		t.Fatalf("epoch-invalidated defensive cleanup emitted %d writes, want 0", got)
+	}
+	if pending, ok := manager.PendingOperation(); ok {
+		t.Fatalf("completed defensive cleanup retained pending operation: %+v", pending)
+	}
+}
+
+func TestOperationPostFailureCleanupUsesFreshBoundedContext(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	var cleanupCalls atomic.Int32
+	manager.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		cleanupCalls.Add(1)
+		if ctx.Err() != nil {
+			t.Fatalf("cleanup inherited failed caller context: %v", ctx.Err())
+		}
+		operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+		if !ok || !manager.AdmitPendingEmission(operationID, target) {
+			t.Fatal("fresh cleanup context must admit only its typed defensive disable")
+		}
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	})
+
+	caller, cancel := context.WithCancel(context.Background())
+	_, err := manager.EnableOperation(caller, operationTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+		if !ok || !manager.AdmitPendingEmission(operationID, target) {
+			t.Fatal("enable could not admit its pending emission")
+		}
+		cancel()
+		return b503session.DispatchOutcome{Err: context.Canceled, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("enable error = %v, want caller cancellation", err)
+	}
+	if got := cleanupCalls.Load(); got != 1 {
+		t.Fatalf("fresh post-failure cleanup calls = %d, want one conservative attempt", got)
 	}
 }
 

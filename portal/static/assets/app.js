@@ -2950,9 +2950,10 @@ class PortalShell extends HTMLElement {
   }
 
   async loadEEBusSPINEChildren(nodeID, cursor = "") {
-    if (!this._eebusSpinePartnerID || !this._eebusSpineSnapshotID || !nodeID) throw new Error("SPINE snapshot expired");
+    if (!this._eebusSpinePartnerID || !this._eebusSpineSnapshotID || (!nodeID && !cursor)) throw new Error("SPINE snapshot expired");
     const request = cursor ? "continue" : "children";
-    const query = new URLSearchParams({ request, snapshot_id: this._eebusSpineSnapshotID, parent_node_id: nodeID });
+    const query = new URLSearchParams({ request, snapshot_id: this._eebusSpineSnapshotID });
+    if (nodeID) query.set("parent_node_id", nodeID);
     if (cursor) query.set("cursor", cursor);
     const payload = await this.eebusAdminFetch(`/partners/${encodeURIComponent(this._eebusSpinePartnerID)}/spine?${query.toString()}`);
     this.renderEEBusSPINEPage(payload.data, true);

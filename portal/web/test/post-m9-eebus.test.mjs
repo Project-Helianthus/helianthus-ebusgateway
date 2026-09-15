@@ -407,6 +407,31 @@ test("SPINE peer refresh requests only the connected view and Browse stays GET-o
   assert.match(calls[1].url, /\/partners\/live-1\/spine\?request=root$/);
 });
 
+test("Portal root SPINE continuation omits parent_node_id", async () => {
+  const calls = [];
+  const tree = { innerHTML: "" };
+  const { shell } = await issue817Shell(async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return response({ state_revision: 5, data: { snapshot_id: "snapshot-1", snapshot_hash: `sha256:${"a".repeat(64)}`, parent_node_id: null, nodes: [{ node_id: "root-9", parent_node_id: null, kind: "device", payload: { type: "Device" } }] }, error: null });
+  }, new Map([
+    ['[data-role="eebus-spine-tree"]', tree],
+  ]));
+  shell._eebusSpinePartnerID = "live-1";
+  shell._eebusSpineSnapshotID = "snapshot-1";
+
+  await shell.loadEEBusSPINEChildren("", "root-cursor");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, "GET");
+  const query = new URLSearchParams(calls[0].url.split("?")[1]);
+  assert.equal(query.get("request"), "continue");
+  assert.equal(query.get("snapshot_id"), "snapshot-1");
+  assert.equal(query.get("cursor"), "root-cursor");
+  assert.equal(query.has("parent_node_id"), false);
+  assert.match(tree.innerHTML, /root-9/);
+  await assert.rejects(shell.loadEEBusSPINEChildren("", ""), /SPINE snapshot expired/);
+});
+
 test("workspace navigation clears only the departing workspace volatile authority", async () => {
   const panels = ["pairing", "ship", "spine"].map((name) => ({ dataset: { eebusWorkspace: name }, hidden: false }));
   const buttons = ["pairing", "ship", "spine"].map((name) => ({ dataset: { eebusWorkspaceTarget: name }, setAttribute() {} }));

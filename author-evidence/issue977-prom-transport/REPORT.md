@@ -199,3 +199,33 @@ It passed 158 Portal tests, the full Go race suite, Python suites of 168, 6,
 28, 14, 6, and 2 tests, `golangci-lint` with zero findings, both semantic
 mapping gates, and transport/passive-smoke gates (`not triggered`). No override
 was used. T01..T88 and P01..P06 remain outside this metrics-only change.
+
+## HTTP admission-order correction
+
+A later live review found that final retirement publication preceded several
+native cleanup calls but HTTP shutdown followed them. If one cleanup stalled,
+the listener could admit new GraphQL, MCP, Portal, or Modbus requests after the
+public transport metric already reported `retired`. The teardown now publishes
+the final bounded statuses and immediately starts bounded HTTP shutdown in the
+same first LIFO defer. `http.Server.Shutdown` stops new admission before waiting
+for already-admitted requests; only after that bounded drain completes do the
+existing broadcast, deduplication, reconstruction, observability, and mDNS
+cleanup steps run.
+
+A source-order regression proves retirement and HTTP admission stop share the
+first teardown defer, with publication first, and that every later cleanup is
+registered in the earlier defer. The focused control-plane and metrics tests
+passed under `-race`.
+
+The exact post-correction
+`CGO_ENABLED=0 GOWORK=off ./scripts/ci_local.sh` run exited `0`.
+`FULL-CI-P2-ADMISSION-RERUN.log` is 340 lines with SHA-256
+`b6dbc915adb0a147769a8193fae7c6c7235e083e86e152a2d798b920d774789f`;
+the exit artifact SHA-256 is
+`9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3ab86aa`.
+It passed 158 Portal tests, the complete Go race suite, Python suites of 168, 6,
+28, 14, 6, and 2 tests, and lint with zero findings. Because the teardown source
+changed, the repository transport gate conservatively triggered and passed the
+Modbus RTU production composition and pinned endpoint conformance checks. Both
+SemReg mapping gates passed; passive smoke remained not triggered. No override
+was used. T01..T88 and P01..P06 remain outside this change.

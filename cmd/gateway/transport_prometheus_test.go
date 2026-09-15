@@ -118,6 +118,29 @@ func TestGatewayPublishesRetirementBeforeObservabilityClose(t *testing.T) {
 	}
 }
 
+func TestGatewayStopsHTTPAdmissionImmediatelyAfterRetirementPublication(t *testing.T) {
+	source, err := os.ReadFile("gateway_run_lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	retire := strings.Index(text, "publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)")
+	shutdown := strings.Index(text, "shutdownHTTPControlPlane(server)")
+	if retire < 0 || shutdown < 0 || shutdown < retire {
+		t.Fatalf("retirement must precede HTTP admission stop: retire=%d shutdown=%d", retire, shutdown)
+	}
+	deferEnd := strings.Index(text[retire:], "\n\t}()")
+	if deferEnd < 0 || shutdown >= retire+deferEnd {
+		t.Fatalf("retirement and HTTP admission stop must share the first teardown defer: retire=%d shutdown=%d end=%d", retire, shutdown, retire+deferEnd)
+	}
+	for _, laterCleanup := range []string{"listener.Close()", "deduplicator.Close()", "reconstructor.Close()", "busObservability.Close()", "advertiser.Close()"} {
+		cleanup := strings.Index(text, laterCleanup)
+		if cleanup < 0 || cleanup > retire {
+			t.Fatalf("cleanup %q must be registered before the LIFO retirement/HTTP defer: cleanup=%d retire=%d", laterCleanup, cleanup, retire)
+		}
+	}
+}
+
 func TestEEBusTransportRetirementFencesDelayedRecoveryDelivery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

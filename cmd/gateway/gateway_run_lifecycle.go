@@ -618,8 +618,8 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		return err
 	}
 	defer func() {
-		// Preserve the historical teardown order: stop eBUS consumers before
-		// closing observability, then retire mDNS and HTTP before Gateway/driver.
+		// After HTTP admission has stopped and active requests have drained,
+		// preserve the historical native-consumer cleanup order.
 		if listener != nil {
 			if err := listener.Close(); err != nil {
 				log.Printf("broadcast listener close: %v", err)
@@ -645,16 +645,17 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				log.Printf("mdns close: %v", err)
 			}
 		}
+	}()
+	defer func() {
+		// This defer is registered after control-plane teardown, so LIFO makes
+		// the final bounded runtime statuses observable before HTTP immediately
+		// stops admitting new work and drains already-admitted requests.
+		publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)
 		if server != nil {
 			if err := shutdownHTTPControlPlane(server); err != nil {
 				log.Printf("http server shutdown: %v", err)
 			}
 		}
-	}()
-	defer func() {
-		// This defer is registered after control-plane teardown, so LIFO makes
-		// the final bounded runtime statuses observable before /metrics closes.
-		publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)
 	}()
 
 	// The control plane is already serving through stable fail-closed

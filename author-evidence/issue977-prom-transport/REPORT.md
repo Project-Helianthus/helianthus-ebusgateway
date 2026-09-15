@@ -185,7 +185,7 @@ The first complete post-correction CI run exited `1` on the pre-existing
 all changed lifecycle tests passed. That leaf then passed 10/10 under `-race`.
 The faithful sanitized failure log is
 `FULL-CI-P1-TERMINAL-FENCE.log` (4,472 lines, SHA-256
-`c3e41dc1fbc8cf69fb5acdd8c66a358f0ea1c3f746fde77d27a10893a49773b1`), and its
+`0786ac780ac7109ad65ebebef78ccfdd0c0cc8266d99b7a5e17fd04b820e67df`), and its
 exit artifact SHA-256 is
 `4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865`.
 
@@ -229,3 +229,19 @@ changed, the repository transport gate conservatively triggered and passed the
 Modbus RTU production composition and pinned endpoint conformance checks. Both
 SemReg mapping gates passed; passive smoke remained not triggered. No override
 was used. T01..T88 and P01..P06 remain outside this change.
+
+
+## Retained-evidence privacy correction
+
+A post-CI review found that the historical failed terminal-fence transcript still
+contained the persistent per-user macOS temporary-directory token under
+`/var/folders`. The transcript now replaces that complete host-specific prefix
+with `[temp]`. Its raw indentation was normalized at the same time, closing the
+nonblocking whitespace-hygiene observation without changing command, result,
+failure, or gate semantics. Candidate-wide searches find no account name,
+private workspace path, or host-specific temporary prefix, and
+`git diff --check 7b82440fd39ed4b7d1cb63a688fa33b312f6ae5d --` passes. The updated sanitized
+failed-log SHA-256 is
+`0786ac780ac7109ad65ebebef78ccfdd0c0cc8266d99b7a5e17fd04b820e67df`. This
+evidence-only correction does not change the runtime source that passed the full
+P2 CI run.

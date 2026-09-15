@@ -950,19 +950,25 @@ func (cache *ShadowCache) desiredPinClass(key WatchKey, descriptor WatchDescript
 }
 
 func (cache *ShadowCache) rejectWriteByPrecedence(state *shadowKeyState, entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
+	generationQualifiedActive := state != nil && write.Source == ShadowWriteSourceActiveConfirmed && write.StartGeneration == state.generation
 	if state != nil && !state.invalidatedAt.IsZero() {
 		if write.ObservedAt.Before(state.invalidatedAt) {
 			return ShadowWriteRejectionReasonStaleTimestamp
 		}
 		if write.ObservedAt.Equal(state.invalidatedAt) {
-			if write.Source == ShadowWriteSourceActiveConfirmed && write.StartGeneration == state.generation {
+			if generationQualifiedActive {
 				return ""
 			}
 			return ShadowWriteRejectionReasonStaleTimestamp
 		}
 	}
-	if entry == nil && state != nil && !state.precedenceHighWater.IsZero() && !write.ObservedAt.After(state.precedenceHighWater) {
-		return ShadowWriteRejectionReasonStaleTimestamp
+	if entry == nil && state != nil && !state.precedenceHighWater.IsZero() {
+		if write.ObservedAt.Before(state.precedenceHighWater) {
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
+		if write.ObservedAt.Equal(state.precedenceHighWater) && !generationQualifiedActive {
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
 	}
 	if entry == nil {
 		return ""

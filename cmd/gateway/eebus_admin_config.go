@@ -112,7 +112,8 @@ func classifyEEBusFactoryFailure(err error) eebusadmin.EEBusDegradedReason {
 // replacement. It deliberately exposes no operator start/stop/restart API;
 // that broader surface belongs to the later generic DriverManager.
 type eebusRuntimeLifecycle struct {
-	mu sync.RWMutex
+	mu            sync.RWMutex
+	publicationMu sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -238,38 +239,112 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 	if lifecycle == nil {
 		return errors.New("eeBUS lifecycle unavailable"), false
 	}
-	if retire {
-		lifecycle.publishUnavailable(eebusLifecycleStarting, "")
-		lifecycle.slot.Retire()
-	} else {
-		lifecycle.setState(eebusLifecycleStarting, false)
-	}
 
+	// Starting/retry publication and terminal retirement share one short
+	// linearization lock. Native startup, shutdown, and observer callbacks run
+	// only after it is released.
+	lifecycle.publicationMu.Lock()
 	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		lifecycle.publicationMu.Unlock()
+		return context.Canceled, true
+	}
+	var previous eebusruntime.Runtime
+	if retire {
+		previous = lifecycle.slot.RetireDetached()
+		readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting})
+		lifecycle.handler = unavailableEEBusAdminHandler(readiness)
+		lifecycle.admin = nil
+		lifecycle.adminAvailable = false
+		lifecycle.runtimeAvailable = false
+		lifecycle.degradedReason = readiness.EEBusDegradedReason
+	} else {
+		readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting})
+		lifecycle.handler = unavailableEEBusAdminHandler(readiness)
+		lifecycle.degradedReason = readiness.EEBusDegradedReason
+	}
+	lifecycle.state = eebusLifecycleStarting
+	lifecycle.timerOutstanding = false
 	lifecycle.attempts++
 	lifecycle.revision++
+	observer := lifecycle.transportObserver
+	status := eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{
+		State: lifecycle.state, Revision: lifecycle.revision,
+		RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason,
+	})
 	lifecycle.mu.Unlock()
+	lifecycle.publicationMu.Unlock()
+	if observer != nil {
+		observer(status)
+	}
+	if previous != nil {
+		lifecycle.slot.shutdownDetached(previous)
+	}
+	lifecycle.publicationMu.Lock()
+	lifecycle.mu.RLock()
+	retiredBeforeStart := lifecycle.transportRetired
+	lifecycle.mu.RUnlock()
+	lifecycle.publicationMu.Unlock()
+	if retiredBeforeStart {
+		return context.Canceled, true
+	}
 
-	adapter, admin, adminAvailable, err := lifecycle.start(lifecycle.ctx)
-	reason := eebusStartupFailureReason(err)
-	if err == nil && adapter != nil && adapter.startupDegradedReason != "" {
+	adapter, admin, adminAvailable, startErr := lifecycle.start(lifecycle.ctx)
+	reason := eebusStartupFailureReason(startErr)
+	if startErr == nil && adapter != nil && adapter.startupDegradedReason != "" {
 		reason = adapter.startupDegradedReason
 	}
-	if err != nil && adapter == nil {
-		lifecycle.publishUnavailable(eebusLifecycleDegraded, reason)
-		return err, false
+
+	var resultErr error
+	switch {
+	case startErr != nil:
+		resultErr = startErr
+	case adapter == nil || adapter.runtime == nil:
+		resultErr = errors.New("eeBUS starter returned no runtime")
+		reason = eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable
+	case adminAvailable && admin == nil:
+		resultErr = errors.New("eeBUS starter returned incomplete admin capability")
+		reason = eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable
+	case !adminAvailable && admin != nil:
+		resultErr = errors.New("eeBUS starter returned inconsistent admin capability")
+		reason = eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable
 	}
-	if adapter == nil || adapter.runtime == nil {
-		lifecycle.publishUnavailable(eebusLifecycleDegraded, eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable)
-		return errors.New("eeBUS starter returned no runtime"), false
-	}
-	if adminAvailable && admin == nil {
-		_ = adapter.Shutdown()
-		lifecycle.publishUnavailable(eebusLifecycleDegraded, eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable)
-		return errors.New("eeBUS starter returned incomplete admin capability"), false
+	if resultErr != nil {
+		lifecycle.publicationMu.Lock()
+		lifecycle.mu.Lock()
+		terminal := lifecycle.transportRetired
+		if !terminal {
+			readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDegraded, DegradedReason: reason})
+			lifecycle.handler = unavailableEEBusAdminHandler(readiness)
+			lifecycle.admin = nil
+			lifecycle.adminAvailable = false
+			lifecycle.runtimeAvailable = false
+			lifecycle.state = eebusLifecycleDegraded
+			lifecycle.degradedReason = readiness.EEBusDegradedReason
+			lifecycle.timerOutstanding = false
+			lifecycle.revision++
+			observer = lifecycle.transportObserver
+			status = eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{
+				State: lifecycle.state, Revision: lifecycle.revision,
+				RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason,
+			})
+		}
+		lifecycle.mu.Unlock()
+		lifecycle.publicationMu.Unlock()
+		if observer != nil && !terminal {
+			observer(status)
+		}
+		if adapter != nil {
+			_ = adapter.Shutdown()
+		}
+		if terminal {
+			return context.Canceled, true
+		}
+		return resultErr, false
 	}
 
-	if !adminAvailable && err == nil && reason == eebusadmin.EEBusDegradedReasonUnknownStartupFailure {
+	if !adminAvailable && reason == eebusadmin.EEBusDegradedReasonUnknownStartupFailure {
 		reason = eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable
 	}
 	handler := unavailableEEBusAdminHandler(eebusadmin.ReadinessV1{
@@ -277,6 +352,7 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 		EEBusReadiness:      eebusadmin.EEBusReadinessDegraded,
 		EEBusDegradedReason: reason,
 	})
+	resultErr = startErr
 	if adminAvailable {
 		var handlerErr error
 		handler, handlerErr = newEEBusAdminHandler(adapter, admin, eebusadmin.ReadinessV1{
@@ -286,7 +362,7 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 		if handlerErr != nil {
 			admin = nil
 			adminAvailable = false
-			err = errors.Join(err, handlerErr)
+			resultErr = handlerErr
 			reason = eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable
 			handler = unavailableEEBusAdminHandler(eebusadmin.ReadinessV1{
 				ProcessReadiness:    eebusadmin.ProcessReadinessReady,
@@ -295,12 +371,22 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 			})
 		}
 	}
-	if !lifecycle.slot.Replace(adapter.runtime) {
-		lifecycle.publishUnavailable(eebusLifecycleStopped, eebusadmin.EEBusDegradedReasonUnknownStartupFailure)
-		return context.Canceled, false
-	}
 
+	lifecycle.publicationMu.Lock()
 	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		lifecycle.publicationMu.Unlock()
+		_ = adapter.Shutdown()
+		return context.Canceled, true
+	}
+	previous, committed := lifecycle.slot.ReplaceDetached(adapter.runtime)
+	if !committed {
+		lifecycle.mu.Unlock()
+		lifecycle.publicationMu.Unlock()
+		_ = adapter.Shutdown()
+		return context.Canceled, true
+	}
 	lifecycle.handler = handler
 	lifecycle.admin = admin
 	lifecycle.adminAvailable = adminAvailable
@@ -314,9 +400,20 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 		lifecycle.degradedReason = reason
 	}
 	lifecycle.revision++
+	observer = lifecycle.transportObserver
+	status = eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{
+		State: lifecycle.state, Revision: lifecycle.revision,
+		RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason,
+	})
 	lifecycle.mu.Unlock()
-	lifecycle.notifyTransportRuntimeStatus()
-	return err, adminAvailable
+	lifecycle.publicationMu.Unlock()
+	if observer != nil {
+		observer(status)
+	}
+	if previous != nil {
+		lifecycle.slot.shutdownDetached(previous)
+	}
+	return resultErr, adminAvailable
 }
 
 func (lifecycle *eebusRuntimeLifecycle) scheduleRecovery() {
@@ -324,6 +421,10 @@ func (lifecycle *eebusRuntimeLifecycle) scheduleRecovery() {
 		return
 	}
 	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		return
+	}
 	if lifecycle.state == eebusLifecycleDisabled || lifecycle.state == eebusLifecycleStopped || lifecycle.attempts >= lifecycle.policy.MaxAttempts {
 		lifecycle.state = eebusLifecycleDegraded
 		lifecycle.timerOutstanding = false
@@ -350,6 +451,10 @@ func (lifecycle *eebusRuntimeLifecycle) recover() {
 			return
 		}
 		lifecycle.mu.Lock()
+		if lifecycle.transportRetired {
+			lifecycle.mu.Unlock()
+			return
+		}
 		lifecycle.timerOutstanding = false
 		lifecycle.revision++
 		lifecycle.mu.Unlock()
@@ -361,6 +466,10 @@ func (lifecycle *eebusRuntimeLifecycle) recover() {
 		}
 
 		lifecycle.mu.Lock()
+		if lifecycle.transportRetired {
+			lifecycle.mu.Unlock()
+			return
+		}
 		if lifecycle.ctx.Err() != nil {
 			lifecycle.state = eebusLifecycleStopped
 			lifecycle.timerOutstanding = false
@@ -390,6 +499,10 @@ func (lifecycle *eebusRuntimeLifecycle) publishUnavailable(state eebusLifecycleS
 		return
 	}
 	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		return
+	}
 	readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: state, DegradedReason: reason})
 	lifecycle.handler = unavailableEEBusAdminHandler(readiness)
 	lifecycle.admin = nil
@@ -408,6 +521,10 @@ func (lifecycle *eebusRuntimeLifecycle) setState(state eebusLifecycleState, time
 		return
 	}
 	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		return
+	}
 	lifecycle.state = state
 	lifecycle.timerOutstanding = timerOutstanding
 	readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: state, DegradedReason: lifecycle.degradedReason})
@@ -495,9 +612,11 @@ func (lifecycle *eebusRuntimeLifecycle) PublishTransportRetirement() {
 	if lifecycle == nil {
 		return
 	}
+	lifecycle.publicationMu.Lock()
 	lifecycle.mu.Lock()
 	if lifecycle.transportRetired {
 		lifecycle.mu.Unlock()
+		lifecycle.publicationMu.Unlock()
 		return
 	}
 	readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{
@@ -518,7 +637,11 @@ func (lifecycle *eebusRuntimeLifecycle) PublishTransportRetirement() {
 	observer := lifecycle.transportObserver
 	lifecycle.transportObserver = nil
 	lifecycle.transportRetired = true
+	if lifecycle.slot != nil {
+		lifecycle.slot.FenceTerminal()
+	}
 	lifecycle.mu.Unlock()
+	lifecycle.publicationMu.Unlock()
 	if observer != nil {
 		observer(status)
 	}

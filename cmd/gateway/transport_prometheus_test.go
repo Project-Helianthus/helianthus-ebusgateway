@@ -127,7 +127,6 @@ func TestEEBusTransportRetirementFencesDelayedRecoveryDelivery(t *testing.T) {
 	releaseWait := make(chan struct{})
 	recoveryNotification := make(chan struct{})
 	releaseNotification := make(chan struct{})
-	recoveryAttempted := make(chan struct{})
 	var waitMu sync.Mutex
 	waitCalls := 0
 	var notificationOnce sync.Once
@@ -143,7 +142,6 @@ func TestEEBusTransportRetirementFencesDelayedRecoveryDelivery(t *testing.T) {
 			if call == 1 {
 				return &eebusRuntimeAdapter{runtime: runtime, startupDegradedReason: eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable}, nil, false, nil
 			}
-			close(recoveryAttempted)
 			return nil, nil, false, errors.New("bounded optional-admin recovery failed")
 		},
 		wait: func(waitCtx context.Context, _ time.Duration) bool {
@@ -169,9 +167,8 @@ func TestEEBusTransportRetirementFencesDelayedRecoveryDelivery(t *testing.T) {
 	}
 	defer func() { _ = lifecycle.Shutdown() }()
 	<-waitEntered
-	blockedRevision := lifecycle.LifecycleSnapshot().Revision + 1
 	lifecycle.SetTransportRuntimeStatusObserver(func(status ebusgateway.TransportRuntimeStatus) {
-		if status.Revision == blockedRevision {
+		if status.State == ebusgateway.TransportRuntimeStateStarting {
 			notificationOnce.Do(func() {
 				close(recoveryNotification)
 				select {
@@ -199,10 +196,100 @@ func TestEEBusTransportRetirementFencesDelayedRecoveryDelivery(t *testing.T) {
 
 	// This resumes a recovery notification that captured the old observer and
 	// revision before retirement. The store rejects it, and subsequent recovery
-	// transitions find the observer detached.
+	// transitions see the terminal fence before starting native work.
 	close(releaseNotification)
-	<-recoveryAttempted
+	recoveryDone := make(chan struct{})
+	go func() { lifecycle.recovery.Wait(); close(recoveryDone) }()
+	select {
+	case <-recoveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("recovery did not exit after observing transport retirement")
+	}
+	startMu.Lock()
+	finalStartCalls := startCalls
+	startMu.Unlock()
+	if finalStartCalls != 1 {
+		t.Fatalf("native starts after retirement = %d; want initial start only", finalStartCalls)
+	}
 	assertRetired("delayed recovery and later transition")
+}
+
+func TestEEBusTransportRetirementRejectsSuccessfulInFlightRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := ebusgateway.NewBusObservabilityStore(ebusgateway.DefaultConfig())
+	initialRuntime := &msp05bRuntime{}
+	recoveredRuntime := &msp05bRuntime{}
+	releaseWait := make(chan struct{})
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	var startMu sync.Mutex
+	startCalls := 0
+	lifecycle, err := newEEBusRuntimeLifecycle(ctx, true, eebusRuntimeLifecycleOptions{
+		policy: eebusRestartPolicy{MaxAttempts: 3, Backoff: time.Second},
+		start: func(context.Context) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+			startMu.Lock()
+			startCalls++
+			call := startCalls
+			startMu.Unlock()
+			if call == 1 {
+				return &eebusRuntimeAdapter{runtime: initialRuntime, startupDegradedReason: eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable}, nil, false, nil
+			}
+			close(startEntered)
+			<-releaseStart
+			return &eebusRuntimeAdapter{runtime: recoveredRuntime}, issue809AdminStub{}, true, nil
+		},
+		wait: func(waitCtx context.Context, _ time.Duration) bool {
+			select {
+			case <-releaseWait:
+				return true
+			case <-waitCtx.Done():
+				return false
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lifecycle.Shutdown() }()
+	lifecycle.SetTransportRuntimeStatusObserver(store.SetTransportRuntimeStatus)
+	close(releaseWait)
+	<-startEntered
+
+	retired := make(chan struct{})
+	go func() { lifecycle.PublishTransportRetirement(); close(retired) }()
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("retirement waited for an in-flight native start")
+	}
+	terminal := lifecycle.LifecycleSnapshot()
+	close(releaseStart)
+	recoveryDone := make(chan struct{})
+	go func() { lifecycle.recovery.Wait(); close(recoveryDone) }()
+	select {
+	case <-recoveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight recovery did not exit after retirement")
+	}
+
+	final := lifecycle.LifecycleSnapshot()
+	if final != terminal || final.State != eebusLifecycleStopped || final.AdminAvailable || final.RuntimeAvailable {
+		t.Fatalf("terminal lifecycle changed after in-flight start: before=%#v after=%#v", terminal, final)
+	}
+	if recoveredRuntime.stopCalls != 1 {
+		t.Fatalf("rejected recovered runtime shutdown calls = %d; want one", recoveredRuntime.stopCalls)
+	}
+	if lifecycle.Admin() != nil {
+		t.Fatal("retirement allowed recovered admin publication")
+	}
+	if _, snapshotErr := lifecycle.Adapter().Snapshot(); snapshotErr == nil {
+		t.Fatal("retirement allowed recovered runtime publication")
+	}
+	metrics := store.RenderPrometheus()
+	if !strings.Contains(metrics, `protocol="eebus",reason="shutdown",state="retired"`) {
+		t.Fatalf("in-flight recovery replaced terminal metric:\n%s", metrics)
+	}
 }
 
 func TestGatewayControlPlaneContextDefersSharedCancellation(t *testing.T) {

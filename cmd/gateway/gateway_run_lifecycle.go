@@ -52,6 +52,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return fmt.Errorf("create portal contribution registry: %w", err)
 	}
+	updateModbusTransportStatus := func(ebusgateway.TransportRuntimeStatus) {}
 
 	modbusAdapter, err := startModbusRuntime(
 		ctx,
@@ -63,6 +64,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		log.Printf("Modbus TCP unavailable; continuing without Modbus")
 		modbusAdapter = nil
 	}
+	modbusTransportStatus := modbusRuntimeTransportStatus(cfg.ModbusTCPConfig, modbusAdapter != nil)
 	if modbusAdapter != nil {
 		pvContribution, err := startGatewayPortalPVContribution(modbusAdapter, portalContributions)
 		if err != nil {
@@ -76,6 +78,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			if err := modbusAdapter.Close(); err != nil {
 				result = errors.Join(result, fmt.Errorf("shutdown Modbus TCP sidecar: %w", err))
 			}
+			updateModbusTransportStatus(retiredModbusRuntimeTransportStatus())
 		}()
 		sunSpecWorker := newGatewaySunSpecLiveSmokeWorker(ctx, modbusAdapter, log.Printf)
 		if sunSpecWorker != nil {
@@ -258,6 +261,13 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	busObservability, deduplicator, err := wireObserveFirstObserversFn(&cfg)
 	if err != nil {
 		return err
+	}
+	if busObservability != nil {
+		updateModbusTransportStatus = busObservability.SetTransportRuntimeStatus
+		updateModbusTransportStatus(modbusTransportStatus)
+		if eebusLifecycle != nil {
+			eebusLifecycle.SetTransportRuntimeStatusObserver(busObservability.SetTransportRuntimeStatus)
+		}
 	}
 	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled || cfg.PrometheusEVSEEnabled) {
 		// This is intentionally wired before the HTTP control plane starts. The
@@ -583,8 +593,13 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver,
 		)
 	}
+	// Keep the control plane alive through final transport retirement. The main
+	// context still cancels work immediately; this lifecycle-owned context is
+	// canceled by teardown after retirement and the explicit close sequence.
+	controlPlaneCtx, controlPlaneCancel := newGatewayControlPlaneContext(ctx)
+	defer controlPlaneCancel()
 	server, advertiser, err := startHTTPServerFn(
-		ctx,
+		controlPlaneCtx,
 		cfg,
 		gateway,
 		builder,
@@ -603,8 +618,8 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		return err
 	}
 	defer func() {
-		// Preserve the historical teardown order: stop eBUS consumers before
-		// closing observability, then retire mDNS and HTTP before Gateway/driver.
+		// After HTTP admission has stopped and active requests have drained,
+		// preserve the historical native-consumer cleanup order.
 		if listener != nil {
 			if err := listener.Close(); err != nil {
 				log.Printf("broadcast listener close: %v", err)
@@ -630,9 +645,15 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				log.Printf("mdns close: %v", err)
 			}
 		}
+	}()
+	defer func() {
+		// This defer is registered after control-plane teardown, so LIFO makes
+		// the final bounded runtime statuses observable before HTTP immediately
+		// stops admitting new work and drains already-admitted requests.
+		publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)
 		if server != nil {
-			if err := server.Close(); err != nil {
-				log.Printf("http server close: %v", err)
+			if err := shutdownHTTPControlPlane(server); err != nil {
+				log.Printf("http server shutdown: %v", err)
 			}
 		}
 	}()

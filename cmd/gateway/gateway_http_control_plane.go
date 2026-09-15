@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"expvar"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
@@ -139,6 +141,12 @@ func registerHTTPControlPlaneCoreRoutes(
 	}
 }
 
+// newGatewayControlPlaneContext retains request and operator context values while
+// deferring shared lifecycle cancellation until final transport retirement.
+func newGatewayControlPlaneContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(ctx))
+}
+
 func startHTTPControlPlaneListener(
 	ctx context.Context,
 	cfg ebusgateway.Config,
@@ -164,7 +172,7 @@ func startHTTPControlPlaneListener(
 		return nil, nil, err
 	}
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Addr: listener.Addr().String(), Handler: mux}
 	if operatorEndpoint != nil {
 		server.RegisterOnShutdown(func() {
 			_ = operatorEndpoint.Close()
@@ -199,12 +207,24 @@ func startHTTPControlPlaneListener(
 		}
 	}
 
-	go func() {
-		<-ctx.Done()
-		_ = server.Shutdown(context.Background())
-		if operatorEndpoint != nil {
-			_ = operatorEndpoint.Close()
-		}
-	}()
 	return server, advertiser, nil
+}
+
+func shutdownHTTPControlPlane(server *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return shutdownHTTPControlPlaneWithContext(server, ctx)
+}
+
+func shutdownHTTPControlPlaneWithContext(server *http.Server, ctx context.Context) error {
+	if server == nil {
+		return nil
+	}
+	if err := server.Shutdown(ctx); err == nil {
+		return nil
+	} else if closeErr := server.Close(); closeErr != nil {
+		return errors.Join(err, closeErr)
+	} else {
+		return err
+	}
 }

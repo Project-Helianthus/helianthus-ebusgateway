@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
@@ -474,6 +475,46 @@ func TestIssue846RuntimeSlotWaitsForInFlightReadersBeforeSwapAndShutdown(t *test
 	}
 	if oldRuntime.stopCalls != 1 {
 		t.Fatalf("old runtime shutdown calls = %d; want one", oldRuntime.stopCalls)
+	}
+}
+
+func TestEEBusRuntimeSlotTerminalFenceDoesNotWaitForInFlightReader(t *testing.T) {
+	runtime := &issue846BlockingRuntime{
+		snapshotEntered: make(chan struct{}),
+		snapshotRelease: make(chan struct{}),
+		shutdownCalled:  make(chan struct{}),
+	}
+	slot := newEEBusRuntimeSlot(runtime)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = slot.Snapshot()
+	}()
+	<-runtime.snapshotEntered
+
+	fenced := make(chan struct{})
+	go func() { slot.FenceTerminal(); close(fenced) }()
+	select {
+	case <-fenced:
+	case <-time.After(time.Second):
+		t.Fatal("terminal fence waited for an in-flight native reader")
+	}
+	if _, err := slot.Snapshot(); err == nil {
+		t.Fatal("terminal fence admitted a new reader")
+	}
+	select {
+	case <-runtime.shutdownCalled:
+		t.Fatal("terminal fence invoked native shutdown")
+	default:
+	}
+
+	close(runtime.snapshotRelease)
+	<-readDone
+	if err := slot.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.stopCalls != 1 {
+		t.Fatalf("terminal runtime shutdown calls = %d; want one", runtime.stopCalls)
 	}
 }
 

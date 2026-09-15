@@ -57,9 +57,52 @@ def main() -> int:
         expected_added = [
             '\tfs.BoolVar(&cfg.PrometheusEVSEEnabled, "semantic-prometheus-evse-enabled", cfg.PrometheusEVSEEnabled, "append detached EVSE SemReg metrics when an EVSE semantic runtime is configured")',
         ]
+    lifecycle_shutdown_removed = [
+        '\t\tctx,',
+        '\t\t\tif err := server.Close(); err != nil {',
+        '\t\t\t\tlog.Printf("http server close: %v", err)',
+        '\t\t\t}',
+        '\t\t}',
+    ]
+    if path == "cmd/gateway/gateway_run_lifecycle.go" and (
+        not removed or removed == ['\t\tctx,'] or removed == lifecycle_shutdown_removed
+    ):
+        expected_removed = removed
+        expected_added = [
+            '\tupdateModbusTransportStatus := func(ebusgateway.TransportRuntimeStatus) {}',
+            '\tmodbusTransportStatus := modbusRuntimeTransportStatus(cfg.ModbusTCPConfig, modbusAdapter != nil)',
+            '\t\t\tupdateModbusTransportStatus(retiredModbusRuntimeTransportStatus())',
+            '\t}',
+            '\tif busObservability != nil {',
+            '\t\tupdateModbusTransportStatus = busObservability.SetTransportRuntimeStatus',
+            '\t\tupdateModbusTransportStatus(modbusTransportStatus)',
+            '\t\tif eebusLifecycle != nil {',
+            '\t\t\teebusLifecycle.SetTransportRuntimeStatusObserver(busObservability.SetTransportRuntimeStatus)',
+            '\t\t}',
+            '\t// Keep the control plane alive through final transport retirement. The main',
+            '\t// context still cancels work immediately; this lifecycle-owned context is',
+            '\t// canceled by teardown after retirement and the explicit close sequence.',
+            '\tcontrolPlaneCtx, controlPlaneCancel := newGatewayControlPlaneContext(ctx)',
+            '\tdefer controlPlaneCancel()',
+            '\t\tcontrolPlaneCtx,',
+        ]
+        if removed == lifecycle_shutdown_removed:
+            expected_added.extend([
+                '\t\t\tif err := shutdownHTTPControlPlane(server); err != nil {',
+                '\t\t\t\tlog.Printf("http server shutdown: %v", err)',
+                '\t\t\t}',
+                '\t\t}',
+            ])
+        expected_added.extend([
+            '\t}()',
+            '\tdefer func() {',
+            '\t\t// This defer is registered after control-plane teardown, so LIFO makes',
+            '\t\t// the final bounded runtime statuses observable before /metrics closes.',
+            '\t\tpublishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)',
+        ])
     if removed == expected_removed and added == expected_added:
         return 0
-    print("transport gate: lifecycle diff is not the exact detached SemReg Prometheus hunk", file=sys.stderr)
+    print("transport gate: lifecycle diff is not an exempt exact Prometheus hunk", file=sys.stderr)
     return 1
 
 

@@ -108,7 +108,7 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 		"reconstructor.Close()",
 		"busObservability.Close()",
 		"advertiser.Close()",
-		"server.Close()",
+		"shutdownHTTPControlPlane(server)",
 	} {
 		next := strings.Index(text, closeCall)
 		if next < 0 || next < last {
@@ -175,7 +175,7 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 		"ebusDriver.Shutdown(stopCtx)",
 		"artifactBuilder.EmitToFile(artifactPath)",
 		"gateway.Close()",
-		"server.Close()",
+		"shutdownHTTPControlPlane(server)",
 	} {
 		next := strings.Index(text, closeCall)
 		if next < 0 || next < last {

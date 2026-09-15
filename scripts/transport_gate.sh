@@ -52,6 +52,32 @@ requires_ebus_transport_gate() {
   return 1
 }
 
+# B503's session manager, dispatcher, installation wiring, MCP operation owner,
+# and GraphQL operation provider are native eBUS operation surfaces. They can
+# construct, invoke, issue, or fence raw-frame requests and select the production
+# sender, so a source change must require current M6a T01..T88 evidence even
+# though their paths do not live under the generic scanner or mux directories
+# above. Keep this classifier explicit: a filename match is auditable and does
+# not turn unrelated Portal B503 presentation changes into transport work.
+requires_b503_native_transport_gate() {
+  local file="$1"
+  case "${file}" in
+    *_test.go)
+      return 1
+      ;;
+  esac
+  case "${file}" in
+    cmd/gateway/vaillant_b503_dispatcher.go|\
+    cmd/gateway/vaillant_b503_graphql_provider.go|\
+    cmd/gateway/vaillant_b503_wiring.go|\
+    mcp/vaillant_b503.go|\
+    internal/vaillant/b503session/*.go)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # The Modbus RTU gate is deliberately separate from the eBUS M6a topology
 # matrix. It covers the gateway's explicit RTU composition boundary and the
 # exact pinned upstream endpoint contract, without pretending an ENH/ENS/ebusd
@@ -324,6 +350,10 @@ while IFS= read -r file; do
 	if [[ "${file}" == "cmd/gateway/gateway_cli.go" || "${file}" == "cmd/gateway/gateway_run_lifecycle.go" ]] && python3 scripts/semreg_prometheus_transport_classifier.py "${base_ref}" "${file}"; then
 		continue
 	fi
+  if requires_b503_native_transport_gate "${file}"; then
+    requires_ebus_gate=1
+    continue
+  fi
   if requires_ebus_transport_gate "${file}"; then
     requires_ebus_gate=1
   fi

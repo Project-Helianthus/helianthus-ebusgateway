@@ -19,6 +19,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol/vaillant/b503"
 )
 
 // defaultVaillantTarget is the BAI00 primary address used when a caller
@@ -46,6 +47,10 @@ func (b503StubDispatcher) Invoke(ctx context.Context, target byte, payload []byt
 	return nil, errRawFrameMisconfigured
 }
 
+func (b503StubDispatcher) InvokeB503Outcome(context.Context, byte, []byte) mcp.B503DispatchOutcome {
+	return mcp.B503DispatchOutcome{Err: errRawFrameMisconfigured}
+}
+
 // b503StubRefresh conservatively reports transport-down on every refresh.
 // Mirrors spec §7.3 behaviour when the refresh function is nil
 // (ErrTransportDown is the safe fallback). Kept explicit so the
@@ -68,16 +73,17 @@ type b503Runtime struct {
 	dispatcher  mcp.RPCDispatcher
 }
 
-// EBusDriverActivated advances the B503 transport epoch to the exact admitted
-// DriverManager generation. Duplicate or stale notifications are no-ops. This
-// callback performs no I/O and never calls back into DriverManager.
+// EBusDriverActivated records the exact admitted DriverManager generation.
+// A surviving owner remains bound to its prior transport key until its next
+// admitted Read/Disable refresh. Duplicate or stale notifications are no-ops.
+// This callback performs no I/O and never calls back into DriverManager.
 func (runtime *b503Runtime) EBusDriverActivated(correlation drivermanager.Correlation) {
 	if runtime == nil || runtime.manager == nil || correlation.Generation == 0 {
 		return
 	}
 	runtime.lifecycleMu.Lock()
 	defer runtime.lifecycleMu.Unlock()
-	if correlation.Generation <= runtime.manager.TransportKey().TransportEpoch {
+	if correlation.Generation <= runtime.manager.LifecycleTransportKey().TransportEpoch {
 		return
 	}
 	runtime.manager.OnEpochAdvance(context.Background(), correlation.Generation)
@@ -91,21 +97,23 @@ func (runtime *b503Runtime) EBusDriverWithdrawn(correlation drivermanager.Correl
 		return
 	}
 	runtime.disconnectIfCurrent(b503session.TransportKey{
-		AdapterInstanceID: runtime.manager.TransportKey().AdapterInstanceID,
+		AdapterInstanceID: runtime.manager.LifecycleTransportKey().AdapterInstanceID,
 		TransportEpoch:    correlation.Generation,
 	})
 }
 
 // disconnectIfCurrent serializes the request-side source-unavailable fallback
-// with DriverManager activation/withdrawal. An invocation that observed epoch
-// N cannot disconnect a newly enabled issuer after epoch N+1 becomes active.
+// with DriverManager activation/withdrawal. Correlation follows the latest
+// admitted lifecycle generation rather than the owner-bound key, so withdrawal
+// of N+1 releases an owner still awaiting bounded refresh from N, while a stale
+// completion from N cannot disconnect generation N+1.
 func (runtime *b503Runtime) disconnectIfCurrent(expected b503session.TransportKey) {
 	if runtime == nil || runtime.manager == nil {
 		return
 	}
 	runtime.lifecycleMu.Lock()
 	defer runtime.lifecycleMu.Unlock()
-	if runtime.manager.TransportKey() != expected {
+	if runtime.manager.LifecycleTransportKey() != expected {
 		return
 	}
 	runtime.manager.OnTransportDisconnect()
@@ -134,6 +142,11 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 		TransportEpoch:    0,
 	}
 	mgr := b503session.New(initialTK, 30*time.Second, b503StubRefresh)
+	// Process start cannot establish whether a prior gateway incarnation left
+	// the device-side live-monitor session settled. Fence the configured target
+	// before MCP or GraphQL can probe or admit an Enable. Later registry-qualified
+	// explicit targets inherit the same restart fence through MarkQualifiedTarget.
+	mgr.ResetForRestart(defaultVaillantTarget)
 	runtime := &b503Runtime{mcpServer: s, manager: mgr}
 
 	var disp mcp.RPCDispatcher
@@ -173,5 +186,8 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 	})
 
 	runtime.dispatcher = disp
+	mgr.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, disp, target, b503.EncodeLiveMonitorMain())
+	})
 	return runtime
 }

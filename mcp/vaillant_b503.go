@@ -21,6 +21,43 @@ type RPCDispatcher interface {
 	Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error)
 }
 
+// B503DispatchOutcome records the conservative wire boundary for a B503
+// operation. Emitted means bus.Send was entered; it never claims a physical
+// receiver accepted the frame.
+type B503DispatchOutcome struct {
+	Response  []byte
+	Emitted   bool
+	Native    b503session.NativeResult
+	Err       error
+	Transport b503session.TransportKey
+}
+
+// B503OutcomeDispatcher is an optional internal extension. Generic reads keep
+// RPCDispatcher; only lifecycle ownership consumes this outcome.
+type B503OutcomeDispatcher interface {
+	RPCDispatcher
+	InvokeB503Outcome(ctx context.Context, target byte, payload []byte) B503DispatchOutcome
+}
+
+// InvokeB503Operation adapts the lifecycle-aware dispatcher to the Manager's
+// operation contract. Generic RPCDispatcher remains unchanged, but lifecycle
+// operations fail closed before emission when the B503 outcome hook is absent;
+// they never infer native or settlement evidence from the generic API.
+func InvokeB503Operation(ctx context.Context, dispatcher RPCDispatcher, target byte, payload []byte) b503session.DispatchOutcome {
+	if dispatcher == nil {
+		return b503session.DispatchOutcome{Err: errNotSupported}
+	}
+	aware, ok := dispatcher.(B503OutcomeDispatcher)
+	if !ok {
+		return b503session.DispatchOutcome{Err: errNotSupported}
+	}
+	outcome := aware.InvokeB503Outcome(ctx, target, payload)
+	return b503session.DispatchOutcome{
+		Response: outcome.Response, Emitted: outcome.Emitted, Native: outcome.Native,
+		Err: outcome.Err, Transport: outcome.Transport,
+	}
+}
+
 // B503Availability is the public capability-signal enum surfaced via
 // VaillantB503Availability(). Spec §11.
 type B503Availability string
@@ -42,13 +79,49 @@ type VaillantB503Options struct {
 	DefaultTarget  byte
 }
 
+// VaillantB503HistoryRecord is the stable MCP view of one bounded B503
+// history record. Empty native slots remain nil so JSON preserves the
+// established null representation.
+type VaillantB503HistoryRecord struct {
+	Index            int    `json:"index"`
+	FirstActiveError *int   `json:"first_active_error"`
+	Slots            []*int `json:"slots"`
+}
+
+// VaillantB503HistoryFailure describes the first failed read in the bounded,
+// ordered history prefix. Records before Index are verified native reads;
+// later indices are deliberately not fabricated or attempted.
+type VaillantB503HistoryFailure struct {
+	Index   int    `json:"index"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// VaillantB503HistoryList is the stable partial-result contract for the
+// history list tool. Failure is nil only when every requested index was read.
+// A non-nil Failure preserves the successful ordered prefix in Records.
+type VaillantB503HistoryList struct {
+	Records []VaillantB503HistoryRecord `json:"records"`
+	Failure *VaillantB503HistoryFailure `json:"failure"`
+}
+
+// VaillantB503SessionStatus is the stable read-only ownership view. Owned
+// means the gateway session gate is held; it does not identify a client and
+// deliberately exposes no issuer token or transport key.
+type VaillantB503SessionStatus struct {
+	State string `json:"state"`
+	Owned bool   `json:"owned"`
+}
+
 // Public tool names (spec §3 / plan AD02).
 const (
 	toolVaillantB503ErrorsGetName         = "ebus.v1.vaillant.errors.get"
 	toolVaillantB503ErrorsHistoryGetName  = "ebus.v1.vaillant.errors.history.get"
+	toolVaillantB503ErrorsHistoryListName = "ebus.v1.vaillant.errors.history.list"
 	toolVaillantB503ServiceCurrentGetName = "ebus.v1.vaillant.service.current.get"
 	toolVaillantB503ServiceHistoryGetName = "ebus.v1.vaillant.service.history.get"
 	toolVaillantB503LiveMonitorName       = "ebus.v1.vaillant.live_monitor.get"
+	toolVaillantB503LiveSessionGetName    = "ebus.v1.vaillant.live_monitor.session.get"
 )
 
 // --- server-side state ----------------------------------------------------
@@ -78,7 +151,7 @@ func b503StateFor(s *Server) (*b503State, bool) {
 	return st, ok
 }
 
-// RegisterVaillantB503Tools installs the 5 Vaillant B503 tools on s.
+// RegisterVaillantB503Tools installs the 7 Vaillant B503 tools on s.
 //
 // Options validation: Dispatcher and SessionManager MUST be non-nil. A
 // misconfigured bootstrap that passes a zero-value VaillantB503Options
@@ -129,6 +202,17 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 			},
 		},
 		Tool{
+			Name:        toolVaillantB503ErrorsHistoryListName,
+			Description: "List a bounded Vaillant error-history prefix in ascending index order; returns verified records and a first-failure marker without probing later indices (READ).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": mergeProps(targetProp, map[string]any{
+					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 16},
+				}),
+				"additionalProperties": false,
+			},
+		},
+		Tool{
 			Name:        toolVaillantB503ServiceCurrentGetName,
 			Description: "Get current Vaillant service-message slots via B503 family=0x00 selector=0x02 (READ).",
 			InputSchema: map[string]any{
@@ -161,6 +245,15 @@ func RegisterVaillantB503Tools(s *Server, opts VaillantB503Options) {
 				"additionalProperties": false,
 			},
 		},
+		Tool{
+			Name:        toolVaillantB503LiveSessionGetName,
+			Description: "Get the gateway-held Vaillant live-monitor session state without exposing authority (READ).",
+			InputSchema: map[string]any{
+				"type":                 "object",
+				"properties":           targetProp,
+				"additionalProperties": false,
+			},
+		},
 	)
 }
 
@@ -189,12 +282,16 @@ func (s *Server) handleVaillantB503Call(ctx context.Context, name string, args m
 		return st.handleErrorsGet(ctx, args), true
 	case toolVaillantB503ErrorsHistoryGetName:
 		return st.handleErrorsHistoryGet(ctx, args), true
+	case toolVaillantB503ErrorsHistoryListName:
+		return st.handleErrorsHistoryList(ctx, args), true
 	case toolVaillantB503ServiceCurrentGetName:
 		return st.handleServiceCurrentGet(ctx, args), true
 	case toolVaillantB503ServiceHistoryGetName:
 		return st.handleServiceHistoryGet(ctx, args), true
 	case toolVaillantB503LiveMonitorName:
 		return st.handleLiveMonitor(ctx, args), true
+	case toolVaillantB503LiveSessionGetName:
+		return st.handleLiveMonitorSession(ctx, args), true
 	}
 	return nil, false
 }
@@ -235,6 +332,18 @@ func historyIndex(args map[string]any) (byte, bool, error) {
 	return v, true, nil
 }
 
+func historyLimit(args map[string]any) (int, error) {
+	raw, ok := args["limit"]
+	if !ok || raw == nil {
+		return 5, nil
+	}
+	value, ok := raw.(float64)
+	if !ok || value != float64(int(value)) || value < 1 || value > 16 {
+		return 0, fmt.Errorf("%w: limit must be an integer between 1 and 16", errInvalidArgument)
+	}
+	return int(value), nil
+}
+
 func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) map[string]any {
 	target, err := st.target(args)
 	if err != nil {
@@ -242,7 +351,7 @@ func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) m
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
@@ -258,7 +367,7 @@ func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[strin
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentService())
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
@@ -280,13 +389,107 @@ func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
 		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errDecodeFailed, err))
 	}
 	return st.okEnvelope(ctx, historyToMap(rec))
+}
+
+func (st *b503State) handleErrorsHistoryList(ctx context.Context, args map[string]any) map[string]any {
+	target, err := st.target(args)
+	if err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	limit, err := historyLimit(args)
+	if err != nil {
+		return st.errEnvelopeAt(ctx, target, err)
+	}
+	result, err := st.errorsHistoryList(ctx, target, limit)
+	if err != nil {
+		return st.errEnvelopeAt(ctx, target, err)
+	}
+	return st.okEnvelopeAt(ctx, target, result)
+}
+
+func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit int) (VaillantB503HistoryList, error) {
+	if limit < 1 || limit > 16 {
+		return VaillantB503HistoryList{}, fmt.Errorf("%w: limit must be between 1 and 16", errInvalidArgument)
+	}
+	records := make([]VaillantB503HistoryRecord, 0, limit)
+	for index := 0; index < limit; index++ {
+		payload := append(b503.EncodeErrorHistory(), byte(index))
+		resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
+		if err != nil {
+			normalized := normalizeB503OperationErr(err)
+			code, ok := classifyB503Error(normalized)
+			if !ok {
+				code = "UPSTREAM_RPC_FAILED"
+			}
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: code, Message: err.Error(),
+			}}, nil
+		}
+		record, err := b503.DecodeErrorHistory(resp)
+		if err != nil {
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: "DECODE_FAILED", Message: err.Error(),
+			}}, nil
+		}
+		if record.Index != byte(index) {
+			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
+				Index: index, Code: "DECODE_FAILED", Message: fmt.Sprintf("requested history index %d, device echoed %d", index, record.Index),
+			}}, nil
+		}
+		records = append(records, historyToRecord(record))
+	}
+	return VaillantB503HistoryList{Records: records}, nil
+}
+
+func (st *b503State) handleLiveMonitorSession(ctx context.Context, args map[string]any) map[string]any {
+	target, err := st.target(args)
+	if err != nil {
+		return st.errEnvelope(ctx, err)
+	}
+	return st.okEnvelopeAt(ctx, target, st.liveMonitorSession())
+}
+
+func (st *b503State) liveMonitorSession() VaillantB503SessionStatus {
+	if st == nil || st.opts.SessionManager == nil {
+		return VaillantB503SessionStatus{State: "Idle"}
+	}
+	snapshot := st.opts.SessionManager.StatusSnapshot()
+	return VaillantB503SessionStatus{
+		State: snapshot.State.String(),
+		Owned: snapshot.Owned,
+	}
+}
+
+// VaillantB503ErrorsHistoryList exposes the exact stable MCP aggregate to the
+// GraphQL adapter. A nil target uses the registered default target.
+func (s *Server) VaillantB503ErrorsHistoryList(ctx context.Context, target *byte, limit int) (VaillantB503HistoryList, error) {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return VaillantB503HistoryList{}, errNotSupported
+	}
+	resolved := st.opts.DefaultTarget
+	if target != nil {
+		resolved = *target
+	}
+	return st.errorsHistoryList(ctx, resolved, limit)
+}
+
+// VaillantB503LiveMonitorSession exposes the exact stable MCP session-status
+// contract to the GraphQL adapter. The session gate is gateway-global, while
+// the optional target is validated by GraphQL before this method is called.
+func (s *Server) VaillantB503LiveMonitorSession(_ context.Context, _ *byte) (VaillantB503SessionStatus, error) {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return VaillantB503SessionStatus{}, errNotSupported
+	}
+	return st.liveMonitorSession(), nil
 }
 
 func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[string]any) map[string]any {
@@ -302,7 +505,7 @@ func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[strin
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {
@@ -341,26 +544,12 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		if err != nil {
 			return st.errEnvelope(ctx, err)
 		}
-		key, err := mgr.Enable(ctx)
-		if err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
-		// Emit the request so the device acknowledges live-monitor
-		// activation. Bound by SERVICE_WRITE safety class.
-		if _, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain()); err != nil {
-			// Dispatcher failure → release session and surface upstream
-			// error. Rebuild the SessionKey from the Manager's current
-			// TransportKey in case OnEpochAdvance re-homed the session
-			// between Enable and the failed Invoke. If even the rebuilt
-			// key no longer matches (session already disabled by refresh
-			// policy surfacing TRANSPORT_DOWN / SESSION_BUSY), Disable is
-			// a no-op — the session is already released.
-			rebuilt := b503session.SessionKey{
-				Transport:   mgr.TransportKey(),
-				IssuerToken: key.IssuerToken,
-			}
-			_ = mgr.Disable(rebuilt)
-			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		key, err := mgr.EnableOperation(ctx, target, dispatch)
+		if err != nil {
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		data := map[string]any{"issuer_token": key.IssuerToken}
 		return st.okEnvelope(ctx, data)
@@ -378,21 +567,21 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 		if err != nil {
 			return st.errEnvelope(ctx, err)
 		}
-		if mgr.LastRefreshTransportDown() {
-			return st.errEnvelope(ctx, errTransportDown)
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
 		}
-		transport := mgr.TransportKey()
-		if err := mgr.Read(transport); err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
-		}
-		resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeLiveMonitorMain())
+		resp, err := mgr.ReadOperation(ctx, target, dispatch)
 		if err != nil {
-			return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		data := map[string]any{"raw_hex": hexString(resp)}
 		return st.okEnvelope(ctx, data)
 
 	case "disable":
+		target, err := st.target(args)
+		if err != nil {
+			return st.errEnvelope(ctx, err)
+		}
 		// issuer_token is mandatory for disable. Silently treating a missing
 		// or non-string token as empty masks malformed client payloads as
 		// SESSION_BUSY (via ErrWrongToken → normalized), keeps the session
@@ -410,9 +599,12 @@ func (st *b503State) handleLiveMonitor(ctx context.Context, args map[string]any)
 			return st.errEnvelope(ctx, fmt.Errorf("%w: issuer_token must be non-empty", errInvalidArgument))
 		}
 		transport := mgr.TransportKey()
-		err := mgr.Disable(b503session.SessionKey{Transport: transport, IssuerToken: tok})
+		dispatch := func(dispatchCtx context.Context, dispatchTarget byte) b503session.DispatchOutcome {
+			return InvokeB503Operation(dispatchCtx, st.opts.Dispatcher, dispatchTarget, b503.EncodeLiveMonitorMain())
+		}
+		err = mgr.DisableOperation(ctx, b503session.SessionKey{Transport: transport, IssuerToken: tok}, target, dispatch)
 		if err != nil {
-			return st.errEnvelope(ctx, normalizeSessionErr(err))
+			return st.errEnvelopeAt(ctx, target, normalizeB503OperationErr(err))
 		}
 		return st.okEnvelope(ctx, map[string]any{"disabled": true})
 	}
@@ -460,6 +652,25 @@ func historyToMap(r b503.ErrorHistoryRecord) map[string]any {
 	return out
 }
 
+func historyToRecord(r b503.ErrorHistoryRecord) VaillantB503HistoryRecord {
+	record := VaillantB503HistoryRecord{
+		Index: int(r.Index),
+		Slots: make([]*int, len(r.Slots)),
+	}
+	for index, slot := range r.Slots {
+		if slot == b503.EmptySlot {
+			continue
+		}
+		value := int(slot)
+		record.Slots[index] = &value
+	}
+	if value, ok := r.FirstActive(); ok {
+		first := int(value)
+		record.FirstActiveError = &first
+	}
+	return record
+}
+
 func hexString(b []byte) string {
 	const hexd = "0123456789abcdef"
 	out := make([]byte, len(b)*2)
@@ -475,6 +686,7 @@ func hexString(b []byte) string {
 var (
 	errSessionBusy       = errors.New("b503mcp: SESSION_BUSY")
 	errTransportDown     = errors.New("b503mcp: TRANSPORT_DOWN")
+	errUnknown           = errors.New("b503mcp: UNKNOWN")
 	errNotSupported      = errors.New("b503mcp: NOT_SUPPORTED")
 	errInvalidToken      = errors.New("b503mcp: INVALID_TOKEN")
 	errInvalidArgument   = errors.New("b503mcp: INVALID_ARGUMENT")
@@ -497,10 +709,31 @@ func normalizeSessionErr(err error) error {
 		// the public wire (disable-with-wrong-token is indistinguishable
 		// from second-claimant to the caller).
 		return errSessionBusy
+	case errors.Is(err, b503session.ErrTargetMismatch):
+		return errSessionBusy
+	case errors.Is(err, b503session.ErrCleanupPending):
+		return errUnknown
 	case errors.Is(err, b503session.ErrNotActive):
 		return errSessionBusy
 	default:
 		return errSessionBusy
+	}
+}
+
+func normalizeB503OperationErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, b503session.ErrTransportDown),
+		errors.Is(err, b503session.ErrSessionBusy),
+		errors.Is(err, b503session.ErrWrongToken),
+		errors.Is(err, b503session.ErrTargetMismatch),
+		errors.Is(err, b503session.ErrCleanupPending),
+		errors.Is(err, b503session.ErrNotActive):
+		return normalizeSessionErr(err)
+	default:
+		return fmt.Errorf("%w: %v", errUpstreamRPCFailed, err)
 	}
 }
 
@@ -511,6 +744,8 @@ func classifyB503Error(err error) (string, bool) {
 		return "SESSION_BUSY", true
 	case errors.Is(err, errTransportDown):
 		return "TRANSPORT_DOWN", true
+	case errors.Is(err, errUnknown):
+		return "UNKNOWN", true
 	case errors.Is(err, errNotSupported):
 		return "NOT_SUPPORTED", true
 	case errors.Is(err, errInvalidToken):
@@ -532,10 +767,22 @@ func classifyB503Error(err error) (string, bool) {
 // probe honors the request context so a slow dispatcher cannot hang
 // tools/call after the main handler has already produced a result.
 func (st *b503State) b503Envelope(ctx context.Context, data any, err error, isError bool) map[string]any {
+	return st.b503EnvelopeFor(ctx, nil, data, err, isError)
+}
+
+// b503EnvelopeFor binds capability metadata to target when a tool has already
+// resolved one. The established tools retain b503Envelope's default-target
+// behavior; the two newly promoted target-aware tools must not report a
+// different device's probe result in their stable output metadata.
+func (st *b503State) b503EnvelopeFor(ctx context.Context, target *byte, data any, err error, isError bool) map[string]any {
 	env := newToolEnvelope(data, err)
 	reason := AvailabilityUnknown
 	if st != nil && st.server != nil {
-		reason = st.server.VaillantB503AvailabilityCtx(ctx)
+		if target == nil {
+			reason = st.server.VaillantB503AvailabilityCtx(ctx)
+		} else {
+			reason = st.server.VaillantB503AvailabilityAtCtx(ctx, *target)
+		}
 	}
 	if meta, ok := env["meta"].(map[string]any); ok {
 		caps, _ := meta["capabilities"].(map[string]any)
@@ -555,8 +802,16 @@ func (st *b503State) okEnvelope(ctx context.Context, data any) map[string]any {
 	return st.b503Envelope(ctx, data, nil, false)
 }
 
+func (st *b503State) okEnvelopeAt(ctx context.Context, target byte, data any) map[string]any {
+	return st.b503EnvelopeFor(ctx, &target, data, nil, false)
+}
+
 func (st *b503State) errEnvelope(ctx context.Context, err error) map[string]any {
 	return st.b503Envelope(ctx, nil, err, true)
+}
+
+func (st *b503State) errEnvelopeAt(ctx context.Context, target byte, err error) map[string]any {
+	return st.b503EnvelopeFor(ctx, &target, nil, err, true)
 }
 
 // --- capability -----------------------------------------------------------
@@ -576,7 +831,7 @@ func (s *Server) VaillantB503Availability() B503Availability {
 //
 // Probe ordering (first match wins):
 //  1. Manager reports LastRefreshTransportDown → TRANSPORT_DOWN.
-//  2. Manager.State() ∈ {Enabling, Active} → SESSION_BUSY (a second
+//  2. Manager.State() ∈ {Enabling, Active, Refreshing} → SESSION_BUSY (a second
 //     action=enable would fail with SESSION_BUSY; publishing
 //     AVAILABLE here would contradict the error code clients receive).
 //  3. Probe succeeds → AVAILABLE.
@@ -589,23 +844,40 @@ func (s *Server) VaillantB503AvailabilityCtx(ctx context.Context) B503Availabili
 	if !ok || st == nil {
 		return AvailabilityUnknown
 	}
+	return s.VaillantB503AvailabilityAtCtx(ctx, st.opts.DefaultTarget)
+}
+
+// VaillantB503AvailabilityAtCtx is the target-bound form of the capability
+// probe. It retains the same bounded current-error probe and is used by
+// GraphQL consumers that selected a target explicitly.
+func (s *Server) VaillantB503AvailabilityAtCtx(ctx context.Context, target byte) B503Availability {
+	st, ok := b503StateFor(s)
+	if !ok || st == nil {
+		return AvailabilityUnknown
+	}
 	if st.opts.Dispatcher == nil || st.opts.SessionManager == nil {
+		return AvailabilityUnknown
+	}
+	st.opts.SessionManager.MarkQualifiedTarget(target)
+	if st.opts.SessionManager.TargetBlocked(target) {
 		return AvailabilityUnknown
 	}
 	if st.opts.SessionManager.LastRefreshTransportDown() {
 		return AvailabilityTransportDown
 	}
-	if st.opts.SessionManager.IsOwned() {
-		// Live-monitor session gate is held (Enabling / Active / transient
-		// internal expired during epoch refresh) → enable/disable by
+	snapshot := st.opts.SessionManager.StatusSnapshot()
+	if snapshot.State == b503session.Refreshing {
+		return AvailabilityUnknown
+	}
+	if snapshot.Owned {
+		// Live-monitor session gate is held (Enabling / Active / Refreshing) → enable/disable by
 		// another client would return SESSION_BUSY. Surface that
 		// literally so preflight/backoff logic doesn't see AVAILABLE
 		// contradicted by a concurrent error.code=SESSION_BUSY. Using
-		// IsOwned() (rather than State()==Active) covers the transient
-		// expired window too.
+		// IsOwned() (rather than State()==Active) covers Refreshing too.
 		return AvailabilitySessionBusy
 	}
-	_, err := st.opts.Dispatcher.Invoke(ctx, st.opts.DefaultTarget, b503.EncodeCurrentError())
+	_, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err == nil {
 		return AvailabilityAvailable
 	}

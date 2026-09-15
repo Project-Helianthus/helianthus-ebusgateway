@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/b503session"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -103,6 +105,10 @@ type rawFrameDispatcher struct {
 	mgr                 *b503session.Manager
 	requestTimeout      time.Duration
 	disconnectIfCurrent func(b503session.TransportKey)
+	// afterPendingEmission is a deterministic test seam. Production leaves it
+	// nil; it runs while the Manager's emission fence is held and before
+	// bus.Send enters the generation-bound substrate.
+	afterPendingEmission func()
 }
 
 // newRawFrameDispatcher constructs a production dispatcher.
@@ -169,20 +175,31 @@ func newRawFrameDispatcherWithSourceProvider(bus b503Bus, sourceProvider func() 
 //   - On stale-epoch completion → wraps errRawFrameStaleEpoch (caller
 //     never sees data; capability stays last-known per AD18 row 8).
 func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error) {
+	outcome := d.invokeB503Outcome(ctx, target, payload)
+	return outcome.Response, outcome.Err
+}
+
+func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte, payload []byte) mcp.B503DispatchOutcome {
 	if d == nil || d.bus == nil || d.mgr == nil {
-		return nil, errRawFrameMisconfigured
+		return mcp.B503DispatchOutcome{Err: errRawFrameMisconfigured}
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	transportAtIssue := d.mgr.TransportKey()
+	if err := ctx.Err(); err != nil {
+		return mcp.B503DispatchOutcome{
+			Err:       classifyB503ContextErr(ctx, err),
+			Transport: transportAtIssue,
+		}
 	}
 	// §12.2 explicit reject: payload must not include PB/SB. A naive
 	// caller that prepended `b5 03` would otherwise produce a wire frame
 	// with `b5 03 b5 03 …` after the Frame envelope adds its own primary/
 	// secondary bytes — silent corruption.
 	if len(payload) >= 2 && payload[0] == b503PrimaryByte && payload[1] == b503SecondaryByte {
-		return nil, errRawFrameMalformedPayload
+		return mcp.B503DispatchOutcome{Err: errRawFrameMalformedPayload, Transport: transportAtIssue}
 	}
-	transportAtIssue := d.mgr.TransportKey()
 	source, admitted := d.admittedSource()
 	if !admitted || source == 0 {
 		// Source admission is intersected with DriverManager capability. A
@@ -191,10 +208,13 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		// owner here as an idempotent fallback; the correlated lifecycle event
 		// may already have performed the same disconnect and never advances the
 		// B503 transport epoch.
-		if d.disconnectIfCurrent != nil {
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
 			d.disconnectIfCurrent(transportAtIssue)
 		}
-		return nil, fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown)
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown),
+			Transport: transportAtIssue,
+		}
 	}
 
 	// Capture the current epoch at issue-time. AD18 + R3 A2 fix: epoch
@@ -221,6 +241,33 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	if d.readMu != nil {
 		d.readMu.Lock()
 	}
+	unlockReadMu := func() {
+		if d.readMu != nil {
+			d.readMu.Unlock()
+		}
+	}
+	// A context or admitted source can become invalid while this operation
+	// waits for B524 polling to quiesce. Revalidate both at the final
+	// pre-emission boundary so terminal disconnect never drains a stale queued
+	// B503 write after readMu becomes available.
+	if err := bsCtx.Err(); err != nil {
+		unlockReadMu()
+		return mcp.B503DispatchOutcome{
+			Err:       classifyB503ContextErr(bsCtx, err),
+			Transport: transportAtIssue,
+		}
+	}
+	currentSource, currentAdmitted := d.admittedSource()
+	if !currentAdmitted || currentSource == 0 || currentSource != source {
+		unlockReadMu()
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
+			d.disconnectIfCurrent(transportAtIssue)
+		}
+		return mcp.B503DispatchOutcome{
+			Err:       fmt.Errorf("%w: %w", errRawFrameSourceNotAdmitted, b503session.ErrTransportDown),
+			Transport: transportAtIssue,
+		}
+	}
 	frame := protocol.Frame{
 		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
@@ -229,10 +276,35 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		Secondary: b503SecondaryByte,
 		Data:      payload,
 	}
-	resp, sendErr := d.bus.Send(bsCtx, frame)
-	if d.readMu != nil {
-		d.readMu.Unlock()
+	// From this point onward every outcome is conservatively emitted. The
+	// transport API offers no finer acknowledgement boundary than entering
+	// bus.Send.
+	var releaseEmission func()
+	if operationID, ok := b503session.PendingOperationIDFromContext(ctx); ok {
+		var admitted bool
+		releaseEmission, admitted = d.mgr.BeginPendingEmission(operationID, target)
+		if !admitted {
+			unlockReadMu()
+			return mcp.B503DispatchOutcome{
+				Err:       b503session.ErrTransportDown,
+				Transport: transportAtIssue,
+			}
+		}
+		if d.afterPendingEmission != nil {
+			d.afterPendingEmission()
+		}
 	}
+	var resp *protocol.Frame
+	var sendErr error
+	if releaseEmission != nil {
+		func() {
+			defer releaseEmission()
+			resp, sendErr = d.bus.Send(bsCtx, frame)
+		}()
+	} else {
+		resp, sendErr = d.bus.Send(bsCtx, frame)
+	}
+	unlockReadMu()
 
 	// Stale-epoch discipline (§12.7): re-check the Manager's current
 	// epoch against the captured startEpoch BEFORE classifying or
@@ -240,7 +312,7 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 	// belongs to a dead incarnation and must be discarded. We
 	// deliberately do not consult the Manager's other state for this
 	// decision — the stored epoch alone is sufficient.
-	endEpoch := d.mgr.TransportKey().TransportEpoch
+	endEpoch := d.mgr.DispatchEpoch()
 	if endEpoch != startEpoch {
 		// Discard regardless of success/error. The waiter (Invoke
 		// caller) sees errRawFrameStaleEpoch; consumer code path treats
@@ -248,18 +320,42 @@ func (d *rawFrameDispatcher) Invoke(ctx context.Context, target byte, payload []
 		// per AD18 row 8). Do NOT call OnTransportDisconnect here — by
 		// the time the epoch advanced, the Manager has already been
 		// notified by whatever drove the rollover.
-		return nil, errRawFrameStaleEpoch
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: b503session.NativeAmbiguous,
+			Err: errRawFrameStaleEpoch, Transport: transportAtIssue,
+		}
 	}
 
 	if sendErr != nil {
-		return nil, d.classifySendErr(ctx, bsCtx, transportAtIssue, sendErr)
+		native := b503session.NativeAmbiguous
+		if errors.Is(sendErr, ebuserrors.ErrNACK) {
+			native = b503session.NativeNAK
+		}
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: native,
+			Err: d.classifySendErr(ctx, bsCtx, transportAtIssue, sendErr), Transport: transportAtIssue,
+		}
 	}
 	if resp == nil {
 		// Defensive: bus.Send returned (nil, nil). Treat as protocol
 		// failure rather than panic on response.Data dereference.
-		return nil, fmt.Errorf("%w: nil response frame", errRawFrameUpstreamRPCFailed)
+		return mcp.B503DispatchOutcome{
+			Emitted: true, Native: b503session.NativeAmbiguous,
+			Err: fmt.Errorf("%w: nil response frame", errRawFrameUpstreamRPCFailed), Transport: transportAtIssue,
+		}
 	}
-	return resp.Data, nil
+	return mcp.B503DispatchOutcome{
+		Response: resp.Data, Emitted: true, Native: b503session.NativeACK, Transport: transportAtIssue,
+	}
+}
+
+// InvokeB503Outcome is the B503-only lifecycle extension. The generic Invoke
+// contract remains unchanged. A pre-cancelled or lifecycle-invalidated request
+// cannot reach bus.Send; after admission all other errors are conservatively
+// may-have-emitted until the transport API grows a stronger acknowledgement
+// boundary.
+func (d *rawFrameDispatcher) InvokeB503Outcome(ctx context.Context, target byte, payload []byte) mcp.B503DispatchOutcome {
+	return d.invokeB503Outcome(ctx, target, payload)
 }
 
 func (d *rawFrameDispatcher) admittedSource() (byte, bool) {
@@ -301,7 +397,7 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 	// to transportAtIssue prevents a stale generation-N completion from
 	// disconnecting the issuer admitted on generation N+1.
 	if isTransportDownErr(sendErr) {
-		if d.disconnectIfCurrent != nil {
+		if d.disconnectIfCurrent != nil && d.mgr.IsOwned() {
 			d.disconnectIfCurrent(transportAtIssue)
 		}
 		// errors.Join lets the resulting error chain match BOTH
@@ -311,6 +407,12 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 			fmt.Errorf("%w: %v", errRawFrameTransportDown, sendErr),
 			b503session.ErrTransportDown,
 		)
+	}
+	if cause := context.Cause(callerCtx); errors.Is(cause, b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
+	}
+	if cause := context.Cause(bsCtx); errors.Is(cause, b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
 	}
 
 	// No transport-down signal in sendErr: ctx-cancel classification
@@ -326,6 +428,17 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 	// Everything else: NAK, CRC, generic protocol failure. Preserves the
 	// underlying error chain via %w so tests can assert via errors.Is.
 	return fmt.Errorf("%w: %v", errRawFrameUpstreamRPCFailed, sendErr)
+}
+
+// classifyB503ContextErr distinguishes a caller deadline/cancellation from a
+// Manager lifecycle invalidation. The latter is a transport withdrawal, so it
+// must remain visible as TRANSPORT_DOWN while ordinary caller cancellation
+// preserves the upstream-timeout public mapping.
+func classifyB503ContextErr(ctx context.Context, err error) error {
+	if errors.Is(context.Cause(ctx), b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
+	}
+	return fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err)
 }
 
 // isTransportDownErr reports whether the bus.Send error indicates the

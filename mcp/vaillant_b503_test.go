@@ -25,6 +25,13 @@ type stubB503Call struct {
 	payload []byte
 }
 
+type genericOnlyB503Dispatcher struct{ calls int }
+
+func (dispatcher *genericOnlyB503Dispatcher) Invoke(context.Context, byte, []byte) ([]byte, error) {
+	dispatcher.calls++
+	return []byte{0x01, 0x00}, nil
+}
+
 func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []byte) ([]byte, error) {
 	s.calls = append(s.calls, stubB503Call{target: target, payload: append([]byte{}, payload...)})
 	if s.err != nil {
@@ -38,7 +45,19 @@ func (s *stubB503Dispatcher) Invoke(ctx context.Context, target byte, payload []
 	return nil, errors.New("stubB503Dispatcher: no canned response")
 }
 
-// newB503Server builds a gateway MCP Server, attaches the five Vaillant B503
+func (s *stubB503Dispatcher) InvokeB503Outcome(ctx context.Context, target byte, payload []byte) B503DispatchOutcome {
+	if ctx != nil && ctx.Err() != nil {
+		return B503DispatchOutcome{Err: ctx.Err()}
+	}
+	response, err := s.Invoke(ctx, target, payload)
+	native := b503session.NativeAmbiguous
+	if err == nil {
+		native = b503session.NativeACK
+	}
+	return B503DispatchOutcome{Response: response, Emitted: true, Native: native, Err: err}
+}
+
+// newB503Server builds a gateway MCP Server, attaches the Vaillant B503
 // tools, and returns server + dispatcher stub + session manager so tests can
 // manipulate wire responses and FSM state.
 func newB503Server(t *testing.T, disp *stubB503Dispatcher, mgr *b503session.Manager) *Server {
@@ -66,6 +85,17 @@ func newDefaultMgr() *b503session.Manager {
 	)
 }
 
+func TestVaillantB503LifecycleRejectsGenericDispatcherWithoutOutcomeFallback(t *testing.T) {
+	dispatcher := &genericOnlyB503Dispatcher{}
+	outcome := InvokeB503Operation(context.Background(), dispatcher, 0x15, []byte{0x00, 0x03})
+	if outcome.Emitted || !errors.Is(outcome.Err, errNotSupported) {
+		t.Fatalf("generic-only lifecycle outcome = %+v, want pre-emission NOT_SUPPORTED", outcome)
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("generic dispatcher calls = %d, want zero", dispatcher.calls)
+	}
+}
+
 // --- Test 1: ToolRegistration --------------------------------------------
 
 func TestVaillantB503_ToolRegistration(t *testing.T) {
@@ -82,14 +112,55 @@ func TestVaillantB503_ToolRegistration(t *testing.T) {
 	wants := []string{
 		toolVaillantB503ErrorsGetName,
 		toolVaillantB503ErrorsHistoryGetName,
+		toolVaillantB503ErrorsHistoryListName,
 		toolVaillantB503ServiceCurrentGetName,
 		toolVaillantB503ServiceHistoryGetName,
 		toolVaillantB503LiveMonitorName,
+		toolVaillantB503LiveSessionGetName,
 	}
 	for _, want := range wants {
 		if !hasToolName(tools, want) {
 			t.Errorf("tool %q not registered", want)
 		}
+	}
+}
+
+func TestVaillantB503LiveMonitorSession_RefreshingIsOwnedAndStable(t *testing.T) {
+	refreshStarted := make(chan struct{})
+	allowRefresh := make(chan struct{})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		time.Minute,
+		func(context.Context) (b503session.TransportKey, error) {
+			close(refreshStarted)
+			<-allowRefresh
+			return b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 2}, nil
+		},
+	)
+	if _, err := mgr.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	srv := newB503Server(t, &stubB503Dispatcher{}, mgr)
+	done := make(chan error, 1)
+	go func() {
+		mgr.OnEpochAdvance(context.Background(), 2)
+		_, err := mgr.ReadOperation(context.Background(), 0, func(context.Context, byte) b503session.DispatchOutcome {
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+		})
+		done <- err
+	}()
+	<-refreshStarted
+
+	session, err := srv.VaillantB503LiveMonitorSession(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("VaillantB503LiveMonitorSession: %v", err)
+	}
+	if session.State != "Refreshing" || !session.Owned {
+		t.Fatalf("session=%+v; want Refreshing with ownership held", session)
+	}
+	close(allowRefresh)
+	if err := <-done; err != nil {
+		t.Fatalf("triggering read: %v", err)
 	}
 }
 
@@ -232,9 +303,9 @@ func TestVaillantB503_LiveMonitor_Disable_WrongToken_SessionBusy(t *testing.T) {
 	assertToolErrorCode(t, res, "SESSION_BUSY")
 }
 
-// --- Test 6: second enable -> SESSION_BUSY -------------------------------
+// --- Test 6: emitted enable leaves settlement UNKNOWN --------------------
 
-func TestVaillantB503_LiveMonitor_SecondEnable_SessionBusy(t *testing.T) {
+func TestVaillantB503_LiveMonitor_SecondEnable_UnknownWhileSettlementUnproven(t *testing.T) {
 	disp := &stubB503Dispatcher{
 		respByPrefix: map[string][]byte{"\x00\x03": {0x01, 0x00}},
 	}
@@ -248,7 +319,7 @@ func TestVaillantB503_LiveMonitor_SecondEnable_SessionBusy(t *testing.T) {
 		JSONRPC: "2.0", ID: 2, Method: "tools/call",
 		Params: json.RawMessage(`{"name":"` + toolVaillantB503LiveMonitorName + `","arguments":{"action":"enable"}}`),
 	})
-	assertToolErrorCode(t, res, "SESSION_BUSY")
+	assertToolErrorCode(t, res, "UNKNOWN")
 }
 
 // --- Test 7: epoch advance EXPIRED never leaks ---------------------------

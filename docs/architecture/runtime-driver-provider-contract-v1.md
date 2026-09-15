@@ -1545,7 +1545,7 @@ code that is not connected to that composition stays unavailable.
 
 | Runtime/profile | Current reachable operations | Current boundary and INT-06 disposition |
 |---|---|---|
-| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`; B503 adds five read-only evidence/session views. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
+| eBUS `ebus.primary` | Discovery, raw evidence, read, semantic projection, and write are declared on the one managed runtime. Stable MCP provides runtime/registry/semantic reads, guarded schedules/config writes, and registry-routed `ebus.v1.rpc.invoke`. B503 exposes seven stable operations: `ebus.v1.vaillant.errors.get`, `ebus.v1.vaillant.errors.history.get`, `ebus.v1.vaillant.errors.history.list`, `ebus.v1.vaillant.service.current.get`, `ebus.v1.vaillant.service.history.get`, `ebus.v1.vaillant.live_monitor.get`, and `ebus.v1.vaillant.live_monitor.session.get`. The evidence/history/session reads are non-mutating; `live_monitor.get` is the bounded session action surface. | Reuse current `DriverManager`, generation admission, selected-source intersection, and registry method mutability. A declared `WRITE` is not universal semantic write authority; the exact current registry method and a nonzero source still decide. An explicit valid nonzero RPC source overrides the startup-admitted source. |
 | eeBUS SHIP/SPINE runtime | Public redacted runtime, service, session, topology, pairing, and snapshot reads. Owner-only raw feature and mutation-record reads exist. Raw feature set and rollback exist only through the owner boundary, exact write authorization, configured mutation-lab profile, and a runtime implementing the optional mutation interface. | Adapt the eeBUS runtime slot and command router. Missing mutation interface is `unsupported`, never success. No generic semantic eeBUS write is inferred. Exact normative use-case mappings remain a separate docs/registry dependency. |
 | Modbus TCP and qualified SunSpec/Fronius path | Bounded FC03/FC04 raw read, retained profile observation, and one qualified/promoted `helianthus.pack.pv@1.0.0` SemReg projection through the existing qualify/refresh worker. | Read-only. The projection preserves admitted native observation and counter continuity evidence; generated energy is exact Wh-to-kWh with `counter_continuity_unavailable` as a declared projection loss. Reuse adapter-owned scheduling, one owner-gated reconnect/retry, endpoint sanitization, and full wire/logical/physical/generation provenance. No FC06/FC16 or vendor-private write is permitted by the current gateway provider. |
 | Tesla HSC provider in production composition | One disabled-by-default status snapshot with compatibility `unknown` and registry-derived `outbound_allowed` (currently false). | No serial acquisition or transmission. FC100/101/102 records and current-limit evidence types do not authorize a live route. |
@@ -1596,9 +1596,52 @@ confidence model.
   `ebus.v1.ebus_standard.decode`.
 - Vaillant B503 reads: `ebus.v1.vaillant.errors.get`,
   `ebus.v1.vaillant.errors.history.get`,
+  `ebus.v1.vaillant.errors.history.list`,
   `ebus.v1.vaillant.service.current.get`,
   `ebus.v1.vaillant.service.history.get`, and
-  `ebus.v1.vaillant.live_monitor.get`. No B503 install-write tool is present.
+  `ebus.v1.vaillant.live_monitor.session.get`. The bounded
+  `ebus.v1.vaillant.live_monitor.get` session action is separate; no B503
+  install-write tool is present. GraphQL singular reads, the bounded
+  `vaillantErrorsHistory`, `vaillantLiveMonitorSession`, and
+  `vaillantCapabilities` use nullable roots with non-null returned child
+  elements. The history root returns a typed `records` prefix plus nullable
+  `failure { index, code, message }`: it stops at the first failed indexed
+  read, preserves earlier verified rows, and neither fabricates nor probes
+  later indices. The same stable MCP list output is `{records, failure}`.
+  An unavailable session or invalid-target capability failure is field-local
+  and preserves unrelated root fields in the same query.
+  The stable gateway-owned live-monitor session state is one of `Idle`,
+  `Enabling`, `Active`, `Refreshing`, or `Disabled`. `Refreshing` means an
+  epoch refresh retains the ownership gate while every live-monitor operation
+  is busy; a successful refresh returns `Active`, while refresh failure releases
+  ownership and returns to `Idle`. `Disabled` never reports `owned: true`.
+  While the Live-Monitor tab is visible, Portal refreshes this read-only session
+  strip every five seconds so idle expiry and external clients become visible;
+  it stops that polling on tab/section exit, document hiding, or component
+  disconnect, and every result remains fenced to the selected target and epoch.
+  If navigation occurs while an owned session is `Refreshing`, Portal retains
+  the exact issuer-token/target pair and uses a separate bounded, read-only
+  status check after the visible poll has stopped.  It performs at most one
+  token-bound cleanup write after an `Active` confirmation, clears the local
+  pair only after a released `Idle`/`Disabled` confirmation or that write's
+  `disabled: true`, and stops on pair replacement or finite status-failure and
+  non-terminal attempt budgets.  A GraphQL error or null session root is a
+  failed refresh: it leaves the last valid state and retained pair intact
+  rather than inferring an unowned `Unknown` session.
+  Target qualification publishes `PENDING` before it schedules old-pair
+  cleanup and never waits for that cleanup RPC; repeated navigation shares a
+  blocked cleanup for the same exact pair. Visible and deferred session status
+  reads share one serialized request slot. A newer target, epoch, visibility,
+  or lifecycle transition supersedes an older result before it may update
+  state or issue cleanup.
+  Projection B503 capability cards are optional decoration: their probes never
+  block projection/bootstrap completion and remain generation-fenced. When
+  projection discovery later supplies target addresses to an already-open B503
+  pane, Portal rerenders only the picker against the existing qualified state;
+  it does not promote or expose actions for an unqualified target. Portal
+  history retention is keyed by resolved target identity (including the
+  configured-default identity), while qualification epoch only rejects stale
+  responses; returning from B to A can therefore retain A's verified rows.
 - eeBUS public reads: `eebus.v1.runtime.status.get`,
   `eebus.v1.services.list`, `eebus.v1.services.get`,
   `eebus.v1.sessions.list`, `eebus.v1.sessions.get`,

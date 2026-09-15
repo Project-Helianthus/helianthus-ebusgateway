@@ -19,4 +19,10 @@ var (
 	// ErrWrongToken indicates a Disable call whose issuer_token does not
 	// match the currently-held session.
 	ErrWrongToken = errors.New("b503session: issuer_token mismatch")
+	// ErrTargetMismatch indicates that a live-monitor operation was aimed at a
+	// different target than the target bound to the active owner.
+	ErrTargetMismatch = errors.New("b503session: target mismatch")
+	// ErrCleanupPending indicates that a target is fenced by a process-local
+	// cleanup obligation or by restart recovery.
+	ErrCleanupPending = errors.New("b503session: cleanup pending")
 )

@@ -149,7 +149,7 @@ func startHTTPServer(
 	//
 	// With the stub dispatcher, read tools surface `UPSTREAM_RPC_FAILED`
 	// with the "production wiring pending" message; live-monitor action
-	// paths use the real session FSM so EXPIRED normalization, session
+	// paths use the real session FSM so refresh-state publication, session
 	// epochs, and owner-conditional release are all exercised — only the
 	// raw bus dispatch is stubbed.
 	b503rt := installVaillantB503(mcpServer, gateway, &cfg, ebusSourceProvider)

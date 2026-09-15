@@ -11,9 +11,9 @@ package b503session
 
 // State is the public FSM state of the live-monitor session.
 //
-// The internal expired state is used by the refresh-once policy but is
-// NEVER returned by any public accessor: State() resolves expired into
-// Active or Disabled before returning (spec §7.1.1).
+// Refreshing is a stable transitional state for the refresh-once policy. It
+// keeps ownership visible without claiming the session is active while the
+// transport incarnation is being re-homed (spec §7.1.1).
 type State int
 
 const (
@@ -23,16 +23,14 @@ const (
 	Enabling
 	// Active means the session holds the ownership gate and is accepting reads.
 	Active
+	// Refreshing means an epoch refresh holds the ownership gate. Operations are
+	// unavailable until it reaches Active or releases to Idle.
+	Refreshing
 	// Disabled is a terminal post-failure state prior to returning to Idle.
 	Disabled
-	// expired is INTERNAL ONLY. It is set while a refresh-once policy runs
-	// and is never leaked via State().
-	expired
 )
 
-// String returns a stable human-readable label. The internal expired state
-// maps to "Expired" for test-only diagnostics; production code paths must
-// not observe it through State().
+// String returns a stable human-readable label.
 func (s State) String() string {
 	switch s {
 	case Idle:
@@ -41,10 +39,10 @@ func (s State) String() string {
 		return "Enabling"
 	case Active:
 		return "Active"
+	case Refreshing:
+		return "Refreshing"
 	case Disabled:
 		return "Disabled"
-	case expired:
-		return "Expired"
 	default:
 		return "Unknown"
 	}

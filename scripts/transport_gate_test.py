@@ -528,6 +528,51 @@ type Config struct {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
 
+    def test_transport_gate_fails_closed_for_b503_native_operation_sources(self) -> None:
+        # B503's session, dispatcher, provider operation paths, and production
+        # installation wiring can construct, select, or emit native eBUS
+        # requests. Each must make a current matrix report mandatory; this
+        # deliberately does not provide the fixture report, so failure proves
+        # the classifier fired.
+        for changed_file in (
+            "cmd/gateway/vaillant_b503_dispatcher.go",
+            "cmd/gateway/vaillant_b503_graphql_provider.go",
+            "cmd/gateway/vaillant_b503_wiring.go",
+            "internal/vaillant/b503session/session.go",
+            "mcp/vaillant_b503.go",
+        ):
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(changed_file)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"],
+                    cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("TRANSPORT_MATRIX_REPORT is required", result.stdout)
+
+    def test_transport_gate_skips_b503_test_only_changes(self) -> None:
+        for changed_file in (
+            "cmd/gateway/vaillant_b503_dispatcher_test.go",
+            "internal/vaillant/b503session/operation_test.go",
+            "mcp/vaillant_b503_test.go",
+        ):
+            with self.subTest(changed_file=changed_file):
+                repo_path, _ = self._create_temp_repo(changed_file)
+                result = subprocess.run(
+                    ["bash", "scripts/transport_gate.sh"],
+                    cwd=repo_path,
+                    env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                self.assertIn("transport gate: not triggered.", result.stdout)
+
     def test_transport_gate_fails_for_runtime_call_reorder_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(
             "cmd/gateway/main.go",

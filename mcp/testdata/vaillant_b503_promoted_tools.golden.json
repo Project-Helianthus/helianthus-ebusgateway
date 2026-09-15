@@ -1,0 +1,37 @@
+[
+  {
+    "description": "List a bounded Vaillant error-history prefix in ascending index order; returns verified records and a first-failure marker without probing later indices (READ).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "target_address": {
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "ebus.v1.vaillant.errors.history.list"
+  },
+  {
+    "description": "Get the gateway-held Vaillant live-monitor session state without exposing authority (READ).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "target_address": {
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "ebus.v1.vaillant.live_monitor.session.get"
+  }
+]

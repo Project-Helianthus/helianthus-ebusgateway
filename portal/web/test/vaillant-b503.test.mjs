@@ -64,16 +64,48 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
     }
   }
   const fetchRequests = [];
+  const createdElements = [];
+	const intervalCalls = [];
+	const clearedIntervals = [];
+	const timeoutCalls = [];
+	const clearedTimeouts = [];
+	const documentListeners = new Map();
+	const documentState = {
+	  visibilityState: "visible",
+	  documentElement: { setAttribute() {} },
+	  createElement() {
+		const element = makeAuditedElement({
+		  _listeners: new Map(),
+		  addEventListener(type, listener) { this._listeners.set(type, listener); },
+		  append() {},
+		  setAttribute(name, value) { this._audit.push({ prop: String(name), value: String(value) }); },
+		});
+		createdElements.push(element);
+		return element;
+	  },
+	  addEventListener(type, listener) { documentListeners.set(type, listener); },
+	  removeEventListener(type, listener) {
+		if (documentListeners.get(type) === listener) documentListeners.delete(type);
+	  },
+	};
   const sandbox = {
     console: { error() {}, log() {}, warn() {} },
-    document: { documentElement: { setAttribute() {} } },
+	  document: documentState,
     customElements: { define() {} },
     HTMLElement: FakeHTMLElement,
     localStorage: { getItem: () => null, setItem() {} },
-    setInterval: () => ({}),
-    clearInterval: () => {},
-    setTimeout,
-    clearTimeout,
+	  setInterval(callback, delay) {
+		const timer = { callback, delay, id: intervalCalls.length + 1 };
+		intervalCalls.push(timer);
+		return timer;
+	  },
+	  clearInterval(timer) { clearedIntervals.push(timer); },
+	  setTimeout(callback, delay) {
+		const timer = { callback, delay, id: timeoutCalls.length + 1 };
+		timeoutCalls.push(timer);
+		return timer;
+	  },
+	  clearTimeout(timer) { clearedTimeouts.push(timer); },
     AbortController,
     URLSearchParams,
     TextDecoder,
@@ -96,7 +128,7 @@ function buildSandbox({ source, sourcePath, elements, fetchImpl }) {
   shell.bindEvents = () => {};
   shell.querySelector = (selector) => elements.get(selector) || null;
   shell.querySelectorAll = () => [];
-  return { shell, fetchRequests };
+	return { shell, fetchRequests, createdElements, intervalCalls, clearedIntervals, timeoutCalls, clearedTimeouts, documentState, documentListeners };
 }
 
 // Parse a GraphQL fetch call and return {query, variables} from the init body.
@@ -157,7 +189,7 @@ test("VaillantB503Pane_NavItemRegistered", async () => {
 
 // ---- 2. Unavailable capability → empty-state placeholder ----
 
-test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
+test("VaillantB503Pane_Unknown_ShowsProbeFailureHint", async () => {
   const { source, sourcePath } = await loadShellSource();
   const paneBody = makeAuditedElement();
   const elements = new Map([
@@ -185,8 +217,8 @@ test("VaillantB503Pane_Unavailable_ShowsPlaceholder", async () => {
   const htmlWrites = paneBody._audit.filter((e) => e.prop === "innerHTML");
   assert.ok(htmlWrites.length >= 1, "pane body should receive rendered HTML");
   const rendered = htmlWrites.map((e) => e.value).join("\n").toLowerCase();
-  assert.ok(rendered.includes("not supported"),
-    `unavailable state must render a 'not supported' placeholder; got: ${rendered}`);
+  assert.ok(rendered.includes("probe failure hint"),
+    `UNKNOWN state must render the probe-failure hint; got: ${rendered}`);
 });
 
 // ---- 3. Available capability → three tabs ----
@@ -384,4 +416,2187 @@ test("VaillantB503Pane_LiveMonitor_AutoDisableOnLeave", async () => {
   // Token must be cleared after disable.
   assert.ok(!shell._vaillantB503LiveToken,
     "issuerToken must be cleared after auto-disable");
+});
+
+test("VaillantB503Pane_AutoDisableKeepsTokenOnGraphQLError", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    // HTTP transport succeeds, but GraphQL rejects the disable request.
+    fetchImpl: makeGqlFetchImpl([
+      { match: "vaillantLiveMonitor", reply: { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] } },
+    ]),
+  });
+  shell._vaillantB503LiveToken = "tok-still-needed";
+  shell._vaillantB503LiveTarget = 8;
+
+  const cleaned = await Object.getPrototypeOf(shell).handleVaillantB503NavAway.call(shell);
+  assert.equal(cleaned, false, "GraphQL error must leave cleanup pending");
+  assert.equal(shell._vaillantB503LiveToken, "tok-still-needed",
+    "HTTP-successful GraphQL failure must retain issuer token for a later bounded cleanup");
+  assert.equal(shell._vaillantB503LiveTarget, 8,
+    "failure must retain the old target paired with the issuer token");
+  assert.match(status.textContent, /Disable pending: SESSION_BUSY/,
+    "the UI must state that session closure was not confirmed");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).length, 1,
+    "the handler must not auto-retry indefinitely");
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1,
+    "an unconfirmed disable checks authoritative status once without clearing the pair");
+});
+
+test("VaillantB503Pane_LateEnable_AtoBRetainsPriorTokenUntilConfirmedCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement();
+  let resolveEnable;
+  let disableAttempts = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLive(") && variables.action === "enable") {
+        return new Promise((resolve) => {
+          resolveEnable = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-A", rawHex: null, disabled: false } } }),
+          });
+        });
+      }
+      if (query.includes("VaillantLiveDisable") && variables.action === "disable") {
+        disableAttempts += 1;
+        const reply = disableAttempts === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+	  if (query.includes("VaillantLiveMonitorSession")) {
+		return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+	  }
+      throw new Error(`unexpected GraphQL request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  const lateA = proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  await flush();
+
+  // A completes only after the operator selected B. The canonical B context
+  // must remain untouched while A's token-bound cleanup is retained.
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  resolveEnable();
+  await lateA;
+
+  assert.equal(shell._vaillantB503TargetAddress, 21, "late A completion must not replace current B target");
+  assert.equal(shell._vaillantB503Epoch, 1, "late A completion must not mutate B epoch");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "failed A cleanup must retain A issuer token");
+  assert.equal(shell._vaillantB503LiveTarget, 8, "failed A cleanup must retain A target");
+  assert.match(status.textContent, /Disable pending: SESSION_BUSY/);
+  assert.equal(fetchRequests.length, 3, "late completion gets one cleanup attempt and one authoritative status read");
+  const firstDisable = parseGqlInit(fetchRequests[1].init).variables;
+  assert.deepEqual(firstDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    "late cleanup must use A's returned token and A target");
+
+  const cleaned = await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(cleaned, true, "one later cleanup may clear after disabled=true");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 21, "later A cleanup must still preserve B selection");
+  assert.equal(fetchRequests.length, 4, "later cleanup is bounded to one explicit attempt");
+  const secondDisable = parseGqlInit(fetchRequests[3].init).variables;
+  assert.deepEqual(secondDisable, { action: "disable", issuerToken: "token-A", targetAddress: 8 });
+});
+
+test("VaillantB503Pane_StaleEnableKeepsNewerSessionWhenOldCleanupIsBusy", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement({ textContent: "Live-monitor session active." });
+  let resolveEnableA;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLive(") && variables.action === "enable") {
+        return new Promise((resolve) => {
+          resolveEnableA = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-A", rawHex: null, disabled: false } } }),
+          });
+        });
+      }
+      if (query.includes("VaillantLiveDisable") && variables.action === "disable") {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
+        });
+      }
+      throw new Error(`unexpected GraphQL request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  const lateA = proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  await flush();
+
+  // B is already a newer active session when the old A enable completes.
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  shell._vaillantB503LiveToken = "token-B";
+  shell._vaillantB503LiveTarget = 21;
+  resolveEnableA();
+  await lateA;
+
+  assert.equal(shell._vaillantB503LiveToken, "token-B",
+    "stale A enable must never publish over a newer B cleanup token");
+  assert.equal(shell._vaillantB503LiveTarget, 21,
+    "stale A enable must never publish over B's target");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  assert.equal(status.textContent, "Live-monitor session active.",
+    "old cleanup failure must not overwrite B's current status");
+  assert.equal(fetchRequests.length, 2, "late A gets one direct bounded cleanup attempt");
+  assert.deepEqual(parseGqlInit(fetchRequests[0].init).variables,
+    { action: "enable", targetAddress: 8 });
+  assert.deepEqual(parseGqlInit(fetchRequests[1].init).variables,
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    "direct cleanup must use the obsolete A token and captured A target");
+});
+
+test("VaillantB503Pane_DelayedOldCleanupPreservesReplacementToken", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement({ textContent: "Live-monitor session active." });
+  let resolveOldCleanup;
+  let disableAttempts = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-live-status"]', status]]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveDisable") || variables.action !== "disable") {
+        throw new Error(`unexpected GraphQL request ${query}`);
+      }
+      disableAttempts += 1;
+      if (disableAttempts === 1) {
+        return new Promise((resolve) => {
+          resolveOldCleanup = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true, status: 200,
+        json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+      });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503TargetAddress = 8;
+
+  const oldCleanup = proto.handleVaillantB503NavAway.call(shell);
+  await flush();
+
+  // The pane reopens and a current B enable replaces the recoverable cleanup
+  // pair while the old A disable response remains pending.
+  shell._vaillantB503LiveToken = "token-B";
+  shell._vaillantB503LiveTarget = 21;
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  resolveOldCleanup();
+  assert.equal(await oldCleanup, true, "old cleanup was confirmed by the gateway");
+
+  assert.equal(shell._vaillantB503LiveToken, "token-B",
+    "confirmed old A cleanup must not erase a newer B cleanup token");
+  assert.equal(shell._vaillantB503LiveTarget, 21,
+    "confirmed old A cleanup must not erase B's paired target");
+  assert.equal(shell._vaillantB503TargetAddress, 21,
+    "old completion must not mutate the current B target");
+  assert.equal(status.textContent, "Live-monitor session active.",
+    "old completion must not replace B's current session status");
+  assert.deepEqual(parseGqlInit(fetchRequests[0].init).variables,
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 });
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), true,
+    "the replacement B pair remains available for one later bounded cleanup");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 2,
+    "cleanup write attempts remain explicit and bounded");
+  assert.deepEqual(parseGqlInit(fetchRequests[1].init).variables,
+    { action: "disable", issuerToken: "token-B", targetAddress: 21 });
+});
+
+test("VaillantB503Pane_TargetProbeUnmountsOldLiveControlsBeforeBQualification", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const target = makeAuditedElement({ value: "21", addEventListener() {} });
+  const status = makeAuditedElement();
+  const output = makeAuditedElement();
+  const controls = new Map();
+  for (const role of ["enable", "read", "disable"]) {
+    const listeners = new Map();
+    controls.set(role, makeAuditedElement({
+      _listeners: listeners,
+      addEventListener(type, listener) { listeners.set(type, listener); },
+    }));
+  }
+  let resolveBProbe;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-target"]', target],
+      ['[data-role="vaillant-b503-live-status"]', status],
+      ['[data-role="vaillant-b503-live-output"]', output],
+      ['[data-role="vaillant-b503-live-enable"]', controls.get("enable")],
+      ['[data-role="vaillant-b503-live-read"]', controls.get("read")],
+      ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantB503Cap")) {
+        assert.equal(variables.targetAddress, 21, "only B is qualified after target selection");
+        return new Promise((resolve) => {
+          resolveBProbe = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "NOT_SUPPORTED" } } } }),
+          });
+        });
+      }
+      throw new Error(`unexpected B503 operation during target qualification: ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+
+  // These are click handlers from the previously available A live-monitor
+  // pane. The pending state must make even those stale references inert.
+  controls.get("enable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "enable"));
+  controls.get("read").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "read"));
+  controls.get("disable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "disable"));
+
+  const changing = proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503CapabilityReason, "PENDING",
+    "B must become operation-pending synchronously before cleanup/probe yields");
+  assert.match(body.innerHTML, /b503-state-pending/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "pending pane must unmount every B503 live-monitor control");
+  for (const role of ["enable", "read", "disable"]) controls.get(role)._listeners.get("click")();
+  await flush();
+
+  const liveOperations = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLive("));
+  assert.equal(liveOperations.length, 0,
+    "stale A controls clicked while B probes must send no B SERVICE_WRITE/read operation");
+  assert.equal(fetchRequests.length, 1, "only B's capability probe may leave the browser during qualification");
+
+  resolveBProbe();
+  await changing;
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+  assert.match(body.innerHTML, /b503-state-not-supported/);
+});
+
+test("VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const target = makeAuditedElement({ value: "21", addEventListener() {} });
+  let resolveACleanup;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-target"]', target],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantB503Cap", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } } },
+    ]),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell.handleVaillantB503NavAway = (previous) => {
+    if (previous === 8) return new Promise((resolve) => { resolveACleanup = () => resolve(true); });
+    return Promise.resolve(true);
+  };
+
+  const toB = proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  target.value = "34";
+  const toC = proto.changeVaillantB503Target.call(shell);
+  await toC;
+
+  assert.equal(shell._vaillantB503TargetAddress, 34);
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init).variables.targetAddress), [34],
+    "C is the only target that may be qualified while B cleanup remains pending");
+  resolveACleanup();
+  await toB;
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init).variables.targetAddress), [34],
+    "late B cleanup must not launch a duplicate probe for the current C context");
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED",
+    "late B completion must not overwrite C's qualification result");
+  assert.match(body.innerHTML, /b503-state-not-supported/);
+});
+
+test("VaillantB503Pane_stalledQualificationTimesOutAndReentrySupersedesStaleProbe", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const pendingReplies = [];
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: (_url, init) => new Promise((resolve) => {
+      pendingReplies.push({ resolve, signal: init.signal });
+    }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+  shell.activateSection = proto.activateSection;
+  shell._activeSectionTarget = "section-projection";
+  shell._vaillantB503TargetAddress = 8;
+
+  const timeoutContext = proto._beginVaillantB503TargetQualification.call(shell, 8);
+  const timedOut = proto.refreshVaillantB503Capability.call(shell, timeoutContext);
+  await flush();
+  assert.equal(timeoutCalls.length, 1, "qualification installs one bounded timeout");
+  assert.equal(timeoutCalls[0].delay, 5000);
+  timeoutCalls[0].callback();
+  await timedOut;
+  assert.equal(pendingReplies[0].signal.aborted, true, "timeout aborts its stalled capability transport");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "timeout clears its own handle");
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN", "timeout releases PENDING into a recoverable conservative state");
+  assert.match(body.innerHTML, /b503-state-unknown/);
+
+  const pendingContext = proto._beginVaillantB503TargetQualification.call(shell, 8);
+  const stalled = proto.refreshVaillantB503Capability.call(shell, pendingContext);
+  await flush();
+  const reopened = proto.openVaillantB503ProjectionTarget.call(shell, 8);
+  await reopened;
+  await flush();
+  assert.equal(fetchRequests.length, 3, "same-target re-entry supersedes the stalled PENDING qualification once");
+  assert.equal(pendingReplies[1].signal.aborted, true, "re-entry aborts the superseded capability probe");
+
+  pendingReplies[2].resolve({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } },
+  }) });
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE", "re-entry result qualifies the current target");
+
+  pendingReplies[1].resolve({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } },
+  }) });
+  await stalled;
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE", "late superseded response cannot overwrite the newer qualification");
+});
+
+test("VaillantB503Pane_targetQualificationDoesNotWaitForBlockedOldCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const target = makeAuditedElement({ value: "21", addEventListener() {} });
+  let cleanupCalls = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-target"]', target],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        cleanupCalls += 1;
+        return new Promise(() => {}); // Simulates a transport that never settles.
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query} ${JSON.stringify(variables)}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+
+  await proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED", "B qualification progresses despite a blocked A cleanup");
+  assert.match(body.innerHTML, /b503-state-not-supported/);
+  target.value = "34";
+  await proto.changeVaillantB503Target.call(shell);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantB503Cap")).map(({ variables }) => variables.targetAddress), [21, 34]);
+  assert.equal(cleanupCalls, 1, "repeated selections reuse one blocked cleanup for the retained A pair");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "the unconfirmed pair remains recoverable");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+});
+
+test("VaillantB503Pane_targetSwitchCleansRetainedAPairRatherThanPreviousPicker", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "34", addEventListener() {} });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 21; // B selected in the picker.
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8; // Retained A recovery pair.
+
+  await proto.changeVaillantB503Target.call(shell); // B -> C.
+  const disable = fetchRequests.map((request) => parseGqlInit(request.init))
+    .find(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disable.variables, { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    "target-switch cleanup must submit the retained A token with its paired A target");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed cleanup clears exactly A's pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "confirmed A cleanup must preserve selected C");
+});
+
+test("VaillantB503ProjectionTargetCleanupPreservesRetainedDefaultPair", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell.activateSection = () => {};
+  shell._vaillantB503TargetAddress = 21; // Prior picker/card context is B.
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-default";
+  shell._vaillantB503LiveTarget = null; // Token belongs to configured default.
+
+  await proto.openVaillantB503ProjectionTarget.call(shell, 34); // B -> C card.
+  const disable = fetchRequests.map((request) => parseGqlInit(request.init))
+    .find(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disable.variables, { action: "disable", issuerToken: "token-default", targetAddress: null },
+    "card cleanup must preserve null/default as the held token's paired target");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "default-pair cleanup must preserve selected C");
+});
+
+test("VaillantB503Pane_DelayedExplicitDisablePreservesNewSameTargetEnable", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const status = makeAuditedElement();
+  const session = makeAuditedElement();
+  let resolveOldDisable;
+  let disableAttempts = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-live-status"]', status],
+      ['[data-role="vaillant-b503-live-output"]', makeAuditedElement()],
+      ['[data-role="vaillant-b503-session-strip"]', session],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLive(") && variables.action === "disable") {
+        disableAttempts += 1;
+        if (disableAttempts === 1) {
+          return new Promise((resolve) => {
+            resolveOldDisable = () => resolve({
+              ok: true, status: 200,
+              json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+            });
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantLive(") && variables.action === "enable") {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-B", rawHex: null, disabled: false } } }),
+        });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      throw new Error(`unexpected GraphQL request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 21;
+
+  const oldDisable = proto.invokeVaillantLiveMonitor.call(shell, "disable");
+  await flush();
+  await proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  assert.equal(shell._vaillantB503LiveToken, "token-B", "new same-target enable replaces A token while disable is pending");
+  assert.equal(shell._vaillantB503LiveTarget, 21);
+  assert.equal(status.textContent, "Live-monitor session active.");
+
+  resolveOldDisable();
+  await oldDisable;
+  assert.equal(shell._vaillantB503LiveToken, "token-B",
+    "late A disable confirmation must not erase same-target B token");
+  assert.equal(shell._vaillantB503LiveTarget, 21);
+  assert.equal(status.textContent, "Live-monitor session active.",
+    "late A disable must not replace B's active status");
+
+  await proto.invokeVaillantLiveMonitor.call(shell, "disable");
+  assert.equal(shell._vaillantB503LiveToken, null,
+    "a later explicit B disable may clear exactly its submitted pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  const liveCalls = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLive("));
+  assert.deepEqual(liveCalls.map(({ variables }) => variables), [
+    { action: "disable", targetAddress: 21, issuerToken: "token-A" },
+    { action: "enable", targetAddress: 21 },
+    { action: "disable", targetAddress: 21, issuerToken: "token-B" },
+  ]);
+});
+
+test("VaillantB503Pane_StaleExplicitDisableClearsItsStillCurrentPair", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "21", addEventListener() {} });
+  const status = makeAuditedElement();
+  const body = makeAuditedElement();
+  let resolveExplicitDisable;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-target"]', target],
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-live-status"]', status],
+      ['[data-role="vaillant-b503-live-output"]', makeAuditedElement()],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantLive(") && variables.action === "disable") {
+        return new Promise((resolve) => {
+          resolveExplicitDisable = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }),
+          });
+        });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({
+          ok: true, status: 200,
+          json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }),
+        });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }) });
+      }
+      throw new Error(`unexpected GraphQL request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  const explicitDisable = proto.invokeVaillantLiveMonitor.call(shell, "disable");
+  await flush();
+  const switched = proto.changeVaillantB503Target.call(shell);
+  await switched;
+  assert.equal(shell._vaillantB503LiveToken, "token-A",
+    "concurrent target cleanup SESSION_BUSY must retain A until explicit disable confirms");
+  resolveExplicitDisable();
+  await explicitDisable;
+  assert.equal(shell._vaillantB503LiveToken, null,
+    "successful stale explicit disable must clear its still-current A pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  const liveCalls = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLive(") || query.includes("VaillantLiveDisable"));
+  assert.deepEqual(liveCalls.map(({ variables }) => variables), [
+    { action: "disable", targetAddress: 8, issuerToken: "token-A" },
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "explicit disable and concurrent cleanup must both remain bound to captured A");
+});
+
+test("VaillantB503Pane_reason_matrix_has_stable_state_selectors", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  for (const [reason, selector, required] of [
+    ["AVAILABLE", "b503-state-available", "Live-Monitor"],
+    ["NOT_SUPPORTED", "b503-state-not-supported", "Support limitation"],
+    ["TRANSPORT_DOWN", "b503-state-transport-down", "Transport warning"],
+    ["SESSION_BUSY", "b503-state-session-busy", "Session contention"],
+    ["UNKNOWN", "b503-state-unknown", "Probe failure hint"],
+  ]) {
+    const paneBody = makeAuditedElement();
+    const { shell } = buildSandbox({ source, sourcePath, elements: new Map([["[data-role=\"vaillant-b503-body\"]", paneBody]]), fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+    Object.getPrototypeOf(shell).renderVaillantB503Pane.call(shell, reason, paneBody);
+    const rendered = paneBody.innerHTML;
+    assert.ok(rendered.includes(`data-testid=\"${selector}\"`), `${reason} must expose ${selector}`);
+    assert.ok(rendered.includes(required), `${reason} must expose its documented helpful artefact`);
+    assert.ok(rendered.includes('data-role="vaillant-b503-target"'), `${reason} must retain the target selector`);
+  }
+});
+
+test("VaillantB503Pane_empty_target_preserves_configured_default_for_every_request", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "" });
+  const elements = new Map([
+    ['[data-role="vaillant-b503-target"]', target],
+    ['[data-role="vaillant-b503-errors-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-service-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-history-body"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-live-status"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-live-output"]', makeAuditedElement()],
+    ['[data-role="vaillant-b503-session-strip"]', makeAuditedElement()],
+  ]);
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements,
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: [] } } },
+      { match: "VaillantErrors", reply: { data: { vaillantErrors: { firstActiveError: null, slots: [] } } } },
+      { match: "VaillantServiceCurrent", reply: { data: { vaillantServiceCurrent: { firstActiveError: null, slots: [] } } } },
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
+      { match: "VaillantLive", reply: { data: { vaillantLiveMonitor: { rawHex: "", issuerToken: null, disabled: false } } } },
+    ]),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  await proto.refreshVaillantErrors.call(shell);
+  await proto.refreshVaillantServiceCurrent.call(shell);
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  await proto.invokeVaillantLiveMonitor.call(shell, "read");
+
+  assert.equal(proto._vaillantB503Target.call(shell), null, "empty selection must mean configured default");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.length, 6, "live-monitor read also refreshes the session strip");
+  for (const call of calls) {
+    assert.equal(call.variables.targetAddress, null, `${call.query} must preserve null/default target`);
+  }
+});
+
+test("VaillantB503Pane_nonempty_targets_keep_the_probed_configured_default_selected", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  shell.projectionDevices = [
+    { address: 21, display_name: "Regulator" },
+    { address: 8, display_name: "Boiler" },
+  ];
+  const options = Object.getPrototypeOf(shell)._vaillantB503TargetOptions.call(shell);
+  assert.match(options, /^<option value="" selected>Configured default<\/option>/,
+    "a direct-open capability probe on configured default must keep null selected");
+  assert.match(options, /value="21"/);
+  assert.match(options, /value="8"/);
+});
+
+test("VaillantB503Pane_empty_discovery_keeps_configured_default_target_option", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  shell.projectionDevices = [];
+  Object.getPrototypeOf(shell).renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /<option value="" selected>Configured default<\/option>/,
+    "empty discovery must describe the null target that Portal operations resolve through the configured default");
+  assert.doesNotMatch(body.innerHTML, /No target selected/);
+});
+
+test("VaillantB503ProjectionCard_renders_without_projection_planes", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+    ]),
+  });
+  shell.projectionDevices = [{ address: 8, display_name: "Boiler", projections: [] }];
+  await Object.getPrototypeOf(shell).loadAllProjectionPlanes.call(shell);
+	await flush();
+  assert.match(grid.innerHTML, /No non-empty projection planes/);
+  assert.equal(appended.length, 1, "capability card must be appended even without graph planes");
+  assert.match(appended[0].textContent, /Vaillant B503/);
+  assert.ok(appended[0]._audit.some((entry) => entry.prop === "data-role" && entry.value === "projection-b503-card"),
+    "projection card must retain the public data-role selector");
+});
+
+test("VaillantB503ProjectionCard_stalledOptionalProbeDoesNotBlockPreview", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const list = makeAuditedElement();
+  const grid = makeAuditedElement();
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: (url, init) => {
+      if (String(url).includes("projection/devices")) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 8, display_name: "Boiler", projections: [] }] }) });
+      }
+      if (parseGqlInit(init).query.includes("VaillantB503Projection")) return new Promise(() => {});
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  shell.isActiveBootstrapLifecycle = () => true;
+  const loaded = await Object.getPrototypeOf(shell).loadProjectionPreview.call(shell, list, 1, null);
+  assert.equal(loaded, true, "optional B503 card probe cannot hold projection/bootstrap completion");
+  assert.match(grid.innerHTML, /No non-empty projection planes/);
+});
+
+test("VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const list = makeAuditedElement();
+  const picker = makeAuditedElement({ value: "", disabled: true });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+	  ['[data-role="vaillant-b503-target"]', picker],
+      ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+    ]),
+    fetchImpl: (url) => {
+      if (String(url).includes("projection/devices")) return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 21, display_name: "Regulator", projections: [] }] }) });
+      throw new Error(`unexpected request ${url}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.isActiveBootstrapLifecycle = () => true;
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503CapabilityReason = "NOT_SUPPORTED";
+  shell.projectionDevices = [];
+  proto.renderVaillantB503Pane.call(shell, "NOT_SUPPORTED", body);
+  assert.match(body.innerHTML, /vaillant-b503-target[^>]*disabled/);
+  shell.loadAllProjectionPlanes = async () => true;
+  await proto.loadProjectionPreview.call(shell, list, 1, null);
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+	  assert.match(picker.innerHTML, /value="21"/);
+	  assert.equal(picker.disabled, false);
+});
+
+test("VaillantB503Pane_discoveryRetainsExplicitSelectedTarget", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const picker = makeAuditedElement({ value: "", disabled: false });
+  const { shell } = buildSandbox({ source, sourcePath, elements: new Map([['[data-role="vaillant-b503-target"]', picker]]) });
+  shell.projectionDevices = [{ address: 21, display_name: "Regulator" }];
+  shell._vaillantB503TargetAddress = 8;
+  Object.getPrototypeOf(shell)._refreshVaillantB503TargetPicker.call(shell);
+  assert.match(picker.innerHTML, /value="8" selected>Previously selected/);
+  assert.equal(picker.value, "8");
+  assert.equal(picker.disabled, false);
+});
+
+test("VaillantB503Pane_discoveryKeepsActiveResultNodeAttached", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const picker = makeAuditedElement({ value: "", disabled: true });
+  const errorsBody = makeAuditedElement();
+  let resolveErrors;
+  const { shell } = buildSandbox({ source, sourcePath, elements: new Map([
+    ['[data-role="vaillant-b503-body"]', body], ['[data-role="vaillant-b503-target"]', picker],
+    ['[data-role="vaillant-b503-errors-body"]', errorsBody], ['[data-role="projection-controls"]', { classList: { add() {}, remove() {} } }],
+  ]), fetchImpl: (url, init) => {
+    if (String(url).includes("projection/devices")) return Promise.resolve({ ok: true, json: async () => ({ items: [{ address: 21, projections: [] }] }) });
+    if (parseGqlInit(init).query.includes("VaillantErrors")) return new Promise((resolve) => { resolveErrors = resolve; });
+    throw new Error(`unexpected ${url}`);
+  }});
+  const proto = Object.getPrototypeOf(shell);
+  shell.isActiveBootstrapLifecycle = () => true;
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  const pending = proto.refreshVaillantErrors.call(shell);
+  await proto.loadProjectionPreview.call(shell, makeAuditedElement(), 1, null);
+  resolveErrors({ ok: true, json: async () => ({ data: { vaillantErrors: { firstActiveError: 281, slots: [281] } } }) });
+  await pending;
+  assert.match(errorsBody.innerHTML, /281/, "discovery must not detach the active errors result node");
+  assert.match(picker.innerHTML, /value="21"/);
+});
+
+test("VaillantB503ProjectionCard_ignores_out_of_order_A_B_A_capability_results", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const deviceSelect = makeAuditedElement({ value: "8" });
+  const pending = [];
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-uml-grid"]', grid],
+      ['[data-role="projection-device-select"]', deviceSelect],
+    ]),
+    fetchImpl: (_url, init) => new Promise((resolve) => {
+      pending.push({
+        target: parseGqlInit(init).variables.targetAddress,
+        resolve: () => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } }) }),
+      });
+    }),
+  });
+  shell.projectionDevices = [
+    { address: 8, display_name: "A", projections: [] },
+    { address: 21, display_name: "B", projections: [] },
+  ];
+  const proto = Object.getPrototypeOf(shell);
+
+  const firstA = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  deviceSelect.value = "21";
+  const B = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  deviceSelect.value = "8";
+  const newestA = proto.loadAllProjectionPlanes.call(shell);
+  await flush();
+  assert.deepEqual(pending.map((request) => request.target), [8, 21, 8]);
+
+  pending[0].resolve();
+  await firstA;
+  pending[1].resolve();
+  await B;
+  assert.equal(appended.length, 0, "superseded A and B requests must not append cards");
+  pending[2].resolve();
+  await newestA;
+	await flush();
+  assert.equal(appended.length, 1, "only the newest A invocation may append its card");
+});
+
+test("VaillantB503ProjectionCard_target_wins_over_a_stale_hidden_picker", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const staleTarget = makeAuditedElement({ value: "8" });
+  const paneBody = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-device-select"]', makeAuditedElement({ value: "21" })],
+      ['[data-role="vaillant-b503-target"]', staleTarget],
+      ['[data-role="vaillant-b503-body"]', paneBody],
+      ['[data-role="vaillant-b503-errors-body"]', makeAuditedElement()],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantB503Projection", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+      { match: "vaillantCapabilities", reply: { data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } } },
+      { match: "VaillantErrors", reply: { data: { vaillantErrors: { firstActiveError: null, slots: [] } } } },
+    ]),
+  });
+
+  await Object.getPrototypeOf(shell).renderVaillantB503ProjectionCard.call(shell, grid, 21);
+  assert.equal(appended.length, 1, "the admitted card must be rendered");
+  const click = appended[0]._listeners.get("click");
+  assert.equal(typeof click, "function", "the projection card must be navigable");
+  click();
+  await flush();
+
+  assert.equal(Object.getPrototypeOf(shell)._vaillantB503Target.call(shell), 21,
+    "the card target must remain canonical despite the stale picker");
+  await Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
+  const b503Calls = fetchRequests
+    .map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("vaillantCapabilities") || query.includes("VaillantErrors"));
+  assert.ok(b503Calls.length >= 2, "card navigation must probe capability and issue later B503 requests");
+  for (const call of b503Calls) {
+    assert.equal(call.variables.targetAddress, 21,
+      `stale picker must not override ${call.query}`);
+  }
+});
+
+test("VaillantB503ProjectionCard_qualifiesTargetBeforeStaleLiveControlsCanRun", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const appended = [];
+  const grid = makeAuditedElement({ querySelector: () => null, append: (node) => appended.push(node) });
+  const paneBody = makeAuditedElement();
+  const staleTarget = makeAuditedElement({ value: "8", addEventListener() {} });
+  const status = makeAuditedElement();
+  const output = makeAuditedElement();
+  const controls = new Map();
+  for (const role of ["enable", "read", "disable"]) {
+    const listeners = new Map();
+    controls.set(role, makeAuditedElement({
+      _listeners: listeners,
+      addEventListener(type, listener) { listeners.set(type, listener); },
+    }));
+  }
+  let resolveBProbe;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="projection-device-select"]', makeAuditedElement({ value: "21" })],
+      ['[data-role="vaillant-b503-target"]', staleTarget],
+      ['[data-role="vaillant-b503-body"]', paneBody],
+      ['[data-role="vaillant-b503-live-status"]', status],
+      ['[data-role="vaillant-b503-live-output"]', output],
+      ['[data-role="vaillant-b503-live-enable"]', controls.get("enable")],
+      ['[data-role="vaillant-b503-live-read"]', controls.get("read")],
+      ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query, variables } = parseGqlInit(init);
+      if (query.includes("VaillantB503Projection")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        assert.equal(variables.targetAddress, 21, "card target B must be the only target qualified");
+        return new Promise((resolve) => {
+          resolveBProbe = () => resolve({
+            ok: true, status: 200,
+            json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } } }),
+          });
+        });
+      }
+      throw new Error(`unexpected B503 operation while card target qualifies: ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+  controls.get("enable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "enable"));
+  controls.get("read").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "read"));
+  controls.get("disable").addEventListener("click", () => proto.invokeVaillantLiveMonitor.call(shell, "disable"));
+
+  await proto.renderVaillantB503ProjectionCard.call(shell, grid, 21);
+  assert.equal(appended.length, 1, "available projection capability must expose a card");
+  appended[0]._listeners.get("click")();
+  assert.equal(shell._vaillantB503CapabilityReason, "PENDING",
+    "card navigation must publish pending before any cleanup/probe await");
+  assert.equal(proto._vaillantB503Target.call(shell), 21);
+  assert.match(paneBody.innerHTML, /b503-state-pending/);
+  assert.doesNotMatch(paneBody.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "pending card navigation must withdraw old live controls");
+  for (const role of ["enable", "read", "disable"]) controls.get(role)._listeners.get("click")();
+  await flush();
+
+  const liveOperations = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLive("));
+  assert.equal(liveOperations.length, 0,
+    "stale A controls after clicking B card must not dispatch a B service operation");
+  assert.equal(fetchRequests.length, 2, "only card availability and B qualification requests may occur");
+  resolveBProbe();
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "NOT_SUPPORTED");
+  assert.match(paneBody.innerHTML, /b503-state-not-supported/);
+});
+
+test("VaillantB503Pane_session_status_does_not_infer_a_foreign_owner", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const target = makeAuditedElement({ value: "8" });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-target"]', target],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Gateway session gate is held/);
+  assert.doesNotMatch(strip.innerHTML.toLowerCase(), /another client|foreign owner/);
+  assert.match(strip.innerHTML, /data-testid="b503-session-state-label"/);
+});
+
+test("VaillantB503Pane_visibleAndDeferredSessionReadsSerializeAndIgnoreSupersededResult", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  let resolveFirst;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let sessionCalls = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        sessionCalls += 1;
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        if (sessionCalls === 1) {
+          return new Promise((resolve) => {
+            resolveFirst = () => {
+              inFlight -= 1;
+              resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+            };
+          });
+        }
+        inFlight -= 1;
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+
+  const visible = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  const deferred = proto._refreshVaillantB503DeferredCleanupStatus.call(shell);
+  await flush();
+  assert.equal(sessionCalls, 1, "deferred polling queues behind the visible status read");
+  resolveFirst();
+  await visible;
+  await deferred;
+
+  assert.equal(maxInFlight, 1, "visible and deferred status polling share one request slot");
+  assert.equal(sessionCalls, 2, "the newest queued status read runs once after the slow predecessor");
+  assert.doesNotMatch(strip.innerHTML, /Session state: Idle/, "superseded visible Idle result never overwrites the newer status");
+  assert.equal(shell._vaillantB503SessionState, "Active");
+  assert.equal(shell._vaillantB503LiveToken, null, "the queued deferred Active result performs one confirmed cleanup");
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 1,
+    "serialized status processing emits no duplicate cleanup write");
+});
+
+test("VaillantB503Pane_sessionStatusTimeoutReleasesTheNextGeneration", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let sessionCalls = 0;
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      sessionCalls += 1;
+      if (sessionCalls === 1) return new Promise(() => {});
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  const stalled = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  assert.equal(timeoutCalls.length, 1);
+  timeoutCalls[0].callback();
+  assert.equal(await stalled, false, "timeout cannot publish a session result");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "timeout clears its scheduled handle");
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+  assert.equal(sessionCalls, 2, "a newer generation proceeds after the timeout");
+  assert.match(strip.innerHTML, /Session state: Active/);
+  assert.equal(fetchRequests.length, 2);
+});
+
+test("VaillantB503Pane_disconnectAbortsStalledStatusAndReconnectsWithoutLateWrite", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let firstSignal;
+  let sessionCalls = 0;
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected cleanup write ${query}`);
+      sessionCalls += 1;
+      if (sessionCalls === 1) {
+        firstSignal = init.signal;
+        return new Promise(() => {});
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  const stalled = proto.refreshVaillantLiveMonitorSession.call(shell);
+  await flush();
+  shell._isConnected = false;
+  proto.disconnectedCallback.call(shell);
+  assert.equal(firstSignal?.aborted, true, "disconnect aborts the stalled status transport");
+  assert.equal(await stalled, false, "invalidated status cannot mutate the detached component");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "disconnect clears the status timeout");
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+
+  shell._isConnected = true;
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true, "reconnect starts a new status generation");
+  assert.equal(sessionCalls, 2);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "late/stale status work never emits a cleanup write");
+});
+
+test("VaillantB503Pane_refreshing_session_holds_gate_and_disables_live_operations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const controls = new Map([
+    ["enable", makeAuditedElement({ disabled: false })],
+    ["read", makeAuditedElement({ disabled: false })],
+    ["disable", makeAuditedElement({ disabled: false })],
+  ]);
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-enable"]', controls.get("enable")],
+      ['[data-role="vaillant-b503-live-read"]', controls.get("read")],
+      ['[data-role="vaillant-b503-live-disable"]', controls.get("disable")],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Session state: Refreshing/);
+  assert.match(strip.innerHTML, /Gateway session gate is held/);
+  for (const [name, control] of controls) {
+    assert.equal(control.disabled, true, `${name} must be unavailable while refresh owns the gate`);
+  }
+});
+
+test("VaillantB503Pane_visibleLiveSessionPollShowsExternalIdleExpiry", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  let sessionCalls = 0;
+  const { shell, intervalCalls } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      sessionCalls += 1;
+      const session = sessionCalls === 1
+        ? { state: "Active", owned: true }
+        : { state: "Idle", owned: false };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.match(strip.innerHTML, /Session state: Active/);
+
+  proto._startVaillantB503LiveMonitorSessionPolling.call(shell);
+  assert.equal(intervalCalls.length, 1, "visible live tab starts one bounded session refresh interval");
+  assert.equal(intervalCalls[0].delay, 5000);
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  assert.equal(sessionCalls, 2, "poll performs only the read-only session query");
+  assert.match(strip.innerHTML, /Session state: Idle/,
+    "idle expiry or another client closure must replace stale active/owned strip state");
+});
+
+test("VaillantB503Pane_sessionPollStopsHiddenAndOnNavigation", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals, documentState, documentListeners } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  proto._startVaillantB503LiveMonitorSessionPolling.call(shell);
+  const firstTimer = intervalCalls[0];
+  assert.ok(documentListeners.has("visibilitychange"));
+
+  documentState.visibilityState = "hidden";
+  documentListeners.get("visibilitychange")();
+  assert.deepEqual(clearedIntervals, [firstTimer], "hidden document clears the live session interval");
+  firstTimer.callback();
+  await flush();
+  assert.equal(fetchRequests.length, 0, "hidden tab issues no session request");
+
+  documentState.visibilityState = "visible";
+  documentListeners.get("visibilitychange")();
+  const resumedTimer = intervalCalls[1];
+  assert.ok(resumedTimer, "visible live tab resumes one bounded session interval");
+  proto.activateSection.call(shell, "section-registry");
+  assert.ok(clearedIntervals.includes(resumedTimer), "navigating away stops the resumed interval");
+  assert.equal(documentListeners.has("visibilitychange"), false, "navigation removes the visibility listener");
+});
+
+test("VaillantB503Pane_failedLiveActionRefreshesVisibleSessionStrip", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  await proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1,
+    "failed local live action must refresh the visible session state once");
+  assert.match(strip.innerHTML, /Session state: Idle/);
+  assert.equal(status.textContent, "SESSION_BUSY");
+});
+
+test("VaillantB503Pane_refreshingStripRemainsVisibleWithoutOperationsWhenCapabilityUnknown", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath, elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503CapabilityReason = "UNKNOWN";
+  proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+  assert.match(body.innerHTML, /b503-session-strip/, "Refreshing ownership remains observable during capability uncertainty");
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "unknown capability must not expose live-monitor operations while refresh owns the gate");
+  assert.doesNotMatch(body.innerHTML, /projection-b503-card/, "unknown capability must not expose a projection card");
+});
+
+test("VaillantB503Pane_activeCurrentOwnerRetainsOnlyReadDisableWhenCapabilityUnknown", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const read = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const disable = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-live-read"]', read],
+      ['[data-role="vaillant-b503-live-disable"]', disable],
+    ]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  const actions = [];
+  shell.invokeVaillantLiveMonitor = (action) => { actions.push(action); };
+  shell.refreshVaillantLiveMonitorSession = async () => true;
+  shell._startVaillantB503LiveMonitorSessionPolling = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+
+  proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+
+  assert.match(body.innerHTML, /b503-active-owner-unknown-controls/);
+  assert.match(body.innerHTML, /b503-session-strip/);
+  assert.match(body.innerHTML, /vaillant-b503-live-read/);
+  assert.match(body.innerHTML, /vaillant-b503-live-disable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/, "unproven cleanup must never admit a second Enable");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/, "UNKNOWN owner exception must not restore general B503 tabs");
+  assert.doesNotMatch(body.innerHTML, /projection-b503-card/, "UNKNOWN owner exception must not create a projection entry");
+  assert.equal(typeof read._listeners.get("click"), "function", "retained READ must be bound");
+  assert.equal(typeof disable._listeners.get("click"), "function", "retained DISABLE must be bound");
+  read._listeners.get("click")();
+  disable._listeners.get("click")();
+  assert.deepEqual(actions, ["read", "disable"]);
+});
+
+test("VaillantB503Pane_successfulEnableRequalifiesAvailableToUnknownOwnerControls", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const resolveCapabilities = [];
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: "token-current", rawHex: null, disabled: false } } }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return new Promise((resolve) => {
+          resolveCapabilities.push((reason) => resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: reason === "AVAILABLE", reason } } } }) }));
+        });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Idle";
+  shell._vaillantB503SessionOwned = false;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+  assert.match(body.innerHTML, /vaillant-b503-live-enable/);
+
+  const staleQualification = proto.refreshVaillantB503Capability.call(shell);
+  const enable = proto.invokeVaillantLiveMonitor.call(shell, "enable");
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN",
+    "successful Enable invalidates cached AVAILABLE before requalification settles");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/,
+    "Enable must unmount during the delayed authoritative capability query");
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/,
+    "general tabs must unmount during the delayed authoritative capability query");
+  assert.equal(resolveCapabilities.length, 2, "lifecycle requalification supersedes the older same-target probe");
+  resolveCapabilities[1]("UNKNOWN");
+  await enable;
+  resolveCapabilities[0]("AVAILABLE");
+  await staleQualification;
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Active");
+  assert.equal(shell._vaillantB503SessionOwned, true);
+  assert.match(body.innerHTML, /b503-active-owner-unknown-controls/);
+  assert.match(body.innerHTML, /vaillant-b503-live-read/);
+  assert.match(body.innerHTML, /vaillant-b503-live-disable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-enable/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 2);
+});
+
+test("VaillantB503Pane_successfulDisableRequalifiesAvailableAndUnmountsOperations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const status = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+      ['[data-role="vaillant-b503-live-status"]', status],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLive(")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { issuerToken: null, rawHex: null, disabled: true } } }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "UNKNOWN" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+  assert.match(body.innerHTML, /vaillant-b503-live-enable/);
+
+  await proto.invokeVaillantLiveMonitor.call(shell, "disable");
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+});
+
+test("VaillantB503Pane_idleExpiryRequalifiesCachedAvailableAndUnmountsOperations", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) });
+      }
+      if (query.includes("vaillantCapabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { available: false, reason: "UNKNOWN" } } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._bindVaillantB503TabEvents = () => {};
+  shell._bindVaillantB503ActiveTabEvents = () => {};
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+  proto.renderVaillantB503Pane.call(shell, "AVAILABLE", body);
+  assert.match(body.innerHTML, /vaillant-b503-tabs/);
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(calls.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 1);
+  assert.equal(calls.filter((query) => query.includes("vaillantCapabilities")).length, 1);
+});
+
+test("VaillantB503Pane_unknownOtherTargetOrNonOwnerGetsNoLiveControls", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  for (const variant of [
+    { name: "other target", target: 34, liveTarget: 21, token: "token-A", state: "Active", owned: true },
+    { name: "no browser token", target: 21, liveTarget: 21, token: null, state: "Active", owned: true },
+    { name: "not owned", target: 21, liveTarget: 21, token: "token-A", state: "Active", owned: false },
+    { name: "not active", target: 21, liveTarget: 21, token: "token-A", state: "Idle", owned: false },
+  ]) {
+    const body = makeAuditedElement();
+    const { shell } = buildSandbox({
+      source, sourcePath,
+      elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+    });
+    const proto = Object.getPrototypeOf(shell);
+    shell._vaillantB503TargetAddress = variant.target;
+    shell._vaillantB503ActiveTab = "live-monitor";
+    shell._vaillantB503SessionState = variant.state;
+    shell._vaillantB503SessionOwned = variant.owned;
+    shell._vaillantB503LiveToken = variant.token;
+    shell._vaillantB503LiveTarget = variant.liveTarget;
+
+    proto.renderVaillantB503Pane.call(shell, "UNKNOWN", body);
+
+    assert.match(body.innerHTML, /b503-state-unknown/, `${variant.name}: UNKNOWN state remains visible`);
+    assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/, `${variant.name}: live controls must remain absent`);
+    assert.doesNotMatch(body.innerHTML, /vaillant-b503-tabs/, `${variant.name}: general tabs must remain absent`);
+  }
+});
+
+test("VaillantB503Pane_activeUnknownExceptionUnmountsOnOwnershipLoss", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement({ innerHTML: '<button data-role="vaillant-b503-live-read">Read</button><button data-role="vaillant-b503-live-disable">Disable</button>' });
+  const strip = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-body"]', body],
+      ['[data-role="vaillant-b503-session-strip"]', strip],
+    ]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantLiveMonitorSession", reply: { data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } } },
+    ]),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "UNKNOWN";
+  shell._vaillantB503SessionState = "Active";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-current";
+  shell._vaillantB503LiveTarget = 21;
+
+  assert.equal(await proto.refreshVaillantLiveMonitorSession.call(shell), true);
+  assert.equal(shell._vaillantB503SessionState, "Idle");
+  assert.equal(shell._vaillantB503SessionOwned, false);
+  assert.match(body.innerHTML, /b503-state-unknown/);
+  assert.doesNotMatch(body.innerHTML, /vaillant-b503-live-(?:enable|read|disable)/,
+    "ownership loss must immediately unmount the Active owner exception");
+});
+
+test("VaillantB503Pane_refreshingNavigationDefersPairCleanupUntilActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  let sessionReads = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        sessionReads += 1;
+        const session = sessionReads === 1
+          ? { state: "Refreshing", owned: true }
+          : { state: "Active", owned: true };
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
+        const reply = disables.length === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503TargetAddress = 34; // C stays selected.
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  const first = await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(first, false, "Refreshing rejects immediate cleanup without discarding its pair");
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.attempted, false);
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disables.map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "post-refresh cleanup retries exactly once with the captured token-target pair");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503TargetAddress, 34, "deferred A cleanup must preserve selected C");
+});
+
+test("VaillantB503Pane_navAwayUsesAuthoritativeRefreshingStatusNotCachedActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }) });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503SessionState = "Active"; // Last visible poll is stale.
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), false);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+  assert.equal(intervalCalls.length, 1, "authoritative Refreshing state starts bounded read-only recovery");
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).length, 1);
+  assert.equal(calls.filter(({ query }) => query.includes("VaillantLiveMonitorSession")).length, 1);
+});
+
+test("VaillantB503Pane_navAwayRetriesWhenAuthoritativeStatusAlreadySettledActive", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable"));
+        const reply = disables.length === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantLiveMonitorSession: { state: "Active", owned: true } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  assert.equal(await proto.handleVaillantB503NavAway.call(shell), false);
+  assert.deepEqual(shell._vaillantB503DeferredCleanup && {
+    token: shell._vaillantB503DeferredCleanup.token,
+    target: shell._vaillantB503DeferredCleanup.target,
+  }, { token: "token-A", target: 8 }, "authoritative same-pair Active status retains the exact recovery pair");
+  assert.equal(intervalCalls.length, 1, "settled Active starts the bounded read-only retry path");
+
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  const disables = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable"));
+  assert.deepEqual(disables.map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "only the captured same-token pair is retried after Active");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed retry clears the captured token without a leak");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+});
+
+test("VaillantB503Pane_targetReprobesAfterDetachedCleanupReleasesSession", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "21" });
+  let resolveDisable;
+  let capabilityReads = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return new Promise((resolve) => { resolveDisable = resolve; });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        capabilityReads += 1;
+        const reason = capabilityReads === 1 ? "SESSION_BUSY" : "AVAILABLE";
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantCapabilities: { vaillantB503: { reason } } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  await proto.changeVaillantB503Target.call(shell);
+  assert.equal(shell._vaillantB503CapabilityReason, "SESSION_BUSY",
+    "the initial B probe may observe the old A session before detached cleanup reaches the gateway");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  resolveDisable({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+  await flush();
+  await flush();
+
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE",
+    "confirmed detached cleanup requalifies the same selected target instead of leaving SESSION_BUSY stuck");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  const calls = fetchRequests.map((request) => parseGqlInit(request.init));
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantB503Cap")).map(({ variables }) => variables.targetAddress), [21, 21],
+    "both probes remain bound to B and the cleanup cannot overwrite the selected target");
+  assert.deepEqual(calls.filter(({ query }) => query.includes("VaillantLiveDisable")).map(({ variables }) => variables), [
+    { action: "disable", issuerToken: "token-A", targetAddress: 8 },
+  ], "detached cleanup writes only the captured A token-target pair");
+});
+
+test("VaillantB503Pane_pendingCapabilityConsumesEarlierConfirmedCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const target = makeAuditedElement({ value: "21" });
+  let resolveBusyCapability;
+  let capabilityReads = 0;
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-target"]', target]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      }
+      if (query.includes("VaillantB503Cap")) {
+        capabilityReads += 1;
+        if (capabilityReads === 1) return new Promise((resolve) => { resolveBusyCapability = resolve; });
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({
+          data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } },
+        }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = () => {};
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  const switched = proto.changeVaillantB503Target.call(shell);
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "PENDING", "B remains pending while its first capability response is delayed");
+  assert.equal(shell._vaillantB503LiveToken, null, "confirmed detached A cleanup clears only its captured pair before B responds");
+  resolveBusyCapability({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "SESSION_BUSY" } } },
+  }) });
+  await switched;
+  await flush();
+  await flush();
+
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE",
+    "a delayed busy B response consumes the earlier exact-context cleanup confirmation and is requalified");
+  assert.equal(shell._vaillantB503TargetAddress, 21);
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init)).filter(({ query }) => query.includes("VaillantB503Cap"))
+    .map(({ variables }) => variables.targetAddress), [21, 21], "the reprobe remains target-bound to B");
+});
+
+test("VaillantB503Pane_tabSwapDoesNotAwaitHungLiveCleanup", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const service = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const live = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const history = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-tab-errors"]', errors],
+      ['[data-role="vaillant-b503-tab-service"]', service],
+      ['[data-role="vaillant-b503-tab-live-monitor"]', live],
+      ['[data-role="vaillant-b503-tab-history"]', history],
+    ]),
+    fetchImpl: () => new Promise(() => {}),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  let rendered = 0;
+  shell.renderVaillantB503Pane = () => { rendered += 1; };
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  proto._bindVaillantB503TabEvents.call(shell);
+
+  errors._listeners.get("click")();
+  assert.equal(shell._vaillantB503ActiveTab, "errors", "requested tab is selected before a stalled disable settles");
+  assert.equal(rendered, 1);
+  await flush();
+  assert.equal(fetchRequests.length, 1, "cleanup remains detached and owns one disable request");
+});
+
+test("VaillantB503Pane_tabSwapConfirmedCleanupRequalifiesCurrentTarget", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errors = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const service = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const live = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const history = makeAuditedElement({ _listeners: new Map(), addEventListener(type, listener) { this._listeners.set(type, listener); } });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([
+      ['[data-role="vaillant-b503-tab-errors"]', errors],
+      ['[data-role="vaillant-b503-tab-service"]', service],
+      ['[data-role="vaillant-b503-tab-live-monitor"]', live],
+      ['[data-role="vaillant-b503-tab-history"]', history],
+    ]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveDisable")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitor: { disabled: true } } }) });
+      if (query.includes("VaillantB503Cap")) return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantCapabilities: { vaillantB503: { reason: "UNKNOWN" } } } }) });
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  const rendered = [];
+  shell.renderVaillantB503Pane = (reason) => { rendered.push(reason); };
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503CapabilityReason = "AVAILABLE";
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  proto._bindVaillantB503TabEvents.call(shell);
+
+  errors._listeners.get("click")();
+  assert.equal(shell._vaillantB503ActiveTab, "errors", "the selected tab changes before detached cleanup resolves");
+  await flush();
+  await flush();
+
+  const queries = fetchRequests.map((request) => parseGqlInit(request.init).query);
+  assert.equal(queries.filter((query) => query.includes("VaillantLiveDisable")).length, 1, "confirmed cleanup retains its one captured disable request");
+  assert.equal(queries.filter((query) => query.includes("VaillantB503Cap")).length, 1, "confirmed cleanup performs one target-bound capability requalification");
+  assert.equal(queries.filter((query) => query.includes("VaillantLiveMonitorSession")).length, 0, "tab cleanup adds no visible-pane session request");
+  assert.equal(shell._vaillantB503LiveToken, null);
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN");
+  assert.ok(rendered.includes("UNKNOWN"), "cleanup confirmation immediately fences the cached AVAILABLE pane");
+});
+
+test("VaillantB503Pane_hiddenDeferredCleanupPollsRefreshingPairUntilActiveOnce", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let sessionReads = 0;
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        sessionReads += 1;
+        const session = sessionReads === 1
+          ? { state: "Refreshing", owned: true }
+          : { state: "Active", owned: true };
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: session } }) });
+      }
+      if (query.includes("VaillantLiveDisable")) {
+        const count = fetchRequests.map((request) => parseGqlInit(request.init))
+          .filter(({ query: candidate }) => candidate.includes("VaillantLiveDisable")).length;
+        const reply = count === 1
+          ? { data: { vaillantLiveMonitor: null }, errors: [{ message: "SESSION_BUSY" }] }
+          : { data: { vaillantLiveMonitor: { disabled: true } } };
+        return Promise.resolve({ ok: true, status: 200, json: async () => reply });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-registry"; // The visible tab poll is intentionally absent.
+  shell._vaillantB503ActiveTab = "errors";
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+
+  await proto.handleVaillantB503NavAway.call(shell);
+  assert.equal(intervalCalls.length, 1, "nav-away installs a separate read-only deferred-cleanup status loop");
+  assert.equal(intervalCalls[0].delay, 5000);
+  assert.equal(shell._vaillantB503DeferredCleanup?.target, 8);
+
+  intervalCalls[0].callback();
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503LiveToken, null, "Active confirmation completes cleanup after the tab is gone");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+  assert.ok(clearedIntervals.includes(intervalCalls[0]), "confirmed cleanup stops the detached status loop");
+  const writesBeforeRepeat = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable")).length;
+  intervalCalls[0].callback();
+  await flush();
+  const writesAfterRepeat = fetchRequests.map((request) => parseGqlInit(request.init))
+    .filter(({ query }) => query.includes("VaillantLiveDisable")).length;
+  assert.equal(writesBeforeRepeat, 2, "one immediate and one post-Active cleanup write are expected");
+  assert.equal(writesAfterRepeat, writesBeforeRepeat, "a completed deferred cleanup never writes twice");
+});
+
+test("VaillantB503Pane_sessionEnvelopeFailureRetainsPairAndBoundsDeferredStatusRetries", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: null }, errors: [{ message: "UPSTREAM_RPC_FAILED" }] }) });
+      }
+      throw new Error(`unexpected request ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503SessionState = "Refreshing";
+  shell._vaillantB503SessionOwned = true;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0 };
+
+  const refreshed = await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.equal(refreshed, false, "GraphQL errors/null roots are refresh failures, not an unowned Unknown state");
+  assert.equal(shell._vaillantB503SessionState, "Refreshing");
+  assert.equal(shell._vaillantB503SessionOwned, true);
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.match(strip.textContent, /unavailable/);
+
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    intervalCalls[0].callback();
+    await flush();
+    await flush();
+  }
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined, "bounded status failures stop the detached retry task");
+  assert.ok(clearedIntervals.includes(intervalCalls[0]));
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "failed status reads retain the exact later-retry pair");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "status envelope failures issue no cleanup write");
+});
+
+test("VaillantB503Pane_deferredRefreshingStatusLoopHasFiniteAttemptBound", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, fetchRequests, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantLiveMonitorSession")) throw new Error(`unexpected request ${query}`);
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Refreshing", owned: true } } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    intervalCalls[0].callback();
+    await flush();
+    await flush();
+  }
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined, "a perpetually Refreshing hidden session reaches the finite read bound");
+  assert.ok(clearedIntervals.includes(intervalCalls[0]));
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "timeout keeps the recoverable pair for a later bounded action");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0);
+});
+
+test("VaillantB503Pane_disconnectStopsDeferredStatusReadWithoutDiscardingPair", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const { shell, intervalCalls, clearedIntervals } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: {} }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  assert.equal(intervalCalls.length, 1);
+  proto.disconnectedCallback.call(shell);
+  assert.ok(clearedIntervals.includes(intervalCalls[0]), "disconnect stops the local status timer");
+  assert.equal(shell._vaillantB503LiveToken, "token-A", "disconnect never claims that the server-owned session was released");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+});
+
+test("VaillantB503Pane_disconnectFencesAnInFlightDeferredStatusResult", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  let resolveStatus;
+  const statusResult = new Promise((resolve) => { resolveStatus = resolve; });
+  const { shell, fetchRequests, intervalCalls } = buildSandbox({
+    source, sourcePath, elements: new Map(),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (query.includes("VaillantLiveMonitorSession")) return statusResult;
+      throw new Error(`unexpected cleanup write ${query}`);
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false, statusFailures: 0, statusAttempts: 0 };
+  proto._startVaillantB503DeferredCleanupStatusPolling.call(shell);
+  intervalCalls[0].callback();
+  await flush();
+  shell._isConnected = false;
+  proto.disconnectedCallback.call(shell);
+  resolveStatus({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Active", owned: true } } }) });
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503LiveToken, "token-A");
+  assert.equal(shell._vaillantB503LiveTarget, 8);
+  assert.equal(shell._vaillantB503DeferredCleanup?.token, "token-A");
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "a late status result after disconnect must not emit a hidden cleanup write");
+});
+
+test("VaillantB503Pane_refreshFailureReleaseClearsDeferredPairWithoutWrite", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const strip = makeAuditedElement();
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-session-strip"]', strip]]),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: { vaillantLiveMonitorSession: { state: "Idle", owned: false } } }) }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._activeSectionTarget = "section-vaillant-b503";
+  shell._vaillantB503ActiveTab = "live-monitor";
+  shell._vaillantB503TargetAddress = 34;
+  shell._vaillantB503LiveToken = "token-A";
+  shell._vaillantB503LiveTarget = 8;
+  shell._vaillantB503DeferredCleanup = { token: "token-A", target: 8, attempted: false };
+  await proto.refreshVaillantLiveMonitorSession.call(shell);
+  assert.equal(shell._vaillantB503LiveToken, null, "released session clears its deferred recovery pair");
+  assert.equal(shell._vaillantB503LiveTarget, null);
+  assert.equal(shell._vaillantB503DeferredCleanup, undefined);
+  assert.equal(fetchRequests.filter((request) => parseGqlInit(request.init).query.includes("VaillantLiveDisable")).length, 0,
+    "released session performs no unnecessary cleanup write");
+});
+
+test("VaillantB503Pane_threads_target_and_discards_stale_error_response", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const errorsBody = makeAuditedElement();
+  let resolveOld;
+  const old = new Promise((resolve) => { resolveOld = resolve; });
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath, elements: new Map([["[data-role=\"vaillant-b503-errors-body\"]", errorsBody]]),
+    fetchImpl: () => old,
+  });
+  shell._vaillantB503TargetAddress = 8;
+  const pending = Object.getPrototypeOf(shell).refreshVaillantErrors.call(shell);
+  shell._vaillantB503Epoch = 1;
+  shell._vaillantB503TargetAddress = 21;
+  resolveOld({ ok: true, status: 200, json: async () => ({ data: { vaillantErrors: { firstActiveError: 281, slots: [281] } } }) });
+  await pending;
+  const { variables } = parseGqlInit(fetchRequests[0].init);
+  assert.equal(variables.targetAddress, 8, "request must bind the target selected at request time");
+  assert.equal(errorsBody.innerHTML, "", "old target response must not mutate the new target view");
+});
+
+test("VaillantB503Pane_historyFirstLoadRendersVerifiedPartialPrefix", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: makeGqlFetchImpl([
+      { match: "VaillantErrorsHistory", reply: { data: { vaillantErrorsHistory: {
+        records: [{ index: 0, firstActiveError: 281, slots: [281, null] }],
+        failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" },
+      } } } },
+    ]),
+  });
+  await Object.getPrototypeOf(shell).refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>0<\/td>/, "first successful indexed row must render");
+  assert.match(body.innerHTML, /b503-history-partial/);
+  assert.match(body.innerHTML, /index 1: UPSTREAM_RPC_FAILED/);
+  assert.doesNotMatch(body.innerHTML, /<td>1<\/td>/, "later unprobed rows must not be fabricated");
+});
+
+test("VaillantB503Pane_historyPartialFailureRetainsPriorTableRows", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  let calls = 0;
+  const { shell } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantErrorsHistory")) throw new Error(`unexpected request ${query}`);
+      calls += 1;
+      const history = calls === 1
+        ? { records: [
+          { index: 0, firstActiveError: 281, slots: [281] },
+          { index: 1, firstActiveError: 282, slots: [282] },
+        ], failure: null }
+        : { records: [{ index: 0, firstActiveError: 281, slots: [281] }],
+          failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "history transport failure" } };
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>1<\/td>/, "baseline table contains index 1");
+  await proto.refreshVaillantErrorsHistory.call(shell);
+  assert.match(body.innerHTML, /<td>0<\/td>/);
+  assert.match(body.innerHTML, /<td>1<\/td>/,
+    "later partial failure must retain last-known valid row instead of replacing the table wholesale");
+  assert.match(body.innerHTML, /b503-history-partial/);
+  assert.match(body.innerHTML, /UPSTREAM_RPC_FAILED/);
+});
+
+test("VaillantB503Pane_historyRetentionIsByTargetNotQualificationEpoch", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const replies = [
+    { records: [{ index: 0, firstActiveError: 281, slots: [281] }, { index: 1, firstActiveError: 282, slots: [282] }], failure: null },
+    { records: [{ index: 0, firstActiveError: 901, slots: [901] }], failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "B failure" } },
+    { records: [{ index: 0, firstActiveError: 281, slots: [281] }], failure: { index: 1, code: "UPSTREAM_RPC_FAILED", message: "A failure" } },
+  ];
+  const { shell, fetchRequests } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-history-body"]', body]]),
+    fetchImpl: (_url, init) => {
+      const { query } = parseGqlInit(init);
+      if (!query.includes("VaillantErrorsHistory")) throw new Error(`unexpected request ${query}`);
+      const history = replies.shift();
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ data: { vaillantErrorsHistory: history } }) });
+    },
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell._vaillantB503TargetAddress = 8;
+  await proto.refreshVaillantErrorsHistory.call(shell); // A complete.
+  shell._vaillantB503TargetAddress = 21;
+  shell._vaillantB503Epoch = 1;
+  await proto.refreshVaillantErrorsHistory.call(shell); // B partial.
+  shell._vaillantB503TargetAddress = 8;
+  shell._vaillantB503Epoch = 2;
+  await proto.refreshVaillantErrorsHistory.call(shell); // A partial, new epoch.
+  assert.match(body.innerHTML, /<td>1<\/td>/, "returning to A retains A's verified index 1 despite B and an epoch change");
+  assert.match(body.innerHTML, /A failure/);
+  assert.deepEqual(fetchRequests.map((request) => parseGqlInit(request.init).variables.targetAddress), [8, 21, 8]);
+});
+
+test("VaillantB503Pane_uses_graphql_history_session_and_AD02_contract", async () => {
+  const { source } = await loadShellSource();
+  assert.match(source, /vaillantErrorsHistory\(targetAddress: \$targetAddress, limit: \$limit\) \{ records/);
+  assert.match(source, /b503-history-partial/);
+  assert.match(source, /vaillantLiveMonitorSession\(targetAddress: \$targetAddress\)/);
+  assert.match(source, /b503-install-writes-banner/);
+  assert.match(source, /b503-ad02-tooltip-anchor/);
+  assert.doesNotMatch(source, /api\/v1\/vaillant/);
 });

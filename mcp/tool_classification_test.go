@@ -69,14 +69,16 @@ func toolClassificationPolicy() map[string]toolClass {
 		// a dedicated capability signal (meta.capabilities.vaillant_b503).
 		toolVaillantB503ErrorsGetName:         toolClassCoreStable,
 		toolVaillantB503ErrorsHistoryGetName:  toolClassCoreStable,
+		toolVaillantB503ErrorsHistoryListName: toolClassCoreStable,
 		toolVaillantB503ServiceCurrentGetName: toolClassCoreStable,
 		toolVaillantB503ServiceHistoryGetName: toolClassCoreStable,
 		toolVaillantB503LiveMonitorName:       toolClassCoreStable,
+		toolVaillantB503LiveSessionGetName:    toolClassCoreStable,
 		GrowattProtocolIIV1IdentityGetTool:    toolClassCoreStable,
 	}
 }
 
-// testInstallB503ForClassification wires the 5 Vaillant B503 tools onto
+// testInstallB503ForClassification wires the Vaillant B503 tools onto
 // server using no-op stubs. Used by TestToolClassificationPolicy so the
 // production-wiring ebus.v1.vaillant.* tool names are checked against
 // toolClassificationPolicy() in CI.

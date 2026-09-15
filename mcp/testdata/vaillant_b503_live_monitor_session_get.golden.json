@@ -1,0 +1,25 @@
+{
+  "data": {
+    "owned": false,
+    "state": "Idle"
+  },
+  "error": null,
+  "meta": {
+    "capabilities": {
+      "vaillant_b503": {
+        "available": true,
+        "reason": "AVAILABLE"
+      }
+    },
+    "consistency": {
+      "mode": "LIVE"
+    },
+    "contract": {
+      "major": 1,
+      "minor": 0,
+      "name": "helianthus-ebus-mcp"
+    },
+    "data_hash": "610e2710c4d5cb3434bcec2d177aeb206271bf12d972ee2fd0b2ca8b881c2612",
+    "data_timestamp": "\u003cruntime\u003e"
+  }
+}

@@ -13,15 +13,17 @@ import (
 )
 
 type managedFenceTransport struct {
-	closeOnce   sync.Once
-	closed      chan struct{}
-	writeOnce   sync.Once
-	writeStart  chan struct{}
-	writeReturn chan struct{}
-	startOnce   sync.Once
-	startStart  chan struct{}
-	writes      atomic.Int32
-	startCalls  atomic.Int32
+	closeOnce       sync.Once
+	closed          chan struct{}
+	writeOnce       sync.Once
+	writeStart      chan struct{}
+	writeReturn     chan struct{}
+	startOnce       sync.Once
+	startStart      chan struct{}
+	startReturnOnce sync.Once
+	startReturn     chan struct{}
+	writes          atomic.Int32
+	startCalls      atomic.Int32
 }
 
 func newManagedFenceTransport() *managedFenceTransport {
@@ -30,6 +32,7 @@ func newManagedFenceTransport() *managedFenceTransport {
 		writeStart:  make(chan struct{}),
 		writeReturn: make(chan struct{}),
 		startStart:  make(chan struct{}),
+		startReturn: make(chan struct{}),
 	}
 }
 
@@ -50,6 +53,7 @@ func (transport *managedFenceTransport) RequestStart(byte) error {
 	transport.startCalls.Add(1)
 	transport.startOnce.Do(func() { close(transport.startStart) })
 	<-transport.closed
+	transport.startReturnOnce.Do(func() { close(transport.startReturn) })
 	return net.ErrClosed
 }
 
@@ -275,11 +279,10 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 
 	t.Run("blocked request start drains before BACKOFF publication", func(t *testing.T) {
 		upstream := newManagedFenceTransport()
-		startDone := make(chan struct{})
 		callback := make(chan struct{})
 		mux, cancel := newMux(t, upstream, func() {
 			select {
-			case <-startDone:
+			case <-upstream.startReturn:
 			default:
 				t.Error("connection-loss callback crossed an admitted RequestStart")
 			}
@@ -292,7 +295,6 @@ func TestManagedConnectionLossLinearizesProxyAdmissionAndProviderUse(t *testing.
 			if result.err == nil {
 				t.Error("RequestStart unexpectedly succeeded across loss")
 			}
-			close(startDone)
 		}()
 		select {
 		case <-upstream.startStart:

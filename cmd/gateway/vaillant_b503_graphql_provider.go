@@ -81,10 +81,20 @@ func publicB503GraphQLError(err error) error {
 	}
 }
 
+// publicB503DirectReadGraphQLError matches the stable MCP singular-read
+// envelope: dispatcher failures are upstream RPC failures. Lifecycle actions
+// retain publicB503GraphQLError because their transport semantics are distinct.
+func publicB503DirectReadGraphQLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
+}
+
 func (p *b503GraphQLProvider) Errors(ctx context.Context, target *byte) (graphql.VaillantB503Errors, error) {
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), b503.EncodeCurrentError())
 	if err != nil {
-		return graphql.VaillantB503Errors{}, publicB503GraphQLError(err)
+		return graphql.VaillantB503Errors{}, publicB503DirectReadGraphQLError(err)
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
@@ -96,7 +106,7 @@ func (p *b503GraphQLProvider) Errors(ctx context.Context, target *byte) (graphql
 func (p *b503GraphQLProvider) ServiceCurrent(ctx context.Context, target *byte) (graphql.VaillantB503Errors, error) {
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), b503.EncodeCurrentService())
 	if err != nil {
-		return graphql.VaillantB503Errors{}, publicB503GraphQLError(err)
+		return graphql.VaillantB503Errors{}, publicB503DirectReadGraphQLError(err)
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
@@ -112,7 +122,7 @@ func (p *b503GraphQLProvider) ErrorHistory(ctx context.Context, target *byte, in
 	}
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), payload)
 	if err != nil {
-		return graphql.VaillantB503HistoryRecord{}, publicB503GraphQLError(err)
+		return graphql.VaillantB503HistoryRecord{}, publicB503DirectReadGraphQLError(err)
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
@@ -153,7 +163,7 @@ func (p *b503GraphQLProvider) ServiceHistory(ctx context.Context, target *byte, 
 	}
 	resp, err := p.dispatcher.Invoke(ctx, p.targetOr(target), payload)
 	if err != nil {
-		return graphql.VaillantB503HistoryRecord{}, publicB503GraphQLError(err)
+		return graphql.VaillantB503HistoryRecord{}, publicB503DirectReadGraphQLError(err)
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {

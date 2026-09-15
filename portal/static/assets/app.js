@@ -3645,10 +3645,14 @@ class PortalShell extends HTMLElement {
       const label = device.display_name || device.device_id || formatAddress(address);
       return `<option value="${address}"${address === selected ? " selected" : ""}>${escapeHtml(`${label} (${formatAddress(address)})`)}</option>`;
     }).join("");
+	const selectedPresent = selected !== null && devices.some((device) => Number(device.address) === selected);
+	const retainedSelected = selected !== null && !selectedPresent
+	  ? `<option value="${selected}" selected>${escapeHtml(`Previously selected (${formatAddress(selected)})`)}</option>`
+	  : "";
     // A null target is a real configured-default request, even when discovery
     // has no alternative addresses. Do not claim that no target is selected
     // while reads or a live-monitor operation resolve to that default.
-    return `${defaultOption}${deviceOptions}`;
+    return `${defaultOption}${retainedSelected}${deviceOptions}`;
   }
 
   _refreshVaillantB503TargetPicker() {
@@ -3657,7 +3661,7 @@ class PortalShell extends HTMLElement {
     const hasTargets = (Array.isArray(this.projectionDevices) ? this.projectionDevices : [])
       .some((device) => Number.isInteger(Number(device.address)) && Number(device.address) >= 0 && Number(device.address) <= 255);
     picker.innerHTML = this._vaillantB503TargetOptions();
-    picker.disabled = !hasTargets;
+    picker.disabled = !hasTargets && this._vaillantB503Target() === null;
     picker.value = this._vaillantB503Target() === null ? "" : String(this._vaillantB503Target());
   }
 

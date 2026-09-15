@@ -1156,6 +1156,18 @@ test("VaillantB503Pane_discoveryRefreshesPickerWithoutChangingQualifiedState", a
 	  assert.equal(picker.disabled, false);
 });
 
+test("VaillantB503Pane_discoveryRetainsExplicitSelectedTarget", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const picker = makeAuditedElement({ value: "", disabled: false });
+  const { shell } = buildSandbox({ source, sourcePath, elements: new Map([['[data-role="vaillant-b503-target"]', picker]]) });
+  shell.projectionDevices = [{ address: 21, display_name: "Regulator" }];
+  shell._vaillantB503TargetAddress = 8;
+  Object.getPrototypeOf(shell)._refreshVaillantB503TargetPicker.call(shell);
+  assert.match(picker.innerHTML, /value="8" selected>Previously selected/);
+  assert.equal(picker.value, "8");
+  assert.equal(picker.disabled, false);
+});
+
 test("VaillantB503Pane_discoveryKeepsActiveResultNodeAttached", async () => {
   const { source, sourcePath } = await loadShellSource();
   const body = makeAuditedElement();

@@ -105,6 +105,10 @@ type rawFrameDispatcher struct {
 	mgr                 *b503session.Manager
 	requestTimeout      time.Duration
 	disconnectIfCurrent func(b503session.TransportKey)
+	// afterPendingEmission is a deterministic test seam. Production leaves it
+	// nil; it runs while the Manager's emission fence is held and before
+	// bus.Send enters the generation-bound substrate.
+	afterPendingEmission func()
 }
 
 // newRawFrameDispatcher constructs a production dispatcher.
@@ -264,13 +268,6 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 			Transport: transportAtIssue,
 		}
 	}
-	if operationID, ok := b503session.PendingOperationIDFromContext(ctx); ok && !d.mgr.AdmitPendingEmission(operationID, target) {
-		unlockReadMu()
-		return mcp.B503DispatchOutcome{
-			Err:       b503session.ErrTransportDown,
-			Transport: transportAtIssue,
-		}
-	}
 	frame := protocol.Frame{
 		FrameType: protocol.FrameTypeInitiatorTarget,
 		Source:    source,
@@ -282,7 +279,31 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	// From this point onward every outcome is conservatively emitted. The
 	// transport API offers no finer acknowledgement boundary than entering
 	// bus.Send.
-	resp, sendErr := d.bus.Send(bsCtx, frame)
+	var releaseEmission func()
+	if operationID, ok := b503session.PendingOperationIDFromContext(ctx); ok {
+		var admitted bool
+		releaseEmission, admitted = d.mgr.BeginPendingEmission(operationID, target)
+		if !admitted {
+			unlockReadMu()
+			return mcp.B503DispatchOutcome{
+				Err:       b503session.ErrTransportDown,
+				Transport: transportAtIssue,
+			}
+		}
+		if d.afterPendingEmission != nil {
+			d.afterPendingEmission()
+		}
+	}
+	var resp *protocol.Frame
+	var sendErr error
+	if releaseEmission != nil {
+		func() {
+			defer releaseEmission()
+			resp, sendErr = d.bus.Send(bsCtx, frame)
+		}()
+	} else {
+		resp, sendErr = d.bus.Send(bsCtx, frame)
+	}
 	unlockReadMu()
 
 	// Stale-epoch discipline (§12.7): re-check the Manager's current

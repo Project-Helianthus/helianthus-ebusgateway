@@ -568,6 +568,58 @@ func TestIssue552B503EnableDisconnectBeforeEmissionReturnsIdleWithoutCleanup(t *
 	}
 }
 
+func TestIssue552B503EpochAdvanceAfterAdmissionDoesNotWriteReplacementGeneration(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	)
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, &sync.Mutex{}, mgr, time.Second)
+	epochAttempted := make(chan struct{})
+	epochAdvanced := make(chan struct{})
+	dispatcher.afterPendingEmission = func() {
+		go func() {
+			close(epochAttempted)
+			mgr.OnEpochAdvance(context.Background(), 2)
+			close(epochAdvanced)
+		}()
+		<-epochAttempted
+	}
+	bus.onSend = func(frame protocol.Frame, _ *b503DispatcherMockBus) {
+		if len(frame.Data) < 2 || frame.Data[0] != 0x00 || frame.Data[1] != 0x03 {
+			t.Fatalf("wire frame = %x, want SERVICE_WRITE selector 00 03", frame.Data)
+		}
+		select {
+		case <-epochAdvanced:
+			t.Fatal("epoch advance completed before admitted SERVICE_WRITE entered bus.Send")
+		default:
+		}
+		if got := mgr.DispatchEpoch(); got != 1 {
+			t.Fatalf("SERVICE_WRITE entered replacement epoch %d, want issuing epoch 1", got)
+		}
+	}
+
+	_, err := mgr.EnableOperation(context.Background(), 0x15, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(ctx, dispatcher, target, []byte{0x00, 0x03})
+	})
+	if err != nil && !errors.Is(err, errRawFrameStaleEpoch) && !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("admitted enable outcome = %v, want success or conservative replacement-generation result", err)
+	}
+	select {
+	case <-epochAdvanced:
+	case <-time.After(time.Second):
+		t.Fatal("epoch advance remained blocked after bus.Send returned")
+	}
+	if got := mgr.DispatchEpoch(); got != 2 {
+		t.Fatalf("epoch after send = %d, want replacement epoch 2", got)
+	}
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("SERVICE_WRITE bus.Send count = %d, want exactly 1 issuing-generation send", calls)
+	}
+}
+
 func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testing.T) {
 	bus := newB503DispatcherMockBus()
 	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})

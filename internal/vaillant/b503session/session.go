@@ -152,6 +152,12 @@ type pendingOperation struct {
 // different logical agent (the session owner).
 type Manager struct {
 	mu sync.Mutex // liveMonitorMu — ownership gate, distinct from B524 readMu.
+	// emissionMu serializes a lifecycle advance with the narrow interval from
+	// pending-operation admission through entry into the generation-bound bus
+	// substrate. It is distinct from both the owner gate and B524 readMu: the
+	// dispatcher takes it only after readMu is acquired, while lifecycle events
+	// take it before stateMu and never acquire readMu.
+	emissionMu sync.Mutex
 
 	stateMu      sync.Mutex
 	state        State
@@ -273,6 +279,27 @@ func (m *Manager) PendingOperation() (PendingOperationSnapshot, bool) {
 func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
+	return m.admitPendingEmissionLocked(operationID, target)
+}
+
+// BeginPendingEmission admits one typed lifecycle operation and holds the
+// lifecycle-emission fence until the dispatcher has entered its generation-bound
+// send substrate. Call the returned release exactly once after bus.Send returns.
+// A lifecycle advance which acquired the fence first invalidates the pending
+// operation, so this method returns false without a wire attempt.
+func (m *Manager) BeginPendingEmission(operationID string, target byte) (release func(), ok bool) {
+	m.emissionMu.Lock()
+	m.stateMu.Lock()
+	ok = m.admitPendingEmissionLocked(operationID, target)
+	m.stateMu.Unlock()
+	if !ok {
+		m.emissionMu.Unlock()
+		return nil, false
+	}
+	return func() { m.emissionMu.Unlock() }, true
+}
+
+func (m *Manager) admitPendingEmissionLocked(operationID string, target byte) bool {
 	pending := m.pendingOperation
 	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target {
 		return false
@@ -763,6 +790,8 @@ func (m *Manager) OnTransportDisconnect() {
 // fenced without emitting any recovery write; reconnect and restart cannot
 // establish settlement or reconstruct caller ownership.
 func (m *Manager) OnEpochAdvance(_ context.Context, newEpoch uint64) {
+	m.emissionMu.Lock()
+	defer m.emissionMu.Unlock()
 	m.stateMu.Lock()
 	if newEpoch <= m.observedEpoch {
 		m.stateMu.Unlock()

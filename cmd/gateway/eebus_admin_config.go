@@ -49,6 +49,7 @@ type eebusRuntimeLifecycleSnapshot struct {
 	Attempts         int
 	Revision         uint64
 	AdminAvailable   bool
+	RuntimeAvailable bool
 	TimerOutstanding bool
 	DegradedReason   eebusadmin.EEBusDegradedReason
 }
@@ -124,12 +125,17 @@ type eebusRuntimeLifecycle struct {
 	handler http.Handler
 	admin   eebusruntime.AdminV1
 
-	state            eebusLifecycleState
-	attempts         int
-	revision         uint64
-	adminAvailable   bool
-	timerOutstanding bool
-	degradedReason   eebusadmin.EEBusDegradedReason
+	state             eebusLifecycleState
+	attempts          int
+	revision          uint64
+	adminAvailable    bool
+	runtimeAvailable  bool
+	timerOutstanding  bool
+	degradedReason    eebusadmin.EEBusDegradedReason
+	transportObserver func(ebusgateway.TransportRuntimeStatus)
+	// transportRetired fences Prometheus delivery during Gateway teardown. It
+	// does not alter native recovery or shutdown ownership.
+	transportRetired bool
 
 	recovery sync.WaitGroup
 	stopOnce sync.Once
@@ -298,6 +304,7 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 	lifecycle.handler = handler
 	lifecycle.admin = admin
 	lifecycle.adminAvailable = adminAvailable
+	lifecycle.runtimeAvailable = true
 	lifecycle.timerOutstanding = false
 	if adminAvailable {
 		lifecycle.state = eebusLifecycleRunning
@@ -308,6 +315,7 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 	}
 	lifecycle.revision++
 	lifecycle.mu.Unlock()
+	lifecycle.notifyTransportRuntimeStatus()
 	return err, adminAvailable
 }
 
@@ -321,12 +329,14 @@ func (lifecycle *eebusRuntimeLifecycle) scheduleRecovery() {
 		lifecycle.timerOutstanding = false
 		lifecycle.revision++
 		lifecycle.mu.Unlock()
+		lifecycle.notifyTransportRuntimeStatus()
 		return
 	}
 	lifecycle.state = eebusLifecycleBackoff
 	lifecycle.timerOutstanding = true
 	lifecycle.revision++
 	lifecycle.mu.Unlock()
+	lifecycle.notifyTransportRuntimeStatus()
 
 	lifecycle.recovery.Add(1)
 	go lifecycle.recover()
@@ -343,6 +353,7 @@ func (lifecycle *eebusRuntimeLifecycle) recover() {
 		lifecycle.timerOutstanding = false
 		lifecycle.revision++
 		lifecycle.mu.Unlock()
+		lifecycle.notifyTransportRuntimeStatus()
 
 		_, complete := lifecycle.attempt(true)
 		if complete {
@@ -355,6 +366,7 @@ func (lifecycle *eebusRuntimeLifecycle) recover() {
 			lifecycle.timerOutstanding = false
 			lifecycle.revision++
 			lifecycle.mu.Unlock()
+			lifecycle.notifyTransportRuntimeStatus()
 			return
 		}
 		if lifecycle.attempts >= lifecycle.policy.MaxAttempts {
@@ -362,12 +374,14 @@ func (lifecycle *eebusRuntimeLifecycle) recover() {
 			lifecycle.timerOutstanding = false
 			lifecycle.revision++
 			lifecycle.mu.Unlock()
+			lifecycle.notifyTransportRuntimeStatus()
 			return
 		}
 		lifecycle.state = eebusLifecycleBackoff
 		lifecycle.timerOutstanding = true
 		lifecycle.revision++
 		lifecycle.mu.Unlock()
+		lifecycle.notifyTransportRuntimeStatus()
 	}
 }
 
@@ -380,11 +394,13 @@ func (lifecycle *eebusRuntimeLifecycle) publishUnavailable(state eebusLifecycleS
 	lifecycle.handler = unavailableEEBusAdminHandler(readiness)
 	lifecycle.admin = nil
 	lifecycle.adminAvailable = false
+	lifecycle.runtimeAvailable = false
 	lifecycle.state = state
 	lifecycle.degradedReason = readiness.EEBusDegradedReason
 	lifecycle.timerOutstanding = false
 	lifecycle.revision++
 	lifecycle.mu.Unlock()
+	lifecycle.notifyTransportRuntimeStatus()
 }
 
 func (lifecycle *eebusRuntimeLifecycle) setState(state eebusLifecycleState, timerOutstanding bool) {
@@ -401,6 +417,67 @@ func (lifecycle *eebusRuntimeLifecycle) setState(state eebusLifecycleState, time
 	lifecycle.degradedReason = readiness.EEBusDegradedReason
 	lifecycle.revision++
 	lifecycle.mu.Unlock()
+	lifecycle.notifyTransportRuntimeStatus()
+}
+
+// SetTransportRuntimeStatusObserver binds the detached Prometheus snapshot to
+// existing eeBUS lifecycle transitions. The observer receives only finite
+// Gateway-owned status fields, never a native runtime handle.
+func (lifecycle *eebusRuntimeLifecycle) SetTransportRuntimeStatusObserver(observer func(ebusgateway.TransportRuntimeStatus)) {
+	if lifecycle == nil || observer == nil {
+		return
+	}
+	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		return
+	}
+	lifecycle.transportObserver = observer
+	status := eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: lifecycle.state, Revision: lifecycle.revision, RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason})
+	lifecycle.mu.Unlock()
+	observer(status)
+}
+
+func (lifecycle *eebusRuntimeLifecycle) notifyTransportRuntimeStatus() {
+	if lifecycle == nil {
+		return
+	}
+	lifecycle.mu.RLock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.RUnlock()
+		return
+	}
+	observer := lifecycle.transportObserver
+	status := eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: lifecycle.state, Revision: lifecycle.revision, RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason})
+	lifecycle.mu.RUnlock()
+	if observer != nil {
+		observer(status)
+	}
+}
+
+func eebusRuntimeTransportStatus(snapshot eebusRuntimeLifecycleSnapshot) ebusgateway.TransportRuntimeStatus {
+	status := ebusgateway.TransportRuntimeStatus{Protocol: ebusgateway.TransportRuntimeProtocolEEBus, Revision: snapshot.Revision}
+	if snapshot.State != eebusLifecycleStopped && snapshot.RuntimeAvailable {
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateReady, ebusgateway.TransportRuntimeReasonNone, ebusgateway.TransportRuntimeOutcomeAvailable
+		return status
+	}
+	switch snapshot.State {
+	case eebusLifecycleDisabled:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateDisabled, ebusgateway.TransportRuntimeReasonNotConfigured, ebusgateway.TransportRuntimeOutcomeUnavailable
+	case eebusLifecycleStarting:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateStarting, ebusgateway.TransportRuntimeReasonNone, ebusgateway.TransportRuntimeOutcomePending
+	case eebusLifecycleBackoff:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateDegraded, ebusgateway.TransportRuntimeReasonStartupFailed, ebusgateway.TransportRuntimeOutcomeUnavailable
+	case eebusLifecycleRunning:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateReady, ebusgateway.TransportRuntimeReasonNone, ebusgateway.TransportRuntimeOutcomeAvailable
+	case eebusLifecycleStopped:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateRetired, ebusgateway.TransportRuntimeReasonShutdown, ebusgateway.TransportRuntimeOutcomeUnavailable
+	case eebusLifecycleDegraded:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateDegraded, ebusgateway.TransportRuntimeReasonStartupFailed, ebusgateway.TransportRuntimeOutcomeUnavailable
+	default:
+		status.State, status.Reason, status.Outcome = ebusgateway.TransportRuntimeStateUnknown, ebusgateway.TransportRuntimeReasonUnknown, ebusgateway.TransportRuntimeOutcomeUnknown
+	}
+	return status
 }
 
 func (lifecycle *eebusRuntimeLifecycle) markStoppedIfCancelled() {
@@ -408,6 +485,43 @@ func (lifecycle *eebusRuntimeLifecycle) markStoppedIfCancelled() {
 		return
 	}
 	lifecycle.publishUnavailable(eebusLifecycleStopped, lifecycle.LifecycleSnapshot().DegradedReason)
+}
+
+// PublishTransportRetirement atomically publishes the final bounded metric and
+// fences future observer delivery before the Gateway closes /metrics. It does
+// not cancel, join, retire, or shut down the native runtime; Shutdown retains
+// ownership of those later operations.
+func (lifecycle *eebusRuntimeLifecycle) PublishTransportRetirement() {
+	if lifecycle == nil {
+		return
+	}
+	lifecycle.mu.Lock()
+	if lifecycle.transportRetired {
+		lifecycle.mu.Unlock()
+		return
+	}
+	readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{
+		State: eebusLifecycleStopped, DegradedReason: lifecycle.degradedReason,
+	})
+	lifecycle.handler = unavailableEEBusAdminHandler(readiness)
+	lifecycle.admin = nil
+	lifecycle.adminAvailable = false
+	lifecycle.runtimeAvailable = false
+	lifecycle.state = eebusLifecycleStopped
+	lifecycle.degradedReason = readiness.EEBusDegradedReason
+	lifecycle.timerOutstanding = false
+	lifecycle.revision++
+	status := eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{
+		State: lifecycle.state, Revision: lifecycle.revision,
+		RuntimeAvailable: lifecycle.runtimeAvailable, DegradedReason: lifecycle.degradedReason,
+	})
+	observer := lifecycle.transportObserver
+	lifecycle.transportObserver = nil
+	lifecycle.transportRetired = true
+	lifecycle.mu.Unlock()
+	if observer != nil {
+		observer(status)
+	}
 }
 
 func (lifecycle *eebusRuntimeLifecycle) Adapter() *eebusRuntimeAdapter {
@@ -448,7 +562,8 @@ func (lifecycle *eebusRuntimeLifecycle) LifecycleSnapshot() eebusRuntimeLifecycl
 	return eebusRuntimeLifecycleSnapshot{
 		State: lifecycle.state, Attempts: lifecycle.attempts, Revision: lifecycle.revision,
 		AdminAvailable: lifecycle.adminAvailable, TimerOutstanding: lifecycle.timerOutstanding,
-		DegradedReason: lifecycle.degradedReason,
+		RuntimeAvailable: lifecycle.runtimeAvailable,
+		DegradedReason:   lifecycle.degradedReason,
 	}
 }
 
@@ -458,8 +573,9 @@ func (lifecycle *eebusRuntimeLifecycle) ServeHTTP(writer http.ResponseWriter, re
 		return
 	}
 	lifecycle.mu.RLock()
-	defer lifecycle.mu.RUnlock()
-	lifecycle.handler.ServeHTTP(writer, request)
+	handler := lifecycle.handler
+	lifecycle.mu.RUnlock()
+	handler.ServeHTTP(writer, request)
 }
 
 func (lifecycle *eebusRuntimeLifecycle) Shutdown() error {

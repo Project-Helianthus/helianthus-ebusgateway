@@ -1,0 +1,8 @@
+isolated exact HEAD: 3cf615eec4f08194a169a24a16ba46b4571ac0fb
+origin remote: absent
+origin refs: absent
+.............
+----------------------------------------------------------------------
+Ran 13 tests in 4.184s
+
+OK

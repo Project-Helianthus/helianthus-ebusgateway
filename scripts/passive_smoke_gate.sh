@@ -87,16 +87,16 @@ semreg_public_config_only() {
   return 0
 }
 
-# A semantic /metrics append is not a passive-capture behavior change. Keep
-# this exception deliberately narrow: it accepts only the provider field,
-# setter, detached snapshot hand-off, and renderer append. Any passive state,
-# lock, counter, or unrelated RenderPrometheus change still requires the
+# A detached /metrics append is not a passive-capture behavior change. Keep
+# this exception deliberately narrow: it accepts only the pre-existing SemReg
+# hunk or #977's Gateway-owned two-protocol runtime snapshot hunk. Any passive
+# state, lock, counter, or unrelated RenderPrometheus change still requires the
 # ordinary deterministic passive-smoke report.
-bus_observability_semreg_metrics_only() {
+bus_observability_metrics_only() {
 	python3 - "$base_ref" <<'PY'
 import subprocess, sys
 base = sys.argv[1]
-expected = [
+semreg_expected = [
  "// semanticMetricsProvider returns detached, already-evaluated SemReg views.",
  "// It is invoked after the store snapshot is released: a /metrics request must",
  "// never take the store lock across a driver or publication lock.",
@@ -113,6 +113,45 @@ expected = [
  "if haveSemanticMetricsProvider {", "writeSemanticMetrics(writer, semanticDomains, now)",
  "}",
 ]
+transport_runtime_expected = [
+ "// transportRuntimeStatus is a two-entry, Gateway-owned lifecycle snapshot.",
+ "// It is updated by composition/lifecycle transitions and is deliberately",
+ "// rendered without calling into Modbus or eeBUS native runtime APIs.",
+ "transportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus",
+ "cfg:                    cfg,", "now:                    time.Now,",
+ "cfg: cfg,", "now: time.Now,",
+ "transportRuntimeStatus: map[TransportRuntimeProtocol]TransportRuntimeStatus{",
+ "TransportRuntimeProtocolModbusTCP: defaultTransportRuntimeStatus(TransportRuntimeProtocolModbusTCP),",
+ "TransportRuntimeProtocolEEBus:     defaultTransportRuntimeStatus(TransportRuntimeProtocolEEBus),",
+ "},",
+ "// SetTransportRuntimeStatus records one finite lifecycle result for the",
+ "// Modbus TCP or eeBUS runtime. Callers invoke this at lifecycle transitions;",
+ "// RenderPrometheus only copies the stored value and never reaches a runtime.",
+ "func (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {",
+ "if store == nil {", "return", "}",
+ "status = normalizeTransportRuntimeStatus(status)",
+ "if status.Protocol == \"\" {", "return", "}",
+ "store.mu.Lock()",
+ "if store.transportRuntimeStatus == nil {",
+ "store.transportRuntimeStatus = map[TransportRuntimeProtocol]TransportRuntimeStatus{}",
+ "}", "store.transportRuntimeStatus[status.Protocol] = status", "store.mu.Unlock()", "}",
+ "transportRuntimeStatus := make(map[TransportRuntimeProtocol]TransportRuntimeStatus, len(store.transportRuntimeStatus))",
+ "for protocol, status := range store.transportRuntimeStatus {",
+ "transportRuntimeStatus[protocol] = status", "}",
+ "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)",
+ "if current, ok := store.transportRuntimeStatus[status.Protocol]; ok &&",
+ "status.Protocol == TransportRuntimeProtocolEEBus && status.Revision < current.Revision {",
+ "store.mu.Unlock()", "return", "}",
+]
+# A committed combined diff places the revision fence inside the setter. During
+# development, the branch diff and working-tree diff are inspected separately,
+# so the same exact lines arrive as a trailing hunk. Accept only those two exact
+# representations; any added or reordered production line falls through.
+transport_runtime_combined_expected = (
+    transport_runtime_expected[:27]
+    + transport_runtime_expected[35:]
+    + transport_runtime_expected[27:35]
+)
 diffs = []
 for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observability_store.go"),
              ("git","diff","--unified=0","--","bus_observability_store.go"),
@@ -122,9 +161,13 @@ for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observabilit
 if not diffs:
     raise SystemExit(1)
 diffs = [line for line in diffs if line]
-if diffs != expected:
+if diffs == semreg_expected:
+    required = {"semanticMetricsProvider func(time.Time) []SemanticMetricsDomain", "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {", "semanticDomains = semanticMetricsProvider(now)", "writeSemanticMetrics(writer, semanticDomains, now)"}
+elif diffs in (transport_runtime_expected, transport_runtime_combined_expected):
+    required = {"transportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus", "func (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {", "store.transportRuntimeStatus[status.Protocol] = status", "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)"}
+else:
     raise SystemExit(1)
-if not {"semanticMetricsProvider func(time.Time) []SemanticMetricsDomain", "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {", "semanticDomains = semanticMetricsProvider(now)", "writeSemanticMetrics(writer, semanticDomains, now)"}.issubset(diffs):
+if not required.issubset(diffs):
     raise SystemExit(1)
 raise SystemExit(0)
 PY
@@ -254,7 +297,7 @@ while IFS= read -r file; do
   if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
     continue
   fi
-  if [[ "${file}" == "bus_observability_store.go" ]] && bus_observability_semreg_metrics_only; then
+  if [[ "${file}" == "bus_observability_store.go" ]] && bus_observability_metrics_only; then
     continue
   fi
   if requires_passive_smoke_gate "${file}"; then

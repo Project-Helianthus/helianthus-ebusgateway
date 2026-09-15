@@ -141,11 +141,6 @@ type BusObservabilityStore struct {
 	// never take the store lock across a driver or publication lock.
 	semanticMetricsProvider func(time.Time) []SemanticMetricsDomain
 
-	// transportRuntimeStatus is a two-entry, Gateway-owned lifecycle snapshot.
-	// It is updated by composition/lifecycle transitions and is deliberately
-	// rendered without calling into Modbus or eeBUS native runtime APIs.
-	transportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus
-
 	energyFreshnessMetricsRefresher func(now time.Time, passiveState string)
 	busAdmission                    *BusAdmission
 	admissionStabilityWindow        *AdmissionStabilityWindow
@@ -440,12 +435,8 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg: cfg,
-		now: time.Now,
-		transportRuntimeStatus: map[TransportRuntimeProtocol]TransportRuntimeStatus{
-			TransportRuntimeProtocolModbusTCP: defaultTransportRuntimeStatus(TransportRuntimeProtocolModbusTCP),
-			TransportRuntimeProtocolEEBus:     defaultTransportRuntimeStatus(TransportRuntimeProtocolEEBus),
-		},
+		cfg:                    cfg,
+		now:                    time.Now,
 		transportClass:         string(canonicalTransportProtocol(cfg.TransportConfig.Protocol)),
 		activeTimingQuality:    timingQualityForActive(cfg),
 		passiveTimingQuality:   timingQualityForPassive(cfg),
@@ -1174,30 +1165,6 @@ func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(tim
 	store.mu.Unlock()
 }
 
-// SetTransportRuntimeStatus records one finite lifecycle result for the
-// Modbus TCP or eeBUS runtime. Callers invoke this at lifecycle transitions;
-// RenderPrometheus only copies the stored value and never reaches a runtime.
-func (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {
-	if store == nil {
-		return
-	}
-	status = normalizeTransportRuntimeStatus(status)
-	if status.Protocol == "" {
-		return
-	}
-	store.mu.Lock()
-	if store.transportRuntimeStatus == nil {
-		store.transportRuntimeStatus = map[TransportRuntimeProtocol]TransportRuntimeStatus{}
-	}
-	if current, ok := store.transportRuntimeStatus[status.Protocol]; ok &&
-		status.Protocol == TransportRuntimeProtocolEEBus && status.Revision < current.Revision {
-		store.mu.Unlock()
-		return
-	}
-	store.transportRuntimeStatus[status.Protocol] = status
-	store.mu.Unlock()
-}
-
 func (store *BusObservabilityStore) RenderPrometheus() string {
 	if store == nil {
 		return ""
@@ -1231,10 +1198,6 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	adaptermuxDiagProvider := store.adaptermuxDiagProvider
 	v8RolloutProvider := store.v8RolloutProvider
 	semanticMetricsProvider := store.semanticMetricsProvider
-	transportRuntimeStatus := make(map[TransportRuntimeProtocol]TransportRuntimeStatus, len(store.transportRuntimeStatus))
-	for protocol, status := range store.transportRuntimeStatus {
-		transportRuntimeStatus[protocol] = status
-	}
 	store.mu.Unlock()
 
 	// batch-21 diagnostic counters — snapshot OUTSIDE store.mu (the
@@ -1276,7 +1239,6 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	if haveSemanticMetricsProvider {
 		writeSemanticMetrics(writer, semanticDomains, now)
 	}
-	writeTransportRuntimeMetrics(writer, transportRuntimeStatus)
 
 	writer.writeHelp("ebus_observability_transport_info", "Observe-first transport metadata.")
 	writer.writeType("ebus_observability_transport_info", "gauge")

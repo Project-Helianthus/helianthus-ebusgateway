@@ -156,6 +156,15 @@ type Config struct {
             self.assertNotEqual(hostile.returncode, 0, modified_other)
             self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
+    def _pre_candidate_bus_observability_base(self) -> str:
+        # Immutable issue fixture pinned to the pre-candidate source; never
+        # derive this classifier baseline from moving branch history.
+        fixture = SCRIPT_DIR / "testdata" / "passive_smoke_bus_observability_store_base.go"
+        try:
+            return fixture.read_text(encoding="utf-8")
+        except OSError as exc:
+            self.fail(f"cannot read immutable pre-candidate fixture: {exc}")
+
     def _create_temp_repo(
         self,
         changed_file: str,
@@ -306,6 +315,68 @@ func (store *BusObservabilityStore) RenderPrometheus() {
             result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"), text=True, capture_output=True, check=False)
             self.assertNotEqual(result.returncode, 0, "classifier accepted changed lock structure")
             self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_bus_observability_transport_snapshot_is_only_exception(self) -> None:
+        base = self._pre_candidate_bus_observability_base()
+        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        repo_path, _ = self._create_temp_repo(
+            "bus_observability_store.go", base_text=base, modified_text=allowed
+        )
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("not triggered", result.stdout)
+
+        for hostile in (
+            '\nfunc transportSnapshotPassiveMutation(store *BusObservabilityStore) { store.passive.state = "unsafe" }\n',
+            '\nfunc transportSnapshotLockMutation(store *BusObservabilityStore) { store.mu.RLock() }\n',
+            '\nfunc transportSnapshotCounterMutation(writer *prometheusWriter) { writer.writeGaugeSample("ebus_unreviewed", 1, nil) }\n',
+            '\nfunc transportSnapshotRenderMutation(store *BusObservabilityStore) { _ = store.RenderPrometheus() }\n',
+        ):
+            (repo_path / "bus_observability_store.go").write_text(allowed + hostile, encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, hostile)
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_transport_snapshot_fixture_falls_back_without_local_history(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        repo_path = pathlib.Path(temp_dir.name)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Codex"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "bus_observability_store.go").write_text((REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8"), encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "depth-one candidate"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "update-ref", "-d", "refs/heads/main"], cwd=repo_path, check=True, capture_output=True, text=True)
+        self.assertNotEqual(subprocess.run(["git", "rev-parse", "--verify", "HEAD^"], cwd=repo_path, capture_output=True, text=True, check=False).returncode, 0)
+        self.assertNotEqual(subprocess.run(["git", "rev-parse", "--verify", "main"], cwd=repo_path, capture_output=True, text=True, check=False).returncode, 0)
+        self.assertEqual(self._pre_candidate_bus_observability_base(), (SCRIPT_DIR / "testdata" / "passive_smoke_bus_observability_store_base.go").read_text(encoding="utf-8"))
+
+    def test_transport_snapshot_fixture_survives_empty_successor_commit(self) -> None:
+        base = self._pre_candidate_bus_observability_base()
+        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        repo_path, _ = self._create_temp_repo("bus_observability_store.go", base_text=base, modified_text=base)
+        tracked = repo_path / "bus_observability_store.go"
+        tracked.write_text(allowed, encoding="utf-8")
+        subprocess.run(["git", "add", "bus_observability_store.go"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "candidate"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "--allow-empty", "-m", "successor"], cwd=repo_path, check=True, capture_output=True, text=True)
+        self.assertEqual(self._pre_candidate_bus_observability_base(), base)
+        allowed_result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD^^"), text=True, capture_output=True, check=False)
+        self.assertEqual(allowed_result.returncode, 0, msg=allowed_result.stdout + allowed_result.stderr)
+        tracked.write_text(allowed + '\nfunc successorHostile(store *BusObservabilityStore) { store.passive.state = "unsafe" }\n', encoding="utf-8")
+        hostile = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD^^"), text=True, capture_output=True, check=False)
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
     def test_passive_smoke_gate_fails_for_runtime_control_flow_main_diff(self) -> None:
         repo_path, _ = self._create_temp_repo(

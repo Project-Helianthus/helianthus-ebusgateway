@@ -63,6 +63,32 @@ function response(payload) {
   };
 }
 
+function spineTree() {
+  let html = "";
+  const tree = {
+    get innerHTML() { return html; },
+    set innerHTML(value) { html = value; },
+    querySelectorAll(selector) {
+      assert.equal(selector, '[data-eebus-spine-action="continue"]');
+      const controls = [];
+      const pattern = /<button class="button" data-eebus-spine-action="continue" data-eebus-node="([^"]*)" data-eebus-cursor="([^"]*)">More<\/button>/g;
+      for (const match of html.matchAll(pattern)) {
+        const markup = match[0];
+        controls.push({
+          getAttribute(name) {
+            if (name === "data-eebus-node") return match[1];
+            if (name === "data-eebus-cursor") return match[2];
+            return null;
+          },
+          remove() { html = html.replace(markup, ""); },
+        });
+      }
+      return controls;
+    },
+  };
+  return tree;
+}
+
 test("Portal source contains no eeBUS login, credential, session, or CSRF surface", async () => {
   const { source } = await issue817Shell(async () => response({ state_revision: 1, data: {} }));
   for (const forbidden of [
@@ -430,6 +456,48 @@ test("Portal root SPINE continuation omits parent_node_id", async () => {
   assert.equal(query.has("parent_node_id"), false);
   assert.match(tree.innerHTML, /root-9/);
   await assert.rejects(shell.loadEEBusSPINEChildren("", ""), /SPINE snapshot expired/);
+});
+
+test("Portal removes only the consumed continuation across three root and child pages", async (t) => {
+  for (const entry of [
+    { name: "root", parentNodeID: "" },
+    { name: "child", parentNodeID: "feature-1" },
+  ]) {
+    await t.test(entry.name, async () => {
+      const calls = [];
+      const tree = spineTree();
+      const pages = [
+        { snapshot_id: "snapshot-1", parent_node_id: entry.parentNodeID || null, nodes: [{ node_id: `${entry.name}-2`, kind: "feature" }], next_cursor: `${entry.name}-cursor-2` },
+        { snapshot_id: "snapshot-1", parent_node_id: entry.parentNodeID || null, nodes: [{ node_id: `${entry.name}-3`, kind: "feature" }] },
+      ];
+      const { shell } = await issue817Shell(async (url, init = {}) => {
+        calls.push({ url: String(url), init });
+        return response({ state_revision: 5, data: pages.shift(), error: null });
+      }, new Map([
+        ['[data-role="eebus-spine-tree"]', tree],
+      ]));
+      shell._eebusSpinePartnerID = "live-1";
+      shell._eebusSpineSnapshotID = "snapshot-1";
+      shell.renderEEBusSPINEPage({
+        snapshot_id: "snapshot-1",
+        parent_node_id: entry.parentNodeID || null,
+        nodes: [{ node_id: `${entry.name}-1`, kind: "feature" }],
+        next_cursor: `${entry.name}-cursor-1`,
+      }, false);
+
+      await shell.loadEEBusSPINEChildren(entry.parentNodeID, `${entry.name}-cursor-1`);
+      assert.doesNotMatch(tree.innerHTML, new RegExp(`data-eebus-cursor="${entry.name}-cursor-1"`));
+      assert.match(tree.innerHTML, new RegExp(`data-eebus-cursor="${entry.name}-cursor-2"`));
+
+      await shell.loadEEBusSPINEChildren(entry.parentNodeID, `${entry.name}-cursor-2`);
+      assert.doesNotMatch(tree.innerHTML, /data-eebus-spine-action="continue"/);
+      assert.match(tree.innerHTML, new RegExp(`${entry.name}-1`));
+      assert.match(tree.innerHTML, new RegExp(`${entry.name}-2`));
+      assert.match(tree.innerHTML, new RegExp(`${entry.name}-3`));
+      assert.equal(calls.length, 2);
+      for (const call of calls) assert.equal(call.init.method, "GET");
+    });
+  }
 });
 
 test("workspace navigation clears only the departing workspace volatile authority", async () => {

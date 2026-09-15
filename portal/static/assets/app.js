@@ -2956,8 +2956,21 @@ class PortalShell extends HTMLElement {
     if (nodeID) query.set("parent_node_id", nodeID);
     if (cursor) query.set("cursor", cursor);
     const payload = await this.eebusAdminFetch(`/partners/${encodeURIComponent(this._eebusSpinePartnerID)}/spine?${query.toString()}`);
+    this.removeEEBusSPINEContinuation(nodeID, cursor);
     this.renderEEBusSPINEPage(payload.data, true);
     return payload;
+  }
+
+  removeEEBusSPINEContinuation(nodeID, cursor) {
+    if (!cursor) return;
+    const tree = this.querySelector('[data-role="eebus-spine-tree"]');
+    if (!tree) return;
+    for (const control of tree.querySelectorAll?.('[data-eebus-spine-action="continue"]') || []) {
+      if ((control.getAttribute("data-eebus-node") || "") !== nodeID) continue;
+      if ((control.getAttribute("data-eebus-cursor") || "") !== cursor) continue;
+      control.remove();
+      return;
+    }
   }
 
   renderEEBusSPINEPage(page, append) {

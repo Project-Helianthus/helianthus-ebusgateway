@@ -744,6 +744,59 @@ test("VaillantB503Pane_RapidTargetChangesOnlyProbeNewestQualification", async ()
   assert.match(body.innerHTML, /b503-state-not-supported/);
 });
 
+test("VaillantB503Pane_stalledQualificationTimesOutAndReentrySupersedesStaleProbe", async () => {
+  const { source, sourcePath } = await loadShellSource();
+  const body = makeAuditedElement();
+  const pendingReplies = [];
+  const { shell, fetchRequests, timeoutCalls, clearedTimeouts } = buildSandbox({
+    source, sourcePath,
+    elements: new Map([['[data-role="vaillant-b503-body"]', body]]),
+    fetchImpl: (_url, init) => new Promise((resolve) => {
+      pendingReplies.push({ resolve, signal: init.signal });
+    }),
+  });
+  const proto = Object.getPrototypeOf(shell);
+  shell.renderVaillantB503Pane = proto.renderVaillantB503Pane;
+  shell.activateSection = proto.activateSection;
+  shell._activeSectionTarget = "section-projection";
+  shell._vaillantB503TargetAddress = 8;
+
+  const timeoutContext = proto._beginVaillantB503TargetQualification.call(shell, 8);
+  const timedOut = proto.refreshVaillantB503Capability.call(shell, timeoutContext);
+  await flush();
+  assert.equal(timeoutCalls.length, 1, "qualification installs one bounded timeout");
+  assert.equal(timeoutCalls[0].delay, 5000);
+  timeoutCalls[0].callback();
+  await timedOut;
+  assert.equal(pendingReplies[0].signal.aborted, true, "timeout aborts its stalled capability transport");
+  assert.ok(clearedTimeouts.includes(timeoutCalls[0]), "timeout clears its own handle");
+  assert.equal(shell._vaillantB503CapabilityReason, "UNKNOWN", "timeout releases PENDING into a recoverable conservative state");
+  assert.match(body.innerHTML, /b503-state-unknown/);
+
+  const pendingContext = proto._beginVaillantB503TargetQualification.call(shell, 8);
+  const stalled = proto.refreshVaillantB503Capability.call(shell, pendingContext);
+  await flush();
+  const reopened = proto.openVaillantB503ProjectionTarget.call(shell, 8);
+  await reopened;
+  await flush();
+  assert.equal(fetchRequests.length, 3, "same-target re-entry supersedes the stalled PENDING qualification once");
+  assert.equal(pendingReplies[1].signal.aborted, true, "re-entry aborts the superseded capability probe");
+
+  pendingReplies[2].resolve({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "AVAILABLE" } } },
+  }) });
+  await flush();
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE", "re-entry result qualifies the current target");
+
+  pendingReplies[1].resolve({ ok: true, status: 200, json: async () => ({
+    data: { vaillantCapabilities: { vaillantB503: { reason: "NOT_SUPPORTED" } } },
+  }) });
+  await stalled;
+  await flush();
+  assert.equal(shell._vaillantB503CapabilityReason, "AVAILABLE", "late superseded response cannot overwrite the newer qualification");
+});
+
 test("VaillantB503Pane_targetQualificationDoesNotWaitForBlockedOldCleanup", async () => {
   const { source, sourcePath } = await loadShellSource();
   const body = makeAuditedElement();

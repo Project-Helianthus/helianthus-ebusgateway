@@ -208,6 +208,7 @@ function explorerDecode(rawHex, rawLen, type) {
 
 const vaillantB503LiveSessionPollIntervalMs = 5000;
 const vaillantB503SessionStatusTimeoutMs = 5000;
+const vaillantB503CapabilityTimeoutMs = 5000;
 // Deferred cleanup has a separate, read-only status loop.  It deliberately
 // outlives the visible Live-Monitor tab because navigation can occur while the
 // gateway is refreshing an owned session.  The loop has a finite failure
@@ -233,6 +234,7 @@ class PortalShell extends HTMLElement {
 
   disconnectedCallback() {
     this.endBootstrapLifecycle();
+	this._invalidateVaillantB503CapabilityRequests();
 	this._stopVaillantB503LiveMonitorSessionPolling();
 	this._stopVaillantB503DeferredCleanupStatusPolling();
 	this.clearEEBusVisibilityAuthority();
@@ -655,9 +657,9 @@ class PortalShell extends HTMLElement {
     }
     if (targetID === "section-vaillant-b503") {
       // Target-selection paths publish PENDING synchronously and complete their
-      // own ordered cleanup/probe sequence. A second refresh here would race
-      // that sequence and defeat its generation fence.
-      if (this._vaillantB503CapabilityReason !== "PENDING" && typeof this.refreshVaillantB503Capability === "function") {
+      // own ordered cleanup/probe sequence. Suppress only that same synchronous
+      // activation; a later nav re-entry is a bounded retry for a stalled probe.
+      if (!this._vaillantB503QualificationStarting && typeof this.refreshVaillantB503Capability === "function") {
         this.refreshVaillantB503Capability();
       }
     }
@@ -3666,6 +3668,7 @@ class PortalShell extends HTMLElement {
   }
 
   _beginVaillantB503TargetQualification(target) {
+	this._invalidateVaillantB503CapabilityRequests();
 	this._invalidateVaillantB503SessionStatusRequests();
     this._vaillantB503ConfirmedCleanupContext = undefined;
     this._vaillantB503Epoch = (this._vaillantB503Epoch || 0) + 1;
@@ -3732,7 +3735,12 @@ class PortalShell extends HTMLElement {
       return;
     }
     const qualification = this._beginVaillantB503TargetQualification(target);
-    this.activateSection("section-vaillant-b503");
+	this._vaillantB503QualificationStarting = true;
+	try {
+	  this.activateSection("section-vaillant-b503");
+	} finally {
+	  this._vaillantB503QualificationStarting = false;
+	}
     void this.handleVaillantB503NavAway(previous).then((disabled) => {
       if (disabled) this._recordVaillantB503ConfirmedCleanup(qualification);
     });
@@ -3744,14 +3752,47 @@ class PortalShell extends HTMLElement {
   async refreshVaillantB503Capability(requestContext) {
     const body = this.querySelector('[data-role="vaillant-b503-body"]');
     const context = requestContext || this._vaillantB503RequestContext();
+	const active = this._vaillantB503CapabilityInFlight;
+	if (active) active.cancel();
 	const requestVersion = (this._vaillantB503CapabilityRequestVersion || 0) + 1;
 	this._vaillantB503CapabilityRequestVersion = requestVersion;
+	const controller = typeof AbortController === "function" ? new AbortController() : null;
+	let resolveBounded;
+	let settled = false;
+	const finish = (result) => {
+	  if (settled) return;
+	  settled = true;
+	  clearTimeout(timeout);
+	  resolveBounded(result);
+	};
+	const bounded = new Promise((resolve) => { resolveBounded = resolve; });
+	const timeout = setTimeout(() => {
+	  if (controller) controller.abort();
+	  finish({ error: new Error("B503 capability request timed out") });
+	}, vaillantB503CapabilityTimeoutMs);
+	const inFlight = {
+	  requestVersion,
+	  context,
+	  promise: bounded,
+	  cancel: () => {
+	    if (controller) controller.abort();
+	    finish({ cancelled: true });
+	  },
+	};
+	this._vaillantB503CapabilityInFlight = inFlight;
+	Promise.resolve(this._gqlRequest(
+	  "query VaillantB503Cap($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { available reason } } }",
+	  { targetAddress: context.target },
+	  controller ? { signal: controller.signal } : undefined,
+	)).then(
+	  (env) => finish({ env }),
+	  (error) => finish({ error }),
+	);
     let reason = "UNKNOWN";
     try {
-      const env = await this._gqlRequest(
-        "query VaillantB503Cap($targetAddress: Int) { vaillantCapabilities(targetAddress: $targetAddress) { vaillantB503 { available reason } } }",
-        { targetAddress: context.target },
-      );
+	  const result = await inFlight.promise;
+	  if (result.cancelled) return;
+	  const env = result.env;
       const cap = env && env.data && env.data.vaillantCapabilities
         && env.data.vaillantCapabilities.vaillantB503;
       if (cap && typeof cap.reason === "string") {
@@ -3761,6 +3802,8 @@ class PortalShell extends HTMLElement {
       // Network failure: render as UNKNOWN. No retry loop; the operator
       // can click the nav entry again to retry.
       reason = "UNKNOWN";
+	} finally {
+	  if (this._vaillantB503CapabilityInFlight === inFlight) this._vaillantB503CapabilityInFlight = undefined;
     }
     if (!this._isCurrentVaillantB503Context(context) || requestVersion !== this._vaillantB503CapabilityRequestVersion) return;
     this._vaillantB503CapabilityReason = reason;
@@ -3770,6 +3813,13 @@ class PortalShell extends HTMLElement {
       this._reprobeVaillantB503CapabilityAfterCleanup(context);
     }
   }
+
+	_invalidateVaillantB503CapabilityRequests() {
+	  this._vaillantB503CapabilityRequestVersion = (this._vaillantB503CapabilityRequestVersion || 0) + 1;
+	  const active = this._vaillantB503CapabilityInFlight;
+	  if (active) active.cancel();
+	  this._vaillantB503CapabilityInFlight = undefined;
+	}
 
   async _requalifyVaillantB503CapabilityAfterLifecycle(context, refreshSession) {
 	if (!this._isCurrentVaillantB503Context(context)) return false;

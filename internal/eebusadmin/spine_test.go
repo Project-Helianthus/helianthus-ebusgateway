@@ -2,6 +2,7 @@ package eebusadmin
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,6 +93,49 @@ func TestIssue817LazySPINETreePreservesVR940CanonicalInventory(t *testing.T) {
 	}
 	if raw.calls != 1 {
 		t.Fatalf("raw Snapshot calls=%d, want immutable one-shot capture", raw.calls)
+	}
+}
+
+func TestIssue980SPINERootContinuationPreservesCursorScope(t *testing.T) {
+	snapshot := issue809VR940Snapshot(t)
+	template := snapshot.Devices[0]
+	for index := 1; index <= spinePageSize; index++ {
+		device := template
+		device.Address = fmt.Sprintf("root-device-%02d", index)
+		snapshot.Devices = append(snapshot.Devices, device)
+	}
+	snapshot.Meta.DataHash = ""
+	var err error
+	snapshot, err = eebusruntime.NewSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatalf("build root-pagination snapshot: %v", err)
+	}
+
+	raw := &issue809RawSnapshotStub{snapshot: snapshot}
+	adminSnapshot := testAdminSnapshot()
+	adminSnapshot.Connected = []eebusruntime.ConnectedPartnerV1{{SKI: template.SKI, ConnectionState: "connected"}}
+	admin := &adminV1Stub{snapshot: adminSnapshot, snapshots: map[eebusruntime.AdminViewV1]eebusruntime.AdminSnapshotV1{eebusruntime.AdminViewV1Connected: adminSnapshot}}
+	handler := newIssue817Server(t, admin, raw, nil)
+	partnerID := issue844PartnerID(t, handler, "connected")
+
+	root := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=root")
+	if len(root.Nodes) != spinePageSize || root.NextCursor == "" || root.ParentNodeID != nil {
+		t.Fatalf("root page=%#v; want %d nodes and continuation", root, spinePageSize)
+	}
+
+	wrongScope := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=continue&snapshot_id="+root.SnapshotID+"&parent_node_id="+root.Nodes[0].NodeID+"&cursor="+root.NextCursor, nil)
+	wrongScopeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongScopeResponse, wrongScope)
+	if wrongScopeResponse.Code != http.StatusConflict {
+		t.Fatalf("root cursor in child scope status=%d body=%s", wrongScopeResponse.Code, wrongScopeResponse.Body.String())
+	}
+
+	continuation := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=continue&snapshot_id="+root.SnapshotID+"&cursor="+root.NextCursor)
+	if continuation.ParentNodeID != nil || len(continuation.Nodes) != 1 || continuation.NextCursor != "" {
+		t.Fatalf("root continuation=%#v; want final root node", continuation)
+	}
+	if raw.calls != 1 {
+		t.Fatalf("raw Snapshot calls=%d; want immutable one-shot capture", raw.calls)
 	}
 }
 

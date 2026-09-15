@@ -597,6 +597,7 @@ func TestSemanticReadScheduler_RevalidatesShadowWhenInvalidatedBeforeLock(t *tes
 	var fetchCalls int32
 	value, err := scheduler.GetWatch(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
 		atomic.AddInt32(&fetchCalls, 1)
+		now = now.Add(time.Nanosecond)
 		return []byte{0x44}, nil
 	})
 	if err != nil {

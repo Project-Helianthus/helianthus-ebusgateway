@@ -39,7 +39,15 @@ type spineSnapshot struct {
 type spineCursor struct {
 	parentID string
 	offset   int
+	scope    spineCursorScope
 }
+
+type spineCursorScope uint8
+
+const (
+	spineCursorScopeRoot spineCursorScope = iota + 1
+	spineCursorScopeChildren
+)
 
 type spineNode struct {
 	ID       string
@@ -96,6 +104,7 @@ type spineQuery struct {
 	snapshotID string
 	parentID   string
 	cursor     string
+	scope      spineCursorScope
 }
 
 func parseSpineQuery(request *http.Request) (spineQuery, bool) {
@@ -108,10 +117,17 @@ func parseSpineQuery(request *http.Request) (spineQuery, bool) {
 	shape := spineQuery{request: values.Get("request"), snapshotID: values.Get("snapshot_id"), parentID: values.Get("parent_node_id"), cursor: values.Get("cursor")}
 	switch shape.request {
 	case "root":
+		shape.scope = spineCursorScopeRoot
 		return shape, len(values) == 1
 	case "children":
+		shape.scope = spineCursorScopeChildren
 		return shape, len(values) == 3 && shape.snapshotID != "" && shape.parentID != "" && shape.cursor == ""
 	case "continue":
+		if len(values) == 3 && shape.snapshotID != "" && shape.parentID == "" && shape.cursor != "" {
+			shape.scope = spineCursorScopeRoot
+			return shape, true
+		}
+		shape.scope = spineCursorScopeChildren
 		return shape, len(values) == 4 && shape.snapshotID != "" && shape.parentID != "" && shape.cursor != ""
 	default:
 		return spineQuery{}, false
@@ -172,7 +188,14 @@ func (server *server) spineExistingPage(w http.ResponseWriter, partnerID string,
 		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
 	}
-	if _, ok := snapshot.nodes[shape.parentID]; !ok {
+	if shape.scope == spineCursorScopeChildren {
+		if _, ok := snapshot.nodes[shape.parentID]; !ok {
+			server.spineMu.Unlock()
+			server.writeError(w, http.StatusConflict, "snapshot_expired")
+			return
+		}
+	}
+	if shape.scope != spineCursorScopeRoot && shape.scope != spineCursorScopeChildren {
 		server.spineMu.Unlock()
 		server.writeError(w, http.StatusConflict, "snapshot_expired")
 		return
@@ -180,7 +203,7 @@ func (server *server) spineExistingPage(w http.ResponseWriter, partnerID string,
 	offset := 0
 	if shape.request == "continue" {
 		cursor, exists := snapshot.cursors[shape.cursor]
-		if !exists || cursor.parentID != shape.parentID {
+		if !exists || cursor.scope != shape.scope || cursor.parentID != shape.parentID {
 			server.spineMu.Unlock()
 			server.writeError(w, http.StatusConflict, "snapshot_expired")
 			return
@@ -354,7 +377,11 @@ func (server *server) spinePageLocked(snapshot *spineSnapshot, parentID string, 
 		if err != nil {
 			return spinePage{}, err
 		}
-		snapshot.cursors[cursor] = spineCursor{parentID: parentID, offset: end}
+		scope := spineCursorScopeChildren
+		if parentID == "" {
+			scope = spineCursorScopeRoot
+		}
+		snapshot.cursors[cursor] = spineCursor{parentID: parentID, offset: end, scope: scope}
 		page.NextCursor = cursor
 	}
 	return page, nil

@@ -941,6 +941,10 @@ func (cache *ShadowCache) rejectWriteByPrecedence(entry *shadowEntry, write Shad
 	if entry == nil {
 		return ""
 	}
+	if (entry.state == ShadowEntryStateInvalidated || entry.state == ShadowEntryStateTombstone) &&
+		!entry.invalidatedAt.IsZero() && !write.ObservedAt.After(entry.invalidatedAt) {
+		return ShadowWriteRejectionReasonStaleTimestamp
+	}
 	if write.ObservedAt.Before(entry.observedAt) {
 		return ShadowWriteRejectionReasonStaleTimestamp
 	}

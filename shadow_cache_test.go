@@ -237,6 +237,49 @@ func TestShadowCacheInvalidationGenerationRejectsStaleActiveWrite(t *testing.T) 
 	}
 }
 
+func TestShadowCacheInvalidationTimestampRejectsDelayedPassiveWrite(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(200, 0),
+	})
+
+	for _, observedAt := range []time.Time{time.Unix(150, 0), time.Unix(200, 0)} {
+		result := cache.Write(ShadowWrite{
+			Key:        key,
+			Source:     ShadowWriteSourcePassive,
+			Confidence: ShadowConfidenceHigh,
+			Value:      []byte{0x21},
+			ObservedAt: observedAt,
+		})
+		if result.Accepted {
+			t.Fatalf("passive write observed at %s accepted across invalidation barrier", observedAt)
+		}
+		if result.Reason != ShadowWriteRejectionReasonStaleTimestamp {
+			t.Fatalf("passive write observed at %s rejection = %s; want %s", observedAt, result.Reason, ShadowWriteRejectionReasonStaleTimestamp)
+		}
+	}
+
+	entry, ok := cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStateInvalidated || !entry.InvalidatedAt.Equal(time.Unix(200, 0)) {
+		t.Fatalf("Entry(key) after delayed writes = %+v, %t; want invalidated barrier at 200", entry, ok)
+	}
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(201, 0), []byte{0x22})
+	entry, ok = cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStatePresent || !entry.ObservedAt.Equal(time.Unix(201, 0)) || len(entry.Value) != 1 || entry.Value[0] != 0x22 {
+		t.Fatalf("Entry(key) after post-invalidation write = %+v, %t; want newer present value", entry, ok)
+	}
+}
+
 func TestShadowCacheCapacityBlockedInvalidationStillRejectsStaleActiveWrite(t *testing.T) {
 	t.Parallel()
 

@@ -14,6 +14,7 @@ import (
 
 type promotedB503Dispatcher struct {
 	failIndex *byte
+	failErr   error
 	calls     []byte
 }
 
@@ -48,6 +49,9 @@ func (dispatcher *promotedB503Dispatcher) Invoke(_ context.Context, _ byte, payl
 		index := payload[2]
 		dispatcher.calls = append(dispatcher.calls, index)
 		if dispatcher.failIndex != nil && index == *dispatcher.failIndex {
+			if dispatcher.failErr != nil {
+				return nil, dispatcher.failErr
+			}
 			return nil, errors.New("history transport failure")
 		}
 		value := uint16(0x0119) + uint16(index)
@@ -171,6 +175,23 @@ func TestVaillantB503ErrorsHistoryListPreservesVerifiedPrefix(t *testing.T) {
 	}
 	if envelope["error"] != nil {
 		t.Fatalf("typed partial result must not hide rows behind envelope error: %#v", envelope["error"])
+	}
+}
+
+func TestVaillantB503ErrorsHistoryListPreservesTransportDownClassification(t *testing.T) {
+	failIndex := byte(1)
+	server := newB503Server(t, &stubB503Dispatcher{}, newDefaultMgr())
+	state, _ := b503StateFor(server)
+	state.opts.Dispatcher = &promotedB503Dispatcher{failIndex: &failIndex, failErr: b503session.ErrTransportDown}
+
+	envelope := envelopeFromResult(t, doRPC(t, server.Handler(), rpcRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: json.RawMessage(`{"name":"` + toolVaillantB503ErrorsHistoryListName + `","arguments":{"limit":2}}`),
+	}))
+	data := envelope["data"].(map[string]any)
+	failure := data["failure"].(map[string]any)
+	if int(failure["index"].(float64)) != 1 || failure["code"] != "TRANSPORT_DOWN" {
+		t.Fatalf("failure = %#v; want index 1 TRANSPORT_DOWN", failure)
 	}
 }
 

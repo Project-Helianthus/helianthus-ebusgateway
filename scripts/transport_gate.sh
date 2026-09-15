@@ -62,6 +62,11 @@ requires_ebus_transport_gate() {
 requires_b503_native_transport_gate() {
   local file="$1"
   case "${file}" in
+    *_test.go)
+      return 1
+      ;;
+  esac
+  case "${file}" in
     cmd/gateway/vaillant_b503_dispatcher.go|\
     cmd/gateway/vaillant_b503_graphql_provider.go|\
     cmd/gateway/vaillant_b503_wiring.go|\

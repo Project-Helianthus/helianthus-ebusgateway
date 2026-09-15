@@ -423,8 +423,13 @@ func (st *b503State) errorsHistoryList(ctx context.Context, target byte, limit i
 		payload := append(b503.EncodeErrorHistory(), byte(index))
 		resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 		if err != nil {
+			normalized := normalizeB503OperationErr(err)
+			code, ok := classifyB503Error(normalized)
+			if !ok {
+				code = "UPSTREAM_RPC_FAILED"
+			}
 			return VaillantB503HistoryList{Records: records, Failure: &VaillantB503HistoryFailure{
-				Index: index, Code: "UPSTREAM_RPC_FAILED", Message: err.Error(),
+				Index: index, Code: code, Message: err.Error(),
 			}}, nil
 		}
 		record, err := b503.DecodeErrorHistory(resp)

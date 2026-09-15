@@ -351,7 +351,7 @@ func (st *b503State) handleErrorsGet(ctx context.Context, args map[string]any) m
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentError())
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	slots, err := b503.DecodeCurrentError(resp)
 	if err != nil {
@@ -367,7 +367,7 @@ func (st *b503State) handleServiceCurrentGet(ctx context.Context, args map[strin
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, b503.EncodeCurrentService())
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	slots, err := b503.DecodeCurrentService(resp)
 	if err != nil {
@@ -389,7 +389,7 @@ func (st *b503State) handleErrorsHistoryGet(ctx context.Context, args map[string
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	rec, err := b503.DecodeErrorHistory(resp)
 	if err != nil {
@@ -500,7 +500,7 @@ func (st *b503State) handleServiceHistoryGet(ctx context.Context, args map[strin
 	}
 	resp, err := st.opts.Dispatcher.Invoke(ctx, target, payload)
 	if err != nil {
-		return st.errEnvelope(ctx, fmt.Errorf("%w: %v", errUpstreamRPCFailed, err))
+		return st.errEnvelope(ctx, normalizeB503OperationErr(err))
 	}
 	rec, err := b503.DecodeServiceHistory(resp)
 	if err != nil {

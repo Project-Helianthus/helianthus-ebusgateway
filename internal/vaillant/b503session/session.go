@@ -856,12 +856,100 @@ func (m *Manager) idleTimerFired(gen uint64) {
 		return
 	}
 	target := m.activeTarget
+	if m.pendingEpoch > m.transport.TransportEpoch {
+		attemptedEpoch := m.pendingEpoch
+		pending := &pendingOperation{PendingOperationSnapshot: PendingOperationSnapshot{
+			OperationID: newCleanupAttemptID(), Kind: OperationDisable, Target: target, Transport: m.transport,
+		}}
+		m.pendingOperation = pending
+		m.state = Refreshing
+		refresh := m.refresh
+		m.stateMu.Unlock()
+		m.idleRefreshAndDisable(pending, attemptedEpoch, refresh)
+		return
+	}
 	epoch := m.transport.TransportEpoch
 	attemptID := newCleanupAttemptID()
 	m.toDisabledLocked()
 	m.createCleanupLocked(target, epoch, attemptID)
 	m.stateMu.Unlock()
 	m.attemptCleanup(context.Background(), epoch)
+}
+
+// idleRefreshAndDisable gives an expired owner the same one-shot rebind fence
+// as an admitted Disable before emitting the timer's defensive disable.
+func (m *Manager) idleRefreshAndDisable(pending *pendingOperation, attemptedEpoch uint64, refresh RefreshFunc) {
+	var (
+		transport TransportKey
+		err       error
+	)
+	if refresh == nil {
+		err = ErrTransportDown
+	} else {
+		transport, err = refresh(context.Background())
+	}
+	m.stateMu.Lock()
+	if m.pendingOperation != pending || !m.mutexHeld || m.state != Refreshing {
+		m.stateMu.Unlock()
+		return
+	}
+	if pending.invalidated || err != nil || transport.TransportEpoch < attemptedEpoch || transport.TransportEpoch < m.observedEpoch {
+		m.pendingOperation = nil
+		latest := m.observedEpoch
+		m.pendingEpoch = 0
+		m.transport.TransportEpoch = latest
+		m.toDisabledLocked()
+		m.createCleanupLocked(pending.Target, latest, pending.OperationID)
+		m.stateMu.Unlock()
+		return
+	}
+	m.transport = transport
+	m.observedEpoch = transport.TransportEpoch
+	m.pendingEpoch = 0
+	m.state = Active
+	pending.Transport = transport
+	dispatch := m.cleanupDispatch
+	m.stateMu.Unlock()
+	if dispatch == nil {
+		m.stateMu.Lock()
+		if m.pendingOperation == pending {
+			m.pendingOperation = nil
+			m.toDisabledLocked()
+			m.createCleanupLocked(pending.Target, transport.TransportEpoch, pending.OperationID)
+		}
+		m.stateMu.Unlock()
+		return
+	}
+	ctx, cancel := m.bindPendingContext(context.Background(), pending)
+	defer cancel(nil)
+	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), pending.Target, dispatch)
+	m.stateMu.Lock()
+	if m.pendingOperation != pending {
+		m.stateMu.Unlock()
+		return
+	}
+	if pending.invalidated || m.observedEpoch > transport.TransportEpoch {
+		m.pendingOperation = nil
+		m.pendingEpoch = 0
+		m.transport.TransportEpoch = m.observedEpoch
+		m.toDisabledLocked()
+		m.createCleanupLocked(pending.Target, m.observedEpoch, pending.OperationID)
+		if m.cleanup != nil {
+			m.cleanup.TransportEpoch = m.observedEpoch
+		}
+		m.stateMu.Unlock()
+		return
+	}
+	m.pendingOperation = nil
+	m.releaseOwnerLocked()
+	m.state = Disabled
+	m.createCleanupLocked(pending.Target, transport.TransportEpoch, pending.OperationID)
+	m.cleanup.LastAttempted = true
+	m.cleanup.LastAttemptEpoch = transport.TransportEpoch
+	m.cleanup.LastEmitted = outcome.Emitted
+	m.cleanup.LastNative = outcome.Native
+	m.cleanup.LastErr = outcome.Err
+	m.stateMu.Unlock()
 }
 
 func (m *Manager) beginOwnerOperation(ctx context.Context, target byte, key *SessionKey, kind OperationKind) (*pendingOperation, error) {
@@ -911,13 +999,19 @@ func (m *Manager) beginOwnerOperation(ctx context.Context, target byte, key *Ses
 
 	m.stateMu.Lock()
 	if m.pendingOperation != pending || !m.mutexHeld || m.state != Refreshing {
-		if m.pendingOperation == pending {
-			m.pendingOperation = nil
-		}
 		m.stateMu.Unlock()
 		if err != nil {
 			return nil, err
 		}
+		return nil, ErrTransportDown
+	}
+	if pending.invalidated || m.observedEpoch > attemptedEpoch || (err == nil && newTransport.TransportEpoch < m.observedEpoch) {
+		m.pendingOperation = nil
+		m.pendingEpoch = 0
+		m.transport.TransportEpoch = m.observedEpoch
+		m.toDisabledLocked()
+		m.createCleanupLocked(target, m.observedEpoch, pending.OperationID)
+		m.stateMu.Unlock()
 		return nil, ErrTransportDown
 	}
 	if err == nil && newTransport.TransportEpoch >= attemptedEpoch {

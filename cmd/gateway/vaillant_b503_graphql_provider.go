@@ -74,6 +74,8 @@ func publicB503GraphQLError(err error) error {
 		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
 	case errors.Is(err, errRawFrameUpstreamRPCFailed):
 		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
+	case errors.Is(err, errRawFrameStaleEpoch):
+		return fmt.Errorf("UPSTREAM_RPC_FAILED: %w", err)
 	default:
 		return err
 	}

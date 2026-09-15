@@ -132,6 +132,7 @@ func TestIssue552B503GraphQLPreservesDispatcherErrorCodes(t *testing.T) {
 	}{
 		{name: "context cancellation before turnaround", err: errRawFrameUpstreamTimeout, code: "UPSTREAM_RPC_FAILED"},
 		{name: "nak crc or protocol failure", err: errRawFrameUpstreamRPCFailed, code: "UPSTREAM_RPC_FAILED"},
+		{name: "stale epoch completion", err: errRawFrameStaleEpoch, code: "UPSTREAM_RPC_FAILED"},
 		{name: "cleanup pending", err: b503session.ErrCleanupPending, code: "UNKNOWN"},
 		{name: "transport down", err: b503session.ErrTransportDown, code: "TRANSPORT_DOWN"},
 		{name: "session contention", err: b503session.ErrSessionBusy, code: "SESSION_BUSY"},

@@ -358,6 +358,78 @@ func TestOperationSuccessfulReadResetsIdleTimer(t *testing.T) {
 	}
 }
 
+func TestOperationIdleExpiryRefreshesBeforeDefensiveDisable(t *testing.T) {
+	refreshed := make(chan struct{}, 1)
+	manager := b503session.New(newTK(testEpoch), 20*time.Millisecond, func(context.Context) (b503session.TransportKey, error) {
+		refreshed <- struct{}{}
+		return newTK(testEpoch + 1), nil
+	})
+	cleanup := &dispatchRecorder{outcomes: []b503session.DispatchOutcome{{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}}}
+	manager.SetCleanupDispatcher(cleanup.dispatch)
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}); err != nil {
+		t.Fatalf("enable = %v", err)
+	}
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	select {
+	case <-refreshed:
+	case <-time.After(time.Second):
+		t.Fatal("idle expiry did not refresh current epoch")
+	}
+	deadline := time.After(time.Second)
+	for len(cleanup.snapshot()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("idle expiry did not issue refreshed defensive disable")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
+		t.Fatalf("idle cleanup targets = %v, want one %#x", got, operationTarget)
+	}
+	if got := manager.TransportKey(); got != newTK(testEpoch+1) {
+		t.Fatalf("idle cleanup transport = %+v, want refreshed epoch", got)
+	}
+}
+
+func TestOperationIdleRefreshRolloverBeforeEmissionRetainsLatestCleanup(t *testing.T) {
+	dispatchEntered := make(chan struct{})
+	dispatchRelease := make(chan struct{})
+	manager := b503session.New(newTK(testEpoch), 20*time.Millisecond, func(context.Context) (b503session.TransportKey, error) {
+		return newTK(testEpoch + 1), nil
+	})
+	manager.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		close(dispatchEntered)
+		<-dispatchRelease
+		if ctx.Err() != nil {
+			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown, Transport: newTK(testEpoch + 1)}
+		}
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}
+	})
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}); err != nil {
+		t.Fatalf("enable = %v", err)
+	}
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	<-dispatchEntered
+	manager.OnEpochAdvance(context.Background(), testEpoch+2)
+	close(dispatchRelease)
+	deadline := time.After(time.Second)
+	for manager.IsOwned() {
+		select {
+		case <-deadline:
+			t.Fatal("idle rollover retained owner")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cleanup, ok := manager.CleanupObligation()
+	if !ok || cleanup.TransportEpoch != testEpoch+2 || cleanup.LastAttempted {
+		t.Fatalf("idle rollover cleanup = %+v, present=%v", cleanup, ok)
+	}
+}
+
 func TestOperationRefreshedDisableUsesOldAuthenticatedKeyAndDispatchesOnce(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, okRefresh(testEpoch+1))
 	ack := func(context.Context, byte) b503session.DispatchOutcome {
@@ -508,6 +580,37 @@ func TestOperationRefreshedReadDisconnectReleasesOwnerAndRetainsCleanup(t *testi
 	obligation, ok := manager.CleanupObligation()
 	if !ok || obligation.Target != operationTarget || obligation.TransportEpoch != testEpoch+1 {
 		t.Fatalf("refreshed read disconnect cleanup = %+v, present=%v", obligation, ok)
+	}
+}
+
+func TestOperationRefreshInvalidatedByNewerEpochDoesNotRegressOwner(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	manager := b503session.New(newTK(testEpoch), time.Minute, func(context.Context) (b503session.TransportKey, error) {
+		close(entered)
+		<-release
+		return newTK(testEpoch + 1), nil
+	})
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: manager.TransportKey()}
+	}
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("enable = %v", err)
+	}
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	done := make(chan error, 1)
+	go func() { _, err := manager.ReadOperation(context.Background(), operationTarget, ack); done <- err }()
+	<-entered
+	manager.OnEpochAdvance(context.Background(), testEpoch+2)
+	close(release)
+	if err := <-done; !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("invalidated refresh = %v, want ErrTransportDown", err)
+	}
+	if got := manager.TransportKey().TransportEpoch; got != testEpoch+2 {
+		t.Fatalf("transport epoch regressed to %d, want %d", got, testEpoch+2)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("invalidated refresh state = %+v, want ownerless Idle", got)
 	}
 }
 

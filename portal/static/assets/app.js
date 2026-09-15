@@ -3791,7 +3791,7 @@ class PortalShell extends HTMLElement {
     const sanitized = typeof reason === "string" ? reason : "UNKNOWN";
     const hasTargets = (Array.isArray(this.projectionDevices) ? this.projectionDevices : [])
       .some((device) => Number.isInteger(Number(device.address)) && Number(device.address) >= 0 && Number(device.address) <= 255);
-    const targetPicker = `<label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target"${hasTargets ? "" : " disabled"}>${this._vaillantB503TargetOptions()}</select></label>`;
+    const targetPicker = `<label class="muted-inline">Target <select class="select" data-role="vaillant-b503-target" aria-label="Vaillant B503 target"${hasTargets || this._vaillantB503Target() !== null ? "" : " disabled"}>${this._vaillantB503TargetOptions()}</select></label>`;
 	const liveTabSelected = (this._vaillantB503ActiveTab || "errors") === "live-monitor";
 	const keepRefreshingSessionVisible = sanitized === "UNKNOWN" && liveTabSelected &&
 	  this._vaillantB503SessionState === "Refreshing" && this._vaillantB503SessionOwned === true;

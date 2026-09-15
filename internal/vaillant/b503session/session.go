@@ -269,7 +269,7 @@ func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	pending := m.pendingOperation
-	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target || !m.mutexHeld {
+	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target || (!m.mutexHeld && m.state != Disabled) {
 		return false
 	}
 	switch pending.Kind {
@@ -278,7 +278,7 @@ func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 			return false
 		}
 	case OperationRead, OperationDisable:
-		if m.state != Active {
+		if m.state != Active && m.state != Disabled {
 			return false
 		}
 	default:
@@ -1102,7 +1102,7 @@ func (m *Manager) clearCleanupForOperationLocked(operationID string) {
 	}
 }
 
-func (m *Manager) attemptCleanup(ctx context.Context, epoch uint64) {
+func (m *Manager) attemptCleanup(_ context.Context, epoch uint64) {
 	m.stateMu.Lock()
 	if m.cleanup == nil || m.restarted || (m.cleanup.LastAttempted && m.cleanup.LastAttemptEpoch == epoch) || m.cleanupDispatch == nil {
 		m.stateMu.Unlock()
@@ -1114,8 +1114,19 @@ func (m *Manager) attemptCleanup(ctx context.Context, epoch uint64) {
 	m.cleanup.LastAttempted = true
 	m.cleanup.TransportEpoch = epoch
 	dispatch := m.cleanupDispatch
+	pending := &pendingOperation{PendingOperationSnapshot: PendingOperationSnapshot{OperationID: newCleanupAttemptID(), Kind: OperationDisable, Target: target, Transport: m.transport}}
+	m.pendingOperation = pending
 	m.stateMu.Unlock()
-	outcome := dispatchOnce(ctx, target, dispatch)
+	cleanupCtx, timeout := context.WithTimeout(context.Background(), 5*time.Second)
+	defer timeout()
+	operationCtx, cancel := m.bindPendingContext(cleanupCtx, pending)
+	defer cancel(nil)
+	outcome := dispatchOnce(withPendingOperation(operationCtx, pending.OperationID), target, dispatch)
+	m.stateMu.Lock()
+	if m.pendingOperation == pending {
+		m.pendingOperation = nil
+	}
+	m.stateMu.Unlock()
 	m.recordCleanupOutcome(attemptID, epoch, outcome)
 }
 

@@ -181,6 +181,102 @@ func TestOperationEnablePostEmissionEpochAdvanceRunsAtMostOneLifecycleCleanup(t 
 	}
 }
 
+func TestOperationEpochAdvanceCancelsAdmittedEnableBeforeEmission(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	admitted := make(chan struct{})
+	done := make(chan error, 1)
+	var emitted int
+	go func() {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+			if !ok || !manager.AdmitPendingEmission(operationID, target) {
+				panic("epoch-cancellation test could not admit pending enable")
+			}
+			close(admitted)
+			<-ctx.Done()
+			// This models the dispatcher's final context check after poll
+			// quiescence and before entering bus.Send.
+			if ctx.Err() == nil {
+				emitted++
+			}
+			return b503session.DispatchOutcome{Err: ctx.Err(), Transport: newTK(testEpoch)}
+		})
+		done <- err
+	}()
+	<-admitted
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("epoch-invalidated enable = %v, want context cancellation", err)
+	}
+	if emitted != 0 {
+		t.Fatalf("epoch-invalidated enable emissions = %d, want 0", emitted)
+	}
+	if _, ok := manager.CleanupObligation(); ok {
+		t.Fatal("pre-emission epoch cancellation retained cleanup")
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("epoch-invalidated snapshot = %+v, want Idle without owner", got)
+	}
+	if got := manager.TransportKey(); got != newTK(testEpoch+1) {
+		t.Fatalf("epoch-invalidated transport = %+v, want %+v", got, newTK(testEpoch+1))
+	}
+}
+
+func TestOperationEpochAdvanceBeforeAdmissionEmitsNothing(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	waiting := make(chan struct{})
+	allowAdmission := make(chan struct{})
+	done := make(chan error, 1)
+	var sends int
+	go func() {
+		_, err := manager.EnableOperation(context.Background(), operationTarget, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+			close(waiting)
+			<-allowAdmission
+			operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+			if !ok || manager.AdmitPendingEmission(operationID, target) {
+				sends++
+				return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+			}
+			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown, Transport: newTK(testEpoch)}
+		})
+		done <- err
+	}()
+	<-waiting
+	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	close(allowAdmission)
+	if err := <-done; !errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("epoch-invalidated pre-admission enable = %v, want ErrTransportDown", err)
+	}
+	if sends != 0 {
+		t.Fatalf("post-rollover sends = %d, want 0", sends)
+	}
+	if _, ok := manager.CleanupObligation(); ok {
+		t.Fatal("pre-admission rollover retained cleanup")
+	}
+}
+
+func TestOperationEpochZeroRunsFirstCleanupAttempt(t *testing.T) {
+	manager := b503session.New(newTK(0), time.Minute, nil)
+	cleanup := &dispatchRecorder{outcomes: []b503session.DispatchOutcome{{
+		Emitted: true, Native: b503session.NativeACK, Transport: newTK(0),
+	}}}
+	manager.SetCleanupDispatcher(cleanup.dispatch)
+	ambiguous := errors.New("ambiguous enable")
+	_, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Err: ambiguous, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(0)}
+	})
+	if !errors.Is(err, ambiguous) {
+		t.Fatalf("epoch-zero enable error = %v, want ambiguous result", err)
+	}
+	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
+		t.Fatalf("epoch-zero cleanup targets = %v, want one %#x", got, operationTarget)
+	}
+	obligation, ok := manager.CleanupObligation()
+	if !ok || !obligation.LastAttempted || obligation.LastAttemptEpoch != 0 || obligation.LastNative != b503session.NativeACK {
+		t.Fatalf("epoch-zero cleanup evidence = %+v, present=%v", obligation, ok)
+	}
+}
+
 func TestOperationDisableACKRetainsUnsettledCleanup(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	ack := func(context.Context, byte) b503session.DispatchOutcome {

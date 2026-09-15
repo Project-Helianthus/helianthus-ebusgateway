@@ -91,6 +91,7 @@ type CleanupObligationSnapshot struct {
 	OriginEmitted           bool
 	OriginNative            NativeResult
 	OriginErr               error
+	LastAttempted           bool
 	LastAttemptEpoch        uint64
 	LastEmitted             bool
 	LastNative              NativeResult
@@ -124,7 +125,9 @@ type PendingOperationSnapshot struct {
 
 type pendingOperation struct {
 	PendingOperationSnapshot
-	token string
+	token       string
+	cancel      context.CancelFunc
+	invalidated bool
 }
 
 // Manager is the single-owner live-monitor session FSM.
@@ -266,7 +269,7 @@ func (m *Manager) AdmitPendingEmission(operationID string, target byte) bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	pending := m.pendingOperation
-	if pending == nil || pending.OperationID != operationID || pending.Target != target || !m.mutexHeld {
+	if pending == nil || pending.invalidated || pending.OperationID != operationID || pending.Target != target || !m.mutexHeld {
 		return false
 	}
 	switch pending.Kind {
@@ -354,6 +357,9 @@ func (m *Manager) Enable(ctx context.Context) (SessionKey, error) {
 // handle, while every emitted failure releases caller ownership and retains
 // cleanup under UNKNOWN.
 func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch DispatchFunc) (SessionKey, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.MarkQualifiedTarget(target)
 	m.stateMu.Lock()
 	if _, fenced := m.restartFences[target]; fenced {
@@ -385,6 +391,9 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 		},
 		token: token,
 	}
+	operationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	pending.cancel = cancel
 	m.pendingOperation = pending
 	m.activeToken = token
 	m.activeTarget = target
@@ -392,7 +401,7 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 	m.lastRefreshTransportDown = false
 	m.stateMu.Unlock()
 
-	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
+	outcome := dispatchOnce(withPendingOperation(operationCtx, pending.OperationID), target, dispatch)
 
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
@@ -460,12 +469,17 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 // ReadOperation validates the target-bound owner, performs at most one epoch
 // refresh when required, and dispatches the admitted read exactly once.
 func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch DispatchFunc) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.MarkQualifiedTarget(target)
 	pending, err := m.beginOwnerOperation(ctx, target, nil, OperationRead)
 	if err != nil {
 		return nil, err
 	}
-	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
+	operationCtx, cancel := m.bindPendingContext(ctx, pending)
+	defer cancel()
+	outcome := dispatchOnce(withPendingOperation(operationCtx, pending.OperationID), target, dispatch)
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
 		m.stateMu.Unlock()
@@ -504,11 +518,16 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 // emitted or pre-emission terminal outcome. Its exact outcome is recorded, but
 // ACK or NAK alone never clears cleanup or makes re-Enable admissible.
 func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target byte, dispatch DispatchFunc) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.MarkQualifiedTarget(target)
 	pending, err := m.beginOwnerOperation(ctx, target, &key, OperationDisable)
 	if err != nil {
 		return err
 	}
+	operationCtx, cancel := m.bindPendingContext(ctx, pending)
+	defer cancel()
 	// Once the current owner has admitted an explicit Disable, idle expiry
 	// must not race it to a second terminal path while it waits for poll
 	// quiescence. The owner remains held until emission or invalidation.
@@ -521,7 +540,7 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 		m.idleTimerGen++
 	}
 	m.stateMu.Unlock()
-	outcome := dispatchOnce(withPendingOperation(ctx, pending.OperationID), target, dispatch)
+	outcome := dispatchOnce(withPendingOperation(operationCtx, pending.OperationID), target, dispatch)
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
 		m.stateMu.Unlock()
@@ -540,6 +559,7 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 	m.createCleanupLocked(target, epoch, pending.OperationID)
 	attemptID := m.cleanup.GatewayCleanupAttemptID
 	m.cleanup.LastAttemptEpoch = epoch
+	m.cleanup.LastAttempted = true
 	m.stateMu.Unlock()
 	m.recordCleanupOutcome(attemptID, epoch, outcome)
 	return outcome.Err
@@ -666,6 +686,12 @@ func (m *Manager) OnTransportDisconnect() {
 	if !m.mutexHeld {
 		return
 	}
+	if pending := m.pendingOperation; pending != nil {
+		pending.invalidated = true
+		if pending.cancel != nil {
+			pending.cancel()
+		}
+	}
 	if pending := m.pendingOperation; pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
 		m.pendingOperation = nil
 		m.pendingEpoch = 0
@@ -698,6 +724,15 @@ func (m *Manager) OnEpochAdvance(_ context.Context, newEpoch uint64) {
 	}
 	m.observedEpoch = newEpoch
 	m.lastRefreshTransportDown = false
+	if pending := m.pendingOperation; pending != nil {
+		// The dispatcher revalidates this context immediately before bus.Send.
+		// A rollover therefore cancels work still waiting for quiescence; a
+		// Send already entered remains conservatively recorded as emitted.
+		pending.invalidated = true
+		if pending.cancel != nil {
+			pending.cancel()
+		}
+	}
 	if pending := m.pendingOperation; m.state == Enabling && pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
 		m.transport.TransportEpoch = newEpoch
 		m.pendingEpoch = 0
@@ -738,6 +773,12 @@ func (m *Manager) ResetForRestart(qualifiedTargets ...byte) {
 	}
 	m.activeToken = ""
 	m.activeTarget = 0
+	if pending := m.pendingOperation; pending != nil {
+		pending.invalidated = true
+		if pending.cancel != nil {
+			pending.cancel()
+		}
+	}
 	m.pendingOperation = nil
 	m.cleanup = nil
 	m.refreshFailed = false
@@ -919,6 +960,21 @@ func dispatchOnce(ctx context.Context, target byte, dispatch DispatchFunc) Dispa
 	return dispatch(ctx, target)
 }
 
+// bindPendingContext installs the cancellation handle while stateMu is held.
+// A lifecycle event that wins the race invalidates and cancels this context
+// before the dispatcher reaches its final pre-emission admission.
+func (m *Manager) bindPendingContext(ctx context.Context, pending *pendingOperation) (context.Context, context.CancelFunc) {
+	operationCtx, cancel := context.WithCancel(ctx)
+	m.stateMu.Lock()
+	if m.pendingOperation != pending || pending.invalidated {
+		cancel()
+	} else {
+		pending.cancel = cancel
+	}
+	m.stateMu.Unlock()
+	return operationCtx, cancel
+}
+
 func (m *Manager) releaseOwnerLocked() {
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
@@ -954,13 +1010,14 @@ func (m *Manager) clearCleanupForOperationLocked(operationID string) {
 
 func (m *Manager) attemptCleanup(ctx context.Context, epoch uint64) {
 	m.stateMu.Lock()
-	if m.cleanup == nil || m.restarted || m.cleanup.LastAttemptEpoch == epoch || m.cleanupDispatch == nil {
+	if m.cleanup == nil || m.restarted || (m.cleanup.LastAttempted && m.cleanup.LastAttemptEpoch == epoch) || m.cleanupDispatch == nil {
 		m.stateMu.Unlock()
 		return
 	}
 	attemptID := m.cleanup.GatewayCleanupAttemptID
 	target := m.cleanup.Target
 	m.cleanup.LastAttemptEpoch = epoch
+	m.cleanup.LastAttempted = true
 	m.cleanup.TransportEpoch = epoch
 	dispatch := m.cleanupDispatch
 	m.stateMu.Unlock()
@@ -973,7 +1030,7 @@ func (m *Manager) attemptCleanup(ctx context.Context, epoch uint64) {
 func (m *Manager) recordCleanupOutcome(attemptID string, epoch uint64, outcome DispatchOutcome) {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	if m.cleanup == nil || m.cleanup.GatewayCleanupAttemptID != attemptID || m.cleanup.LastAttemptEpoch != epoch {
+	if m.cleanup == nil || m.cleanup.GatewayCleanupAttemptID != attemptID || !m.cleanup.LastAttempted || m.cleanup.LastAttemptEpoch != epoch {
 		return
 	}
 	m.cleanup.LastEmitted = outcome.Emitted

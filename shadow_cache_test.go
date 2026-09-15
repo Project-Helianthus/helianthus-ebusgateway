@@ -237,6 +237,55 @@ func TestShadowCacheInvalidationGenerationRejectsStaleActiveWrite(t *testing.T) 
 	}
 }
 
+func TestShadowCacheInvalidationTimestampRejectsDelayedPassiveWrite(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{})
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(200, 0),
+	})
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(190, 0),
+	})
+
+	for _, observedAt := range []time.Time{time.Unix(150, 0), time.Unix(195, 0), time.Unix(200, 0)} {
+		result := cache.Write(ShadowWrite{
+			Key:        key,
+			Source:     ShadowWriteSourcePassive,
+			Confidence: ShadowConfidenceHigh,
+			Value:      []byte{0x21},
+			ObservedAt: observedAt,
+		})
+		if result.Accepted {
+			t.Fatalf("passive write observed at %s accepted across invalidation barrier", observedAt)
+		}
+		if result.Reason != ShadowWriteRejectionReasonStaleTimestamp {
+			t.Fatalf("passive write observed at %s rejection = %s; want %s", observedAt, result.Reason, ShadowWriteRejectionReasonStaleTimestamp)
+		}
+	}
+
+	entry, ok := cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStateInvalidated || !entry.InvalidatedAt.Equal(time.Unix(200, 0)) {
+		t.Fatalf("Entry(key) after delayed writes = %+v, %t; want invalidated barrier at 200", entry, ok)
+	}
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(201, 0), []byte{0x22})
+	entry, ok = cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStatePresent || !entry.ObservedAt.Equal(time.Unix(201, 0)) || len(entry.Value) != 1 || entry.Value[0] != 0x22 {
+		t.Fatalf("Entry(key) after post-invalidation write = %+v, %t; want newer present value", entry, ok)
+	}
+}
+
 func TestShadowCacheCapacityBlockedInvalidationStillRejectsStaleActiveWrite(t *testing.T) {
 	t.Parallel()
 
@@ -293,6 +342,102 @@ func TestShadowCacheCapacityBlockedInvalidationStillRejectsStaleActiveWrite(t *t
 
 	if _, ok := cache.Entry(invalidatedKey); ok {
 		t.Fatal("Entry(invalidatedKey) present; want no cached tombstone after admission failure")
+	}
+}
+
+func TestShadowCacheCapacityBlockedInvalidationPreservesTimestampBarrierForPassiveWrite(t *testing.T) {
+	t.Parallel()
+
+	pinnedKey := NewB509WatchKey(0x08, 0x0200)
+	invalidatedKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{pinnedKey, invalidatedKey}, WatchActivationSourceWriteConfirm)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              1,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, pinnedKey, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	invalidation := cache.Invalidate(ShadowInvalidation{
+		Key:           invalidatedKey,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(200, 0),
+	})
+	if invalidation.State != ShadowEntryStateTombstone {
+		t.Fatalf("Invalidate() state = %s; want %s when tombstone admission fails", invalidation.State, ShadowEntryStateTombstone)
+	}
+	if _, ok := cache.Entry(invalidatedKey); ok {
+		t.Fatal("Entry(invalidatedKey) present; want capacity-blocked tombstone admission")
+	}
+
+	activations.Deactivate(WatchActivationSourceWriteConfirm, pinnedKey)
+	cache.RefreshActivations()
+
+	delayed := cache.Write(ShadowWrite{
+		Key:        invalidatedKey,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x21},
+		ObservedAt: time.Unix(150, 0),
+	})
+	if delayed.Accepted {
+		t.Fatal("capacity-blocked invalidation lost its timestamp barrier")
+	}
+	if delayed.Reason != ShadowWriteRejectionReasonStaleTimestamp {
+		t.Fatalf("delayed passive rejection = %s; want %s", delayed.Reason, ShadowWriteRejectionReasonStaleTimestamp)
+	}
+
+	writeShadow(t, cache, invalidatedKey, ShadowWriteSourcePassive, time.Unix(201, 0), []byte{0x22})
+	entry, ok := cache.Entry(invalidatedKey)
+	if !ok || entry.State != ShadowEntryStatePresent || !entry.ObservedAt.Equal(time.Unix(201, 0)) {
+		t.Fatalf("Entry(invalidatedKey) after post-barrier write = %+v, %t; want present observation at 201", entry, ok)
+	}
+}
+
+func TestShadowCacheEvictionPreservesAcceptedObservationHighWater(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	pressureKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key, pressureKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              1,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(200, 0),
+	})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(201, 0), []byte{0x21})
+	writeShadow(t, cache, pressureKey, ShadowWriteSourcePassive, time.Unix(202, 0), []byte{0x30})
+	if _, ok := cache.Entry(key); ok {
+		t.Fatal("Entry(key) present; want capacity pressure to evict refreshed observation")
+	}
+
+	delayed := cache.Write(ShadowWrite{
+		Key:        key,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x22},
+		ObservedAt: time.Unix(150, 0),
+	})
+	if delayed.Accepted {
+		t.Fatal("eviction lost accepted-observation timestamp high-water")
+	}
+	if delayed.Reason != ShadowWriteRejectionReasonStaleTimestamp {
+		t.Fatalf("delayed passive rejection = %s; want %s", delayed.Reason, ShadowWriteRejectionReasonStaleTimestamp)
+	}
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(203, 0), []byte{0x23})
+	entry, ok := cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStatePresent || !entry.ObservedAt.Equal(time.Unix(203, 0)) {
+		t.Fatalf("Entry(key) after new high-water write = %+v, %t; want present observation at 203", entry, ok)
 	}
 }
 

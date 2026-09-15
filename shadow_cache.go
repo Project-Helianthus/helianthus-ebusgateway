@@ -197,6 +197,8 @@ type ShadowCache struct {
 type shadowKeyState struct {
 	generation          uint64
 	lastWriteGeneration uint64
+	invalidatedAt       time.Time
+	precedenceHighWater time.Time
 	snapshot            atomic.Pointer[shadowEligibilitySnapshotRecord]
 }
 
@@ -514,7 +516,7 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 		}
 	}
 
-	rejectReason := cache.rejectWriteByPrecedence(entry, write)
+	rejectReason := cache.rejectWriteByPrecedence(state, entry, write)
 	if rejectReason != "" {
 		return ShadowWriteResult{
 			Generation: state.generation,
@@ -550,6 +552,10 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	entry.invalidationReason = ""
 	entry.invalidationSource = ""
 	entry.invalidatedAt = time.Time{}
+	if state.precedenceHighWater.IsZero() || write.ObservedAt.After(state.precedenceHighWater) {
+		state.precedenceHighWater = write.ObservedAt
+	}
+	state.invalidatedAt = time.Time{}
 	entry.pinClass = desiredPin
 	if entry.generation == 0 {
 		cache.advanceGenerationLocked(entry, state)
@@ -587,6 +593,12 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	sources := cache.activations.ActiveSources(invalidation.Key)
 
 	state := cache.ensureKeyStateLocked(canonical)
+	if state.invalidatedAt.IsZero() || invalidation.InvalidatedAt.After(state.invalidatedAt) {
+		state.invalidatedAt = invalidation.InvalidatedAt
+	}
+	if state.precedenceHighWater.IsZero() || invalidation.InvalidatedAt.After(state.precedenceHighWater) {
+		state.precedenceHighWater = invalidation.InvalidatedAt
+	}
 	entry := cache.entries[canonical]
 	desiredPin := cache.desiredPinClass(invalidation.Key, descriptor, sources)
 
@@ -628,7 +640,7 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	entry.invalidationGeneration = entry.generation
 	entry.invalidationReason = invalidation.Reason
 	entry.invalidationSource = invalidation.Source
-	entry.invalidatedAt = invalidation.InvalidatedAt
+	entry.invalidatedAt = state.invalidatedAt
 	entry.pinClass = desiredPin
 	cache.bumpLastWriteGenerationLocked(entry, state)
 	cache.applyPinClassLocked(entry, desiredPin)
@@ -937,7 +949,27 @@ func (cache *ShadowCache) desiredPinClass(key WatchKey, descriptor WatchDescript
 	return shadowPinClassNone
 }
 
-func (cache *ShadowCache) rejectWriteByPrecedence(entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
+func (cache *ShadowCache) rejectWriteByPrecedence(state *shadowKeyState, entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
+	generationQualifiedActive := state != nil && write.Source == ShadowWriteSourceActiveConfirmed && write.StartGeneration == state.generation
+	if state != nil && !state.invalidatedAt.IsZero() {
+		if write.ObservedAt.Before(state.invalidatedAt) {
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
+		if write.ObservedAt.Equal(state.invalidatedAt) {
+			if generationQualifiedActive {
+				return ""
+			}
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
+	}
+	if entry == nil && state != nil && !state.precedenceHighWater.IsZero() {
+		if write.ObservedAt.Before(state.precedenceHighWater) {
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
+		if write.ObservedAt.Equal(state.precedenceHighWater) && !generationQualifiedActive {
+			return ShadowWriteRejectionReasonStaleTimestamp
+		}
+	}
 	if entry == nil {
 		return ""
 	}

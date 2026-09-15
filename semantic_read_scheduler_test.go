@@ -610,6 +610,45 @@ func TestSemanticReadScheduler_RevalidatesShadowWhenInvalidatedBeforeLock(t *tes
 	}
 }
 
+func TestSemanticReadScheduler_ActiveReadAtEvictedHighWaterUsesCurrentGeneration(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	pressureKey := NewB509WatchKey(0x08, 0x0201)
+	now := time.Unix(200, 0)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key, pressureKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, now, ShadowCacheOptions{
+		Capacity:              1,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, now, []byte{0x20})
+	writeShadow(t, cache, pressureKey, ShadowWriteSourcePassive, now, []byte{0x30})
+	if _, ok := cache.Entry(key); ok {
+		t.Fatal("Entry(key) present; want capacity pressure to evict the observation")
+	}
+
+	scheduler := NewSemanticReadScheduler()
+	scheduler.now = func() time.Time { return now }
+	scheduler.SetShadowCache(cache)
+
+	var fetchCalls int32
+	value, err := scheduler.GetWatch(context.Background(), key, time.Second, func(context.Context) ([]byte, error) {
+		atomic.AddInt32(&fetchCalls, 1)
+		return []byte{0x44}, nil
+	})
+	if err != nil {
+		t.Fatalf("GetWatch() error = %v", err)
+	}
+	if len(value) != 1 || value[0] != 0x44 {
+		t.Fatalf("GetWatch() value = %v; want active value [0x44]", value)
+	}
+	if got := atomic.LoadInt32(&fetchCalls); got != 1 {
+		t.Fatalf("fetch calls = %d; want 1 for current-generation read at evicted high-water", got)
+	}
+}
+
 func TestSemanticReadScheduler_RecomputesWhenActiveWriteRejectedSameGeneration(t *testing.T) {
 	t.Parallel()
 

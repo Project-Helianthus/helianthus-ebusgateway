@@ -160,8 +160,12 @@ type Manager struct {
 	idleTimeout  time.Duration
 	idleTimer    *time.Timer
 	idleTimerGen uint64 // generation counter — stale callback guard
-	refresh      RefreshFunc
-	mutexHeld    bool
+	// idleExpiryPending records that the timer elapsed while an admitted Read
+	// was awaiting its native outcome. The callback must not tear down that
+	// owner; ReadOperation resolves the expiry after the outcome.
+	idleExpiryPending bool
+	refresh           RefreshFunc
+	mutexHeld         bool
 	// refreshFailed sticks to true when a refresh returned a non-nil,
 	// non-ErrTransportDown error. Subsequent Reads then surface
 	// ErrSessionBusy until ResetForRestart or a new Enable. It is
@@ -510,18 +514,33 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 			m.toDisabledLocked()
 			m.createCleanupLocked(target, epoch, pending.OperationID)
 			m.lastRefreshTransportDown = true
+			m.stateMu.Unlock()
+			return nil, outcome.Err
 		}
+		epoch, cleanup := m.consumeIdleExpiryAfterReadLocked(target, pending.OperationID)
 		m.stateMu.Unlock()
+		if cleanup {
+			m.attemptCleanup(context.Background(), epoch)
+		}
 		return nil, outcome.Err
 	}
 	if outcome.Native != NativeACK {
+		epoch, cleanup := m.consumeIdleExpiryAfterReadLocked(target, pending.OperationID)
 		m.stateMu.Unlock()
+		if cleanup {
+			m.attemptCleanup(context.Background(), epoch)
+		}
 		return nil, ErrTransportDown
 	}
 	if m.state != Active || m.transport != pending.Transport || m.activeTarget != target {
+		epoch, cleanup := m.consumeIdleExpiryAfterReadLocked(target, pending.OperationID)
 		m.stateMu.Unlock()
+		if cleanup {
+			m.attemptCleanup(context.Background(), epoch)
+		}
 		return nil, ErrTransportDown
 	}
+	m.idleExpiryPending = false
 	m.armIdleTimerLocked()
 	m.stateMu.Unlock()
 	return outcome.Response, nil
@@ -798,6 +817,7 @@ func (m *Manager) ResetForRestart(qualifiedTargets ...byte) {
 	m.refreshFailed = false
 	m.lastRefreshTransportDown = false
 	m.pendingEpoch = 0
+	m.idleExpiryPending = false
 	m.state = Disabled
 	m.restarted = true
 	for target := range m.qualified {
@@ -820,6 +840,7 @@ func (m *Manager) toDisabledLocked() {
 		m.idleTimer = nil
 	}
 	m.idleTimerGen++
+	m.idleExpiryPending = false
 	m.state = Disabled
 	if m.mutexHeld {
 		m.mu.Unlock()
@@ -834,6 +855,24 @@ func (m *Manager) toIdleLocked() {
 	if m.cleanup == nil {
 		m.state = Idle
 	}
+}
+
+// consumeIdleExpiryAfterReadLocked turns a timer that elapsed under a pending
+// read into one cleanup only when the read did not successfully extend the
+// still-current owner. Caller must hold stateMu after removing that read from
+// pendingOperation.
+func (m *Manager) consumeIdleExpiryAfterReadLocked(target byte, sourceOperationID string) (uint64, bool) {
+	if !m.idleExpiryPending {
+		return 0, false
+	}
+	m.idleExpiryPending = false
+	if m.state != Active || !m.mutexHeld || m.activeTarget != target {
+		return 0, false
+	}
+	epoch := m.transport.TransportEpoch
+	m.toDisabledLocked()
+	m.createCleanupLocked(target, epoch, sourceOperationID)
+	return epoch, true
 }
 
 // armIdleTimerLocked (re)starts the idle-timeout timer. Safe to call
@@ -866,6 +905,16 @@ func (m *Manager) idleTimerFired(gen uint64) {
 		return // stale callback from a stopped-then-rearmed timer
 	}
 	if m.state != Active {
+		m.stateMu.Unlock()
+		return
+	}
+	if pending := m.pendingOperation; pending != nil {
+		// An admitted read owns the current Active session until it reports its
+		// native outcome. Record this elapsed timer and let ReadOperation either
+		// re-arm on ACK or perform one conservative cleanup on failure.
+		if pending.Kind == OperationRead {
+			m.idleExpiryPending = true
+		}
 		m.stateMu.Unlock()
 		return
 	}

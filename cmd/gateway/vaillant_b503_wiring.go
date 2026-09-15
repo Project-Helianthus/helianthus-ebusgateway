@@ -142,6 +142,11 @@ func installVaillantB503(s *mcp.Server, gw *ebusgateway.Gateway, cfg *ebusgatewa
 		TransportEpoch:    0,
 	}
 	mgr := b503session.New(initialTK, 30*time.Second, b503StubRefresh)
+	// Process start cannot establish whether a prior gateway incarnation left
+	// the device-side live-monitor session settled. Fence the configured target
+	// before MCP or GraphQL can probe or admit an Enable. Later registry-qualified
+	// explicit targets inherit the same restart fence through MarkQualifiedTarget.
+	mgr.ResetForRestart(defaultVaillantTarget)
 	runtime := &b503Runtime{mcpServer: s, manager: mgr}
 
 	var disp mcp.RPCDispatcher

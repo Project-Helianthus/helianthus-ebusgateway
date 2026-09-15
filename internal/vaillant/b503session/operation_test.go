@@ -437,6 +437,101 @@ func TestOperationSuccessfulReadResetsIdleTimer(t *testing.T) {
 	}
 }
 
+func TestOperationIdleExpiryWaitsForAdmittedReadACK(t *testing.T) {
+	const idleTimeout = 30 * time.Millisecond
+	manager := b503session.New(newTK(testEpoch), idleTimeout, nil)
+	defer manager.ResetForRestart()
+	cleanupStarted := make(chan struct{}, 1)
+	manager.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		cleanupStarted <- struct{}{}
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	})
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := manager.ReadOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+			close(readEntered)
+			<-releaseRead
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+		})
+		readDone <- err
+	}()
+	<-readEntered
+	select {
+	case <-cleanupStarted:
+		t.Fatal("idle cleanup crossed an admitted pending read")
+	case <-time.After(3 * idleTimeout):
+	}
+	close(releaseRead)
+	if err := <-readDone; err != nil {
+		t.Fatalf("read completion: %v", err)
+	}
+	select {
+	case <-cleanupStarted:
+		t.Fatal("successful read must re-arm instead of consuming its deferred idle expiry")
+	default:
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("post-read state = %+v, want owned Active", got)
+	}
+}
+
+func TestOperationIdleExpiryAfterAdmittedReadFailureRunsOneCleanup(t *testing.T) {
+	const idleTimeout = 30 * time.Millisecond
+	manager := b503session.New(newTK(testEpoch), idleTimeout, nil)
+	defer manager.ResetForRestart()
+	cleanupStarted := make(chan struct{}, 2)
+	manager.SetCleanupDispatcher(func(context.Context, byte) b503session.DispatchOutcome {
+		cleanupStarted <- struct{}{}
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	})
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}
+	if _, err := manager.EnableOperation(context.Background(), operationTarget, ack); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	readEntered := make(chan struct{})
+	releaseRead := make(chan struct{})
+	readDone := make(chan error, 1)
+	readFailure := errors.New("read response failed")
+	go func() {
+		_, err := manager.ReadOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+			close(readEntered)
+			<-releaseRead
+			return b503session.DispatchOutcome{Err: readFailure, Emitted: true, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
+		})
+		readDone <- err
+	}()
+	<-readEntered
+	select {
+	case <-cleanupStarted:
+		t.Fatal("idle cleanup crossed an admitted pending read")
+	case <-time.After(3 * idleTimeout):
+	}
+	close(releaseRead)
+	if err := <-readDone; !errors.Is(err, readFailure) {
+		t.Fatalf("read completion = %v, want exact read failure", err)
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expired pending read failure did not run conservative cleanup")
+	}
+	select {
+	case <-cleanupStarted:
+		t.Fatal("expired pending read failure ran more than one cleanup")
+	default:
+	}
+}
+
 func TestOperationIdleExpiryRefreshesBeforeDefensiveDisable(t *testing.T) {
 	refreshed := make(chan struct{}, 1)
 	manager := b503session.New(newTK(testEpoch), 20*time.Millisecond, func(context.Context) (b503session.TransportKey, error) {

@@ -914,6 +914,33 @@ func TestM6Dispatcher_InstallVaillantB503_InjectsProductionDispatcher(t *testing
 	}
 }
 
+func TestM6Dispatcher_InstallVaillantB503ColdStartFencesConfiguredAndQualifiedTargets(t *testing.T) {
+	srv, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatalf("mcp.NewServer = %v", err)
+	}
+	gw := gatewayWithMockBus(t)
+	cfg := &ebusgateway.Config{ScanSource: 0x7F}
+	rt := installVaillantB503(srv, gw, cfg, func() (byte, bool) { return 0x7F, true })
+	if rt == nil {
+		t.Fatal("installVaillantB503 returned nil")
+	}
+	if got := srv.VaillantB503Availability(); got != mcp.AvailabilityUnknown {
+		t.Fatalf("cold configured-target availability = %s, want UNKNOWN", got)
+	}
+	if got := srv.VaillantB503AvailabilityAtCtx(context.Background(), 0x21); got != mcp.AvailabilityUnknown {
+		t.Fatalf("cold qualified-target availability = %s, want UNKNOWN", got)
+	}
+	var enableDispatches int
+	_, err = rt.manager.EnableOperation(context.Background(), defaultVaillantTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		enableDispatches++
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK}
+	})
+	if !errors.Is(err, b503session.ErrCleanupPending) || enableDispatches != 0 {
+		t.Fatalf("cold-start EnableOperation = %v, dispatches=%d; want cleanup-pending without native emission", err, enableDispatches)
+	}
+}
+
 // --- Source-level invariants: production must not contain the stub literal ---
 
 // TestM6Dispatcher_NoStubLiteralInProductionWiring asserts that the

@@ -377,6 +377,48 @@ func TestOperationDisableACKRetainsUnsettledCleanup(t *testing.T) {
 	}
 }
 
+func TestOperationDisablePreEmissionFailureKeepsOwnerAndAllowsRetry(t *testing.T) {
+	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
+	cleanup := &dispatchRecorder{}
+	manager.SetCleanupDispatcher(cleanup.dispatch)
+	ack := func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
+	}
+	key, err := manager.EnableOperation(context.Background(), operationTarget, ack)
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	before, ok := manager.CleanupObligation()
+	if !ok || !before.OriginEmitted || before.LastAttempted {
+		t.Fatalf("enable cleanup evidence = %+v, present=%v", before, ok)
+	}
+	blocked := errors.New("readMu quiesce deadline")
+	if err := manager.DisableOperation(context.Background(), key, operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Err: blocked, Emitted: false, Native: b503session.NativeAmbiguous, Transport: newTK(testEpoch)}
+	}); !errors.Is(err, blocked) {
+		t.Fatalf("non-emitted disable = %v, want exact blocked error", err)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("non-emitted disable state = %+v, want owned Active", got)
+	}
+	after, ok := manager.CleanupObligation()
+	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttempted || after.LastEmitted {
+		t.Fatalf("non-emitted disable mutated cleanup into a nonexistent wire attempt: before=%+v after=%+v present=%v", before, after, ok)
+	}
+	if got := cleanup.snapshot(); len(got) != 0 {
+		t.Fatalf("non-emitted disable cleanup writes = %v, want none", got)
+	}
+	if err := manager.DisableOperation(context.Background(), key, operationTarget, ack); err != nil {
+		t.Fatalf("retry disable: %v", err)
+	}
+	if got := manager.StatusSnapshot(); got.State != b503session.Idle || got.Owned {
+		t.Fatalf("retry disable state = %+v, want ownerless Idle", got)
+	}
+	if cleanup, ok := manager.CleanupObligation(); !ok || !cleanup.LastEmitted || cleanup.LastAttemptEpoch != testEpoch {
+		t.Fatalf("retry disable cleanup evidence = %+v, present=%v", cleanup, ok)
+	}
+}
+
 func TestOperationReadInFlightRejectsConcurrentDisable(t *testing.T) {
 	manager := b503session.New(newTK(testEpoch), time.Minute, nil)
 	ack := func(context.Context, byte) b503session.DispatchOutcome {

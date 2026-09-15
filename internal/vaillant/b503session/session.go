@@ -584,6 +584,19 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 	}
 	pending.Emitted = pending.Emitted || outcome.Emitted
 	m.pendingOperation = nil
+	if !pending.Emitted && m.state == Active && m.mutexHeld && m.activeTarget == target {
+		// The dispatcher never reached bus.Send. Keep the authenticated owner so
+		// the caller can retry the exact Disable once poll quiescence or its own
+		// bounded context permits it. A cleanup attempt would falsely record a
+		// wire event that did not occur and would discard the only valid token.
+		m.idleExpiryPending = false
+		m.armIdleTimerLocked()
+		m.stateMu.Unlock()
+		if outcome.Err != nil {
+			return outcome.Err
+		}
+		return ErrTransportDown
+	}
 	epoch := m.transport.TransportEpoch
 	if m.mutexHeld {
 		m.releaseOwnerLocked()

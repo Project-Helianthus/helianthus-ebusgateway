@@ -568,6 +568,57 @@ func TestIssue552B503EnableDisconnectBeforeEmissionReturnsIdleWithoutCleanup(t *
 	}
 }
 
+func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	)
+	key, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	})
+	if err != nil {
+		t.Fatalf("setup enable: %v", err)
+	}
+	before, ok := mgr.CleanupObligation()
+	if !ok || before.LastAttempted {
+		t.Fatalf("setup cleanup evidence = %+v, present=%v", before, ok)
+	}
+	readMu := newB503BlockingReadLocker()
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.DisableOperation(ctx, key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
+			return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
+		})
+	}()
+	<-readMu.entered
+	<-ctx.Done()
+	close(readMu.release)
+	if err := <-done; err == nil {
+		t.Fatal("pre-emission readMu deadline unexpectedly confirmed Disable")
+	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("readMu-deadline bus.Send count = %d, want 0", calls)
+	}
+	if got := mgr.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("pre-emission readMu deadline state = %+v, want owned Active", got)
+	}
+	after, ok := mgr.CleanupObligation()
+	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttempted || after.LastEmitted {
+		t.Fatalf("pre-emission readMu deadline recorded a nonexistent cleanup attempt: before=%+v after=%+v present=%v", before, after, ok)
+	}
+	if err := mgr.DisableOperation(context.Background(), key, 0x15, func(context.Context, byte) b503session.DispatchOutcome {
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	}); err != nil {
+		t.Fatalf("retry disable: %v", err)
+	}
+}
+
 func TestIssue552B503DisableDisconnectBeforeEmissionRetainsFenceWithoutWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

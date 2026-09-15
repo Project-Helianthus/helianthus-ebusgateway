@@ -250,9 +250,9 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 		lifecycle.publicationMu.Unlock()
 		return context.Canceled, true
 	}
-	var previous eebusruntime.Runtime
+	var retireStarted bool
 	if retire {
-		previous = lifecycle.slot.RetireDetached()
+		retireStarted = lifecycle.slot.BeginRetire()
 		readiness := eebusReadinessForLifecycle(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStarting})
 		lifecycle.handler = unavailableEEBusAdminHandler(readiness)
 		lifecycle.admin = nil
@@ -278,8 +278,10 @@ func (lifecycle *eebusRuntimeLifecycle) attempt(retire bool) (error, bool) {
 	if observer != nil {
 		observer(status)
 	}
-	if previous != nil {
-		lifecycle.slot.shutdownDetached(previous)
+	if retireStarted {
+		if previous := lifecycle.slot.DrainRetired(); previous != nil {
+			lifecycle.slot.shutdownDetached(previous)
+		}
 	}
 	lifecycle.publicationMu.Lock()
 	lifecycle.mu.RLock()

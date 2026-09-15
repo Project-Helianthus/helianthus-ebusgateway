@@ -245,3 +245,37 @@ failed-log SHA-256 is
 `0786ac780ac7109ad65ebebef78ccfdd0c0cc8266d99b7a5e17fd04b820e67df`. This
 evidence-only correction does not change the runtime source that passed the full
 P2 CI run.
+
+## Runtime-reader drain correction
+
+A final live review found that retry retirement called `RetireDetached` while
+holding the lifecycle publication lock. Because that call waited for slot read
+locks, a blocked native MCP/runtime reader could indirectly prevent terminal
+retirement from reaching bounded HTTP shutdown.
+
+Retry retirement is now explicitly two phase. `BeginRetire` atomically rejects
+new slot readers under a short operation lock and returns without waiting.
+After lifecycle/publication locks are released and the starting status is
+delivered, `DrainRetired` waits for admitted readers and transfers the old
+runtime to the existing shutdown owner. The terminal fence can win at any point;
+when it does, the drain leaves the runtime for final shutdown, recovery exits
+without another native start, and lifecycle state/revision remain terminal.
+`ReplaceDetached` clears the transient retry fence only while publishing an
+accepted replacement.
+
+The new deterministic regression holds a native `Snapshot` reader open, lets
+recovery enter its retry retirement, and proves terminal retirement completes
+before the reader is released. After release, recovery exits with no second
+native start and final shutdown owns exactly one runtime shutdown. Focused
+lifecycle, slot, teardown, and HTTP tests pass under `-race`.
+
+The exact post-correction
+`CGO_ENABLED=0 GOWORK=off ./scripts/ci_local.sh` run exited `0`.
+`FULL-CI-P1-READER-DRAIN-RERUN.log` is 340 lines with SHA-256
+`517f07c33096850d8617fc917b8e190c9f0f46c488a8e9b0fb9d12b042db3bf5`;
+the exit artifact SHA-256 is
+`9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3ab86aa`.
+It passed 158 Portal tests, the complete Go race suite, Python suites of 168, 6,
+28, 14, 6, and 2 tests, lint with zero findings, the triggered Modbus RTU
+transport composition/pinned-endpoint conformance gate, and both SemReg mapping
+gates. Passive smoke remained not triggered. No override was used.

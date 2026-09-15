@@ -315,6 +315,93 @@ func TestEEBusTransportRetirementRejectsSuccessfulInFlightRecovery(t *testing.T)
 	}
 }
 
+func TestEEBusTransportRetirementDoesNotWaitForRecoveryRuntimeReaderDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := ebusgateway.NewBusObservabilityStore(ebusgateway.DefaultConfig())
+	runtime := &issue846BlockingRuntime{
+		snapshotEntered: make(chan struct{}),
+		snapshotRelease: make(chan struct{}),
+		shutdownCalled:  make(chan struct{}),
+	}
+	releaseWait := make(chan struct{})
+	starting := make(chan struct{})
+	var startingOnce sync.Once
+	var startMu sync.Mutex
+	startCalls := 0
+	lifecycle, err := newEEBusRuntimeLifecycle(ctx, true, eebusRuntimeLifecycleOptions{
+		policy: eebusRestartPolicy{MaxAttempts: 3, Backoff: time.Second},
+		start: func(context.Context) (*eebusRuntimeAdapter, eebusruntime.AdminV1, bool, error) {
+			startMu.Lock()
+			startCalls++
+			call := startCalls
+			startMu.Unlock()
+			if call == 1 {
+				return &eebusRuntimeAdapter{runtime: runtime, startupDegradedReason: eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable}, nil, false, nil
+			}
+			return nil, nil, false, errors.New("native start must not run after retirement")
+		},
+		wait: func(waitCtx context.Context, _ time.Duration) bool {
+			select {
+			case <-releaseWait:
+				return true
+			case <-waitCtx.Done():
+				return false
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.SetTransportRuntimeStatusObserver(func(status ebusgateway.TransportRuntimeStatus) {
+		if status.State == ebusgateway.TransportRuntimeStateStarting {
+			startingOnce.Do(func() { close(starting) })
+		}
+		store.SetTransportRuntimeStatus(status)
+	})
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = lifecycle.Adapter().Snapshot()
+	}()
+	<-runtime.snapshotEntered
+	close(releaseWait)
+	<-starting
+
+	retired := make(chan struct{})
+	go func() { lifecycle.PublishTransportRetirement(); close(retired) }()
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("terminal retirement waited for a recovery runtime reader drain")
+	}
+	terminal := lifecycle.LifecycleSnapshot()
+	close(runtime.snapshotRelease)
+	<-readDone
+	recoveryDone := make(chan struct{})
+	go func() { lifecycle.recovery.Wait(); close(recoveryDone) }()
+	select {
+	case <-recoveryDone:
+	case <-time.After(time.Second):
+		t.Fatal("recovery did not exit after terminal retirement won reader drain")
+	}
+	if final := lifecycle.LifecycleSnapshot(); final != terminal {
+		t.Fatalf("reader drain changed terminal lifecycle: before=%#v after=%#v", terminal, final)
+	}
+	startMu.Lock()
+	finalStartCalls := startCalls
+	startMu.Unlock()
+	if finalStartCalls != 1 {
+		t.Fatalf("native starts = %d; want initial start only", finalStartCalls)
+	}
+	if err := lifecycle.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.stopCalls != 1 {
+		t.Fatalf("terminal runtime shutdown calls = %d; want one", runtime.stopCalls)
+	}
+}
+
 func TestGatewayControlPlaneContextDefersSharedCancellation(t *testing.T) {
 	type contextKey struct{}
 	shared, cancelShared := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "retirement"))

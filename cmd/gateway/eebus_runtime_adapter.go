@@ -39,10 +39,11 @@ type eebusRuntimeAdapter struct {
 // it. The seam is intentionally eeBUS-local; a later DriverManager can own the
 // same start/replace/stop shape without changing the runtime package.
 type eebusRuntimeSlot struct {
-	mu      sync.RWMutex
-	runtime eebusruntime.Runtime
-	closed  atomic.Bool
-	cancel  context.CancelFunc
+	mu       sync.RWMutex
+	runtime  eebusruntime.Runtime
+	closed   atomic.Bool
+	retiring atomic.Bool
+	cancel   context.CancelFunc
 
 	operationMu  sync.Mutex
 	retiredErr   error
@@ -80,6 +81,7 @@ func (slot *eebusRuntimeSlot) ReplaceDetached(runtime eebusruntime.Runtime) (eeb
 	}
 	previous := slot.runtime
 	slot.runtime = runtime
+	slot.retiring.Store(false)
 	if previous != nil {
 		slot.drains.Add(1)
 	}
@@ -122,29 +124,45 @@ func (slot *eebusRuntimeSlot) FenceTerminal() {
 	}
 	slot.operationMu.Lock()
 	slot.closed.Store(true)
+	slot.retiring.Store(true)
 	slot.operationMu.Unlock()
 }
 
 // Retire makes the slot unavailable before a reconstruction attempt. It is
 // separate from Shutdown so a successful attempt may publish a replacement.
 func (slot *eebusRuntimeSlot) Retire() {
-	previous := slot.RetireDetached()
+	if !slot.BeginRetire() {
+		return
+	}
+	previous := slot.DrainRetired()
 	if previous != nil {
 		slot.shutdownDetached(previous)
 	}
 }
 
-// RetireDetached makes readers unavailable and transfers shutdown ownership
-// to the caller without invoking native code while slot locks are held.
-func (slot *eebusRuntimeSlot) RetireDetached() eebusruntime.Runtime {
+// BeginRetire makes new readers unavailable without waiting for a native call.
+// DrainRetired performs the reader drain later, outside lifecycle locks.
+func (slot *eebusRuntimeSlot) BeginRetire() bool {
+	if slot == nil {
+		return false
+	}
+	slot.operationMu.Lock()
+	if slot.closed.Load() {
+		slot.operationMu.Unlock()
+		return false
+	}
+	slot.retiring.Store(true)
+	slot.operationMu.Unlock()
+	return true
+}
+
+func (slot *eebusRuntimeSlot) DrainRetired() eebusruntime.Runtime {
 	if slot == nil {
 		return nil
 	}
-	slot.operationMu.Lock()
 	slot.mu.Lock()
 	if slot.closed.Load() {
 		slot.mu.Unlock()
-		slot.operationMu.Unlock()
 		return nil
 	}
 	previous := slot.runtime
@@ -153,7 +171,6 @@ func (slot *eebusRuntimeSlot) RetireDetached() eebusruntime.Runtime {
 		slot.drains.Add(1)
 	}
 	slot.mu.Unlock()
-	slot.operationMu.Unlock()
 	return previous
 }
 
@@ -163,7 +180,7 @@ func (slot *eebusRuntimeSlot) Start(ctx context.Context) error {
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return errors.New("eeBUS runtime unavailable")
 	}
 	return slot.runtime.Start(ctx)
@@ -180,6 +197,7 @@ func (slot *eebusRuntimeSlot) Shutdown() error {
 		}
 		slot.mu.Lock()
 		slot.closed.Store(true)
+		slot.retiring.Store(true)
 		previous := slot.runtime
 		slot.runtime = nil
 		slot.mu.Unlock()
@@ -201,7 +219,7 @@ func (slot *eebusRuntimeSlot) Snapshot() (eebusruntime.SnapshotV1, error) {
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
 	}
 	return slot.runtime.Snapshot()
@@ -213,7 +231,7 @@ func (slot *eebusRuntimeSlot) PairingState() ([]eebusruntime.PairingObservationV
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return nil, errors.New("eeBUS runtime unavailable")
 	}
 	return slot.runtime.PairingState()
@@ -229,7 +247,7 @@ func (slot *eebusRuntimeSlot) FeaturesGet(
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusraw.FeaturesGetDataV1{}, eebusRuntimeUnavailableError()
 	}
 	return slot.runtime.FeaturesGet(ctx, authorization, request)
@@ -245,7 +263,7 @@ func (slot *eebusRuntimeSlot) FeaturesDataGet(
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusraw.FeatureDataGetDataV1{}, eebusRuntimeUnavailableError()
 	}
 	return slot.runtime.FeaturesDataGet(ctx, authorization, request)
@@ -261,7 +279,7 @@ func (slot *eebusRuntimeSlot) FeaturesDataSet(
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusruntime.RawMutationOutcomeV1{}, eebusRuntimeUnavailableError()
 	}
 	runtime, ok := slot.runtime.(eebusruntime.RawMutationRuntimeV1)
@@ -281,7 +299,7 @@ func (slot *eebusRuntimeSlot) MutationsGet(
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusruntime.RawMutationOutcomeV1{}, eebusRuntimeUnavailableError()
 	}
 	runtime, ok := slot.runtime.(eebusruntime.RawMutationRuntimeV1)
@@ -301,7 +319,7 @@ func (slot *eebusRuntimeSlot) MutationsRollback(
 	}
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	if slot.closed.Load() || slot.runtime == nil {
+	if slot.closed.Load() || slot.retiring.Load() || slot.runtime == nil {
 		return eebusruntime.RawMutationOutcomeV1{}, eebusRuntimeUnavailableError()
 	}
 	runtime, ok := slot.runtime.(eebusruntime.RawMutationRuntimeV1)

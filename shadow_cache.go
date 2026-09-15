@@ -198,6 +198,7 @@ type shadowKeyState struct {
 	generation          uint64
 	lastWriteGeneration uint64
 	invalidatedAt       time.Time
+	precedenceHighWater time.Time
 	snapshot            atomic.Pointer[shadowEligibilitySnapshotRecord]
 }
 
@@ -551,6 +552,9 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	entry.invalidationReason = ""
 	entry.invalidationSource = ""
 	entry.invalidatedAt = time.Time{}
+	if state.precedenceHighWater.IsZero() || write.ObservedAt.After(state.precedenceHighWater) {
+		state.precedenceHighWater = write.ObservedAt
+	}
 	state.invalidatedAt = time.Time{}
 	entry.pinClass = desiredPin
 	if entry.generation == 0 {
@@ -591,6 +595,9 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	state := cache.ensureKeyStateLocked(canonical)
 	if state.invalidatedAt.IsZero() || invalidation.InvalidatedAt.After(state.invalidatedAt) {
 		state.invalidatedAt = invalidation.InvalidatedAt
+	}
+	if state.precedenceHighWater.IsZero() || invalidation.InvalidatedAt.After(state.precedenceHighWater) {
+		state.precedenceHighWater = invalidation.InvalidatedAt
 	}
 	entry := cache.entries[canonical]
 	desiredPin := cache.desiredPinClass(invalidation.Key, descriptor, sources)
@@ -944,6 +951,9 @@ func (cache *ShadowCache) desiredPinClass(key WatchKey, descriptor WatchDescript
 
 func (cache *ShadowCache) rejectWriteByPrecedence(state *shadowKeyState, entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
 	if state != nil && !state.invalidatedAt.IsZero() && !write.ObservedAt.After(state.invalidatedAt) {
+		return ShadowWriteRejectionReasonStaleTimestamp
+	}
+	if entry == nil && state != nil && !state.precedenceHighWater.IsZero() && !write.ObservedAt.After(state.precedenceHighWater) {
 		return ShadowWriteRejectionReasonStaleTimestamp
 	}
 	if entry == nil {

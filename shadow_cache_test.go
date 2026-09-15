@@ -395,6 +395,52 @@ func TestShadowCacheCapacityBlockedInvalidationPreservesTimestampBarrierForPassi
 	}
 }
 
+func TestShadowCacheEvictionPreservesAcceptedObservationHighWater(t *testing.T) {
+	t.Parallel()
+
+	key := NewB509WatchKey(0x08, 0x0200)
+	pressureKey := NewB509WatchKey(0x08, 0x0201)
+	catalog, activations := testShadowCatalogAndActivations(t, []WatchKey{key, pressureKey}, WatchActivationSourceTooling)
+	cache := newTestShadowCache(t, catalog, activations, time.Unix(100, 0), ShadowCacheOptions{
+		Capacity:              1,
+		PinnedCapacity:        1,
+		WriteConfirmPinnedCap: 1,
+	})
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(100, 0), []byte{0x20})
+	cache.Invalidate(ShadowInvalidation{
+		Key:           key,
+		Reason:        ShadowInvalidationReasonExternalWrite,
+		Source:        ShadowInvalidationSourcePassive,
+		InvalidatedAt: time.Unix(200, 0),
+	})
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(201, 0), []byte{0x21})
+	writeShadow(t, cache, pressureKey, ShadowWriteSourcePassive, time.Unix(202, 0), []byte{0x30})
+	if _, ok := cache.Entry(key); ok {
+		t.Fatal("Entry(key) present; want capacity pressure to evict refreshed observation")
+	}
+
+	delayed := cache.Write(ShadowWrite{
+		Key:        key,
+		Source:     ShadowWriteSourcePassive,
+		Confidence: ShadowConfidenceHigh,
+		Value:      []byte{0x22},
+		ObservedAt: time.Unix(150, 0),
+	})
+	if delayed.Accepted {
+		t.Fatal("eviction lost accepted-observation timestamp high-water")
+	}
+	if delayed.Reason != ShadowWriteRejectionReasonStaleTimestamp {
+		t.Fatalf("delayed passive rejection = %s; want %s", delayed.Reason, ShadowWriteRejectionReasonStaleTimestamp)
+	}
+
+	writeShadow(t, cache, key, ShadowWriteSourcePassive, time.Unix(203, 0), []byte{0x23})
+	entry, ok := cache.Entry(key)
+	if !ok || entry.State != ShadowEntryStatePresent || !entry.ObservedAt.Equal(time.Unix(203, 0)) {
+		t.Fatalf("Entry(key) after new high-water write = %+v, %t; want present observation at 203", entry, ok)
+	}
+}
+
 func TestShadowCacheInvalidateWriteConfirmPinCapFailsClosed(t *testing.T) {
 	t.Parallel()
 

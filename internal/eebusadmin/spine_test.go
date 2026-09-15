@@ -129,11 +129,37 @@ func TestIssue980SPINERootContinuationPreservesCursorScope(t *testing.T) {
 	if wrongScopeResponse.Code != http.StatusConflict {
 		t.Fatalf("root cursor in child scope status=%d body=%s", wrongScopeResponse.Code, wrongScopeResponse.Body.String())
 	}
+	assertIssue817ErrorEnvelope(t, wrongScopeResponse.Body.String(), "snapshot_expired")
 
 	continuation := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=continue&snapshot_id="+root.SnapshotID+"&cursor="+root.NextCursor)
 	if continuation.ParentNodeID != nil || len(continuation.Nodes) != 1 || continuation.NextCursor != "" {
 		t.Fatalf("root continuation=%#v; want final root node", continuation)
 	}
+
+	rootParentID := ""
+	for _, node := range append(root.Nodes, continuation.Nodes...) {
+		var device eebusruntime.DeviceV1
+		if json.Unmarshal(node.Payload, &device) == nil && device.Address == template.Address {
+			rootParentID = node.NodeID
+			break
+		}
+	}
+	if rootParentID == "" {
+		t.Fatalf("root pages do not contain original device %q", template.Address)
+	}
+	children := issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=children&snapshot_id="+root.SnapshotID+"&parent_node_id="+rootParentID)
+	if children.NextCursor == "" {
+		t.Fatalf("device children page=%#v; want continuation", children)
+	}
+	childAsRoot := httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=continue&snapshot_id="+root.SnapshotID+"&cursor="+children.NextCursor, nil)
+	childAsRootResponse := httptest.NewRecorder()
+	handler.ServeHTTP(childAsRootResponse, childAsRoot)
+	if childAsRootResponse.Code != http.StatusConflict {
+		t.Fatalf("child cursor in root scope status=%d body=%s", childAsRootResponse.Code, childAsRootResponse.Body.String())
+	}
+	assertIssue817ErrorEnvelope(t, childAsRootResponse.Body.String(), "snapshot_expired")
+	issue817GetSpinePage(t, handler, "/admin/eebus/v1/partners/"+partnerID+"/spine?request=continue&snapshot_id="+root.SnapshotID+"&parent_node_id="+rootParentID+"&cursor="+children.NextCursor)
+
 	if raw.calls != 1 {
 		t.Fatalf("raw Snapshot calls=%d; want immutable one-shot capture", raw.calls)
 	}

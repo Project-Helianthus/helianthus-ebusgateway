@@ -197,6 +197,7 @@ type ShadowCache struct {
 type shadowKeyState struct {
 	generation          uint64
 	lastWriteGeneration uint64
+	invalidatedAt       time.Time
 	snapshot            atomic.Pointer[shadowEligibilitySnapshotRecord]
 }
 
@@ -514,7 +515,7 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 		}
 	}
 
-	rejectReason := cache.rejectWriteByPrecedence(entry, write)
+	rejectReason := cache.rejectWriteByPrecedence(state, entry, write)
 	if rejectReason != "" {
 		return ShadowWriteResult{
 			Generation: state.generation,
@@ -550,6 +551,7 @@ func (cache *ShadowCache) Write(write ShadowWrite) ShadowWriteResult {
 	entry.invalidationReason = ""
 	entry.invalidationSource = ""
 	entry.invalidatedAt = time.Time{}
+	state.invalidatedAt = time.Time{}
 	entry.pinClass = desiredPin
 	if entry.generation == 0 {
 		cache.advanceGenerationLocked(entry, state)
@@ -587,6 +589,9 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	sources := cache.activations.ActiveSources(invalidation.Key)
 
 	state := cache.ensureKeyStateLocked(canonical)
+	if state.invalidatedAt.IsZero() || invalidation.InvalidatedAt.After(state.invalidatedAt) {
+		state.invalidatedAt = invalidation.InvalidatedAt
+	}
 	entry := cache.entries[canonical]
 	desiredPin := cache.desiredPinClass(invalidation.Key, descriptor, sources)
 
@@ -628,7 +633,7 @@ func (cache *ShadowCache) Invalidate(invalidation ShadowInvalidation) ShadowInva
 	entry.invalidationGeneration = entry.generation
 	entry.invalidationReason = invalidation.Reason
 	entry.invalidationSource = invalidation.Source
-	entry.invalidatedAt = invalidation.InvalidatedAt
+	entry.invalidatedAt = state.invalidatedAt
 	entry.pinClass = desiredPin
 	cache.bumpLastWriteGenerationLocked(entry, state)
 	cache.applyPinClassLocked(entry, desiredPin)
@@ -937,13 +942,12 @@ func (cache *ShadowCache) desiredPinClass(key WatchKey, descriptor WatchDescript
 	return shadowPinClassNone
 }
 
-func (cache *ShadowCache) rejectWriteByPrecedence(entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
+func (cache *ShadowCache) rejectWriteByPrecedence(state *shadowKeyState, entry *shadowEntry, write ShadowWrite) ShadowWriteRejectionReason {
+	if state != nil && !state.invalidatedAt.IsZero() && !write.ObservedAt.After(state.invalidatedAt) {
+		return ShadowWriteRejectionReasonStaleTimestamp
+	}
 	if entry == nil {
 		return ""
-	}
-	if (entry.state == ShadowEntryStateInvalidated || entry.state == ShadowEntryStateTombstone) &&
-		!entry.invalidatedAt.IsZero() && !write.ObservedAt.After(entry.invalidatedAt) {
-		return ShadowWriteRejectionReasonStaleTimestamp
 	}
 	if write.ObservedAt.Before(entry.observedAt) {
 		return ShadowWriteRejectionReasonStaleTimestamp

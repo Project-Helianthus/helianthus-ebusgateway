@@ -126,7 +126,7 @@ type PendingOperationSnapshot struct {
 type pendingOperation struct {
 	PendingOperationSnapshot
 	token       string
-	cancel      context.CancelFunc
+	cancel      context.CancelCauseFunc
 	invalidated bool
 }
 
@@ -391,8 +391,8 @@ func (m *Manager) EnableOperation(ctx context.Context, target byte, dispatch Dis
 		},
 		token: token,
 	}
-	operationCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	operationCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	pending.cancel = cancel
 	m.pendingOperation = pending
 	m.activeToken = token
@@ -478,7 +478,7 @@ func (m *Manager) ReadOperation(ctx context.Context, target byte, dispatch Dispa
 		return nil, err
 	}
 	operationCtx, cancel := m.bindPendingContext(ctx, pending)
-	defer cancel()
+	defer cancel(nil)
 	outcome := dispatchOnce(withPendingOperation(operationCtx, pending.OperationID), target, dispatch)
 	m.stateMu.Lock()
 	if m.pendingOperation != pending {
@@ -527,7 +527,7 @@ func (m *Manager) DisableOperation(ctx context.Context, key SessionKey, target b
 		return err
 	}
 	operationCtx, cancel := m.bindPendingContext(ctx, pending)
-	defer cancel()
+	defer cancel(nil)
 	// Once the current owner has admitted an explicit Disable, idle expiry
 	// must not race it to a second terminal path while it waits for poll
 	// quiescence. The owner remains held until emission or invalidation.
@@ -689,7 +689,7 @@ func (m *Manager) OnTransportDisconnect() {
 	if pending := m.pendingOperation; pending != nil {
 		pending.invalidated = true
 		if pending.cancel != nil {
-			pending.cancel()
+			pending.cancel(ErrTransportDown)
 		}
 	}
 	if pending := m.pendingOperation; pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
@@ -730,7 +730,7 @@ func (m *Manager) OnEpochAdvance(_ context.Context, newEpoch uint64) {
 		// Send already entered remains conservatively recorded as emitted.
 		pending.invalidated = true
 		if pending.cancel != nil {
-			pending.cancel()
+			pending.cancel(ErrTransportDown)
 		}
 	}
 	if pending := m.pendingOperation; m.state == Enabling && pending != nil && pending.Kind == OperationEnable && !pending.Emitted {
@@ -776,7 +776,7 @@ func (m *Manager) ResetForRestart(qualifiedTargets ...byte) {
 	if pending := m.pendingOperation; pending != nil {
 		pending.invalidated = true
 		if pending.cancel != nil {
-			pending.cancel()
+			pending.cancel(ErrTransportDown)
 		}
 	}
 	m.pendingOperation = nil
@@ -963,11 +963,11 @@ func dispatchOnce(ctx context.Context, target byte, dispatch DispatchFunc) Dispa
 // bindPendingContext installs the cancellation handle while stateMu is held.
 // A lifecycle event that wins the race invalidates and cancels this context
 // before the dispatcher reaches its final pre-emission admission.
-func (m *Manager) bindPendingContext(ctx context.Context, pending *pendingOperation) (context.Context, context.CancelFunc) {
-	operationCtx, cancel := context.WithCancel(ctx)
+func (m *Manager) bindPendingContext(ctx context.Context, pending *pendingOperation) (context.Context, context.CancelCauseFunc) {
+	operationCtx, cancel := context.WithCancelCause(ctx)
 	m.stateMu.Lock()
 	if m.pendingOperation != pending || pending.invalidated {
-		cancel()
+		cancel(ErrTransportDown)
 	} else {
 		pending.cancel = cancel
 	}

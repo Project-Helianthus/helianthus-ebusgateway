@@ -440,6 +440,25 @@ func TestM6Dispatcher_CtxCanceled_MapsToUpstreamTimeout(t *testing.T) {
 	if !errors.Is(err, errRawFrameUpstreamTimeout) {
 		t.Fatalf("err = %v; want errors.Is(_, errRawFrameUpstreamTimeout)", err)
 	}
+	if errors.Is(err, b503session.ErrTransportDown) {
+		t.Fatalf("ordinary caller cancellation err = %v; must not map TRANSPORT_DOWN", err)
+	}
+}
+
+func TestM6Dispatcher_LifecycleCanceledContextMapsTransportDown(t *testing.T) {
+	disp, bus, _ := newTestDispatcher(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(b503session.ErrTransportDown)
+	outcome := disp.InvokeB503Outcome(ctx, 0x15, []byte{0x00, 0x03})
+	if outcome.Err == nil || !errors.Is(outcome.Err, b503session.ErrTransportDown) {
+		t.Fatalf("lifecycle-canceled outcome error = %v, want TRANSPORT_DOWN", outcome.Err)
+	}
+	if errors.Is(outcome.Err, errRawFrameUpstreamTimeout) {
+		t.Fatalf("lifecycle-canceled outcome error = %v, must not map upstream timeout", outcome.Err)
+	}
+	if outcome.Emitted || bus.callCount() != 0 {
+		t.Fatalf("lifecycle-canceled outcome = %+v, sends=%d; want no emission", outcome, bus.callCount())
+	}
 }
 
 func TestIssue552B503OutcomePreCanceledIsNotEmitted(t *testing.T) {

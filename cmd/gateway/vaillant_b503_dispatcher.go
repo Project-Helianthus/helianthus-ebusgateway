@@ -185,7 +185,7 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	transportAtIssue := d.mgr.TransportKey()
 	if err := ctx.Err(); err != nil {
 		return mcp.B503DispatchOutcome{
-			Err:       fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err),
+			Err:       classifyB503ContextErr(ctx, err),
 			Transport: transportAtIssue,
 		}
 	}
@@ -249,7 +249,7 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	if err := bsCtx.Err(); err != nil {
 		unlockReadMu()
 		return mcp.B503DispatchOutcome{
-			Err:       fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err),
+			Err:       classifyB503ContextErr(bsCtx, err),
 			Transport: transportAtIssue,
 		}
 	}
@@ -387,6 +387,12 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 			b503session.ErrTransportDown,
 		)
 	}
+	if cause := context.Cause(callerCtx); errors.Is(cause, b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
+	}
+	if cause := context.Cause(bsCtx); errors.Is(cause, b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
+	}
 
 	// No transport-down signal in sendErr: ctx-cancel classification
 	// runs second. If the caller's context is done, the operation timed
@@ -401,6 +407,17 @@ func (d *rawFrameDispatcher) classifySendErr(callerCtx, bsCtx context.Context, t
 	// Everything else: NAK, CRC, generic protocol failure. Preserves the
 	// underlying error chain via %w so tests can assert via errors.Is.
 	return fmt.Errorf("%w: %v", errRawFrameUpstreamRPCFailed, sendErr)
+}
+
+// classifyB503ContextErr distinguishes a caller deadline/cancellation from a
+// Manager lifecycle invalidation. The latter is a transport withdrawal, so it
+// must remain visible as TRANSPORT_DOWN while ordinary caller cancellation
+// preserves the upstream-timeout public mapping.
+func classifyB503ContextErr(ctx context.Context, err error) error {
+	if errors.Is(context.Cause(ctx), b503session.ErrTransportDown) {
+		return b503session.ErrTransportDown
+	}
+	return fmt.Errorf("%w: %v", errRawFrameUpstreamTimeout, err)
 }
 
 // isTransportDownErr reports whether the bus.Send error indicates the

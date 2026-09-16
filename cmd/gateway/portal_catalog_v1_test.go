@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -86,6 +87,8 @@ func TestPortalCatalogProductionResourcesBindExactSemanticContext(t *testing.T) 
 					InstanceID: "capability-instance", AssetID: "asset", Definition: capabilityRef,
 					ServiceInstance: "service-instance", BindingID: "binding", SourceEpochID: "epoch", DriverGeneration: "7",
 				}},
+				Sources:  []semreg.SourceDescriptor{{SourceID: "source", SourceEpochID: "epoch", State: semreg.SourceCurrent}},
+				Bindings: []semreg.NativeBinding{{BindingID: "binding", AssetID: "asset", SourceID: "source", SourceEpochID: "epoch", DriverGeneration: "7", State: semreg.BindingCurrent}},
 			}
 			resources, _ := appendPortalSnapshot(nil, nil, descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
 			if len(resources) != 1 || resources[0].ID != descriptor.Groups[0].ResourceContext || resources[0].Source.AssetID != "asset" || resources[0].ServiceID != descriptor.Fields[0].ServiceRef.ID || resources[0].CapabilityID != descriptor.Fields[0].CapabilityRef.ID || resources[0].Source.DriverGeneration != 7 {
@@ -98,6 +101,64 @@ func TestPortalCatalogProductionResourcesBindExactSemanticContext(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestAppendPortalSnapshotUsesMatchedCurrentBindingAndEpochScalars(t *testing.T) {
+	descriptor := gatewayPortalPVDescriptor()
+	serviceRef := semanticRef(descriptor.Fields[0].ServiceRef)
+	capabilityRef := semanticRef(descriptor.Fields[0].CapabilityRef)
+	const binding = semreg.NativeBindingID("binding:current")
+	const epoch = semreg.SourceEpochID("epoch:current")
+	snapshot := semreg.Snapshot{
+		AssetID: "asset", SnapshotID: "snapshot",
+		Services:     []semreg.ServiceInstance{{InstanceID: "service:current", AssetID: "asset", Definition: serviceRef, BindingID: binding, SourceEpochID: epoch, DriverGeneration: "7"}},
+		Capabilities: []semreg.CapabilityInstance{{InstanceID: "capability:current", AssetID: "asset", Definition: capabilityRef, ServiceInstance: "service:current", BindingID: binding, SourceEpochID: epoch, DriverGeneration: "7"}},
+	}
+	for i := 0; i < 8; i++ {
+		historicalBinding := semreg.NativeBindingID(fmt.Sprintf("binding:historical:%d", i))
+		historicalEpoch := semreg.SourceEpochID(fmt.Sprintf("epoch:historical:%d", i))
+		snapshot.Sources = append(snapshot.Sources, semreg.SourceDescriptor{SourceID: semreg.SourceID(fmt.Sprintf("source:historical:%d", i)), SourceEpochID: historicalEpoch, State: semreg.SourceRetired})
+		snapshot.Bindings = append(snapshot.Bindings, semreg.NativeBinding{BindingID: historicalBinding, AssetID: "asset", SourceEpochID: historicalEpoch, DriverGeneration: "6", State: semreg.BindingRetired})
+	}
+	snapshot.Sources = append(snapshot.Sources, semreg.SourceDescriptor{SourceID: "source:current", SourceEpochID: epoch, State: semreg.SourceCurrent})
+	snapshot.Bindings = append(snapshot.Bindings, semreg.NativeBinding{BindingID: binding, AssetID: "asset", SourceID: "source:current", SourceEpochID: epoch, DriverGeneration: "7", State: semreg.BindingCurrent})
+	resources, _ := appendPortalSnapshot(nil, nil, descriptor, snapshot, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+	if len(resources) != 1 {
+		t.Fatalf("resources=%+v", resources)
+	}
+	if got := resources[0].Source; got.BindingID != string(binding) || got.SourceEpoch != string(epoch) {
+		t.Fatalf("capture scalars binding=%q epoch=%q", got.BindingID, got.SourceEpoch)
+	}
+	if !bytes.Contains(resources[0].Source.Snapshot, []byte("binding:historical:7")) || !bytes.Contains(resources[0].Source.Snapshot, []byte("binding:current")) {
+		t.Fatalf("snapshot lost nested binding evidence: %s", resources[0].Source.Snapshot)
+	}
+	withoutResource := func(name string, mutate func(*semreg.Snapshot)) {
+		t.Helper()
+		candidate := snapshot
+		candidate.Sources = append([]semreg.SourceDescriptor(nil), snapshot.Sources...)
+		candidate.Bindings = append([]semreg.NativeBinding(nil), snapshot.Bindings...)
+		candidate.Services = append([]semreg.ServiceInstance(nil), snapshot.Services...)
+		candidate.Capabilities = append([]semreg.CapabilityInstance(nil), snapshot.Capabilities...)
+		mutate(&candidate)
+		got, _ := appendPortalSnapshot(nil, nil, descriptor, candidate, semreg.EvaluationView{}, []semreg.Selection{}, map[string]any{})
+		if len(got) != 0 {
+			t.Fatalf("%s emitted resource: %+v", name, got)
+		}
+	}
+	withoutResource("inconsistent capability epoch", func(candidate *semreg.Snapshot) { candidate.Capabilities[0].SourceEpochID = "epoch:inconsistent" })
+	withoutResource("inconsistent capability generation", func(candidate *semreg.Snapshot) { candidate.Capabilities[0].DriverGeneration = "8" })
+	withoutResource("missing bindings", func(candidate *semreg.Snapshot) { candidate.Bindings = nil })
+	withoutResource("retired binding", func(candidate *semreg.Snapshot) {
+		candidate.Bindings[len(candidate.Bindings)-1].State = semreg.BindingRetired
+	})
+	withoutResource("binding generation mismatch", func(candidate *semreg.Snapshot) { candidate.Bindings[len(candidate.Bindings)-1].DriverGeneration = "8" })
+	withoutResource("missing sources", func(candidate *semreg.Snapshot) { candidate.Sources = nil })
+	withoutResource("retired source", func(candidate *semreg.Snapshot) {
+		candidate.Sources[len(candidate.Sources)-1].State = semreg.SourceRetired
+	})
+	withoutResource("source epoch mismatch", func(candidate *semreg.Snapshot) {
+		candidate.Sources[len(candidate.Sources)-1].SourceEpochID = "epoch:inconsistent"
+	})
 }
 
 func TestPortalCatalogRuntimeHandlerInstallsProductionDescriptors(t *testing.T) {

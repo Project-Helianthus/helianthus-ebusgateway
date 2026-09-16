@@ -1,5 +1,239 @@
 // Generated from portal/web/src/app.js. DO NOT EDIT.
 const THEME_KEY = "helianthus-portal-theme";
+const PORTAL_CATALOG_CONTRACT = "helianthus.gateway.portal-catalog/v1";
+const PORTAL_CATALOG_MAX_CONTRIBUTIONS = 64;
+const PORTAL_CATALOG_MAX_RESOURCES = 64;
+const PORTAL_CATALOG_MAX_FIELDS = 128;
+const PORTAL_CATALOG_MAX_ACTIONS = 64;
+const PORTAL_CATALOG_MAX_QUARANTINES = 64;
+const PORTAL_CATALOG_MAX_TEXT = 512;
+const PORTAL_CATALOG_MAX_NODES = 512;
+const PORTAL_CATALOG_TIMEOUT_MS = 5000;
+const PORTAL_CATALOG_PACK_VERSIONS = new Map([
+  ["helianthus.pack.evse", "1.0.0"],
+  ["helianthus.pack.infrastructure", "1.0.0"],
+  ["helianthus.pack.pv", "1.0.0"],
+  ["helianthus.pack.storage", "1.1.0"],
+  ["helianthus.pack.thermal", "1.0.0"],
+]);
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function catalogText(value) {
+  let text;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value === null) {
+    text = "null";
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    text = String(value);
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = "unavailable";
+    }
+  }
+  return typeof text === "string" ? text.slice(0, PORTAL_CATALOG_MAX_TEXT) : "unavailable";
+}
+
+function hasCatalogStrings(value, names) {
+  return isPlainRecord(value) && names.every((name) => typeof value[name] === "string" && value[name].length > 0 && value[name].length <= PORTAL_CATALOG_MAX_TEXT);
+}
+
+function hasRequiredCatalogStrings(value, names) {
+  return isPlainRecord(value) && names.every((name) => typeof value[name] === "string" && value[name].length > 0);
+}
+
+function catalogContributionKey(row) {
+  return JSON.stringify([
+    row.contribution_driver_id ?? row.driver_id,
+    row.contribution_manifest_id ?? row.manifest_id,
+    row.contribution_manifest_version ?? row.manifest_version,
+  ]);
+}
+
+function catalogResourceKey(row, resourceID) {
+  return JSON.stringify([
+    row.contribution_driver_id ?? row.driver_id,
+    row.contribution_manifest_id ?? row.manifest_id,
+    row.contribution_manifest_version ?? row.manifest_version,
+    resourceID ?? row.resource_id ?? row.id,
+  ]);
+}
+
+function validCatalogSource(source) {
+  return hasCatalogStrings(source, ["asset_id", "snapshot_id", "evaluation_digest"]) &&
+    hasRequiredCatalogStrings(source, ["revision", "binding_id", "source_epoch"]) &&
+    Number.isInteger(source.driver_generation) && source.driver_generation >= 0 &&
+    isPlainRecord(source.snapshot) && isPlainRecord(source.evaluation) &&
+    Array.isArray(source.selections) && isPlainRecord(source.projection);
+}
+
+function validatePortalCatalog(catalog) {
+  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope"]) ||
+      catalog.contract !== PORTAL_CATALOG_CONTRACT ||
+      !/^[a-f0-9]{64}$/.test(catalog.catalog_revision) || !/^[a-f0-9]{64}$/.test(catalog.catalog_digest) ||
+      !Array.isArray(catalog.domains) || catalog.domains.length !== PORTAL_CATALOG_PACK_VERSIONS.size ||
+      !Array.isArray(catalog.contributions) || catalog.contributions.length > PORTAL_CATALOG_MAX_CONTRIBUTIONS ||
+      !Array.isArray(catalog.resources) || catalog.resources.length > PORTAL_CATALOG_MAX_RESOURCES ||
+      !Array.isArray(catalog.fields) || catalog.fields.length > PORTAL_CATALOG_MAX_FIELDS ||
+      !Array.isArray(catalog.actions) || catalog.actions.length > PORTAL_CATALOG_MAX_ACTIONS ||
+      !Array.isArray(catalog.quarantines) || catalog.quarantines.length > PORTAL_CATALOG_MAX_QUARANTINES) {
+    return false;
+  }
+  const domains = new Set();
+  for (const domain of catalog.domains) {
+    if (!isPlainRecord(domain) || !hasCatalogStrings(domain.pack, ["id", "version"]) ||
+        PORTAL_CATALOG_PACK_VERSIONS.get(domain.pack.id) !== domain.pack.version || domains.has(domain.pack.id) ||
+        !["PRESENT", "ABSENT"].includes(domain.source_state) ||
+        (domain.reason !== undefined && (typeof domain.reason !== "string" || domain.reason.length > PORTAL_CATALOG_MAX_TEXT))) return false;
+    domains.add(domain.pack.id);
+  }
+  const contributionKeys = new Set();
+  for (const contribution of catalog.contributions) {
+    if (!hasCatalogStrings(contribution, ["driver_id", "manifest_id", "manifest_version", "digest"]) || !/^sha256:[a-f0-9]{64}$/.test(contribution.digest)) return false;
+    contributionKeys.add(catalogContributionKey(contribution));
+  }
+  const resources = new Set();
+  for (const resource of catalog.resources) {
+    if (!hasCatalogStrings(resource, ["id", "domain", "service_id", "capability_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "state"]) ||
+        !domains.has(resource.domain) || !validCatalogSource(resource.source) || resources.has(catalogResourceKey(resource)) ||
+        !contributionKeys.has(catalogContributionKey(resource))) return false;
+    resources.add(catalogResourceKey(resource));
+  }
+  for (const field of catalog.fields) {
+    if (!hasCatalogStrings(field, ["id", "resource_id", "definition_id", "unit_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "quality", "projection"]) ||
+        !Object.hasOwn(field, "value") || !contributionKeys.has(catalogContributionKey(field)) || !resources.has(catalogResourceKey(field))) return false;
+  }
+  for (const action of catalog.actions) {
+    if (!hasCatalogStrings(action, ["id", "resource_id", "service_id", "capability_id", "operation_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version"]) ||
+        !contributionKeys.has(catalogContributionKey(action)) || !resources.has(catalogResourceKey(action)) || !validCatalogSource(action.source) ||
+        typeof action.discoverable !== "boolean" || typeof action.enabled !== "boolean" ||
+        (action.reason !== undefined && (typeof action.reason !== "string" || action.reason.length > PORTAL_CATALOG_MAX_TEXT))) return false;
+  }
+  return catalog.quarantines.every((row) => hasCatalogStrings(row, ["driver_id", "manifest_id", "manifest_version", "reason"]));
+}
+
+function catalogRecordWindow(record, key, max = 8) {
+  const entries = Array.isArray(record?.[key]) ? record[key] : [];
+  const valid = entries.filter(isPlainRecord);
+  return { records: valid.slice(0, max), omitted: entries.length - valid.slice(0, max).length };
+}
+
+function catalogBrief(value, max = 48) {
+  return catalogText(value).slice(0, max);
+}
+
+function catalogOmitted(count, label) {
+  return count > 0 ? `+${count} ${label} omitted` : "";
+}
+
+function portalEvaluationSummary(evaluation) {
+  const facts = catalogRecordWindow(evaluation, "facts");
+  const context = isPlainRecord(evaluation?.context) ? evaluation.context : {};
+  const values = facts.records.map((fact) => `freshness=${catalogBrief(fact.freshness ?? "unavailable")}, availability=${catalogBrief(fact.effective_availability ?? "unavailable")}`);
+  const evaluatedAt = context.evaluated_at === undefined ? "unavailable" : catalogText(context.evaluated_at);
+  return `Evaluation: ${catalogOmitted(facts.omitted, "fact(s)")}${facts.omitted ? "; " : ""}${values.join(" | ") || "unavailable"}; evaluated_at=${evaluatedAt}`;
+}
+
+function portalQualitySummary(snapshot) {
+  const facts = catalogRecordWindow(snapshot, "facts");
+  const values = [];
+  let omittedCandidates = 0;
+  for (const fact of facts.records) {
+    const candidates = catalogRecordWindow(fact, "candidates", 4);
+    omittedCandidates += candidates.omitted;
+    for (const candidate of candidates.records) {
+      const quality = isPlainRecord(candidate.quality) ? candidate.quality : {};
+      values.push(`${catalogBrief(candidate.candidate_id ?? "candidate")}: qualification=${catalogBrief(quality.qualification ?? "unavailable", 16)}, promotion=${catalogBrief(quality.promotion ?? "unavailable", 16)}, validity=${catalogBrief(quality.validity ?? "unavailable", 16)}, availability=${catalogBrief(quality.availability ?? "unavailable", 16)}, freshness=${catalogBrief(quality.freshness ?? "unavailable", 16)}`);
+    }
+  }
+  const omitted = [catalogOmitted(facts.omitted, "fact(s)"), catalogOmitted(omittedCandidates, "candidate(s)")].filter(Boolean).join("; ");
+  return `Quality: ${omitted}${omitted ? "; " : ""}${values.join(" | ") || "unavailable"}`;
+}
+
+function portalLifecycleSummaries(snapshot) {
+  const sources = catalogRecordWindow(snapshot, "sources");
+  const bindings = catalogRecordWindow(snapshot, "bindings");
+  const fences = catalogRecordWindow(snapshot, "fences");
+  const cursors = catalogRecordWindow(snapshot, "cursors");
+  const sourceValues = sources.records.map((source) => `${catalogBrief(source.source_id ?? "source")}@${catalogBrief(source.source_epoch_id ?? "epoch")}:${catalogBrief(source.state ?? "unavailable")}`);
+  const bindingValues = bindings.records.map((binding) => `${catalogBrief(binding.binding_id ?? "binding")}@${catalogBrief(binding.source_epoch_id ?? "epoch")}:generation=${catalogBrief(binding.driver_generation ?? "unavailable")}, state=${catalogBrief(binding.state ?? "unavailable")}`);
+  const fenceValues = fences.records.map((fence) => `${catalogBrief(fence.source_id ?? "source")}@${catalogBrief(fence.source_epoch_id ?? "epoch")}:generation=${catalogBrief(fence.driver_generation ?? "unavailable")}, reason=${catalogBrief(fence.reason ?? "unavailable")}`);
+  const cursorValues = cursors.records.map((cursor) => `${catalogBrief(cursor.source_id ?? "source")}@${catalogBrief(cursor.source_epoch_id ?? "epoch")}:generation=${catalogBrief(cursor.driver_generation ?? "unavailable")}, fenced=${catalogBrief(cursor.fenced ?? "unavailable")}`);
+  return [
+    `Provenance: sources=${catalogOmitted(sources.omitted, "source(s)")}${sources.omitted ? "; " : ""}${sourceValues.join(" | ") || "unavailable"}`,
+    `Provenance: bindings=${catalogOmitted(bindings.omitted, "binding(s)")}${bindings.omitted ? "; " : ""}${bindingValues.join(" | ") || "unavailable"}`,
+    `Lifecycle: fences=${catalogOmitted(fences.omitted, "fence(s)")}${fences.omitted ? "; " : ""}${fenceValues.join(" | ") || "none"}`,
+    `Lifecycle: cursors=${catalogOmitted(cursors.omitted, "cursor(s)")}${cursors.omitted ? "; " : ""}${cursorValues.join(" | ") || "unavailable"}`,
+  ];
+}
+
+function portalProjectionSummary(projection) {
+  const dispositions = catalogRecordWindow(projection, "dispositions");
+  let omittedLoss = 0;
+  const values = dispositions.records.map((disposition) => {
+    const loss = catalogRecordWindow(disposition, "loss", 4);
+    omittedLoss += loss.omitted;
+    return `${catalogBrief(disposition.item_id ?? "item")}: outcome=${catalogBrief(disposition.outcome ?? "unavailable")}; loss=${loss.records.map((item) => catalogBrief(item.kind ?? "unavailable")).join(",") || "none"}`;
+  });
+  const omitted = [catalogOmitted(dispositions.omitted, "disposition(s)"), catalogOmitted(omittedLoss, "loss item(s)")].filter(Boolean).join("; ");
+  return `Projection: ${omitted}${omitted ? "; " : ""}${values.join(" | ") || "unavailable"}`;
+}
+
+function portalCatalogNodeBudget(catalog) {
+  let nodes = 1; // catalog grid root
+  const resourcesByDomain = new Map(catalog.domains.map((domain) => [domain.pack.id, []]));
+  for (const resource of catalog.resources) resourcesByDomain.get(resource.domain)?.push(resource);
+  const fieldsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+  for (const field of catalog.fields) fieldsByResource.get(catalogResourceKey(field))?.push(field);
+  const actionsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+  for (const action of catalog.actions) actionsByResource.get(catalogResourceKey(action))?.push(action);
+  for (const domain of catalog.domains) {
+    nodes += 2; // domain section and heading
+    if (domain.source_state === "ABSENT") {
+      nodes += 1;
+      continue;
+    }
+    const resources = resourcesByDomain.get(domain.pack.id) || [];
+    if (resources.length === 0) nodes += 1;
+    for (const resource of resources) {
+      nodes += 12; // resource article, heading, identity and nine evidence summary rows
+      nodes += (fieldsByResource.get(catalogResourceKey(resource)) || []).length;
+      nodes += (actionsByResource.get(catalogResourceKey(resource)) || []).filter((action) => action.discoverable).length;
+    }
+  }
+  nodes += 2 + catalog.contributions.length;
+  if (catalog.quarantines.length > 0) nodes += 2 + catalog.quarantines.length;
+  return nodes;
+}
+
+function beginPortalCatalogRequestAbort(lifecycleAbort) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortForLifecycle = () => controller.abort();
+  if (lifecycleAbort?.signal?.aborted) {
+    controller.abort();
+  } else {
+    lifecycleAbort?.signal?.addEventListener?.("abort", abortForLifecycle, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, PORTAL_CATALOG_TIMEOUT_MS);
+  return {
+    controller,
+    get timedOut() { return timedOut; },
+    abort() { controller.abort(); },
+    cleanup() {
+      clearTimeout(timer);
+      lifecycleAbort?.signal?.removeEventListener?.("abort", abortForLifecycle);
+    },
+  };
+}
 
 // L7 decode catalog-canonical enums. Source of truth:
 // helianthus-ebusreg/catalog/ebus_standard/identity.go — Direction and
@@ -352,6 +586,7 @@ class PortalShell extends HTMLElement {
     const issueDraftButton = this.querySelector('[data-role="issue-draft-run"]');
     const issueExportButton = this.querySelector('[data-role="issue-export-run"]');
     const projectionDeviceSelect = this.querySelector('[data-role="projection-device-select"]');
+    const portalCatalogRefresh = this.querySelector('[data-role="portal-catalog-refresh"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -411,6 +646,11 @@ class PortalShell extends HTMLElement {
     if (projectionDeviceSelect) {
       projectionDeviceSelect.addEventListener("change", () => {
         this.loadAllProjectionPlanes();
+      });
+    }
+    if (portalCatalogRefresh) {
+      portalCatalogRefresh.addEventListener("click", () => {
+        void this.refreshPortalCatalog();
       });
     }
     this.querySelectorAll("[data-nav-target]").forEach((button) => {
@@ -623,6 +863,7 @@ class PortalShell extends HTMLElement {
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
+      "section-portal-catalog": ["section-portal-catalog"],
       "section-l7-catalog": ["section-l7-catalog"],
       "section-vaillant-b503": ["section-vaillant-b503"],
 	  "section-eebus": ["section-eebus"],
@@ -654,6 +895,9 @@ class PortalShell extends HTMLElement {
       if (typeof this.refreshL7Services === "function") {
         this.refreshL7Services();
       }
+    }
+    if (targetID === "section-portal-catalog" && this._portalCatalogEndpoint) {
+      void this.refreshPortalCatalog();
     }
     if (targetID === "section-vaillant-b503") {
       // Target-selection paths publish PENDING synchronously and complete their
@@ -707,10 +951,16 @@ class PortalShell extends HTMLElement {
         ? bootstrap.endpoints.graphql
         : "/graphql";
       this._graphqlEndpoint = gqlEndpoint;
+	  this._portalCatalogEndpoint = typeof bootstrap?.endpoints?.portal_catalog === "string"
+	    ? bootstrap.endpoints.portal_catalog
+	    : "";
 	  this._eebusAdminPath = capabilities.eebus_admin && typeof bootstrap.endpoints?.eebus_admin === "string"
 	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
 	    : "";
-      this.applyCapabilityState(capabilities);
+	  this.applyCapabilityState(capabilities);
+	  this.setNavState("portal-catalog", Boolean(this._portalCatalogEndpoint));
+	  this.setPortalCatalogRefreshState(Boolean(this._portalCatalogEndpoint));
+	  void this.refreshPortalCatalog(this._portalCatalogEndpoint, lifecycleToken, lifecycleAbort);
 	  this.applyPVModbusCapabilityState(capabilities);
       if (this._capabilitySemanticPV) {
         await this.refreshPV();
@@ -909,6 +1159,156 @@ class PortalShell extends HTMLElement {
     const vaillantFlag = cap.vaillant_b503 === undefined ? true : Boolean(cap.vaillant_b503);
     this.setNavState("vaillant-b503", vaillantFlag);
     this._capabilityVaillantB503 = vaillantFlag;
+  }
+
+  _portalCatalogAppend(parent, tag, text, className) {
+    if (!parent || !document.createElement) return null;
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = catalogText(text);
+    parent.append(node);
+    return node;
+  }
+
+  setPortalCatalogRefreshState(enabled) {
+    const button = this.querySelector('[data-role="portal-catalog-refresh"]');
+    if (button) button.disabled = !enabled;
+  }
+
+  setPortalCatalogNotice(message = "") {
+    const notice = this.querySelector('[data-role="portal-catalog-notice"]');
+    if (!notice) return;
+    notice.textContent = message;
+    notice.hidden = message.length === 0;
+  }
+
+  _renderPortalCatalogUnavailable(body, message = "Catalog unavailable. No admitted catalog is currently available.") {
+    if (!body || this._portalCatalogHasValid) return;
+    const unavailable = document.createElement ? document.createElement("p") : null;
+    if (!unavailable) return;
+    unavailable.className = "portal-catalog-unavailable";
+    unavailable.textContent = message;
+    body.replaceChildren(unavailable);
+  }
+
+  _renderPortalCatalog(catalog, body) {
+    if (!body || !document.createElement) return false;
+    if (portalCatalogNodeBudget(catalog) > PORTAL_CATALOG_MAX_NODES) return false;
+    const root = document.createElement("div");
+    root.className = "portal-catalog-grid";
+    let nodes = 1;
+    const append = (parent, tag, value, className) => {
+      if (nodes >= PORTAL_CATALOG_MAX_NODES) return null;
+      const node = this._portalCatalogAppend(parent, tag, value, className);
+      if (node) nodes += 1;
+      return node;
+    };
+    const resourcesByDomain = new Map(catalog.domains.map((domain) => [domain.pack.id, []]));
+    for (const resource of catalog.resources) resourcesByDomain.get(resource.domain)?.push(resource);
+    const fieldsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+    for (const field of catalog.fields) fieldsByResource.get(catalogResourceKey(field))?.push(field);
+    const actionsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+    for (const action of catalog.actions) actionsByResource.get(catalogResourceKey(action))?.push(action);
+
+    for (const domain of catalog.domains) {
+      const card = append(root, "section", "", "portal-catalog-domain");
+      if (!card) break;
+      append(card, "h3", `${domain.pack.id}@${domain.pack.version} — ${domain.source_state}`);
+      if (domain.source_state === "ABSENT") {
+        append(card, "p", `Source: ABSENT${domain.reason ? ` (${domain.reason})` : ""}`, "portal-catalog-state");
+        continue;
+      }
+      const resources = resourcesByDomain.get(domain.pack.id) || [];
+      if (resources.length === 0) append(card, "p", "No admitted resources returned.", "portal-catalog-state");
+      for (const resource of resources) {
+        const resourceCard = append(card, "article", "", "portal-catalog-resource");
+        if (!resourceCard) break;
+        append(resourceCard, "h4", resource.id);
+        append(resourceCard, "p", `state=${resource.state}; service=${resource.service_id}; capability=${resource.capability_id}`);
+        append(resourceCard, "p", `contribution=${resource.contribution_driver_id}/${resource.contribution_manifest_id}@${resource.contribution_manifest_version}`);
+        append(resourceCard, "p", `Capture: asset=${resource.source.asset_id}; snapshot=${resource.source.snapshot_id}; revision=${resource.source.revision}; driver_generation=${resource.source.driver_generation}`);
+        append(resourceCard, "p", portalEvaluationSummary(resource.source.evaluation));
+        append(resourceCard, "p", portalQualitySummary(resource.source.snapshot));
+        for (const summary of portalLifecycleSummaries(resource.source.snapshot)) append(resourceCard, "p", summary);
+        append(resourceCard, "p", portalProjectionSummary(resource.source.projection));
+        for (const field of fieldsByResource.get(catalogResourceKey(resource)) || []) {
+          append(resourceCard, "p", `${field.definition_id}=${catalogText(field.value)} ${field.unit_id}; quality=${field.quality}; projection=${field.projection}`, "portal-catalog-field");
+        }
+        for (const action of actionsByResource.get(catalogResourceKey(resource)) || []) {
+          if (!action.discoverable || nodes >= PORTAL_CATALOG_MAX_NODES) continue;
+          const actionButton = document.createElement("button");
+          actionButton.className = "button portal-catalog-action";
+          actionButton.setAttribute("type", "button");
+          actionButton.disabled = true;
+          actionButton.textContent = `Action: ${action.id} (read-only; unavailable)`;
+          resourceCard.append(actionButton);
+          nodes += 1;
+        }
+      }
+    }
+    const contributions = append(root, "section", "", "portal-catalog-summary");
+    if (contributions) {
+      append(contributions, "h3", "Admitted contributions");
+      for (const row of catalog.contributions) append(contributions, "p", `${row.driver_id}/${row.manifest_id}@${row.manifest_version}`);
+    }
+    if (catalog.quarantines.length > 0) {
+      const quarantines = append(root, "section", "", "portal-catalog-summary");
+      if (quarantines) {
+        append(quarantines, "h3", "Quarantined contributions");
+        for (const row of catalog.quarantines) append(quarantines, "p", `${row.driver_id}/${row.manifest_id}@${row.manifest_version}: ${row.reason}`);
+      }
+    }
+    body.replaceChildren(root);
+    return true;
+  }
+
+  async refreshPortalCatalog(endpoint = this._portalCatalogEndpoint, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const body = this.querySelector('[data-role="portal-catalog-body"]');
+    const requestGeneration = (this._portalCatalogRequestGeneration || 0) + 1;
+    this._portalCatalogRequestGeneration = requestGeneration;
+    const isCurrent = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) && this._portalCatalogRequestGeneration === requestGeneration;
+    const showFailure = (message) => {
+      if (!isCurrent()) return;
+      if (this._portalCatalogHasValid) {
+        this.setPortalCatalogNotice(`${message} Showing the last valid catalog snapshot.`);
+        return;
+      }
+      this.setPortalCatalogNotice(message);
+      this._renderPortalCatalogUnavailable(body, message);
+    };
+    if (typeof endpoint !== "string" || endpoint.length === 0 || !body) {
+      showFailure("Catalog unavailable. No admitted catalog is currently available.");
+      return false;
+    }
+    this._portalCatalogRequestAbort?.abort();
+    const requestAbort = beginPortalCatalogRequestAbort(lifecycleAbort);
+    this._portalCatalogRequestAbort = requestAbort;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationName: "PortalCatalogV1", variables: {} }),
+        signal: requestAbort.controller.signal,
+      });
+      if (!response.ok) throw new Error("portal catalog unavailable");
+      const payload = await response.json();
+      const catalog = payload?.data?.portalCatalogV1;
+      if (Array.isArray(payload?.errors) || !validatePortalCatalog(catalog)) throw new Error("invalid portal catalog");
+      if (!isCurrent()) return false;
+      if (!this._renderPortalCatalog(catalog, body)) {
+        showFailure("Catalog refresh rejected: too many admitted records to render safely.");
+        return false;
+      }
+      this._portalCatalogHasValid = true;
+      this.setPortalCatalogNotice();
+      return true;
+    } catch {
+      showFailure(requestAbort.timedOut ? "Catalog refresh timed out." : "Catalog refresh failed.");
+      return false;
+    } finally {
+      requestAbort.cleanup();
+      if (this._portalCatalogRequestAbort === requestAbort) this._portalCatalogRequestAbort = undefined;
+    }
   }
 
   setNavState(name, enabled) {
@@ -3021,6 +3421,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
+            <button data-role="nav-portal-catalog" data-nav-target="section-portal-catalog" disabled><span class="nav-bullet"></span> Catalog</button>
             <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
             <button data-role="nav-vaillant-b503" data-nav-target="section-vaillant-b503" disabled><span class="nav-bullet"></span> Vaillant B503</button>
 			<button data-role="nav-eebus" data-nav-target="section-eebus" disabled><span class="nav-bullet"></span> eeBUS</button>
@@ -3240,6 +3641,17 @@ class PortalShell extends HTMLElement {
                 <button class="button" data-role="issue-export-run" type="button">Export Bundle</button>
               </div>
               <pre class="issue-preview" data-role="issue-preview">Loading issue builder capability...</pre>
+            </section>
+            <section id="section-portal-catalog" class="registry-preview">
+              <div class="portal-catalog-heading">
+                <h2>Contribution Catalog</h2>
+                <button class="button" data-role="portal-catalog-refresh" type="button" disabled>Refresh Catalog</button>
+              </div>
+              <p class="muted-inline">Read-only admitted contributions, provenance, lifecycle, freshness, quality and projection summaries.</p>
+              <p class="portal-catalog-notice" data-role="portal-catalog-notice" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+              <div data-role="portal-catalog-body" role="status" aria-live="polite" aria-atomic="true">
+                <p class="portal-catalog-unavailable">Catalog unavailable. No admitted catalog is currently available.</p>
+              </div>
             </section>
             <section id="section-l7-catalog" class="registry-preview">
               <h2>L7 Standard Catalog</h2>

@@ -242,6 +242,9 @@ func TestBootstrapEndpoint(t *testing.T) {
 	if endpoints["graphql"] != "/graphql" {
 		t.Fatalf("graphql endpoint=%v; want /graphql", endpoints["graphql"])
 	}
+	if endpoints["portal_catalog"] != "/graphql/portal/v1" {
+		t.Fatalf("portal_catalog endpoint=%v; want /graphql/portal/v1", endpoints["portal_catalog"])
+	}
 	if endpoints["search"] != "/portal/api/v1/search" {
 		t.Fatalf("search endpoint=%v; want /portal/api/v1/search", endpoints["search"])
 	}

@@ -191,7 +191,7 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	if resourceID == "" {
 		return resources, fields
 	}
-	serviceID, capabilityID, generation, ok := portalSnapshotContext(snapshot, descriptor.Fields[0].ServiceRef, descriptor.Fields[0].CapabilityRef)
+	serviceID, capabilityID, bindingID, sourceEpoch, generation, ok := portalSnapshotContext(snapshot, descriptor.Fields[0].ServiceRef, descriptor.Fields[0].CapabilityRef)
 	if !ok {
 		return resources, fields
 	}
@@ -200,11 +200,9 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	sels, _ := rawPortal(selections)
 	proj, _ := rawPortal(projection)
 	revisions, revisionText := rawPortal(snapshot.Revisions)
-	bindings, bindingText := rawPortal(snapshot.Bindings)
-	sources, sourceText := rawPortal(snapshot.Sources)
-	source := catalogv1.Source{AssetID: string(snapshot.AssetID), SnapshotID: string(snapshot.SnapshotID), Revision: revisionText, EvaluationDigest: portalDigest(evaluation), BindingID: bindingText, SourceEpoch: sourceText, DriverGeneration: generation, Snapshot: snap, Evaluation: eval, Selections: sels, Projection: proj}
+	source := catalogv1.Source{AssetID: string(snapshot.AssetID), SnapshotID: string(snapshot.SnapshotID), Revision: revisionText, EvaluationDigest: portalDigest(evaluation), BindingID: bindingID, SourceEpoch: sourceEpoch, DriverGeneration: generation, Snapshot: snap, Evaluation: eval, Selections: sels, Projection: proj}
 	r := catalogv1.Resource{ID: resourceID, Domain: descriptor.Requires.Packs[0].ID, ServiceID: serviceID, CapabilityID: capabilityID, State: "CURRENT", Source: source, ContributionDriverID: descriptor.Contributor.DriverID, ContributionManifestID: descriptor.ManifestID, ContributionManifestVersion: descriptor.ManifestVersion}
-	if len(revisions) == 0 || len(evalText) == 0 || len(bindings) == 0 || len(sources) == 0 {
+	if len(revisions) == 0 || len(evalText) == 0 {
 		return resources, fields
 	}
 	// A source snapshot is the complete fact/projection envelope.  Do not make
@@ -212,7 +210,7 @@ func appendPortalSnapshot(resources []catalogv1.Resource, fields []catalogv1.Fie
 	return append(resources, r), fields
 }
 
-func portalSnapshotContext(snapshot semreg.Snapshot, serviceRef, capabilityRef contributionv1.DefinitionRef) (string, string, uint64, bool) {
+func portalSnapshotContext(snapshot semreg.Snapshot, serviceRef, capabilityRef contributionv1.DefinitionRef) (string, string, string, string, uint64, bool) {
 	wantService, wantCapability := semanticRef(serviceRef), semanticRef(capabilityRef)
 	var service semreg.ServiceInstance
 	serviceMatches := 0
@@ -222,7 +220,7 @@ func portalSnapshotContext(snapshot semreg.Snapshot, serviceRef, capabilityRef c
 		}
 	}
 	if serviceMatches != 1 {
-		return "", "", 0, false
+		return "", "", "", "", 0, false
 	}
 	var capability semreg.CapabilityInstance
 	capabilityMatches := 0
@@ -232,13 +230,35 @@ func portalSnapshotContext(snapshot semreg.Snapshot, serviceRef, capabilityRef c
 		}
 	}
 	if capabilityMatches != 1 {
-		return "", "", 0, false
+		return "", "", "", "", 0, false
 	}
 	generation, err := strconv.ParseUint(string(capability.DriverGeneration), 10, 64)
 	if err != nil || generation == 0 {
-		return "", "", 0, false
+		return "", "", "", "", 0, false
 	}
-	return string(service.Definition.ID), string(capability.Definition.ID), generation, true
+	if service.BindingID == "" || service.SourceEpochID == "" || capability.BindingID == "" || capability.SourceEpochID == "" || service.BindingID != capability.BindingID || service.SourceEpochID != capability.SourceEpochID || service.DriverGeneration != capability.DriverGeneration {
+		return "", "", "", "", 0, false
+	}
+	var binding semreg.NativeBinding
+	bindingMatches := 0
+	for _, candidate := range snapshot.Bindings {
+		if candidate.BindingID == capability.BindingID && candidate.AssetID == snapshot.AssetID && candidate.SourceEpochID == capability.SourceEpochID && candidate.DriverGeneration == capability.DriverGeneration && candidate.State == semreg.BindingCurrent {
+			binding, bindingMatches = candidate, bindingMatches+1
+		}
+	}
+	if bindingMatches != 1 || binding.SourceID == "" {
+		return "", "", "", "", 0, false
+	}
+	sourceMatches := 0
+	for _, candidate := range snapshot.Sources {
+		if candidate.SourceID == binding.SourceID && candidate.SourceEpochID == capability.SourceEpochID && candidate.State == semreg.SourceCurrent {
+			sourceMatches++
+		}
+	}
+	if sourceMatches != 1 {
+		return "", "", "", "", 0, false
+	}
+	return string(service.Definition.ID), string(capability.Definition.ID), string(capability.BindingID), string(capability.SourceEpochID), generation, true
 }
 
 func appendPortalPV(resources []catalogv1.Resource, fields []catalogv1.Field, v modbusadapter.SemanticPVCurrent) ([]catalogv1.Resource, []catalogv1.Field) {

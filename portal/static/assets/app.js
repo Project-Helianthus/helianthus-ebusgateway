@@ -1,5 +1,765 @@
 // Generated from portal/web/src/app.js. DO NOT EDIT.
 const THEME_KEY = "helianthus-portal-theme";
+const PORTAL_CATALOG_CONTRACT = "helianthus.gateway.portal-catalog/v1";
+const PORTAL_CATALOG_MAX_CONTRIBUTIONS = 64;
+const PORTAL_CATALOG_MAX_RESOURCES = 64;
+const PORTAL_CATALOG_MAX_FIELDS = 128;
+const PORTAL_CATALOG_MAX_ACTIONS = 64;
+const PORTAL_CATALOG_MAX_QUARANTINES = 64;
+const PORTAL_CATALOG_MAX_TEXT = 512;
+const PORTAL_CATALOG_MAX_NODES = 512;
+const PORTAL_CATALOG_MAX_EVIDENCE_PAGE_ROWS = 128;
+const PORTAL_CATALOG_MAX_QUALITY_CANDIDATES = 8;
+const PORTAL_CATALOG_TIMEOUT_MS = 5000;
+const PORTAL_CATALOG_PACK_VERSIONS = new Map([
+  ["helianthus.pack.evse", "1.0.0"],
+  ["helianthus.pack.infrastructure", "1.0.0"],
+  ["helianthus.pack.pv", "1.0.0"],
+  ["helianthus.pack.storage", "1.1.0"],
+  ["helianthus.pack.thermal", "1.0.0"],
+]);
+const PORTAL_CATALOG_DOMAIN_ORDER = [
+  "helianthus.pack.evse", "helianthus.pack.infrastructure", "helianthus.pack.pv", "helianthus.pack.storage", "helianthus.pack.thermal",
+];
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function catalogText(value) {
+  let text;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value === null) {
+    text = "null";
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    text = String(value);
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = "unavailable";
+    }
+  }
+  return typeof text === "string" ? text.slice(0, PORTAL_CATALOG_MAX_TEXT) : "unavailable";
+}
+
+function hasCatalogStrings(value, names) {
+  return isPlainRecord(value) && names.every((name) => typeof value[name] === "string" && value[name].length > 0 && value[name].length <= PORTAL_CATALOG_MAX_TEXT);
+}
+
+function hasRequiredCatalogStrings(value, names) {
+  return isPlainRecord(value) && names.every((name) => typeof value[name] === "string" && value[name].length > 0);
+}
+
+function catalogContributionKey(row) {
+  return JSON.stringify([
+    row.contribution_driver_id ?? row.driver_id,
+    row.contribution_manifest_id ?? row.manifest_id,
+    row.contribution_manifest_version ?? row.manifest_version,
+  ]);
+}
+
+function catalogResourceKey(row, resourceID) {
+  return JSON.stringify([
+    row.contribution_driver_id ?? row.driver_id,
+    row.contribution_manifest_id ?? row.manifest_id,
+    row.contribution_manifest_version ?? row.manifest_version,
+    resourceID ?? row.resource_id ?? row.id,
+  ]);
+}
+
+function validCatalogSource(source) {
+  return hasCatalogStrings(source, ["asset_id", "snapshot_id", "evaluation_digest"]) &&
+    hasRequiredCatalogStrings(source, ["revision", "binding_id", "source_epoch"]) &&
+    Number.isInteger(source.driver_generation) && source.driver_generation >= 0 &&
+    isPlainRecord(source.snapshot) && isPlainRecord(source.evaluation) &&
+    Array.isArray(source.selections) && isPlainRecord(source.projection);
+}
+
+function validatePortalCatalog(catalog) {
+  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope"]) ||
+      catalog.contract !== PORTAL_CATALOG_CONTRACT ||
+      !/^[a-f0-9]{64}$/.test(catalog.catalog_revision) || !/^[a-f0-9]{64}$/.test(catalog.catalog_digest) ||
+      !Array.isArray(catalog.domains) || catalog.domains.length !== PORTAL_CATALOG_PACK_VERSIONS.size ||
+      !Array.isArray(catalog.contributions) || catalog.contributions.length > PORTAL_CATALOG_MAX_CONTRIBUTIONS ||
+      !Array.isArray(catalog.resources) || catalog.resources.length > PORTAL_CATALOG_MAX_RESOURCES ||
+      !Array.isArray(catalog.fields) || catalog.fields.length > PORTAL_CATALOG_MAX_FIELDS ||
+      !Array.isArray(catalog.actions) || catalog.actions.length > PORTAL_CATALOG_MAX_ACTIONS ||
+      !Array.isArray(catalog.quarantines) || catalog.quarantines.length > PORTAL_CATALOG_MAX_QUARANTINES) {
+    return false;
+  }
+  const domains = new Set();
+  const domainStates = new Map();
+  for (const [index, domain] of catalog.domains.entries()) {
+    if (!isPlainRecord(domain) || !hasCatalogStrings(domain.pack, ["id", "version"]) ||
+        domain.pack.id !== PORTAL_CATALOG_DOMAIN_ORDER[index] || PORTAL_CATALOG_PACK_VERSIONS.get(domain.pack.id) !== domain.pack.version || domains.has(domain.pack.id) ||
+        !["PRESENT", "ABSENT"].includes(domain.source_state) ||
+        (domain.reason !== undefined && (typeof domain.reason !== "string" || domain.reason.length > PORTAL_CATALOG_MAX_TEXT))) return false;
+    domains.add(domain.pack.id);
+    domainStates.set(domain.pack.id, domain.source_state);
+  }
+  const contributionKeys = new Set();
+  for (const contribution of catalog.contributions) {
+    if (!hasCatalogStrings(contribution, ["driver_id", "manifest_id", "manifest_version", "digest"]) || !/^sha256:[a-f0-9]{64}$/.test(contribution.digest)) return false;
+    contributionKeys.add(catalogContributionKey(contribution));
+  }
+  const resources = new Set();
+  for (const resource of catalog.resources) {
+    if (!hasCatalogStrings(resource, ["id", "domain", "service_id", "capability_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "state"]) ||
+        !domains.has(resource.domain) || domainStates.get(resource.domain) !== "PRESENT" || !validCatalogSource(resource.source) || resources.has(catalogResourceKey(resource)) ||
+        !contributionKeys.has(catalogContributionKey(resource))) return false;
+    resources.add(catalogResourceKey(resource));
+  }
+  for (const field of catalog.fields) {
+    if (!hasCatalogStrings(field, ["id", "resource_id", "definition_id", "unit_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "quality", "projection"]) ||
+        !Object.hasOwn(field, "value") || !contributionKeys.has(catalogContributionKey(field)) || !resources.has(catalogResourceKey(field))) return false;
+  }
+  for (const action of catalog.actions) {
+    if (!hasCatalogStrings(action, ["id", "resource_id", "service_id", "capability_id", "operation_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version"]) ||
+        !contributionKeys.has(catalogContributionKey(action)) || !resources.has(catalogResourceKey(action)) || !validCatalogSource(action.source) ||
+        typeof action.discoverable !== "boolean" || typeof action.enabled !== "boolean" ||
+        (action.reason !== undefined && (typeof action.reason !== "string" || action.reason.length > PORTAL_CATALOG_MAX_TEXT))) return false;
+  }
+  return catalog.quarantines.every((row) => hasCatalogStrings(row, ["driver_id", "manifest_id", "manifest_version", "reason"]));
+}
+
+function catalogRecordWindow(record, key, max = 8) {
+  const entries = Array.isArray(record?.[key]) ? record[key] : [];
+  const valid = entries.filter(isPlainRecord);
+  return { records: valid.slice(0, max), omitted: entries.length - valid.slice(0, max).length };
+}
+
+function catalogValueWindow(record, key, max = 8) {
+  const entries = Array.isArray(record?.[key]) ? record[key] : [];
+  const valid = entries.filter((value) => typeof value === "string" && value.length > 0);
+  return { records: valid.slice(0, max), omitted: entries.length - valid.slice(0, max).length };
+}
+
+function catalogFactKey(key) {
+  if (!isPlainRecord(key) || ![key.pack_id, key.pack_version, key.fact_id].every((value) => typeof value === "string" && value.length > 0)) return "unavailable";
+  return `${catalogBrief(key.pack_id, 48)}@${catalogBrief(key.pack_version, 24)}/${catalogBrief(key.fact_id, 80)}`;
+}
+
+function portalFactKeyDimensionSummaries(prefix, key, context = "", identityLabel = "key") {
+  const factKey = catalogFactKey(key);
+  const identity = `${context ? `${context}; ` : ""}${identityLabel}=${factKey}`;
+  const dimensions = catalogRecordWindow(key, "dimensions");
+  const rows = [];
+  const omitted = catalogOmitted(dimensions.omitted, "dimension(s)");
+  if (omitted) rows.push(`${prefix} dimension: ${identity}; ${omitted}`);
+  for (const [index, dimension] of dimensions.records.entries()) {
+    rows.push(`${prefix} dimension: ${identity}; id=${catalogBrief(dimension.id ?? "unavailable", 80)}; value=${catalogBrief(dimension.value ?? "unavailable", 160)}`);
+    rows.push(...portalCandidateValueSummaries(`${identity}; dimension=${index}`, dimension.value).map((row) => row.replace("Quality value", `${prefix} dimension value`)));
+  }
+  return rows;
+}
+
+function portalProjectionSourceKeySummaries(itemID, sourceKey) {
+  const factKey = catalogFactKey(sourceKey);
+  return [
+    `Projection source key: item=${itemID}; source_key=${factKey}`,
+    ...portalFactKeyDimensionSummaries("Projection source key", sourceKey, `item=${itemID}`, "source_key"),
+  ];
+}
+
+function catalogBrief(value, max = 48) {
+  const text = catalogText(value);
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}…` : text;
+}
+
+function catalogOmitted(count, label) {
+  return count > 0 ? `+${count} ${label} omitted` : "";
+}
+
+function portalWindowSummaries(prefix, window, omittedLabel, values, empty) {
+  const omitted = catalogOmitted(window.omitted, omittedLabel);
+  if (values.length === 0) return [`${prefix}: ${omitted}${omitted ? "; " : ""}${empty}`];
+  return [
+    ...(omitted ? [`${prefix}: ${omitted}`] : []),
+    ...values.map((value) => `${prefix}: ${value}`),
+  ];
+}
+
+function portalEvaluationSummaries(evaluation) {
+  const facts = catalogRecordWindow(evaluation, "facts");
+  const values = facts.records.map((fact) => `candidate_id=${catalogBrief(fact.candidate_id ?? "unavailable", 80)}; candidate_revision=${catalogBrief(fact.candidate_revision ?? "unavailable", 48)}; freshness=${catalogBrief(fact.freshness ?? "unavailable", 80)}; availability=${catalogBrief(fact.effective_availability ?? "unavailable", 80)}`);
+  const context = isPlainRecord(evaluation?.context) ? evaluation.context : {};
+  const evaluatedAt = context.evaluated_at === undefined ? "unavailable" : catalogBrief(context.evaluated_at, 400);
+  return [
+    ...portalWindowSummaries("Evaluation", facts, "fact(s)", values, "unavailable"),
+    `Evaluation context: evaluated_at=${evaluatedAt}`,
+  ];
+}
+
+function portalCandidateValueSummaries(candidateID, value) {
+  const prefix = `Quality value: candidate=${catalogBrief(candidateID, 80)}`;
+  if (!isPlainRecord(value)) return [`${prefix}; unavailable`];
+  const kind = catalogBrief(value.kind ?? "unavailable", 48);
+  if (value.kind === "quantity") {
+    const quantity = isPlainRecord(value.quantity) ? value.quantity : {};
+    const number = isPlainRecord(quantity.number) ? quantity.number : {};
+    return [`${prefix}; kind=quantity; coefficient=${catalogBrief(number.coefficient ?? "unavailable", 96)}; exponent10=${catalogBrief(number.exponent10 ?? "unavailable", 48)}; unit=${catalogBrief(quantity.unit ?? "unavailable", 96)}`];
+  }
+  if (value.kind === "boolean") return [`${prefix}; kind=boolean; boolean=${Object.hasOwn(value, "boolean") ? catalogBrief(value.boolean, 48) : "unavailable"}`];
+  if (value.kind === "text") return [`${prefix}; kind=text; text=${Object.hasOwn(value, "text") ? catalogBrief(value.text, 240) : "unavailable"}`];
+  if (value.kind === "symbol") {
+    const symbol = isPlainRecord(value.symbol) ? value.symbol : {};
+    return [`${prefix}; kind=symbol; namespace=${catalogBrief(symbol.namespace ?? "unavailable", 96)}; token=${catalogBrief(symbol.token ?? "unavailable", 160)}; known=${catalogBrief(symbol.known ?? "unavailable", 48)}`];
+  }
+  if (value.kind === "symbols") {
+    const symbols = catalogRecordWindow(value, "symbols");
+    const omitted = catalogOmitted(symbols.omitted, "symbol(s)");
+    const rows = [`${prefix}; kind=symbols; symbols=${symbols.records.length}${omitted ? `; ${omitted}` : ""}`];
+    for (const symbol of symbols.records) rows.push(`Quality value symbol: candidate=${catalogBrief(candidateID, 80)}; namespace=${catalogBrief(symbol.namespace ?? "unavailable", 96)}; token=${catalogBrief(symbol.token ?? "unavailable", 160)}; known=${catalogBrief(symbol.known ?? "unavailable", 48)}`);
+    return rows;
+  }
+  if (value.kind === "time") return [`${prefix}; kind=time; time=${catalogBrief(value.time ?? "unavailable", 240)}`];
+  return [`${prefix}; kind=${kind}; representation=${catalogBrief(value, 240)}`];
+}
+
+function portalCandidateEvidenceSummaries(prefix, candidateID, record) {
+  const evidence = catalogRecordWindow(record, "evidence");
+  const candidate = catalogBrief(candidateID, 80);
+  const omitted = catalogOmitted(evidence.omitted, "evidence ref(s)");
+  if (evidence.records.length === 0) return [`${prefix}: candidate=${candidate}; ${omitted}${omitted ? "; " : ""}none`];
+  const rows = [...(omitted ? [`${prefix}: candidate=${candidate}; ${omitted}`] : [])];
+  for (const [index, entry] of evidence.records.entries()) {
+    const ref = `${prefix}: candidate=${candidate}; ref=${index}`;
+    rows.push(
+      `${ref}; owner=${catalogBrief(entry.owner ?? "unavailable", 96)}`,
+      `${ref}; kind=${catalogBrief(entry.kind ?? "unavailable", 96)}`,
+      `${ref}; digest=${catalogBrief(entry.digest ?? "unavailable", 160)}`,
+      `${ref}; contract=${catalogBrief(entry.contract ?? "unavailable", 96)}`,
+      `${ref}; access=${catalogBrief(entry.access ?? "unavailable", 48)}`,
+      `${ref}; redaction=${catalogBrief(entry.redaction ?? "unavailable", 48)}`,
+    );
+  }
+  return rows;
+}
+
+function portalCandidateReasonSummaries(candidateID, quality) {
+  const reasons = catalogValueWindow(quality, "reasons");
+  const candidate = catalogBrief(candidateID, 80);
+  const omitted = catalogOmitted(reasons.omitted, "reason(s)");
+  if (reasons.records.length === 0) return omitted ? [`Quality reason: candidate=${candidate}; ${omitted}`] : [];
+  return [
+    ...(omitted ? [`Quality reason: candidate=${candidate}; ${omitted}`] : []),
+    ...reasons.records.map((reason) => `Quality reason: candidate=${candidate}; reason=${catalogBrief(reason, 160)}`),
+  ];
+}
+
+function portalCandidateProvenanceSummaries(candidate, candidateID) {
+  const origin = isPlainRecord(candidate.origin) ? candidate.origin : {};
+  const candidateText = catalogBrief(candidateID, 80);
+  return [
+    ...["binding_id", "source_epoch_id", "driver_generation"].map((name) => `Quality provenance: candidate=${candidateText}; ${name}=${catalogBrief(candidate[name] ?? "unavailable", 160)}`),
+    `Quality provenance: candidate=${candidateText}; origin_source_id=${catalogBrief(origin.source_id ?? "unavailable", 160)}`,
+    ...["origin_id", "kind", "source_epoch_id", "binding_id"].map((name) => `Quality origin: candidate=${candidateText}; ${name}=${catalogBrief(origin[name] ?? "unavailable", 160)}`),
+    ...portalCandidateEvidenceSummaries("Quality origin evidence", candidateID, origin),
+    ...portalCandidateEvidenceSummaries("Quality evidence", candidateID, candidate),
+  ];
+}
+
+function portalCandidateTimePointSummaries(candidateID, coordinate, point, label = "Quality time") {
+  const prefix = `${label}: candidate=${catalogBrief(candidateID, 80)}; coordinate=${coordinate}`;
+  if (!isPlainRecord(point)) return [`${prefix}; unavailable`];
+  return [
+    `${prefix}.unix_nanoseconds; value=${catalogBrief(point.unix_nanoseconds ?? "unavailable", 160)}`,
+    `${prefix}.clock_id; value=${catalogBrief(point.clock_id ?? "unavailable", 160)}`,
+    `${prefix}.uncertainty_ns; value=${catalogBrief(point.uncertainty_ns ?? "unavailable", 96)}`,
+  ];
+}
+
+function portalCandidateMonotonicSummaries(candidateID, coordinate, point) {
+  const prefix = `Quality monotonic: candidate=${catalogBrief(candidateID, 80)}; coordinate=${coordinate}`;
+  if (!isPlainRecord(point)) return [`${prefix}; unavailable`];
+  return [
+    `${prefix}.clock_epoch_id; value=${catalogBrief(point.clock_epoch_id ?? "unavailable", 160)}`,
+    `${prefix}.nanoseconds; value=${catalogBrief(point.nanoseconds ?? "unavailable", 160)}`,
+  ];
+}
+
+function portalCandidateTimingSummaries(candidate, candidateID) {
+  if (!isPlainRecord(candidate.times)) return [`Quality times: candidate=${catalogBrief(candidateID, 80)}; unavailable`];
+  return [
+    ...portalCandidateTimePointSummaries(candidateID, "phenomenon_at", candidate.times.phenomenon_at),
+    ...portalCandidateTimePointSummaries(candidateID, "source_at", candidate.times.source_at),
+    ...portalCandidateTimePointSummaries(candidateID, "received_at", candidate.times.received_at),
+    ...portalCandidateMonotonicSummaries(candidateID, "receipt_monotonic", candidate.times.receipt_monotonic),
+    ...portalCandidateTimePointSummaries(candidateID, "evaluated_at", candidate.times.evaluated_at),
+    ...portalCandidateMonotonicSummaries(candidateID, "evaluate_monotonic", candidate.times.evaluate_monotonic),
+  ];
+}
+
+function portalCandidateFreshnessPolicySummaries(candidate, candidateID) {
+  const prefix = `Quality freshness policy: candidate=${catalogBrief(candidateID, 80)}`;
+  if (!isPlainRecord(candidate.freshness_policy)) return [`${prefix}; unavailable`];
+  const policy = candidate.freshness_policy;
+  return [
+    `${prefix}; policy_id=${catalogBrief(policy.policy_id ?? "unavailable", 160)}`,
+    `${prefix}; version=${catalogBrief(policy.version ?? "unavailable", 96)}`,
+    `${prefix}; fresh_for_ns=${catalogBrief(policy.fresh_for_ns ?? "unavailable", 160)}`,
+    `${prefix}; retain_for_ns=${catalogBrief(policy.retain_for_ns ?? "unavailable", 160)}`,
+    `${prefix}; max_wall_uncertainty_ns=${catalogBrief(policy.max_wall_uncertainty_ns ?? "unavailable", 160)}`,
+  ];
+}
+
+function portalCandidateCausalSummaries(candidate, candidateID) {
+  if (!isPlainRecord(candidate.causal)) return [];
+  const causal = candidate.causal;
+  const candidateText = catalogBrief(candidateID, 80);
+  const origin = isPlainRecord(causal.origin) ? causal.origin : {};
+  const paths = catalogValueWindow(causal, "path");
+  const omitted = catalogOmitted(paths.omitted, "target(s)");
+  const rows = [
+    `Causal origin: candidate=${candidateText}; origin_id=${catalogBrief(origin.origin_id ?? "unavailable", 96)}`,
+    `Causal origin: candidate=${candidateText}; kind=${catalogBrief(origin.kind ?? "unavailable", 64)}`,
+    `Causal origin: candidate=${candidateText}; source_id=${catalogBrief(origin.source_id ?? "unavailable", 96)}`,
+    `Causal origin: candidate=${candidateText}; source_epoch_id=${catalogBrief(origin.source_epoch_id ?? "unavailable", 96)}`,
+    `Causal origin: candidate=${candidateText}; binding_id=${catalogBrief(origin.binding_id ?? "unavailable", 96)}`,
+    ...portalCandidateEvidenceSummaries("Causal origin evidence", candidateID, origin),
+    `Causal correlation: candidate=${candidateText}; correlation_id=${catalogBrief(causal.correlation_id ?? "unavailable", 160)}`,
+    `Causal correlation: candidate=${candidateText}; parent_correlation_id=${catalogBrief(causal.parent_correlation_id ?? "unavailable", 160)}`,
+    `Causal hops: candidate=${candidateText}; hop_count=${catalogBrief(causal.hop_count ?? "unavailable", 48)}`,
+    `Causal hops: candidate=${candidateText}; max_hops=${catalogBrief(causal.max_hops ?? "unavailable", 48)}`,
+    ...portalCandidateTimePointSummaries(candidateID, "causal.first_seen_at", causal.first_seen_at, "Causal time"),
+    ...portalCandidateTimePointSummaries(candidateID, "causal.expires_at", causal.expires_at, "Causal time"),
+    ...(omitted ? [`Causal path: candidate=${candidateText}; ${omitted}`] : []),
+    ...paths.records.map((target, index) => `Causal path: candidate=${candidateText}; path=${index}; target_id=${catalogBrief(target, 160)}`),
+  ];
+  return rows;
+}
+
+function portalCandidateDerivationSummaries(candidate, candidateID) {
+  if (!isPlainRecord(candidate.derivation)) return [];
+  const derivation = candidate.derivation;
+  const candidateText = catalogBrief(candidateID, 80);
+  const inputs = catalogRecordWindow(derivation, "inputs");
+  const rows = [
+    `Derivation: candidate=${candidateText}; algorithm=${catalogBrief(derivation.algorithm ?? "unavailable", 160)}`,
+    `Derivation: candidate=${candidateText}; version=${catalogBrief(derivation.version ?? "unavailable", 96)}`,
+  ];
+  const omittedInputs = catalogOmitted(inputs.omitted, "input(s)");
+  if (omittedInputs) rows.push(`Derivation input: candidate=${candidateText}; ${omittedInputs}`);
+  for (const [inputIndex, input] of inputs.records.entries()) {
+    const prefix = `Derivation input: candidate=${candidateText}; input=${inputIndex}`;
+    rows.push(
+      `${prefix}; candidate_id=${catalogBrief(input.candidate_id ?? "unavailable", 80)}`,
+      `${prefix}; candidate_revision=${catalogBrief(input.candidate_revision ?? "unavailable", 96)}`,
+    );
+    const paths = catalogRecordWindow(input, "source_paths");
+    const omittedPaths = catalogOmitted(paths.omitted, "source path(s)");
+    if (omittedPaths) rows.push(`Derivation source path: candidate=${candidateText}; input=${inputIndex}; ${omittedPaths}`);
+    for (const [pathIndex, path] of paths.records.entries()) {
+      const pathPrefix = `Derivation source path: candidate=${candidateText}; input=${inputIndex}; path=${pathIndex}`;
+      rows.push(
+        `${pathPrefix}; binding_id=${catalogBrief(path.binding_id ?? "unavailable", 96)}`,
+        `${pathPrefix}; source_id=${catalogBrief(path.source_id ?? "unavailable", 96)}`,
+        `${pathPrefix}; source_epoch_id=${catalogBrief(path.source_epoch_id ?? "unavailable", 96)}`,
+        `${pathPrefix}; driver_generation=${catalogBrief(path.driver_generation ?? "unavailable", 96)}`,
+      );
+    }
+  }
+  rows.push(...portalCandidateEvidenceSummaries("Derivation evidence", candidateID, derivation));
+  return rows;
+}
+
+function portalQualitySummaries(snapshot) {
+  const facts = catalogRecordWindow(snapshot, "facts");
+  const values = [];
+  let omittedCandidates = 0;
+  for (const [factIndex, fact] of facts.records.entries()) {
+    const factKey = isPlainRecord(fact.key) ? fact.key : {};
+    values.push(`Fact envelope: index=${factIndex}; asset_id=${catalogBrief(fact.asset_id ?? "unavailable", 160)}`);
+    values.push(`Fact envelope: index=${factIndex}; key=${catalogFactKey(factKey)}`);
+    values.push(`Fact envelope: index=${factIndex}; revision=${catalogBrief(fact.revision ?? "unavailable", 96)}`);
+    values.push(...portalFactKeyDimensionSummaries("Fact envelope key", factKey, `index=${factIndex}`));
+    const candidates = Array.isArray(fact.candidates) ? fact.candidates : [];
+    for (const candidate of candidates) {
+      if (!isPlainRecord(candidate) || values.filter((value) => value.startsWith("Quality: candidate=")).length >= PORTAL_CATALOG_MAX_QUALITY_CANDIDATES) {
+        omittedCandidates += 1;
+        continue;
+      }
+      const candidateID = candidate.candidate_id ?? "unavailable";
+      const quality = isPlainRecord(candidate.quality) ? candidate.quality : {};
+      const key = isPlainRecord(candidate.key) ? candidate.key : {};
+      values.push(`Quality: candidate=${catalogBrief(candidateID, 80)}; assertion=${catalogBrief(quality.assertion ?? "unavailable", 48)}; qualification=${catalogBrief(quality.qualification ?? "unavailable", 48)}; promotion=${catalogBrief(quality.promotion ?? "unavailable", 48)}; validity=${catalogBrief(quality.validity ?? "unavailable", 48)}; availability=${catalogBrief(quality.availability ?? "unavailable", 48)}; freshness=${catalogBrief(quality.freshness ?? "unavailable", 48)}`);
+      values.push(...portalCandidateReasonSummaries(candidateID, quality));
+      values.push(`Quality key: candidate=${catalogBrief(candidateID, 80)}; key=${catalogFactKey(key)}`);
+      values.push(...portalFactKeyDimensionSummaries("Quality key", key, `candidate=${catalogBrief(candidateID, 80)}`));
+      values.push(...portalCandidateValueSummaries(candidateID, candidate.value));
+      values.push(...portalCandidateProvenanceSummaries(candidate, candidateID));
+      values.push(...portalCandidateTimingSummaries(candidate, candidateID));
+      values.push(...portalCandidateFreshnessPolicySummaries(candidate, candidateID));
+      values.push(`Candidate revision: candidate=${catalogBrief(candidateID, 80)}; revision=${catalogBrief(candidate.revision ?? "unavailable", 96)}`);
+      values.push(...portalCandidateCausalSummaries(candidate, candidateID));
+      values.push(...portalCandidateDerivationSummaries(candidate, candidateID));
+    }
+  }
+  const omitted = [catalogOmitted(facts.omitted, "fact(s)"), catalogOmitted(omittedCandidates, "candidate(s)")].filter(Boolean).join("; ");
+  if (values.length === 0) return [`Quality: ${omitted}${omitted ? "; " : ""}unavailable`];
+  return [
+    ...(omitted ? [`Quality: ${omitted}`] : []),
+    ...values,
+  ];
+}
+
+function portalCatalogMetadataSummaries(catalog) {
+  return [
+    `Catalog revision: ${catalogBrief(catalog.catalog_revision, 96)}`,
+    `Catalog digest: ${catalogBrief(catalog.catalog_digest, 96)}`,
+    `Catalog evaluation instant: ${catalogBrief(catalog.evaluation_instant, 240)}`,
+    `Catalog authorization scope: ${catalogBrief(catalog.authorization_scope, 240)}`,
+  ];
+}
+
+function portalContributionSummaries(contribution) {
+  const identity = `${catalogBrief(contribution.driver_id, 96)}/${catalogBrief(contribution.manifest_id, 96)}@${catalogBrief(contribution.manifest_version, 48)}`;
+  return [
+    `Contribution: ${identity}`,
+    `Contribution digest: ${identity}; digest=${catalogBrief(contribution.digest, 96)}`,
+  ];
+}
+
+function portalLifecycleSummaries(snapshot) {
+  const sources = catalogRecordWindow(snapshot, "sources");
+  const bindings = catalogRecordWindow(snapshot, "bindings");
+  const fences = catalogRecordWindow(snapshot, "fences");
+  const cursors = catalogRecordWindow(snapshot, "cursors");
+  const rows = [
+    ...portalWindowSummaries("Provenance source", sources, "source(s)", sources.records.map((source) => `${catalogBrief(source.source_id ?? "source", 80)}@${catalogBrief(source.source_epoch_id ?? "epoch", 80)}; state=${catalogBrief(source.state ?? "unavailable", 80)}`), "unavailable"),
+    ...portalWindowSummaries("Provenance binding", bindings, "binding(s)", bindings.records.map((binding) => `${catalogBrief(binding.binding_id ?? "binding", 80)}@${catalogBrief(binding.source_epoch_id ?? "epoch", 80)}; generation=${catalogBrief(binding.driver_generation ?? "unavailable", 48)}; state=${catalogBrief(binding.state ?? "unavailable", 80)}`), "unavailable"),
+    ...portalWindowSummaries("Lifecycle fence", fences, "fence(s)", fences.records.map((fence) => `${catalogBrief(fence.source_id ?? "source", 80)}@${catalogBrief(fence.source_epoch_id ?? "epoch", 80)}; generation=${catalogBrief(fence.driver_generation ?? "unavailable", 48)}; reason=${catalogBrief(fence.reason ?? "unavailable", 96)}`), "none"),
+    ...portalWindowSummaries("Lifecycle cursor", cursors, "cursor(s)", cursors.records.map((cursor) => `${catalogBrief(cursor.source_id ?? "source", 80)}@${catalogBrief(cursor.source_epoch_id ?? "epoch", 80)}; generation=${catalogBrief(cursor.driver_generation ?? "unavailable", 48)}; fenced=${catalogBrief(cursor.fenced ?? "unavailable", 48)}`), "unavailable"),
+  ];
+  for (const [index, source] of sources.records.entries()) {
+    const prefix = `Lifecycle source: index=${index}`;
+    for (const name of ["source_id", "source_epoch_id", "protocol_id", "profile_id", "profile_version", "state", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(source[name] ?? "unavailable", 160)}`);
+    rows.push(...portalRecordEvidenceSummaries("Lifecycle source registry", `index=${index}`, { evidence: [source.registry_evidence].filter(isPlainRecord) }));
+    rows.push(...portalCandidateTimePointSummaries(`source-${index}`, "started_at", source.started_at, "Lifecycle source time").map((row) => row.replace("candidate=source-", "index=")));
+  }
+  for (const [index, binding] of bindings.records.entries()) {
+    const prefix = `Lifecycle binding: index=${index}`;
+    for (const name of ["binding_id", "asset_id", "source_id", "source_epoch_id", "driver_generation", "state", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(binding[name] ?? "unavailable", 160)}`);
+    rows.push(...portalRecordEvidenceSummaries("Lifecycle binding native resource", `index=${index}`, { evidence: [binding.native_resource].filter(isPlainRecord) }));
+  }
+  for (const [index, fence] of fences.records.entries()) {
+    const prefix = `Lifecycle fence detail: index=${index}`;
+    for (const name of ["source_id", "source_epoch_id", "driver_generation", "reason", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(fence[name] ?? "unavailable", 160)}`);
+    rows.push(...portalRecordEvidenceSummaries("Lifecycle fence evidence", `index=${index}`, fence));
+  }
+  for (const [index, cursor] of cursors.records.entries()) {
+    const prefix = `Lifecycle cursor detail: index=${index}`;
+    for (const name of ["source_id", "source_epoch_id", "driver_generation", "last_sequence", "last_batch_digest", "fenced"]) rows.push(`${prefix}; ${name}=${catalogBrief(cursor[name] ?? "unavailable", 160)}`);
+  }
+  return rows;
+}
+
+function portalProjectionSummaries(projection) {
+  const dispositions = catalogRecordWindow(projection, "dispositions");
+  const record = isPlainRecord(projection) ? projection : {};
+  const rows = [
+    `Projection header: contract=${catalogBrief(record.contract ?? "unavailable", 160)}`,
+    `Projection header: snapshot_id=${catalogBrief(record.snapshot_id ?? "unavailable", 160)}`,
+    ...portalRevisionSummaries("Projection revision", record.revisions),
+  ];
+  const manifest = isPlainRecord(record.manifest) ? record.manifest : {};
+  for (const name of ["target_id", "target_version", "kernel_version", "mapping_revision"]) rows.push(`Projection manifest: ${name}=${catalogBrief(manifest[name] ?? "unavailable", 160)}`);
+  const packs = catalogRecordWindow(manifest, "pack_versions");
+  if (packs.omitted) rows.push(`Projection manifest pack: ${catalogOmitted(packs.omitted, "pack version(s)")}`);
+  for (const [index, pack] of packs.records.entries()) rows.push(`Projection manifest pack: index=${index}; id=${catalogBrief(pack.id ?? "unavailable", 96)}; version=${catalogBrief(pack.version ?? "unavailable", 96)}`);
+  const requested = catalogRecordWindow(record, "requested");
+  if (requested.omitted) rows.push(`Projection requested item: ${catalogOmitted(requested.omitted, "item(s)")}`);
+  for (const [index, item] of requested.records.entries()) rows.push(`Projection requested item: index=${index}; item_id=${catalogBrief(item.item_id ?? "unavailable", 160)}; kind=${catalogBrief(item.kind ?? "unavailable", 96)}`);
+  if (isPlainRecord(record.causal)) rows.push(...portalCandidateCausalSummaries({ causal: record.causal }, "projection"));
+  const omittedDispositions = catalogOmitted(dispositions.omitted, "disposition(s)");
+  if (omittedDispositions) rows.push(`Projection: ${omittedDispositions}`);
+  if (dispositions.records.length === 0) rows.push("Projection: unavailable");
+  for (const disposition of dispositions.records) {
+    const itemID = catalogBrief(disposition.item_id ?? "item", 96);
+    const sourceKeys = catalogRecordWindow(disposition, "source_keys");
+    const omittedSourceKeys = catalogOmitted(sourceKeys.omitted, "source key(s)");
+    rows.push(`Projection: item=${itemID}; kind=${catalogBrief(disposition.kind ?? "unavailable", 80)}; outcome=${catalogBrief(disposition.outcome ?? "unavailable", 80)}; reason=${catalogBrief(disposition.reason ?? "unavailable", 96)}; source_keys=${sourceKeys.records.length}${omittedSourceKeys ? `; ${omittedSourceKeys}` : ""}`);
+    for (const sourceKey of sourceKeys.records) rows.push(...portalProjectionSourceKeySummaries(itemID, sourceKey));
+    const loss = catalogRecordWindow(disposition, "loss");
+    const omittedLoss = catalogOmitted(loss.omitted, "loss item(s)");
+    if (omittedLoss) rows.push(`Projection loss: item=${itemID}; ${omittedLoss}`);
+    if (loss.records.length === 0) {
+      rows.push(`Projection loss: item=${itemID}; none`);
+      continue;
+    }
+    for (const entry of loss.records) {
+      const kind = catalogBrief(entry.kind ?? "unavailable", 96);
+      const sourceItems = catalogValueWindow(entry, "source_items");
+      const omittedSourceItems = catalogOmitted(sourceItems.omitted, "source item(s)");
+      rows.push(`Projection loss: item=${itemID}; kind=${kind}; description=${catalogBrief(entry.description ?? "unavailable", 160)}; source_items=${sourceItems.records.length}${omittedSourceItems ? `; ${omittedSourceItems}` : ""}`);
+      rows.push(`Projection loss reversible: item=${itemID}; kind=${kind}; reversible=${catalogBrief(entry.reversible ?? "unavailable", 48)}`);
+      for (const sourceItem of sourceItems.records) rows.push(`Projection loss source: item=${itemID}; kind=${kind}; source_item=${catalogBrief(sourceItem, 160)}`);
+    }
+  }
+  return rows;
+}
+
+function portalSelectionContextSummaries(selection, selectedCandidate) {
+  const candidate = catalogBrief(selectedCandidate, 80);
+  const context = isPlainRecord(selection.context) ? selection.context : {};
+  const evaluatedAt = isPlainRecord(context.evaluated_at) ? context.evaluated_at : {};
+  const monotonic = isPlainRecord(context.evaluate_monotonic) ? context.evaluate_monotonic : {};
+  return [
+    `Selection context evaluated_at: selected_candidate=${candidate}; unix_nanoseconds=${catalogBrief(evaluatedAt.unix_nanoseconds ?? "unavailable", 96)}; clock_id=${catalogBrief(evaluatedAt.clock_id ?? "unavailable", 96)}; uncertainty_ns=${catalogBrief(evaluatedAt.uncertainty_ns ?? "unavailable", 48)}`,
+    `Selection context evaluate_monotonic: selected_candidate=${candidate}; clock_epoch_id=${catalogBrief(monotonic.clock_epoch_id ?? "unavailable", 96)}; nanoseconds=${catalogBrief(monotonic.nanoseconds ?? "unavailable", 96)}`,
+  ];
+}
+
+function portalSelectionSummaries(selections) {
+  const selected = catalogRecordWindow({ selections }, "selections");
+  const values = [];
+  for (const selection of selected.records) {
+    const key = isPlainRecord(selection.key) ? selection.key : {};
+    const factKey = catalogFactKey(key);
+    const selectedCandidate = selection.selected_candidate ?? "unavailable";
+    const candidate = catalogBrief(selectedCandidate, 80);
+    const revisions = isPlainRecord(selection.revisions) ? selection.revisions : {};
+    values.push(`Selection: key=${factKey}; selected_candidate=${candidate}; candidate_revision=${catalogBrief(selection.candidate_revision ?? "unavailable", 48)}; policy=${catalogBrief(selection.policy_id ?? "unavailable", 64)}@${catalogBrief(selection.policy_version ?? "unavailable", 32)}`);
+    values.push(
+      `Selection contract: selected_candidate=${candidate}; contract=${catalogBrief(selection.contract ?? "unavailable", 96)}`,
+      `Selection snapshot: selected_candidate=${candidate}; snapshot_id=${catalogBrief(selection.snapshot_id ?? "unavailable", 160)}`,
+      `Selection evaluation: selected_candidate=${candidate}; evaluation_digest=${catalogBrief(selection.evaluation_digest ?? "unavailable", 160)}`,
+      `Selection presentation: selected_candidate=${candidate}; presentation_only=${catalogBrief(selection.presentation_only ?? "unavailable", 48)}`,
+    );
+    for (const revision of ["semantic", "identity", "facts", "services", "capabilities"]) values.push(`Selection revision: selected_candidate=${candidate}; ${revision}=${catalogBrief(revisions[revision] ?? "unavailable", 48)}`);
+    values.push(...portalSelectionContextSummaries(selection, selectedCandidate));
+    values.push(...portalFactKeyDimensionSummaries("Selection key", key, `selected_candidate=${candidate}`));
+  }
+  const omitted = catalogOmitted(selected.omitted, "selection(s)");
+  if (values.length === 0) return [`Selections: ${omitted}${omitted ? "; " : ""}unavailable`];
+  return [
+    ...(omitted ? [`Selections: ${omitted}`] : []),
+    ...values,
+  ];
+}
+
+function portalConflictSummaries(snapshot) {
+  const facts = catalogRecordWindow(snapshot, "facts");
+  const values = [];
+  let omittedConflicts = 0;
+  for (const [factIndex, fact] of facts.records.entries()) {
+    const conflicts = catalogRecordWindow(fact, "conflicts");
+    omittedConflicts += conflicts.omitted;
+    for (const [conflictIndex, conflict] of conflicts.records.entries()) {
+      const context = `fact=${factIndex}; conflict=${conflictIndex}`;
+      values.push(`conflict=${catalogBrief(conflict.conflict_id ?? "unavailable", 80)}; kind=${catalogBrief(conflict.kind ?? "unavailable", 64)}; state=${catalogBrief(conflict.state ?? "unavailable", 64)}`);
+      const candidates = catalogValueWindow(conflict, "candidates");
+      if (candidates.omitted) values.push(`Conflict candidate: ${context}; ${catalogOmitted(candidates.omitted, "candidate(s)")}`);
+      for (const [index, candidate] of candidates.records.entries()) values.push(`Conflict candidate: ${context}; index=${index}; candidate_id=${catalogBrief(candidate, 96)}`);
+      values.push(...portalRecordEvidenceSummaries("Conflict evidence", context, conflict));
+    }
+  }
+  const omitted = [catalogOmitted(facts.omitted, "fact(s)"), catalogOmitted(omittedConflicts, "conflict(s)")].filter(Boolean).join("; ");
+  if (values.length === 0) return [`Conflicts: ${omitted}${omitted ? "; " : ""}none`];
+  return [
+    ...(omitted ? [`Conflicts: ${omitted}`] : []),
+    ...values.map((value) => `Conflict: ${value}`),
+  ];
+}
+
+function portalRetainedCandidateSummaries(prefix, candidate) {
+  const record = isPlainRecord(candidate) ? candidate : {};
+  const id = record.candidate_id ?? "unavailable";
+  const quality = isPlainRecord(record.quality) ? record.quality : {};
+  const key = isPlainRecord(record.key) ? record.key : {};
+  return [
+    `${prefix} candidate: candidate_id=${catalogBrief(id, 80)}`,
+    `${prefix} candidate: quality.assertion=${catalogBrief(quality.assertion ?? "unavailable", 64)}`,
+    `${prefix} candidate: quality.qualification=${catalogBrief(quality.qualification ?? "unavailable", 64)}`,
+    `${prefix} candidate: quality.promotion=${catalogBrief(quality.promotion ?? "unavailable", 64)}`,
+    `${prefix} candidate: quality.validity=${catalogBrief(quality.validity ?? "unavailable", 64)}`,
+    `${prefix} candidate: quality.availability=${catalogBrief(quality.availability ?? "unavailable", 64)}`,
+    `${prefix} candidate: quality.freshness=${catalogBrief(quality.freshness ?? "unavailable", 64)}`,
+    ...portalCandidateReasonSummaries(id, quality).map((row) => row.replace(/^Quality/, prefix)),
+    `${prefix} key: candidate=${catalogBrief(id, 80)}; key=${catalogFactKey(key)}`,
+    ...portalFactKeyDimensionSummaries(`${prefix} key`, key, `candidate=${catalogBrief(id, 80)}`),
+    ...portalCandidateValueSummaries(id, record.value).map((row) => row.replace("Quality value", `${prefix} value`)),
+    ...portalCandidateProvenanceSummaries(record, id).map((row) => row.replace(/^Quality/, prefix)),
+    ...portalCandidateTimingSummaries(record, id).map((row) => row.replace(/^Quality/, prefix)),
+    ...portalCandidateFreshnessPolicySummaries(record, id).map((row) => row.replace(/^Quality/, prefix)),
+    `${prefix} candidate: revision=${catalogBrief(record.revision ?? "unavailable", 96)}`,
+    ...portalCandidateCausalSummaries(record, id).map((row) => row.replace(/^Causal/, `${prefix} causal`)),
+    ...portalCandidateDerivationSummaries(record, id).map((row) => row.replace(/^Derivation/, `${prefix} derivation`)),
+  ];
+}
+
+function portalRetainedSummaries(snapshot) {
+  const retained = catalogRecordWindow(snapshot, "retained_observations");
+  const values = retained.records.flatMap((entry, index) => {
+    const candidate = isPlainRecord(entry.observation) && isPlainRecord(entry.observation.candidate)
+      ? entry.observation.candidate
+      : isPlainRecord(entry.candidate) ? entry.candidate : {};
+    return [`candidate=${catalogBrief(candidate.candidate_id ?? "unavailable", 80)}; removal=${catalogBrief(entry.removal ?? "unavailable", 64)}`, `index=${index}; contract=${catalogBrief(entry.contract ?? "unavailable", 160)}; candidate=${catalogBrief(candidate.candidate_id ?? "unavailable", 80)}; removal=${catalogBrief(entry.removal ?? "unavailable", 64)}`, ...portalRetainedCandidateSummaries(`Retained snapshot index=${index}`, candidate)];
+  });
+  return portalWindowSummaries("Retained observation", retained, "observation(s)", values, "none");
+}
+
+function portalEvaluationRetainedSummaries(evaluation) {
+  const retained = catalogRecordWindow(evaluation, "retained_observations");
+  const values = retained.records.flatMap((entry, index) => {
+    const observation = isPlainRecord(entry.observation) ? entry.observation : {};
+    const candidate = isPlainRecord(observation.candidate) ? observation.candidate : {};
+    return [`candidate=${catalogBrief(candidate.candidate_id ?? "unavailable", 80)}; removal=${catalogBrief(observation.removal ?? "unavailable", 64)}; freshness=${catalogBrief(entry.freshness ?? "unavailable", 64)}`, `index=${index}; contract=${catalogBrief(observation.contract ?? "unavailable", 160)}; candidate=${catalogBrief(candidate.candidate_id ?? "unavailable", 80)}; removal=${catalogBrief(observation.removal ?? "unavailable", 64)}; freshness=${catalogBrief(entry.freshness ?? "unavailable", 64)}`, ...portalRetainedCandidateSummaries(`Retained evaluation index=${index}`, candidate)];
+  });
+  return portalWindowSummaries("Retained evaluation", retained, "observation(s)", values, "none");
+}
+
+function portalRevisionSummaries(prefix, revisions) {
+  const vector = isPlainRecord(revisions) ? revisions : {};
+  return ["semantic", "identity", "facts", "services", "capabilities"].map((name) => `${prefix}: ${name}=${catalogBrief(vector[name] ?? "unavailable", 96)}`);
+}
+
+function portalRecordEvidenceSummaries(prefix, context, record) {
+  const evidence = catalogRecordWindow(record, "evidence");
+  const omitted = catalogOmitted(evidence.omitted, "evidence ref(s)");
+  const rows = omitted ? [`${prefix}: ${context}; ${omitted}`] : [];
+  for (const [index, entry] of evidence.records.entries()) {
+    const item = `${prefix}: ${context}; ref=${index}`;
+    for (const name of ["owner", "kind", "digest", "contract", "access", "redaction"]) rows.push(`${item}; ${name}=${catalogBrief(entry[name] ?? "unavailable", 160)}`);
+  }
+  return rows;
+}
+
+function portalSnapshotHeaderSummaries(snapshot) {
+  const record = isPlainRecord(snapshot) ? snapshot : {};
+  const rows = [
+    `Snapshot header: contract=${catalogBrief(record.contract ?? "unavailable", 160)}`,
+    `Snapshot header: snapshot_id=${catalogBrief(record.snapshot_id ?? "unavailable", 160)}`,
+    `Snapshot header: asset_id=${catalogBrief(record.asset_id ?? "unavailable", 160)}`,
+    ...portalRevisionSummaries("Snapshot revision", record.revisions),
+    ...portalCandidateTimePointSummaries("snapshot", "evaluated_at", record.evaluated_at, "Snapshot time"),
+    ...portalCandidateMonotonicSummaries("snapshot", "evaluate_monotonic", record.evaluate_monotonic).map((row) => row.replace("Quality monotonic", "Snapshot monotonic")),
+  ];
+  const links = catalogRecordWindow(record, "identity_links");
+  if (links.omitted) rows.push(`Snapshot identity link: ${catalogOmitted(links.omitted, "link(s)")}`);
+  for (const [index, link] of links.records.entries()) {
+    const prefix = `Snapshot identity link: index=${index}`;
+    for (const name of ["asset_id", "binding_id", "state", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(link[name] ?? "unavailable", 160)}`);
+    rows.push(...portalRecordEvidenceSummaries("Snapshot identity basis", `index=${index}`, { evidence: link.basis }));
+  }
+  const services = catalogRecordWindow(record, "services");
+  if (services.omitted) rows.push(`Snapshot service: ${catalogOmitted(services.omitted, "service(s)")}`);
+  for (const [index, service] of services.records.entries()) {
+    const prefix = `Snapshot service: index=${index}`;
+    for (const name of ["instance_id", "asset_id", "binding_id", "source_epoch_id", "driver_generation", "qualification", "availability", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(service[name] ?? "unavailable", 160)}`);
+    const definition = isPlainRecord(service.definition) ? service.definition : {};
+    const pack = isPlainRecord(definition.pack) ? definition.pack : {};
+    for (const [name, value] of [["pack_id", pack.id], ["pack_version", pack.version], ["definition_id", definition.id], ["definition_version", definition.version]]) rows.push(`${prefix}; ${name}=${catalogBrief(value ?? "unavailable", 160)}`);
+  }
+  const capabilities = catalogRecordWindow(record, "capabilities");
+  if (capabilities.omitted) rows.push(`Snapshot capability: ${catalogOmitted(capabilities.omitted, "capability(s)")}`);
+  for (const [index, capability] of capabilities.records.entries()) {
+    const prefix = `Snapshot capability: index=${index}`;
+    for (const name of ["instance_id", "asset_id", "service_instance", "binding_id", "source_epoch_id", "driver_generation", "qualification", "availability", "revision"]) rows.push(`${prefix}; ${name}=${catalogBrief(capability[name] ?? "unavailable", 160)}`);
+    const definition = isPlainRecord(capability.definition) ? capability.definition : {};
+    const pack = isPlainRecord(definition.pack) ? definition.pack : {};
+    for (const [name, value] of [["pack_id", pack.id], ["pack_version", pack.version], ["definition_id", definition.id], ["definition_version", definition.version]]) rows.push(`${prefix}; ${name}=${catalogBrief(value ?? "unavailable", 160)}`);
+    const constraints = catalogRecordWindow(capability, "constraints");
+    if (constraints.omitted) rows.push(`Snapshot capability constraint: index=${index}; ${catalogOmitted(constraints.omitted, "constraint(s)")}`);
+    for (const [fieldIndex, field] of constraints.records.entries()) {
+      const context = `capability=${index}; field=${fieldIndex}; id=${catalogBrief(field.id ?? "unavailable", 96)}`;
+      rows.push(`Snapshot capability constraint: ${context}`);
+      rows.push(...portalCandidateValueSummaries(context, field.value).map((row) => row.replace("Quality value", "Snapshot capability constraint value")));
+    }
+    rows.push(...portalRecordEvidenceSummaries("Snapshot capability activation evidence", `index=${index}`, { evidence: capability.activation_evidence }));
+  }
+  return rows;
+}
+
+function portalEvaluationHeaderSummaries(evaluation) {
+  const record = isPlainRecord(evaluation) ? evaluation : {};
+  const context = isPlainRecord(record.context) ? record.context : {};
+  return [
+    `Evaluation header: contract=${catalogBrief(record.contract ?? "unavailable", 160)}`,
+    `Evaluation header: snapshot_id=${catalogBrief(record.snapshot_id ?? "unavailable", 160)}`,
+    ...portalRevisionSummaries("Evaluation revision", record.revisions),
+    `Evaluation header: evaluation_digest=${catalogBrief(record.evaluation_digest ?? "unavailable", 160)}`,
+    ...portalCandidateTimePointSummaries("evaluation", "context.evaluated_at", context.evaluated_at, "Evaluation time"),
+    ...portalCandidateMonotonicSummaries("evaluation", "context.evaluate_monotonic", context.evaluate_monotonic).map((row) => row.replace("Quality monotonic", "Evaluation monotonic")),
+  ];
+}
+
+function portalCatalogResourceDetailRows(resource, fields, actions) {
+  const rows = [
+    { tag: "p", text: `Resource state: state=${catalogBrief(resource.state, 80)}` },
+    { tag: "p", text: `Resource service: service_id=${catalogBrief(resource.service_id, 160)}` },
+    { tag: "p", text: `Resource capability: capability_id=${catalogBrief(resource.capability_id, 160)}` },
+    { tag: "p", text: `Resource contribution: driver_id=${catalogBrief(resource.contribution_driver_id, 96)}; manifest_id=${catalogBrief(resource.contribution_manifest_id, 96)}; manifest_version=${catalogBrief(resource.contribution_manifest_version, 48)}` },
+    { tag: "p", text: `Capture: asset=${catalogBrief(resource.source.asset_id, 80)}; snapshot=${catalogBrief(resource.source.snapshot_id, 80)}; revision=${catalogBrief(resource.source.revision, 160)}; driver_generation=${catalogBrief(resource.source.driver_generation, 48)}` },
+    { tag: "p", text: `Capture binding: binding_id=${catalogBrief(resource.source.binding_id, 160)}` },
+    { tag: "p", text: `Capture epoch: source_epoch=${catalogBrief(resource.source.source_epoch, 160)}` },
+    { tag: "p", text: `Capture evaluation: evaluation_digest=${catalogBrief(resource.source.evaluation_digest, 160)}` },
+  ];
+  for (const summary of portalSnapshotHeaderSummaries(resource.source.snapshot)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalEvaluationHeaderSummaries(resource.source.evaluation)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalEvaluationSummaries(resource.source.evaluation)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalEvaluationRetainedSummaries(resource.source.evaluation)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalQualitySummaries(resource.source.snapshot)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalLifecycleSummaries(resource.source.snapshot)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalProjectionSummaries(resource.source.projection)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalSelectionSummaries(resource.source.selections)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalConflictSummaries(resource.source.snapshot)) rows.push({ tag: "p", text: summary });
+  for (const summary of portalRetainedSummaries(resource.source.snapshot)) rows.push({ tag: "p", text: summary });
+  for (const field of fields) rows.push({ tag: "p", className: "portal-catalog-field", text: `${catalogBrief(field.definition_id, 80)}=${catalogBrief(field.value, 128)} ${catalogBrief(field.unit_id, 64)}; quality=${catalogBrief(field.quality, 64)}; projection=${catalogBrief(field.projection, 64)}` });
+  for (const action of actions) {
+    if (!action.discoverable) continue;
+    rows.push({ tag: "button", className: "button portal-catalog-action", action: true, text: `Action: ${catalogBrief(action.id, 96)}; server_enabled=${action.enabled ? "true" : "false"}${action.reason ? `; reason=${catalogBrief(action.reason, 160)}` : ""}; read-only` });
+  }
+  return rows;
+}
+
+function portalCatalogBaseNodeBudget(catalog) {
+  let nodes = 1; // catalog grid root
+  nodes += catalog.domains.length * 3; // each domain section, heading and source state
+  nodes += catalog.resources.length * 3; // compact resource article, identity and state
+  nodes += 2 + portalCatalogMetadataSummaries(catalog).length;
+  nodes += 2 + catalog.contributions.reduce((count, contribution) => count + portalContributionSummaries(contribution).length, 0);
+  if (catalog.quarantines.length > 0) nodes += 2 + catalog.quarantines.length;
+  if (catalog.resources.length > 0) nodes += 9; // selected detail section, heading/status and two three-node pagers
+  return nodes;
+}
+
+function portalCatalogEvidencePageSize(catalog) {
+  // The catalog body is itself a live DOM node outside the rendered grid.
+  return Math.min(PORTAL_CATALOG_MAX_EVIDENCE_PAGE_ROWS, PORTAL_CATALOG_MAX_NODES - 1 - portalCatalogBaseNodeBudget(catalog));
+}
+
+function portalCatalogNodeBudget(catalog) {
+  const base = portalCatalogBaseNodeBudget(catalog);
+  if (catalog.resources.length === 0) return base;
+  return base + Math.max(0, portalCatalogEvidencePageSize(catalog));
+}
+
+function beginPortalCatalogRequestAbort(lifecycleAbort) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortForLifecycle = () => controller.abort();
+  if (lifecycleAbort?.signal?.aborted) {
+    controller.abort();
+  } else {
+    lifecycleAbort?.signal?.addEventListener?.("abort", abortForLifecycle, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, PORTAL_CATALOG_TIMEOUT_MS);
+  return {
+    controller,
+    get timedOut() { return timedOut; },
+    abort() { controller.abort(); },
+    cleanup() {
+      clearTimeout(timer);
+      lifecycleAbort?.signal?.removeEventListener?.("abort", abortForLifecycle);
+    },
+  };
+}
 
 // L7 decode catalog-canonical enums. Source of truth:
 // helianthus-ebusreg/catalog/ebus_standard/identity.go — Direction and
@@ -352,6 +1112,7 @@ class PortalShell extends HTMLElement {
     const issueDraftButton = this.querySelector('[data-role="issue-draft-run"]');
     const issueExportButton = this.querySelector('[data-role="issue-export-run"]');
     const projectionDeviceSelect = this.querySelector('[data-role="projection-device-select"]');
+    const portalCatalogRefresh = this.querySelector('[data-role="portal-catalog-refresh"]');
     if (toggle) {
       toggle.addEventListener("click", () => {
         const current = loadTheme();
@@ -411,6 +1172,11 @@ class PortalShell extends HTMLElement {
     if (projectionDeviceSelect) {
       projectionDeviceSelect.addEventListener("change", () => {
         this.loadAllProjectionPlanes();
+      });
+    }
+    if (portalCatalogRefresh) {
+      portalCatalogRefresh.addEventListener("click", () => {
+        void this.refreshPortalCatalog();
       });
     }
     this.querySelectorAll("[data-nav-target]").forEach((button) => {
@@ -623,6 +1389,7 @@ class PortalShell extends HTMLElement {
       "section-timeline": ["section-timeline", "section-provenance"],
       "section-snapshots": ["section-snapshots", "section-snapshot-diff", "section-sessions"],
       "section-issue-builder": ["section-issue-builder"],
+      "section-portal-catalog": ["section-portal-catalog"],
       "section-l7-catalog": ["section-l7-catalog"],
       "section-vaillant-b503": ["section-vaillant-b503"],
 	  "section-eebus": ["section-eebus"],
@@ -654,6 +1421,9 @@ class PortalShell extends HTMLElement {
       if (typeof this.refreshL7Services === "function") {
         this.refreshL7Services();
       }
+    }
+    if (targetID === "section-portal-catalog" && this._portalCatalogEndpoint) {
+      void this.refreshPortalCatalog();
     }
     if (targetID === "section-vaillant-b503") {
       // Target-selection paths publish PENDING synchronously and complete their
@@ -707,10 +1477,16 @@ class PortalShell extends HTMLElement {
         ? bootstrap.endpoints.graphql
         : "/graphql";
       this._graphqlEndpoint = gqlEndpoint;
+	  this._portalCatalogEndpoint = typeof bootstrap?.endpoints?.portal_catalog === "string"
+	    ? bootstrap.endpoints.portal_catalog
+	    : "";
 	  this._eebusAdminPath = capabilities.eebus_admin && typeof bootstrap.endpoints?.eebus_admin === "string"
 	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
 	    : "";
-      this.applyCapabilityState(capabilities);
+	  this.applyCapabilityState(capabilities);
+	  this.setNavState("portal-catalog", Boolean(this._portalCatalogEndpoint));
+	  this.setPortalCatalogRefreshState(Boolean(this._portalCatalogEndpoint));
+	  void this.refreshPortalCatalog(this._portalCatalogEndpoint, lifecycleToken, lifecycleAbort);
 	  this.applyPVModbusCapabilityState(capabilities);
       if (this._capabilitySemanticPV) {
         await this.refreshPV();
@@ -909,6 +1685,201 @@ class PortalShell extends HTMLElement {
     const vaillantFlag = cap.vaillant_b503 === undefined ? true : Boolean(cap.vaillant_b503);
     this.setNavState("vaillant-b503", vaillantFlag);
     this._capabilityVaillantB503 = vaillantFlag;
+  }
+
+  _portalCatalogAppend(parent, tag, text, className) {
+    if (!parent || !document.createElement) return null;
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = catalogText(text);
+    parent.append(node);
+    return node;
+  }
+
+  setPortalCatalogRefreshState(enabled) {
+    const button = this.querySelector('[data-role="portal-catalog-refresh"]');
+    if (button) button.disabled = !enabled;
+  }
+
+  setPortalCatalogNotice(message = "") {
+    const notice = this.querySelector('[data-role="portal-catalog-notice"]');
+    if (!notice) return;
+    notice.textContent = message;
+    notice.hidden = message.length === 0;
+  }
+
+  _renderPortalCatalogUnavailable(body, message = "Catalog unavailable. No admitted catalog is currently available.") {
+    if (!body || this._portalCatalogHasValid) return;
+    const unavailable = document.createElement ? document.createElement("p") : null;
+    if (!unavailable) return;
+    unavailable.className = "portal-catalog-unavailable";
+    unavailable.textContent = message;
+    body.replaceChildren(unavailable);
+  }
+
+  _renderPortalCatalog(catalog, body) {
+    if (!body || !document.createElement) return false;
+    const baseNodes = portalCatalogBaseNodeBudget(catalog);
+    const renderedNodeBudget = portalCatalogNodeBudget(catalog);
+    if (renderedNodeBudget > PORTAL_CATALOG_MAX_NODES || baseNodes > PORTAL_CATALOG_MAX_NODES || (catalog.resources.length > 0 && portalCatalogEvidencePageSize(catalog) < 1)) return false;
+    const root = document.createElement("div");
+    root.className = "portal-catalog-grid";
+    let nodes = 1;
+    const append = (parent, tag, value, className) => {
+      if (nodes >= PORTAL_CATALOG_MAX_NODES) return null;
+      const node = this._portalCatalogAppend(parent, tag, value, className);
+      if (node) nodes += 1;
+      return node;
+    };
+    const appendButton = (parent, label, disabled, handler) => {
+      const button = append(parent, "button", label, "button portal-catalog-page");
+      if (!button) return null;
+      button.setAttribute("type", "button");
+      button.disabled = disabled;
+      button.addEventListener?.("click", handler);
+      return button;
+    };
+    const resourcesByDomain = new Map(catalog.domains.map((domain) => [domain.pack.id, []]));
+    for (const resource of catalog.resources) resourcesByDomain.get(resource.domain)?.push(resource);
+    const fieldsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+    for (const field of catalog.fields) fieldsByResource.get(catalogResourceKey(field))?.push(field);
+    const actionsByResource = new Map(catalog.resources.map((resource) => [catalogResourceKey(resource), []]));
+    for (const action of catalog.actions) actionsByResource.get(catalogResourceKey(action))?.push(action);
+
+    let selectedIndex = this._portalCatalogResourceIndex;
+    if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= catalog.resources.length) {
+      selectedIndex = catalog.resources.findIndex((resource) => (actionsByResource.get(catalogResourceKey(resource)) || []).some((action) => action.discoverable));
+      if (selectedIndex < 0) selectedIndex = 0;
+    }
+    this._portalCatalogResourceIndex = selectedIndex;
+
+    for (const domain of catalog.domains) {
+      const card = append(root, "section", "", "portal-catalog-domain");
+      if (!card) return false;
+      append(card, "h3", `${domain.pack.id}@${domain.pack.version} — ${domain.source_state}`);
+      append(card, "p", `Source: ${domain.source_state}${domain.reason ? ` (${domain.reason})` : ""}`, "portal-catalog-state");
+      for (const resource of resourcesByDomain.get(domain.pack.id) || []) {
+        const resourceCard = append(card, "article", "", "portal-catalog-resource");
+        if (!resourceCard) return false;
+        append(resourceCard, "h4", resource.id);
+        append(resourceCard, "p", `state=${catalogBrief(resource.state, 80)}; contribution=${catalogBrief(resource.contribution_driver_id, 96)}/${catalogBrief(resource.contribution_manifest_id, 96)}@${catalogBrief(resource.contribution_manifest_version, 48)}`, "portal-catalog-state");
+      }
+    }
+    const metadata = append(root, "section", "", "portal-catalog-summary");
+    if (!metadata) return false;
+    append(metadata, "h3", "Catalog metadata");
+    for (const summary of portalCatalogMetadataSummaries(catalog)) append(metadata, "p", summary);
+    const contributions = append(root, "section", "", "portal-catalog-summary");
+    if (!contributions) return false;
+    append(contributions, "h3", "Admitted contributions");
+    for (const row of catalog.contributions) {
+      for (const summary of portalContributionSummaries(row)) append(contributions, "p", summary);
+    }
+    if (catalog.quarantines.length > 0) {
+      const quarantines = append(root, "section", "", "portal-catalog-summary");
+      if (!quarantines) return false;
+      append(quarantines, "h3", "Quarantined contributions");
+      for (const row of catalog.quarantines) append(quarantines, "p", `${row.driver_id}/${row.manifest_id}@${row.manifest_version}: ${row.reason}`);
+    }
+
+    if (catalog.resources.length > 0) {
+      const selected = catalog.resources[selectedIndex];
+      const detailRows = portalCatalogResourceDetailRows(selected, fieldsByResource.get(catalogResourceKey(selected)) || [], actionsByResource.get(catalogResourceKey(selected)) || []);
+      const pageSize = portalCatalogEvidencePageSize(catalog);
+      const pageCount = Math.max(1, Math.ceil(detailRows.length / pageSize));
+      let page = this._portalCatalogEvidencePage;
+      if (!Number.isInteger(page) || page < 0 || page >= pageCount) page = 0;
+      this._portalCatalogEvidencePage = page;
+      const pageStart = page * pageSize;
+      const pageRows = detailRows.slice(pageStart, pageStart + pageSize);
+      const detail = append(root, "section", "", "portal-catalog-detail");
+      if (!detail) return false;
+      append(detail, "h3", "Selected admitted resource");
+      append(detail, "p", `Resource ${selectedIndex + 1} of ${catalog.resources.length}: ${catalogBrief(selected.id, 160)}`);
+      const rerender = () => this._renderPortalCatalog(catalog, body);
+      appendButton(detail, "Previous Resource", selectedIndex === 0, () => {
+        this._portalCatalogResourceIndex = Math.max(0, selectedIndex - 1);
+        this._portalCatalogEvidencePage = 0;
+        rerender();
+      });
+      appendButton(detail, "Next Resource", selectedIndex + 1 >= catalog.resources.length, () => {
+        this._portalCatalogResourceIndex = Math.min(catalog.resources.length - 1, selectedIndex + 1);
+        this._portalCatalogEvidencePage = 0;
+        rerender();
+      });
+      append(detail, "p", `Resource page ${selectedIndex + 1} of ${catalog.resources.length}`);
+      appendButton(detail, "Previous Evidence", page === 0, () => {
+        this._portalCatalogEvidencePage = Math.max(0, page - 1);
+        rerender();
+      });
+      appendButton(detail, "Next Evidence", page + 1 >= pageCount, () => {
+        this._portalCatalogEvidencePage = Math.min(pageCount - 1, page + 1);
+        rerender();
+      });
+      append(detail, "p", `Evidence page ${page + 1} of ${pageCount}; page size ${pageSize}; rows ${pageRows.length === 0 ? 0 : pageStart + 1}-${pageStart + pageRows.length} of ${detailRows.length}`);
+      for (const row of pageRows) {
+        const node = append(detail, row.tag, row.text, row.className);
+        if (!node) return false;
+        if (row.action) {
+          node.setAttribute("type", "button");
+          node.disabled = true;
+        }
+      }
+    }
+    if (nodes > PORTAL_CATALOG_MAX_NODES) return false;
+    body.replaceChildren(root);
+    return true;
+  }
+
+  async refreshPortalCatalog(endpoint = this._portalCatalogEndpoint, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
+    const body = this.querySelector('[data-role="portal-catalog-body"]');
+    const requestGeneration = (this._portalCatalogRequestGeneration || 0) + 1;
+    this._portalCatalogRequestGeneration = requestGeneration;
+    const isCurrent = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) && this._portalCatalogRequestGeneration === requestGeneration;
+    const showFailure = (message) => {
+      if (!isCurrent()) return;
+      if (this._portalCatalogHasValid) {
+        this.setPortalCatalogNotice(`${message} Showing the last valid catalog snapshot.`);
+        return;
+      }
+      this.setPortalCatalogNotice(message);
+      this._renderPortalCatalogUnavailable(body, message);
+    };
+    if (typeof endpoint !== "string" || endpoint.length === 0 || !body) {
+      showFailure("Catalog unavailable. No admitted catalog is currently available.");
+      return false;
+    }
+    this._portalCatalogRequestAbort?.abort();
+    const requestAbort = beginPortalCatalogRequestAbort(lifecycleAbort);
+    this._portalCatalogRequestAbort = requestAbort;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationName: "PortalCatalogV1", variables: {} }),
+        signal: requestAbort.controller.signal,
+      });
+      if (!response.ok) throw new Error("portal catalog unavailable");
+      const payload = await response.json();
+      const catalog = payload?.data?.portalCatalogV1;
+      if (Array.isArray(payload?.errors) || !validatePortalCatalog(catalog)) throw new Error("invalid portal catalog");
+      if (!isCurrent()) return false;
+      this._portalCatalogResourceIndex = undefined;
+      this._portalCatalogEvidencePage = 0;
+      if (!this._renderPortalCatalog(catalog, body)) {
+        showFailure("Catalog refresh rejected: too many admitted records to render safely.");
+        return false;
+      }
+      this._portalCatalogHasValid = true;
+      this.setPortalCatalogNotice();
+      return true;
+    } catch {
+      showFailure(requestAbort.timedOut ? "Catalog refresh timed out." : "Catalog refresh failed.");
+      return false;
+    } finally {
+      requestAbort.cleanup();
+      if (this._portalCatalogRequestAbort === requestAbort) this._portalCatalogRequestAbort = undefined;
+    }
   }
 
   setNavState(name, enabled) {
@@ -2998,6 +3969,11 @@ class PortalShell extends HTMLElement {
   }
 
   render() {
+    // render() replaces the Portal DOM. A prior catalog is no longer visible,
+    // so a failed bootstrap after reattach must not claim it is still shown.
+    this._portalCatalogHasValid = false;
+    this._portalCatalogResourceIndex = undefined;
+    this._portalCatalogEvidencePage = 0;
     this.innerHTML = `
       <div class="shell">
         <header class="topbar">
@@ -3021,6 +3997,7 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-timeline" data-nav-target="section-timeline" disabled><span class="nav-bullet"></span> Timeline</button>
             <button data-role="nav-snapshots" data-nav-target="section-snapshots" disabled><span class="nav-bullet"></span> Snapshots</button>
             <button data-role="nav-issue-builder" data-nav-target="section-issue-builder" disabled><span class="nav-bullet"></span> Issue Builder</button>
+            <button data-role="nav-portal-catalog" data-nav-target="section-portal-catalog" disabled><span class="nav-bullet"></span> Catalog</button>
             <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
             <button data-role="nav-vaillant-b503" data-nav-target="section-vaillant-b503" disabled><span class="nav-bullet"></span> Vaillant B503</button>
 			<button data-role="nav-eebus" data-nav-target="section-eebus" disabled><span class="nav-bullet"></span> eeBUS</button>
@@ -3240,6 +4217,17 @@ class PortalShell extends HTMLElement {
                 <button class="button" data-role="issue-export-run" type="button">Export Bundle</button>
               </div>
               <pre class="issue-preview" data-role="issue-preview">Loading issue builder capability...</pre>
+            </section>
+            <section id="section-portal-catalog" class="registry-preview">
+              <div class="portal-catalog-heading">
+                <h2>Contribution Catalog</h2>
+                <button class="button" data-role="portal-catalog-refresh" type="button" disabled>Refresh Catalog</button>
+              </div>
+              <p class="muted-inline">Read-only admitted contributions, provenance, lifecycle, freshness, quality and projection summaries.</p>
+              <p class="portal-catalog-notice" data-role="portal-catalog-notice" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+              <div data-role="portal-catalog-body" role="status" aria-live="polite" aria-atomic="true">
+                <p class="portal-catalog-unavailable">Catalog unavailable. No admitted catalog is currently available.</p>
+              </div>
             </section>
             <section id="section-l7-catalog" class="registry-preview">
               <h2>L7 Standard Catalog</h2>

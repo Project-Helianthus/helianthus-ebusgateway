@@ -202,6 +202,67 @@ body {
   color: var(--muted);
 }
 
+.portal-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.7rem;
+}
+
+.portal-catalog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.portal-catalog-heading h2 {
+  margin-bottom: 0;
+}
+
+.portal-catalog-domain,
+.portal-catalog-summary,
+.portal-catalog-resource {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+.portal-catalog-domain h3,
+.portal-catalog-summary h3,
+.portal-catalog-resource h4 {
+  margin: 0 0 0.45rem;
+  font-size: 0.9rem;
+}
+
+.portal-catalog-domain p,
+.portal-catalog-summary p,
+.portal-catalog-resource p {
+  margin: 0.35rem 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.portal-catalog-resource {
+  margin-top: 0.55rem;
+  background: var(--card);
+}
+
+.portal-catalog-state,
+.portal-catalog-unavailable,
+.portal-catalog-notice {
+  color: var(--warn);
+}
+
+.portal-catalog-notice {
+  margin: 0.55rem 0;
+  font-size: 0.85rem;
+}
+
+.portal-catalog-action {
+  margin-top: 0.45rem;
+}
+
 .bus-banner {
   margin: 0 0 0.65rem;
   padding: 0.55rem 0.7rem;

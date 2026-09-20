@@ -84,6 +84,56 @@ func (l *b503BlockingReadLocker) Lock() {
 
 func (*b503BlockingReadLocker) Unlock() {}
 
+// b503LaggingParentContext models a caller deadline whose propagation to a
+// derived context has not yet run. context.WithTimeout uses AfterFunc when a
+// parent provides it; this test seam deliberately holds that callback so the
+// final pre-emission check must consult the caller context directly.
+type b503LaggingParentContext struct {
+	done chan struct{}
+
+	mu        sync.Mutex
+	err       error
+	afterFunc func()
+}
+
+func newB503LaggingParentContext() *b503LaggingParentContext {
+	return &b503LaggingParentContext{done: make(chan struct{})}
+}
+
+func (c *b503LaggingParentContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *b503LaggingParentContext) Done() <-chan struct{} { return c.done }
+
+func (c *b503LaggingParentContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (*b503LaggingParentContext) Value(any) any { return nil }
+
+func (c *b503LaggingParentContext) AfterFunc(f func()) func() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.afterFunc = f
+	return func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.afterFunc == nil {
+			return false
+		}
+		c.afterFunc = nil
+		return true
+	}
+}
+
+func (c *b503LaggingParentContext) expire() {
+	c.mu.Lock()
+	c.err = context.DeadlineExceeded
+	close(c.done)
+	c.mu.Unlock()
+}
+
 // issue851ClassifyBarrierError blocks the first Error call. bus.Send returns
 // the value without formatting it, so reaching this barrier proves Invoke has
 // already completed its post-Send epoch check and entered error classification.
@@ -668,6 +718,32 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
 	}); err != nil {
 		t.Fatalf("retry disable: %v", err)
+	}
+}
+
+func TestIssue988B503DispatcherRejectsLaggingParentDeadlineBeforeEmission(t *testing.T) {
+	bus := newB503DispatcherMockBus()
+	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
+	mgr := b503session.New(
+		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
+		30*time.Second,
+		nil,
+	)
+	readMu := newB503BlockingReadLocker()
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
+	ctx := newB503LaggingParentContext()
+	done := make(chan mcp.B503DispatchOutcome, 1)
+	go func() {
+		done <- dispatcher.InvokeB503Outcome(ctx, 0x15, []byte{0x00, 0x03})
+	}()
+	<-readMu.entered
+	ctx.expire()
+	close(readMu.release)
+	if outcome := <-done; outcome.Err == nil || outcome.Emitted {
+		t.Fatalf("lagging parent deadline outcome = %+v, want a pre-emission deadline failure", outcome)
+	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("lagging-parent-deadline bus.Send count = %d, want 0", calls)
 	}
 }
 

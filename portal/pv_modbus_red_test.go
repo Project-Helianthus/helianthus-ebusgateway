@@ -58,10 +58,11 @@ func TestPortalPVAndRawModbusRoutesAreClosedAndDisabledByDefault(t *testing.T) {
 func TestPortalPVForwardsClosedM2MEnvelopeAndRawReadUsesMCPEnvelope(t *testing.T) {
 	provider := &portalRawReadProvider{}
 	audit := make([]string, 0, 2)
+	semanticPV := `{"data":{"semanticPVCurrent":{"evaluation":{"facts":[{"candidate_id":"candidate:power","effective_availability":"available","freshness":"fresh"},{"candidate_id":"candidate:frequency-retained","effective_availability":"unavailable","freshness":"stale"}]},"projection":{"dispositions":[{"item_id":"projection.gateway.pv.inverter.ac.power.active","outcome":"exact"},{"item_id":"projection.gateway.pv.inverter.ac.frequency","outcome":"withheld","reason":"mapping.field_invalid"}],"manifest":{"target_id":"target:gateway-semantic-pv"}},"selections":[{"key":{"fact_id":"pv.ac.aggregate_active_power"},"selected_candidate_id":"candidate:power"}],"snapshot":{"facts":[{"candidates":[{"candidate_id":"candidate:power","value":{"quantity":{"number":{"coefficient":"43215","exponent10":-1},"unit":"unit.watt"}}}],"key":{"fact_id":"pv.ac.aggregate_active_power"}},{"candidates":[{"candidate_id":"candidate:frequency-retained"}],"key":{"fact_id":"pv.ac.frequency"}}],"snapshot_id":"snapshot:test"}}}}`
 	handler := NewHandler(Options{
 		SemanticPVEnabled: true,
 		SemanticPV: func(context.Context) (ForwardedResponse, error) {
-			return ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: []byte(`{"data":{"semanticPVCurrent":{"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"}}}}}`)}, nil
+			return ForwardedResponse{Status: http.StatusOK, ContentType: "application/json", Body: []byte(semanticPV)}, nil
 		},
 		RawModbusEnabled: true,
 		ModbusProvider:   provider,
@@ -72,7 +73,7 @@ func TestPortalPVForwardsClosedM2MEnvelopeAndRawReadUsesMCPEnvelope(t *testing.T
 
 	pvResponse := httptest.NewRecorder()
 	handler.ServeHTTP(pvResponse, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/pv/current", nil))
-	if pvResponse.Code != http.StatusOK || pvResponse.Body.String() != `{"data":{"semanticPVCurrent":{"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"}}}}}` {
+	if pvResponse.Code != http.StatusOK || pvResponse.Body.String() != semanticPV || strings.Contains(pvResponse.Body.String(), `"selected_candidate_id":"candidate:frequency-retained"`) {
 		t.Fatalf("semantic PV response=%d %s", pvResponse.Code, pvResponse.Body.String())
 	}
 

@@ -70,7 +70,7 @@ The executable proof is
 Run the focused evidence:
 
 ```bash
-GOWORK=off go test -race ./internal/modbusadapter ./mcp ./m2mgraphql ./portal \
+GOWORK=off go test -race ./internal/modbusadapter ./cmd/gateway ./mcp ./m2mgraphql ./portal \
   -run 'TestPUBLIC05|TestSemanticPVToolReplacesLegacyCanonicalPVTool|TestSemanticPVCurrentUsesOneEvaluatedProjection|TestPortalPVForwardsClosedM2MEnvelopeAndRawReadUsesMCPEnvelope' \
   -count=1
 ```

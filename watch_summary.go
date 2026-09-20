@@ -134,7 +134,7 @@ func (cache *ShadowCache) WatchSummary() WatchSummary {
 		}
 		freshnessCounts[freshnessClass]++
 
-		directApplyClass := watchSummaryDirectApplyClass(descriptor.SemanticClass, cache.featureFlags)
+		directApplyClass := watchSummaryDirectApplyClass(descriptor.SemanticClass, descriptor.DirectApplyPolicy, cache.featureFlags)
 		directApplyCounts[directApplyClass]++
 
 		for _, source := range activeSources {
@@ -210,9 +210,12 @@ func (activation WatchSummaryActivationCounts) withClasses(sourceCounts map[stri
 	return activation
 }
 
-func watchSummaryDirectApplyClass(class WatchSemanticClass, featureFlags ObserveFirstFeatureFlags) string {
-	switch class {
-	case WatchSemanticClassState:
+func watchSummaryDirectApplyClass(class WatchSemanticClass, policy WatchDirectApplyPolicy, featureFlags ObserveFirstFeatureFlags) string {
+	switch policy {
+	case WatchDirectApplyPolicyStateDefault:
+		if class != WatchSemanticClassState {
+			return watchSummaryDirectApplyClassNotApplicable
+		}
 		if !featureFlags.ObserveFirstEnabled() {
 			return watchSummaryDirectApplyClassStateMasterOff
 		}
@@ -220,7 +223,10 @@ func watchSummaryDirectApplyClass(class WatchSemanticClass, featureFlags Observe
 			return watchSummaryDirectApplyClassStateEligible
 		}
 		return watchSummaryDirectApplyClassStateIneligible
-	case WatchSemanticClassConfig:
+	case WatchDirectApplyPolicyConfigOptIn:
+		if class != WatchSemanticClassConfig {
+			return watchSummaryDirectApplyClassNotApplicable
+		}
 		if !featureFlags.ObserveFirstEnabled() {
 			return watchSummaryDirectApplyClassConfigMasterOff
 		}

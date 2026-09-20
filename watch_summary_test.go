@@ -155,6 +155,93 @@ func TestShadowCacheWatchSummary_ComputesInventoryActivationAndEligibilityClasse
 	}
 }
 
+func TestShadowCacheWatchSummary_DirectApplyEligibilityHonorsDescriptorPolicy(t *testing.T) {
+	descriptors := []WatchDescriptor{
+		{
+			Key:               NewB509WatchKey(0x15, 0x1301),
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.policy.state_default",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+		{
+			Key:               NewB524WatchKey(0x15, 0x02, 0x08, 0x00, 0x2301),
+			SemanticClass:     WatchSemanticClassConfig,
+			FreshnessProfile:  WatchFreshnessProfileConfig,
+			DecoderID:         "test.watch.policy.config_opt_in",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+		},
+		{
+			Key:               NewB509WatchKey(0x15, 0x1302),
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.policy.never",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyNever,
+		},
+		{
+			Key:               NewB509WatchKey(0x15, 0x1303),
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.policy.energy_merge_only",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyEnergyMergeOnly,
+		},
+		{
+			Key:               NewB509WatchKey(0x15, 0x1304),
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.policy.state_config_mismatch",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+		},
+		{
+			Key:               NewB524WatchKey(0x15, 0x02, 0x08, 0x00, 0x2302),
+			SemanticClass:     WatchSemanticClassConfig,
+			FreshnessProfile:  WatchFreshnessProfileConfig,
+			DecoderID:         "test.watch.policy.config_state_mismatch",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+		},
+		{
+			Key:               NewB509WatchKey(0x15, 0x1305),
+			SemanticClass:     WatchSemanticClassState,
+			FreshnessProfile:  WatchFreshnessProfileStateFast,
+			DecoderID:         "test.watch.policy.unknown",
+			CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+			DirectApplyPolicy: WatchDirectApplyPolicy("unknown"),
+		},
+	}
+	catalog, err := NewWatchCatalog(descriptors)
+	if err != nil {
+		t.Fatalf("NewWatchCatalog error = %v", err)
+	}
+
+	activations := NewWatchActivationSet(catalog)
+	keys := make([]WatchKey, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		keys = append(keys, descriptor.Key)
+	}
+	if err := activations.Activate(WatchActivationSourcePoller, keys...); err != nil {
+		t.Fatalf("Activate poller error = %v", err)
+	}
+
+	cache := NewShadowCache(ShadowCacheOptions{
+		Catalog:      catalog,
+		Activations:  activations,
+		FeatureFlags: NormalizeObserveFirstFeatureFlags(true, true, true, ObserveFirstExternalWritePolicyRecordOnly),
+	})
+
+	directApplyClasses := classCountsToMap(cache.WatchSummary().DirectApplyEligibilityClasses)
+	if directApplyClasses[watchSummaryDirectApplyClassStateEligible] != 1 ||
+		directApplyClasses[watchSummaryDirectApplyClassConfigEligible] != 1 ||
+		directApplyClasses[watchSummaryDirectApplyClassNotApplicable] != 5 {
+		t.Fatalf("direct_apply_eligibility_classes = %+v; want state_eligible=1 config_eligible=1 not_applicable=5", directApplyClasses)
+	}
+}
+
 func TestShadowCacheWatchSummary_ReportsPinnedBudgetDegradedMarker(t *testing.T) {
 	keyA := NewB509WatchKey(0x15, 0x1101)
 	keyB := NewB509WatchKey(0x15, 0x1102)

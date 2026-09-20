@@ -157,6 +157,119 @@ func TestPassiveShadowLaneEnabled_EnergyMergeOnlyPolicyDisabled(t *testing.T) {
 	}
 }
 
+func TestHandleAdjudicatedPassiveEvent_DirectApplyAdmissionHonorsNormalizedPolicyFlags(t *testing.T) {
+	t.Parallel()
+
+	stateKey := ebusgateway.NewB509WatchKey(0x08, 0x0200)
+	configKey := ebusgateway.NewB524WatchKey(0x15, 0x02, 0x03, 0x01, 0x001C)
+	tests := []struct {
+		name   string
+		flags  ebusgateway.ObserveFirstFeatureFlags
+		key    ebusgateway.WatchKey
+		policy ebusgateway.ObserveFirstDirectApplyPolicy
+		want   bool
+	}{
+		{
+			name:   "state default is admitted",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, false, ebusgateway.ObserveFirstExternalWritePolicyRecordOnly),
+			key:    stateKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyStateDefault,
+			want:   true,
+		},
+		{
+			name:   "config opt in remains denied without runtime admission",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    configKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyConfigOptIn,
+			want:   false,
+		},
+		{
+			name:   "global disable is denied",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(false, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    stateKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyStateDefault,
+			want:   false,
+		},
+		{
+			name:   "state disabled normalizes config direct apply off",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, false, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    configKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyConfigOptIn,
+			want:   false,
+		},
+		{
+			name:   "never is denied",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    stateKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyNever,
+			want:   false,
+		},
+		{
+			name:   "energy merge only is denied",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    stateKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicyEnergyMergeOnly,
+			want:   false,
+		},
+		{
+			name:   "unknown policy is denied",
+			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
+			key:    stateKey,
+			policy: ebusgateway.ObserveFirstDirectApplyPolicy("unknown"),
+			want:   false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			poller := newVaillantSemanticPoller(
+				ebusgateway.Config{ObserveFirstFlags: test.flags},
+				&ebusgateway.Gateway{},
+				graphql.NewLiveSemanticProvider(),
+				nil,
+				nil,
+			)
+			event := passiveDirectApplyTestEvent(test.key, test.policy)
+			poller.handleAdjudicatedPassiveEvent(event)
+
+			lookup := poller.shadow.Lookup(test.key, 10*time.Second)
+			if lookup.Found != test.want {
+				t.Fatalf("shadow found = %t; want %t for policy=%q flags=%+v", lookup.Found, test.want, test.policy, test.flags)
+			}
+		})
+	}
+}
+
+func passiveDirectApplyTestEvent(key ebusgateway.WatchKey, policy ebusgateway.ObserveFirstDirectApplyPolicy) ebusgateway.AdjudicatedPassiveEvent {
+	request := protocol.Frame{Source: 0x10, Target: 0x08, Primary: vaillantB509Primary, Secondary: vaillantB509Secondary, Data: buildB509ReadSelector(0x0200)}
+	response := protocol.Frame{Source: 0x08, Target: 0x10, Primary: vaillantB509Primary, Secondary: vaillantB509Secondary, Data: []byte{vaillantB509OpcodeRead, 0x02, 0x00, 0xAA}}
+	if typed, ok := key.(ebusgateway.B524WatchKey); ok {
+		request = protocol.Frame{Source: 0x10, Target: typed.Target, Primary: vaillantExtRegisterPrimary, Secondary: vaillantExtRegisterSecondary, Data: buildB524ReadSelector(typed.Opcode, typed.Group, typed.Instance, typed.RegisterAddress)}
+		response = protocol.Frame{Source: typed.Target, Target: 0x10, Primary: vaillantExtRegisterPrimary, Secondary: vaillantExtRegisterSecondary, Data: []byte{typed.Opcode, typed.Instance, typed.Group, byte(typed.RegisterAddress), byte(typed.RegisterAddress >> 8), 0xAA}}
+	}
+	return ebusgateway.AdjudicatedPassiveEvent{
+		Event: ebusgateway.PassiveClassifiedEvent{
+			HasRequest:  true,
+			HasResponse: true,
+			Request:     request,
+			Response:    response,
+		},
+		Fingerprint: ebusgateway.PassiveTransactionFingerprint{
+			SharedWatchKey: key,
+			ObservedAt:     time.Unix(400, 0),
+			ResponseClass:  ebusgateway.DedupResponseValueBearing,
+			FamilyPolicy: ebusgateway.ObserveFirstFamilyPolicy{
+				RequestIntent:     ebusgateway.ObserveFirstRequestIntentRead,
+				ResponseClass:     ebusgateway.DedupResponseValueBearing,
+				DirectApplyPolicy: policy,
+			},
+		},
+		Disposition: ebusgateway.DedupDispositionUnmatchedThirdParty,
+	}
+}
+
 func TestHandleAdjudicatedPassiveEvent_UnmatchedExternalWriteInvalidatesShadow(t *testing.T) {
 	t.Parallel()
 

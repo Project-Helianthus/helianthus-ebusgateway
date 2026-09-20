@@ -134,7 +134,7 @@ func (cache *ShadowCache) WatchSummary() WatchSummary {
 		}
 		freshnessCounts[freshnessClass]++
 
-		directApplyClass := watchSummaryDirectApplyClass(descriptor.SemanticClass, cache.featureFlags)
+		directApplyClass := watchSummaryDirectApplyClass(descriptor.SemanticClass, descriptor.DirectApplyPolicy, cache.featureFlags)
 		directApplyCounts[directApplyClass]++
 
 		for _, source := range activeSources {
@@ -210,9 +210,12 @@ func (activation WatchSummaryActivationCounts) withClasses(sourceCounts map[stri
 	return activation
 }
 
-func watchSummaryDirectApplyClass(class WatchSemanticClass, featureFlags ObserveFirstFeatureFlags) string {
-	switch class {
-	case WatchSemanticClassState:
+func watchSummaryDirectApplyClass(class WatchSemanticClass, policy WatchDirectApplyPolicy, featureFlags ObserveFirstFeatureFlags) string {
+	switch policy {
+	case WatchDirectApplyPolicyStateDefault:
+		if class != WatchSemanticClassState {
+			return watchSummaryDirectApplyClassNotApplicable
+		}
 		if !featureFlags.ObserveFirstEnabled() {
 			return watchSummaryDirectApplyClassStateMasterOff
 		}
@@ -220,14 +223,11 @@ func watchSummaryDirectApplyClass(class WatchSemanticClass, featureFlags Observe
 			return watchSummaryDirectApplyClassStateEligible
 		}
 		return watchSummaryDirectApplyClassStateIneligible
-	case WatchSemanticClassConfig:
-		if !featureFlags.ObserveFirstEnabled() {
-			return watchSummaryDirectApplyClassConfigMasterOff
-		}
-		if featureFlags.PassiveConfigDirectApply() {
-			return watchSummaryDirectApplyClassConfigEligible
-		}
-		return watchSummaryDirectApplyClassConfigIneligible
+	case WatchDirectApplyPolicyConfigOptIn:
+		// Config direct-apply has no accepted end-to-end runtime admission path.
+		// Keep the descriptor visible while reporting it as unavailable for direct
+		// application until that path is explicitly implemented and qualified.
+		return watchSummaryDirectApplyClassNotApplicable
 	default:
 		return watchSummaryDirectApplyClassNotApplicable
 	}

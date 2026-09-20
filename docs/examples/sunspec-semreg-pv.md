@@ -56,8 +56,8 @@ and an invalid **2000 Hz** value. The result is deliberately partial:
 - the immutable snapshot advances and keeps the complete 14-item projection
   accounting;
 - the previous 50 Hz candidate remains as native evidence but evaluates
-  `stale`, receives no presentation selection, and is reported `withheld` with
-  reason `mapping.field_invalid`;
+  `stale` and `degraded`, receives no presentation selection, and is reported
+  `withheld` with reason `mapping.field_invalid`;
 - the invalid refresh does not create a frequency candidate or invent zero;
 - active power advances to revision 2 as exactly 4321.5 W, evaluates `fresh`,
   remains selected, and retains an `exact` no-loss disposition; and

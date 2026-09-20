@@ -55,6 +55,10 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 		t.Fatalf("initial qualification=%+v err=%v", initial, err)
 	}
 
+	// Use the production 30-second fast-telemetry policy. The next healthy
+	// refresh keeps power current while the invalid frequency field can retain
+	// only the now-stale prior 50 Hz evidence.
+	time.Sleep(31 * time.Second)
 	sunspectest.SetFloat(words, 20, 4_321.5)
 	sunspectest.SetFloat(words, 22, 2_000)
 	refresh, err := producer.Refresh(context.Background(), modbusadapter.SunSpecPollIdentity{PollGeneration: 502, DeadlineIdentity: 602})
@@ -154,6 +158,27 @@ func assertPUBLIC05ComposedPV(t *testing.T, current modbusadapter.SemanticPVCurr
 	if frequency == nil || len(frequency.Candidates) != 1 || frequency.Candidates[0].Value == nil || frequency.Candidates[0].Value.Quantity == nil ||
 		frequency.Candidates[0].Value.Quantity.Number.Coefficient != "5" || frequency.Candidates[0].Value.Quantity.Number.Exponent10 != 1 {
 		t.Fatalf("composed retained frequency=%+v; want exact prior 50 Hz", frequency)
+	}
+	var powerFresh, frequencyStale bool
+	for _, evaluated := range current.Evaluation.Facts {
+		switch evaluated.CandidateID {
+		case power.Candidates[0].CandidateID:
+			powerFresh = evaluated.Freshness == semreg.FreshnessFresh && evaluated.EffectiveAvailability == semreg.AvailabilityAvailable
+		case frequency.Candidates[0].CandidateID:
+			frequencyStale = evaluated.Freshness == semreg.FreshnessStale && evaluated.EffectiveAvailability == semreg.AvailabilityDegraded
+		}
+	}
+	var powerSelected, frequencySelected bool
+	for _, selection := range current.Selections {
+		switch selection.Key.FactID {
+		case power.Key.FactID:
+			powerSelected = selection.SelectedCandidate == power.Candidates[0].CandidateID
+		case frequency.Key.FactID:
+			frequencySelected = true
+		}
+	}
+	if !powerFresh || !frequencyStale || !powerSelected || frequencySelected {
+		t.Fatalf("composed evaluation/selection lost field isolation: evaluation=%+v selections=%+v", current.Evaluation.Facts, current.Selections)
 	}
 	var powerExact, frequencyWithheld bool
 	for _, disposition := range current.Projection.Dispositions {

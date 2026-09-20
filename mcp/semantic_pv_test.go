@@ -31,7 +31,7 @@ func public05SemanticPVData() map[string]any {
 		}},
 		"evaluation": map[string]any{"facts": []any{
 			map[string]any{"candidate_id": "candidate:power", "freshness": "fresh", "effective_availability": "available"},
-			map[string]any{"candidate_id": "candidate:frequency-retained", "freshness": "stale", "effective_availability": "unavailable"},
+			map[string]any{"candidate_id": "candidate:frequency-retained", "freshness": "stale", "effective_availability": "degraded"},
 		}},
 		"selections": []any{map[string]any{"key": powerKey, "selected_candidate_id": "candidate:power"}},
 		"projection": map[string]any{"manifest": map[string]any{"target_id": "target:gateway-semantic-pv"}, "dispositions": []any{

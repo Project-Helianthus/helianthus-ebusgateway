@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"math"
 	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -986,10 +986,7 @@ func pvCoreObservation(t *testing.T, words []uint16, pollGeneration, deadlineIde
 }
 
 func pvCoreSetFloat(words []uint16, payloadOffset int, value float32) {
-	const payloadStart = 2 + 67 + 2
-	bits := math.Float32bits(value)
-	words[payloadStart+payloadOffset] = uint16(bits >> 16)
-	words[payloadStart+payloadOffset+1] = uint16(bits)
+	sunspectest.SetFloat(words, payloadOffset, value)
 }
 
 func pvCoreDisposition(t *testing.T, draft pvPublicationDraft, nativeID string) projection.ProjectionDisposition {

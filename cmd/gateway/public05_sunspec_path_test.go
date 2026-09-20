@@ -4,20 +4,17 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/binary"
 	"encoding/json"
-	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -25,10 +22,14 @@ import (
 )
 
 func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
-	source := &public05SunSpecSource{words: public05SunSpecWords()}
-	source.setFloat(20, 1_234.5)
-	source.setFloat(22, 50)
-	listener := source.serve(t)
+	words := sunspectest.ObservedFroniusFloatControlsWords()
+	sunspectest.SetFloat(words, 20, 1_234.5)
+	sunspectest.SetFloat(words, 22, 50)
+	listener, _, err := sunspectest.ServeSunSpecChain(words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
 
 	config, err := mapModbusRuntimeConfig(ebusgateway.ModbusTCPConfig{
 		Enabled: true, Endpoint: "tcp://" + listener.Addr().String(), DialTimeout: time.Second,
@@ -54,8 +55,8 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 		t.Fatalf("initial qualification=%+v err=%v", initial, err)
 	}
 
-	source.setFloat(20, 4_321.5)
-	source.setFloat(22, 2_000)
+	sunspectest.SetFloat(words, 20, 4_321.5)
+	sunspectest.SetFloat(words, 22, 2_000)
 	refresh, err := producer.Refresh(context.Background(), modbusadapter.SunSpecPollIdentity{PollGeneration: 502, DeadlineIdentity: 602})
 	if err != nil || refresh.Outcome != modbusadapter.SunSpecQualificationGO {
 		t.Fatalf("invalid-frequency refresh=%+v err=%v", refresh, err)
@@ -165,107 +166,5 @@ func assertPUBLIC05ComposedPV(t *testing.T, current modbusadapter.SemanticPVCurr
 	}
 	if !powerExact || !frequencyWithheld {
 		t.Fatalf("composed projection lost field isolation: %+v", current.Projection.Dispositions)
-	}
-}
-
-type public05SunSpecSource struct {
-	mu    sync.RWMutex
-	words []uint16
-}
-
-func (source *public05SunSpecSource) setFloat(payloadOffset int, value float32) {
-	const payloadStart = 2 + 67 + 2
-	bits := math.Float32bits(value)
-	source.mu.Lock()
-	defer source.mu.Unlock()
-	source.words[payloadStart+payloadOffset] = uint16(bits >> 16)
-	source.words[payloadStart+payloadOffset+1] = uint16(bits)
-}
-
-func (source *public05SunSpecSource) serve(t *testing.T) net.Listener {
-	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() {
-		connection, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = connection.Close() }()
-		for {
-			header := make([]byte, 7)
-			if _, err := io.ReadFull(connection, header); err != nil {
-				return
-			}
-			length := int(binary.BigEndian.Uint16(header[4:6]))
-			body := make([]byte, length-1)
-			if _, err := io.ReadFull(connection, body); err != nil || len(body) != 5 {
-				return
-			}
-			offset := binary.BigEndian.Uint16(body[1:3])
-			count := binary.BigEndian.Uint16(body[3:5])
-			start, end := int(offset)-40000, int(offset)-40000+int(count)
-			source.mu.RLock()
-			if start < 0 || end > len(source.words) {
-				source.mu.RUnlock()
-				return
-			}
-			response := make([]byte, 9+2*int(count))
-			copy(response[:2], header[:2])
-			binary.BigEndian.PutUint16(response[4:6], uint16(3+2*int(count)))
-			response[6], response[7], response[8] = header[6], body[0], byte(2*count)
-			for index, word := range source.words[start:end] {
-				binary.BigEndian.PutUint16(response[9+2*index:], word)
-			}
-			source.mu.RUnlock()
-			if _, err := connection.Write(response); err != nil {
-				return
-			}
-		}
-	}()
-	return listener
-}
-
-type public05SunSpecModel struct {
-	id, length uint16
-	payload    []uint16
-}
-
-func public05SunSpecWords() []uint16 {
-	common := make([]uint16, 65)
-	public05PutSunSpecString(common[0:16], "Fronius")
-	public05PutSunSpecString(common[16:32], "Symo GEN24 10.0")
-	public05PutSunSpecString(common[40:48], "1.41.11-1")
-	public05PutSunSpecString(common[48:64], "synthetic")
-	inverter := make([]uint16, 60)
-	inverter[46] = 4
-	mppt := make([]uint16, 88)
-	mppt[6] = 4
-	models := []public05SunSpecModel{
-		{1, 65, common}, {113, 60, inverter}, {120, 26, make([]uint16, 26)}, {121, 30, make([]uint16, 30)},
-		{122, 44, make([]uint16, 44)}, {123, 24, make([]uint16, 24)}, {160, 88, mppt}, {124, 24, make([]uint16, 24)},
-	}
-	words := []uint16{0x5375, 0x6e53}
-	for _, model := range models {
-		words = append(words, model.id, model.length)
-		words = append(words, model.payload...)
-	}
-	return append(words, 0xffff, 0)
-}
-
-func public05PutSunSpecString(words []uint16, value string) {
-	data := []byte(value)
-	for index := range words {
-		var high, low byte
-		if 2*index < len(data) {
-			high = data[2*index]
-		}
-		if 2*index+1 < len(data) {
-			low = data[2*index+1]
-		}
-		words[index] = uint16(high)<<8 | uint16(low)
 	}
 }

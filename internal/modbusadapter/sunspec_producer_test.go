@@ -2,17 +2,15 @@ package modbusadapter
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -532,67 +530,16 @@ func TestSunSpecProducerSourceDelegatesSemanticSelectionToModbusreg(t *testing.T
 	}
 }
 
-type sunSpecReadRequest struct {
-	UnitID    byte
-	Function  modbus.FunctionCode
-	Offset    uint16
-	WordCount uint16
-}
+type sunSpecReadRequest = sunspectest.ReadRequest
 
 func serveSunSpecChain(t *testing.T, words []uint16) (net.Listener, func() []sunSpecReadRequest) {
 	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, requests, err := sunspectest.ServeSunSpecChain(words)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	var mu sync.Mutex
-	var requests []sunSpecReadRequest
-	go func() {
-		connection, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = connection.Close() }()
-		for {
-			header := make([]byte, 7)
-			if _, err := io.ReadFull(connection, header); err != nil {
-				return
-			}
-			length := int(binary.BigEndian.Uint16(header[4:6]))
-			body := make([]byte, length-1)
-			if _, err := io.ReadFull(connection, body); err != nil || len(body) != 5 {
-				return
-			}
-			request := sunSpecReadRequest{
-				UnitID: header[6], Function: modbus.FunctionCode(body[0]),
-				Offset: binary.BigEndian.Uint16(body[1:3]), WordCount: binary.BigEndian.Uint16(body[3:5]),
-			}
-			mu.Lock()
-			requests = append(requests, request)
-			mu.Unlock()
-			start := int(request.Offset) - 40000
-			end := start + int(request.WordCount)
-			if start < 0 || end > len(words) {
-				return
-			}
-			response := make([]byte, 9+2*int(request.WordCount))
-			copy(response[:2], header[:2])
-			binary.BigEndian.PutUint16(response[4:6], uint16(3+2*int(request.WordCount)))
-			response[6], response[7], response[8] = request.UnitID, byte(request.Function), byte(2*request.WordCount)
-			for index, word := range words[start:end] {
-				binary.BigEndian.PutUint16(response[9+2*index:], word)
-			}
-			if _, err := connection.Write(response); err != nil {
-				return
-			}
-		}
-	}()
-	return listener, func() []sunSpecReadRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]sunSpecReadRequest(nil), requests...)
-	}
+	return listener, requests
 }
 
 func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, unitID byte) {
@@ -619,97 +566,23 @@ func assertBoundedFC03Discovery(t *testing.T, requests []sunSpecReadRequest, uni
 }
 
 func sunSpecWords(headers ...uint16) []uint16 {
-	words := []uint16{0x5375, 0x6e53}
-	for index := 0; index < len(headers); index += 2 {
-		words = append(words, headers[index], headers[index+1])
-		if headers[index] != 0xffff {
-			words = append(words, make([]uint16, headers[index+1])...)
-		}
-	}
-	return words
+	return sunspectest.Words(headers...)
 }
 
 func observedFroniusFloatWords() []uint16 {
-	return sunSpecFixtureWords(
-		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
-		sunSpecFixtureModel{113, 60, floatInverterPayload()},
-		sunSpecFixtureModel{120, 26, make([]uint16, 26)},
-		sunSpecFixtureModel{121, 30, make([]uint16, 30)},
-		sunSpecFixtureModel{122, 44, make([]uint16, 44)},
-		sunSpecFixtureModel{160, 88, mpptPayload(4)},
-		sunSpecFixtureModel{124, 24, make([]uint16, 24)},
-	)
+	return sunspectest.ObservedFroniusFloatWords()
 }
 
 func observedFroniusFloatControlsWords() []uint16 {
-	return sunSpecFixtureWords(
-		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
-		sunSpecFixtureModel{113, 60, floatInverterPayload()},
-		sunSpecFixtureModel{120, 26, make([]uint16, 26)},
-		sunSpecFixtureModel{121, 30, make([]uint16, 30)},
-		sunSpecFixtureModel{122, 44, make([]uint16, 44)},
-		sunSpecFixtureModel{123, 24, make([]uint16, 24)},
-		sunSpecFixtureModel{160, 88, mpptPayload(4)},
-		sunSpecFixtureModel{124, 24, make([]uint16, 24)},
-	)
+	return sunspectest.ObservedFroniusFloatControlsWords()
 }
 
 func admittedFloatChainWords() []uint16 {
-	return sunSpecFixtureWords(
-		sunSpecFixtureModel{1, 65, commonPayload("Fronius", "Symo GEN24 10.0", "1.41.11-1")},
-		sunSpecFixtureModel{113, 60, floatInverterPayload()},
-	)
-}
-
-type sunSpecFixtureModel struct {
-	id, length uint16
-	payload    []uint16
-}
-
-func sunSpecFixtureWords(models ...sunSpecFixtureModel) []uint16 {
-	words := []uint16{0x5375, 0x6e53}
-	for _, model := range models {
-		words = append(words, model.id, model.length)
-		words = append(words, model.payload...)
-	}
-	return append(words, 0xffff, 0)
-}
-
-func commonPayload(manufacturer, model, firmware string) []uint16 {
-	payload := make([]uint16, 65)
-	putSunSpecString(payload[0:16], manufacturer)
-	putSunSpecString(payload[16:32], model)
-	putSunSpecString(payload[40:48], firmware)
-	putSunSpecString(payload[48:64], "synthetic")
-	return payload
-}
-
-func floatInverterPayload() []uint16 {
-	payload := make([]uint16, 60)
-	// Model 113's status point is word 48 including the two-word header.
-	payload[46] = 4
-	return payload
-}
-
-func mpptPayload(modules uint16) []uint16 {
-	payload := make([]uint16, 88)
-	// Model 160's N point is word 8 including the two-word header.
-	payload[6] = modules
-	return payload
+	return sunspectest.AdmittedFloatChainWords()
 }
 
 func putSunSpecString(words []uint16, value string) {
-	data := []byte(value)
-	for index := range words {
-		var high, low byte
-		if 2*index < len(data) {
-			high = data[2*index]
-		}
-		if 2*index+1 < len(data) {
-			low = data[2*index+1]
-		}
-		words[index] = uint16(high)<<8 | uint16(low)
-	}
+	sunspectest.PutString(words, value)
 }
 
 func sunSpecWireKeys(occurrences []modbusreg.SunSpecOccurrence) []modbusreg.SunSpecWireKey {

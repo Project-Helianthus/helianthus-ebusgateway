@@ -8,7 +8,7 @@ native read, semantic implementation, fallback, or live-device claim.
 - Gateway production baseline:
   [`8e6194e964da043e1806790ebe451fab61e6b588`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/8e6194e964da043e1806790ebe451fab61e6b588).
 - Focused public example tests:
-  [`6f9d36afa5b5633f01d5747414a51f5bb2a198f4`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/6f9d36afa5b5633f01d5747414a51f5bb2a198f4).
+  [`b75cac187d6431ced70f567eefc8d2c6c9f83306`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/b75cac187d6431ced70f567eefc8d2c6c9f83306).
 - Native registry pin:
   [`helianthus-modbusreg ed75fdfbed0d`](https://github.com/Project-Helianthus/helianthus-modbusreg/commit/ed75fdfbed0d42eb2f159afc0174449b545b31af).
 - Canonical semantic contract pin:
@@ -20,9 +20,9 @@ native read, semantic implementation, fallback, or live-device claim.
 | --- | --- |
 | Native acquisition and qualification | Gateway performs bounded read-only acquisition in [`sunspec_producer.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/internal/modbusadapter/sunspec_producer.go). The exact Fronius chain replay and wire/logical provenance are tested in [`sunspec_producer_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/internal/modbusadapter/sunspec_producer_test.go#L20). Model decoding, capability selection, flavor qualification, and the retained observation remain owned by [`helianthus-modbusreg`](https://github.com/Project-Helianthus/helianthus-modbusreg/blob/ed75fdfbed0d42eb2f159afc0174449b545b31af/sunspec_qualification_observation.go). |
 | SemReg publication | The existing [14-item native-to-PV map](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/internal/modbusadapter/semreg_pv_publication_core.go#L210) constructs one versioned snapshot, evaluation, selections, and projection report. Each candidate retains source/binding identity, native evidence, lifecycle times, freshness policy, quality, origin, and explicit projection loss. |
-| MCP | [`semantic.v1.pv.current.get`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/mcp/modbus_v1.go#L148) returns that same four-object view through the Gateway provider. Its public fixture asserts selected power and withheld frequency at [`6f9d36a`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/6f9d36afa5b5633f01d5747414a51f5bb2a198f4/mcp/semantic_pv_test.go#L54). |
-| M2M GraphQL | `SemanticPVCurrent` accepts only the fixed `PUBLIC_GRAPHQL_SEMANTIC_PV_V1` query and returns the same snapshot, evaluation, selections, and projection objects. The exact shape and field isolation are pinned by the [GraphQL test and golden](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/6f9d36afa5b5633f01d5747414a51f5bb2a198f4/m2mgraphql/semantic_pv_test.go#L15). |
-| Portal | The Portal PV endpoint forwards the closed M2M GraphQL response; it does not decode registers or select semantic candidates. The [forwarding test](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/6f9d36afa5b5633f01d5747414a51f5bb2a198f4/portal/pv_modbus_red_test.go#L58) proves the selected power and withheld-frequency result is unchanged. |
+| MCP | [`semantic.v1.pv.current.get`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/mcp/modbus_v1.go#L148) returns that same four-object view through the Gateway provider. Its public fixture asserts selected power and withheld frequency at [`b75cac1`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/mcp/semantic_pv_test.go#L54). |
+| M2M GraphQL | `SemanticPVCurrent` accepts only the fixed `PUBLIC_GRAPHQL_SEMANTIC_PV_V1` query and returns the same snapshot, evaluation, selections, and projection objects. The exact shape and field isolation are pinned by the [GraphQL test and golden](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/m2mgraphql/semantic_pv_test.go#L15). |
+| Portal | The Portal PV endpoint forwards the closed M2M GraphQL response; it does not decode registers or select semantic candidates. The [forwarding test](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/portal/pv_modbus_red_test.go#L58) proves the selected power and withheld-frequency result is unchanged. |
 
 The consumer fixtures prove the public surfaces preserve the four-object
 contract. The SemReg publication tests are the behavioral proof; the consumers
@@ -41,7 +41,7 @@ deterministic SunSpec chain fixture. It proves that active power:
   loss.
 
 The executable proof is
-[`semreg_pv_publication_core_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/6f9d36afa5b5633f01d5747414a51f5bb2a198f4/internal/modbusadapter/semreg_pv_publication_core_test.go#L147).
+[`semreg_pv_publication_core_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/internal/modbusadapter/semreg_pv_publication_core_test.go#L148).
 
 ## Negative example: one invalid field
 
@@ -61,7 +61,7 @@ and an invalid **2000 Hz** value. The result is deliberately partial:
   as available, and no consumer bypasses SemReg.
 
 The executable proof is
-[`semreg_pv_publication_core_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/6f9d36afa5b5633f01d5747414a51f5bb2a198f4/internal/modbusadapter/semreg_pv_publication_core_test.go#L362).
+[`semreg_pv_publication_core_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/internal/modbusadapter/semreg_pv_publication_core_test.go#L363).
 
 Run the focused evidence:
 

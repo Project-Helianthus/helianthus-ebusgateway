@@ -9,10 +9,18 @@ GraphQL surfaces, Portal behavior, and the HTTP/operator edge.
 The repository keeps this name until a separately approved gateway rewrite.
 Do not rename it as part of unrelated work.
 
-This repository is not the universal semantic owner. Cross-protocol canonical
-semantics belong to planned `helianthus-semreg` when that repository and scope
-become active. Until then, keep protocol-specific types and behavior inside their
-driver, adapter, or native projection boundaries.
+This repository is not the universal semantic owner. The separate public
+[`helianthus-semreg`](https://github.com/Project-Helianthus/helianthus-semreg)
+repository is the current canonical owner of promoted protocol-neutral types,
+publication, evaluation, projection, and capability-pack contracts. Keep
+protocol-specific identity, qualification, decoding, behavior, and raw evidence
+inside their driver, adapter, or native registry boundaries; the Gateway composes
+accepted native and SemReg surfaces without redefining either owner.
+
+The current binary has scoped runtime and contribution seams. Its universal
+public lifecycle/configuration service remains in progress; do not document or
+consume it as an available public API before that contract is implemented and
+accepted.
 
 ## Workflow
 

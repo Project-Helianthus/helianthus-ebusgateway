@@ -42,9 +42,12 @@ The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
 ### What does not belong in this repository
 
 - Low-level transport framing and bus primitives (use `helianthus-ebusgo`).
-- Protocol-native identity, qualification, decoding, and raw evidence (use the
-  owning native registry and transport repository, such as
-  `helianthus-ebusreg`, `helianthus-eebusreg`, or `helianthus-modbusreg`).
+- Reusable protocol-native registry definitions, profile qualification rules,
+  decoders, evidence schemas, and transport primitives (use the owning native
+  registry and transport repository, such as `helianthus-ebusreg`,
+  `helianthus-eebusreg`, or `helianthus-modbusreg`). Gateway-owned drivers and
+  adapters still compose those contracts and retain runtime-native evidence;
+  they do not redefine the upstream protocol contract.
 - Canonical protocol-neutral semantic types and publication contracts (use
   [`helianthus-semreg`](https://github.com/Project-Helianthus/helianthus-semreg)).
 - Platform deployment bundles or auth/TLS edge policy management (handled by deployment infrastructure).

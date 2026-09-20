@@ -37,6 +37,8 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	config.Clock = func() time.Time { return now }
 	adapter, err := modbusadapter.Start(context.Background(), config, (&net.Dialer{}).DialContext, func(config modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
 		return modbus.NewTCPEndpoint(config)
 	})
@@ -55,10 +57,10 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 		t.Fatalf("initial qualification=%+v err=%v", initial, err)
 	}
 
-	// Use the production 30-second fast-telemetry policy. The next healthy
-	// refresh keeps power current while the invalid frequency field can retain
-	// only the now-stale prior 50 Hz evidence.
-	time.Sleep(31 * time.Second)
+	// Advance through the production 30-second fast-telemetry policy. The next
+	// healthy refresh keeps power current while the invalid frequency field can
+	// retain only the now-stale prior 50 Hz evidence.
+	now = now.Add(31 * time.Second)
 	sunspectest.SetFloat(words, 20, 4_321.5)
 	sunspectest.SetFloat(words, 22, 2_000)
 	refresh, err := producer.Refresh(context.Background(), modbusadapter.SunSpecPollIdentity{PollGeneration: 502, DeadlineIdentity: 602})

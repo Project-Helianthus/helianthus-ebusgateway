@@ -42,6 +42,9 @@ type Config struct {
 	Enabled     bool
 	Endpoint    modbus.TCPEndpointConfig
 	DialTimeout time.Duration
+	// Clock is optional deterministic lifecycle time for offline integration
+	// evidence. Production configuration leaves it nil and uses time.Now.
+	Clock func() time.Time
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -157,7 +160,11 @@ func Start(
 			endpoint.Close(),
 		)
 	}
-	processStarted := time.Now()
+	clock := time.Now
+	if config.Clock != nil {
+		clock = config.Clock
+	}
+	processStarted := clock()
 	startedWall := processStarted.UTC()
 	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+startedWall.Format(time.RFC3339Nano)))
 	return &Adapter{
@@ -173,8 +180,8 @@ func Start(
 		pvSourceEpoch:   semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
 		startedWall:     startedWall,
 		startedMono:     processStarted,
-		wallNow:         time.Now,
-		monotonicNow:    time.Now,
+		wallNow:         clock,
+		monotonicNow:    clock,
 	}, nil
 }
 

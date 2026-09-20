@@ -10,7 +10,7 @@ native read, semantic implementation, fallback, or live-device claim.
 - Focused public example tests:
   [`b75cac187d6431ced70f567eefc8d2c6c9f83306`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/b75cac187d6431ced70f567eefc8d2c6c9f83306).
 - Composed Gateway provider and Portal proof:
-  [`acd6abf00ff0e2a98b36d700db7c1e50b421359b`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/acd6abf00ff0e2a98b36d700db7c1e50b421359b).
+  [`11662ccd31180f81451837361e8d7949664dbe8b`](https://github.com/Project-Helianthus/helianthus-ebusgateway/commit/11662ccd31180f81451837361e8d7949664dbe8b).
 - Native registry pin:
   [`helianthus-modbusreg ed75fdfbed0d`](https://github.com/Project-Helianthus/helianthus-modbusreg/commit/ed75fdfbed0d42eb2f159afc0174449b545b31af).
 - Canonical semantic contract pin:
@@ -25,7 +25,7 @@ native read, semantic implementation, fallback, or live-device claim.
 | MCP | [`semantic.v1.pv.current.get`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/8e6194e964da043e1806790ebe451fab61e6b588/mcp/modbus_v1.go#L148) returns that same four-object view through the Gateway provider. Its public fixture asserts selected power and withheld frequency at [`b75cac1`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/mcp/semantic_pv_test.go#L54). |
 | M2M GraphQL | `SemanticPVCurrent` accepts only the fixed `PUBLIC_GRAPHQL_SEMANTIC_PV_V1` query and returns the same snapshot, evaluation, selections, and projection objects. The exact shape and field isolation are pinned by the [GraphQL test and golden](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/m2mgraphql/semantic_pv_test.go#L15). |
 | Portal | The Portal PV endpoint forwards the closed M2M GraphQL response; it does not decode registers or select semantic candidates. The [forwarding test](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/b75cac187d6431ced70f567eefc8d2c6c9f83306/portal/pv_modbus_red_test.go#L58) proves the selected power and withheld-frequency result is unchanged. |
-| Composed runtime proof | [`TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/acd6abf00ff0e2a98b36d700db7c1e50b421359b/cmd/gateway/public05_sunspec_path_test.go#L27) performs bounded native FC03 acquisition through the real SunSpec producer, publishes the refresh through the real adapter, verifies the Gateway MCP provider retains the exact snapshot and projection, and then verifies the same result through the mTLS M2M GraphQL runtime and Portal endpoint. |
+| Composed runtime proof | [`TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/11662ccd31180f81451837361e8d7949664dbe8b/cmd/gateway/public05_sunspec_path_test.go#L24) reuses the accepted native SunSpec replay through the real producer, publishes the refresh through the real adapter, verifies the Gateway MCP provider retains the exact snapshot and projection, and then verifies the same result through the mTLS M2M GraphQL runtime and Portal endpoint. |
 
 The consumer fixtures prove the public surfaces preserve the four-object
 contract. The composed runtime proof verifies that the real providers retain

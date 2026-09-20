@@ -144,6 +144,43 @@ func TestPVPublicationDraftWithholdsUnsupportedOperatingSymbolOnly(t *testing.T)
 	}
 }
 
+func TestPUBLIC05ValidPowerIsAvailableInPublicSemRegView(t *testing.T) {
+	core, err := newPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := observedFroniusFloatControlsWords()
+	pvCoreSetFloat(words, 20, 1_234.5)
+	pvCoreSetFloat(words, 22, 50)
+	draft := pvCoreDraft(t, words, "source-epoch:pv:public-05", 1, 2_000)
+	if _, err := core.ingest(draft); err != nil {
+		t.Fatal(err)
+	}
+	view, err := core.publicView(draft.assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	power := pvCoreEnvelope(t, view.snapshot, "pv.ac.aggregate_active_power")
+	if len(power.Candidates) != 1 {
+		t.Fatalf("active-power candidates=%d; want one", len(power.Candidates))
+	}
+	candidate := power.Candidates[0]
+	if candidate.Value == nil || candidate.Value.Quantity == nil || candidate.Value.Quantity.Unit != "unit.watt" || candidate.Value.Quantity.Number.Coefficient != "12345" || candidate.Value.Quantity.Number.Exponent10 != -1 {
+		t.Fatalf("active-power value=%+v; want exact 1234.5 W", candidate.Value)
+	}
+	if candidate.Quality.Qualification != semreg.QualificationQualified || candidate.Quality.Promotion != semreg.PromotionPromoted || len(candidate.Evidence) == 0 || candidate.BindingID == nil || candidate.SourceEpochID == nil {
+		t.Fatalf("active-power evidence boundary=%+v", candidate)
+	}
+	freshness, found := pvCoreEvaluatedFreshness(view.evaluation, candidate.CandidateID)
+	if !found || freshness != semreg.FreshnessFresh || !pvCoreHasSelection(view.selections, power.Key) {
+		t.Fatalf("active-power public availability freshness=%s found=%t selections=%+v", freshness, found, view.selections)
+	}
+	disposition := pvCoreDispositionReport(t, view.projection, "inverter.ac.power.active")
+	if disposition.Outcome != projection.ProjectionExact || len(disposition.SourceKeys) != 1 || len(disposition.Loss) != 0 {
+		t.Fatalf("active-power projection=%+v", disposition)
+	}
+}
+
 func TestPVPublicationCoreEnforcesSequenceAndExpectedRevision(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {
@@ -322,12 +359,15 @@ func TestPVPublicationCorePublishesCanonicalZeroGeneratedEnergy(t *testing.T) {
 	t.Fatal("canonical zero generated energy was withheld")
 }
 
-func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testing.T) {
+func TestPUBLIC05InvalidFrequencyIsUnavailableWhilePowerRefreshes(t *testing.T) {
 	core, err := newPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := pvCoreDraft(t, observedFroniusFloatControlsWords(), "source-epoch:pv:test-a", 1, 2_000)
+	initialWords := observedFroniusFloatControlsWords()
+	pvCoreSetFloat(initialWords, 20, 1_234.5)
+	pvCoreSetFloat(initialWords, 22, 50)
+	first := pvCoreDraft(t, initialWords, "source-epoch:pv:test-a", 1, 2_000)
 	if _, err := core.ingest(first); err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +389,9 @@ func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testi
 	if after.snapshot.SnapshotID == before.snapshot.SnapshotID {
 		t.Fatal("healthy refresh did not advance the immutable snapshot")
 	}
+	if len(after.snapshot.Facts) != len(before.snapshot.Facts) || len(after.projection.Requested) != 14 || len(after.projection.Dispositions) != 14 {
+		t.Fatalf("partial refresh replaced the complete projection: facts=%d/%d requested=%d dispositions=%d", len(after.snapshot.Facts), len(before.snapshot.Facts), len(after.projection.Requested), len(after.projection.Dispositions))
+	}
 	frequency := pvCoreEnvelope(t, after.snapshot, "pv.ac.frequency")
 	if len(frequency.Candidates) != 1 {
 		t.Fatalf("retained frequency candidates=%d", len(frequency.Candidates))
@@ -359,6 +402,9 @@ func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testi
 	if pvCoreHasSelection(after.selections, frequency.Key) {
 		t.Fatal("stale retained frequency received a presentation selection")
 	}
+	if frequency.Candidates[0].Value == nil || frequency.Candidates[0].Value.Quantity == nil || frequency.Candidates[0].Value.Quantity.Number.Coefficient == "0" {
+		t.Fatalf("invalid frequency invented zero instead of retaining native evidence: %+v", frequency.Candidates[0].Value)
+	}
 	frequencyProjection := pvCoreDispositionReport(t, after.projection, "inverter.ac.frequency")
 	if frequencyProjection.Outcome != projection.ProjectionWithheld || frequencyProjection.Reason == nil || *frequencyProjection.Reason != pvReasonFieldInvalid {
 		t.Fatalf("stale retained frequency projection=%+v", frequencyProjection)
@@ -366,6 +412,17 @@ func TestPVPublicationCoreCommitsHealthyRefreshWhenRetainedFieldIsStale(t *testi
 	activePower := pvCoreEnvelope(t, after.snapshot, "pv.ac.aggregate_active_power")
 	if len(activePower.Candidates) != 1 || activePower.Candidates[0].Revision != "2" || !pvCoreHasSelection(after.selections, activePower.Key) {
 		t.Fatalf("healthy active-power field was not refreshed: %+v", activePower)
+	}
+	powerValue := activePower.Candidates[0].Value
+	if powerValue == nil || powerValue.Quantity == nil || powerValue.Quantity.Unit != "unit.watt" || powerValue.Quantity.Number.Coefficient != "43215" || powerValue.Quantity.Number.Exponent10 != -1 {
+		t.Fatalf("healthy active-power value=%+v; want exact 4321.5 W", powerValue)
+	}
+	if freshness, ok := pvCoreEvaluatedFreshness(after.evaluation, activePower.Candidates[0].CandidateID); !ok || freshness != semreg.FreshnessFresh {
+		t.Fatalf("healthy active-power freshness=%s found=%t", freshness, ok)
+	}
+	powerProjection := pvCoreDispositionReport(t, after.projection, "inverter.ac.power.active")
+	if powerProjection.Outcome != projection.ProjectionExact || len(powerProjection.Loss) != 0 {
+		t.Fatalf("healthy active-power projection=%+v", powerProjection)
 	}
 }
 

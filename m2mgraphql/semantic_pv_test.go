@@ -14,7 +14,7 @@ import (
 
 func TestSemanticPVCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"pv-asset-test": {}}, SemanticPVCurrent: func(context.Context, string) (json.RawMessage, bool) {
-		return json.RawMessage(`{"snapshot":{"snapshot_id":"snapshot:test"},"evaluation":{"evaluation_digest":"sha256:test"},"selections":[],"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"}}}`), true
+		return json.RawMessage(`{"snapshot":{"snapshot_id":"snapshot:test","facts":[{"key":{"fact_id":"pv.ac.aggregate_active_power"},"candidates":[{"candidate_id":"candidate:power","value":{"quantity":{"number":{"coefficient":"43215","exponent10":-1},"unit":"unit.watt"}}}]},{"key":{"fact_id":"pv.ac.frequency"},"candidates":[{"candidate_id":"candidate:frequency-retained"}]}]},"evaluation":{"facts":[{"candidate_id":"candidate:power","freshness":"fresh","effective_availability":"available"},{"candidate_id":"candidate:frequency-retained","freshness":"stale","effective_availability":"degraded"}]},"selections":[{"key":{"fact_id":"pv.ac.aggregate_active_power"},"selected_candidate_id":"candidate:power"}],"projection":{"manifest":{"target_id":"target:gateway-semantic-pv"},"dispositions":[{"item_id":"projection.gateway.pv.inverter.ac.power.active","outcome":"exact"},{"item_id":"projection.gateway.pv.inverter.ac.frequency","outcome":"withheld","reason":"mapping.field_invalid"}]}}`), true
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -34,6 +34,9 @@ func TestSemanticPVCurrentUsesOneEvaluatedProjection(t *testing.T) {
 	current := response.Data["semanticPVCurrent"]
 	if len(current) != 4 || current["snapshot"] == nil || current["evaluation"] == nil || current["selections"] == nil || current["projection"] == nil || strings.Contains(recorder.Body.String(), `"snapshotId"`) {
 		t.Fatalf("fixed GraphQL response shape=%s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"coefficient":"43215"`) || !strings.Contains(recorder.Body.String(), `"reason":"mapping.field_invalid"`) || strings.Contains(recorder.Body.String(), `"selected_candidate_id":"candidate:frequency-retained"`) {
+		t.Fatalf("fixed GraphQL response lost PUBLIC-05 field isolation=%s", recorder.Body.String())
 	}
 	want, err := os.ReadFile("testdata/semantic_pv_current.golden.json")
 	if err != nil {

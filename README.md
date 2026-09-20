@@ -89,12 +89,14 @@ or physical validation.
 ## Helianthus Dependency Chain
 
 ```text
-protocol-native transports and registries
-                 -> helianthus-semreg -> helianthus-ebusgateway -> consumers
-                    (canonical state)    (composition/APIs)
+protocol-native transports and registries ----+
+                                               +-> helianthus-ebusgateway -> consumers
+helianthus-semreg (canonical state) -----------+      (composition/APIs)
 ```
 
-Native evidence remains available beside the promoted path; SemReg does not
+Native contracts and SemReg are parallel Gateway inputs. Native evidence remains
+available beside the promoted path; a promoted capability publishes through
+SemReg without routing unrelated native surfaces through it. SemReg does not
 replace protocol owners, and the Gateway does not redefine their evidence.
 
 ## Quickstart (copy/paste)

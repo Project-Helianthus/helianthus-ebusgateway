@@ -1,15 +1,24 @@
 # helianthus-ebusgateway
 
-`helianthus-ebusgateway` is the runtime/API edge for Helianthus eBUS systems. It connects to an eBUS transport and exposes GraphQL, subscriptions, MCP, optional UI surfaces (`/ui`, `/portal`), and optional mDNS advertisement.
+`helianthus-ebusgateway` is the runtime composition and API edge for Helianthus.
+It hosts enabled protocol-native drivers, composes their promoted semantic state,
+and exposes declared GraphQL, MCP, Portal, Prometheus, subscription, and operator
+surfaces. The repository keeps its historical name while its runtime scope spans
+more than eBUS.
 
 ## Purpose and Scope
 
 ### What belongs in this repository
 
 - Gateway runtime assembly (`gateway.go`, `cmd/gateway`).
-- GraphQL query/mutation/subscription surfaces (`graphql/`).
-- MCP JSON-RPC tool surface (`mcp/`).
-- Optional UI mount and mDNS advertisement (`ui/`, `mdns/`).
+- Existing typed driver lifecycle, configuration, admission, and generic
+  contribution seams. The universal public lifecycle/configuration service is
+  still in progress and is not exposed by the current binary.
+- Native and semantic GraphQL query/mutation/subscription surfaces (`graphql/`,
+  `m2mgraphql/`).
+- Native and semantic MCP JSON-RPC tool surfaces (`mcp/`).
+- Portal, Prometheus, optional UI mount, and mDNS advertisement (`portal/`,
+  `semantic_prometheus.go`, `ui/`, `mdns/`).
 - Hardware-backed smoke entrypoint and unknown-device dump plumbing (`cmd/smoke`, `smoke*.go`, `register_dump*.go`).
 
 ### Gateway command map
@@ -33,14 +42,41 @@ The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
 ### What does not belong in this repository
 
 - Low-level transport framing and bus primitives (use `helianthus-ebusgo`).
-- Registry/provider model definitions and plane/projection semantics (use `helianthus-ebusreg`).
+- Reusable protocol-native registry definitions, profile qualification rules,
+  decoders, evidence schemas, and transport primitives (use the owning native
+  registry and transport repository, such as `helianthus-ebusreg`,
+  `helianthus-eebusreg`, or `helianthus-modbusreg`). Gateway-owned drivers and
+  adapters still compose those contracts and retain runtime-native evidence;
+  they do not redefine the upstream protocol contract.
+- Canonical protocol-neutral semantic types and publication contracts (use
+  [`helianthus-semreg`](https://github.com/Project-Helianthus/helianthus-semreg)).
 - Platform deployment bundles or auth/TLS edge policy management (handled by deployment infrastructure).
 
 ## Status and Maturity
 
-- Active, CI-validated gateway service with race-enabled tests.
-- Suitable for onboarding and issue-focused runtime/API changes.
-- Smoke mode is intentionally opt-in and environment-backed (`EBUS_SMOKE=1` + local config file).
+- Active gateway service with repository CI and race-enabled tests.
+- The accepted Gateway baseline pins SemReg at
+  [`089ed6ae9004`](https://github.com/Project-Helianthus/helianthus-semreg/commit/089ed6ae9004cfba8aff27f1e54d579aeccc0b4c).
+- Current accepted SemReg composition covers PV, Storage, and EVSE domain paths;
+  Thermal/HVAC ([issue #952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952)),
+  Infrastructure, complete EEBUS output, Matter output, packaging, and physical
+  validation remain separate or in-progress 0.7 work.
+- Smoke mode is intentionally opt-in and environment-backed (`EBUS_SMOKE=1` + local config file). Repository and offline tests do not establish physical qualification.
+
+### Accepted public evidence
+
+| Surface | Accepted revision and boundary |
+|---|---|
+| SemReg PV composition | [PR #956 / `2ad927b`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/956) makes one SemReg PV publication available to MCP, M2M GraphQL, and Portal. |
+| SemReg Storage and EVSE | [PR #959 / `b2651d7`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/959) and [PR #962 / `1fbf5e1`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/962) add the accepted read-only domain paths. Producer availability and physical qualification remain separate. |
+| Prometheus | [PR #964 / `c139d0e`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/964) exports bounded PV and Storage projections, [PR #967 / `2daae4c`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/967) adds EVSE, and [PR #978 / `143bf19`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/978) adds detached Modbus and EEBUS runtime status. |
+| Generic Portal contributions | [PR #984 / `5eb5346`](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/984) renders the admitted read-only contribution catalog with explicit absence, provenance, freshness, quality, lifecycle, and projection-loss states. Complete INT-10 remains open. |
+| Home Assistant consumers | The separate integration consumes the public PV, Storage, and EVSE SemReg contracts in [PR #257](https://github.com/Project-Helianthus/helianthus-ha-integration/pull/257), [PR #261](https://github.com/Project-Helianthus/helianthus-ha-integration/pull/261), and [PR #263](https://github.com/Project-Helianthus/helianthus-ha-integration/pull/263). Those merges do not prove the packaged add-on contains the same revisions. |
+| EEBUS and Matter | Both are public 0.7 software scope and do not depend on private hardware. EEBUS-native runtime/read surfaces are present, while the protocol-neutral EEBUS output remains in progress. The accepted baseline has [no composed Matter output binding](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/5eb53465e88d254455251203e2dc30f813541bba/docs/architecture/runtime-driver-provider-contract-v1.md#current-operation-inventory-at-the-pinned-baseline); it makes no Matter conformance claim. |
+
+These links establish merged software and offline validation only. They do not
+establish packaging parity, installation success, certification, device support,
+or physical validation.
 
 ## Stable Instance Identity
 
@@ -53,9 +89,15 @@ The defensive non-send Tesla Gen3 HSC completed-outcome owner is documented in
 ## Helianthus Dependency Chain
 
 ```text
-helianthus-ebusgo  ->  helianthus-ebusreg  ->  helianthus-ebusgateway  ->  operators/automation clients
- (transport/proto)     (registry/schema)        (runtime/API)
+protocol-native transports and registries ----+
+                                               +-> helianthus-ebusgateway -> consumers
+helianthus-semreg (canonical state) -----------+      (composition/APIs)
 ```
+
+Native contracts and SemReg are parallel Gateway inputs. Native evidence remains
+available beside the promoted path; a promoted capability publishes through
+SemReg without routing unrelated native surfaces through it. SemReg does not
+replace protocol owners, and the Gateway does not redefine their evidence.
 
 ## Quickstart (copy/paste)
 

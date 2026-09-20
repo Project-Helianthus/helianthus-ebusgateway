@@ -101,45 +101,29 @@ replace protocol owners, and the Gateway does not redefine their evidence.
 
 ## Quickstart (copy/paste)
 
-### 0) Prerequisite: private module access (outside CI)
+Prerequisites: Git, Go 1.22 or newer, Python 3.11 or newer, and Node.js 20
+or newer. The public module graph resolves over HTTPS without a GitHub token,
+`GOPRIVATE`, a `.netrc` file, or sibling checkouts.
+
+### 1) Clone and validate the public source
 
 ```bash
-# Align local module settings with CI for private dependencies.
-export GOPRIVATE='github.com/d3vi1/*'
-export GONOSUMDB='github.com/d3vi1/*'
-export GOPROXY=direct
-
-# Use a GitHub token with read access to private repos.
-export GH_TOKEN='<your_github_token>'
-
-# CI uses a tokenized Git URL rewrite; keep local onboarding non-persistent.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
-export GIT_CONFIG_VALUE_0="https://github.com/"
-```
-
-After local checks, clear auth-related shell variables:
-`unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GH_TOKEN`
-
-### 1) Clone and baseline validation
-
-```bash
-git clone https://github.com/d3vi1/helianthus-ebusgateway.git
+git clone https://github.com/Project-Helianthus/helianthus-ebusgateway.git
 cd helianthus-ebusgateway
+git rev-parse HEAD
+GOWORK=off go mod download
 ./scripts/ci_local.sh
-go test ./...
-go vet ./...
-go build ./...
-go test -race -count=1 ./...
-```
-
-### 2) Inspect runtime flags locally
-
-```bash
 go run ./cmd/gateway -h
 ```
 
-### 3) Run gateway against a local ENH endpoint
+The organization keeps a reproducible anonymous-run record, including the exact
+revision and the boundaries of the evidence, in
+[`profile/reproducibility.md`](https://github.com/Project-Helianthus/.github/blob/main/profile/reproducibility.md).
+Repository validation proves public build and offline test readiness. It does
+not prove packaging parity, installation, certification, or physical device
+qualification.
+
+### 2) Run gateway against a local ENH endpoint
 
 ```bash
 go run ./cmd/gateway \
@@ -149,7 +133,7 @@ go run ./cmd/gateway \
   -http-addr :8080
 ```
 
-### 4) Probe GraphQL and MCP surfaces
+### 3) Probe GraphQL and MCP surfaces
 
 ```bash
 curl -fsS http://127.0.0.1:8080/graphql \
@@ -166,7 +150,7 @@ curl -fsS http://127.0.0.1:8080/mcp \
 ```
 
 Portal API probes and operational notes live in docs:
-https://github.com/d3vi1/helianthus-docs-ebus/blob/main/api/portal.md
+https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/portal.md
 
 ## Local Smoke-Test Configuration Example
 
@@ -251,12 +235,12 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 
 ### Repositories and docs
 
-- `helianthus-ebusgo`: https://github.com/d3vi1/helianthus-ebusgo
-- `helianthus-ebusreg`: https://github.com/d3vi1/helianthus-ebusreg
-- eBUS docs hub: https://github.com/d3vi1/helianthus-docs-ebus
-- Portal API and operations: https://github.com/d3vi1/helianthus-docs-ebus/blob/main/api/portal.md
-- Smoke-test documentation: https://github.com/d3vi1/helianthus-docs-ebus/blob/main/development/smoke-test.md
-- Issue tracker: https://github.com/d3vi1/helianthus-ebusgateway/issues
+- `helianthus-ebusgo`: https://github.com/Project-Helianthus/helianthus-ebusgo
+- `helianthus-ebusreg`: https://github.com/Project-Helianthus/helianthus-ebusreg
+- eBUS docs hub: https://github.com/Project-Helianthus/helianthus-docs-ebus
+- Portal API and operations: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/portal.md
+- Smoke-test documentation: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/smoke-test.md
+- Issue tracker: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues
 
 ### Issue workflow conventions
 

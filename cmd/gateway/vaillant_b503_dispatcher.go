@@ -249,7 +249,16 @@ func (d *rawFrameDispatcher) invokeB503Outcome(ctx context.Context, target byte,
 	// A context or admitted source can become invalid while this operation
 	// waits for B524 polling to quiesce. Revalidate both at the final
 	// pre-emission boundary so terminal disconnect never drains a stale queued
-	// B503 write after readMu becomes available.
+	// B503 write after readMu becomes available. Check the caller first: a
+	// derived request-timeout context can observe parent cancellation slightly
+	// later, and that gap must not admit a B503 write.
+	if err := ctx.Err(); err != nil {
+		unlockReadMu()
+		return mcp.B503DispatchOutcome{
+			Err:       classifyB503ContextErr(ctx, err),
+			Transport: transportAtIssue,
+		}
+	}
 	if err := bsCtx.Err(); err != nil {
 		unlockReadMu()
 		return mcp.B503DispatchOutcome{

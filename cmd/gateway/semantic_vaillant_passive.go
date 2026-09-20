@@ -162,14 +162,10 @@ func passiveShadowLaneEnabled(flags ebusgateway.ObserveFirstFeatureFlags, policy
 
 	switch policy.RequestIntent {
 	case ebusgateway.ObserveFirstRequestIntentRead:
-		switch policy.DirectApplyPolicy {
-		case ebusgateway.ObserveFirstDirectApplyPolicyStateDefault:
+		if policy.DirectApplyPolicy == ebusgateway.ObserveFirstDirectApplyPolicyStateDefault {
 			return flags.PassiveStateDirectApply()
-		case ebusgateway.ObserveFirstDirectApplyPolicyConfigOptIn:
-			return flags.PassiveConfigDirectApply()
-		default:
-			return false
 		}
+		return false
 	case ebusgateway.ObserveFirstRequestIntentWrite:
 		if !policy.UsesRuntimeExternalWritePolicy {
 			return false

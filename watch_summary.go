@@ -224,16 +224,10 @@ func watchSummaryDirectApplyClass(class WatchSemanticClass, policy WatchDirectAp
 		}
 		return watchSummaryDirectApplyClassStateIneligible
 	case WatchDirectApplyPolicyConfigOptIn:
-		if class != WatchSemanticClassConfig {
-			return watchSummaryDirectApplyClassNotApplicable
-		}
-		if !featureFlags.ObserveFirstEnabled() {
-			return watchSummaryDirectApplyClassConfigMasterOff
-		}
-		if featureFlags.PassiveConfigDirectApply() {
-			return watchSummaryDirectApplyClassConfigEligible
-		}
-		return watchSummaryDirectApplyClassConfigIneligible
+		// Config direct-apply has no accepted end-to-end runtime admission path.
+		// Keep the descriptor visible while reporting it as unavailable for direct
+		// application until that path is explicitly implemented and qualified.
+		return watchSummaryDirectApplyClassNotApplicable
 	default:
 		return watchSummaryDirectApplyClassNotApplicable
 	}

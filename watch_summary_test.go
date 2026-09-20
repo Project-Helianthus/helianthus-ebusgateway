@@ -136,9 +136,8 @@ func TestShadowCacheWatchSummary_ComputesInventoryActivationAndEligibilityClasse
 
 	directApplyClasses := classCountsToMap(summary.DirectApplyEligibilityClasses)
 	if directApplyClasses[watchSummaryDirectApplyClassStateEligible] != 2 ||
-		directApplyClasses[watchSummaryDirectApplyClassConfigIneligible] != 1 ||
-		directApplyClasses[watchSummaryDirectApplyClassNotApplicable] != 1 {
-		t.Fatalf("direct_apply_eligibility_classes = %+v; want state_eligible=2 config_ineligible=1 not_applicable=1", directApplyClasses)
+		directApplyClasses[watchSummaryDirectApplyClassNotApplicable] != 2 {
+		t.Fatalf("direct_apply_eligibility_classes = %+v; want state_eligible=2 not_applicable=2", directApplyClasses)
 	}
 
 	if summary.Degraded.Active {
@@ -236,9 +235,8 @@ func TestShadowCacheWatchSummary_DirectApplyEligibilityHonorsDescriptorPolicy(t 
 
 	directApplyClasses := classCountsToMap(cache.WatchSummary().DirectApplyEligibilityClasses)
 	if directApplyClasses[watchSummaryDirectApplyClassStateEligible] != 1 ||
-		directApplyClasses[watchSummaryDirectApplyClassConfigEligible] != 1 ||
-		directApplyClasses[watchSummaryDirectApplyClassNotApplicable] != 5 {
-		t.Fatalf("direct_apply_eligibility_classes = %+v; want state_eligible=1 config_eligible=1 not_applicable=5", directApplyClasses)
+		directApplyClasses[watchSummaryDirectApplyClassNotApplicable] != 6 {
+		t.Fatalf("direct_apply_eligibility_classes = %+v; want state_eligible=1 not_applicable=6", directApplyClasses)
 	}
 }
 

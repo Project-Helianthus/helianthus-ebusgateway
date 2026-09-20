@@ -177,11 +177,11 @@ func TestHandleAdjudicatedPassiveEvent_DirectApplyAdmissionHonorsNormalizedPolic
 			want:   true,
 		},
 		{
-			name:   "config opt in is admitted",
+			name:   "config opt in remains denied without runtime admission",
 			flags:  ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
 			key:    configKey,
 			policy: ebusgateway.ObserveFirstDirectApplyPolicyConfigOptIn,
-			want:   true,
+			want:   false,
 		},
 		{
 			name:   "global disable is denied",

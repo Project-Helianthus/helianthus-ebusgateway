@@ -372,6 +372,90 @@ func TestActivePassiveDeduplicator_B524ConfigShadowObserverDoesNotPromoteToState
 	}
 }
 
+func TestActivePassiveDeduplicator_B524ConfigDirectApplyRemainsObservabilityOnlyForNormalizedFlags(t *testing.T) {
+	configKey := NewB524WatchKey(0x15, 0x06, 0x03, 0x01, 0x0005)
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x15,
+		Primary:   0xB5,
+		Secondary: 0x24,
+		Data:      []byte{0x06, 0x00, 0x03, 0x01, 0x05, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x42, 0x01, 0x03, 0x05, 0x00, 0x22},
+	}
+	cases := []struct {
+		name  string
+		flags ObserveFirstFeatureFlags
+	}{
+		{
+			name:  "config flag enabled",
+			flags: NormalizeObserveFirstFeatureFlags(true, true, true, ObserveFirstExternalWritePolicyRecordAndInvalidate),
+		},
+		{
+			name:  "config flag normalized disabled",
+			flags: NormalizeObserveFirstFeatureFlags(true, false, true, ObserveFirstExternalWritePolicyRecordAndInvalidate),
+		},
+	}
+
+	for _, test := range cases {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			catalog, err := NewWatchCatalog([]WatchDescriptor{{
+				Key:               configKey,
+				SemanticClass:     WatchSemanticClassConfig,
+				FreshnessProfile:  WatchFreshnessProfileConfig,
+				DecoderID:         "test.semantic.config.flags",
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+			}})
+			if err != nil {
+				t.Fatalf("NewWatchCatalog error = %v", err)
+			}
+			activations := NewWatchActivationSet(catalog)
+			if err := activations.Activate(WatchActivationSourcePoller, configKey); err != nil {
+				t.Fatalf("Activate error = %v", err)
+			}
+			base := time.Unix(0, 0)
+			shadow := NewShadowCache(ShadowCacheOptions{
+				Catalog:      catalog,
+				Activations:  activations,
+				FeatureFlags: test.flags,
+				Now:          func() time.Time { return base },
+			})
+			cfg := DefaultConfig()
+			cfg.ObserveFirstFlags = test.flags
+			cfg.WatchObserver = shadow
+			deduplicator, err := NewActivePassiveDeduplicator(cfg)
+			if err != nil {
+				t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
+			}
+			defer deduplicator.Close()
+			forceHealthyDedup(deduplicator)
+			deduplicator.nowFunc = func() time.Time { return base }
+			subscription, err := deduplicator.Subscribe("test-config-no-direct-apply", DedupSubscriberCritical, 2)
+			if err != nil {
+				t.Fatalf("Subscribe error = %v", err)
+			}
+			defer subscription.Close()
+
+			deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+			deduplicator.publishAll(deduplicator.releaseExpiredPending(base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond)))
+			event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
+			if event.ThirdPartyEligible {
+				t.Fatal("ThirdPartyEligible = true; want false for config direct-apply without runtime admission")
+			}
+			if event.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyNever {
+				t.Fatalf("DirectApplyPolicy = %q; want never", event.FamilyPolicy.DirectApplyPolicy)
+			}
+		})
+	}
+}
+
 func TestActivePassiveDeduplicator_B524ConfigPolicyNotPromotedToStateDefault(t *testing.T) {
 	deduplicator := newTestDeduplicator(t)
 	forceHealthyDedup(deduplicator)

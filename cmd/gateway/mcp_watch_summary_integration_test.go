@@ -26,27 +26,24 @@ func TestMCPWatchSummaryProviderAdapter_DirectApplyPolicyGoldenAndNormalizedFlag
 			name:  "permitted paths and denied policies",
 			flags: ebusgateway.NormalizeObserveFirstFeatureFlags(true, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordOnly),
 			wantCounts: map[string]int{
-				"state_eligible":  1,
-				"config_eligible": 1,
-				"not_applicable":  5,
+				"state_eligible": 1,
+				"not_applicable": 6,
 			},
 		},
 		{
 			name:  "global disable",
 			flags: ebusgateway.NormalizeObserveFirstFeatureFlags(false, true, true, ebusgateway.ObserveFirstExternalWritePolicyRecordOnly),
 			wantCounts: map[string]int{
-				"state_master_off":  1,
-				"config_master_off": 1,
-				"not_applicable":    5,
+				"state_master_off": 1,
+				"not_applicable":   6,
 			},
 		},
 		{
 			name:  "normalized config disabled",
 			flags: ebusgateway.NormalizeObserveFirstFeatureFlags(true, false, true, ebusgateway.ObserveFirstExternalWritePolicyRecordAndInvalidate),
 			wantCounts: map[string]int{
-				"state_ineligible":  1,
-				"config_ineligible": 1,
-				"not_applicable":    5,
+				"state_ineligible": 1,
+				"not_applicable":   6,
 			},
 		},
 	}

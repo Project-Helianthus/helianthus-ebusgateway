@@ -253,6 +253,104 @@ func TestObserveFirstFamilyPolicy_B509DirectApplyRequiresPayloadBearingRead(t *t
 	}
 }
 
+func TestObserveFirstFamilyPolicy_B509DirectApplyRequiresMatchingActiveStateDescriptor(t *testing.T) {
+	request := protocol.Frame{
+		Source:    0x31,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+	key := NewB509WatchKey(0x08, 0x0200)
+
+	tests := []struct {
+		name       string
+		descriptor WatchDescriptor
+		want       ObserveFirstDirectApplyPolicy
+	}{
+		{
+			name: "state default is admitted",
+			descriptor: WatchDescriptor{
+				Key:               key,
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+			},
+			want: ObserveFirstDirectApplyPolicyStateDefault,
+		},
+		{
+			name: "never is refused",
+			descriptor: WatchDescriptor{
+				Key:               key,
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyNever,
+			},
+			want: ObserveFirstDirectApplyPolicyNever,
+		},
+		{
+			name: "energy merge only is refused",
+			descriptor: WatchDescriptor{
+				Key:               key,
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyEnergyMergeOnly,
+			},
+			want: ObserveFirstDirectApplyPolicyNever,
+		},
+		{
+			name: "unknown policy is refused",
+			descriptor: WatchDescriptor{
+				Key:               key,
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicy("unknown"),
+			},
+			want: ObserveFirstDirectApplyPolicyNever,
+		},
+		{
+			name: "semantic class policy mismatch is refused",
+			descriptor: WatchDescriptor{
+				Key:               key,
+				SemanticClass:     WatchSemanticClassConfig,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyConfigOptIn,
+			},
+			want: ObserveFirstDirectApplyPolicyNever,
+		},
+		{
+			name: "descriptor key mismatch is refused",
+			descriptor: WatchDescriptor{
+				Key:               NewB509WatchKey(0x08, 0x0201),
+				SemanticClass:     WatchSemanticClassState,
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: WatchDirectApplyPolicyStateDefault,
+			},
+			want: ObserveFirstDirectApplyPolicyNever,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			policy := observeFirstFamilyPolicy(
+				ObserveFirstTrafficScopePassive,
+				request,
+				DedupResponseValueBearing,
+				WatchObservation{
+					State:         WatchObservationStateActive,
+					Descriptor:    test.descriptor,
+					HasDescriptor: true,
+				},
+				NormalizeObserveFirstFeatureFlags(true, true, true, ObserveFirstExternalWritePolicyRecordOnly),
+			)
+			if policy.DirectApplyPolicy != test.want {
+				t.Fatalf("DirectApplyPolicy = %q; want %q", policy.DirectApplyPolicy, test.want)
+			}
+		})
+	}
+}
+
 func TestObserveFirstFamilyPolicy_B555UsesConservativeRecordInvalidate(t *testing.T) {
 	request := protocol.Frame{
 		Source:    0x10,

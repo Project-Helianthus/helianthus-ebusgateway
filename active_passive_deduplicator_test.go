@@ -494,13 +494,16 @@ func TestActivePassiveDeduplicator_PassiveFingerprintCarriesSharedB509WatchKeyFo
 	deduplicator.nowFunc = func() time.Time { return base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond) }
 	deduplicator.publishAll(deduplicator.releaseExpiredPending(deduplicator.now()))
 
-	event := requireAdjudicatedEvent(t, subscription, DedupDispositionUnmatchedThirdParty)
+	event := requireAdjudicatedEvent(t, subscription, DedupDispositionObservabilityOnly)
 	if event.Fingerprint.SharedWatchKey == nil {
 		t.Fatal("SharedWatchKey = nil; want parsed passive watch key")
 	}
 	want := NewB509WatchKey(0x08, 0x0200).Canonical()
 	if got := event.Fingerprint.SharedWatchKey.Canonical(); got != want {
 		t.Fatalf("SharedWatchKey.Canonical() = %q; want %q", got, want)
+	}
+	if event.ThirdPartyEligible {
+		t.Fatal("ThirdPartyEligible = true; want false without an active normalized descriptor")
 	}
 }
 
@@ -532,6 +535,119 @@ func TestBuildActiveFingerprint_B509HeaderOnlyResponseUsesFamilyClassifier(t *te
 	}
 	if fingerprint.ResponseClass != DedupResponseHeaderOnly {
 		t.Fatalf("ResponseClass = %q; want %q", fingerprint.ResponseClass, DedupResponseHeaderOnly)
+	}
+}
+
+func TestActivePassiveDeduplicator_B509ThirdPartyAdmissionUsesActiveNormalizedDescriptor(t *testing.T) {
+	base := time.Unix(0, 0)
+	key := NewB509WatchKey(0x08, 0x0200)
+	request := protocol.Frame{
+		Source:    0x10,
+		Target:    0x08,
+		Primary:   0xB5,
+		Secondary: 0x09,
+		Data:      []byte{0x29, 0x02, 0x00},
+	}
+	response := protocol.Frame{
+		Source:    request.Target,
+		Target:    request.Source,
+		Primary:   request.Primary,
+		Secondary: request.Secondary,
+		Data:      []byte{0x29, 0x02, 0x00, 0x7F},
+	}
+
+	tests := []struct {
+		name        string
+		class       WatchSemanticClass
+		policy      WatchDirectApplyPolicy
+		disposition DedupDisposition
+	}{
+		{
+			name:        "state default is admitted",
+			class:       WatchSemanticClassState,
+			policy:      WatchDirectApplyPolicyStateDefault,
+			disposition: DedupDispositionUnmatchedThirdParty,
+		},
+		{
+			name:        "never is observability only",
+			class:       WatchSemanticClassState,
+			policy:      WatchDirectApplyPolicyNever,
+			disposition: DedupDispositionObservabilityOnly,
+		},
+		{
+			name:        "energy merge only is observability only",
+			class:       WatchSemanticClassState,
+			policy:      WatchDirectApplyPolicyEnergyMergeOnly,
+			disposition: DedupDispositionObservabilityOnly,
+		},
+		{
+			name:        "unknown policy is observability only",
+			class:       WatchSemanticClassState,
+			policy:      WatchDirectApplyPolicy("unknown"),
+			disposition: DedupDispositionObservabilityOnly,
+		},
+		{
+			name:        "semantic class policy mismatch is observability only",
+			class:       WatchSemanticClassConfig,
+			policy:      WatchDirectApplyPolicyConfigOptIn,
+			disposition: DedupDispositionObservabilityOnly,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := WatchDescriptor{
+				Key:               key,
+				SemanticClass:     test.class,
+				FreshnessProfile:  WatchFreshnessProfileStateFast,
+				DecoderID:         "test.active.normalized.b509",
+				CorrelationPolicy: WatchCorrelationPolicyRequestResponse,
+				DirectApplyPolicy: test.policy,
+			}
+			if test.class == WatchSemanticClassConfig {
+				descriptor.FreshnessProfile = WatchFreshnessProfileConfig
+			}
+			catalog, err := NewWatchCatalog([]WatchDescriptor{descriptor})
+			if err != nil {
+				t.Fatalf("NewWatchCatalog error = %v", err)
+			}
+			activations := NewWatchActivationSet(catalog)
+			if err := activations.Activate(WatchActivationSourcePoller, key); err != nil {
+				t.Fatalf("Activate error = %v", err)
+			}
+			shadow := NewShadowCache(ShadowCacheOptions{
+				Catalog:      catalog,
+				Activations:  activations,
+				FeatureFlags: NormalizeObserveFirstFeatureFlags(true, true, true, ObserveFirstExternalWritePolicyRecordAndInvalidate),
+				Now:          func() time.Time { return base },
+			})
+			cfg := DefaultConfig()
+			cfg.WatchObserver = shadow
+			cfg.ObserveFirstFlags = shadow.FeatureFlags()
+			deduplicator, err := NewActivePassiveDeduplicator(cfg)
+			if err != nil {
+				t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
+			}
+			defer deduplicator.Close()
+			forceHealthyDedup(deduplicator)
+			deduplicator.nowFunc = func() time.Time { return base }
+			subscription, err := deduplicator.Subscribe("test-normalized-b509", DedupSubscriberCritical, 2)
+			if err != nil {
+				t.Fatalf("Subscribe error = %v", err)
+			}
+			defer subscription.Close()
+
+			deduplicator.OnPassiveClassifiedEvent(passiveTransactionEvent(base, request, response))
+			deduplicator.publishAll(deduplicator.releaseExpiredPending(base.Add(deduplicator.budgets.PendingGraceTimeout + time.Millisecond)))
+			event := requireAdjudicatedEvent(t, subscription, test.disposition)
+			if event.Fingerprint.FamilyPolicy.DirectApplyPolicy != ObserveFirstDirectApplyPolicyStateDefault && test.disposition == DedupDispositionUnmatchedThirdParty {
+				t.Fatalf("permitted descriptor policy = %q; want state_default", event.Fingerprint.FamilyPolicy.DirectApplyPolicy)
+			}
+			if event.Disposition == DedupDispositionUnmatchedThirdParty && event.SuppressShadow {
+				t.Fatal("permitted B509 descriptor suppressed shadow; want direct-apply lane available")
+			}
+		})
 	}
 }
 

@@ -121,7 +121,7 @@ func observeFirstFamilyPolicy(scope ObserveFirstTrafficScope, request protocol.F
 		}
 	case ObserveFirstFamilyB509:
 		policy.CorrelationPolicy = WatchCorrelationPolicyRequestResponse
-		if intent == ObserveFirstRequestIntentRead && responseClass == DedupResponseValueBearing {
+		if observeFirstB509CorrelatedStateRead(request, observation) && responseClass == DedupResponseValueBearing {
 			policy.DirectApplyPolicy = ObserveFirstDirectApplyPolicyStateDefault
 		}
 	case ObserveFirstFamilyB555:
@@ -322,14 +322,34 @@ func observeFirstExpectedB524ReadSelector(frame protocol.Frame) (opcode, group, 
 }
 
 func observeFirstB524CorrelatedStateRead(frame protocol.Frame, observation WatchObservation) bool {
-	_, _, _, _, ok := observeFirstExpectedB524ReadSelector(frame)
+	opcode, group, instance, addr, ok := observeFirstExpectedB524ReadSelector(frame)
 	if !ok {
+		return false
+	}
+	key := NewB524WatchKey(frame.Target, opcode, group, instance, addr)
+	return observeFirstMatchesActiveStateDefaultDescriptor(key, observation)
+}
+
+func observeFirstB509CorrelatedStateRead(frame protocol.Frame, observation WatchObservation) bool {
+	addr, ok := observeFirstExpectedB509Address(frame)
+	if !ok || observeFirstRequestIntentFromFrame(frame) != ObserveFirstRequestIntentRead {
+		return false
+	}
+	key := NewB509WatchKey(frame.Target, addr)
+	return observeFirstMatchesActiveStateDefaultDescriptor(key, observation)
+}
+
+func observeFirstMatchesActiveStateDefaultDescriptor(key WatchKey, observation WatchObservation) bool {
+	if key == nil {
 		return false
 	}
 	if !observation.HasDescriptor || observation.State != WatchObservationStateActive {
 		return false
 	}
 	descriptor := observation.Descriptor
+	if descriptor.Key == nil || descriptor.Key.Canonical() != key.Canonical() {
+		return false
+	}
 	if descriptor.SemanticClass != WatchSemanticClassState {
 		return false
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -375,10 +376,21 @@ func TestPUBLIC05InvalidFrequencyIsUnavailableWhilePowerRefreshes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeFrequency := pvCoreEnvelope(t, before.snapshot, "pv.ac.frequency")
+	if len(beforeFrequency.Candidates) != 1 {
+		t.Fatalf("initial frequency candidates=%d; want one", len(beforeFrequency.Candidates))
+	}
+	initialFrequency := beforeFrequency.Candidates[0]
+	if initialFrequency.Value == nil || initialFrequency.Value.Quantity == nil || initialFrequency.Value.Quantity.Unit != "unit.hertz" || initialFrequency.Value.Quantity.Number.Coefficient != "5" || initialFrequency.Value.Quantity.Number.Exponent10 != 1 {
+		t.Fatalf("initial frequency=%+v; want exact 50 Hz", initialFrequency.Value)
+	}
 	words := observedFroniusFloatControlsWords()
 	pvCoreSetFloat(words, 20, 4_321.5)
 	pvCoreSetFloat(words, 22, 2_000) // invalid frequency; retain the prior candidate.
 	second := pvCoreDraft(t, words, "source-epoch:pv:test-a", 1, 31_000_000_000)
+	if pvCoreHasFact(second.facts, "pv.ac.frequency") {
+		t.Fatal("invalid 2000 Hz refresh contributed a frequency candidate")
+	}
 	if _, err := core.ingest(second); err != nil {
 		t.Fatalf("healthy refresh with one stale retained field: %v", err)
 	}
@@ -396,14 +408,14 @@ func TestPUBLIC05InvalidFrequencyIsUnavailableWhilePowerRefreshes(t *testing.T) 
 	if len(frequency.Candidates) != 1 {
 		t.Fatalf("retained frequency candidates=%d", len(frequency.Candidates))
 	}
+	if !reflect.DeepEqual(frequency.Candidates[0], initialFrequency) {
+		t.Fatalf("invalid refresh replaced retained 50 Hz candidate:\n before=%+v\n after=%+v", initialFrequency, frequency.Candidates[0])
+	}
 	if freshness, ok := pvCoreEvaluatedFreshness(after.evaluation, frequency.Candidates[0].CandidateID); !ok || freshness != semreg.FreshnessStale {
 		t.Fatalf("retained frequency freshness=%s found=%t", freshness, ok)
 	}
 	if pvCoreHasSelection(after.selections, frequency.Key) {
 		t.Fatal("stale retained frequency received a presentation selection")
-	}
-	if frequency.Candidates[0].Value == nil || frequency.Candidates[0].Value.Quantity == nil || frequency.Candidates[0].Value.Quantity.Number.Coefficient == "0" {
-		t.Fatalf("invalid frequency invented zero instead of retaining native evidence: %+v", frequency.Candidates[0].Value)
 	}
 	frequencyProjection := pvCoreDispositionReport(t, after.projection, "inverter.ac.frequency")
 	if frequencyProjection.Outcome != projection.ProjectionWithheld || frequencyProjection.Reason == nil || *frequencyProjection.Reason != pvReasonFieldInvalid {

@@ -42,14 +42,15 @@ const (
 	// terminator and abandoned-grant cases) because, for a legitimate
 	// terminator, the SYN byte IS delivered to activeCh so the bus.Send
 	// consumer observes the terminator. See onSYNLocked.
-	ReasonSYNTerminator     ActiveTxnInactiveReason = "syn_terminator"
-	ReasonSYNTimeout        ActiveTxnInactiveReason = "syn_timeout"
-	ReasonMaxOwnership      ActiveTxnInactiveReason = "max_ownership"
-	ReasonReset             ActiveTxnInactiveReason = "reset"
-	ReasonReconnect         ActiveTxnInactiveReason = "reconnect"
-	ReasonActiveWriteError  ActiveTxnInactiveReason = "active_write_error"
-	ReasonActiveReadTimeout ActiveTxnInactiveReason = "active_read_timeout"
-	ReasonContextCancel     ActiveTxnInactiveReason = "context_cancel"
+	ReasonSYNTerminator        ActiveTxnInactiveReason = "syn_terminator"
+	ReasonSYNTimeout           ActiveTxnInactiveReason = "syn_timeout"
+	ReasonMaxOwnership         ActiveTxnInactiveReason = "max_ownership"
+	ReasonReset                ActiveTxnInactiveReason = "reset"
+	ReasonReconnect            ActiveTxnInactiveReason = "reconnect"
+	ReasonActiveWriteError     ActiveTxnInactiveReason = "active_write_error"
+	ReasonActiveReadTimeout    ActiveTxnInactiveReason = "active_read_timeout"
+	ReasonContextCancel        ActiveTxnInactiveReason = "context_cancel"
+	ReasonArbitrationCollision ActiveTxnInactiveReason = "arbitration_collision"
 )
 
 // activeTxnDiag captures per-transaction diagnostic data for a gateway
@@ -406,6 +407,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	m.activeTxn.bytesRead.Store(0)
 	m.activeTxn.bytesDeliveredToActive.Store(0)
 	m.activeTxn.firstByteSuspectArbLoss.Store(false)
+	m.collisionResyncSYNs = 0
 	m.activeTxn.drainedOnGrant = drained
 	m.activeTxn.grantsTotal.Add(1)
 	// batch-22 round-3 Attack 2: snapshot the upstream transport's
@@ -434,9 +436,12 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 	)
 }
 
-// markActiveReadTimeout clears gatewayTxnActive with ReasonActiveReadTimeout.
-// Called from activeTransport.ReadByte/ReadEvent when the read times out.
-// Acquires stateMu internally. Caller must NOT hold stateMu.
+// markActiveReadTimeout clears ordinary gateway transactions with
+// ReasonActiveReadTimeout. A confirmed F-NEW-29 collision recovery is the
+// narrow exception: protocol.Bus treats ErrTimeout while waitForSyn as a
+// retryable absence of a structural SYN, so its transaction identity and
+// arbitration ownership remain live until Retry, Abandon, or another terminal
+// lifecycle boundary. Caller must NOT hold stateMu.
 //
 // Codex round-2 MUST FIX on PR #647: if the transition fires AND
 // V8ClassifierMode != Off, the watchdog is cancelled outside stateMu
@@ -448,7 +453,7 @@ func (m *Mux) recordGatewayGrant(initiator byte, drained int) {
 func (m *Mux) markActiveReadTimeout() {
 	m.stateMu.Lock()
 	transitioned := false
-	if m.gatewayTxnActive {
+	if m.gatewayTxnActive && !m.activeTxn.firstByteSuspectArbLoss.Load() {
 		m.gatewayTxnActive = false
 		m.recordGatewayInactive(ReasonActiveReadTimeout)
 		transitioned = true
@@ -532,6 +537,11 @@ func (m *Mux) recordGatewayInactive(reason ActiveTxnInactiveReason) {
 	if m.activeTxn.inactiveReas != ReasonNone {
 		return
 	}
+	// A collision resynchronization envelope belongs only to the live
+	// gateway transaction. Every terminal boundary clears it so stale
+	// SYNs cannot affect a later grant after reset, reconnect, context
+	// cancellation, timeout, or normal ownership release.
+	m.collisionResyncSYNs = 0
 	m.activeTxn.inactiveAt = time.Now()
 	m.activeTxn.inactiveReas = reason
 	class := m.classifyTxnLocked(reason)
@@ -614,6 +624,12 @@ func (m *Mux) classifyTxnLocked(reason ActiveTxnInactiveReason) TxnClass {
 	// echo-only timeout.)
 	if reason == ReasonTransactionDone || reason == ReasonCmdNACK {
 		return TxnClassSuccessLike
+	}
+	// A first-byte arbitration collision is confirmed foreign traffic,
+	// not a candidate response merely because the protocol retry path
+	// subsequently consumed its SYN resynchronization envelope.
+	if reason == ReasonArbitrationCollision {
+		return TxnClassNonEchoInvalidFrame
 	}
 
 	isTimeoutLike := reason == ReasonActiveReadTimeout ||

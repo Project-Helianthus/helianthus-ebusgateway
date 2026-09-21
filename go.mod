@@ -3,7 +3,7 @@ module github.com/Project-Helianthus/helianthus-ebusgateway
 go 1.22.0
 
 require (
-	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260821185245-872b442444f2
+	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260921041247-2ebba9fb05fe
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20260906140547-e24532a50caa
 	github.com/Project-Helianthus/helianthus-eebusreg v0.1.35
 	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20260909115211-f670287d0d86

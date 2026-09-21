@@ -61,6 +61,13 @@ type p3MockTransport struct {
 	// readTimeout, if > 0, causes ReadEvent to return ErrTimeout
 	// after this duration instead of blocking indefinitely (AM33).
 	readTimeout time.Duration
+
+	// requestStartHook and writeHook are optional deterministic firmware
+	// seams for cross-layer active-path tests. They run after the mock has
+	// recorded the operation, with its mutex released, so a hook may inject
+	// the corresponding adapter event without blocking readLoop.
+	requestStartHook func(byte)
+	writeHook        func(byte)
 }
 
 func newP3MockTransport() *p3MockTransport {
@@ -71,8 +78,12 @@ func newP3MockTransport() *p3MockTransport {
 
 func (t *p3MockTransport) RequestStart(initiator byte) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.startRequests = append(t.startRequests, initiator)
+	hook := t.requestStartHook
+	t.mu.Unlock()
+	if hook != nil {
+		hook(initiator)
+	}
 	return nil
 }
 
@@ -111,9 +122,27 @@ func (t *p3MockTransport) ReadByte() (byte, error) {
 
 func (t *p3MockTransport) Write(p []byte) (int, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.writtenBytes = append(t.writtenBytes, p...)
+	hook := t.writeHook
+	t.mu.Unlock()
+	if hook != nil {
+		for _, b := range p {
+			hook(b)
+		}
+	}
 	return len(p), nil
+}
+
+func (t *p3MockTransport) setRequestStartHook(hook func(byte)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.requestStartHook = hook
+}
+
+func (t *p3MockTransport) setWriteHook(hook func(byte)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.writeHook = hook
 }
 
 func (t *p3MockTransport) Close() error {

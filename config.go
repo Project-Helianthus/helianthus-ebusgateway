@@ -96,7 +96,9 @@ type EEBusConfig struct {
 	PairingWindowMode  EEBusPairingWindowMode
 }
 
-// M2MGraphQLConfig configures the dedicated public SemReg PV listener.
+// M2MGraphQLConfig configures the dedicated public M2M API listener. The field
+// and CLI prefix retain their pre-v1 name while the listener also hosts other
+// versioned M2M contracts such as the Matter binding feed.
 // An all-zero value is disabled. Any partially populated value is rejected by
 // the command runtime rather than being silently enabled.
 type M2MGraphQLConfig struct {

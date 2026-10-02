@@ -13,6 +13,8 @@ REPO_ROOT = SCRIPT_DIR.parent
 TRANSPORT_GATE_SCRIPT = REPO_ROOT / "scripts" / "transport_gate.sh"
 CONFIG_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_public_config_classifier.py"
 PROMETHEUS_LIFECYCLE_CLASSIFIER = REPO_ROOT / "scripts" / "semreg_prometheus_transport_classifier.py"
+MATTER_FEED_CLASSIFIER = REPO_ROOT / "scripts" / "matter_feed_transport_classifier.py"
+MATTER_FEED_API_PATCH = SCRIPT_DIR / "testdata" / "matter_feed_api_composition.patch"
 
 
 class TransportGateTests(unittest.TestCase):
@@ -164,6 +166,7 @@ type Config struct {
         shutil.copy2(TRANSPORT_GATE_SCRIPT, repo_path / "scripts" / "transport_gate.sh")
         shutil.copy2(CONFIG_CLASSIFIER, repo_path / "scripts" / "semreg_public_config_classifier.py")
         shutil.copy2(PROMETHEUS_LIFECYCLE_CLASSIFIER, repo_path / "scripts" / "semreg_prometheus_transport_classifier.py")
+        shutil.copy2(MATTER_FEED_CLASSIFIER, repo_path / "scripts" / "matter_feed_transport_classifier.py")
 
         tracked_file = repo_path / changed_file
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +189,100 @@ type Config struct {
             encoding="utf-8",
         )
         return repo_path, report_path
+
+    def _create_matter_feed_api_repo(self) -> pathlib.Path:
+        paths = (
+            "cmd/gateway/gateway_run_lifecycle.go",
+            "cmd/gateway/m2m_graphql_config.go",
+            "cmd/gateway/m2m_graphql_runtime.go",
+            "config.go",
+        )
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        repo_path = pathlib.Path(temp_dir.name)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Codex"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "scripts").mkdir(parents=True)
+        for source in (TRANSPORT_GATE_SCRIPT, CONFIG_CLASSIFIER, PROMETHEUS_LIFECYCLE_CLASSIFIER, MATTER_FEED_CLASSIFIER):
+            shutil.copy2(source, repo_path / "scripts" / source.name)
+        for path in paths:
+            target = repo_path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / path, target)
+        reverse_check = subprocess.run(
+            ["git", "apply", "--unidiff-zero", "-R", "--check", str(MATTER_FEED_API_PATCH)],
+            cwd=repo_path, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(reverse_check.returncode, 0, msg=reverse_check.stdout + reverse_check.stderr)
+        subprocess.run(["git", "apply", "--unidiff-zero", "-R", str(MATTER_FEED_API_PATCH)], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "base"], cwd=repo_path, check=True, capture_output=True, text=True)
+        for path in paths:
+            shutil.copy2(REPO_ROOT / path, repo_path / path)
+        self.assertEqual(subprocess.run(["git", "remote"], cwd=repo_path, check=True, capture_output=True, text=True).stdout, "")
+        self.assertEqual(subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True).stdout.strip(), "1")
+        return repo_path
+
+    def test_matter_feed_api_composition_exemption_is_exact(self) -> None:
+        repo_path = self._create_matter_feed_api_repo()
+        allowed = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
+        self.assertIn("transport gate: not triggered.", allowed.stdout)
+
+        runtime = repo_path / "cmd/gateway/m2m_graphql_runtime.go"
+        runtime.write_text(runtime.read_text(encoding="utf-8") + "\nfunc openNativeTransport() {}\n", encoding="utf-8")
+        hostile = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("Modbus RTU production conformance", hostile.stdout)
+
+    def test_matter_feed_api_composition_does_not_exempt_added_native_source(self) -> None:
+        repo_path = self._create_matter_feed_api_repo()
+        native = repo_path / "internal/adaptermux/native.go"
+        native.parent.mkdir(parents=True)
+        native.write_text("package adaptermux\nfunc openNativeTransport() {}\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(native.relative_to(repo_path))], cwd=repo_path, check=True, capture_output=True, text=True)
+        hostile = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
+
+    def test_config_comment_only_exemption_rejects_production_code(self) -> None:
+        repo_path, _ = self._create_temp_repo(
+            "config.go",
+            base_text="// previous configuration comment\n",
+            modified_text="// revised configuration comment\n",
+        )
+        allowed = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
+        self.assertIn("transport gate: not triggered.", allowed.stdout)
+
+        (repo_path / "config.go").write_text(
+            "// revised configuration comment\nfunc openNativeTransport() {}\n",
+            encoding="utf-8",
+        )
+        hostile = subprocess.run(
+            ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+            env=self._script_env(TRANSPORT_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("TRANSPORT_MATRIX_REPORT is required", hostile.stdout)
 
     def _fake_go_env(self, repo_path: pathlib.Path, exit_code: int, missing_test: str = "") -> dict[str, str]:
         bin_dir = repo_path / "fake-bin"

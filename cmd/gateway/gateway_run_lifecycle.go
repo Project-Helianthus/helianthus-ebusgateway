@@ -117,7 +117,12 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 		}()
 	}
-	m2mRuntime, err := newM2MGraphQLRuntimeWithTesla(cfg, modbusAdapter, growattBMSRuntime, teslaHSCRetained)
+	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)
+	matterFeedProvider, err := newGatewayMatterBindingFeedProvider(portalCatalogSource, cfg.M2MGraphQL.AllowedAssets)
+	if err != nil {
+		return fmt.Errorf("matter binding feed provider: %w", err)
+	}
+	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, modbusAdapter, growattBMSRuntime, teslaHSCRetained, matterFeedProvider)
 	if err != nil {
 		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
 	}
@@ -560,7 +565,6 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err := builder.Start(ctx); err != nil {
 		return err
 	}
-	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)
 	var (
 		listener      *ebusgateway.BroadcastListener
 		reconstructor *ebusgateway.PassiveTransactionReconstructor

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/schemas/matter-binding-feed-v1.schema.json",
+  "title": "Helianthus Gateway Matter binding feed v1",
+  "description": "Detached HTTP/JSON feed. It creates no Matter node, endpoint, fabric, route, or native dispatch.",
+  "oneOf": [
+    { "$ref": "#/$defs/snapshotResponse" },
+    { "$ref": "#/$defs/changesResponse" },
+    { "$ref": "#/$defs/intent" },
+    { "$ref": "#/$defs/execution" },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "error"],
+      "properties": {
+        "contract": { "const": "helianthus.gateway.matter-binding-feed/v1" },
+        "error": { "enum": ["unavailable", "method_not_allowed", "capture_unavailable", "invalid_cursor", "content_type_required", "principal_required", "invalid_intent", "admission_rejected", "invalid_execution", "not_found", "encode_failed"] }
+      }
+    }
+  ],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "cursor": { "type": "object", "additionalProperties": false, "required": ["instance", "sequence"], "properties": { "instance": { "$ref": "#/$defs/id" }, "sequence": { "type": "integer", "minimum": 1 } } },
+    "target": { "type": "object", "additionalProperties": false, "required": ["projection_contract", "target_id", "target_version", "mapping_revision"], "properties": { "projection_contract": { "const": "helianthus.gateway.matter-projection/v1" }, "target_id": { "const": "matter.data-model" }, "target_version": { "type": "string", "minLength": 1 }, "mapping_revision": { "const": "1" } } },
+    "fence": { "type": "object", "additionalProperties": false, "required": ["snapshot_id", "revisions", "binding_id", "source_epoch", "driver_generation"], "properties": { "snapshot_id": { "$ref": "#/$defs/id" }, "revisions": { "$ref": "#/$defs/revisions" }, "binding_id": { "$ref": "#/$defs/id" }, "source_epoch": { "$ref": "#/$defs/id" }, "driver_generation": { "type": "integer", "minimum": 1 } } },
+    "resource": {
+      "type": "object", "additionalProperties": false, "required": ["asset_id", "resource_id", "snapshot_id", "revisions", "binding_id", "source_epoch", "driver_generation", "state"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/id" }, "resource_id": { "$ref": "#/$defs/id" }, "snapshot_id": { "type": "string" }, "revisions": { "type": "object" }, "binding_id": { "type": "string" }, "source_epoch": { "type": "string" }, "driver_generation": { "type": "integer", "minimum": 0 }, "state": { "enum": ["CURRENT", "WITHDRAWN", "QUARANTINED", "UNAVAILABLE"] },
+        "projected": { "$ref": "#/$defs/matterResult" }, "causal": { "$ref": "#/$defs/causal" }, "last_fence": { "$ref": "#/$defs/fence" }
+      },
+      "oneOf": [
+        {
+          "required": ["projected"],
+          "not": { "required": ["last_fence"] },
+          "properties": {
+            "snapshot_id": { "$ref": "#/$defs/id" },
+            "revisions": { "$ref": "#/$defs/revisions" },
+            "binding_id": { "$ref": "#/$defs/id" },
+            "source_epoch": { "$ref": "#/$defs/id" },
+            "driver_generation": { "type": "integer", "minimum": 1 },
+            "state": { "const": "CURRENT" },
+            "projected": { "$ref": "#/$defs/matterResult" }
+          }
+        },
+        {
+          "not": { "required": ["projected"] },
+          "properties": {
+            "snapshot_id": { "const": "" },
+            "revisions": { "type": "object", "additionalProperties": false, "required": ["semantic", "identity", "facts", "services", "capabilities"], "properties": { "semantic": { "const": "" }, "identity": { "const": "" }, "facts": { "const": "" }, "services": { "const": "" }, "capabilities": { "const": "" } } },
+            "binding_id": { "const": "" },
+            "source_epoch": { "const": "" },
+            "driver_generation": { "const": 0 },
+            "state": { "enum": ["WITHDRAWN", "QUARANTINED", "UNAVAILABLE"] },
+            "last_fence": { "$ref": "#/$defs/fence" }
+          }
+        }
+      ]
+    },
+    "operationClaim": { "type": "object", "additionalProperties": false, "required": ["catalog_revision", "digest", "driver_id", "manifest_id", "manifest_version", "action_id", "resource_id", "capability_id", "operation_id", "snapshot_id", "revision", "binding_id", "source_epoch", "driver_generation"], "properties": { "catalog_revision": { "type": "string" }, "digest": { "type": "string" }, "driver_id": { "type": "string" }, "manifest_id": { "type": "string" }, "manifest_version": { "type": "string" }, "action_id": { "type": "string" }, "resource_id": { "type": "string" }, "capability_id": { "type": "string" }, "operation_id": { "type": "string" }, "snapshot_id": { "type": "string" }, "revision": { "type": "string" }, "binding_id": { "type": "string" }, "source_epoch": { "type": "string" }, "driver_generation": { "type": "integer", "minimum": 1 } } },
+    "operation": { "type": "object", "additionalProperties": false, "required": ["asset_id", "action", "claim"], "properties": { "asset_id": { "$ref": "#/$defs/id" }, "action": { "$ref": "#/$defs/portalAction" }, "claim": { "$ref": "#/$defs/operationClaim" } } },
+    "snapshot": { "type": "object", "additionalProperties": false, "required": ["contract", "target", "ledger", "resources", "operations"], "properties": { "contract": { "const": "helianthus.gateway.matter-binding-feed/v1" }, "target": { "$ref": "#/$defs/target" }, "ledger": { "$ref": "#/$defs/ledger" }, "resources": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/resource" } }, "operations": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/operation" } } } },
+    "snapshotResponse": { "type": "object", "additionalProperties": false, "required": ["contract", "cursor", "snapshot"], "properties": { "contract": { "const": "helianthus.gateway.matter-binding-feed/v1" }, "cursor": { "$ref": "#/$defs/cursor" }, "snapshot": { "$ref": "#/$defs/snapshot" } } },
+    "changesResponse": { "type": "object", "additionalProperties": false, "required": ["contract", "cursor", "changes"], "properties": { "contract": { "const": "helianthus.gateway.matter-binding-feed/v1" }, "cursor": { "$ref": "#/$defs/cursor" }, "resync_required": { "type": "boolean" }, "changes": { "type": "array", "items": { "$ref": "#/$defs/snapshotResponse" } } } },
+    "intent": { "type": "object", "additionalProperties": false, "required": ["asset_id", "claim", "idempotency_key", "deadline", "arguments", "causal"], "properties": { "asset_id": { "$ref": "#/$defs/id" }, "claim": { "$ref": "#/$defs/operationClaim" }, "idempotency_key": { "$ref": "#/$defs/id" }, "deadline": { "type": "string", "format": "date-time" }, "arguments": {}, "causal": { "$ref": "#/$defs/causal" } } },
+    "execution": { "type": "object", "additionalProperties": false, "required": ["contract", "ack", "readback", "outcome"], "properties": { "contract": { "const": "helianthus.gateway.matter-binding-feed/v1" }, "ack": { "type": "string", "minLength": 1 }, "readback": {}, "outcome": {} } },
+    "revisions": { "type": "object", "additionalProperties": false, "required": ["semantic", "identity", "facts", "services", "capabilities"], "properties": { "semantic": { "type": "string", "minLength": 1 }, "identity": { "type": "string", "minLength": 1 }, "facts": { "type": "string", "minLength": 1 }, "services": { "type": "string", "minLength": 1 }, "capabilities": { "type": "string", "minLength": 1 } } },
+    "ledger": { "type": "object", "additionalProperties": false, "required": ["manifest", "requested", "dispositions"], "properties": { "manifest": { "$ref": "#/$defs/manifest" }, "requested": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/requested" } }, "dispositions": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/disposition" } } } },
+    "manifest": { "type": "object", "additionalProperties": false, "required": ["target_id", "target_version", "kernel_version", "pack_versions", "mapping_revision"], "properties": { "target_id": { "const": "matter.data-model" }, "target_version": { "type": "string", "minLength": 1 }, "kernel_version": { "const": "helianthus.semantic.kernel/v1" }, "pack_versions": { "type": "array", "items": { "$ref": "#/$defs/pack" } }, "mapping_revision": { "const": "1" } } },
+    "pack": { "type": "object", "additionalProperties": false, "required": ["id", "version"], "properties": { "id": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 } } },
+    "requested": { "type": "object", "additionalProperties": false, "required": ["item_id", "kind"], "properties": { "item_id": { "type": "string", "minLength": 1 }, "kind": { "enum": ["fact", "relation", "capability", "operation"] } } },
+    "loss": { "type": "object", "additionalProperties": false, "required": ["kind", "source_items", "description", "reversible"], "properties": { "kind": { "enum": ["unit", "range", "precision", "time", "symbol", "provenance", "identity", "capability", "operation", "policy"] }, "source_items": { "type": "array", "items": { "type": "string", "minLength": 1 } }, "description": { "type": "string" }, "reversible": { "type": "boolean" } } },
+    "disposition": { "type": "object", "additionalProperties": false, "required": ["kind", "item_id", "outcome", "source_keys", "loss"], "properties": { "kind": { "enum": ["fact", "relation", "capability", "operation"] }, "item_id": { "type": "string", "minLength": 1 }, "outcome": { "enum": ["exact", "transformed", "withheld", "unrepresentable", "unsupported", "unknown"] }, "source_keys": { "type": "array", "items": { "$ref": "#/$defs/factKey" } }, "loss": { "type": "array", "items": { "$ref": "#/$defs/loss" } }, "reason": { "type": "string", "minLength": 1 } } },
+    "factKey": { "type": "object", "additionalProperties": false, "required": ["pack_id", "pack_version", "fact_id", "dimensions"], "properties": { "pack_id": { "type": "string", "minLength": 1 }, "pack_version": { "type": "string", "minLength": 1 }, "fact_id": { "type": "string", "minLength": 1 }, "dimensions": { "type": "array", "items": { "$ref": "#/$defs/dimension" } } } },
+    "dimension": { "type": "object", "additionalProperties": false, "required": ["id", "value"], "properties": { "id": { "type": "string", "minLength": 1 }, "value": {} } },
+    "matterResult": { "type": "object", "additionalProperties": false, "required": ["document", "report"], "properties": { "document": { "$ref": "#/$defs/matterDocument" }, "report": { "$ref": "#/$defs/report" } } },
+    "matterDocument": { "type": "object", "additionalProperties": false, "required": ["contract", "target_id", "target_version", "mapping_revision", "attributes"], "properties": { "contract": { "const": "helianthus.gateway.matter-projection/v1" }, "target_id": { "const": "matter.data-model" }, "target_version": { "type": "string", "minLength": 1 }, "mapping_revision": { "const": "1" }, "attributes": { "type": "array", "items": { "$ref": "#/$defs/matterAttribute" } } } },
+    "matterAttribute": { "type": "object", "additionalProperties": false, "required": ["element", "value"], "properties": { "element": { "type": "object", "additionalProperties": false, "required": ["device_type", "cluster", "kind", "element_id"], "properties": { "device_type": { "type": "integer", "minimum": 0, "maximum": 4294967295 }, "cluster": { "type": "integer", "minimum": 0, "maximum": 4294967295 }, "kind": { "const": "attribute" }, "element_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 } } }, "value": { "type": "object", "additionalProperties": false, "required": ["milliamperes"], "properties": { "milliamperes": { "type": "string", "minLength": 1 } } } } },
+    "report": { "type": "object", "additionalProperties": false, "required": ["contract", "manifest", "snapshot_id", "revisions", "requested", "dispositions"], "properties": { "contract": { "const": "helianthus.semantic.projection/v1" }, "manifest": { "$ref": "#/$defs/manifest" }, "snapshot_id": { "type": "string", "minLength": 1 }, "revisions": { "$ref": "#/$defs/revisions" }, "requested": { "type": "array", "items": { "$ref": "#/$defs/requested" } }, "dispositions": { "type": "array", "items": { "$ref": "#/$defs/disposition" } }, "causal": { "$ref": "#/$defs/causal" } } },
+    "portalAction": { "type": "object", "additionalProperties": false, "required": ["id", "resource_id", "service_id", "capability_id", "operation_id", "contribution_driver_id", "contribution_manifest_id", "contribution_manifest_version", "source", "discoverable", "enabled"], "properties": { "id": { "type": "string" }, "resource_id": { "type": "string" }, "service_id": { "type": "string" }, "capability_id": { "type": "string" }, "operation_id": { "type": "string" }, "contribution_driver_id": { "type": "string" }, "contribution_manifest_id": { "type": "string" }, "contribution_manifest_version": { "type": "string" }, "source": { "$ref": "#/$defs/portalSource" }, "discoverable": { "type": "boolean" }, "enabled": { "type": "boolean" }, "reason": { "type": "string" } } },
+    "portalSource": { "type": "object", "additionalProperties": false, "required": ["asset_id", "snapshot_id", "revision", "evaluation_digest", "binding_id", "source_epoch", "driver_generation", "snapshot", "evaluation", "selections", "projection"], "properties": { "asset_id": { "type": "string" }, "snapshot_id": { "type": "string" }, "revision": { "type": "string" }, "evaluation_digest": { "type": "string" }, "binding_id": { "type": "string" }, "source_epoch": { "type": "string" }, "driver_generation": { "type": "integer", "minimum": 0 }, "snapshot": {}, "evaluation": {}, "selections": {}, "projection": {} } },
+    "causal": { "type": "object", "additionalProperties": false, "required": ["origin", "correlation_id", "hop_count", "max_hops", "first_seen_at", "expires_at", "path"], "properties": { "origin": { "$ref": "#/$defs/origin" }, "correlation_id": { "type": "string", "minLength": 1 }, "parent_correlation_id": { "type": "string", "minLength": 1 }, "hop_count": { "type": "integer", "minimum": 0, "maximum": 65535 }, "max_hops": { "type": "integer", "minimum": 0, "maximum": 65535 }, "first_seen_at": { "$ref": "#/$defs/timePoint" }, "expires_at": { "$ref": "#/$defs/timePoint" }, "path": { "type": "array", "items": { "type": "string", "minLength": 1 } } } },
+    "origin": { "type": "object", "additionalProperties": false, "required": ["origin_id", "kind", "evidence"], "properties": { "origin_id": { "type": "string", "minLength": 1 }, "kind": { "enum": ["native_observation", "derived", "operator", "automation", "projection"] }, "source_id": { "type": "string", "minLength": 1 }, "source_epoch_id": { "type": "string", "minLength": 1 }, "binding_id": { "type": "string", "minLength": 1 }, "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } } } },
+    "evidence": { "type": "object", "additionalProperties": false, "required": ["owner", "kind", "digest", "contract", "access", "redaction"], "properties": { "owner": { "type": "string", "minLength": 1 }, "kind": { "type": "string", "minLength": 1 }, "digest": { "type": "string", "minLength": 1 }, "contract": { "type": "string", "minLength": 1 }, "access": { "enum": ["public", "authorized", "restricted"] }, "redaction": { "enum": ["none", "redacted", "metadata_only"] } } },
+    "timePoint": { "type": "object", "additionalProperties": false, "required": ["unix_nanoseconds", "clock_id", "uncertainty_ns"], "properties": { "unix_nanoseconds": { "type": "string", "minLength": 1 }, "clock_id": { "type": "string", "minLength": 1 }, "uncertainty_ns": { "type": "string", "minLength": 1 } } }
+  }
+}

@@ -87,6 +87,24 @@ semreg_public_config_only() {
   return 0
 }
 
+# Documentation-only edits to config.go cannot open, select, or mutate a
+# passive source. Keep this exemption lexical and fail closed: every changed
+# source line must remain a Go line comment.
+config_comment_only() {
+	local changes line trimmed
+	changes="$({
+		git diff --unified=0 "${base_ref}...HEAD" -- config.go
+		git diff --cached --unified=0 -- config.go
+		git diff --unified=0 -- config.go
+	} | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+	[[ -n "${changes}" ]] || return 1
+	while IFS= read -r line; do
+		trimmed="${line#"${line%%[![:space:]]*}"}"
+		[[ "${trimmed}" == //* ]] || return 1
+	done <<< "${changes}"
+	return 0
+}
+
 # A detached /metrics append is not a passive-capture behavior change. Keep
 # this exception deliberately narrow: it accepts only the pre-existing SemReg
 # hunk or #977's Gateway-owned two-protocol runtime snapshot hunk. Any passive
@@ -295,6 +313,9 @@ while IFS= read -r file; do
     break
   fi
   if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then
+    continue
+  fi
+  if [[ "${file}" == "config.go" ]] && config_comment_only; then
     continue
   fi
   if [[ "${file}" == "bus_observability_store.go" ]] && bus_observability_metrics_only; then

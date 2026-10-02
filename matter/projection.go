@@ -17,13 +17,21 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
+var (
+	matterCurrentMinimum = big.NewInt(-4611686018427387904)
+	matterCurrentMaximum = big.NewInt(4611686018427387904)
+)
+
 const (
-	Contract                              = "helianthus.gateway.matter-projection/v1"
-	TargetID          semreg.TargetID     = "matter.data-model"
-	TargetVersion     semreg.VersionLabel = "1.7-draft-ballot-0.9+29b4768a513cf566011ab8cd60df1bc495204953"
-	MappingRevision   semreg.Uint64       = "1"
-	MatterModelCommit                     = "29b4768a513cf566011ab8cd60df1bc495204953"
-	MatterSpecCommit                      = "214e40c9d51cfe89050eae68ca5b76238fcfa332"
+	Contract                                       = "helianthus.gateway.matter-projection/v1"
+	TargetID                   semreg.TargetID     = "matter.data-model"
+	TargetVersion              semreg.VersionLabel = "1.7-draft-ballot-0.9+29b4768a513cf566011ab8cd60df1bc495204953"
+	MappingRevision            semreg.Uint64       = "1"
+	MatterModelCommit                              = "29b4768a513cf566011ab8cd60df1bc495204953"
+	MatterSpecCommit                               = "214e40c9d51cfe89050eae68ca5b76238fcfa332"
+	DocsSemanticCommit                             = "30f5e5c79ac6da3a7c7c10c990599906d1dfd0cb"
+	DocsSemanticContractPath                       = "api/v1/targets/matter-1.7-ballot-0.9-v1.json"
+	DocsSemanticContractSHA256                     = "5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c"
 )
 
 // ElementKind identifies a Matter data-model element. This projection contains
@@ -112,7 +120,19 @@ func Ledger() ([]projection.RequestedItem, []projection.ProjectionDisposition) {
 	dispositions := make([]projection.ProjectionDisposition, len(requested))
 	for i, item := range requested {
 		reason := semreg.DefinitionID("matter.unmapped.v1")
-		dispositions[i] = projection.ProjectionDisposition{Kind: item.Kind, ItemID: item.ItemID, Outcome: projection.ProjectionUnknown, Reason: &reason, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}}
+		dispositions[i] = projection.ProjectionDisposition{
+			Kind:       item.Kind,
+			ItemID:     item.ItemID,
+			Outcome:    projection.ProjectionUnknown,
+			Reason:     &reason,
+			SourceKeys: []semreg.FactKey{},
+			Loss: []projection.LossDetail{{
+				Kind:        projection.LossPolicy,
+				SourceItems: []semreg.DefinitionID{item.ItemID},
+				Description: "no target lookup, inferred fallback, authority, intent, route, or operation is created",
+				Reversible:  false,
+			}},
+		}
 	}
 	return requested, dispositions
 }
@@ -129,6 +149,9 @@ func Project(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) (Result
 	}
 	if evaluation.SnapshotID != snapshot.SnapshotID || evaluation.Revisions != snapshot.Revisions {
 		return Result{}, &semreg.Error{ID: semreg.RevisionConflict, Detail: "matter projection evaluation"}
+	}
+	if err := validateEvaluationCorrespondence(snapshot, evaluation); err != nil {
+		return Result{}, err
 	}
 	if hasConflict(snapshot) {
 		return Result{}, &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection conflict"}
@@ -156,6 +179,28 @@ func Project(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) (Result
 	}
 	document := Document{Contract: Contract, TargetID: TargetID, TargetVersion: TargetVersion, MappingRevision: MappingRevision, Attributes: attributes}
 	return detach(Result{Document: document, Report: report})
+}
+
+func validateEvaluationCorrespondence(snapshot semreg.Snapshot, evaluation semreg.EvaluationView) error {
+	candidates := make(map[semreg.CandidateID]semreg.Uint64)
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			candidates[candidate.CandidateID] = candidate.Revision
+		}
+	}
+	if len(candidates) != len(evaluation.Facts) {
+		return &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection evaluation completeness"}
+	}
+	for _, evaluated := range evaluation.Facts {
+		revision, ok := candidates[evaluated.CandidateID]
+		if !ok {
+			return &semreg.Error{ID: semreg.DanglingReference, Detail: "matter projection evaluated candidate"}
+		}
+		if revision != evaluated.CandidateRevision {
+			return &semreg.Error{ID: semreg.RevisionConflict, Detail: "matter projection candidate revision"}
+		}
+	}
+	return nil
 }
 
 func hasConflict(snapshot semreg.Snapshot) bool {
@@ -196,6 +241,9 @@ func mapEVSEActiveCurrent(snapshot semreg.Snapshot, evaluation semreg.Evaluation
 			if current.Quality.Assertion != semreg.AssertionObserved || current.Quality.Qualification != semreg.QualificationQualified || current.Quality.Promotion != semreg.PromotionPromoted || current.Quality.Validity != semreg.ValidityGood || current.Quality.Availability != semreg.AvailabilityAvailable || current.Quality.Freshness != semreg.FreshnessFresh {
 				return nil, nil, &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection current qualification"}
 			}
+			if err := evse.New().ValidateFact(fact.Key, current.Value); err != nil {
+				return nil, nil, err
+			}
 			if found != nil {
 				return nil, nil, &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection ambiguous current"}
 			}
@@ -210,8 +258,19 @@ func mapEVSEActiveCurrent(snapshot semreg.Snapshot, evaluation semreg.Evaluation
 		return nil, nil, err
 	}
 	reason := semreg.DefinitionID("matter.phase_endpoint_identity_loss.v1")
-	disposition := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "evse.ac.current", Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{found.Key}, Reason: &reason, Loss: []projection.LossDetail{{Kind: projection.LossIdentity, SourceItems: []semreg.DefinitionID{"evse.ac.current"}, Description: "Matter v1 has no allocated endpoint or phase identity.", Reversible: false}}}
-	disposition.Loss = append(disposition.Loss, projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{"evse.ac.current"}, Description: "Matter represents only integral milliamperes; sub-milliampere values are rejected.", Reversible: false})
+	disposition := projection.ProjectionDisposition{
+		Kind:       projection.ItemFact,
+		ItemID:     "evse.ac.current",
+		Outcome:    projection.ProjectionTransformed,
+		SourceKeys: []semreg.FactKey{found.Key},
+		Reason:     &reason,
+		Loss: []projection.LossDetail{{
+			Kind:        projection.LossUnit,
+			SourceItems: []semreg.DefinitionID{"evse.ac.current"},
+			Description: "amperes are represented as integral milliamperes only when exact and representable",
+			Reversible:  false,
+		}},
+	}
 	return []TargetAttribute{{Element: evseActiveCurrent, Value: AttributeValue{Milliampere: ma}}}, &disposition, nil
 }
 
@@ -231,9 +290,16 @@ func amperesToMilliampere(value semreg.Value) (string, error) {
 		if remainder.Sign() != 0 {
 			return "", &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection current precision"}
 		}
+		if quotient.Cmp(matterCurrentMinimum) < 0 || quotient.Cmp(matterCurrentMaximum) > 0 {
+			return "", &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection current range"}
+		}
 		return quotient.String(), nil
 	}
-	return new(big.Int).Mul(coefficient, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)).String(), nil
+	result := new(big.Int).Mul(coefficient, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+	if result.Cmp(matterCurrentMinimum) < 0 || result.Cmp(matterCurrentMaximum) > 0 {
+		return "", &semreg.Error{ID: semreg.PreconditionFailed, Detail: "matter projection current range"}
+	}
+	return result.String(), nil
 }
 
 func detach(result Result) (Result, error) {

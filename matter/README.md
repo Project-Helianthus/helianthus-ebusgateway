@@ -11,6 +11,11 @@ The manifest exactly uses SemReg `089ed6ae9004cfba8aff27f1e54d579aeccc0b4c`
 metadata for EVSE 1.0.0, infrastructure 1.0.0, PV 1.0.0, storage 1.1.0, and
 thermal 1.0.0.
 
+The accepted mapping contract is pinned to
+`helianthus-docs-semantic@30f5e5c79ac6da3a7c7c10c990599906d1dfd0cb`,
+`api/v1/targets/matter-1.7-ballot-0.9-v1.json`, SHA-256
+`5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c`.
+
 The sole positive v1 mapping is observed, qualified, promoted, fresh and
 available `evse.ac.current`: amperes become milliamperes at Electrical Sensor
 device type `0x0510`, Electrical Power Measurement cluster `0x0090`,
@@ -18,6 +23,8 @@ device type `0x0510`, Electrical Power Measurement cluster `0x0090`,
 irreversible loss. Every other field, capability, and operation has an explicit
 non-positive ledger disposition. Services have no SemReg projection item kind.
 
-This is not Matter runtime composition. It performs no endpoint allocation,
-commissioning, fabric, transport, subscription, I/O, authority decision,
-intent creation, route selection, dispatch, command handling, or retained state.
+This is not Matter runtime composition. It has no Matter SDK dependency and
+creates no Matter node, endpoint allocation, commissioning, fabric, transport,
+subscription, I/O, access control, authority decision, intent, route, command
+dispatch, command result, or retained state. It makes no certification,
+conformance, live-device, or physical-result claim.

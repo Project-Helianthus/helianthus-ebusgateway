@@ -13,6 +13,11 @@ The manifest derives, mechanically, from SemReg `089ed6ae9004cfba8aff27f1e54d579
 metadata for EVSE 1.0.0, infrastructure 1.0.0, PV 1.0.0, storage 1.1.0, and
 thermal 1.0.0.
 
+The accepted public mapping contract is pinned to
+`Project-Helianthus/helianthus-docs-semantic@30f5e5c79ac6da3a7c7c10c990599906d1dfd0cb`,
+path `api/v1/targets/matter-1.7-ballot-0.9-v1.json`, SHA-256
+`5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c`.
+
 The sole positive mapping is observational `evse.ac.current`: qualified,
 promoted, fresh, available amperes convert to integer milliamperes at composed
 Electrical Sensor device type `0x0510`, Electrical Power Measurement cluster
@@ -22,8 +27,10 @@ closed. All other fields, capabilities, and operations appear exactly once in
 the SemReg report with explicit `unknown` disposition. SemReg services have no
 projection-item kind, so the adapter does not invent service rows.
 
-The adapter has no endpoint allocation, commissioning, fabric, transport,
-subscription, I/O, native reads, route selection, retained state, authority,
-intent, command dispatch, command result, or live-device behavior. It is not
-Matter certification or a runtime composition claim. The semantic documentation
-contract tracked by `helianthus-docs-semantic#31` remains a required merge gate.
+The adapter has no Matter SDK dependency and creates no Matter node, endpoint
+allocation, commissioning, fabric, transport, subscription, I/O, native read,
+access control, route, retained state, authority, intent, command dispatch, or
+command result. It makes no certification, conformance, live-device, or physical
+claim. The semantic documentation contract from `helianthus-docs-semantic#31`
+is the accepted implementation input pinned above; this package does not redefine
+its ownership or turn it into runtime evidence.

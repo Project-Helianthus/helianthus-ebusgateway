@@ -326,6 +326,51 @@ raise SystemExit(0)
 PY
 }
 
+# The Matter binding feed is a detached HTTP/M2M composition seam. Its
+# allowlist is an exact source diff, so any adjacent runtime, protocol, or
+# native change fails the classifier and remains subject to the normal gates.
+matter_feed_api_composition_only() {
+  python3 scripts/matter_feed_transport_classifier.py "${base_ref}" "$1"
+}
+
+# Documentation-only changes cannot alter a transport. Keep this deliberately
+# narrow: every added or removed non-blank line must be a Go line comment.
+config_comments_only() {
+  python3 - "${base_ref}" <<'PY'
+from __future__ import annotations
+
+import difflib
+import subprocess
+import sys
+from pathlib import Path
+
+base_ref = sys.argv[1]
+result = subprocess.run(
+    ["git", "show", f"{base_ref}:config.go"],
+    text=True,
+    capture_output=True,
+    check=False,
+)
+if result.returncode:
+    raise SystemExit(1)
+try:
+    current = Path("config.go").read_text(encoding="utf-8")
+except OSError:
+    raise SystemExit(1)
+
+changed = []
+for line in difflib.unified_diff(result.stdout.splitlines(), current.splitlines(), n=0):
+    if line.startswith(("---", "+++", "@@")):
+        continue
+    if line.startswith(("+", "-")):
+        changed.append(line[1:].strip())
+
+if changed and all(not line or line.startswith("//") for line in changed):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 while IFS= read -r file; do
   [[ -z "${file}" ]] && continue
   # The transport gate is for transport/protocol and matrix topology execution
@@ -337,6 +382,12 @@ while IFS= read -r file; do
     fi
     requires_ebus_gate=1
     requires_modbus_rtu_gate=1
+    continue
+  fi
+  if matter_feed_api_composition_only "${file}"; then
+    continue
+  fi
+  if [[ "${file}" == "config.go" ]] && config_comments_only; then
     continue
   fi
 	if [[ "${file}" == "config.go" ]] && semreg_public_config_only; then

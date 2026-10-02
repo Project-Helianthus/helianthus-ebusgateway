@@ -116,6 +116,27 @@ type Config struct {
             self.assertNotEqual(hostile.returncode, 0)
             self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
 
+    def test_config_comment_only_change_does_not_require_passive_report(self) -> None:
+        base = "// M2MGraphQLConfig configures the dedicated public SemReg PV listener.\ntype Config struct{}\n"
+        comments_only = "// M2MGraphQLConfig configures the dedicated public M2M API listener.\n// It also hosts the Matter binding feed.\ntype Config struct{}\n"
+        repo_path, _ = self._create_temp_repo("config.go", base, comments_only)
+        allowed = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(allowed.returncode, 0, msg=allowed.stdout + allowed.stderr)
+        self.assertIn("not triggered", allowed.stdout)
+
+        (repo_path / "config.go").write_text(comments_only + "PassiveMode bool\n", encoding="utf-8")
+        hostile = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(hostile.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", hostile.stdout)
+
     def test_evse_prometheus_config_exemption_is_exact(self) -> None:
         base = "type Config struct {\n}\n"
         exact = base + "// PrometheusEVSEEnabled enables only the detached EVSE SemReg observation\n// section. It neither configures acquisition nor grants a native runtime.\nPrometheusEVSEEnabled bool\n"

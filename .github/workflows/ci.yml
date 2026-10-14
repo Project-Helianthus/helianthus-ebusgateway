@@ -10,7 +10,8 @@ concurrency:
 
 jobs:
   terminology:
-    runs-on: [self-hosted, synology]
+    # fork pull requests never run on the persistent runners
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'synology' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +26,8 @@ jobs:
       - run: python3 scripts/source_selection_m4_gate.py
 
   build:
-    runs-on: [self-hosted, synology]
+    # fork pull requests never run on the persistent runners
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'synology' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +50,8 @@ jobs:
           GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
   test:
-    runs-on: [self-hosted, synology]
+    # fork pull requests never run on the persistent runners
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'synology' }}
     timeout-minutes: 45
     env:
       GOFLAGS: -p=4
@@ -73,7 +76,8 @@ jobs:
       - run: python3 scripts/passive_smoke_gate_test.py
 
   lint:
-    runs-on: [self-hosted, synology]
+    # fork pull requests never run on the persistent runners
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'synology' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

@@ -50,12 +50,9 @@ jobs:
           GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
   test:
-    # fork pull requests never run on the persistent runners
-    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || 'synology' }}
-    timeout-minutes: 60
-    env:
-      GOFLAGS: -p=4
-      GOMAXPROCS: "4"
+    # stays GitHub-hosted: race suite needs isolated CPU and the localhost-binding test is not runner-robust yet (CI migration val 3, see the follow-up issue linked in the PR body)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,7 +64,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: go test -race -count=1 -timeout 30m -p 2 ./...
+      - run: go test -race -count=1 ./...
       - name: SemReg PV public integration
         run: GOWORK=off go test -race -count=1 ./internal/modbusadapter ./m2mgraphql ./mcp ./portal ./cmd/gateway -run 'TestPVPublication|TestAdapterPublishesOneSemRegPVProjection|TestSemanticPV|TestPortalPV|TestM2MGraphQLRuntime'
       - run: python3 scripts/passive_canary_verifier_test.py

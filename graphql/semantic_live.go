@@ -977,13 +977,11 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		}
 		key = energyMergeKey{Channel: source, Usage: usage, Period: "day"}
 	case "year":
-		yearKind, ok := stringValue(values, "year_kind")
+		// ebusreg publishes the absolute `year`; the current/previous label
+		// of the public Yearly[1]/Yearly[0] slots derives from the reference
+		// date (now). A missing or out-of-window year is not retained.
+		yearKind, ok := energyYearKindFor(values, now)
 		if !ok {
-			return false
-		}
-		switch yearKind {
-		case "previous", "current":
-		default:
 			return false
 		}
 		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", YearKind: yearKind}
@@ -1016,16 +1014,34 @@ func (provider *LiveSemanticProvider) applyEnergyPoint(key energyMergeKey, kwh f
 	return true
 }
 
+// energyYearKindFor maps the absolute B516 `year` to the public
+// "current"/"previous" slot relative to the reference date. It reports false
+// when the year is absent/invalid or lies outside those two windows.
+func energyYearKindFor(values map[string]types.Value, now time.Time) (string, bool) {
+	year, ok := uintValue(values, "year")
+	if !ok {
+		return "", false
+	}
+	switch int(year) {
+	case now.Year():
+		return "current", true
+	case now.Year() - 1:
+		return "previous", true
+	default:
+		return "", false
+	}
+}
+
+// matchesToday requires a valid absolute year, month and day equal to the
+// reference date.
 func matchesToday(values map[string]types.Value, now time.Time) bool {
-	day, okDay := uintValue(values, "day")
+	year, okYear := uintValue(values, "year")
 	month, okMonth := uintValue(values, "month")
-	if okMonth && int(month) != int(now.Month()) {
+	day, okDay := uintValue(values, "day")
+	if !okYear || !okMonth || !okDay {
 		return false
 	}
-	if okDay && int(day) != now.Day() {
-		return false
-	}
-	return true
+	return int(year) == now.Year() && int(month) == int(now.Month()) && int(day) == now.Day()
 }
 
 func stringValue(values map[string]types.Value, key string) (string, bool) {

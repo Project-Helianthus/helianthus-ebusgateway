@@ -42,7 +42,7 @@ type energyMergeKey struct {
 	Channel  string // "gas", "electricity", "solar"
 	Usage    string // "hot_water", "climate" (canonicalized from heating/cooling)
 	Period   string // "day", "year", "month"
-	YearKind string // "" for day, "previous"/"current" for year/month
+	YearKind string // "" for day, "previous"/"current" for year/month; broadcasts derive it from the ebusreg absolute year and a reference date
 }
 
 // EnergyMergeKey is the external key contract for register/broadcast energy merge inputs.

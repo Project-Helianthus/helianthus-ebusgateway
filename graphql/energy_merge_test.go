@@ -455,6 +455,9 @@ func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
 			"source": {Valid: true, Value: "gas"},
 			"usage":  {Valid: true, Value: "heating"},
 			"period": {Valid: true, Value: "day"},
+			"year":   {Valid: true, Value: uint16(time.Now().Year())},
+			"month":  {Valid: true, Value: uint8(time.Now().Month())},
+			"day":    {Valid: true, Value: uint8(time.Now().Day())},
 		},
 	})
 	if !updated {

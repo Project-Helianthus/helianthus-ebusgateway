@@ -72,6 +72,7 @@ type LiveSemanticProvider struct {
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
+	energyClock                func() time.Time
 	energyPassiveState         string
 	energyPassiveStateProvider func() string
 
@@ -371,11 +372,57 @@ func (provider *LiveSemanticProvider) SetCylindersFromCache(cylinders []Cylinder
 	provider.SetCylinders(cylinders)
 }
 
+// SetEnergyClock injects the reference clock used to ingest broadcasts and to
+// project the public previous/current energy slots. Nil restores time.Now.
+func (provider *LiveSemanticProvider) SetEnergyClock(clock func() time.Time) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	provider.energyClock = clock
+	provider.mu.Unlock()
+}
+
+func (provider *LiveSemanticProvider) energyNow() time.Time {
+	provider.mu.RLock()
+	clock := provider.energyClock
+	provider.mu.RUnlock()
+	if clock == nil {
+		return time.Now()
+	}
+	return clock()
+}
+
+// EnergyWindowKey resolves a relative register window ("current"/"previous"
+// for year and month periods; the reference day for "day") to the dated merge
+// key against the provider's reference clock.
+func (provider *LiveSemanticProvider) EnergyWindowKey(channel, usage, period, label string) EnergyMergeKey {
+	return energyWindowKey(channel, usage, period, label, provider.energyNow())
+}
+
+// EnergyReferenceTime returns the provider's current reference instant. A
+// register acquisition captures it once and derives every key from it.
+func (provider *LiveSemanticProvider) EnergyReferenceTime() time.Time {
+	return provider.energyNow()
+}
+
+// EnergyWindowKeyAt is EnergyWindowKey against an explicit reference instant.
+func (provider *LiveSemanticProvider) EnergyWindowKeyAt(channel, usage, period, label string, ref time.Time) EnergyMergeKey {
+	return energyWindowKey(channel, usage, period, label, ref)
+}
+
+// EnergyLifetimeKey is the undated key of a lifetime (all-time) total. It is
+// never keyed by a reference year; the public series maps it to the current
+// yearly slot with the previous slot and today held at zero.
+func (provider *LiveSemanticProvider) EnergyLifetimeKey(channel, usage string) EnergyMergeKey {
+	return energyLifetimeKey(channel, usage)
+}
+
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 	if provider == nil || provider.energyMerge == nil {
 		return nil
 	}
-	snapshot := provider.energyMerge.SnapshotWithContext(time.Now(), provider.currentEnergyPassiveState())
+	snapshot := provider.energyMerge.SnapshotWithContext(provider.energyNow(), provider.currentEnergyPassiveState())
 	if snapshot == nil {
 		return nil
 	}
@@ -917,7 +964,7 @@ func (provider *LiveSemanticProvider) ApplyBroadcast(event router.BroadcastEvent
 		return nil, false
 	}
 
-	if updated := provider.applyEnergy(event.Values, time.Now()); !updated {
+	if updated := provider.applyEnergy(event.Values, provider.energyNow()); !updated {
 		return nil, false
 	}
 	return provider.EnergyTotals(), true
@@ -929,8 +976,7 @@ func (provider *LiveSemanticProvider) ApplyEnergyFromRegister(key EnergyMergeKey
 	if provider == nil || provider.energyMerge == nil {
 		return false
 	}
-	now := time.Now()
-	return provider.applyEnergyPoint(key, kwh, EnergySourceRegister, now)
+	return provider.applyEnergyPoint(key, kwh, EnergySourceRegister, provider.energyNow())
 }
 
 func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value, now time.Time) bool {
@@ -975,18 +1021,16 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		if !matchesToday(values, now) {
 			return false
 		}
-		key = energyMergeKey{Channel: source, Usage: usage, Period: "day"}
+		key = energyWindowKey(source, usage, "day", "", now)
 	case "year":
-		yearKind, ok := stringValue(values, "year_kind")
-		if !ok {
+		// ebusreg publishes the absolute `year`; it is stored as the window
+		// identity. Only the current and previous year are accepted; the
+		// public previous/current slot is projected at snapshot time.
+		year, ok := uintValue(values, "year")
+		if !ok || (int(year) != now.Year() && int(year) != now.Year()-1) {
 			return false
 		}
-		switch yearKind {
-		case "previous", "current":
-		default:
-			return false
-		}
-		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", YearKind: yearKind}
+		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", Year: int(year)}
 	default:
 		return false
 	}
@@ -1016,16 +1060,16 @@ func (provider *LiveSemanticProvider) applyEnergyPoint(key energyMergeKey, kwh f
 	return true
 }
 
+// matchesToday requires a valid absolute year, month and day equal to the
+// reference date.
 func matchesToday(values map[string]types.Value, now time.Time) bool {
-	day, okDay := uintValue(values, "day")
+	year, okYear := uintValue(values, "year")
 	month, okMonth := uintValue(values, "month")
-	if okMonth && int(month) != int(now.Month()) {
+	day, okDay := uintValue(values, "day")
+	if !okYear || !okMonth || !okDay {
 		return false
 	}
-	if okDay && int(day) != now.Day() {
-		return false
-	}
-	return true
+	return int(year) == now.Year() && int(month) == int(now.Month()) && int(day) == now.Day()
 }
 
 func stringValue(values map[string]types.Value, key string) (string, bool) {

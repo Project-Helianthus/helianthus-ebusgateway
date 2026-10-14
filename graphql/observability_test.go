@@ -26,7 +26,7 @@ func TestObservability_StartupPhaseTransitionIncrementsCounter(t *testing.T) {
 func TestObservability_EnergyMergeCounters(t *testing.T) {
 	store := newEnergyMergeStore()
 	now := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
-	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	key := wkey("gas", "heating", "day", "")
 
 	beforeBroadcastAccept := expvarMapInt64Value(semanticEnergyMergesTotal, "broadcast")
 	beforeRegisterAccept := expvarMapInt64Value(semanticEnergyMergesTotal, "register")

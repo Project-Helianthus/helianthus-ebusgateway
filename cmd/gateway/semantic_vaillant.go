@@ -1596,15 +1596,16 @@ type b524EnergyQuery struct {
 	channel  string // EnergyMergeKey.Channel
 	usage    string // EnergyMergeKey.Usage
 	period   string // EnergyMergeKey.Period ("year", "month")
-	yearKind string // EnergyMergeKey.YearKind ("current", "previous")
+	yearKind string // relative window label ("current", "previous"), resolved to a dated EnergyMergeKey via provider.EnergyWindowKey at read time
 }
 
 var b524EnergyQueries = []b524EnergyQuery{
-	// All-time totals (mapped as year/current).
-	{energy_fuel_sum_hc, "gas", "climate", "year", "current"},
-	{energy_fuel_sum_hwc, "gas", "hot_water", "year", "current"},
-	{energy_electricity_sum_hc, "electricity", "climate", "year", "current"},
-	{energy_electricity_sum_hwc, "electricity", "hot_water", "year", "current"},
+	// All-time (lifetime) totals: undated "all" window, never keyed by the
+	// reference year; projected to the current yearly slot by the provider.
+	{energy_fuel_sum_hc, "gas", "climate", "all", ""},
+	{energy_fuel_sum_hwc, "gas", "hot_water", "all", ""},
+	{energy_electricity_sum_hc, "electricity", "climate", "all", ""},
+	{energy_electricity_sum_hwc, "electricity", "hot_water", "all", ""},
 	// Monthly: this month (month/current).
 	{energy_fuel_sum_hc_this_month, "gas", "climate", "month", "current"},
 	{energy_fuel_sum_hwc_this_month, "gas", "hot_water", "month", "current"},
@@ -1630,29 +1631,38 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
+	p.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
+		return p.readEnergyRegister(ctx, q)
+	})
+}
+
+// acquireEnergy performs one register acquisition. The reference time is
+// captured once and every dated key of the acquisition derives from it. If the
+// provider clock crosses a month or year boundary during the acquisition, the
+// reply read after the crossing is discarded (its relative window would be
+// mislabelled) and the acquisition stops; the next poll re-acquires.
+func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery, time.Time) (uint32, bool)) {
+	ref := p.provider.EnergyReferenceTime()
 	accepted, failed := 0, 0
 	for _, q := range b524EnergyQueries {
-		val, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr)
+		val, ok := read(q, ref)
 		if !ok {
 			failed++
 			continue
 		}
+		if now := p.provider.EnergyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
+			log.Printf("semantic energy b524: window boundary crossed during acquisition (ref=%s now=%s); discarding remaining replies", ref.Format("2006-01"), now.Format("2006-01"))
+			failed++
+			break
+		}
 		kwh := float64(val)
 
-		if p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-			Channel: q.channel, Usage: q.usage, Period: q.period, YearKind: q.yearKind,
-		}, kwh) {
-			accepted++
+		key := p.provider.EnergyLifetimeKey(q.channel, q.usage)
+		if q.period != "all" {
+			key = p.provider.EnergyWindowKeyAt(q.channel, q.usage, q.period, q.yearKind, ref)
 		}
-		// For all-time totals, lock day and year/previous with register-priority 0
-		// to prevent broadcast double-counting (all-time total already includes them).
-		if q.period == "year" && q.yearKind == "current" {
-			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-				Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "previous",
-			}, 0)
-			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-				Channel: q.channel, Usage: q.usage, Period: "day", YearKind: "",
-			}, 0)
+		if p.provider.ApplyEnergyFromRegister(key, kwh) {
+			accepted++
 		}
 	}
 	if accepted > 0 || failed > 0 {
@@ -6762,6 +6772,13 @@ func (p *vaillantSemanticPoller) readB509UCHFloat(ctx context.Context, target by
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
+	return p.readB524ValueWithMaxAge(ctx, opcode, group, instance, addr, -1)
+}
+
+// readB524ValueWithMaxAge is readB524Value with a cache-age override: a
+// non-negative maxAgeOverride replaces the descriptor TTL (0 never consults the
+// scheduler or shadow cache); a negative override keeps the descriptor TTL.
+func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, opcode, group, instance byte, addr uint16, maxAgeOverride time.Duration) ([]byte, bool) {
 	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
 		return nil, false
 	}
@@ -6785,6 +6802,9 @@ func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, grou
 	watchKey := ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr)
 	watchRuntime := p.prepareSemanticReadWatchRuntime(watchKey)
 	maxAge := watchRuntime.maxAge
+	if maxAgeOverride >= 0 {
+		maxAge = maxAgeOverride
+	}
 	value, stats, err := p.scheduler.GetWatchWithStats(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
@@ -7758,6 +7778,27 @@ func (p *vaillantSemanticPoller) readB524Uint16(ctx context.Context, opcode, gro
 
 func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, group, instance byte, addr uint16) (uint32, bool) {
 	raw, ok := p.readB524Value(ctx, opcode, group, instance, addr)
+	if !ok || len(raw) < 4 {
+		return 0, false
+	}
+	v := binary.LittleEndian.Uint32(raw[:4])
+	if v == 0xFFFFFFFF {
+		return 0, false
+	}
+	return v, true
+}
+
+// readEnergyRegister reads one B524 energy register. Relative-window (monthly:
+// this-month / last-month) replies are never served from the scheduler or
+// shadow cache: their window label depends on when the value was acquired, so
+// they always read fresh from the bus (maxAge 0). Lifetime totals are undated
+// and keep the normal TTL.
+func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524EnergyQuery) (uint32, bool) {
+	maxAgeOverride := time.Duration(-1)
+	if q.period == "month" {
+		maxAgeOverride = 0
+	}
+	raw, ok := p.readB524ValueWithMaxAge(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, maxAgeOverride)
 	if !ok || len(raw) < 4 {
 		return 0, false
 	}

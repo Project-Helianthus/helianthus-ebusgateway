@@ -3618,6 +3618,7 @@ func TestRefreshEnergy_NoRegulatorKeepsNeverSeenShape(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
 		provider:            provider,
 		controller:          0x15,
@@ -3639,22 +3640,14 @@ func TestRefreshEnergy_ReadFailurePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
 		provider:   provider,
 		controller: 0x15,
 	}
 
-	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "hot_water",
-		Period:  "day",
-	}, 3.5)
-	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel:  "gas",
-		Usage:    "hot_water",
-		Period:   "year",
-		YearKind: "current",
-	}, 240.0)
+	provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "hot_water", "day", ""), 3.5)
+	provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "hot_water", "year", "current"), 240.0)
 
 	before := provider.EnergyTotals()
 	if before == nil {
@@ -3679,11 +3672,8 @@ func TestPublishEnergyTotals_PublishesProviderSnapshot(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
-	if !provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "climate",
-		Period:  "day",
-	}, 4.25) {
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "climate", "day", ""), 4.25) {
 		t.Fatal("ApplyEnergyFromRegister() = false; want true")
 	}
 
@@ -5158,6 +5148,38 @@ func TestVaillantSemanticPoller_RegulatorDetectionNone(t *testing.T) {
 	}
 }
 
+// Pins the classification delta from the ebusreg 2342a8d8 repin: capability is
+// read from Catalog.All and the "Thermostat" role now counts as a present
+// controller (before: Regulator only, from the metadata-complete ByPartNumber
+// subset). Affects the published regulator capability and absence FSM.
+func TestVaillantSemanticPoller_RegulatorDetectionEbusregRepinDelta(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+	cases := []struct {
+		name string
+		part string
+		want productids.ControllerCapability
+	}{
+		{"thermostat role is a present controller", "0020018249", productids.ControllerPresent},
+		{"boiler outside ByPartNumber is none, not unknown", "0010002465", productids.ControllerNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newTestRegistry(
+				registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "X", SerialNumber: "21-22-09-" + tc.part + "-0082-005409-N4"},
+			)
+			poller := &vaillantSemanticPoller{reg: reg, catalog: catalog}
+			if got := poller.findRegulatorCapability(); got != tc.want {
+				t.Fatalf("findRegulatorCapability(%s) = %s; want %s", tc.part, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestVaillantSemanticPoller_RegulatorDetectionUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -5648,11 +5670,11 @@ func TestB524EnergyQueries_Coverage(t *testing.T) {
 		yearKind string
 	}
 	expected := map[tuple]bool{
-		// All-time totals.
-		{"gas", "climate", "year", "current"}:           false,
-		{"gas", "hot_water", "year", "current"}:         false,
-		{"electricity", "climate", "year", "current"}:   false,
-		{"electricity", "hot_water", "year", "current"}: false,
+		// All-time (lifetime) totals: undated window.
+		{"gas", "climate", "all", ""}:           false,
+		{"gas", "hot_water", "all", ""}:         false,
+		{"electricity", "climate", "all", ""}:   false,
+		{"electricity", "hot_water", "all", ""}: false,
 		// Monthly: this month.
 		{"gas", "climate", "month", "current"}:           false,
 		{"gas", "hot_water", "month", "current"}:         false,
@@ -6911,5 +6933,99 @@ func TestDeviceSlotCacheGating_RequiresRediscoveryAfterTTL(t *testing.T) {
 	poller.mu.Unlock()
 	if !needsDiscovery {
 		t.Fatal("needsDiscovery should be true after TTL expiry")
+	}
+}
+
+// One acquisition derives every dated key from one reference date; replies read
+// after a month/year boundary crossing are discarded, not mislabelled.
+func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
+	t.Parallel()
+
+	clock := time.Date(2026, time.December, 31, 23, 59, 59, 0, time.UTC)
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
+	poller := &vaillantSemanticPoller{provider: provider}
+
+	calls := 0
+	poller.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
+		calls++
+		if calls == 6 { // second monthly reply arrives after midnight
+			clock = time.Date(2027, time.January, 1, 0, 0, 1, 0, time.UTC)
+		}
+		return uint32(100 * calls), true
+	})
+	if calls != 6 {
+		t.Fatalf("reads after boundary = %d total; want acquisition to stop at 6", calls)
+	}
+
+	totals := provider.EnergyTotals() // read on 2027-01-01
+	if got := totals.Gas.Climate.Yearly; got[1] != 100 || got[0] != 0 {
+		t.Fatalf("lifetime on Jan 1 = %v; want [0 100]", got)
+	}
+	// Reply 5 (gas climate, "this month") was read before midnight: Dec 2026 = previous month.
+	if got := totals.Gas.Climate.Monthly; got[0] != 500 || got[1] != 0 {
+		t.Fatalf("Gas.Climate.Monthly = %v; want [500 0]", got)
+	}
+	// Reply 6 crossed midnight and must not be stored under any month.
+	if got := totals.Gas.DHW.Monthly; len(got) == 2 && (got[0] != 0 || got[1] != 0) {
+		t.Fatalf("Gas.DHW.Monthly = %v; want discarded reply (zeros)", got)
+	}
+}
+
+// Relative monthly queries (this-month / last-month) never consult the
+// scheduler or shadow cache, whatever the pass reference: they always read
+// fresh from the bus. Lifetime totals keep their normal TTL.
+func TestReadEnergyRegister_MonthlyNeverServedFromCache(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	poller := &vaillantSemanticPoller{
+		scheduler: ebusgateway.NewSemanticReadScheduler(),
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			calls++
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			return &protocol.Frame{Data: []byte{0x01, 0x00, localRegulator.group, byte(addr), byte(addr >> 8), 0x64, 0x00, 0x00, 0x00}}, nil
+		},
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+	}
+	var month, life b524EnergyQuery
+	for _, q := range b524EnergyQueries {
+		if q.period == "month" && month.addr == 0 {
+			month = q
+		}
+		if q.period == "all" && life.addr == 0 {
+			life = q
+		}
+	}
+	ctx := context.Background()
+
+	// Warm the cache through the ordinary (TTL) path, as a December pass would.
+	for _, q := range []b524EnergyQuery{month, life} {
+		if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr); !ok {
+			t.Fatalf("warm read of %#x failed", q.addr)
+		}
+	}
+	warm := calls
+	// Precondition: the ordinary path is served from the warm cache.
+	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, month.addr); !ok || calls != warm {
+		t.Fatalf("ordinary second read calls=%d; want cache hit (%d)", calls, warm)
+	}
+
+	// Monthly energy reads: a pass in January and another in the same month as
+	// the warm value both go to the bus.
+	for i := 1; i <= 2; i++ {
+		if _, ok := poller.readEnergyRegister(ctx, month); !ok {
+			t.Fatalf("monthly read %d failed", i)
+		}
+		if calls != warm+i {
+			t.Fatalf("after monthly read %d calls=%d; want bus read (%d)", i, calls, warm+i)
+		}
+	}
+
+	// Lifetime total is undated: normal TTL, served from cache.
+	if _, ok := poller.readEnergyRegister(ctx, life); !ok || calls != warm+2 {
+		t.Fatalf("lifetime read calls=%d; want cache hit (%d)", calls, warm+2)
 	}
 }

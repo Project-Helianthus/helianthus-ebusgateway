@@ -1165,7 +1165,7 @@ func TestBusObservabilityStoreEnergyFreshnessMetricsTrackPassiveAndAgingWithoutN
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	store := NewBusObservabilityStore(cfg)
-	base := time.Now().UTC()
+	base := time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
 	now := base
 	store.now = func() time.Time { return now }
 	store.mu.Lock()
@@ -1174,6 +1174,7 @@ func TestBusObservabilityStoreEnergyFreshnessMetricsTrackPassiveAndAgingWithoutN
 	store.mu.Unlock()
 
 	semantic := graphql.NewLiveSemanticProvider()
+	semantic.SetEnergyClock(func() time.Time { return now })
 	store.SetEnergyFreshnessMetricsRefresher(func(observedAt time.Time, passiveState string) {
 		semantic.RefreshEnergyFreshnessMetrics(observedAt, passiveState)
 	})
@@ -1184,6 +1185,9 @@ func TestBusObservabilityStoreEnergyFreshnessMetricsTrackPassiveAndAgingWithoutN
 			"source": {Valid: true, Value: "gas"},
 			"usage":  {Valid: true, Value: "heating"},
 			"period": {Valid: true, Value: "day"},
+			"year":   {Valid: true, Value: uint16(2026)},
+			"month":  {Valid: true, Value: uint8(2)},
+			"day":    {Valid: true, Value: uint8(26)},
 		},
 	})
 	if !updated {

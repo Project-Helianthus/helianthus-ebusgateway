@@ -165,7 +165,7 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	defer server.Close()
 
 	client := graphqlclient.NewClient(server.URL)
-	semantic := NewLiveSemanticProvider()
+	semantic := newClockedProvider()
 	builder.SetSemanticProvider(semantic)
 	updatedAt := time.Date(2026, time.March, 12, 18, 30, 0, 0, time.UTC)
 	selectedSource := uint8(0x7F)
@@ -1705,39 +1705,12 @@ func TestQueryResolvers_Integration(t *testing.T) {
 	})
 
 	t.Run("energy_totals_root_with_values", func(t *testing.T) {
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel: "gas",
-			Usage:   "hot_water",
-			Period:  "day",
-		}, 3.5)
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel:  "gas",
-			Usage:    "hot_water",
-			Period:   "year",
-			YearKind: "previous",
-		}, 120.0)
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel:  "gas",
-			Usage:    "hot_water",
-			Period:   "year",
-			YearKind: "current",
-		}, 240.0)
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel: "electricity",
-			Usage:   "heating",
-			Period:  "day",
-		}, 1.25)
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel:  "gas",
-			Usage:    "hot_water",
-			Period:   "month",
-			YearKind: "current",
-		}, 15.0)
-		semantic.ApplyEnergyFromRegister(EnergyMergeKey{
-			Channel: "solar",
-			Usage:   "cooling",
-			Period:  "day",
-		}, 2.75)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("gas", "hot_water", "day", ""), 3.5)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("gas", "hot_water", "year", "previous"), 120.0)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("gas", "hot_water", "year", "current"), 240.0)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("electricity", "heating", "day", ""), 1.25)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("gas", "hot_water", "month", "current"), 15.0)
+		semantic.ApplyEnergyFromRegister(semantic.EnergyWindowKey("solar", "cooling", "day", ""), 2.75)
 
 		request := graphqlclient.NewRequest(`
 			query {

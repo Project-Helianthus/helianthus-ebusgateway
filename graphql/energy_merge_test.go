@@ -17,7 +17,7 @@ var (
 
 func TestEnergyMerge_EmptyAcceptsAny(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	key := wkey("gas", "heating", "day", "")
 
 	if !store.Apply(key, 1.5, EnergySourceBroadcast, t0) {
 		t.Fatal("first broadcast into empty store should be accepted")
@@ -31,7 +31,7 @@ func TestEnergyMerge_EmptyAcceptsAny(t *testing.T) {
 
 func TestEnergyMerge_RegisterOverwritesBroadcast(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	key := wkey("gas", "heating", "day", "")
 
 	store.Apply(key, 1.0, EnergySourceBroadcast, t0)
 
@@ -40,7 +40,7 @@ func TestEnergyMerge_RegisterOverwritesBroadcast(t *testing.T) {
 	}
 
 	// Key is canonicalized: "heating" → "climate"
-	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	canonKey := wkey("gas", "climate", "day", "")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	store.mu.RUnlock()
@@ -55,7 +55,7 @@ func TestEnergyMerge_RegisterOverwritesBroadcast(t *testing.T) {
 
 func TestEnergyMerge_BroadcastNeverOverwritesRegister(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	key := wkey("gas", "heating", "day", "")
 
 	store.Apply(key, 1.0, EnergySourceRegister, t0)
 
@@ -64,7 +64,7 @@ func TestEnergyMerge_BroadcastNeverOverwritesRegister(t *testing.T) {
 		t.Fatal("broadcast should never overwrite register")
 	}
 
-	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	canonKey := wkey("gas", "climate", "day", "")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	store.mu.RUnlock()
@@ -76,7 +76,7 @@ func TestEnergyMerge_BroadcastNeverOverwritesRegister(t *testing.T) {
 
 func TestEnergyMerge_MonotonicBroadcast(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "year", YearKind: "current"}
+	key := wkey("electricity", "hot_water", "year", "current")
 
 	store.Apply(key, 10.0, EnergySourceBroadcast, t1)
 
@@ -95,7 +95,7 @@ func TestEnergyMerge_MonotonicBroadcast(t *testing.T) {
 		t.Fatal("same-timestamp broadcast should be rejected (monotonic: must be strictly newer)")
 	}
 
-	canonKey := energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "year", YearKind: "current"}
+	canonKey := wkey("electricity", "hot_water", "year", "current")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	store.mu.RUnlock()
@@ -107,7 +107,7 @@ func TestEnergyMerge_MonotonicBroadcast(t *testing.T) {
 
 func TestEnergyMerge_MonotonicRegister(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "solar", Usage: "heating", Period: "day"}
+	key := wkey("solar", "heating", "day", "")
 
 	store.Apply(key, 100.0, EnergySourceRegister, t1)
 
@@ -121,7 +121,7 @@ func TestEnergyMerge_MonotonicRegister(t *testing.T) {
 		t.Fatal("older register should be rejected (monotonic)")
 	}
 
-	canonKey := energyMergeKey{Channel: "solar", Usage: "climate", Period: "day"}
+	canonKey := wkey("solar", "climate", "day", "")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	store.mu.RUnlock()
@@ -133,7 +133,7 @@ func TestEnergyMerge_MonotonicRegister(t *testing.T) {
 
 func TestEnergyMerge_RegisterOverwritesBroadcastRegardlessOfTime(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "hot_water", Period: "year", YearKind: "previous"}
+	key := wkey("gas", "hot_water", "year", "previous")
 
 	// Broadcast at t2 (later timestamp).
 	store.Apply(key, 5.0, EnergySourceBroadcast, t2)
@@ -143,7 +143,7 @@ func TestEnergyMerge_RegisterOverwritesBroadcastRegardlessOfTime(t *testing.T) {
 		t.Fatal("register should overwrite broadcast even with older timestamp")
 	}
 
-	canonKey := energyMergeKey{Channel: "gas", Usage: "hot_water", Period: "year", YearKind: "previous"}
+	canonKey := wkey("gas", "hot_water", "year", "previous")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	store.mu.RUnlock()
@@ -160,18 +160,18 @@ func TestEnergyMerge_SnapshotBuildsCorrectTotals(t *testing.T) {
 	store := newEnergyMergeStore()
 
 	// Gas heating day.
-	store.Apply(energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}, 1.5, EnergySourceBroadcast, t0)
+	store.Apply(wkey("gas", "heating", "day", ""), 1.5, EnergySourceBroadcast, t0)
 
 	// Gas hot_water year current.
-	store.Apply(energyMergeKey{Channel: "gas", Usage: "hot_water", Period: "year", YearKind: "current"}, 100.0, EnergySourceBroadcast, t0)
+	store.Apply(wkey("gas", "hot_water", "year", "current"), 100.0, EnergySourceBroadcast, t0)
 
 	// Electricity hot_water year previous.
-	store.Apply(energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "year", YearKind: "previous"}, 200.0, EnergySourceRegister, t0)
+	store.Apply(wkey("electricity", "hot_water", "year", "previous"), 200.0, EnergySourceRegister, t0)
 
 	// Solar heating day.
-	store.Apply(energyMergeKey{Channel: "solar", Usage: "heating", Period: "day"}, 50.0, EnergySourceBroadcast, t0)
+	store.Apply(wkey("solar", "heating", "day", ""), 50.0, EnergySourceBroadcast, t0)
 
-	totals := store.Snapshot()
+	totals := store.SnapshotWithContext(t0, "")
 	if totals == nil {
 		t.Fatal("Snapshot() = nil; want non-nil")
 	}
@@ -207,14 +207,14 @@ func TestEnergyMerge_SnapshotBuildsMonthlySeries(t *testing.T) {
 	store := newEnergyMergeStore()
 
 	// Gas climate: this month = 284, last month = 266.
-	store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "month", YearKind: "current"}, 284.0, EnergySourceRegister, t0)
-	store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "month", YearKind: "previous"}, 266.0, EnergySourceRegister, t0)
+	store.Apply(wkey("gas", "climate", "month", "current"), 284.0, EnergySourceRegister, t0)
+	store.Apply(wkey("gas", "climate", "month", "previous"), 266.0, EnergySourceRegister, t0)
 
 	// Electricity hot_water: this month = 5, last month = 3.
-	store.Apply(energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "month", YearKind: "current"}, 5.0, EnergySourceRegister, t0)
-	store.Apply(energyMergeKey{Channel: "electricity", Usage: "hot_water", Period: "month", YearKind: "previous"}, 3.0, EnergySourceRegister, t0)
+	store.Apply(wkey("electricity", "hot_water", "month", "current"), 5.0, EnergySourceRegister, t0)
+	store.Apply(wkey("electricity", "hot_water", "month", "previous"), 3.0, EnergySourceRegister, t0)
 
-	totals := store.Snapshot()
+	totals := store.SnapshotWithContext(t0, "")
 	if totals == nil {
 		t.Fatal("Snapshot() = nil; want non-nil")
 	}
@@ -254,12 +254,7 @@ func TestEnergyMerge_SnapshotMonthlyMetadataBackfillsPartialSelectors(t *testing
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newEnergyMergeStore()
-			if !store.Apply(energyMergeKey{
-				Channel:  "gas",
-				Usage:    "climate",
-				Period:   "month",
-				YearKind: tc.presentKind,
-			}, 9.5, EnergySourceRegister, t0) {
+			if !store.Apply(wkey("gas", "climate", "month", tc.presentKind), 9.5, EnergySourceRegister, t0) {
 				t.Fatal("Apply() = false; want true")
 			}
 
@@ -347,12 +342,7 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 	for _, ch := range channels {
 		for _, us := range usages {
 			for _, ps := range periods {
-				key := energyMergeKey{
-					Channel:  ch,
-					Usage:    us,
-					Period:   ps.period,
-					YearKind: ps.yearKind,
-				}
+				key := wkey(ch, us, ps.period, ps.yearKind)
 				if !store.Apply(key, float64(expectedCount+1), EnergySourceBroadcast, t0) {
 					t.Fatalf("Apply(%v) = false; want true for first write", key)
 				}
@@ -373,7 +363,7 @@ func TestEnergyMerge_AllChannelUsagePeriodCombinations(t *testing.T) {
 		t.Fatalf("store has %d points; want 30", gotCount)
 	}
 
-	totals := store.Snapshot()
+	totals := store.SnapshotWithContext(t0, "")
 	if totals == nil {
 		t.Fatal("Snapshot() = nil after 30 inserts")
 	}
@@ -400,8 +390,8 @@ func TestEnergyMerge_HeatingCoolingCanonicalizedToClimate(t *testing.T) {
 	store := newEnergyMergeStore()
 
 	// "heating" and "cooling" both map to "climate" — they share the same merge slot.
-	keyHeating := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
-	keyCooling := energyMergeKey{Channel: "gas", Usage: "cooling", Period: "day"}
+	keyHeating := wkey("gas", "heating", "day", "")
+	keyCooling := wkey("gas", "cooling", "day", "")
 
 	if !store.Apply(keyHeating, 10.0, EnergySourceBroadcast, t0) {
 		t.Fatal("first heating broadcast should be accepted")
@@ -412,7 +402,7 @@ func TestEnergyMerge_HeatingCoolingCanonicalizedToClimate(t *testing.T) {
 		t.Fatal("cooling broadcast with newer timestamp should overwrite heating (same canonical key)")
 	}
 
-	canonKey := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	canonKey := wkey("gas", "climate", "day", "")
 	store.mu.RLock()
 	point := store.points[canonKey]
 	count := len(store.points)
@@ -427,12 +417,8 @@ func TestEnergyMerge_HeatingCoolingCanonicalizedToClimate(t *testing.T) {
 }
 
 func TestApplyEnergyFromRegister(t *testing.T) {
-	provider := NewLiveSemanticProvider()
-	key := EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "climate",
-		Period:  "day",
-	}
+	provider := newClockedProvider()
+	key := provider.EnergyWindowKey("gas", "climate", "day", "")
 
 	if !provider.ApplyEnergyFromRegister(key, 1.25) {
 		t.Fatal("ApplyEnergyFromRegister() = false; want true")
@@ -448,24 +434,23 @@ func TestApplyEnergyFromRegister(t *testing.T) {
 }
 
 func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
-	provider := NewLiveSemanticProvider()
+	provider := newClockedProvider()
 	_, updated := provider.ApplyBroadcast(router.BroadcastEvent{
 		Values: map[string]types.Value{
 			"wh":     {Valid: true, Value: float64(1000)},
 			"source": {Valid: true, Value: "gas"},
 			"usage":  {Valid: true, Value: "heating"},
 			"period": {Valid: true, Value: "day"},
+			"year":   {Valid: true, Value: uint16(2026)},
+			"month":  {Valid: true, Value: uint8(2)},
+			"day":    {Valid: true, Value: uint8(26)},
 		},
 	})
 	if !updated {
 		t.Fatal("ApplyBroadcast() updated = false; want true")
 	}
 
-	key := EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "climate",
-		Period:  "day",
-	}
+	key := provider.EnergyWindowKey("gas", "climate", "day", "")
 	if !provider.ApplyEnergyFromRegister(key, 2.5) {
 		t.Fatal("ApplyEnergyFromRegister() = false; want true")
 	}
@@ -481,7 +466,7 @@ func TestApplyEnergyFromRegister_OverwritesBroadcast(t *testing.T) {
 
 func TestEnergyMerge_BroadcastMetadataStatesAndStaleness(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "heating", Period: "day"}
+	key := wkey("gas", "heating", "day", "")
 	if !store.Apply(key, 12.5, EnergySourceBroadcast, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
@@ -519,7 +504,7 @@ func TestEnergyMerge_BroadcastMetadataStatesAndStaleness(t *testing.T) {
 
 func TestEnergyMerge_MissingSelectorStatesNeverSeenAndUnavailable(t *testing.T) {
 	store := newEnergyMergeStore()
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 1, EnergySourceBroadcast, t0) {
+	if !store.Apply(wkey("gas", "climate", "day", ""), 1, EnergySourceBroadcast, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
 
@@ -538,7 +523,7 @@ func TestEnergyMerge_BroadcastFreshnessTransitionsMetricIncrements(t *testing.T)
 	before := readExpvarMapValue(energyBroadcastTransitions, "warming_up->stale")
 
 	store := newEnergyMergeStore()
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
+	if !store.Apply(wkey("gas", "climate", "day", ""), 2, EnergySourceBroadcast, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
 	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
@@ -552,7 +537,7 @@ func TestEnergyMerge_BroadcastFreshnessTransitionsMetricIncrements(t *testing.T)
 
 func TestEnergyMerge_SnapshotWithContextDoesNotMutateBroadcastMetrics(t *testing.T) {
 	store := newEnergyMergeStore()
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 2, EnergySourceBroadcast, t0) {
+	if !store.Apply(wkey("gas", "climate", "day", ""), 2, EnergySourceBroadcast, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
 	store.RefreshFreshnessMetricsWithContext(t0.Add(time.Minute), "warming_up")
@@ -579,13 +564,13 @@ func TestEnergyMerge_SnapshotWithContextDoesNotMutateBroadcastMetrics(t *testing
 
 func TestEnergyMerge_BroadcastFreshnessIgnoresRegisterSelectors(t *testing.T) {
 	store := newEnergyMergeStore()
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}, 7, EnergySourceRegister, t0) {
+	if !store.Apply(wkey("gas", "climate", "day", ""), 7, EnergySourceRegister, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "previous"}, 70, EnergySourceRegister, t0) {
+	if !store.Apply(wkey("gas", "climate", "year", "previous"), 70, EnergySourceRegister, t0) {
 		t.Fatal("Apply() year previous = false; want true")
 	}
-	if !store.Apply(energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", YearKind: "current"}, 71, EnergySourceRegister, t0) {
+	if !store.Apply(wkey("gas", "climate", "year", "current"), 71, EnergySourceRegister, t0) {
 		t.Fatal("Apply() year current = false; want true")
 	}
 
@@ -602,7 +587,7 @@ func TestEnergyMerge_BroadcastFreshnessIgnoresRegisterSelectors(t *testing.T) {
 	if afterFresh != beforeFresh {
 		t.Fatalf("energy_broadcast_selectors[fresh] = %d; want unchanged %d for register-only selectors", afterFresh, beforeFresh)
 	}
-	wantNeverSeenDelta := int64(len(energyBroadcastSelectorCatalog()))
+	wantNeverSeenDelta := int64(len(energyBroadcastSelectorCatalog(t0)))
 	if delta := afterNeverSeen - beforeNeverSeen; delta != wantNeverSeenDelta {
 		t.Fatalf("energy_broadcast_selectors[never_seen] delta = %d; want %d", delta, wantNeverSeenDelta)
 	}
@@ -618,7 +603,7 @@ func TestEnergyMerge_ConstructorsDoNotMutateBroadcastSelectorMetrics(t *testing.
 	}
 
 	_ = newEnergyMergeStore()
-	_ = NewLiveSemanticProvider()
+	_ = newClockedProvider()
 
 	for _, state := range energyFreshnessStates() {
 		after := readExpvarMapValue(energyBroadcastSelectors, string(state))
@@ -629,12 +614,8 @@ func TestEnergyMerge_ConstructorsDoNotMutateBroadcastSelectorMetrics(t *testing.
 }
 
 func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
-	provider := NewLiveSemanticProvider()
-	if !provider.ApplyEnergyFromRegister(EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "climate",
-		Period:  "day",
-	}, 8.75) {
+	provider := newClockedProvider()
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "climate", "day", ""), 8.75) {
 		t.Fatal("ApplyEnergyFromRegister() = false; want true")
 	}
 
@@ -655,7 +636,7 @@ func TestApplyEnergyFromRegister_MetadataFresh(t *testing.T) {
 
 func TestEnergyMerge_RegisterFreshnessAgesOut(t *testing.T) {
 	store := newEnergyMergeStore()
-	key := energyMergeKey{Channel: "gas", Usage: "climate", Period: "day"}
+	key := wkey("gas", "climate", "day", "")
 	if !store.Apply(key, 8.75, EnergySourceRegister, t0) {
 		t.Fatal("Apply() = false; want true")
 	}
@@ -693,7 +674,7 @@ func TestEnergyMerge_RegisterFreshnessAgesOut(t *testing.T) {
 }
 
 func TestLiveSemanticProvider_EnergyTotalsVisibleWhenNeverSeen(t *testing.T) {
-	provider := NewLiveSemanticProvider()
+	provider := newClockedProvider()
 
 	totals := provider.EnergyTotals()
 	if totals == nil {

@@ -192,7 +192,7 @@ func TestSemanticRuntime_StartWithoutRouterStillRunsBootFSM(t *testing.T) {
 }
 
 func TestLiveSemanticProvider_ApplyBroadcastDoesNotAdvanceStartupEpochs(t *testing.T) {
-	provider := NewLiveSemanticProvider()
+	provider := newClockedProvider()
 
 	event := router.BroadcastEvent{
 		Values: map[string]types.Value{
@@ -200,6 +200,9 @@ func TestLiveSemanticProvider_ApplyBroadcastDoesNotAdvanceStartupEpochs(t *testi
 			"source": {Valid: true, Value: "gas"},
 			"usage":  {Valid: true, Value: "heating"},
 			"period": {Valid: true, Value: "day"},
+			"year":   {Valid: true, Value: uint16(2026)},
+			"month":  {Valid: true, Value: uint8(2)},
+			"day":    {Valid: true, Value: uint8(26)},
 		},
 	}
 

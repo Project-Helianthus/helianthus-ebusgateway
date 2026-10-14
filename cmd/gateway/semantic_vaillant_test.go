@@ -7015,13 +7015,18 @@ func TestReadEnergyRegister_MonthlyCacheFencedAtMonthStart(t *testing.T) {
 		t.Fatalf("unfenced second read calls=%d; want cache hit (%d)", calls, warm)
 	}
 
-	// Pass at 00:00:00 of the new month: the cached monthly observation predates it.
-	ref := time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC)
+	// Pass whose month started after the cached observation was acquired
+	// (wall time): the cached monthly observation is not eligible.
+	ref := time.Now().AddDate(0, 1, 0)
 	if _, ok := poller.readEnergyRegister(ctx, month, ref); !ok {
 		t.Fatal("fenced monthly read failed")
 	}
 	if calls != warm+1 {
 		t.Fatalf("monthly read calls=%d; want a fresh bus read (%d)", calls, warm+1)
+	}
+	// A pass in the month the observation was acquired in still uses the cache.
+	if _, ok := poller.readEnergyRegister(ctx, month, time.Now()); !ok || calls != warm+1 {
+		t.Fatalf("same-month read calls=%d; want cache hit (%d)", calls, warm+1)
 	}
 	// Lifetime total is undated: cache still served.
 	if _, ok := poller.readEnergyRegister(ctx, life, ref); !ok || calls != warm+1 {

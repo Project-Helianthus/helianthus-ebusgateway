@@ -6772,13 +6772,12 @@ func (p *vaillantSemanticPoller) readB509UCHFloat(ctx context.Context, target by
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
-	return p.readB524ValueWithMaxAge(ctx, opcode, group, instance, addr, -1)
+	return p.readB524ValueNotBefore(ctx, opcode, group, instance, addr, time.Time{})
 }
 
-// readB524ValueWithMaxAge is readB524Value with an optional cache-age cap:
-// maxAgeCap >= 0 replaces the descriptor TTL when it is smaller (0 forces a
-// fresh bus read); a negative cap leaves the descriptor TTL untouched.
-func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, opcode, group, instance byte, addr uint16, maxAgeCap time.Duration) ([]byte, bool) {
+// readB524ValueNotBefore is readB524Value with a wall-clock fence: a cached or
+// shadow observation acquired before notBefore is never served (zero disables).
+func (p *vaillantSemanticPoller) readB524ValueNotBefore(ctx context.Context, opcode, group, instance byte, addr uint16, notBefore time.Time) ([]byte, bool) {
 	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
 		return nil, false
 	}
@@ -6802,10 +6801,7 @@ func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, op
 	watchKey := ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr)
 	watchRuntime := p.prepareSemanticReadWatchRuntime(watchKey)
 	maxAge := watchRuntime.maxAge
-	if maxAgeCap >= 0 && maxAgeCap < maxAge {
-		maxAge = maxAgeCap
-	}
-	value, stats, err := p.scheduler.GetWatchWithStats(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
+	value, stats, err := p.scheduler.GetWatchWithStatsNotBefore(ctx, watchKey, maxAge, notBefore, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()
@@ -7789,17 +7785,16 @@ func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, g
 }
 
 // readEnergyRegister reads one B524 energy register for an acquisition whose
-// reference time is ref. Relative-window (monthly) replies are fenced so a
-// cached observation acquired before the start of ref's calendar month can
-// never be consumed: the cache-age cap is the time elapsed since that month
-// start (0 forces a fresh bus read). Lifetime totals are undated and unfenced.
+// reference time is ref. Relative-window (monthly) replies are fenced on wall
+// time: a cached or shadow observation acquired before the start of ref's
+// calendar month is never consumed and a fresh bus read is made. Lifetime
+// totals are undated and unfenced.
 func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524EnergyQuery, ref time.Time) (uint32, bool) {
-	cap := time.Duration(-1)
+	var notBefore time.Time
 	if q.period == "month" {
-		monthStart := time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, ref.Location())
-		cap = ref.Sub(monthStart)
+		notBefore = time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, ref.Location())
 	}
-	raw, ok := p.readB524ValueWithMaxAge(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, cap)
+	raw, ok := p.readB524ValueNotBefore(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, notBefore)
 	if !ok || len(raw) < 4 {
 		return 0, false
 	}

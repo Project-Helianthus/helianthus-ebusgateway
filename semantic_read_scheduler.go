@@ -70,12 +70,8 @@ type semanticReadEntry struct {
 	done    chan struct{}
 
 	lastOKAt time.Time
-	// lastOKObservedAt is the wall-clock acquisition time of lastOK (the fetch
-	// completion for active reads, the shadow observation time for shadow-served
-	// values). It is compared as wall time only (monotonic reading stripped).
-	lastOKObservedAt time.Time
-	lastOK           []byte
-	lastErr          error
+	lastOK   []byte
+	lastErr  error
 
 	lastOKShadowGeneration uint64
 	lastOKHasGeneration    bool
@@ -207,48 +203,11 @@ func (s *SemanticReadScheduler) GetWatchWithStats(
 	return s.getWithWatchKey(ctx, key.Canonical(), key, maxAge, fetch)
 }
 
-// GetWatchWithStatsNotBefore is GetWatchWithStats with a wall-clock fence: a
-// cached or shadow observation acquired before notBefore (compared as wall
-// time, monotonic readings stripped) is never served and a fresh read is made.
-// A zero notBefore disables the fence.
-func (s *SemanticReadScheduler) GetWatchWithStatsNotBefore(
-	ctx context.Context,
-	key WatchKey,
-	maxAge time.Duration,
-	notBefore time.Time,
-	fetch func(context.Context) ([]byte, error),
-) ([]byte, SemanticReadExecutionStats, error) {
-	if key == nil {
-		return s.getWithWatchKeyNotBefore(ctx, "", nil, maxAge, notBefore, fetch)
-	}
-	return s.getWithWatchKeyNotBefore(ctx, key.Canonical(), key, maxAge, notBefore, fetch)
-}
-
 func (s *SemanticReadScheduler) getWithWatchKey(
 	ctx context.Context,
 	key string,
 	watchKey WatchKey,
 	maxAge time.Duration,
-	fetch func(context.Context) ([]byte, error),
-) ([]byte, SemanticReadExecutionStats, error) {
-	return s.getWithWatchKeyNotBefore(ctx, key, watchKey, maxAge, time.Time{}, fetch)
-}
-
-// observedBefore reports whether an acquisition wall time precedes notBefore.
-// An unknown (zero) acquisition time is treated as before the fence.
-func observedBefore(observed, notBefore time.Time) bool {
-	if notBefore.IsZero() {
-		return false
-	}
-	return observed.IsZero() || observed.Round(0).Before(notBefore.Round(0))
-}
-
-func (s *SemanticReadScheduler) getWithWatchKeyNotBefore(
-	ctx context.Context,
-	key string,
-	watchKey WatchKey,
-	maxAge time.Duration,
-	notBefore time.Time,
 	fetch func(context.Context) ([]byte, error),
 ) ([]byte, SemanticReadExecutionStats, error) {
 	var stats SemanticReadExecutionStats
@@ -313,9 +272,8 @@ func (s *SemanticReadScheduler) getWithWatchKeyNotBefore(
 		}
 
 		if candidate != nil {
-			if snapshot, ok := revalidateSemanticReadShadowCandidate(shadow, watchKey, candidate, maxAge, s.now()); ok && !observedBefore(snapshot.ObservedAt, notBefore) {
+			if snapshot, ok := revalidateSemanticReadShadowCandidate(shadow, watchKey, candidate, maxAge, s.now()); ok {
 				entry.lastOKAt = s.now()
-				entry.lastOKObservedAt = snapshot.ObservedAt
 				entry.lastOK = append(entry.lastOK[:0], candidate.value...)
 				entry.lastErr = nil
 				entry.lastOKShadowGeneration = snapshot.Generation
@@ -336,9 +294,7 @@ func (s *SemanticReadScheduler) getWithWatchKeyNotBefore(
 
 		if !entry.running && len(entry.lastOK) > 0 && maxAge > 0 {
 			age := s.now().Sub(entry.lastOKAt)
-			if observedBefore(entry.lastOKObservedAt, notBefore) {
-				// Acquired before the wall-clock fence: not eligible.
-			} else if age >= 0 && age <= maxAge {
+			if age >= 0 && age <= maxAge {
 				if shadow == nil || watchKey == nil || !entry.lastOKHasGeneration {
 					value := append([]byte(nil), entry.lastOK...)
 					s.mu.Unlock()
@@ -434,7 +390,6 @@ func (s *SemanticReadScheduler) getWithWatchKeyNotBefore(
 		}
 		if err == nil {
 			entry.lastOKAt = s.now()
-			entry.lastOKObservedAt = entry.lastOKAt
 			entry.lastOK = append(entry.lastOK[:0], value...)
 			entry.lastErr = nil
 			entry.lastOKFromShadow = false
@@ -681,7 +636,6 @@ func clearSemanticReadCacheLocked(entry *semanticReadEntry) {
 		return
 	}
 	entry.lastOKAt = time.Time{}
-	entry.lastOKObservedAt = time.Time{}
 	entry.lastOK = entry.lastOK[:0]
 	entry.lastOKShadowGeneration = 0
 	entry.lastOKHasGeneration = false

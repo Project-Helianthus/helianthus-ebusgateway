@@ -6972,10 +6972,10 @@ func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
 	}
 }
 
-// Cache path: a monthly reply cached before the reference month started must
-// not be returned to a pass whose reference is in the new month; it is re-read
-// fresh. Lifetime totals are unfenced and still served from cache.
-func TestReadEnergyRegister_MonthlyCacheFencedAtMonthStart(t *testing.T) {
+// Relative monthly queries (this-month / last-month) never consult the
+// scheduler or shadow cache, whatever the pass reference: they always read
+// fresh from the bus. Lifetime totals keep their normal TTL.
+func TestReadEnergyRegister_MonthlyNeverServedFromCache(t *testing.T) {
 	t.Parallel()
 
 	calls := 0
@@ -7001,35 +7001,31 @@ func TestReadEnergyRegister_MonthlyCacheFencedAtMonthStart(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Warm the cache (as the 23:59 pass would have).
-	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, month.addr); !ok {
-		t.Fatal("warm read failed")
-	}
-	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, life.addr); !ok {
-		t.Fatal("warm lifetime read failed")
+	// Warm the cache through the ordinary (TTL) path, as a December pass would.
+	for _, q := range []b524EnergyQuery{month, life} {
+		if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr); !ok {
+			t.Fatalf("warm read of %#x failed", q.addr)
+		}
 	}
 	warm := calls
-
-	// Precondition: the unfenced path is served from cache.
+	// Precondition: the ordinary path is served from the warm cache.
 	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, month.addr); !ok || calls != warm {
-		t.Fatalf("unfenced second read calls=%d; want cache hit (%d)", calls, warm)
+		t.Fatalf("ordinary second read calls=%d; want cache hit (%d)", calls, warm)
 	}
 
-	// Pass whose month started after the cached observation was acquired
-	// (wall time): the cached monthly observation is not eligible.
-	ref := time.Now().AddDate(0, 1, 0)
-	if _, ok := poller.readEnergyRegister(ctx, month, ref); !ok {
-		t.Fatal("fenced monthly read failed")
+	// Monthly energy reads: a pass in January and another in the same month as
+	// the warm value both go to the bus.
+	for i := 1; i <= 2; i++ {
+		if _, ok := poller.readEnergyRegister(ctx, month); !ok {
+			t.Fatalf("monthly read %d failed", i)
+		}
+		if calls != warm+i {
+			t.Fatalf("after monthly read %d calls=%d; want bus read (%d)", i, calls, warm+i)
+		}
 	}
-	if calls != warm+1 {
-		t.Fatalf("monthly read calls=%d; want a fresh bus read (%d)", calls, warm+1)
-	}
-	// A pass in the month the observation was acquired in still uses the cache.
-	if _, ok := poller.readEnergyRegister(ctx, month, time.Now()); !ok || calls != warm+1 {
-		t.Fatalf("same-month read calls=%d; want cache hit (%d)", calls, warm+1)
-	}
-	// Lifetime total is undated: cache still served.
-	if _, ok := poller.readEnergyRegister(ctx, life, ref); !ok || calls != warm+1 {
-		t.Fatalf("lifetime read calls=%d; want cache hit (%d)", calls, warm+1)
+
+	// Lifetime total is undated: normal TTL, served from cache.
+	if _, ok := poller.readEnergyRegister(ctx, life); !ok || calls != warm+2 {
+		t.Fatalf("lifetime read calls=%d; want cache hit (%d)", calls, warm+2)
 	}
 }

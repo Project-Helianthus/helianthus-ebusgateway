@@ -1631,8 +1631,8 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
-	p.acquireEnergy(func(q b524EnergyQuery, ref time.Time) (uint32, bool) {
-		return p.readEnergyRegister(ctx, q, ref)
+	p.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
+		return p.readEnergyRegister(ctx, q)
 	})
 }
 
@@ -6772,12 +6772,13 @@ func (p *vaillantSemanticPoller) readB509UCHFloat(ctx context.Context, target by
 }
 
 func (p *vaillantSemanticPoller) readB524Value(ctx context.Context, opcode, group, instance byte, addr uint16) ([]byte, bool) {
-	return p.readB524ValueNotBefore(ctx, opcode, group, instance, addr, time.Time{})
+	return p.readB524ValueWithMaxAge(ctx, opcode, group, instance, addr, -1)
 }
 
-// readB524ValueNotBefore is readB524Value with a wall-clock fence: a cached or
-// shadow observation acquired before notBefore is never served (zero disables).
-func (p *vaillantSemanticPoller) readB524ValueNotBefore(ctx context.Context, opcode, group, instance byte, addr uint16, notBefore time.Time) ([]byte, bool) {
+// readB524ValueWithMaxAge is readB524Value with a cache-age override: a
+// non-negative maxAgeOverride replaces the descriptor TTL (0 never consults the
+// scheduler or shadow cache); a negative override keeps the descriptor TTL.
+func (p *vaillantSemanticPoller) readB524ValueWithMaxAge(ctx context.Context, opcode, group, instance byte, addr uint16, maxAgeOverride time.Duration) ([]byte, bool) {
 	if p == nil || (p.bus == nil && p.sendFrameFn == nil) {
 		return nil, false
 	}
@@ -6801,7 +6802,10 @@ func (p *vaillantSemanticPoller) readB524ValueNotBefore(ctx context.Context, opc
 	watchKey := ebusgateway.NewB524WatchKey(target, opcode, group, instance, addr)
 	watchRuntime := p.prepareSemanticReadWatchRuntime(watchKey)
 	maxAge := watchRuntime.maxAge
-	value, stats, err := p.scheduler.GetWatchWithStatsNotBefore(ctx, watchKey, maxAge, notBefore, func(ctx context.Context) ([]byte, error) {
+	if maxAgeOverride >= 0 {
+		maxAge = maxAgeOverride
+	}
+	value, stats, err := p.scheduler.GetWatchWithStats(ctx, watchKey, maxAge, func(ctx context.Context) ([]byte, error) {
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			p.readMu.Lock()
@@ -7784,17 +7788,17 @@ func (p *vaillantSemanticPoller) readB524Uint32LE(ctx context.Context, opcode, g
 	return v, true
 }
 
-// readEnergyRegister reads one B524 energy register for an acquisition whose
-// reference time is ref. Relative-window (monthly) replies are fenced on wall
-// time: a cached or shadow observation acquired before the start of ref's
-// calendar month is never consumed and a fresh bus read is made. Lifetime
-// totals are undated and unfenced.
-func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524EnergyQuery, ref time.Time) (uint32, bool) {
-	var notBefore time.Time
+// readEnergyRegister reads one B524 energy register. Relative-window (monthly:
+// this-month / last-month) replies are never served from the scheduler or
+// shadow cache: their window label depends on when the value was acquired, so
+// they always read fresh from the bus (maxAge 0). Lifetime totals are undated
+// and keep the normal TTL.
+func (p *vaillantSemanticPoller) readEnergyRegister(ctx context.Context, q b524EnergyQuery) (uint32, bool) {
+	maxAgeOverride := time.Duration(-1)
 	if q.period == "month" {
-		notBefore = time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, ref.Location())
+		maxAgeOverride = 0
 	}
-	raw, ok := p.readB524ValueNotBefore(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, notBefore)
+	raw, ok := p.readB524ValueWithMaxAge(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr, maxAgeOverride)
 	if !ok || len(raw) < 4 {
 		return 0, false
 	}

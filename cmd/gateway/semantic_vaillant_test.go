@@ -3618,6 +3618,7 @@ func TestRefreshEnergy_NoRegulatorKeepsNeverSeenShape(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
 		provider:            provider,
 		controller:          0x15,
@@ -3639,22 +3640,14 @@ func TestRefreshEnergy_ReadFailurePreservesLastKnown(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
 	poller := &vaillantSemanticPoller{
 		provider:   provider,
 		controller: 0x15,
 	}
 
-	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "hot_water",
-		Period:  "day",
-	}, 3.5)
-	provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel:  "gas",
-		Usage:    "hot_water",
-		Period:   "year",
-		YearKind: "current",
-	}, 240.0)
+	provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "hot_water", "day", ""), 3.5)
+	provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "hot_water", "year", "current"), 240.0)
 
 	before := provider.EnergyTotals()
 	if before == nil {
@@ -3679,11 +3672,8 @@ func TestPublishEnergyTotals_PublishesProviderSnapshot(t *testing.T) {
 	t.Parallel()
 
 	provider := graphql.NewLiveSemanticProvider()
-	if !provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-		Channel: "gas",
-		Usage:   "climate",
-		Period:  "day",
-	}, 4.25) {
+	provider.SetEnergyClock(func() time.Time { return time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC) })
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "climate", "day", ""), 4.25) {
 		t.Fatal("ApplyEnergyFromRegister() = false; want true")
 	}
 
@@ -5155,6 +5145,38 @@ func TestVaillantSemanticPoller_RegulatorDetectionNone(t *testing.T) {
 	got := poller.findRegulatorCapability()
 	if got != productids.ControllerNone {
 		t.Fatalf("findRegulatorCapability() = %s; want ControllerNone", got)
+	}
+}
+
+// Pins the classification delta from the ebusreg 2342a8d8 repin: capability is
+// read from Catalog.All and the "Thermostat" role now counts as a present
+// controller (before: Regulator only, from the metadata-complete ByPartNumber
+// subset). Affects the published regulator capability and absence FSM.
+func TestVaillantSemanticPoller_RegulatorDetectionEbusregRepinDelta(t *testing.T) {
+	t.Parallel()
+
+	catalog, err := productids.LoadCatalog()
+	if err != nil {
+		t.Fatalf("LoadCatalog() error: %v", err)
+	}
+	cases := []struct {
+		name string
+		part string
+		want productids.ControllerCapability
+	}{
+		{"thermostat role is a present controller", "0020018249", productids.ControllerPresent},
+		{"boiler outside ByPartNumber is none, not unknown", "0010002465", productids.ControllerNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := newTestRegistry(
+				registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "X", SerialNumber: "21-22-09-" + tc.part + "-0082-005409-N4"},
+			)
+			poller := &vaillantSemanticPoller{reg: reg, catalog: catalog}
+			if got := poller.findRegulatorCapability(); got != tc.want {
+				t.Fatalf("findRegulatorCapability(%s) = %s; want %s", tc.part, got, tc.want)
+			}
+		})
 	}
 }
 

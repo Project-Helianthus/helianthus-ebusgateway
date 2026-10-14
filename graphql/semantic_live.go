@@ -72,6 +72,7 @@ type LiveSemanticProvider struct {
 
 	energyMerge                *energyMergeStore
 	energyRevision             uint64
+	energyClock                func() time.Time
 	energyPassiveState         string
 	energyPassiveStateProvider func() string
 
@@ -371,11 +372,39 @@ func (provider *LiveSemanticProvider) SetCylindersFromCache(cylinders []Cylinder
 	provider.SetCylinders(cylinders)
 }
 
+// SetEnergyClock injects the reference clock used to ingest broadcasts and to
+// project the public previous/current energy slots. Nil restores time.Now.
+func (provider *LiveSemanticProvider) SetEnergyClock(clock func() time.Time) {
+	if provider == nil {
+		return
+	}
+	provider.mu.Lock()
+	provider.energyClock = clock
+	provider.mu.Unlock()
+}
+
+func (provider *LiveSemanticProvider) energyNow() time.Time {
+	provider.mu.RLock()
+	clock := provider.energyClock
+	provider.mu.RUnlock()
+	if clock == nil {
+		return time.Now()
+	}
+	return clock()
+}
+
+// EnergyWindowKey resolves a relative register window ("current"/"previous"
+// for year and month periods; the reference day for "day") to the dated merge
+// key against the provider's reference clock.
+func (provider *LiveSemanticProvider) EnergyWindowKey(channel, usage, period, label string) EnergyMergeKey {
+	return energyWindowKey(channel, usage, period, label, provider.energyNow())
+}
+
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 	if provider == nil || provider.energyMerge == nil {
 		return nil
 	}
-	snapshot := provider.energyMerge.SnapshotWithContext(time.Now(), provider.currentEnergyPassiveState())
+	snapshot := provider.energyMerge.SnapshotWithContext(provider.energyNow(), provider.currentEnergyPassiveState())
 	if snapshot == nil {
 		return nil
 	}
@@ -917,7 +946,7 @@ func (provider *LiveSemanticProvider) ApplyBroadcast(event router.BroadcastEvent
 		return nil, false
 	}
 
-	if updated := provider.applyEnergy(event.Values, time.Now()); !updated {
+	if updated := provider.applyEnergy(event.Values, provider.energyNow()); !updated {
 		return nil, false
 	}
 	return provider.EnergyTotals(), true
@@ -929,8 +958,7 @@ func (provider *LiveSemanticProvider) ApplyEnergyFromRegister(key EnergyMergeKey
 	if provider == nil || provider.energyMerge == nil {
 		return false
 	}
-	now := time.Now()
-	return provider.applyEnergyPoint(key, kwh, EnergySourceRegister, now)
+	return provider.applyEnergyPoint(key, kwh, EnergySourceRegister, provider.energyNow())
 }
 
 func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value, now time.Time) bool {
@@ -975,16 +1003,16 @@ func (provider *LiveSemanticProvider) applyEnergy(values map[string]types.Value,
 		if !matchesToday(values, now) {
 			return false
 		}
-		key = energyMergeKey{Channel: source, Usage: usage, Period: "day"}
+		key = energyWindowKey(source, usage, "day", "", now)
 	case "year":
-		// ebusreg publishes the absolute `year`; the current/previous label
-		// of the public Yearly[1]/Yearly[0] slots derives from the reference
-		// date (now). A missing or out-of-window year is not retained.
-		yearKind, ok := energyYearKindFor(values, now)
-		if !ok {
+		// ebusreg publishes the absolute `year`; it is stored as the window
+		// identity. Only the current and previous year are accepted; the
+		// public previous/current slot is projected at snapshot time.
+		year, ok := uintValue(values, "year")
+		if !ok || (int(year) != now.Year() && int(year) != now.Year()-1) {
 			return false
 		}
-		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", YearKind: yearKind}
+		key = energyMergeKey{Channel: source, Usage: usage, Period: "year", Year: int(year)}
 	default:
 		return false
 	}
@@ -1012,24 +1040,6 @@ func (provider *LiveSemanticProvider) applyEnergyPoint(key energyMergeKey, kwh f
 	}
 	provider.mu.Unlock()
 	return true
-}
-
-// energyYearKindFor maps the absolute B516 `year` to the public
-// "current"/"previous" slot relative to the reference date. It reports false
-// when the year is absent/invalid or lies outside those two windows.
-func energyYearKindFor(values map[string]types.Value, now time.Time) (string, bool) {
-	year, ok := uintValue(values, "year")
-	if !ok {
-		return "", false
-	}
-	switch int(year) {
-	case now.Year():
-		return "current", true
-	case now.Year() - 1:
-		return "previous", true
-	default:
-		return "", false
-	}
 }
 
 // matchesToday requires a valid absolute year, month and day equal to the

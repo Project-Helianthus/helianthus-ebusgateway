@@ -63,7 +63,7 @@ func TestMatchesToday_RequiresValidYearMonthDay(t *testing.T) {
 func TestApplyEnergy_YearlyUsesAbsoluteYearAgainstReferenceDate(t *testing.T) {
 	now := time.Date(2026, time.April, 7, 12, 0, 0, 0, time.UTC)
 
-	provider := NewLiveSemanticProvider()
+	provider := providerAt(now)
 	if !provider.applyEnergy(energyDateValues("year", uint16(2026), nil, nil), now) {
 		t.Fatal("applyEnergy(year=2026) = false; want accepted as current year")
 	}
@@ -72,7 +72,7 @@ func TestApplyEnergy_YearlyUsesAbsoluteYearAgainstReferenceDate(t *testing.T) {
 		t.Fatalf("Yearly after 2026 = %#v; want [0 5]", totals)
 	}
 
-	provider = NewLiveSemanticProvider()
+	provider = providerAt(now)
 	if !provider.applyEnergy(energyDateValues("year", uint16(2025), nil, nil), now) {
 		t.Fatal("applyEnergy(year=2025) = false; want accepted as previous year")
 	}
@@ -92,7 +92,7 @@ func TestApplyEnergy_YearlyRejectsUnknownOrOutOfWindowYear(t *testing.T) {
 	}
 	for name, vals := range cases {
 		t.Run(name, func(t *testing.T) {
-			provider := NewLiveSemanticProvider()
+			provider := providerAt(now)
 			if provider.applyEnergy(vals, now) {
 				t.Fatal("applyEnergy() = true; want rejected")
 			}
@@ -100,22 +100,84 @@ func TestApplyEnergy_YearlyRejectsUnknownOrOutOfWindowYear(t *testing.T) {
 	}
 }
 
-func TestApplyEnergy_YearlyFollowsReferenceDateAcrossYearBoundary(t *testing.T) {
-	// The same absolute year 2026 is "current" in 2026 and "previous" in 2027.
-	now := time.Date(2027, time.January, 2, 0, 5, 0, 0, time.UTC)
+func providerAt(now time.Time) *LiveSemanticProvider {
 	provider := NewLiveSemanticProvider()
-	if !provider.applyEnergy(energyDateValues("year", uint16(2026), nil, nil), now) {
-		t.Fatal("applyEnergy(year=2026, ref=2027) = false; want accepted as previous")
+	provider.SetEnergyClock(func() time.Time { return now })
+	return provider
+}
+
+// Same-provider New Year rollover: values stored on Dec 31 keep their absolute
+// year identity and are re-projected on Jan 1; re-receiving the old year
+// updates its own window instead of the new current slot.
+func TestEnergy_YearRolloverKeepsAbsoluteWindowIdentity(t *testing.T) {
+	clock := time.Date(2026, time.December, 31, 23, 59, 0, 0, time.UTC)
+	provider := NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
+
+	vals := func(year uint16, wh float64) map[string]types.Value {
+		v := energyDateValues("year", year, nil, nil)
+		v["wh"] = types.Value{Valid: true, Value: wh}
+		return v
 	}
-	totals := provider.EnergyTotals()
-	if totals.Gas.Climate.Yearly[0] != 5.0 || totals.Gas.Climate.Yearly[1] != 0 {
-		t.Fatalf("Yearly = %v; want [5 0]", totals.Gas.Climate.Yearly)
+	if !provider.applyEnergy(vals(2025, 7000), clock) || !provider.applyEnergy(vals(2026, 5000), clock.Add(time.Second)) {
+		t.Fatal("applyEnergy on 2026-12-31 rejected")
+	}
+	if got := provider.EnergyTotals().Gas.Climate.Yearly; got[0] != 7 || got[1] != 5 {
+		t.Fatalf("Yearly on 2026-12-31 = %v; want [7 5]", got)
+	}
+
+	clock = time.Date(2027, time.January, 1, 0, 1, 0, 0, time.UTC)
+	got := provider.EnergyTotals().Gas.Climate
+	if got.Yearly[0] != 5 || got.Yearly[1] != 0 {
+		t.Fatalf("Yearly on 2027-01-01 = %v; want [5 0] (2026 previous, 2027 current)", got.Yearly)
+	}
+	if got.YearlyMeta[1].Provenance != EnergyProvenanceNone {
+		t.Fatalf("current-year meta = %+v; want no provenance for unseen 2027", got.YearlyMeta[1])
+	}
+
+	// Re-receive 2026 after rollover with a new value: it lands in previous only.
+	if !provider.applyEnergy(vals(2026, 5500), clock) {
+		t.Fatal("re-receive of 2026 after rollover rejected")
+	}
+	got = provider.EnergyTotals().Gas.Climate
+	if got.Yearly[0] != 5.5 || got.Yearly[1] != 0 {
+		t.Fatalf("Yearly after re-receive = %v; want [5.5 0] (no duplicate year)", got.Yearly)
+	}
+	// 2025 is now out of the public window and must not be ingested.
+	if provider.applyEnergy(vals(2025, 9000), clock.Add(time.Second)) {
+		t.Fatal("applyEnergy(2025) after rollover = true; want rejected")
+	}
+}
+
+// Register reads resolve relative labels against the same reference clock, so
+// they map onto the same dated identity as broadcasts.
+func TestEnergy_RegisterWindowKeysShareBroadcastIdentity(t *testing.T) {
+	clock := time.Date(2027, time.January, 1, 8, 0, 0, 0, time.UTC)
+	provider := providerAt(clock)
+	if !provider.applyEnergy(energyDateValues("year", uint16(2026), nil, nil), clock) {
+		t.Fatal("broadcast rejected")
+	}
+	// A register read of "previous" year on 2027-01-01 is the same 2026 window.
+	key := provider.EnergyWindowKey("gas", "climate", "year", "previous")
+	if key != (energyMergeKey{Channel: "gas", Usage: "climate", Period: "year", Year: 2026}) {
+		t.Fatalf("previous-year key = %+v", key)
+	}
+	if !provider.ApplyEnergyFromRegister(key, 6.0) {
+		t.Fatal("register apply rejected (register must win over broadcast)")
+	}
+	if got := provider.EnergyTotals().Gas.Climate.Yearly; got[0] != 6 || got[1] != 0 {
+		t.Fatalf("Yearly = %v; want [6 0]", got)
+	}
+	// Previous month across the year boundary is December 2026.
+	m := provider.EnergyWindowKey("gas", "climate", "month", "previous")
+	if m.Year != 2026 || m.Month != 12 {
+		t.Fatalf("previous-month key = %+v; want 2026-12", m)
 	}
 }
 
 func TestApplyEnergy_DayRejectsTotalAndUndatedSelectors(t *testing.T) {
 	now := time.Date(2026, time.April, 7, 12, 0, 0, 0, time.UTC)
-	provider := NewLiveSemanticProvider()
+	provider := providerAt(now)
 	// "87 34" total reply echoes 2026-04-07 but the period is "all": not a window.
 	if provider.applyEnergy(energyDateValues("all", uint16(2026), nil, nil), now) {
 		t.Fatal("applyEnergy(period=all) = true; want rejected")
@@ -130,7 +192,7 @@ func TestApplyEnergy_DayRejectsTotalAndUndatedSelectors(t *testing.T) {
 
 func TestApplyEnergy_MonthlyBroadcastIsNotConsumed(t *testing.T) {
 	now := time.Date(2026, time.April, 7, 12, 0, 0, 0, time.UTC)
-	provider := NewLiveSemanticProvider()
+	provider := providerAt(now)
 	if provider.applyEnergy(energyDateValues("month", uint16(2026), uint8(4), nil), now) {
 		t.Fatal("applyEnergy(month) = true; want unchanged (monthly broadcast not consumed)")
 	}
@@ -160,7 +222,7 @@ func TestApplyEnergy_RealDecoderYearlySelectorAndTotalReply(t *testing.T) {
 	if got := yearly["year"]; !got.Valid || got.Value != uint16(2025) {
 		t.Fatalf("decoded year = %+v; want 2025", got)
 	}
-	provider := NewLiveSemanticProvider()
+	provider := providerAt(now)
 	if !provider.applyEnergy(yearly, now) {
 		t.Fatal("applyEnergy(yearly 2025) = false; want accepted")
 	}
@@ -170,8 +232,25 @@ func TestApplyEnergy_RealDecoderYearlySelectorAndTotalReply(t *testing.T) {
 
 	// Documented `87 34` total reply (2026-04-07 echo, period=all) is not a window.
 	total := decodeB516(t, []byte{0x00, 0x00, 0x00, 0x03, 0x03, 0x87, 0x34, 0x00, 0x54, 0x5D, 0x46})
-	provider = NewLiveSemanticProvider()
+	provider = providerAt(now)
 	if provider.applyEnergy(total, now) {
 		t.Fatal("applyEnergy(total reply 87 34) = true; want rejected")
 	}
+}
+
+// energyTestRef is the deterministic reference date shared by fixtures and
+// ingestion (matches t0 in energy_merge_test.go: 2026-02-26 12:00 UTC).
+var energyTestRef = time.Date(2026, time.February, 26, 12, 0, 0, 0, time.UTC)
+
+// newClockedProvider returns a provider whose energy clock is pinned to
+// energyTestRef.
+func newClockedProvider() *LiveSemanticProvider {
+	provider := NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return energyTestRef })
+	return provider
+}
+
+// wkey builds a dated key against energyTestRef.
+func wkey(channel, usage, period, label string) energyMergeKey {
+	return energyWindowKey(channel, usage, period, label, energyTestRef)
 }

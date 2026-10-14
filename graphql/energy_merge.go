@@ -36,17 +36,74 @@ type energyDataPoint struct {
 	IngestAt time.Time
 }
 
-// energyMergeKey uniquely identifies an energy data point.
-// Usage is canonicalized: "heating" and "cooling" both map to "climate".
+// energyMergeKey uniquely identifies an energy data point by its absolute
+// window identity. Usage is canonicalized: "heating" and "cooling" both map
+// to "climate".
+//
+// Day keys carry Year/Month/Day, month keys Year/Month, year keys Year; unused
+// components are zero. The public two-slot (previous/current) series is a
+// projection of these keys against a reference date at snapshot time, so
+// the stored identity never goes stale across a year or month boundary.
 type energyMergeKey struct {
-	Channel  string // "gas", "electricity", "solar"
-	Usage    string // "hot_water", "climate" (canonicalized from heating/cooling)
-	Period   string // "day", "year", "month"
-	YearKind string // "" for day, "previous"/"current" for year/month; broadcasts derive it from the ebusreg absolute year and a reference date
+	Channel string // "gas", "electricity", "solar"
+	Usage   string // "hot_water", "climate" (canonicalized from heating/cooling)
+	Period  string // "day", "year", "month"
+	Year    int
+	Month   int
+	Day     int
 }
 
 // EnergyMergeKey is the external key contract for register/broadcast energy merge inputs.
 type EnergyMergeKey = energyMergeKey
+
+// energyWindowKey builds the dated key of a relative window against a
+// reference date. label is "current" or "previous" for year/month periods and
+// ignored for "day" (always the reference day).
+func energyWindowKey(channel, usage, period, label string, ref time.Time) energyMergeKey {
+	key := energyMergeKey{Channel: channel, Usage: usage, Period: period}
+	switch period {
+	case "day":
+		key.Year, key.Month, key.Day = ref.Year(), int(ref.Month()), ref.Day()
+	case "year":
+		key.Year = ref.Year()
+		if label == "previous" {
+			key.Year--
+		}
+	case "month":
+		first := time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, time.UTC)
+		if label == "previous" {
+			first = first.AddDate(0, -1, 0)
+		}
+		key.Year, key.Month = first.Year(), int(first.Month())
+	}
+	return key
+}
+
+// energySlotFor projects a dated key onto the public two-slot series
+// (0 = previous, 1 = current) relative to ref. For the day period it reports
+// slot 1 when the key is the reference day. ok is false when the window lies
+// outside the public projection.
+func energySlotFor(key energyMergeKey, ref time.Time) (int, bool) {
+	switch key.Period {
+	case "day":
+		return 1, key.Year == ref.Year() && key.Month == int(ref.Month()) && key.Day == ref.Day()
+	case "year":
+		switch key.Year {
+		case ref.Year():
+			return 1, true
+		case ref.Year() - 1:
+			return 0, true
+		}
+	case "month":
+		if k := energyWindowKey(key.Channel, key.Usage, "month", "current", ref); k.Year == key.Year && k.Month == key.Month {
+			return 1, true
+		}
+		if k := energyWindowKey(key.Channel, key.Usage, "month", "previous", ref); k.Year == key.Year && k.Month == key.Month {
+			return 0, true
+		}
+	}
+	return 0, false
+}
 
 // canonicalizeUsage maps raw usage strings to canonical merge key values.
 // "heating" and "cooling" both target the same Climate series.
@@ -101,6 +158,10 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if key.Period == "day" {
+		s.pruneOlderDaysLocked(key)
+	}
+
 	existing, exists := s.points[key]
 	if !exists {
 		// No existing point: accept any source.
@@ -136,6 +197,23 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
+	}
+}
+
+// pruneOlderDaysLocked drops day points of the same channel/usage dated before
+// key, so day identities do not accumulate.
+func (s *energyMergeStore) pruneOlderDaysLocked(key energyMergeKey) {
+	for existing := range s.points {
+		if existing.Period != "day" || existing.Channel != key.Channel || existing.Usage != key.Usage {
+			continue
+		}
+		if [3]int{existing.Year, existing.Month, existing.Day} == [3]int{key.Year, key.Month, key.Day} {
+			continue
+		}
+		if existing.Year < key.Year ||
+			(existing.Year == key.Year && (existing.Month < key.Month || (existing.Month == key.Month && existing.Day < key.Day))) {
+			delete(s.points, existing)
+		}
 	}
 }
 
@@ -182,10 +260,15 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 			continue
 		}
 
+		slot, inWindow := energySlotFor(key, now)
+		if !inWindow {
+			continue
+		}
+		meta := energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
 		switch key.Period {
 		case "day":
 			series.Today = point.Value
-			series.TodayMeta = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
+			series.TodayMeta = meta
 		case "year":
 			if len(series.Yearly) < 2 {
 				series.Yearly = make([]float64, 2)
@@ -193,14 +276,8 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 			if len(series.YearlyMeta) < 2 {
 				series.YearlyMeta = make([]EnergyPointMeta, 2)
 			}
-			switch key.YearKind {
-			case "previous":
-				series.Yearly[0] = point.Value
-				series.YearlyMeta[0] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
-			case "current":
-				series.Yearly[1] = point.Value
-				series.YearlyMeta[1] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
-			}
+			series.Yearly[slot] = point.Value
+			series.YearlyMeta[slot] = meta
 		case "month":
 			if len(series.Monthly) < 2 {
 				series.Monthly = make([]float64, 2)
@@ -208,20 +285,14 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 			if len(series.MonthlyMeta) < 2 {
 				series.MonthlyMeta = make([]EnergyPointMeta, 2)
 			}
-			switch key.YearKind {
-			case "previous":
-				series.Monthly[0] = point.Value
-				series.MonthlyMeta[0] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
-			case "current":
-				series.Monthly[1] = point.Value
-				series.MonthlyMeta[1] = energyPointMetaFromDataPoint(&point, energyFreshnessStateFor(point, now, passiveState), now)
-			}
+			series.Monthly[slot] = point.Value
+			series.MonthlyMeta[slot] = meta
 		}
 	}
 
 	// Ensure all energy selector slots are observable with explicit freshness
 	// metadata, even when a value has never been seen.
-	for _, key := range energyMetadataSelectorCatalog() {
+	for _, key := range energyMetadataSelectorCatalog(now) {
 		channel := mergeSelectChannel(totals, key.Channel)
 		if channel == nil {
 			continue
@@ -233,6 +304,7 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 		point, exists := s.points[key]
 		state := energyFreshnessForOptionalPoint(exists, point, now, passiveState)
 		meta := energyPointMetaFromOptionalPoint(exists, point, state, now)
+		slot, _ := energySlotFor(key, now)
 		switch key.Period {
 		case "day":
 			if series.TodayMeta.FreshnessState == "" {
@@ -242,21 +314,15 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 			if len(series.YearlyMeta) < 2 {
 				series.YearlyMeta = make([]EnergyPointMeta, 2)
 			}
-			if key.YearKind == "previous" && series.YearlyMeta[0].FreshnessState == "" {
-				series.YearlyMeta[0] = meta
-			}
-			if key.YearKind == "current" && series.YearlyMeta[1].FreshnessState == "" {
-				series.YearlyMeta[1] = meta
+			if series.YearlyMeta[slot].FreshnessState == "" {
+				series.YearlyMeta[slot] = meta
 			}
 		case "month":
 			if len(series.MonthlyMeta) < 2 {
 				series.MonthlyMeta = make([]EnergyPointMeta, 2)
 			}
-			if key.YearKind == "previous" && series.MonthlyMeta[0].FreshnessState == "" {
-				series.MonthlyMeta[0] = meta
-			}
-			if key.YearKind == "current" && series.MonthlyMeta[1].FreshnessState == "" {
-				series.MonthlyMeta[1] = meta
+			if series.MonthlyMeta[slot].FreshnessState == "" {
+				series.MonthlyMeta[slot] = meta
 			}
 		}
 	}
@@ -361,7 +427,8 @@ func energyFreshnessForOptionalPoint(exists bool, point energyDataPoint, now tim
 
 func (s *energyMergeStore) reconcileBroadcastStatesLocked(now time.Time, passiveState string) {
 	nextCounts := make(map[EnergyFreshnessState]int)
-	for _, key := range energyBroadcastSelectorCatalog() {
+	nextStates := make(map[energyMergeKey]EnergyFreshnessState)
+	for _, key := range energyBroadcastSelectorCatalog(now) {
 		point, exists := s.points[key]
 		if exists && point.Source == EnergySourceRegister {
 			// Broadcast freshness tracks passive/broadcast observability, not
@@ -376,9 +443,11 @@ func (s *energyMergeStore) reconcileBroadcastStatesLocked(now time.Time, passive
 		if prevState != nextState {
 			energyBroadcastTransitions.Add(string(prevState)+"->"+string(nextState), 1)
 		}
-		s.broadcastStates[key] = nextState
+		nextStates[key] = nextState
 		nextCounts[nextState]++
 	}
+	// Rebuilt per reference date so keys of past windows do not accumulate.
+	s.broadcastStates = nextStates
 	for _, state := range energyFreshnessStates() {
 		delta := nextCounts[state] - s.broadcastStateCounts[state]
 		if delta != 0 {
@@ -398,15 +467,17 @@ func energyFreshnessStates() []EnergyFreshnessState {
 	}
 }
 
-func energyMetadataSelectorCatalog() []energyMergeKey {
-	return energySelectorCatalog(true)
+func energyMetadataSelectorCatalog(ref time.Time) []energyMergeKey {
+	return energySelectorCatalog(true, ref)
 }
 
-func energyBroadcastSelectorCatalog() []energyMergeKey {
-	return energySelectorCatalog(false)
+func energyBroadcastSelectorCatalog(ref time.Time) []energyMergeKey {
+	return energySelectorCatalog(false, ref)
 }
 
-func energySelectorCatalog(includeMonth bool) []energyMergeKey {
+// energySelectorCatalog lists the dated keys of every public energy slot
+// relative to the reference date.
+func energySelectorCatalog(includeMonth bool, ref time.Time) []energyMergeKey {
 	channels := []string{"gas", "electricity", "solar"}
 	usages := []string{"hot_water", "climate"}
 	periodVariants := 3
@@ -416,36 +487,12 @@ func energySelectorCatalog(includeMonth bool) []energyMergeKey {
 	out := make([]energyMergeKey, 0, len(channels)*len(usages)*periodVariants)
 	for _, channel := range channels {
 		for _, usage := range usages {
-			out = append(out, energyMergeKey{
-				Channel: channel,
-				Usage:   usage,
-				Period:  "day",
-			})
-			out = append(out, energyMergeKey{
-				Channel:  channel,
-				Usage:    usage,
-				Period:   "year",
-				YearKind: "previous",
-			})
-			out = append(out, energyMergeKey{
-				Channel:  channel,
-				Usage:    usage,
-				Period:   "year",
-				YearKind: "current",
-			})
+			out = append(out, energyWindowKey(channel, usage, "day", "", ref))
+			out = append(out, energyWindowKey(channel, usage, "year", "previous", ref))
+			out = append(out, energyWindowKey(channel, usage, "year", "current", ref))
 			if includeMonth {
-				out = append(out, energyMergeKey{
-					Channel:  channel,
-					Usage:    usage,
-					Period:   "month",
-					YearKind: "previous",
-				})
-				out = append(out, energyMergeKey{
-					Channel:  channel,
-					Usage:    usage,
-					Period:   "month",
-					YearKind: "current",
-				})
+				out = append(out, energyWindowKey(channel, usage, "month", "previous", ref))
+				out = append(out, energyWindowKey(channel, usage, "month", "current", ref))
 			}
 		}
 	}

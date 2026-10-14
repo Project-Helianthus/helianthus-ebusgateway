@@ -1596,7 +1596,7 @@ type b524EnergyQuery struct {
 	channel  string // EnergyMergeKey.Channel
 	usage    string // EnergyMergeKey.Usage
 	period   string // EnergyMergeKey.Period ("year", "month")
-	yearKind string // EnergyMergeKey.YearKind ("current", "previous")
+	yearKind string // relative window label ("current", "previous"), resolved to a dated EnergyMergeKey via provider.EnergyWindowKey at read time
 }
 
 var b524EnergyQueries = []b524EnergyQuery{
@@ -1639,20 +1639,14 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		}
 		kwh := float64(val)
 
-		if p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-			Channel: q.channel, Usage: q.usage, Period: q.period, YearKind: q.yearKind,
-		}, kwh) {
+		if p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, q.period, q.yearKind), kwh) {
 			accepted++
 		}
 		// For all-time totals, lock day and year/previous with register-priority 0
 		// to prevent broadcast double-counting (all-time total already includes them).
 		if q.period == "year" && q.yearKind == "current" {
-			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-				Channel: q.channel, Usage: q.usage, Period: "year", YearKind: "previous",
-			}, 0)
-			p.provider.ApplyEnergyFromRegister(graphql.EnergyMergeKey{
-				Channel: q.channel, Usage: q.usage, Period: "day", YearKind: "",
-			}, 0)
+			p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, "year", "previous"), 0)
+			p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, "day", ""), 0)
 		}
 	}
 	if accepted > 0 || failed > 0 {

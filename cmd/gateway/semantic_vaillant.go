@@ -70,8 +70,8 @@ const (
 	// STATE registers (read-only live values)
 	circuit_flow_setpoint  = uint16(0x0007) // flow_setpoint
 	circuit_flow_temp      = uint16(0x0008) // flow_temperature (VF[x])
-	circuit_circuit_state  = uint16(0x001B) // circuit_state
-	circuit_pump_status    = uint16(0x001E) // pump_status
+	circuit_pump_status    = uint16(0x001B) // pump_status (observed Vaillant "Status Pump")
+	circuit_circuit_state  = uint16(0x001E) // circuit_state (observed Vaillant "Status circuit"; 0=standby 1=heating 2=cooling 3=dhw)
 	circuit_calc_flow_temp = uint16(0x0020) // calculated_flow_temperature
 	circuit_mixer_position = uint16(0x0021) // mixer_position_pct
 	circuit_humidity       = uint16(0x0022) // room_humidity_pct
@@ -95,6 +95,7 @@ const (
 	CircuitStateStandby = "standby"
 	CircuitStateHeating = "heating"
 	CircuitStateCooling = "cooling"
+	CircuitStateDHW     = "dhw"
 
 	// --- DHW registers: GG=0x01 / OP=0x02 ---
 
@@ -2421,6 +2422,7 @@ var circuitStateNames = map[uint16]string{
 	0: CircuitStateStandby,
 	1: CircuitStateHeating,
 	2: CircuitStateCooling,
+	3: CircuitStateDHW,
 }
 
 func decodeCircuitStateToken(raw *uint16) string {

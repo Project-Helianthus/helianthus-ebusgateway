@@ -3445,6 +3445,7 @@ func TestCircuitState_DecodesKnownValues(t *testing.T) {
 		{0, "standby"},
 		{1, "heating"},
 		{2, "cooling"},
+		{3, "dhw"},
 	}
 	for _, tt := range tests {
 		raw := tt.raw
@@ -3452,6 +3453,108 @@ func TestCircuitState_DecodesKnownValues(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("decodeCircuitStateToken(%d) = %q; want %q", tt.raw, got, tt.want)
 		}
+	}
+}
+
+func TestCircuitRegisterSelectors_PinCircuitStateAndPumpStatus(t *testing.T) {
+	t.Parallel()
+
+	if circuit_circuit_state != uint16(0x001E) {
+		t.Fatalf("circuit_circuit_state = 0x%04x; want 0x001E (Status circuit)", circuit_circuit_state)
+	}
+	if circuit_pump_status != uint16(0x001B) {
+		t.Fatalf("circuit_pump_status = 0x%04x; want 0x001B (Status Pump)", circuit_pump_status)
+	}
+}
+
+// RR=0x001E carries the circuit state enumeration and RR=0x001B the raw pump
+// status. Distinct payloads per register prove each field follows its own
+// selector, including DHW (3) and a raw pump value that is not a state code.
+func TestRefreshCircuits_ReadsCircuitStateFromRR001EAndPumpFromRR001B(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		stateRaw  byte
+		pumpRaw   byte
+		wantState string
+		wantPump  bool
+	}{
+		{"standby_pump_on", 0, 1, "standby", true},
+		{"heating_pump_off", 1, 0, "heating", false},
+		{"cooling", 2, 1, "cooling", true},
+		{"dhw", 3, 1, "dhw", true},
+		{"unmapped_stays_raw", 7, 0, "unknown_7", false},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Unix(1000, 0)
+			circuitType := uint16(1)
+			provider := graphql.NewLiveSemanticProvider()
+			poller := &vaillantSemanticPoller{
+				controller:                  0x15,
+				source:                      0x7F,
+				provider:                    provider,
+				scheduler:                   ebusgateway.NewSemanticReadScheduler(),
+				requestTimeout:              50 * time.Millisecond,
+				circuitFullScanInterval:     semanticCircuitFullScanInterval,
+				lastCircuitFullScanAt:       now.Add(-5 * time.Minute),
+				lastCircuitFullScanComplete: true,
+				nowFn:                       func() time.Time { return now },
+				circuits: map[byte]*vaillantCircuitSnapshot{
+					0x00: {Instance: 0x00, Active: true, CircuitTypeRaw: &circuitType},
+				},
+				sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+					if len(frame.Data) != 6 {
+						return testB524ResponseForSelectorPayload(frame.Data), nil
+					}
+					group := frame.Data[2]
+					instance := frame.Data[3]
+					addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+					if group != localCircuits.group || instance != 0x00 {
+						return testB524ResponseForSelectorPayload(frame.Data), nil
+					}
+					switch addr {
+					case 0x001E:
+						return testB524ResponseForSelectorPayload(frame.Data, tt.stateRaw, 0x00), nil
+					case 0x001B:
+						return testB524ResponseForSelectorPayload(frame.Data, tt.pumpRaw, 0x00), nil
+					case circuit_type:
+						return testB524ResponseForSelectorPayload(frame.Data, 0x01, 0x00), nil
+					case circuit_flow_temp:
+						return testB524ResponseForSelectorPayload(frame.Data, testB524Float32Payload(35)...), nil
+					default:
+						return testB524ResponseForSelectorPayload(frame.Data, 0x00), nil
+					}
+				},
+			}
+
+			poller.refreshCircuits(context.Background())
+
+			entry := poller.circuits[0x00]
+			if entry == nil || entry.CircuitStateRaw == nil || entry.PumpStatusRaw == nil {
+				t.Fatalf("snapshot = %#v; want circuit state and pump status read", entry)
+			}
+			if *entry.CircuitStateRaw != uint16(tt.stateRaw) {
+				t.Fatalf("CircuitStateRaw = %d; want %d (from RR=0x001E)", *entry.CircuitStateRaw, tt.stateRaw)
+			}
+			if *entry.PumpStatusRaw != uint16(tt.pumpRaw) {
+				t.Fatalf("PumpStatusRaw = %d; want %d (from RR=0x001B)", *entry.PumpStatusRaw, tt.pumpRaw)
+			}
+			circuits := provider.Circuits()
+			if len(circuits) != 1 {
+				t.Fatalf("provider.Circuits() = %d entries; want 1", len(circuits))
+			}
+			if got := circuits[0].State.CircuitState; got != tt.wantState {
+				t.Fatalf("published circuit_state = %q; want %q", got, tt.wantState)
+			}
+			if got := circuits[0].State.PumpActive; got == nil || *got != tt.wantPump {
+				t.Fatalf("published pump_active = %v; want %v", got, tt.wantPump)
+			}
+		})
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 	graphqlgo "github.com/graphql-go/graphql"
 )
 
-const querySchemaShapeSHA256 = "63b8df876d8e00d98c26d4071d4ec532edc28ff07aa7c30aca0e55fa32f2ff28"
+const querySchemaShapeSHA256 = "e7c5796506872d185c3031ab168c3e719a025404d07085a9d30907b7b3be9ab2"
 
 func TestQuerySchemaKeepsIntrospectionShape(t *testing.T) {
 	t.Parallel()
@@ -41,7 +41,7 @@ func TestQuerySchemaKeepsExactRootFieldSet(t *testing.T) {
 	sort.Strings(got)
 	want := []string{
 		"adapterHardwareInfo", "adapterStatus", "adapter_hardware_info", "adapter_status",
-		"boilerStatus", "boiler_status", "busMessages", "busPeriodicity", "busSummary",
+		"boilerStatus", "boiler_status", "busIdentificationEvidence", "busMessages", "busPeriodicity", "busSummary",
 		"circuits", "cylinders", "daemonStatus", "daemon_status", "device", "devices", "dhw",
 		"energyTotals", "energy_totals", "fm5Interpretation", "fm5SemanticMode", "fm5_semantic_mode",
 		"gatewayIdentity", "gateway_identity", "methods", "planes", "radioDevices", "radio_devices",

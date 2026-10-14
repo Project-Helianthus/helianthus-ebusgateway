@@ -489,6 +489,7 @@ type Server struct {
 	invoker                     Invoker
 	statusProvider              StatusProvider
 	bus                         BusObservabilityProvider
+	identificationEvidence      IdentificationEvidenceProvider
 	watch                       WatchSummaryProvider
 	semantic                    SemanticProvider
 	semanticSnapshotTimeout     func(context.Context, time.Duration) (context.Context, context.CancelFunc)
@@ -872,6 +873,11 @@ func (s *Server) SetBusObservabilityProvider(provider BusObservabilityProvider) 
 	}
 	s.bus = provider
 	s.registerBusObservabilityTools()
+	// Providers that also retain raw 07 04 identification evidence expose
+	// the read-only evidence tool alongside the bus tools.
+	if evidence, ok := provider.(IdentificationEvidenceProvider); ok {
+		s.SetIdentificationEvidenceProvider(evidence)
+	}
 }
 
 func (s *Server) SetWatchSummaryProvider(provider WatchSummaryProvider) {
@@ -1152,6 +1158,17 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 			return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(nil, err, consistency)), true), nil
 		}
 		return callToolResultText(mustJSON(newToolEnvelopeWithConsistency(s.snapshotBusMessagesList(snapshot, limit), nil, consistency)), false), nil
+	case toolBusIdentificationEvidenceListName:
+		// Retained evidence is an append-only bounded ring; snapshot
+		// consistency does not apply. Always return live data.
+		if err := rejectUnknownIdentificationEvidenceArgs(call.Arguments); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		limit, err := parseOptionalLimit(call.Arguments)
+		if err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
+		return callToolResultText(mustJSON(newToolEnvelope(s.snapshotIdentificationEvidence(limit), nil)), false), nil
 	case toolBusPeriodicityListName:
 		consistency, snapshot, err := s.resolveConsistency(call.Arguments)
 		if err != nil {

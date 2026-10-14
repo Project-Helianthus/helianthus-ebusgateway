@@ -996,3 +996,46 @@ func encodeTeslaTestVarint(value uint32) []byte {
 var _ mcp.TeslaGen3EVSECurrentLimitV1Provider = (*teslaHSCRetainedOwner)(nil)
 var _ mcp.TeslaGen3EVSESemanticProvider = (*teslaHSCRetainedOwner)(nil)
 var _ mcp.SemanticEVSEPrometheusProvider = (*teslaHSCRetainedOwner)(nil)
+
+// TestTeslaCharacterizationOwnerFirstIncarnationLegacyIdentityAndPublicBytes
+// pins the legacy Tesla IDs and public bytes of the first incarnation through
+// the retained owner with an injected publication clock (issue #1024). The
+// successor generation is deliberately absent: its identities are the one
+// documented observable change of the hub migration.
+func TestTeslaCharacterizationOwnerFirstIncarnationLegacyIdentityAndPublicBytes(t *testing.T) {
+	owner, clock := startTeslaCharacterizationOwner(t)
+	const dir = "tesla_owner_first_incarnation"
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner))
+	read := func(name string, wall time.Time, readClock time.Duration) {
+		t.Helper()
+		clock.set(wall, readClock)
+		value, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := characterizationJSON(t, value)
+		canonical, snapshot := characterizationCanonical(t, public)
+		characterizationGolden(t, dir, name+".public.json", public)
+		characterizationGolden(t, dir, name+".canonical.json", canonical)
+		characterizationGolden(t, dir, name+".ids.json", characterizationIdentity(t, snapshot))
+		current, ok := owner.SemanticEVSECurrentAt(wall.Add(time.Second))
+		if !ok {
+			t.Fatal("EVSE CurrentAt unavailable")
+		}
+		characterizationGolden(t, dir, name+".current_at.json", characterizationJSON(t, current))
+	}
+	read("sequence2", characterizationAnchor.Add(5*time.Second), 3*time.Second)
+	clock.set(characterizationAnchor.Add(7*time.Second), 4*time.Second)
+	persistent := teslaPersistentOutcome(t, 4, 18)
+	persistent.Exchange.ReceiptWall = characterizationAnchor.Add(6 * time.Second)
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	read("sequence3", characterizationAnchor.Add(8*time.Second), 5*time.Second)
+	clock.set(characterizationAnchor.Add(9*time.Second), 6*time.Second)
+	characterizationGolden(t, dir, "mcp_sequence3.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1EVSECurrentGetTool, `{}`))
+}

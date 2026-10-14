@@ -2,15 +2,24 @@ package modbusadapter
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -1090,4 +1099,179 @@ func pvCoreViewJSON(view pvPublicationView) ([]byte, error) {
 		Selections []semreg.Selection          `json:"selections"`
 		Projection projection.ProjectionReport `json:"projection"`
 	}{view.snapshot, view.canonical, view.evaluation, view.selections, view.projection})
+}
+
+// Characterization goldens for issue #1024. They were captured from the
+// pre-hub PV publication path and must stay byte-identical when the kernel
+// moves behind the semantic publication hub. Regenerate them only on a
+// deliberate, reviewed change with HELIANTHUS_UPDATE_CHARACTERIZATION=1.
+
+type pvCharacterizationEndpoint struct {
+	*fakeEndpoint
+	advance func()
+}
+
+func (endpoint pvCharacterizationEndpoint) OpenConnection(connection net.Conn) (modbus.TCPConnectionHandle, error) {
+	endpoint.advance()
+	return endpoint.fakeEndpoint.OpenConnection(connection)
+}
+
+func TestPVCharacterizationFirstIncarnationLegacyIdentityAndCanonicalSnapshots(t *testing.T) {
+	origin := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
+	current := origin
+	advance := func() {
+		clockMu.Lock()
+		current = current.Add(time.Second)
+		clockMu.Unlock()
+	}
+	set := func(at time.Time) {
+		clockMu.Lock()
+		current = at
+		clockMu.Unlock()
+	}
+	config := validConfig()
+	config.Clock = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return current
+	}
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	// The factory, the dial and the open each advance the injected clock, so
+	// a PV epoch sampled anywhere but after all three changes every golden.
+	adapter, err := Start(context.Background(), config,
+		func(context.Context, string, string) (net.Conn, error) { advance(); return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) {
+			advance()
+			return pvCharacterizationEndpoint{fakeEndpoint: &fakeEndpoint{}, advance: advance}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	wantEpoch := pvCharacterizationEpoch(config.Endpoint.Endpoint, origin.Add(3*time.Second))
+	words := observedFroniusFloatControlsWords()
+	set(origin.Add(5 * time.Second))
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, words, 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("first PV publication unavailable")
+	}
+	if got := pvCharacterizationSourceEpoch(t, first.Snapshot); got != wantEpoch {
+		t.Fatalf("PV epoch=%q want %q: the epoch sample point moved", got, wantEpoch)
+	}
+	set(origin.Add(10 * time.Second))
+	refreshed := append([]uint16(nil), words...)
+	pvCoreSetFloat(refreshed, 20, 4_321.5)
+	if err := adapter.RecordSunSpecCurrentObservation(pvCoreObservation(t, refreshed, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	set(origin.Add(12 * time.Second))
+	second, ok := adapter.SemanticPVCurrentByAsset(string(first.Snapshot.AssetID))
+	if !ok {
+		t.Fatal("second PV publication unavailable")
+	}
+	single, ok := adapter.SemanticPVCurrentSingleAt(origin.Add(14 * time.Second))
+	if !ok {
+		t.Fatal("single PV view unavailable")
+	}
+	dir := filepath.Join("testdata", "characterization", "pv_first_incarnation")
+	pvCharacterizationGolden(t, dir, "ids.json", pvCharacterizationIdentity(t, second.Snapshot))
+	pvCharacterizationGolden(t, dir, "publish1.canonical.json", first.Canonical)
+	pvCharacterizationGolden(t, dir, "publish2.canonical.json", second.Canonical)
+	pvCharacterizationGolden(t, dir, "read1.json", pvCharacterizationJSON(t, first))
+	pvCharacterizationGolden(t, dir, "read2.json", pvCharacterizationJSON(t, second))
+	pvCharacterizationGolden(t, dir, "single_at.json", pvCharacterizationJSON(t, single))
+}
+
+func pvCharacterizationEpoch(endpoint string, started time.Time) semreg.SourceEpochID {
+	sum := sha256.Sum256([]byte("semantic-pv-source-epoch\x00" + endpoint + "\x00" + started.UTC().Format(time.RFC3339Nano)))
+	return semreg.SourceEpochID("source-epoch:semantic-pv:" + hex.EncodeToString(sum[:])[:32])
+}
+
+func pvCharacterizationSourceEpoch(t *testing.T, snapshot semreg.Snapshot) semreg.SourceEpochID {
+	t.Helper()
+	for _, source := range snapshot.Sources {
+		if source.State == semreg.SourceCurrent {
+			return source.SourceEpochID
+		}
+	}
+	t.Fatal("PV snapshot has no current source")
+	return ""
+}
+
+func pvCharacterizationJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// pvCharacterizationIdentity summarizes every identifier family the hub
+// minters must reproduce: asset, source, epoch, generation, binding, service,
+// capability, candidate and cursor key.
+func pvCharacterizationIdentity(t *testing.T, snapshot semreg.Snapshot) []byte {
+	t.Helper()
+	summary := map[string][]string{"asset": {string(snapshot.AssetID)}}
+	add := func(kind string, fields ...string) {
+		summary[kind] = append(summary[kind], strings.Join(fields, " "))
+	}
+	for _, source := range snapshot.Sources {
+		add("sources", string(source.SourceID), string(source.SourceEpochID), string(source.State))
+	}
+	for _, binding := range snapshot.Bindings {
+		add("bindings", string(binding.BindingID), string(binding.SourceID), string(binding.SourceEpochID), string(binding.DriverGeneration), string(binding.State))
+	}
+	for _, link := range snapshot.IdentityLinks {
+		add("identity_links", string(link.BindingID), string(link.State))
+	}
+	for _, service := range snapshot.Services {
+		add("services", string(service.InstanceID), string(service.Definition.ID), string(service.BindingID))
+	}
+	for _, capability := range snapshot.Capabilities {
+		add("capabilities", string(capability.InstanceID), string(capability.Definition.ID), string(capability.ServiceInstance), string(capability.BindingID))
+	}
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			add("candidates", string(candidate.CandidateID), string(envelope.Key.FactID), string(candidate.Origin.OriginID))
+		}
+	}
+	for _, cursor := range snapshot.Cursors {
+		add("cursors", string(cursor.SourceID), string(cursor.SourceEpochID), string(cursor.DriverGeneration), string(cursor.LastSequence))
+	}
+	for _, values := range summary {
+		sort.Strings(values)
+	}
+	encoded, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
+}
+
+func pvCharacterizationGolden(t *testing.T, dir, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if os.Getenv("HELIANTHUS_UPDATE_CHARACTERIZATION") == "1" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read characterization golden %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("characterization golden %s changed:\n got: %s\nwant: %s", path, got, want)
+	}
 }

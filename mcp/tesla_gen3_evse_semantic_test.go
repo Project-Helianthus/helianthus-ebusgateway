@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -1486,4 +1488,119 @@ func newTeslaGen3EVSESemanticFixture(t *testing.T) *TeslaGen3EVSESemanticPublica
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestTeslaGen3EVSECharacterizationFirstIncarnationLegacyIdentityAndPublicBytes
+// pins the legacy Tesla publication IDs and public bytes (MCP tool, M2M
+// GraphQL handler, scrape tuple, canonical snapshots) of the first
+// incarnation with injected clocks (issue #1024).
+func TestTeslaGen3EVSECharacterizationFirstIncarnationLegacyIdentityAndPublicBytes(t *testing.T) {
+	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	wall, read := base.Add(2*time.Second), uint64(0)
+	set := func(at time.Time, clock time.Duration) {
+		mu.Lock()
+		wall, read = at, uint64(clock)
+		mu.Unlock()
+	}
+	p.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return wall }
+	p.readClock = func() (uint64, error) { mu.Lock(); defer mu.Unlock(); return read, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:characterization:1", ObservedAt: base, EvaluatedAt: base.Add(time.Second), MonotonicNS: 1, EvaluatedMonotonicNS: 1_000_000_001, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mcpHandler := teslaGen3EVSEMCPHandler(t, p)
+	graphqlHandler := teslaGen3EVSEGraphQLHandler(t, p)
+	capture := func(name string, at time.Time, clock time.Duration) {
+		t.Helper()
+		set(at, clock)
+		value, err := p.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Snapshot semreg.Snapshot `json:"snapshot"`
+		}
+		if err := json.Unmarshal(public, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := semreg.CanonicalJSON(decoded.Snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		teslaGen3EVSECharacterizationGolden(t, name+".public.json", public)
+		teslaGen3EVSECharacterizationGolden(t, name+".canonical.json", canonical)
+		set(at.Add(time.Second), clock+time.Second)
+		teslaGen3EVSECharacterizationGolden(t, name+".mcp.json", teslaGen3EVSECharacterizationMCP(t, mcpHandler))
+		set(at.Add(2*time.Second), clock+2*time.Second)
+		teslaGen3EVSECharacterizationGolden(t, name+".graphql.json", teslaGen3EVSECharacterizationGraphQL(t, graphqlHandler, "principal-"+name))
+		current, ok := p.SemanticEVSECurrentAt(at.Add(3 * time.Second))
+		if !ok {
+			t.Fatal("scrape tuple unavailable")
+		}
+		encoded, err := json.Marshal(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		teslaGen3EVSECharacterizationGolden(t, name+".current_at.json", encoded)
+	}
+	capture("sequence1", base.Add(3*time.Second), 2*time.Second)
+	set(base.Add(10*time.Second), 9*time.Second)
+	withdrawn := source
+	withdrawn.Provisional = nil
+	if err := p.Publish(withdrawn, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:characterization:2", ObservedAt: base.Add(9 * time.Second), EvaluatedAt: base.Add(9 * time.Second), MonotonicNS: 9_000_000_000, EvaluatedMonotonicNS: 9_000_000_000, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	capture("sequence2", base.Add(11*time.Second), 10*time.Second)
+}
+
+func teslaGen3EVSECharacterizationMCP(t *testing.T, handler http.Handler) []byte {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + SemanticV1EVSECurrentGetTool + `","arguments":{}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"isError":true`) {
+		t.Fatalf("MCP status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response.Body.Bytes()
+}
+
+func teslaGen3EVSECharacterizationGraphQL(t *testing.T, handler http.Handler, principal string) []byte {
+	t.Helper()
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), principal)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+		t.Fatalf("GraphQL status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response.Body.Bytes()
+}
+
+func teslaGen3EVSECharacterizationGolden(t *testing.T, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join("testdata", "characterization", "tesla_publication_first_incarnation", name)
+	if os.Getenv("HELIANTHUS_UPDATE_CHARACTERIZATION") == "1" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read characterization golden %s: %v", path, err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("characterization golden %s changed:\n got: %s\nwant: %s", path, got, want)
+	}
 }

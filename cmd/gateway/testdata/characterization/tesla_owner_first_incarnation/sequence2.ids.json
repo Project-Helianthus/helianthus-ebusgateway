@@ -1,0 +1,29 @@
+{
+  "asset": [
+    "asset:tesla-wc3-a"
+  ],
+  "bindings": [
+    "binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95 source:tesla-wc3-a epoch:tesla-wc3-a 7 current"
+  ],
+  "candidates": [
+    "candidate:tesla-wc3:6dbe2f0f1761d1dc150a8f489110b8e0 evse.limit.allocated_current origin:tesla-wc3:6dbe2f0f1761d1dc150a8f489110b8e0",
+    "candidate:tesla-wc3:6e6695dc1247cc2e52346a39daec08d5 evse.limit.configured_current origin:tesla-wc3:6e6695dc1247cc2e52346a39daec08d5"
+  ],
+  "capabilities": [
+    "capability:tesla-wc3:272930c2222f87a9659d70da89c63223 evse.capability.read.evse service:tesla-wc3:6edd3058a1b32972e7b33fe9e4d0822f binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "capability:tesla-wc3:d6814720e2e57f7af65acf5b9c411c38 evse.capability.read.connector service:tesla-wc3:03ae485218190fab9d8ce3446238532a binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95"
+  ],
+  "cursors": [
+    "source:tesla-wc3-a epoch:tesla-wc3-a 7 2"
+  ],
+  "identity_links": [
+    "binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95 qualified"
+  ],
+  "services": [
+    "service:tesla-wc3:03ae485218190fab9d8ce3446238532a evse.service.connector binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "service:tesla-wc3:6edd3058a1b32972e7b33fe9e4d0822f evse.service.evse binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95"
+  ],
+  "sources": [
+    "source:tesla-wc3-a epoch:tesla-wc3-a current"
+  ]
+}

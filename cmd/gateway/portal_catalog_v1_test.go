@@ -2,15 +2,31 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
+	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -383,4 +399,423 @@ func TestPortalCatalogHandlerRejectsRegistryChangeDuringCapture(t *testing.T) {
 	if next.Code != http.StatusOK || !bytes.Contains(next.Body.Bytes(), []byte(`"portal.pv"`)) || bytes.Contains(next.Body.Bytes(), []byte(`"portal catalog changed during detached capture"`)) {
 		t.Fatalf("successor request did not capture the new complete generation: %d %s", next.Code, next.Body.String())
 	}
+}
+
+// Characterization goldens for issue #1024. They were captured from the
+// pre-hub publication paths of the three PublicationKernel owners and must stay
+// byte-identical when those kernels move behind the semantic publication hub.
+// Regenerate them only on a deliberate, reviewed change with
+// HELIANTHUS_UPDATE_CHARACTERIZATION=1.
+
+// characterizationAnchor is the one wall origin shared by every fixture so a
+// single consumer instant evaluates all three families coherently.
+var characterizationAnchor = time.Unix(1_800_000_000, 0).UTC()
+
+func characterizationGolden(t *testing.T, dir, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join("testdata", "characterization", dir, name)
+	if os.Getenv("HELIANTHUS_UPDATE_CHARACTERIZATION") == "1" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read characterization golden %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("characterization golden %s changed:\n got: %s\nwant: %s", path, got, want)
+	}
+}
+
+func characterizationJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// characterizationCanonical returns the canonical SemReg bytes of the snapshot
+// carried by one public {snapshot, evaluation, selections, projection} value.
+func characterizationCanonical(t *testing.T, public []byte) ([]byte, semreg.Snapshot) {
+	t.Helper()
+	var value struct {
+		Snapshot semreg.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(public, &value); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := semreg.CanonicalJSON(value.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical, value.Snapshot
+}
+
+// characterizationIdentity summarizes every identifier family the hub
+// minters must reproduce: asset, source, epoch, generation, binding, service,
+// capability, candidate and cursor key.
+func characterizationIdentity(t *testing.T, snapshot semreg.Snapshot) []byte {
+	t.Helper()
+	summary := map[string][]string{"asset": {string(snapshot.AssetID)}}
+	add := func(kind string, fields ...string) {
+		summary[kind] = append(summary[kind], strings.Join(fields, " "))
+	}
+	for _, source := range snapshot.Sources {
+		add("sources", string(source.SourceID), string(source.SourceEpochID), string(source.State))
+	}
+	for _, binding := range snapshot.Bindings {
+		add("bindings", string(binding.BindingID), string(binding.SourceID), string(binding.SourceEpochID), string(binding.DriverGeneration), string(binding.State))
+	}
+	for _, link := range snapshot.IdentityLinks {
+		add("identity_links", string(link.BindingID), string(link.State))
+	}
+	for _, service := range snapshot.Services {
+		add("services", string(service.InstanceID), string(service.Definition.ID), string(service.BindingID))
+	}
+	for _, capability := range snapshot.Capabilities {
+		add("capabilities", string(capability.InstanceID), string(capability.Definition.ID), string(capability.ServiceInstance), string(capability.BindingID))
+	}
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			add("candidates", string(candidate.CandidateID), string(envelope.Key.FactID), string(candidate.Origin.OriginID))
+		}
+	}
+	for _, cursor := range snapshot.Cursors {
+		add("cursors", string(cursor.SourceID), string(cursor.SourceEpochID), string(cursor.DriverGeneration), string(cursor.LastSequence))
+	}
+	for _, values := range summary {
+		sort.Strings(values)
+	}
+	encoded, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
+}
+
+// characterizationMCPCall returns the exact JSON-RPC response body.
+func characterizationMCPCall(t *testing.T, handler http.Handler, tool string, arguments string) []byte {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tool + `","arguments":` + arguments + `}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body)))
+	if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte(`"isError":true`)) {
+		t.Fatalf("MCP %s status=%d body=%s", tool, response.Code, response.Body.String())
+	}
+	return response.Body.Bytes()
+}
+
+// setCharacterizationUnexported injects a deterministic clock into a type that
+// exposes no clock seam on the characterized revision. It is test-only.
+func setCharacterizationUnexported(t *testing.T, target any, field string, value any) {
+	t.Helper()
+	element := reflect.ValueOf(target).Elem()
+	slot := element.FieldByName(field)
+	if !slot.IsValid() {
+		t.Fatalf("%T has no field %q", target, field)
+	}
+	reflect.NewAt(slot.Type(), unsafe.Pointer(slot.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
+}
+
+// characterizationClock is one injected wall and read-clock pair.
+type characterizationClock struct {
+	mu   sync.Mutex
+	wall time.Time
+	read uint64
+}
+
+func (clock *characterizationClock) set(wall time.Time, read time.Duration) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	clock.wall, clock.read = wall, uint64(read)
+}
+
+func (clock *characterizationClock) now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.wall
+}
+
+func (clock *characterizationClock) readClock() (uint64, error) {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.read, nil
+}
+
+func injectTeslaCharacterizationClock(t *testing.T, owner *teslaHSCRetainedOwner, clock *characterizationClock) {
+	t.Helper()
+	setCharacterizationUnexported(t, owner.publication, "now", clock.now)
+	setCharacterizationUnexported(t, owner.publication, "readClock", clock.readClock)
+}
+
+// startTeslaCharacterizationOwner ingests one persistent and one provisional
+// outcome on the first incarnation with an injected publication clock.
+func startTeslaCharacterizationOwner(t *testing.T) (*teslaHSCRetainedOwner, *characterizationClock) {
+	t.Helper()
+	owner := startTeslaRetainedFixture(t, teslaRetainedConfig())
+	clock := &characterizationClock{}
+	injectTeslaCharacterizationClock(t, owner, clock)
+	clock.set(characterizationAnchor.Add(1500*time.Millisecond), 0)
+	persistent := teslaPersistentOutcome(t, 1, 16)
+	persistent.Exchange.ReceiptWall = characterizationAnchor.Add(time.Second)
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	clock.set(characterizationAnchor.Add(4*time.Second), 2500*time.Millisecond)
+	provisional := teslaProvisionalOutcome(t, 2, 12, 600, false, 32)
+	provisional.Set.ReceiptWall = characterizationAnchor.Add(2 * time.Second)
+	provisional.Readback.ReceiptWall = characterizationAnchor.Add(3 * time.Second)
+	if err := owner.IngestProvisional(context.Background(), provisional); err != nil {
+		t.Fatal(err)
+	}
+	return owner, clock
+}
+
+// characterizationPVEndpoint is an inert endpoint: SunSpec observations are
+// recorded directly, so no socket identity enters the PV source hash. Its
+// open, like the factory and the dial, advances the injected clock.
+type characterizationPVEndpoint struct{ advance func() }
+
+func (endpoint characterizationPVEndpoint) OpenConnection(net.Conn) (modbus.TCPConnectionHandle, error) {
+	endpoint.advance()
+	return modbus.TCPConnectionHandle{}, nil
+}
+func (characterizationPVEndpoint) EnqueueRead(modbus.TCPReadPlan) (modbus.TCPRequestHandle, error) {
+	return modbus.TCPRequestHandle{}, errors.New("characterization endpoint performs no reads")
+}
+func (characterizationPVEndpoint) Dispatch() (modbus.TCPDispatch, bool) {
+	return modbus.TCPDispatch{}, false
+}
+func (characterizationPVEndpoint) Write(context.Context, modbus.TCPDispatch) (modbus.OwnerTransition, error) {
+	return modbus.OwnerTransition{}, errors.New("characterization endpoint performs no writes")
+}
+func (characterizationPVEndpoint) Read(context.Context, modbus.TCPConnectionHandle) (modbus.TCPReadBatch, error) {
+	return modbus.TCPReadBatch{}, errors.New("characterization endpoint performs no reads")
+}
+func (characterizationPVEndpoint) Cancel(modbus.TCPRequestHandle) error { return nil }
+func (characterizationPVEndpoint) Snapshot() modbus.TCPEndpointSnapshot {
+	return modbus.TCPEndpointSnapshot{}
+}
+func (characterizationPVEndpoint) Close() error { return nil }
+
+// characterizationSunSpecObservation replays the accepted SunSpec chain words
+// into one immutable qualification observation.
+func characterizationSunSpecObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) modbusreg.SunSpecQualificationObservation {
+	t.Helper()
+	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := modbusreg.NewSunSpecChainPlan(modbusreg.SunSpecChainPlanSpec{
+		SchemaRevision: modbusreg.SunSpecModelsRevisionV1, BaseCandidates: []uint16{40000},
+		Limits: modbusreg.SunSpecChainLimits{MaxTotalWords: 1024, MaxOccurrences: 32}, DecoderKeys: registry.DecoderKeys(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, offset := modbusreg.NewSunSpecChain(plan), 0
+	var completed modbusreg.SunSpecChainSnapshot
+	for id := uint64(1); ; id++ {
+		requests := chain.NextRequests()
+		if len(requests) != 1 {
+			t.Fatalf("fixture replay requests=%d", len(requests))
+		}
+		request := requests[0]
+		count := int(request.WordCount())
+		if offset+count > len(words) {
+			t.Fatal("fixture replay exceeded immutable words")
+		}
+		view, err := modbusreg.NewLogicalViewSnapshot(modbusreg.LogicalViewRecord{
+			LogicalViewID: id, WireResponseID: id + 100, PhysicalRequestID: id + 200,
+			Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5,
+			UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters,
+			Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(),
+			AuthorizationScope: "fixture:characterization", PollGeneration: pollGeneration, DeadlineIdentity: deadlineIdentity,
+			LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceOffset: 0, SliceWordCount: request.WordCount(),
+			Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		offset += count
+		completed, err = chain.AdmitReplay(request, view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(completed.RawWords()) != 0 {
+			break
+		}
+	}
+	observation, err := modbusreg.NewSunSpecQualificationObservation(registry, completed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return observation
+}
+
+type characterizationFamilies struct {
+	pv        *modbusadapter.Adapter
+	pvProfile string
+	pvSample  string
+	pvAsset   string
+	growatt   *growattBMSRS485ProductionProvider
+	tesla     *teslaHSCRetainedOwner
+	clock     *characterizationClock
+}
+
+// startCharacterizationFamilies composes the production PV, Growatt and Tesla
+// paths with deterministic native fixtures and injected clocks.
+func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
+	t.Helper()
+	config, err := mapModbusRuntimeConfig(ebusgateway.ModbusTCPConfig{Enabled: true, Endpoint: "tcp://127.0.0.1:1502", DialTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pvMu sync.Mutex
+	pvNow := characterizationAnchor.Add(-30 * time.Second)
+	advance := func() {
+		pvMu.Lock()
+		pvNow = pvNow.Add(time.Second)
+		pvMu.Unlock()
+	}
+	setPV := func(at time.Time) {
+		pvMu.Lock()
+		pvNow = at
+		pvMu.Unlock()
+	}
+	config.Clock = func() time.Time {
+		pvMu.Lock()
+		defer pvMu.Unlock()
+		return pvNow
+	}
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	adapter, err := modbusadapter.Start(context.Background(), config,
+		func(context.Context, string, string) (net.Conn, error) { advance(); return client, nil },
+		func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+			advance()
+			return characterizationPVEndpoint{advance: advance}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+	words := sunspectest.ObservedFroniusFloatControlsWords()
+	sunspectest.SetFloat(words, 20, 1_234.5)
+	sunspectest.SetFloat(words, 22, 50)
+	setPV(characterizationAnchor.Add(-20 * time.Second))
+	qualified := characterizationSunSpecObservation(t, words, 701, 801)
+	if err := adapter.RecordSunSpecQualificationObservation(qualified); err != nil {
+		t.Fatal(err)
+	}
+	setPV(characterizationAnchor.Add(5 * time.Second))
+	refreshed := append([]uint16(nil), words...)
+	sunspectest.SetFloat(refreshed, 20, 4_321.5)
+	if err := adapter.RecordSunSpecCurrentObservation(characterizationSunSpecObservation(t, refreshed, 702, 802)); err != nil {
+		t.Fatal(err)
+	}
+	setPV(characterizationAnchor.Add(10 * time.Second))
+	current, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("PV publication unavailable")
+	}
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4})
+	if _, err := growatt.GrowattStorageSemanticCurrent(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tesla, clock := startTeslaCharacterizationOwner(t)
+	return characterizationFamilies{pv: adapter, pvProfile: qualified.Capability().ProfileID(), pvSample: qualified.SampleID(), pvAsset: string(current.Snapshot.AssetID), growatt: growatt, tesla: tesla, clock: clock}
+}
+
+// characterizationFixedSource evaluates every capture at one fixed instant,
+// because the Matter feed captures at the process wall clock.
+type characterizationFixedSource struct {
+	source catalogv1.SourceCapture
+	at     time.Time
+}
+
+func (s characterizationFixedSource) Capture(time.Time) ([]catalogv1.Resource, []catalogv1.Field, error) {
+	return s.source.Capture(s.at)
+}
+
+func (s characterizationFixedSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
+	return s.source.(gatewayPortalCatalogContributionOwner).PortalCatalogContributions()
+}
+
+func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
+	families := startCharacterizationFamilies(t)
+	at := characterizationAnchor.Add(10 * time.Second)
+	families.clock.set(at, 9*time.Second)
+	const dir = "consumers"
+
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithRuntimes(families.pv, families.growatt, families.tesla))
+	characterizationGolden(t, dir, "mcp_pv.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1PVCurrentGetTool, `{"profile_id":"`+families.pvProfile+`","sample_id":"`+families.pvSample+`"}`))
+	characterizationGolden(t, dir, "mcp_storage.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1GrowattStorageCurrentGetTool, `{}`))
+	characterizationGolden(t, dir, "mcp_evse.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1EVSECurrentGetTool, `{}`))
+
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pvLease, err := startGatewayPortalPVContribution(families.pv, contributions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pvLease.Stop)
+	if err := attachGatewayPortalStorageContribution(families.growatt, contributions); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachGatewayPortalEVSEContribution(families.tesla, contributions); err != nil {
+		t.Fatal(err)
+	}
+	source := newGatewayPortalCatalogSource(families.pv, gatewayPortalStoragePublication(families.growatt), families.tesla, contributions)
+	resources, fields, err := source.Capture(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterizationGolden(t, dir, "portal_source_capture.json", characterizationJSON(t, map[string]any{"resources": resources, "fields": fields}))
+	composer, err := contributions.composer(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCharacterizationUnexported(t, composer, "now", func() time.Time { return at })
+	catalog, err := composer.Catalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterizationGolden(t, dir, "portal_catalog.json", characterizationJSON(t, catalog))
+
+	store := ebusgateway.NewBusObservabilityStore(ebusgateway.Config{})
+	setCharacterizationUnexported(t, store, "now", func() time.Time { return at })
+	store.SetSemanticMetricsProvider(func(scrape time.Time) []ebusgateway.SemanticMetricsDomain {
+		return semanticPrometheusDomains(families.pv, families.growatt, families.tesla, true, true, true, string(families.growatt.storage.assetID), scrape)
+	})
+	var metrics []string
+	for _, line := range strings.Split(store.RenderPrometheus(), "\n") {
+		if strings.Contains(line, "helianthus_semantic_") {
+			metrics = append(metrics, line)
+		}
+	}
+	characterizationGolden(t, dir, "prometheus_semantic.txt", []byte(strings.Join(metrics, "\n")+"\n"))
+
+	feed, err := newGatewayMatterBindingFeedProvider(characterizationFixedSource{source: source, at: at}, []string{families.pvAsset, string(families.growatt.storage.assetID), families.tesla.cfg.AssetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := feed.Capture(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	characterizationGolden(t, dir, "matter_feed.json", characterizationJSON(t, snapshot))
 }

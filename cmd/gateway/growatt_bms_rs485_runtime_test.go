@@ -145,7 +145,7 @@ func (fake *growattEndpointFake) Read(ctx context.Context, unit byte, request mo
 		Generation: fake.generation, RequestID: uint64(index + 1), UnitID: unit, Function: request.Function(),
 		Offset: request.Offset(), Quantity: request.Quantity(), RequestADU: []byte{byte(unit), byte(request.Function()), byte(request.Offset() >> 8), byte(request.Offset())},
 		ResponseADU: []byte{byte(unit), byte(request.Function()), byte(len(words) * 2)}, Words: words,
-		Current: true, IntegrityValid: true, TerminalOutcome: "success", ReceiptWall: time.Unix(1_800_000_000, int64(index)),
+		Current: true, IntegrityValid: true, TerminalOutcome: "success", ReceiptWall: time.Unix(1_800_000_000, int64(index)).UTC(),
 		ReceivedAt: time.Duration(index+1) * time.Millisecond, ClockEpoch: growattBMSRS485ClockEpoch,
 	}, nil
 }
@@ -988,4 +988,55 @@ func TestGrowattBMSRS485ProductionCompositionRejectsResponseBindingAndTracksEpoc
 	if !ok || evidence.SourceEpoch != "source-epoch-2" || evidence.DriverGeneration != 2 || evidence.Slices[0].TransportGeneration != 2 {
 		t.Fatalf("reconnected evidence=%#v/%t", evidence, ok)
 	}
+}
+
+// TestGrowattCharacterizationFirstIncarnationLegacyIdentityAndPublicBytes pins
+// the legacy Growatt IDs and every public byte of the first incarnation
+// (issue #1024): published views, canonical snapshots, the retained current,
+// the reevaluated CurrentAt tuple and the MCP tool response.
+func TestGrowattCharacterizationFirstIncarnationLegacyIdentityAndPublicBytes(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	const dir = "growatt_first_incarnation"
+	var last semreg.Snapshot
+	publish := func(name string) {
+		t.Helper()
+		value, err := runtime.GrowattStorageSemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := characterizationJSON(t, value)
+		canonical, snapshot := characterizationCanonical(t, public)
+		characterizationGolden(t, dir, name+".public.json", public)
+		characterizationGolden(t, dir, name+".canonical.json", canonical)
+		last = snapshot
+	}
+	publish("publish1")
+	// The native evidence record is hashed into every fact's evidence digest;
+	// its receipt instant must not carry the host's local time zone.
+	if evidence, ok := runtime.LastObservationEvidence(); !ok || evidence.ReceiptWall.Location() != time.UTC {
+		t.Fatalf("fixture receipt instant is environment dependent: %v", evidence.ReceiptWall.Location())
+	}
+	publish("publish2")
+	fake.mu.Lock()
+	fake.words[0x000d][6] = 0
+	fake.mu.Unlock()
+	publish("publish3_soft_starting")
+	characterizationGolden(t, dir, "ids.json", characterizationIdentity(t, last))
+	retained, ok := runtime.storage.Current("asset:growatt-bms-a")
+	if !ok {
+		t.Fatal("retained storage current unavailable")
+	}
+	characterizationGolden(t, dir, "current.json", retained)
+	at, ok := runtime.storage.CurrentAt("asset:growatt-bms-a", characterizationAnchor.Add(10*time.Second))
+	if !ok {
+		t.Fatal("storage CurrentAt unavailable")
+	}
+	characterizationGolden(t, dir, "current_at.json", characterizationJSON(t, at))
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithGrowatt(nil, runtime))
+	characterizationGolden(t, dir, "mcp_publish4.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1GrowattStorageCurrentGetTool, `{}`))
 }

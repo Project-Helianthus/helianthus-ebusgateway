@@ -129,6 +129,10 @@ Public eBUS and B524 contracts are documented at:
   scope and residual risk. An override never implies permission for live writes
   and never creates standing or permanent merge authorization; every use remains
   bound to its recorded scope and current merge gates.
+  The override covers only the physical requirements (the eBUS
+  `TRANSPORT_MATRIX_REPORT` T01..T88 check and the AD01..AD12 block). It never
+  skips the offline Modbus RTU gate: when that gate is triggered it still runs
+  under the override, and its failure still fails the gate.
 - Prefer deterministic fixtures, replay, mocks, and local integration tests.
 - A real Home Assistant or live-device smoke is supplemental unless the issue
   explicitly requires it; it is not a prerequisite for ordinary contribution.

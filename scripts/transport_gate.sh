@@ -27,6 +27,7 @@ fi
 
 requires_ebus_gate=0
 requires_modbus_rtu_gate=0
+owner_override_active=0
 
 requires_ebus_transport_gate() {
   local file="$1"
@@ -424,11 +425,11 @@ if [[ "${TRANSPORT_GATE_OWNER_OVERRIDE:-}" == "OVERRIDE_TRANSPORT_GATE_BY_OWNER"
     exit 1
   fi
   echo "transport gate: owner override active (${TRANSPORT_GATE_OWNER_REASON})."
-  # A documented owner override is scope-specific but applies to the current
-  # gate invocation as a whole: main.go can activate both eBUS and RTU gates.
+  # The owner override covers only the physical requirements: the eBUS
+  # TRANSPORT_MATRIX_REPORT (T01..T88) check and the AD01..AD12 block. The
+  # offline Modbus RTU conformance gate is never skipped by the override.
   requires_ebus_gate=0
-  requires_modbus_rtu_gate=0
-  exit 0
+  owner_override_active=1
 fi
 
 if [[ "${requires_ebus_gate}" -eq 1 ]]; then
@@ -477,7 +478,7 @@ while IFS= read -r file; do
   esac
 done <<< "${changed_files}"
 
-if [[ "${adapter_direct_touched}" -eq 1 ]]; then
+if [[ "${adapter_direct_touched}" -eq 1 && "${owner_override_active}" -eq 0 ]]; then
   # AD gate: adaptermux changes require AD01..AD12 coverage evidence.
   # Until the formal AD matrix report is implemented, allow explicit
   # bypass via HELIANTHUS_AD_GATE_SKIP with a documented reason.

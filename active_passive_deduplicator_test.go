@@ -434,7 +434,11 @@ func TestActivePassiveDeduplicator_B524ConfigDirectApplyRemainsObservabilityOnly
 			if err != nil {
 				t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
 			}
-			defer deduplicator.Close()
+			defer func() {
+				if err := deduplicator.Close(); err != nil {
+					t.Errorf("deduplicator.Close error = %v", err)
+				}
+			}()
 			forceHealthyDedup(deduplicator)
 			deduplicator.nowFunc = func() time.Time { return base }
 			subscription, err := deduplicator.Subscribe("test-config-no-direct-apply", DedupSubscriberCritical, 2)
@@ -713,7 +717,11 @@ func TestActivePassiveDeduplicator_B509ThirdPartyAdmissionUsesActiveNormalizedDe
 			if err != nil {
 				t.Fatalf("NewActivePassiveDeduplicator error = %v", err)
 			}
-			defer deduplicator.Close()
+			defer func() {
+				if err := deduplicator.Close(); err != nil {
+					t.Errorf("deduplicator.Close error = %v", err)
+				}
+			}()
 			forceHealthyDedup(deduplicator)
 			deduplicator.nowFunc = func() time.Time { return base }
 			subscription, err := deduplicator.Subscribe("test-normalized-b509", DedupSubscriberCritical, 2)

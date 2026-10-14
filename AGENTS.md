@@ -27,7 +27,9 @@ accepted.
 1. Create one scoped English GitHub issue.
 2. Create `issue/<number>-<slug>` from the repository's current `main`.
 3. Keep the change within the issue acceptance criteria and add focused tests.
-4. Run `./scripts/ci_local.sh` before push.
+4. Run `./scripts/ci_local.sh` before push. Install golangci-lint v2.11.4, the
+   version pinned in `.github/workflows/ci.yml` and expected by the script
+   (it warns when the installed major version differs).
 5. Open one linked PR containing commands, results, applicable gates, and
    residual risk.
 6. Resolve every valid P0-P2 finding and rerun validation after fixes.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -311,24 +312,61 @@ var openGrowattBMSRTUEndpoint = func(config modbus.RTUProductionConfig) (growatt
 	return modbus.OpenRTUProductionEndpoint(config)
 }
 
-func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config) (*growattBMSRS485ProductionProvider, error) {
+// startGrowattBMSRS485Runtime declares the configured Storage asset on the
+// semantic hub (the startup preflight already declared it) and admits its
+// source epoch before the RTU endpoint opens.
+// growattBMSRS485Timing is the complete validity predicate of an enabled
+// Growatt configuration, shared by the runtime and the semantic preflight; it
+// returns the RTU timing the runtime opens the endpoint with.
+func growattBMSRS485Timing(config ebusgateway.GrowattBMSRS485Config) (modbus.RTUTiming, error) {
+	if !validGrowattAssetID(config.AssetID) || !validGrowattSourceID(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
+		config.SerialPath == "" || config.ResponseTimeout <= 0 || config.MaxResponseDelay <= 0 || config.MaxQuiescence <= config.MaxResponseDelay {
+		return modbus.RTUTiming{}, errors.New("enabled Growatt BMS RS-485 configuration is incomplete")
+	}
+	timing, err := modbus.NewRTUTiming(modbus.RTUTimingConfig{
+		Baud: config.Baud, DataBits: 8, Parity: modbus.RTUParity(config.Parity), StopBits: config.StopBits,
+		MaxResponseLatency: config.MaxResponseDelay, MaxQuiescence: config.MaxQuiescence,
+	})
+	if err != nil {
+		return modbus.RTUTiming{}, fmt.Errorf("growatt BMS RS-485 timing: %w", err)
+	}
+	return timing, nil
+}
+
+func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *semhub.Hub) (provider *growattBMSRS485ProductionProvider, err error) {
 	if !config.Enabled {
 		if config != (ebusgateway.GrowattBMSRS485Config{}) {
 			return nil, errors.New("disabled Growatt BMS RS-485 configuration contains active fields")
 		}
 		return nil, nil
 	}
-	if !validGrowattAssetID(config.AssetID) || !validGrowattSourceID(config.SourceID) || config.AssetID == config.SourceID || semreg.SourceEpochID(config.SourceEpoch).Validate() != nil || config.DriverGeneration == 0 || config.UnitID == 0 || config.UnitID > 247 ||
-		config.SerialPath == "" || config.ResponseTimeout <= 0 || config.MaxResponseDelay <= 0 || config.MaxQuiescence <= config.MaxResponseDelay {
-		return nil, errors.New("enabled Growatt BMS RS-485 configuration is incomplete")
+	timing, err := growattBMSRS485Timing(config)
+	if err != nil {
+		return nil, err
 	}
 	parity := modbus.RTUParity(config.Parity)
-	timing, err := modbus.NewRTUTiming(modbus.RTUTimingConfig{
-		Baud: config.Baud, DataBits: 8, Parity: parity, StopBits: config.StopBits,
-		MaxResponseLatency: config.MaxResponseDelay, MaxQuiescence: config.MaxQuiescence,
-	})
+	if hub == nil {
+		return nil, errors.New("growatt BMS semantic hub unavailable")
+	}
+	declaration, err := hub.Declare(growattStorageAssetSpec(config.AssetID, config.SourceID))
 	if err != nil {
-		return nil, fmt.Errorf("growatt BMS RS-485 timing: %w", err)
+		return nil, fmt.Errorf("growatt BMS semantic declaration: %w", err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: semreg.SourceID(config.SourceID), Driver: growattStorageDriver, Legacy: semhub.LegacyGrowattStorage, Epoch: semreg.SourceEpochID(config.SourceEpoch), Generation: config.DriverGeneration})
+	if err != nil {
+		return nil, fmt.Errorf("growatt BMS source epoch admission: %w", err)
+	}
+	// Any later startup failure withdraws the admission, journal-first, so
+	// the source is not left live without a runtime and a retry with the
+	// same configuration can admit again.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, hub.Withdraw(handle))
+		}
+	}()
+	storage, err := newGrowattStoragePublication(declaration, handle)
+	if err != nil {
+		return nil, err
 	}
 	admission := growattBMSRTUAdmission{unitID: config.UnitID}
 	endpoint, err := openGrowattBMSRTUEndpoint(modbus.RTUProductionConfig{
@@ -342,13 +380,7 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config) (*gro
 	session := &growattBMSRTUSession{endpoint: endpoint, sourceID: config.SourceID, sourceEpoch: config.SourceEpoch, driverGeneration: config.DriverGeneration, unitID: config.UnitID}
 	runtime, err := mcp.NewGrowattBMSRS485V202Runtime(growattBMSRS485Revision, config.UnitID, session)
 	if err != nil {
-		_ = endpoint.Close()
-		return nil, err
-	}
-	storage, err := newGrowattStoragePublication(config.AssetID, config.SourceID)
-	if err != nil {
-		_ = endpoint.Close()
-		return nil, err
+		return nil, errors.Join(err, endpoint.Close())
 	}
 	return &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1)}, nil
 }

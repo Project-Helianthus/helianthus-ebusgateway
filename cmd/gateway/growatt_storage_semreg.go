@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -30,11 +31,17 @@ const (
 	growattStoragePackVersion semreg.SemanticVersion = "1.1.0"
 )
 
+const (
+	growattStorageDriver  = "growatt_storage"
+	growattStorageProfile = "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1"
+)
+
 type growattStoragePublication struct {
 	mu                  sync.RWMutex
 	assetID             semreg.AssetID
 	sourceID            semreg.SourceID
-	kernel              *semreg.PublicationKernel
+	hub                 *semhub.Hub
+	handle              *semhub.Handle
 	current             json.RawMessage
 	currentReceivedAt   time.Time
 	currentPublishedAt  time.Time
@@ -53,22 +60,36 @@ func validGrowattSourceID(value string) bool {
 	return value == strings.TrimSpace(value) && semreg.SourceID(value).Validate() == nil
 }
 
-func newGrowattStoragePublication(asset, source string) (*growattStoragePublication, error) {
-	if !validGrowattAssetID(asset) || !validGrowattSourceID(source) || asset == source {
+// growattStorageAssetSpec is the one declaration of the configured Storage
+// asset; the startup preflight and the runtime declare the same spec.
+func growattStorageAssetSpec(asset, source string) semhub.AssetSpec {
+	return semhub.AssetSpec{AssetID: semreg.AssetID(asset), SourceID: semreg.SourceID(source), Driver: growattStorageDriver, Validators: []semreg.PackValidator{storage.New()}}
+}
+
+// newGrowattStoragePublication binds one admitted Storage source generation
+// to its declared asset. It registers the reprojection that withdraws the
+// public view after an accepted control commit.
+func newGrowattStoragePublication(declaration *semhub.Declaration, handle *semhub.Handle) (*growattStoragePublication, error) {
+	if declaration == nil || handle == nil || handle.Source() != declaration.Source() {
 		return nil, errors.New("growatt BMS semantic asset/source identity is invalid")
 	}
-	kernel, err := semreg.NewPublicationKernel(semreg.AssetID(asset), storage.New())
-	if err != nil {
-		return nil, err
-	}
-	return &growattStoragePublication{assetID: semreg.AssetID(asset), sourceID: semreg.SourceID(source), kernel: kernel}, nil
+	p := &growattStoragePublication{assetID: declaration.Asset(), sourceID: declaration.Source(), hub: declaration.Hub(), handle: handle}
+	declaration.SetReprojection(p.onControl)
+	return p, nil
+}
+
+func (p *growattStoragePublication) onControl(semhub.ControlEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.current, p.currentReceivedAt = nil, time.Time{}
+	return nil
 }
 
 // Publish commits one sealed source-bound batch only after all field and
 // evidence checks have completed. Any error occurs before the live kernel is
 // replaced, preserving the last known good public projection.
 func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence) (any, error) {
-	if p == nil || p.kernel == nil {
+	if p == nil || p.hub == nil || p.handle == nil {
 		return nil, errors.New("growatt BMS storage publication unavailable")
 	}
 	if err := validateGrowattStorageInput(status, evidence, p.assetID, p.sourceID); err != nil {
@@ -76,17 +97,18 @@ func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedRead
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	staged, err := p.kernel.Fork()
+	tx, err := p.hub.Begin(p.handle, p.assetID)
 	if err != nil {
 		return nil, err
 	}
-	current, _, exists := staged.Current()
-	sequence := p.publicationSequence + 1
-	batch, manifest, requested, dispositions, err := growattStorageBatch(p.assetID, p.sourceID, status, evidence, semreg.Uint64(strconv.FormatUint(sequence, 10)), current, exists)
+	defer tx.Abort()
+	current, exists := tx.Current()
+	sequence := tx.NextSequence()
+	batch, manifest, requested, dispositions, err := growattStorageBatch(tx.Incarnation(), status, evidence, sequence, current, exists, tx.SourceRetirements())
 	if err != nil {
 		return nil, err
 	}
-	snapshot, canonical, err := staged.Apply(batch, semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(evidence.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(evidence.ReceiptMonotonic.Nanoseconds(), 10))})
+	snapshot, canonical, err := tx.Apply(batch, semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(evidence.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(evidence.ReceiptMonotonic.Nanoseconds(), 10))})
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +129,12 @@ func (p *growattStoragePublication) Publish(status modbusreg.GrowattBMSTypedRead
 	if err != nil {
 		return nil, err
 	}
-	p.kernel, p.current, p.currentReceivedAt, p.currentPublishedAt, p.publicationSequence = staged, append(json.RawMessage(nil), encoded...), evidence.ReceiptWall, time.Now(), sequence
+	if _, err := tx.Commit(func(semhub.Committed) {
+		p.current, p.currentReceivedAt, p.currentPublishedAt = append(json.RawMessage(nil), encoded...), evidence.ReceiptWall, time.Now()
+		p.publicationSequence, _ = strconv.ParseUint(string(sequence), 10, 64)
+	}); err != nil {
+		return nil, err
+	}
 	return json.RawMessage(append([]byte(nil), encoded...)), nil
 }
 
@@ -117,7 +144,7 @@ func (p *growattStoragePublication) Current(asset string) (json.RawMessage, bool
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if len(p.current) == 0 {
+	if len(p.current) == 0 || !p.hub.Admitted(p.assetID) {
 		return nil, false
 	}
 	return append(json.RawMessage(nil), p.current...), true
@@ -145,7 +172,11 @@ func (p *growattStoragePublication) currentAtWithElapsed(asset string, at time.T
 	}
 	p.mu.RLock()
 	raw, received := append(json.RawMessage(nil), p.current...), p.currentReceivedAt
+	readable := p.hub != nil && p.hub.Admitted(p.assetID)
 	p.mu.RUnlock()
+	if !readable {
+		return growattStorageCurrent{}, false
+	}
 	if len(raw) == 0 || received.IsZero() {
 		return growattStorageCurrent{}, false
 	}
@@ -212,8 +243,32 @@ func validateGrowattStorageInput(status modbusreg.GrowattBMSTypedReadOnlyStatus,
 	return nil
 }
 
-func growattStorageBatch(asset semreg.AssetID, source semreg.SourceID, status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
-	bindingID := semreg.NativeBindingID("binding:semantic-storage:" + growattStorageHash(string(asset), string(source), "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1")[:32])
+// growattStorageFirstIdentifiers returns the binding and service identifiers
+// the first incarnation of a Growatt Storage source publishes. They depend
+// only on the configured asset and source, so the startup preflight reserves
+// them.
+func growattStorageFirstIdentifiers(asset, source string) (semreg.NativeBindingID, semreg.ServiceInstanceID) {
+	minter, err := semhub.NewLegacyMinter(semhub.LegacyGrowattStorage)
+	if err != nil {
+		return "", ""
+	}
+	binding := minter.Binding(semhub.Incarnation{Asset: semreg.AssetID(asset), Source: semreg.SourceID(source), First: true}, growattStorageProfile)
+	return binding, growattStorageServiceID(semreg.AssetID(asset), binding)
+}
+
+// growattStorageServiceID is the Storage pack service identifier of one
+// binding.
+func growattStorageServiceID(asset semreg.AssetID, binding semreg.NativeBindingID) semreg.ServiceInstanceID {
+	return semreg.ServiceInstanceID("service:semantic-storage:" + growattStorageHash(string(asset), string(binding), "pack")[:32])
+}
+
+func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSTypedReadOnlyStatus, evidence GrowattBMSRS485ObservationEvidence, sequence semreg.Uint64, current semreg.Snapshot, exists bool, retirements []semreg.SourceEpochID) (semreg.PublicationBatch, projection.ProjectionManifest, []projection.RequestedItem, []projection.ProjectionDisposition, error) {
+	asset, source := inc.Asset, inc.Source
+	minter, err := semhub.NewLegacyMinter(semhub.LegacyGrowattStorage)
+	if err != nil {
+		return semreg.PublicationBatch{}, projection.ProjectionManifest{}, nil, nil, err
+	}
+	bindingID := minter.Binding(inc, growattStorageProfile)
 	epoch := semreg.SourceEpochID(evidence.SourceEpoch)
 	generation := semreg.Uint64(strconv.FormatUint(evidence.DriverGeneration, 10))
 	expected := semreg.Uint64("0")
@@ -241,8 +296,8 @@ func growattStorageBatch(asset semreg.AssetID, source semreg.SourceID, status mo
 		SourceUpserts:       []semreg.SourceDescriptor{{SourceID: source, SourceEpochID: epoch, ProtocolID: "modbus_rtu", ProfileID: "growatt.bms.rs485.1xsxxp.v2_02.readonly.v1", ProfileVersion: "1", RegistryEvidence: registryRef, StartedAt: wall, State: semreg.SourceCurrent, Revision: "1"}},
 		BindingUpserts:      []semreg.NativeBinding{{BindingID: bindingID, AssetID: asset, SourceID: source, SourceEpochID: epoch, DriverGeneration: generation, NativeResource: nativeRef, State: semreg.BindingCurrent, Revision: "1"}},
 		IdentityLinkUpserts: []semreg.IdentityLink{{AssetID: asset, BindingID: bindingID, State: semreg.LinkQualified, Basis: []semreg.EvidenceRef{evidenceRef}, Revision: "1"}}, FactUpserts: facts,
-		ServiceUpserts:    []semreg.ServiceInstance{{InstanceID: semreg.ServiceInstanceID("service:semantic-storage:" + growattStorageHash(string(asset), string(bindingID), "pack")[:32]), AssetID: asset, Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: growattStoragePackID, Version: growattStoragePackVersion}, ID: "storage.service.pack", Version: growattStoragePackVersion}, BindingID: bindingID, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: "1"}},
-		CapabilityUpserts: []semreg.CapabilityInstance{}, SourceRetirements: []semreg.SourceEpochID{}, FactWithdrawals: []semreg.CandidateID{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
+		ServiceUpserts:    []semreg.ServiceInstance{{InstanceID: growattStorageServiceID(asset, bindingID), AssetID: asset, Definition: semreg.DefinitionRef{Pack: semreg.PackRef{ID: growattStoragePackID, Version: growattStoragePackVersion}, ID: "storage.service.pack", Version: growattStoragePackVersion}, BindingID: bindingID, SourceEpochID: epoch, DriverGeneration: generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: "1"}},
+		CapabilityUpserts: []semreg.CapabilityInstance{}, SourceRetirements: append([]semreg.SourceEpochID{}, retirements...), FactWithdrawals: []semreg.CandidateID{}, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
 	// Every object carried by a later observation advances with the observation
 	// revision. A repeated fixed revision would let a concurrent caller replace
 	// a newer lifecycle state, so the SemReg kernel correctly rejects it.
@@ -261,7 +316,7 @@ func growattStorageBatch(asset semreg.AssetID, source semreg.SourceID, status mo
 	for i := range batch.ServiceUpserts {
 		batch.ServiceUpserts[i].Revision = sequence
 	}
-	if exists {
+	if exists && growattStorageHasBinding(current, bindingID) {
 		// Identity and capability topology are stable for one configured asset.
 		// Refreshes carry only newer source-bound facts; this avoids presenting a
 		// source/binding replacement for an unchanged native observation route.
@@ -287,6 +342,15 @@ func growattStorageBatch(asset semreg.AssetID, source semreg.SourceID, status mo
 	}
 	batch.BatchDigest = digest
 	return batch, manifest, requested, growattStorageProjectionDispositions(dispositions), nil
+}
+
+func growattStorageHasBinding(snapshot semreg.Snapshot, binding semreg.NativeBindingID) bool {
+	for _, existing := range snapshot.Bindings {
+		if existing.BindingID == binding {
+			return true
+		}
+	}
+	return false
 }
 
 type growattStorageDisposition struct {

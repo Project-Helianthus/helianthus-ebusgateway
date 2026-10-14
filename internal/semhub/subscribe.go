@@ -34,6 +34,8 @@ type eventBus struct {
 	ring        []Event
 	subscribers map[*Subscription]struct{}
 	queueLimit  int
+	// onEmit, when set by a test, observes every event as it is sequenced.
+	onEmit func(Event)
 }
 
 func newEventBus(incarnation string, queueLimit int) *eventBus {
@@ -47,6 +49,9 @@ func (bus *eventBus) emit(event Event) uint64 {
 	defer bus.mu.Unlock()
 	bus.seq++
 	event.HubSeq = bus.seq
+	if bus.onEmit != nil {
+		bus.onEmit(event)
+	}
 	bus.ring = append(bus.ring, event)
 	if len(bus.ring) > replayRingLimit {
 		bus.ring = append([]Event(nil), bus.ring[len(bus.ring)-replayRingLimit:]...)

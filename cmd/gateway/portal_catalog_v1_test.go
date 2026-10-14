@@ -11,13 +11,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
@@ -512,18 +510,6 @@ func characterizationMCPCall(t *testing.T, handler http.Handler, tool string, ar
 	return response.Body.Bytes()
 }
 
-// setCharacterizationUnexported injects a deterministic clock into a type that
-// exposes no clock seam on the characterized revision. It is test-only.
-func setCharacterizationUnexported(t *testing.T, target any, field string, value any) {
-	t.Helper()
-	element := reflect.ValueOf(target).Elem()
-	slot := element.FieldByName(field)
-	if !slot.IsValid() {
-		t.Fatalf("%T has no field %q", target, field)
-	}
-	reflect.NewAt(slot.Type(), unsafe.Pointer(slot.UnsafeAddr())).Elem().Set(reflect.ValueOf(value))
-}
-
 // characterizationClock is one injected wall and read-clock pair.
 type characterizationClock struct {
 	mu   sync.Mutex
@@ -551,8 +537,7 @@ func (clock *characterizationClock) readClock() (uint64, error) {
 
 func injectTeslaCharacterizationClock(t *testing.T, owner *teslaHSCRetainedOwner, clock *characterizationClock) {
 	t.Helper()
-	setCharacterizationUnexported(t, owner.publication, "now", clock.now)
-	setCharacterizationUnexported(t, owner.publication, "readClock", clock.readClock)
+	owner.publication.SetClock(clock.now, clock.readClock)
 }
 
 // startTeslaCharacterizationOwner ingests one persistent and one provisional
@@ -697,6 +682,7 @@ func startCharacterizationFamilies(t *testing.T) characterizationFamilies {
 	}
 	client, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
+	config.SemanticPV = newTestSemanticPVClass(t)
 	adapter, err := modbusadapter.Start(context.Background(), config,
 		func(context.Context, string, string) (net.Conn, error) { advance(); return client, nil },
 		func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
@@ -789,20 +775,16 @@ func TestCharacterizationConsumersOfAllThreeFamilies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setCharacterizationUnexported(t, composer, "now", func() time.Time { return at })
+	composer.SetClock(func() time.Time { return at })
 	catalog, err := composer.Catalog(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	characterizationGolden(t, dir, "portal_catalog.json", characterizationJSON(t, catalog))
 
-	store := ebusgateway.NewBusObservabilityStore(ebusgateway.Config{})
-	setCharacterizationUnexported(t, store, "now", func() time.Time { return at })
-	store.SetSemanticMetricsProvider(func(scrape time.Time) []ebusgateway.SemanticMetricsDomain {
-		return semanticPrometheusDomains(families.pv, families.growatt, families.tesla, true, true, true, string(families.growatt.storage.assetID), scrape)
-	})
+	rendered := ebusgateway.RenderSemanticPrometheus(semanticPrometheusDomains(families.pv, families.growatt, families.tesla, true, true, true, string(families.growatt.storage.assetID), at), at)
 	var metrics []string
-	for _, line := range strings.Split(store.RenderPrometheus(), "\n") {
+	for _, line := range strings.Split(rendered, "\n") {
 		if strings.Contains(line, "helianthus_semantic_") {
 			metrics = append(metrics, line)
 		}

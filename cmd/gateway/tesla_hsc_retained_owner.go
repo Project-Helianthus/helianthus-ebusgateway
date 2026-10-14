@@ -3,18 +3,35 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse"
 )
+
+const teslaEVSEDriver = "tesla_evse"
+
+// teslaEVSEAssetSpec is the one declaration of the configured EVSE asset; the
+// startup preflight, the owner and its successors declare the same spec.
+func teslaEVSEAssetSpec(config ebusgateway.TeslaGen3HSCRetainedConfig) semhub.AssetSpec {
+	return semhub.AssetSpec{AssetID: semreg.AssetID(config.AssetID), SourceID: semreg.SourceID(config.SourceID), Driver: teslaEVSEDriver, Validators: []semreg.PackValidator{evse.New()}}
+}
+
+// newTeslaEVSESemanticPublication constructs the EVSE publication; a test
+// replaces it to exercise a construction failure after admission.
+var newTeslaEVSESemanticPublication = mcp.NewTeslaGen3EVSESemanticPublication
 
 var errTeslaHSCRetainedUnavailable = errors.New("tesla HSC retained owner unavailable")
 
@@ -82,25 +99,31 @@ func (e TeslaGen3RetainedExchangeEvidence) clone() TeslaGen3RetainedExchangeEvid
 type teslaHSCRetainedOwner struct {
 	mu                sync.Mutex
 	cfg               ebusgateway.TeslaGen3HSCRetainedConfig
+	hub               *semhub.Hub
 	active            bool
 	nextGeneration    uint64
 	successorReserved bool
 	successorConsumed bool
-	persistent        *modbusreg.TeslaGen3PersistentCurrentLimit
-	provisional       *modbusreg.TeslaGen3ProvisionalCurrentLimit
-	persistentInput   TeslaGen3RetainedExchangeEvidence
-	provisionalIn     [2]TeslaGen3RetainedExchangeEvidence
-	havePersistent    bool
-	haveProvisional   bool
-	publication       *mcp.TeslaGen3EVSESemanticPublication
-	sequence          uint64
-	lastCorrelation   uint64
-	lastReceiptWall   time.Time
-	lastReceiptMono   time.Duration
-	contribution      *gatewayPortalContributionLifecycle
+	// pendingSuccessor is a successor whose epoch is already admitted on the
+	// hub but whose Portal attachment failed; a retry completes it.
+	pendingSuccessor *teslaHSCRetainedOwner
+	persistent       *modbusreg.TeslaGen3PersistentCurrentLimit
+	provisional      *modbusreg.TeslaGen3ProvisionalCurrentLimit
+	persistentInput  TeslaGen3RetainedExchangeEvidence
+	provisionalIn    [2]TeslaGen3RetainedExchangeEvidence
+	havePersistent   bool
+	haveProvisional  bool
+	publication      *mcp.TeslaGen3EVSESemanticPublication
+	sequence         uint64
+	lastCorrelation  uint64
+	lastReceiptWall  time.Time
+	lastReceiptMono  time.Duration
+	contribution     *gatewayPortalContributionLifecycle
 }
 
-func startTeslaHSCRetainedOwner(config ebusgateway.TeslaGen3HSCRetainedConfig) (*teslaHSCRetainedOwner, error) {
+// startTeslaHSCRetainedOwner declares the EVSE asset on the semantic hub and
+// admits the configured source epoch and generation.
+func startTeslaHSCRetainedOwner(config ebusgateway.TeslaGen3HSCRetainedConfig, hub *semhub.Hub) (owner *teslaHSCRetainedOwner, err error) {
 	if !config.Enabled {
 		if config != (ebusgateway.TeslaGen3HSCRetainedConfig{}) {
 			return nil, errors.New("disabled Tesla HSC retained configuration contains active fields")
@@ -110,14 +133,32 @@ func startTeslaHSCRetainedOwner(config ebusgateway.TeslaGen3HSCRetainedConfig) (
 	if !validTeslaRetainedConfig(config) {
 		return nil, errors.New("enabled Tesla HSC retained configuration is invalid")
 	}
-	publication, err := mcp.NewTeslaGen3EVSESemanticPublication(mcp.TeslaGen3EVSESemanticConfig{
+	if hub == nil {
+		return nil, errors.New("tesla HSC semantic hub unavailable")
+	}
+	declaration, err := hub.Declare(teslaEVSEAssetSpec(config))
+	if err != nil {
+		return nil, fmt.Errorf("tesla HSC semantic declaration: %w", err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: semreg.SourceID(config.SourceID), Driver: teslaEVSEDriver, Legacy: semhub.LegacyTeslaEVSE, Epoch: semreg.SourceEpochID(config.SourceEpoch), Generation: config.DriverGeneration})
+	if err != nil {
+		return nil, fmt.Errorf("tesla HSC source epoch admission: %w", err)
+	}
+	// A construction failure withdraws the admission, journal-first, so the
+	// source is not left live without an owner and a retry can admit again.
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, hub.Withdraw(handle))
+		}
+	}()
+	publication, err := newTeslaEVSESemanticPublication(mcp.TeslaGen3EVSESemanticConfig{
 		AssetID: config.AssetID, SourceID: config.SourceID, EVSEID: config.EVSEID, ConnectorID: config.ConnectorID,
 		SourceEpoch: config.SourceEpoch, ClockEpoch: config.ClockEpoch, DriverGeneration: config.DriverGeneration,
-	})
+	}, declaration, handle)
 	if err != nil {
 		return nil, err
 	}
-	return &teslaHSCRetainedOwner{cfg: config, active: true, publication: publication}, nil
+	return &teslaHSCRetainedOwner{cfg: config, hub: hub, active: true, publication: publication}, nil
 }
 
 func validTeslaRetainedConfig(config ebusgateway.TeslaGen3HSCRetainedConfig) bool {
@@ -391,11 +432,33 @@ func (owner *teslaHSCRetainedOwner) Fence(current, next uint64) error {
 	if !owner.active || current != owner.cfg.DriverGeneration || current == ^uint64(0) || next != current+1 {
 		return errors.New("tesla HSC generation fence is invalid")
 	}
+	// The hub fences the generation on the retained kernel. A generation that
+	// never published is revoked at the hub level without a batch.
+	if _, err := owner.hub.Fence(owner.fenceRequestLocked(current, next)); err != nil {
+		return fmt.Errorf("tesla HSC generation fence: %w", err)
+	}
 	if owner.contribution != nil {
 		owner.contribution.Stop()
 	}
 	owner.active, owner.nextGeneration = false, next
 	return nil
+}
+
+// fenceRequestLocked describes the generation fence on the owner's own wall
+// and monotonic clocks, so SemReg can evaluate the observations it retains.
+func (owner *teslaHSCRetainedOwner) fenceRequestLocked(current, next uint64) semhub.FenceRequest {
+	sum := sha256.Sum256([]byte(owner.cfg.EndpointID + "\x00" + strconv.FormatUint(current, 10) + "\x00" + strconv.FormatUint(next, 10)))
+	evidence := semreg.EvidenceRef{Owner: "helianthus.pack.evse", Kind: "native.tesla.wc3.generation_fence", Digest: semreg.Digest("sha256:" + hex.EncodeToString(sum[:])), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}
+	wall := owner.lastReceiptWall
+	if wall.IsZero() {
+		wall = time.Unix(0, 0)
+	}
+	return semhub.FenceRequest{
+		Source: semreg.SourceID(owner.cfg.SourceID), Epoch: semreg.SourceEpochID(owner.cfg.SourceEpoch), Generation: current,
+		Reason: "lifecycle.driver_generation_replaced", Evidence: []semreg.EvidenceRef{evidence},
+		ObservedAt: semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(wall.UTC().UnixNano(), 10)), ClockID: "wall.utc", UncertaintyNS: "0"},
+		Monotonic:  semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID(owner.cfg.ClockEpoch), Nanoseconds: semreg.Uint64(strconv.FormatInt(owner.lastReceiptMono.Nanoseconds(), 10))},
+	}
 }
 
 func (owner *teslaHSCRetainedOwner) Successor(config ebusgateway.TeslaGen3HSCRetainedConfig) (*teslaHSCRetainedOwner, error) {
@@ -411,10 +474,20 @@ func (owner *teslaHSCRetainedOwner) Successor(config ebusgateway.TeslaGen3HSCRet
 		owner.mu.Unlock()
 		return nil, errors.New("tesla HSC successor identity or generation is invalid")
 	}
+	if pending := owner.pendingSuccessor; pending != nil && pending.cfg != config {
+		owner.mu.Unlock()
+		return nil, errors.New("tesla HSC successor identity or generation is invalid")
+	}
 	owner.successorReserved = true
+	successor := owner.pendingSuccessor
 	owner.mu.Unlock()
 
-	successor, err := startTeslaHSCRetainedOwner(config)
+	var err error
+	if successor == nil {
+		// The successor admits its new epoch at generation current+1 on the
+		// same hub, so it publishes on the retained kernel of the asset.
+		successor, err = startTeslaHSCRetainedOwner(config, owner.hub)
+	}
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	owner.successorReserved = false
@@ -424,14 +497,21 @@ func (owner *teslaHSCRetainedOwner) Successor(config ebusgateway.TeslaGen3HSCRet
 	if successor == nil {
 		return nil, errors.New("tesla HSC successor construction returned no owner")
 	}
-	if owner.contribution != nil {
-		if err := attachGatewayPortalEVSEContribution(successor, owner.contribution.registry); err != nil {
+	if owner.contribution != nil && successor.contribution == nil {
+		if err := attachTeslaSuccessorContribution(successor, owner.contribution.registry); err != nil {
+			// The admitted successor is retained, never discarded: the hub
+			// already holds its epoch live, so a retry must complete it.
+			owner.pendingSuccessor = successor
 			return nil, err
 		}
 	}
+	owner.pendingSuccessor = nil
 	owner.successorConsumed = true
 	return successor, nil
 }
+
+// attachTeslaSuccessorContribution attaches a successor's Portal contribution.
+var attachTeslaSuccessorContribution = attachGatewayPortalEVSEContribution
 
 func (owner *teslaHSCRetainedOwner) Close() error {
 	if owner == nil {

@@ -39,6 +39,7 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 	}
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	config.Clock = func() time.Time { return now }
+	config.SemanticPV = newTestSemanticPVClass(t)
 	adapter, err := modbusadapter.Start(context.Background(), config, (&net.Dialer{}).DialContext, func(config modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
 		return modbus.NewTCPEndpoint(config)
 	})

@@ -24,8 +24,19 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
+// startGatewayReleaseChecker starts the cache-only release discovery task.
+var startGatewayReleaseChecker = func(checker *releasecheck.Checker, ctx context.Context) {
+	checker.Start(ctx)
+}
+
 func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result error) {
 	resolvedBuildInfo, err := prepareGatewayRunConfig(&cfg)
+	if err != nil {
+		return err
+	}
+	// Every static semantic identity is declared before any runtime starts; a
+	// cross-family collision stops the process here, before any side effect.
+	semanticHub, err := preflightSemanticHub(cfg)
 	if err != nil {
 		return err
 	}
@@ -34,7 +45,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// not trigger or wait for this network operation.
 	daemonReleaseChecker := releasecheck.New(releasecheck.Options{CurrentVersion: resolvedBuildInfo.ReleaseVersion})
 	if cfg.HTTPAddr != "" {
-		daemonReleaseChecker.Start(ctx)
+		startGatewayReleaseChecker(daemonReleaseChecker, ctx)
 	}
 
 	evidenceRuntime, err := openSynchronizedEvidenceRuntime(cfg.EvidenceRecorderConfig)
@@ -57,6 +68,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	modbusAdapter, err := startModbusRuntime(
 		ctx,
 		cfg.ModbusTCPConfig,
+		semanticHub,
 		dialModbusEndpointFn,
 		newModbusEndpointFn,
 	)
@@ -86,7 +98,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			defer func() { _ = sunSpecWorker.Close() }()
 		}
 	}
-	growattBMSRuntime, err := startGrowattBMSRS485Runtime(cfg.ModbusTCPConfig.GrowattBMSRS485)
+	growattBMSRuntime, err := startGrowattBMSRS485Runtime(cfg.ModbusTCPConfig.GrowattBMSRS485, semanticHub)
 	if err != nil {
 		log.Printf("Growatt BMS RS-485 unavailable; continuing without Growatt BMS")
 		growattBMSRuntime = nil
@@ -102,7 +114,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 		}()
 	}
-	teslaHSCRetained, err := startTeslaHSCRetainedOwner(cfg.ModbusTCPConfig.TeslaGen3HSC)
+	teslaHSCRetained, err := startTeslaHSCRetainedOwner(cfg.ModbusTCPConfig.TeslaGen3HSC, semanticHub)
 	if err != nil {
 		return fmt.Errorf("tesla HSC retained owner: %w", err)
 	}

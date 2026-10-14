@@ -173,6 +173,17 @@ type Composer struct {
 
 func (c *Composer) SetRevalidator(r Revalidator) { c.mu.Lock(); defer c.mu.Unlock(); c.revalidator = r }
 
+// SetClock replaces the catalog evaluation clock; nil restores the process
+// clock. It exists for deterministic offline evidence.
+func (c *Composer) SetClock(now func() time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	c.now = now
+}
+
 type identity struct{ driver, manifest, version string }
 
 func New(index contributionv1.SemanticIndex, source SourceCapture, auth Authorizer, invoker Invoker) *Composer {

@@ -15,6 +15,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -295,7 +296,7 @@ func TestGrowattSemanticIdentityRejectsUncanonicalOriginalValues(t *testing.T) {
 				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
 			}
 			defer func() { openGrowattBMSRTUEndpoint = original }()
-			if _, err := startGrowattBMSRS485Runtime(c); err == nil || opened {
+			if _, err := startGrowattBMSRS485Runtime(c, newTestSemanticHub(t)); err == nil || opened {
 				t.Fatalf("invalid configured identity started/opened: %v/%t", err, opened)
 			}
 		})
@@ -314,7 +315,7 @@ func TestGrowattSemanticIdentityRejectsUncanonicalOriginalValues(t *testing.T) {
 				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
 			}
 			defer func() { openGrowattBMSRTUEndpoint = original }()
-			runtime, err := startGrowattBMSRS485Runtime(c)
+			runtime, err := startGrowattBMSRS485Runtime(c, newTestSemanticHub(t))
 			if err != nil || !opened {
 				t.Fatalf("valid SemReg identity boundary rejected: %v/%t", err, opened)
 			}
@@ -337,7 +338,7 @@ func TestGrowattSourceEpochIsAdmittedBeforeEndpointOpen(t *testing.T) {
 				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
 			}
 			defer func() { openGrowattBMSRTUEndpoint = original }()
-			_, err := startGrowattBMSRS485Runtime(config)
+			_, err := startGrowattBMSRS485Runtime(config, newTestSemanticHub(t))
 			if name == "boundary" {
 				if err != nil || !opened {
 					t.Fatalf("valid boundary rejected: %v", err)
@@ -356,7 +357,7 @@ func startGrowattRuntimeWithFake(t *testing.T, config ebusgateway.GrowattBMSRS48
 	original := openGrowattBMSRTUEndpoint
 	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return fake, nil }
 	t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
-	runtime, err := startGrowattBMSRS485Runtime(config)
+	runtime, err := startGrowattBMSRS485Runtime(config, newTestSemanticHub(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +778,7 @@ func TestGrowattBMSRS485ProductionCompositionFailsClosed(t *testing.T) {
 			original := openGrowattBMSRTUEndpoint
 			openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { called = true; return nil, nil }
 			t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
-			if _, err := startGrowattBMSRS485Runtime(config); err == nil || called {
+			if _, err := startGrowattBMSRS485Runtime(config, newTestSemanticHub(t)); err == nil || called {
 				t.Fatalf("err/open=%v/%t", err, called)
 			}
 		})
@@ -1039,4 +1040,97 @@ func TestGrowattCharacterizationFirstIncarnationLegacyIdentityAndPublicBytes(t *
 	}
 	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithGrowatt(nil, runtime))
 	characterizationGolden(t, dir, "mcp_publish4.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1GrowattStorageCurrentGetTool, `{}`))
+}
+
+func growattFenceRequest(at time.Time) semhub.FenceRequest {
+	return semhub.FenceRequest{
+		Source: "growatt-bms-a", Epoch: "source-epoch-1", Generation: 1, Reason: "lifecycle.generation_replaced",
+		Evidence:   []semreg.EvidenceRef{growattStorageDigestEvidence("native.growatt.bms.rs485.v202.generation_fence", "fence")},
+		ObservedAt: growattWall(at), Monotonic: semreg.MonotonicPoint{ClockEpochID: growattBMSRS485ClockEpoch, Nanoseconds: "10000000000"},
+	}
+}
+
+func TestGrowattStorageFenceWithdrawsTheCacheAndGatesReads(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	original := openGrowattBMSRTUEndpoint
+	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return fake, nil }
+	t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
+	runtime, err := startGrowattBMSRS485Runtime(growattProductionConfig(), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.GrowattStorageSemanticCurrent(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtime.storage.Current("asset:growatt-bms-a"); !ok {
+		t.Fatal("published storage view unavailable")
+	}
+	if _, err := hub.Fence(growattFenceRequest(characterizationAnchor.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if !hub.Readable("asset:growatt-bms-a") {
+		t.Fatal("reprojection did not acknowledge the fence")
+	}
+	if _, ok := runtime.storage.Current("asset:growatt-bms-a"); ok {
+		t.Fatal("withdrawn storage view stayed public")
+	}
+	if _, ok := runtime.storage.CurrentAt("asset:growatt-bms-a", characterizationAnchor.Add(2*time.Second)); ok {
+		t.Fatal("withdrawn storage CurrentAt stayed public")
+	}
+	if _, err := runtime.GrowattStorageSemanticCurrent(context.Background()); err == nil || !strings.Contains(err.Error(), string(semreg.StaleDriverGeneration)) {
+		t.Fatalf("fenced generation published: %v", err)
+	}
+}
+
+func TestGrowattAdmissionRefusalNeverOpensTheEndpoint(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	opened := 0
+	original := openGrowattBMSRTUEndpoint
+	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+		opened++
+		return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
+	}
+	t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
+	if _, err := startGrowattBMSRS485Runtime(growattProductionConfig(), hub); err != nil || opened != 1 {
+		t.Fatalf("first start=%v opened=%d", err, opened)
+	}
+	if _, err := startGrowattBMSRS485Runtime(growattProductionConfig(), hub); err == nil || opened != 1 {
+		t.Fatalf("live epoch admitted twice or endpoint opened: %v/%d", err, opened)
+	}
+}
+
+func TestGrowattStartupFailureAfterAdmissionWithdrawsTheAdmission(t *testing.T) {
+	journal := semhub.NewMemoryJournal()
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := growattProductionConfig()
+	original := openGrowattBMSRTUEndpoint
+	t.Cleanup(func() { openGrowattBMSRTUEndpoint = original })
+	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+		return nil, errors.New("serial port unavailable")
+	}
+	if _, err := startGrowattBMSRS485Runtime(config, hub); err == nil {
+		t.Fatal("startup succeeded without an endpoint")
+	}
+	if info, _ := hub.Source(semreg.SourceID(config.SourceID)); info.Live {
+		t.Fatalf("source still live after a failed startup: %+v", info)
+	}
+	openGrowattBMSRTUEndpoint = func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+		return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, nil
+	}
+	runtime, err := startGrowattBMSRS485Runtime(config, hub)
+	if err != nil {
+		t.Fatalf("retry with the same configuration=%v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	kinds := []semhub.EventKind{}
+	for _, record := range journal.Records() {
+		kinds = append(kinds, record.Kind)
+	}
+	if len(kinds) != 3 || kinds[0] != semhub.EventEpochAdmitted || kinds[1] != semhub.EventSourceRetired || kinds[2] != semhub.EventEpochAdmitted {
+		t.Fatalf("journal=%v, want admitted, retired, admitted", kinds)
+	}
 }

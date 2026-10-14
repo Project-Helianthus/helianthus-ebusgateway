@@ -10,7 +10,7 @@ import (
 // and a later epoch replacement (issue #1024). The goldens were captured from
 // the pre-hub publication path.
 func TestPVCharacterizationGenerationAndEpochReplacement(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}

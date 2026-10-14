@@ -1,0 +1,36 @@
+{
+  "asset": [
+    "asset:tesla-wc3-a"
+  ],
+  "bindings": [
+    "binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95 source:tesla-wc3-a epoch:tesla-wc3-a 7 retired",
+    "binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c source:tesla-wc3-a epoch:tesla-wc3-b 8 current"
+  ],
+  "candidates": [
+    "candidate:tesla-wc3:d249afdae889eff9a140a22ef8b21de6 evse.limit.configured_current origin:tesla-wc3:d249afdae889eff9a140a22ef8b21de6"
+  ],
+  "capabilities": [
+    "capability:tesla-wc3:272930c2222f87a9659d70da89c63223 evse.capability.read.evse service:tesla-wc3:6edd3058a1b32972e7b33fe9e4d0822f binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "capability:tesla-wc3:9dfb52a0e32e7b1c6fe72a4177c52048 evse.capability.read.connector service:tesla-wc3:298199d3c58ae478eb4385974a6a5626 binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c",
+    "capability:tesla-wc3:d6814720e2e57f7af65acf5b9c411c38 evse.capability.read.connector service:tesla-wc3:03ae485218190fab9d8ce3446238532a binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "capability:tesla-wc3:e38602efb72deb4eb7fcb4ab6563efb4 evse.capability.read.evse service:tesla-wc3:748a404df71f1048aad1f476fd085e1d binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c"
+  ],
+  "cursors": [
+    "source:tesla-wc3-a epoch:tesla-wc3-a 7 2",
+    "source:tesla-wc3-a epoch:tesla-wc3-b 8 1"
+  ],
+  "identity_links": [
+    "binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95 withdrawn",
+    "binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c qualified"
+  ],
+  "services": [
+    "service:tesla-wc3:03ae485218190fab9d8ce3446238532a evse.service.connector binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "service:tesla-wc3:298199d3c58ae478eb4385974a6a5626 evse.service.connector binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c",
+    "service:tesla-wc3:6edd3058a1b32972e7b33fe9e4d0822f evse.service.evse binding:tesla-wc3:04acb6030d7537c1cb7885976be38c95",
+    "service:tesla-wc3:748a404df71f1048aad1f476fd085e1d evse.service.evse binding:tesla-wc3:1643e96949bab1b47961db2717c17e1c"
+  ],
+  "sources": [
+    "source:tesla-wc3-a epoch:tesla-wc3-a retired",
+    "source:tesla-wc3-a epoch:tesla-wc3-b current"
+  ]
+}

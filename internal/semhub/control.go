@@ -55,6 +55,23 @@ func (e *ControlPendingError) Error() string {
 	return fmt.Sprintf("semhub: control operation %d of the source is unfinished", e.ID.N)
 }
 
+// CoverError reports an accepted publication whose transition cover (the
+// control operation that fences the replaced generation, or retires the
+// replaced epoch, on the source's other assets) did not complete its initial
+// submission. The publication is committed and its handle valid; the other
+// assets stay behind the cover's control gate until RetryControl(ID)
+// resolves them, exactly as for a failed Fence or RetireEpoch.
+type CoverError struct {
+	ID  ControlID
+	Err error
+}
+
+func (e *CoverError) Error() string {
+	return fmt.Sprintf("semhub: publication accepted; transition cover %d is unfinished: %v", e.ID.N, e.Err)
+}
+
+func (e *CoverError) Unwrap() error { return e.Err }
+
 // SettlePendingError reports a mutating request while a settling control
 // operation still has an unsettled reprojection after one Resettle pass.
 type SettlePendingError struct{ ID ControlID }
@@ -306,10 +323,23 @@ func (h *Hub) Settled(id semreg.AssetID) bool {
 	return target.gate == nil || target.gate.reprojection == ReprojectionSettled
 }
 
-// Readable is ReadAdmitted and Settled, the condition of every public read.
-func (h *Hub) Readable(id semreg.AssetID) bool {
-	return h.ReadAdmitted(id) && h.Settled(id)
+// Admitted is the condition of every public read: the control gate admits
+// reads and the reprojection acknowledged the latest control snapshot. Both
+// predicates are evaluated over one gate value under one read lock.
+func (h *Hub) Admitted(id semreg.AssetID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	target := h.assets[id]
+	if target == nil {
+		return false
+	}
+	gate := target.gate
+	h.fault("admitted-read", id)
+	return gate == nil || semanticSuccess(gate.semantic) && gate.reprojection == ReprojectionSettled
 }
+
+// Readable is Admitted.
+func (h *Hub) Readable(id semreg.AssetID) bool { return h.Admitted(id) }
 
 // Inspect returns an ungated deep copy of the asset's current snapshot.
 func (h *Hub) Inspect(id semreg.AssetID) (InspectView, error) {
@@ -459,7 +489,20 @@ func (h *Hub) runControl(id semreg.SourceID, op *controlOp) (ControlResult, erro
 		}
 	}
 	h.fault("control-revoke", "")
-	h.mu.Lock()
+	h.lock()
+	// Pending-control ownership is revalidated at this serialization point: a
+	// control operation installed since the preflight (for example the cover
+	// of a generation transition) keeps ownership and nothing changes.
+	if last := src.last; last != nil {
+		switch last.stateLocked() {
+		case opUnfinished:
+			h.unlock()
+			return ControlResult{}, &ControlPendingError{ID: last.id}
+		case opSettling:
+			h.unlock()
+			return ControlResult{}, &SettlePendingError{ID: last.id}
+		}
+	}
 	// Reconcile at the revocation serialization point. Commit validates the
 	// handle under h.mu, so no publication can land between this
 	// classification and the revocation below.
@@ -478,6 +521,69 @@ func (h *Hub) runControl(id semreg.SourceID, op *controlOp) (ControlResult, erro
 					published[target.id] = true
 				}
 			}
+		}
+	}
+	// Revalidate what the trial saw. A publication transition may have
+	// committed since (it commits under h.mu, as this section runs): an asset
+	// whose control key is now fenced is left out like any asset on which the
+	// transition already holds, and the source is revoked only while the
+	// targeted generation is still its current one.
+	targetsCurrent = src.admitted && op.epoch == src.epoch && !src.retired[src.epoch] && (op.kind == ControlRetire || op.generation == src.generation)
+	// Event and journal metadata are taken here, under the revocation lock.
+	currentGeneration = src.generation
+	for _, target := range assets {
+		if !published[target.id] {
+			continue
+		}
+		if _, batch, err := h.build(op, target, target.kernel); err == nil {
+			if snapshot, _, ok := target.kernel.Current(); ok {
+				if cursor, found := cursorFor(snapshot, op.src.id, op.epoch, batch.DriverGeneration); found && cursor.Fenced {
+					delete(published, target.id)
+					skipped[target.id] = true
+				}
+			}
+		}
+	}
+	if len(published) == 0 && !targetsCurrent {
+		h.unlock()
+		if op.kind == ControlRetire {
+			return ControlResult{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "source retirement"}
+		}
+		return ControlResult{}, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "generation fence"}
+	}
+	// Write-ahead: every control transition, of the current key or of a
+	// historical one, is journalled with the assets it covers before any
+	// handle, gate or event changes.
+	covered := []semreg.AssetID{}
+	for _, target := range assets {
+		if published[target.id] {
+			covered = append(covered, target.id)
+		}
+	}
+	// A retirement of a historical key carries the newest generation of the
+	// retired epoch among the covered assets, like every other retirement.
+	historicalGeneration := uint64(0)
+	for _, target := range assets {
+		if !published[target.id] {
+			continue
+		}
+		if snapshot, _, ok := target.kernel.Current(); ok {
+			if generation := latestGeneration(snapshot, src.id, op.epoch); generation > historicalGeneration {
+				historicalGeneration = generation
+			}
+		}
+	}
+	if targetsCurrent || len(covered) != 0 {
+		kind, generation := EventGenerationFenced, op.generation
+		if op.kind == ControlRetire {
+			kind, generation = EventSourceRetired, historicalGeneration
+			if targetsCurrent {
+				generation = src.generation
+			}
+		}
+		if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: op.epoch, Generation: generation, Kind: kind, Assets: covered}); err != nil {
+			h.unlock()
+			return ControlResult{}, fmt.Errorf("semhub: journal control transition: %w", err)
 		}
 	}
 	src.counter++
@@ -505,22 +611,28 @@ func (h *Hub) runControl(id semreg.SourceID, op *controlOp) (ControlResult, erro
 	}
 	src.ops[op.id.N] = op
 	src.last = op
-	h.mu.Unlock()
+	// Hub-level revocations without a batch: a retirement emits
+	// SourceRetired with the retired generation, a fence GenerationRevoked.
+	// When the operation covers no asset at all, one source-level event
+	// still records the transition of the current key. They are sequenced
+	// inside the revocation serialization.
+	kind, generation := EventGenerationRevoked, op.generation
+	if op.kind == ControlRetire {
+		kind, generation = EventSourceRetired, historicalGeneration
+		if targetsCurrent {
+			generation = currentGeneration
+		}
+	}
+	control := op.id
 	for _, ca := range op.assets {
 		if ca.semantic == SemanticRevokedUnpublished {
-			control := op.id
-			h.bus.emit(Event{Kind: EventGenerationRevoked, Asset: ca.asset.id, Source: src.id, Epoch: op.epoch, Generation: op.generation, Control: &control, Reason: op.reason, NoPublication: true})
+			h.bus.emit(Event{Kind: kind, Asset: ca.asset.id, Source: src.id, Epoch: op.epoch, Generation: generation, Control: &control, Reason: op.reason, NoPublication: true})
 		}
 	}
-	if targetsCurrent {
-		kind := EventGenerationFenced
-		if op.kind == ControlRetire {
-			kind = EventSourceRetired
-		}
-		if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: op.epoch, Generation: currentGeneration, Kind: kind}); err != nil {
-			return h.result(op), err
-		}
+	if len(op.assets) == 0 && targetsCurrent {
+		h.bus.emit(Event{Kind: kind, Source: src.id, Epoch: op.epoch, Generation: generation, Control: &control, Reason: op.reason, NoPublication: true})
 	}
+	h.unlock()
 	failure := h.process(op, false)
 	return h.result(op), failure
 }
@@ -584,6 +696,21 @@ func (h *Hub) build(op *controlOp, target *asset, kernel *semreg.PublicationKern
 		return Attempt{}, semreg.PublicationBatch{}, errNoPublication
 	}
 	sequence := incrementUint(cursor.LastSequence)
+	// A retirement carried by an epoch-transition cover may meet an asset
+	// whose newest cursor for the replaced epoch is already fenced (an
+	// earlier generation transition fenced it). SemReg refuses a batch under
+	// a fenced header, so the retirement goes out under the replaced epoch's
+	// later generation as a new key at sequence 1. A standalone RetireEpoch
+	// (no generation) keeps SemReg's refusal after a fence.
+	if op.kind == ControlRetire && cursor.Fenced && op.generation != 0 {
+		later := semreg.Uint64(strconv.FormatUint(op.generation, 10))
+		if compareDecimal(later, cursor.DriverGeneration) > 0 {
+			generation, sequence = later, "1"
+			if existing, ok := cursorFor(snapshot, op.src.id, op.epoch, later); ok {
+				sequence = incrementUint(existing.LastSequence)
+			}
+		}
+	}
 	batchID := op.batchID
 	if batchID == "" {
 		batchID = semreg.BatchID("batch:semhub:" + idHash("helianthus.semhub.batch.v1", string(target.id), string(op.src.id), string(op.epoch), string(generation), string(sequence)))
@@ -668,14 +795,22 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	target, op := ca.asset, ca.op
 	target.commit.Lock()
 	defer target.commit.Unlock()
+	// Revalidate under the asset lock: an attempt that resolved meanwhile is
+	// never submitted again.
+	h.mu.RLock()
+	resolved := semanticSuccess(ca.semantic) || ca.semantic == SemanticRevokedUnpublished
+	h.mu.RUnlock()
+	if resolved {
+		return nil
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			h.mu.Lock()
+			h.lock()
 			ca.semantic, ca.errID, ca.err = SemanticUncertain, "", fmt.Errorf("semhub: control submission interrupted: %v", recovered)
 			failure = ca.err
-			h.mu.Unlock()
 			control := op.id
 			h.bus.emit(Event{Kind: EventControlFailed, Asset: target.id, Source: op.src.id, Epoch: op.epoch, Generation: op.generation, Control: &control})
+			h.unlock()
 		}
 	}()
 	h.mu.RLock()
@@ -686,10 +821,10 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 		if err != nil {
 			return h.reject(ca, err)
 		}
-		h.mu.Lock()
+		h.lock()
 		ca.attempts = append(ca.attempts, attempt)
 		ca.semantic = SemanticPending
-		h.mu.Unlock()
+		h.unlock()
 	}
 	h.mu.RLock()
 	attempt := ca.attempts[len(ca.attempts)-1]
@@ -731,8 +866,8 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	// status and the queued reprojection, so Inspect never pairs the new
 	// snapshot with older metadata.
 	func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
+		h.lock()
+		defer h.unlock()
 		if !replayed {
 			target.kernel = fork
 		}
@@ -757,11 +892,11 @@ func (h *Hub) reject(ca *controlAsset, err error) error {
 	if errors.As(err, &semErr) {
 		id = semErr.ID
 	}
-	h.mu.Lock()
+	h.lock()
 	ca.semantic, ca.errID, ca.err = SemanticRejected, id, err
-	h.mu.Unlock()
 	control := ca.op.id
 	h.bus.emit(Event{Kind: EventControlFailed, Asset: ca.asset.id, Source: ca.op.src.id, Epoch: ca.op.epoch, Generation: ca.op.generation, Control: &control, ErrorID: id})
+	h.unlock()
 	return err
 }
 
@@ -772,9 +907,9 @@ func (h *Hub) reject(ca *controlAsset, err error) error {
 // runs the new entries afterwards. An entry whose asset still has an attempt
 // in flight waits for it and then runs; it is never dropped.
 func (h *Hub) drain() {
-	h.mu.Lock()
+	h.lock()
 	if h.draining {
-		h.mu.Unlock()
+		h.unlock()
 		return
 	}
 	h.draining = true
@@ -784,23 +919,23 @@ func (h *Hub) drain() {
 		ca := entry.ca
 		for ca.inFlight != nil {
 			running := ca.inFlight
-			h.mu.Unlock()
+			h.unlock()
 			<-running
-			h.mu.Lock()
+			h.lock()
 		}
 		done, _ := h.startAttemptLocked(ca)
-		h.mu.Unlock()
+		h.unlock()
 		if done != nil {
 			<-done
 		}
-		h.mu.Lock()
+		h.lock()
 		if ca.entry == entry {
 			ca.entry = nil
 		}
 		close(entry.done)
 	}
 	h.draining = false
-	h.mu.Unlock()
+	h.unlock()
 }
 
 // startAttemptLocked starts one reprojection attempt for ca in its own
@@ -828,7 +963,7 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 	ca.inFlight = done
 	go func() {
 		err := runCallback(callback, event)
-		h.mu.Lock()
+		h.lock()
 		if target.gate == ca && ca.hubSeq == event.HubSeq {
 			if err != nil {
 				ca.reprojection, ca.reprojErr = ReprojectionUnsettled, err
@@ -837,7 +972,7 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 			}
 		}
 		ca.inFlight = nil
-		h.mu.Unlock()
+		h.unlock()
 		close(done)
 	}()
 	return done, nil
@@ -874,30 +1009,30 @@ func cloneSnapshot(snapshot semreg.Snapshot) semreg.Snapshot {
 // ErrReprojectionQueued when the scheduler is busy with earlier attempts (the
 // queued attempt then runs in order). Otherwise it waits for its attempt.
 func (h *Hub) Resettle(id semreg.AssetID) error {
-	h.mu.Lock()
+	h.lock()
 	target := h.assets[id]
 	if target == nil {
-		h.mu.Unlock()
+		h.unlock()
 		return ErrUnknownAsset
 	}
 	ca := target.gate
 	switch {
 	case ca == nil:
-		h.mu.Unlock()
+		h.unlock()
 		return nil
 	case !semanticSuccess(ca.semantic):
-		h.mu.Unlock()
+		h.unlock()
 		return ErrSemanticOutstanding
 	case ca.inFlight != nil:
-		h.mu.Unlock()
+		h.unlock()
 		return ErrReprojectionInFlight
 	case ca.reprojection == ReprojectionSettled:
-		h.mu.Unlock()
+		h.unlock()
 		return nil
 	}
 	entry := h.enqueueLocked(ca)
 	busy := h.draining
-	h.mu.Unlock()
+	h.unlock()
 	if busy {
 		return ErrReprojectionQueued
 	}
@@ -923,19 +1058,19 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 func (h *Hub) awaitFinished(src *source, activation bool) error {
 	deadline := time.Now().Add(ControlSettleTimeout)
 	for {
-		h.mu.Lock()
+		h.lock()
 		op := src.last
 		state := op.stateLocked()
 		abandoned := op.abandonedOpenLocked()
 		switch {
 		case state == opUnfinished:
-			h.mu.Unlock()
+			h.unlock()
 			return &ControlPendingError{ID: op.id}
 		case activation && abandoned:
-			h.mu.Unlock()
+			h.unlock()
 			return ErrControlAbandoned
 		case state == opFinished:
-			h.mu.Unlock()
+			h.unlock()
 			return nil
 		}
 		busy := h.draining
@@ -945,7 +1080,7 @@ func (h *Hub) awaitFinished(src *source, activation bool) error {
 			}
 		}
 		if busy && !activation {
-			h.mu.Unlock()
+			h.unlock()
 			return &SettlePendingError{ID: op.id}
 		}
 		var waits []chan struct{}
@@ -954,7 +1089,7 @@ func (h *Hub) awaitFinished(src *source, activation bool) error {
 				waits = append(waits, h.enqueueLocked(ca).done)
 			}
 		}
-		h.mu.Unlock()
+		h.unlock()
 		src.control.Unlock()
 		if activation {
 			go h.drain()
@@ -1011,16 +1146,16 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 		return ControlResult{}, err
 	}
 	failure := func() error {
-		op.src.control.Lock()
+		h.lockSourceControl(op.src)
 		defer op.src.control.Unlock()
-		h.mu.Lock()
+		h.lock()
 		latest, abandoned, state := op.src.last == op, op.abandoned, op.stateLocked()
 		if !latest || abandoned {
-			h.mu.Unlock()
+			h.unlock()
 			return ErrControlRequest
 		}
 		if state == opSettling {
-			defer h.mu.Unlock()
+			defer h.unlock()
 			for _, ca := range op.assets {
 				if semanticSuccess(ca.semantic) && ca.inFlight != nil {
 					return &SettlePendingError{ID: op.id}
@@ -1033,7 +1168,7 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 			}
 			return nil
 		}
-		h.mu.Unlock()
+		h.unlock()
 		if state == opUnfinished {
 			return h.process(op, true)
 		}
@@ -1041,6 +1176,17 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 	}()
 	h.drain()
 	return h.result(op), failure
+}
+
+// lockSourceControl takes the source control mutex. When the mutex is held
+// by another control operation it reports the contention to the fault hook
+// before blocking, which lets tests order an interleaving deterministically.
+func (h *Hub) lockSourceControl(src *source) {
+	if src.control.TryLock() {
+		return
+	}
+	h.fault("source-control-contended", "")
+	src.control.Lock()
 }
 
 // AbandonControl marks an unfinished control operation abandoned. Its
@@ -1053,8 +1199,8 @@ func (h *Hub) AbandonControl(id ControlID) error {
 	}
 	op.src.control.Lock()
 	defer op.src.control.Unlock()
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.lock()
+	defer h.unlock()
 	if op.src.last != op || op.abandoned || op.stateLocked() != opUnfinished {
 		return ErrControlRequest
 	}
@@ -1104,27 +1250,33 @@ func (h *Hub) Activate(previous *Handle, generation uint64) (*Handle, error) {
 	if err := h.awaitFinished(src, true); err != nil {
 		return nil, err
 	}
-	h.mu.Lock()
-	if src.epoch != previous.epoch || src.retired[src.epoch] {
-		h.mu.Unlock()
+	h.lock()
+	// The admission identity survives fences but changes on readmission, so
+	// a handle of a withdrawn admission cannot activate the readmitted one.
+	if src.admission != previous.admission || src.epoch != previous.epoch || src.retired[src.epoch] {
+		h.unlock()
 		return nil, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "activation epoch"}
 	}
 	if src.live || !src.fenced {
-		h.mu.Unlock()
+		h.unlock()
 		return nil, ErrGenerationLive
 	}
-	if generation <= src.generation {
-		h.mu.Unlock()
+	// Only the handle of the generation being replaced may activate its
+	// successor; an older handle is obsolete.
+	if previous.generation != src.generation || generation <= src.generation {
+		h.unlock()
 		return nil, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "activation generation"}
+	}
+	// Journal before exposure: a failed append changes nothing.
+	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: src.epoch, Generation: generation, Kind: EventGenerationActivated}); err != nil {
+		h.unlock()
+		return nil, fmt.Errorf("semhub: journal generation activation: %w", err)
 	}
 	src.generation = generation
 	src.token++
 	src.live, src.fenced, src.first = true, false, false
-	handle := &Handle{hub: h, source: src.id, epoch: src.epoch, generation: generation, token: src.token, legacy: src.legacy}
-	h.mu.Unlock()
+	handle := &Handle{hub: h, source: src.id, epoch: src.epoch, generation: generation, token: src.token, admission: src.admission, legacy: src.legacy}
 	h.bus.emit(Event{Kind: EventGenerationActivated, Source: src.id, Epoch: handle.epoch, Generation: generation})
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: handle.epoch, Generation: generation, Kind: EventGenerationActivated}); err != nil {
-		return nil, err
-	}
+	h.unlock()
 	return handle, nil
 }

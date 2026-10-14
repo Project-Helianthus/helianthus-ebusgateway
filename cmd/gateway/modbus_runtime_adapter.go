@@ -7,6 +7,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
@@ -21,12 +22,23 @@ var (
 func startModbusRuntime(
 	ctx context.Context,
 	config ebusgateway.ModbusTCPConfig,
+	hub *semhub.Hub,
 	dial modbusadapter.Dialer,
 	factory modbusadapter.Factory,
 ) (*modbusadapter.Adapter, error) {
 	runtimeConfig, err := mapModbusRuntimeConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("map Modbus TCP runtime configuration: %w", err)
+	}
+	if runtimeConfig.Enabled {
+		// Dynamically discovered PV assets are declared per asset through the
+		// PV class of the process's semantic hub.
+		if hub == nil {
+			return nil, fmt.Errorf("start Modbus TCP runtime: semantic hub unavailable")
+		}
+		if runtimeConfig.SemanticPV, err = modbusadapter.NewSemanticPVClass(hub); err != nil {
+			return nil, fmt.Errorf("start Modbus TCP runtime: %w", err)
+		}
 	}
 	adapter, err := modbusadapter.Start(ctx, runtimeConfig, dial, factory)
 	if err != nil {

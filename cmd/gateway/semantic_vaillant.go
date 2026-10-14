@@ -1600,11 +1600,12 @@ type b524EnergyQuery struct {
 }
 
 var b524EnergyQueries = []b524EnergyQuery{
-	// All-time totals (mapped as year/current).
-	{energy_fuel_sum_hc, "gas", "climate", "year", "current"},
-	{energy_fuel_sum_hwc, "gas", "hot_water", "year", "current"},
-	{energy_electricity_sum_hc, "electricity", "climate", "year", "current"},
-	{energy_electricity_sum_hwc, "electricity", "hot_water", "year", "current"},
+	// All-time (lifetime) totals: undated "all" window, never keyed by the
+	// reference year; projected to the current yearly slot by the provider.
+	{energy_fuel_sum_hc, "gas", "climate", "all", ""},
+	{energy_fuel_sum_hwc, "gas", "hot_water", "all", ""},
+	{energy_electricity_sum_hc, "electricity", "climate", "all", ""},
+	{energy_electricity_sum_hwc, "electricity", "hot_water", "all", ""},
 	// Monthly: this month (month/current).
 	{energy_fuel_sum_hc_this_month, "gas", "climate", "month", "current"},
 	{energy_fuel_sum_hwc_this_month, "gas", "hot_water", "month", "current"},
@@ -1630,23 +1631,38 @@ func (p *vaillantSemanticPoller) refreshEnergy(ctx context.Context) {
 		return
 	}
 
+	p.acquireEnergy(func(q b524EnergyQuery) (uint32, bool) {
+		return p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr)
+	})
+}
+
+// acquireEnergy performs one register acquisition. The reference time is
+// captured once and every dated key of the acquisition derives from it. If the
+// provider clock crosses a month or year boundary during the acquisition, the
+// reply read after the crossing is discarded (its relative window would be
+// mislabelled) and the acquisition stops; the next poll re-acquires.
+func (p *vaillantSemanticPoller) acquireEnergy(read func(b524EnergyQuery) (uint32, bool)) {
+	ref := p.provider.EnergyReferenceTime()
 	accepted, failed := 0, 0
 	for _, q := range b524EnergyQueries {
-		val, ok := p.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, q.addr)
+		val, ok := read(q)
 		if !ok {
 			failed++
 			continue
 		}
+		if now := p.provider.EnergyReferenceTime(); now.Year() != ref.Year() || now.Month() != ref.Month() {
+			log.Printf("semantic energy b524: window boundary crossed during acquisition (ref=%s now=%s); discarding remaining replies", ref.Format("2006-01"), now.Format("2006-01"))
+			failed++
+			break
+		}
 		kwh := float64(val)
 
-		if p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, q.period, q.yearKind), kwh) {
-			accepted++
+		key := p.provider.EnergyLifetimeKey(q.channel, q.usage)
+		if q.period != "all" {
+			key = p.provider.EnergyWindowKeyAt(q.channel, q.usage, q.period, q.yearKind, ref)
 		}
-		// For all-time totals, lock day and year/previous with register-priority 0
-		// to prevent broadcast double-counting (all-time total already includes them).
-		if q.period == "year" && q.yearKind == "current" {
-			p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, "year", "previous"), 0)
-			p.provider.ApplyEnergyFromRegister(p.provider.EnergyWindowKey(q.channel, q.usage, "day", ""), 0)
+		if p.provider.ApplyEnergyFromRegister(key, kwh) {
+			accepted++
 		}
 	}
 	if accepted > 0 || failed > 0 {

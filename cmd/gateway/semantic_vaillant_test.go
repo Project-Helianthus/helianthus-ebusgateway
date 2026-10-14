@@ -5670,11 +5670,11 @@ func TestB524EnergyQueries_Coverage(t *testing.T) {
 		yearKind string
 	}
 	expected := map[tuple]bool{
-		// All-time totals.
-		{"gas", "climate", "year", "current"}:           false,
-		{"gas", "hot_water", "year", "current"}:         false,
-		{"electricity", "climate", "year", "current"}:   false,
-		{"electricity", "hot_water", "year", "current"}: false,
+		// All-time (lifetime) totals: undated window.
+		{"gas", "climate", "all", ""}:           false,
+		{"gas", "hot_water", "all", ""}:         false,
+		{"electricity", "climate", "all", ""}:   false,
+		{"electricity", "hot_water", "all", ""}: false,
 		// Monthly: this month.
 		{"gas", "climate", "month", "current"}:           false,
 		{"gas", "hot_water", "month", "current"}:         false,
@@ -6933,5 +6933,41 @@ func TestDeviceSlotCacheGating_RequiresRediscoveryAfterTTL(t *testing.T) {
 	poller.mu.Unlock()
 	if !needsDiscovery {
 		t.Fatal("needsDiscovery should be true after TTL expiry")
+	}
+}
+
+// One acquisition derives every dated key from one reference date; replies read
+// after a month/year boundary crossing are discarded, not mislabelled.
+func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
+	t.Parallel()
+
+	clock := time.Date(2026, time.December, 31, 23, 59, 59, 0, time.UTC)
+	provider := graphql.NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
+	poller := &vaillantSemanticPoller{provider: provider}
+
+	calls := 0
+	poller.acquireEnergy(func(q b524EnergyQuery) (uint32, bool) {
+		calls++
+		if calls == 6 { // second monthly reply arrives after midnight
+			clock = time.Date(2027, time.January, 1, 0, 0, 1, 0, time.UTC)
+		}
+		return uint32(100 * calls), true
+	})
+	if calls != 6 {
+		t.Fatalf("reads after boundary = %d total; want acquisition to stop at 6", calls)
+	}
+
+	totals := provider.EnergyTotals() // read on 2027-01-01
+	if got := totals.Gas.Climate.Yearly; got[1] != 100 || got[0] != 0 {
+		t.Fatalf("lifetime on Jan 1 = %v; want [0 100]", got)
+	}
+	// Reply 5 (gas climate, "this month") was read before midnight: Dec 2026 = previous month.
+	if got := totals.Gas.Climate.Monthly; got[0] != 500 || got[1] != 0 {
+		t.Fatalf("Gas.Climate.Monthly = %v; want [500 0]", got)
+	}
+	// Reply 6 crossed midnight and must not be stored under any month.
+	if got := totals.Gas.DHW.Monthly; len(got) == 2 && (got[0] != 0 || got[1] != 0) {
+		t.Fatalf("Gas.DHW.Monthly = %v; want discarded reply (zeros)", got)
 	}
 }

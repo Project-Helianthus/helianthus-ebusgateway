@@ -44,10 +44,14 @@ type energyDataPoint struct {
 // components are zero. The public two-slot (previous/current) series is a
 // projection of these keys against a reference date at snapshot time, so
 // the stored identity never goes stale across a year or month boundary.
+//
+// Period "all" is the lifetime total (register-primary): it carries no date and
+// is never keyed by a reference year. Its documented compatibility mapping is
+// the current-year slot, with the previous-year slot and today held at zero.
 type energyMergeKey struct {
 	Channel string // "gas", "electricity", "solar"
 	Usage   string // "hot_water", "climate" (canonicalized from heating/cooling)
-	Period  string // "day", "year", "month"
+	Period  string // "day", "year", "month", or "all" (lifetime total)
 	Year    int
 	Month   int
 	Day     int
@@ -77,6 +81,11 @@ func energyWindowKey(channel, usage, period, label string, ref time.Time) energy
 		key.Year, key.Month = first.Year(), int(first.Month())
 	}
 	return key
+}
+
+// energyLifetimeKey is the undated key of a channel/usage lifetime total.
+func energyLifetimeKey(channel, usage string) energyMergeKey {
+	return energyMergeKey{Channel: channel, Usage: usage, Period: "all"}
 }
 
 // energySlotFor projects a dated key onto the public two-slot series
@@ -290,6 +299,8 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 		}
 	}
 
+	s.applyLifetimeOverlayLocked(totals, now, passiveState)
+
 	// Ensure all energy selector slots are observable with explicit freshness
 	// metadata, even when a value has never been seen.
 	for _, key := range energyMetadataSelectorCatalog(now) {
@@ -328,6 +339,66 @@ func (s *energyMergeStore) SnapshotWithContext(now time.Time, passiveState strin
 	}
 
 	return totals
+}
+
+// applyLifetimeOverlayLocked projects register lifetime totals onto the public
+// series: the total occupies the current-year slot unless a newer register
+// year point for the reference year exists (broadcast never displaces a
+// register value); the previous-year slot and today are held at zero unless a
+// register-sourced dated point exists for them.
+func (s *energyMergeStore) applyLifetimeOverlayLocked(totals *EnergyTotals, now time.Time, passiveState string) {
+	for _, channelName := range []string{"gas", "electricity", "solar"} {
+		channel := mergeSelectChannel(totals, channelName)
+		for _, usage := range []string{"hot_water", "climate"} {
+			life, ok := s.points[energyLifetimeKey(channelName, usage)]
+			if !ok {
+				continue
+			}
+			series := mergeSelectUsage(channel, usage)
+			lifeMeta := energyPointMetaFromDataPoint(&life, energyFreshnessStateFor(life, now, passiveState), now)
+			if len(series.Yearly) < 2 {
+				series.Yearly = make([]float64, 2)
+			}
+			if len(series.YearlyMeta) < 2 {
+				series.YearlyMeta = make([]EnergyPointMeta, 2)
+			}
+
+			dated := func(period, label string) (energyDataPoint, bool) {
+				p, ok := s.points[energyWindowKey(channelName, usage, period, label, now)]
+				return p, ok
+			}
+
+			// Current slot: lifetime total unless a newer register year point wins.
+			cur, curOK := dated("year", "current")
+			if curOK && cur.Source == EnergySourceRegister && cur.IngestAt.After(life.IngestAt) {
+				series.Yearly[1] = cur.Value
+				series.YearlyMeta[1] = energyPointMetaFromDataPoint(&cur, energyFreshnessStateFor(cur, now, passiveState), now)
+			} else {
+				series.Yearly[1] = life.Value
+				series.YearlyMeta[1] = lifeMeta
+			}
+
+			// Previous slot: documented zero lock unless a register point exists.
+			prev, prevOK := dated("year", "previous")
+			if prevOK && prev.Source == EnergySourceRegister {
+				series.Yearly[0] = prev.Value
+				series.YearlyMeta[0] = energyPointMetaFromDataPoint(&prev, energyFreshnessStateFor(prev, now, passiveState), now)
+			} else {
+				series.Yearly[0] = 0
+				series.YearlyMeta[0] = lifeMeta
+			}
+
+			// Today: zero lock unless a register day point exists.
+			day, dayOK := dated("day", "")
+			if dayOK && day.Source == EnergySourceRegister {
+				series.Today = day.Value
+				series.TodayMeta = energyPointMetaFromDataPoint(&day, energyFreshnessStateFor(day, now, passiveState), now)
+			} else {
+				series.Today = 0
+				series.TodayMeta = lifeMeta
+			}
+		}
+	}
 }
 
 // RefreshFreshnessMetricsWithContext recomputes freshness selector gauges/counters

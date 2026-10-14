@@ -400,6 +400,24 @@ func (provider *LiveSemanticProvider) EnergyWindowKey(channel, usage, period, la
 	return energyWindowKey(channel, usage, period, label, provider.energyNow())
 }
 
+// EnergyReferenceTime returns the provider's current reference instant. A
+// register acquisition captures it once and derives every key from it.
+func (provider *LiveSemanticProvider) EnergyReferenceTime() time.Time {
+	return provider.energyNow()
+}
+
+// EnergyWindowKeyAt is EnergyWindowKey against an explicit reference instant.
+func (provider *LiveSemanticProvider) EnergyWindowKeyAt(channel, usage, period, label string, ref time.Time) EnergyMergeKey {
+	return energyWindowKey(channel, usage, period, label, ref)
+}
+
+// EnergyLifetimeKey is the undated key of a lifetime (all-time) total. It is
+// never keyed by a reference year; the public series maps it to the current
+// yearly slot with the previous slot and today held at zero.
+func (provider *LiveSemanticProvider) EnergyLifetimeKey(channel, usage string) EnergyMergeKey {
+	return energyLifetimeKey(channel, usage)
+}
+
 func (provider *LiveSemanticProvider) EnergyTotals() *EnergyTotals {
 	if provider == nil || provider.energyMerge == nil {
 		return nil

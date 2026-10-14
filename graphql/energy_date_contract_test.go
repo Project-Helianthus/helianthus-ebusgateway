@@ -254,3 +254,46 @@ func newClockedProvider() *LiveSemanticProvider {
 func wkey(channel, usage, period, label string) energyMergeKey {
 	return energyWindowKey(channel, usage, period, label, energyTestRef)
 }
+
+// Register-primary lifetime total across New Year with failed refreshes: it
+// stays the current-year value, the previous slot stays zero, and a 2027
+// broadcast cannot displace it (broadcast never overwrites register).
+func TestEnergy_LifetimeTotalSurvivesRolloverAndBroadcast(t *testing.T) {
+	clock := time.Date(2026, time.December, 31, 23, 59, 0, 0, time.UTC)
+	provider := NewLiveSemanticProvider()
+	provider.SetEnergyClock(func() time.Time { return clock })
+
+	if !provider.ApplyEnergyFromRegister(provider.EnergyLifetimeKey("gas", "climate"), 100) {
+		t.Fatal("lifetime register apply rejected")
+	}
+	if got := provider.EnergyTotals().Gas.Climate.Yearly; got[1] != 100 || got[0] != 0 {
+		t.Fatalf("Yearly on Dec 31 = %v; want [0 100]", got)
+	}
+
+	// Rollover; subsequent register refreshes fail (no further applies).
+	clock = time.Date(2027, time.January, 1, 0, 5, 0, 0, time.UTC)
+	got := provider.EnergyTotals().Gas.Climate
+	if got.Yearly[1] != 100 || got.Yearly[0] != 0 {
+		t.Fatalf("Yearly on Jan 1 = %v; want [0 100] (lifetime stays current, previous zero)", got.Yearly)
+	}
+	if got.YearlyMeta[1].Provenance != EnergyProvenanceRegister {
+		t.Fatalf("current meta = %+v; want register provenance", got.YearlyMeta[1])
+	}
+
+	// A 2027 broadcast is accepted into its dated window but does not displace the register total.
+	v := energyDateValues("year", uint16(2027), nil, nil)
+	v["wh"] = types.Value{Valid: true, Value: float64(3000)}
+	provider.applyEnergy(v, clock.Add(time.Minute))
+	got = provider.EnergyTotals().Gas.Climate
+	if got.Yearly[1] != 100 || got.Yearly[0] != 0 {
+		t.Fatalf("Yearly after 2027 broadcast = %v; want [0 100]", got.Yearly)
+	}
+
+	// A newer register year point for the reference year does take precedence.
+	if !provider.ApplyEnergyFromRegister(provider.EnergyWindowKey("gas", "climate", "year", "current"), 7) {
+		t.Fatal("dated register apply rejected")
+	}
+	if got := provider.EnergyTotals().Gas.Climate.Yearly; got[1] != 7 || got[0] != 0 {
+		t.Fatalf("Yearly after newer register year = %v; want [0 7]", got)
+	}
+}

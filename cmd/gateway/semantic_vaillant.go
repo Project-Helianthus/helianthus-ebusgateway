@@ -373,6 +373,7 @@ type vaillantSemanticPoller struct {
 	fm5IdentityObservedAt       time.Time
 	solar                       *vaillantSolarSnapshot
 	solarCylinders              map[byte]*vaillantCylinderSnapshot
+	controllerAPI               controllerAPIIdentityCache // guarded by mu; see semantic_vaillant_dhw_bound.go
 
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
@@ -3143,6 +3144,8 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 		return
 	}
 
+	p.ensureControllerAPIIdentity(ctx)
+
 	snapshot := &vaillantSystemSnapshot{Controller: controller}
 	updated := false
 	configurationAcquired := false
@@ -3942,6 +3945,8 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
 		},
 	}
+	dhwBound := graphql.ResolveDHWBivalenceBound(p.controllerB524Identity())
+	current.Config.DhwBivalenceBound = &dhwBound
 
 	switch source {
 	case semanticSnapshotSourceCache:
@@ -4941,6 +4946,7 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
 		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
 		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
+		configBoundEquals(a.Config.DhwBivalenceBound, b.Config.DhwBivalenceBound) &&
 		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
@@ -6199,7 +6205,13 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
 	}
 
-	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
+	// dhwBivalencePointC is bounded by the controller profile (conservative
+	// policy for an unmatched identity); the API qualifier is read from OP00
+	// first when it is not cached. Validation runs before any bus write.
+	if fieldName == graphql.SystemConfigFieldDHWBivalencePoint {
+		p.ensureControllerAPIIdentity(ctx)
+	}
+	payload, spec, _, err := graphql.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
@@ -8626,6 +8638,7 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			AlternativePoint:             cloneFloatPtr(status.Config.AlternativePoint),
 			HeatingCircuitBivalencePoint: cloneFloatPtr(status.Config.HeatingCircuitBivalencePoint),
 			DhwBivalencePoint:            cloneFloatPtr(status.Config.DhwBivalencePoint),
+			DhwBivalenceBound:            mcpConfigBound(status.Config.DhwBivalenceBound),
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),

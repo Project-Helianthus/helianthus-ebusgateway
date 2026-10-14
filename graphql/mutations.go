@@ -22,6 +22,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
+	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 	graphqlgo "github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/graphql-go/handler"
@@ -148,7 +149,11 @@ var zoneConfigFieldSpecs = map[string]configFieldSpec{
 }
 
 var systemConfigFieldSpecs = map[string]configFieldSpec{
-	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: -20.0, max: 50.0},
+	// dhwBivalencePointC: the fixed range here is the conservative unmatched-
+	// identity policy (-20..20). A matched controller profile overrides it per
+	// write through EncodeSystemConfigValueForController; no path may use a
+	// wider range than the policy without a profile bound (system_bounds.go).
+	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: unmatchedDHWBivalenceMinC, max: unmatchedDHWBivalenceMaxC},
 	"maxRoomHumidityPct":   {group: 0x00, addr: 0x000E, valueType: configValueUint16, min: 30, max: 80},
 	"adaptiveHeatingCurve": {group: 0x00, addr: 0x0014, valueType: configValueBoolU8},
 	"hcBivalencePointC":    {group: 0x00, addr: 0x0023, valueType: configValueFloat32, min: -20.0, max: 30.0},
@@ -621,11 +626,7 @@ func setSystemConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegis
 		}
 		return systemWriter.SetSystemConfig(ctx, fieldName, fieldValue)
 	}
-	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
-	if err != nil {
-		return configMutationError(err)
-	}
-	return applyConfigMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, spec, 0x00, fieldValue)
+	return applySystemFieldMutation(params.Context, registry, invoker, mutationSource, mutationSourceAdmitted, fieldName, fieldValue, systemConfigFieldSpecs)
 }
 
 func setZoneConfigResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, mutationSource byte, mutationSourceAdmitted bool) ConfigMutationResult {
@@ -877,9 +878,29 @@ func scheduleWriteMutationError(err error) *mcp.TimeProgramWriteResult {
 
 // ApplyConfigMutation performs a B524 set_ext_register write with read-back verification.
 func ApplyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
+	return applySystemFieldMutation(ctx, registry, invoker, source, sourceAdmitted, fieldName, rawValue, specs)
+}
+
+// applySystemFieldMutation is the registry/invoker system-config write path. For
+// dhwBivalencePointC it resolves the bound from the controller identity the
+// registry knows (no API qualifier is available on this path, so a profile that
+// records one never matches and the conservative policy bound applies) and
+// rejects out-of-bound values before any invoke.
+func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, fieldName string, rawValue string, specs map[string]configFieldSpec) ConfigMutationResult {
 	spec, err := resolveConfigFieldSpec("system", fieldName, specs)
 	if err != nil {
 		return configMutationError(err)
+	}
+	if fieldName == SystemConfigFieldDHWBivalencePoint {
+		var identity vaillantsystem.B524ControllerIdentity
+		if entry, entryErr := findControllerEntry(registry); entryErr == nil {
+			identity = ControllerIdentityFromEntry(entry)
+		}
+		bound := ResolveDHWBivalenceBound(identity)
+		spec.min, spec.max = bound.MinC, bound.MaxC
+		if _, encodeErr := encodeConfigValue(spec, rawValue); encodeErr != nil {
+			return configMutationError(fmt.Errorf("%s: %s: %w", fieldName, bound.Describe(), encodeErr))
+		}
 	}
 	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, 0x00, rawValue)
 }

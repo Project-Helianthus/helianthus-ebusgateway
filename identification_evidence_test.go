@@ -1,6 +1,7 @@
 package ebusgateway
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -90,5 +91,43 @@ func TestIdentificationEvidenceSessionDerivedFromFirstEvent(t *testing.T) {
 	_ = store.OnBusEvent(identEvent(0x08, []byte{1}))
 	if got := store.Snapshot().Exchanges[0].SessionID; got != want {
 		t.Fatalf("session id changed: %q != %q", got, want)
+	}
+}
+
+func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
+	store := NewIdentificationEvidenceStore(nil)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				_ = store.OnBusEvent(identEvent(byte(0x08+w), []byte{byte(i), 2, 3}))
+			}
+		}(w)
+	}
+	for r := 0; r < 200; r++ {
+		snap := store.Snapshot()
+		for _, ex := range snap.Exchanges {
+			if len(ex.Request) != 5 || ex.Response[0] != 3 {
+				t.Errorf("torn exchange: %+v", ex)
+			}
+			if len(ex.Response) > 0 {
+				ex.Response[0] = 0xFF // mutating a snapshot must not affect the store
+			}
+		}
+	}
+	close(done)
+	wg.Wait()
+	for _, ex := range store.Snapshot().Exchanges {
+		if ex.Response[0] != 3 {
+			t.Fatalf("snapshot mutation leaked into the store: %+v", ex)
+		}
 	}
 }

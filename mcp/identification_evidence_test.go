@@ -115,3 +115,34 @@ func TestIdentificationEvidenceLimitKeepsNewest(t *testing.T) {
 		t.Fatalf("items = %v", items)
 	}
 }
+
+// TestIdentificationEvidenceToolSchemaSignature pins the stable input schema of
+// the provider-enabled tool (the generic inventory signature test builds a
+// server without this provider).
+func TestIdentificationEvidenceToolSchemaSignature(t *testing.T) {
+	server := newIdentificationEvidenceServer(t, true)
+	res := doRPC(t, server.Handler(), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	tools := res.Result.(map[string]any)["tools"].([]any)
+	var schema any
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		if tool["name"] == toolBusIdentificationEvidenceListName {
+			schema = tool["inputSchema"]
+		}
+	}
+	if schema == nil {
+		t.Fatalf("tool missing from tools/list")
+	}
+	blob, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	const wantSchema = `{"additionalProperties":false,"properties":{"limit":{"minimum":1,"type":"integer"}},"type":"object"}`
+	if string(blob) != wantSchema {
+		t.Fatalf("input schema drift\nwant: %s\ngot:  %s", wantSchema, blob)
+	}
+	const wantHash = "52e5deee5c167d9fbfa6aad8df5384e5ac1fe7d9ff67fefebe5b120452a47a5f"
+	if got := hashData(schema); got != wantHash {
+		t.Fatalf("input schema hash = %s, want %s", got, wantHash)
+	}
+}

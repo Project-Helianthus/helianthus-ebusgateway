@@ -105,14 +105,15 @@ func (store *IdentificationEvidenceStore) OnBusEvent(event protocol.BusEvent) er
 	return nil
 }
 
-// Snapshot returns a deep copy of the retained exchanges.
+// Snapshot returns a deep copy of the retained exchanges. Only immutable
+// record references are gathered under the lock (retained byte slices are
+// never mutated after insertion); byte copying happens after it is released so
+// a read never stalls bus events for longer than a short struct copy.
 func (store *IdentificationEvidenceStore) Snapshot() IdentificationEvidenceSnapshot {
 	if store == nil {
 		return IdentificationEvidenceSnapshot{}
 	}
 	store.mu.Lock()
-	defer store.mu.Unlock()
-
 	addresses := make([]int, 0, len(store.rings))
 	for address := range store.rings {
 		addresses = append(addresses, int(address))
@@ -120,11 +121,13 @@ func (store *IdentificationEvidenceStore) Snapshot() IdentificationEvidenceSnaps
 	sort.Ints(addresses)
 	out := IdentificationEvidenceSnapshot{SessionID: store.sessionID}
 	for _, address := range addresses {
-		for _, exchange := range store.rings[byte(address)] {
-			exchange.Request = append([]byte(nil), exchange.Request...)
-			exchange.Response = append([]byte(nil), exchange.Response...)
-			out.Exchanges = append(out.Exchanges, exchange)
-		}
+		out.Exchanges = append(out.Exchanges, store.rings[byte(address)]...)
+	}
+	store.mu.Unlock()
+
+	for i := range out.Exchanges {
+		out.Exchanges[i].Request = append([]byte(nil), out.Exchanges[i].Request...)
+		out.Exchanges[i].Response = append([]byte(nil), out.Exchanges[i].Response...)
 	}
 	return out
 }

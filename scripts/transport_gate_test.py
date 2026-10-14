@@ -352,7 +352,7 @@ type Config struct {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Modbus RTU gateway composition evidence failed", result.stdout)
 
-    def _override_env(self, repo_path: Path, exit_code: int, reason: str) -> dict:
+    def _override_env(self, repo_path: pathlib.Path, exit_code: int, reason: str) -> dict:
         env = self._fake_go_env(repo_path, exit_code)
         env["TRANSPORT_GATE_OWNER_OVERRIDE"] = "OVERRIDE_TRANSPORT_GATE_BY_OWNER"
         env["TRANSPORT_GATE_OWNER_REASON"] = reason

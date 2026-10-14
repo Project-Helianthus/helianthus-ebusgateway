@@ -307,7 +307,11 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 	mux.stateMu.Unlock()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("client.Close error = %v", err)
+		}
+	}()
 	externalID := mux.AddSession(server)
 	if externalID == 0 {
 		t.Fatal("AddSession returned zero external ID")
@@ -618,7 +622,11 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 	mux.stateMu.Unlock()
 
 	client, server := net.Pipe()
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("client.Close error = %v", err)
+		}
+	}()
 	externalID := mux.AddSession(server)
 	if externalID == 0 {
 		t.Fatal("AddSession returned zero external ID")

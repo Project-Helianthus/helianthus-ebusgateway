@@ -66,6 +66,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
+          # Keep in sync with GOLANGCI_LINT_EXPECTED_VERSION in scripts/ci_local.sh.
+          version: v2.11.4
           args: --timeout=5m

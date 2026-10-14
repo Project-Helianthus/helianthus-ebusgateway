@@ -62,6 +62,12 @@ python3 scripts/tesla_evse_semreg_boundary_test.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"
+  # Keep in sync with the version pinned in .github/workflows/ci.yml.
+  GOLANGCI_LINT_EXPECTED_VERSION="2.11.4"
+  golangci_lint_installed="$(golangci-lint --version 2>/dev/null | sed -nE 's/.*version v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n1)"
+  if [ "${golangci_lint_installed%%.*}" != "${GOLANGCI_LINT_EXPECTED_VERSION%%.*}" ]; then
+    echo "WARNING: golangci-lint ${golangci_lint_installed:-unknown} installed; CI pins v${GOLANGCI_LINT_EXPECTED_VERSION} (major v${GOLANGCI_LINT_EXPECTED_VERSION%%.*}). Local lint results may differ from CI." >&2
+  fi
   golangci-lint run ./...
 else
   echo "==> golangci-lint not found; skipping"

@@ -4,11 +4,19 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   terminology:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, synology]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          clean: true
       - run: |
           if git grep -nIwiE 'm[a]ster|s[l]ave'; then
             echo "Found legacy terminology."
@@ -17,11 +25,13 @@ jobs:
       - run: python3 scripts/source_selection_m4_gate.py
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, synology]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          clean: true
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -38,11 +48,16 @@ jobs:
           GOOS=linux GOARCH=arm GOARM=6 go build -o /dev/null ./cmd/gateway
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, synology]
+    timeout-minutes: 45
+    env:
+      GOFLAGS: -p=4
+      GOMAXPROCS: "4"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          clean: true
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -58,11 +73,13 @@ jobs:
       - run: python3 scripts/passive_smoke_gate_test.py
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, synology]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          clean: true
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'

@@ -5,7 +5,7 @@
 **Repo:** helianthus-ebusgateway
 **Issue:** #513
 **Predecessors (all merged):** M4B semantic lock, M4D responder capability lock, M4c2 gateway responder runtime (`meta.capabilities.responder` @ minor=1), M5_PORTAL consumer UI, M5b HA no-op compat.
-**Plan reference:** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.implementing/00-canonical.md` — M6a row.
+**Plan reference:** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/00-canonical.md` — M6a row.
 
 ---
 
@@ -77,7 +77,7 @@ The NM (network manager) stream has cadence + framing invariants that are indepe
 | NM runtime | stream wire framing stability | `internal/nm_runtime/nm_runtime_test.go` |
 | NM runtime | catalog integration (surface ↔ NM mapping) | `internal/nm_runtime/nm_runtime_catalog_integration_test.go` |
 | NM responder | FF 03-06 responder acceptance / refusal | `internal/nm_runtime/responder_runtime_test.go` |
-| Adversarial | scenario replay / fault injection | `internal/adversarial/adversarial_test.go` |
+| Adversarial | scenario replay / fault injection | `internal/adversarial/contract_v1_test.go` |
 
 ---
 
@@ -141,7 +141,7 @@ Each subsection states (a) the concrete signals that would trigger rollback, (b)
 
 ## §7 Timing budget: BENCH-REPLACE carry-forward
 
-**Origin.** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.implementing/decisions/m4b2-responder-go-no-go.md` §7.1(1): the responder ACK timing budget was approved as a literature-backed placeholder to unblock M4c2. The decision doc requires a follow-up measurement once a BASV2 live-bus rig is available.
+**Origin.** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/decisions/m4b2-responder-go-no-go.md` §7.1(1): the responder ACK timing budget was approved as a literature-backed placeholder to unblock M4c2. The decision doc requires a follow-up measurement once a BASV2 live-bus rig is available.
 
 **Current placeholder.** `15 * time.Millisecond` — derived from the eBUS target-response-window published in Vaillant adapter documentation (literature-grade, NOT empirical).
 

@@ -12,6 +12,7 @@ type Builder struct {
 	identity               GatewayIdentityProvider
 	semantic               SemanticProvider
 	bus                    BusObservabilityProvider
+	identificationEvidence IdentificationEvidenceProvider
 	watch                  WatchSummaryProvider
 	boiler                 BoilerConfigWriter
 	system                 SystemConfigWriter
@@ -195,6 +196,9 @@ func (b *Builder) SetBusObservabilityProvider(provider BusObservabilityProvider)
 	}
 	b.mu.Lock()
 	b.bus = provider
+	if evidence, ok := provider.(IdentificationEvidenceProvider); ok {
+		b.identificationEvidence = evidence
+	}
 	b.mu.Unlock()
 }
 

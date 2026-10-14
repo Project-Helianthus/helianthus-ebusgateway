@@ -233,6 +233,19 @@ func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Objec
 					return resolveBusPeriodicity(builder, params.Info.RootValue, limit), nil
 				},
 			},
+			"busIdentificationEvidence": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(types.busIdentificationEvidence),
+				Args: graphqlgo.FieldConfigArgument{
+					"limit": &graphqlgo.ArgumentConfig{Type: graphqlgo.Int},
+				},
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					limit, err := parseBusObservabilityLimit(params.Args)
+					if err != nil {
+						return nil, err
+					}
+					return resolveIdentificationEvidence(builder, limit), nil
+				},
+			},
 			"watchSummary": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(types.watchSummaryType),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

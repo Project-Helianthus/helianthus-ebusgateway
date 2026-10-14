@@ -73,6 +73,9 @@ func wireObserveFirstObservers(cfg *ebusgateway.Config) (*ebusgateway.BusObserva
 
 	busObservability := ebusgateway.NewBusObservabilityStore(observerCfg)
 	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, busObservability)
+	identificationEvidence := ebusgateway.NewIdentificationEvidenceStore(nil)
+	publishIdentificationEvidenceStore(identificationEvidence)
+	cfg.BusConfig.Observer = ebusgateway.ChainBusObservers(cfg.BusConfig.Observer, identificationEvidence)
 	cfg.WatchObserver = observer
 	cfg.WatchEfficiencyObserver = busObservability
 	if deduplicator != nil {

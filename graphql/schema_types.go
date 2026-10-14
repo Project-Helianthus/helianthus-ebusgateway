@@ -31,6 +31,7 @@ type graphqlSchemaTypes struct {
 	busSummaryType              *graphqlgo.Object
 	busMessagesType             *graphqlgo.Object
 	busPeriodicityType          *graphqlgo.Object
+	busIdentificationEvidence   *graphqlgo.Object
 	watchSummaryType            *graphqlgo.Object
 }
 
@@ -5026,6 +5027,7 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		busSummaryType:              busSummaryType,
 		busMessagesType:             busMessagesType,
 		busPeriodicityType:          busPeriodicityType,
+		busIdentificationEvidence:   buildIdentificationEvidenceType(),
 		watchSummaryType:            watchSummaryType,
 	}
 }

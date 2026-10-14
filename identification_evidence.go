@@ -39,6 +39,10 @@ type IdentificationEvidenceSnapshot struct {
 
 // IdentificationEvidenceStore is a protocol.BusObserver that retains the
 // complete request and response bytes of successful directed 07 04 exchanges.
+// Only successful completed exchanges are evidence: an attempt-complete event
+// must carry protocol.BusOutcomeSuccess, a request and a response (the same
+// success requirement as the active/passive deduplicator). Failed, timed-out,
+// NACKed or response-less attempts never enter the ring.
 //
 // Session identity derivation: the store fixes its session identity from the
 // wall-clock time of the first bus event of any kind it observes after
@@ -52,6 +56,10 @@ type IdentificationEvidenceStore struct {
 	sessionID string
 	sequence  uint64
 	rings     map[byte][]IdentificationExchange
+
+	// snapshotHook is a test seam invoked by Snapshot after the lock is
+	// released and before bytes are copied. Nil in production.
+	snapshotHook func()
 }
 
 // NewIdentificationEvidenceStore returns an empty store. A nil clock uses
@@ -74,7 +82,7 @@ func (store *IdentificationEvidenceStore) OnBusEvent(event protocol.BusEvent) er
 	if store.sessionID == "" {
 		store.sessionID = "observer-" + store.now().UTC().Format("20060102T150405.000000000Z")
 	}
-	if event.Kind != protocol.BusEventAttemptComplete || !event.HasRequest || !event.HasResponse {
+	if event.Kind != protocol.BusEventAttemptComplete || event.Outcome != protocol.BusOutcomeSuccess || !event.HasRequest || !event.HasResponse {
 		return nil
 	}
 	req := event.Request
@@ -125,6 +133,9 @@ func (store *IdentificationEvidenceStore) Snapshot() IdentificationEvidenceSnaps
 	}
 	store.mu.Unlock()
 
+	if store.snapshotHook != nil {
+		store.snapshotHook()
+	}
 	for i := range out.Exchanges {
 		out.Exchanges[i].Request = append([]byte(nil), out.Exchanges[i].Request...)
 		out.Exchanges[i].Response = append([]byte(nil), out.Exchanges[i].Response...)

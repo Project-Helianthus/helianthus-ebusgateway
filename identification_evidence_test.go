@@ -3,7 +3,6 @@ package ebusgateway
 import (
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 func identEvent(target byte, response []byte) protocol.BusEvent {
 	return protocol.BusEvent{
 		Kind:        protocol.BusEventAttemptComplete,
+		Outcome:     protocol.BusOutcomeSuccess,
 		HasRequest:  true,
 		HasResponse: true,
 		Request:     protocol.Frame{Source: 0x71, Target: target, Primary: 0x07, Secondary: 0x04},
@@ -96,19 +96,73 @@ func TestIdentificationEvidenceSessionDerivedFromFirstEvent(t *testing.T) {
 	}
 }
 
+func TestIdentificationEvidenceRetainsOnlySuccessfulOutcome(t *testing.T) {
+	store := NewIdentificationEvidenceStore(nil)
+	for _, outcome := range []protocol.BusOutcomeClass{
+		protocol.BusOutcomeUnknown, protocol.BusOutcomeTimeout, protocol.BusOutcomeNACK, protocol.BusOutcomeCRCMismatch,
+		protocol.BusOutcomeEchoMismatch, protocol.BusOutcomeCollision, protocol.BusOutcomeObserverFault, protocol.BusOutcomeAdapterReset,
+	} {
+		failed := identEvent(0x08, []byte{1, 2, 3})
+		failed.Outcome = outcome
+		_ = store.OnBusEvent(failed)
+	}
+	if n := len(store.Snapshot().Exchanges); n != 0 {
+		t.Fatalf("non-success completed attempts retained: %d", n)
+	}
+	_ = store.OnBusEvent(identEvent(0x08, []byte{1, 2, 3}))
+	if n := len(store.Snapshot().Exchanges); n != 1 {
+		t.Fatalf("success exchange not retained: %d", n)
+	}
+}
+
+// TestIdentificationEvidenceWriteDuringSnapshotCopy is deterministic: the test
+// hook performs a write after Snapshot released the lock and before it copied
+// bytes, so a write is provably interleaved with the read regardless of
+// scheduling or GOMAXPROCS. The in-flight snapshot must be unaffected, and
+// the write must be visible to the next snapshot.
+func TestIdentificationEvidenceWriteDuringSnapshotCopy(t *testing.T) {
+	store := NewIdentificationEvidenceStore(nil)
+	_ = store.OnBusEvent(identEvent(0x08, []byte{7, 2, 3}))
+	var before, during uint64
+	hookRan := false
+	store.snapshotHook = func() {
+		hookRan = true
+		store.mu.Lock()
+		before = store.sequence
+		store.mu.Unlock()
+		// Fill and wrap the same ring to replace retained records mid-copy.
+		for i := 0; i < IdentificationEvidenceRingPerAddress+2; i++ {
+			_ = store.OnBusEvent(identEvent(0x08, []byte{0xEE, 9, 9}))
+		}
+		store.mu.Lock()
+		during = store.sequence
+		store.mu.Unlock()
+	}
+	snap := store.Snapshot()
+	store.snapshotHook = nil
+	if !hookRan || during <= before {
+		t.Fatalf("no write occurred between snapshot start and end (hook=%v seq %d->%d)", hookRan, before, during)
+	}
+	if len(snap.Exchanges) != 1 || snap.Exchanges[0].Sequence != 1 || snap.Exchanges[0].Response[1] != 7 {
+		t.Fatalf("in-flight snapshot affected by concurrent writes: %+v", snap.Exchanges)
+	}
+	if after := store.Snapshot(); len(after.Exchanges) != IdentificationEvidenceRingPerAddress || after.Exchanges[len(after.Exchanges)-1].Sequence != during {
+		t.Fatalf("subsequent snapshot does not reflect the writes: %d exchanges", len(after.Exchanges))
+	}
+}
+
+// TestIdentificationEvidenceConcurrentReadWrite exercises the lock discipline
+// under -race. It asserts only consistency; overlap is proven
+// deterministically by TestIdentificationEvidenceWriteDuringSnapshotCopy.
 func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
 	store := NewIdentificationEvidenceStore(nil)
-	// Seed so that every snapshot is non-empty from the first read.
 	for w := 0; w < 4; w++ {
 		_ = store.OnBusEvent(identEvent(byte(0x08+w), []byte{0, 2, 3}))
 	}
-
-	const writers = 4
 	done := make(chan struct{})
 	var started, wg sync.WaitGroup
-	started.Add(writers)
-	var writes atomic.Int64
-	for w := 0; w < writers; w++ {
+	started.Add(4)
+	for w := 0; w < 4; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
@@ -120,18 +174,15 @@ func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
 				default:
 				}
 				_ = store.OnBusEvent(identEvent(byte(0x08+w), []byte{byte(i), 2, 3}))
-				writes.Add(1)
+				runtime.Gosched()
 			}
 		}(w)
 	}
-	started.Wait() // all writers are running before the first read
-
-	observedWhileWriting := false
+	started.Wait()
 	for r := 0; r < 200; r++ {
-		before := writes.Load()
 		snap := store.Snapshot()
-		if len(snap.Exchanges) < writers {
-			t.Fatalf("snapshot %d has %d exchanges, want >= %d", r, len(snap.Exchanges), writers)
+		if len(snap.Exchanges) < 4 {
+			t.Fatalf("snapshot %d has %d exchanges, want >= 4", r, len(snap.Exchanges))
 		}
 		for _, ex := range snap.Exchanges {
 			if len(ex.Request) != 5 || len(ex.Response) != 4 || int(ex.Response[0]) != len(ex.Response)-1 || ex.Response[2] != 2 || ex.Response[3] != 3 {
@@ -139,23 +190,10 @@ func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
 			}
 			ex.Response[0] = 0xFF // mutating a snapshot must not affect the store
 		}
-		if writes.Load() > before {
-			observedWhileWriting = true
-		}
-		runtime.Gosched()
-	}
-	// Keep reading until a write is provably interleaved with a read.
-	for tries := 0; !observedWhileWriting && tries < 100000; tries++ {
-		before := writes.Load()
-		_ = store.Snapshot()
-		observedWhileWriting = writes.Load() > before
 		runtime.Gosched()
 	}
 	close(done)
 	wg.Wait()
-	if !observedWhileWriting {
-		t.Fatalf("no write was observed concurrently with a snapshot read")
-	}
 	for _, ex := range store.Snapshot().Exchanges {
 		if ex.Response[0] != 3 {
 			t.Fatalf("snapshot mutation leaked into the store: %+v", ex)

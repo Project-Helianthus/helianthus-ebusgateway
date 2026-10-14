@@ -20,7 +20,7 @@ func TestWireObserveFirstObserversChainsIdentificationEvidence(t *testing.T) {
 		t.Fatalf("identification evidence store not published by wiring")
 	}
 	err := cfg.BusConfig.Observer.OnBusEvent(protocol.BusEvent{
-		Kind: protocol.BusEventAttemptComplete, HasRequest: true, HasResponse: true,
+		Kind: protocol.BusEventAttemptComplete, Outcome: protocol.BusOutcomeSuccess, HasRequest: true, HasResponse: true,
 		Request:  protocol.Frame{Source: 0x71, Target: 0x08, Primary: 0x07, Secondary: 0x04},
 		Response: protocol.Frame{Data: []byte{0xB5, 'B', 'A', 'I', '0', '0', 1, 2, 3, 4}},
 	})
@@ -36,7 +36,7 @@ func TestBusObservabilityAdaptersExposeIdentificationEvidence(t *testing.T) {
 	store := ebusgateway.NewIdentificationEvidenceStore(nil)
 	publishIdentificationEvidenceStore(store)
 	_ = store.OnBusEvent(protocol.BusEvent{
-		Kind: protocol.BusEventAttemptComplete, HasRequest: true, HasResponse: true,
+		Kind: protocol.BusEventAttemptComplete, Outcome: protocol.BusOutcomeSuccess, HasRequest: true, HasResponse: true,
 		Request:  protocol.Frame{Source: 0x71, Target: 0x15, Primary: 0x07, Secondary: 0x04},
 		Response: protocol.Frame{Data: []byte{0xB5}},
 	})

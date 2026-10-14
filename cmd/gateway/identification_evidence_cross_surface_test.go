@@ -28,7 +28,7 @@ func identificationEvidenceSharedStore(t *testing.T) {
 	store := ebusgateway.NewIdentificationEvidenceStore(func() time.Time { clock = clock.Add(time.Second); return clock })
 	for _, target := range []byte{0x15, 0x08, 0x26, 0x08} {
 		if err := store.OnBusEvent(protocol.BusEvent{
-			Kind: protocol.BusEventAttemptComplete, HasRequest: true, HasResponse: true,
+			Kind: protocol.BusEventAttemptComplete, Outcome: protocol.BusOutcomeSuccess, HasRequest: true, HasResponse: true,
 			Request:  protocol.Frame{Source: 0x71, Target: target, Primary: 0x07, Secondary: 0x04},
 			Response: protocol.Frame{Data: []byte{0xB5, target, 0x00, 0x01}},
 		}); err != nil {

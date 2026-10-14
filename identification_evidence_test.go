@@ -1,7 +1,9 @@
 package ebusgateway
 
 import (
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,12 +98,21 @@ func TestIdentificationEvidenceSessionDerivedFromFirstEvent(t *testing.T) {
 
 func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
 	store := NewIdentificationEvidenceStore(nil)
-	done := make(chan struct{})
-	var wg sync.WaitGroup
+	// Seed so that every snapshot is non-empty from the first read.
 	for w := 0; w < 4; w++ {
+		_ = store.OnBusEvent(identEvent(byte(0x08+w), []byte{0, 2, 3}))
+	}
+
+	const writers = 4
+	done := make(chan struct{})
+	var started, wg sync.WaitGroup
+	started.Add(writers)
+	var writes atomic.Int64
+	for w := 0; w < writers; w++ {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			started.Done()
 			for i := 0; ; i++ {
 				select {
 				case <-done:
@@ -109,22 +120,42 @@ func TestIdentificationEvidenceConcurrentReadWrite(t *testing.T) {
 				default:
 				}
 				_ = store.OnBusEvent(identEvent(byte(0x08+w), []byte{byte(i), 2, 3}))
+				writes.Add(1)
 			}
 		}(w)
 	}
+	started.Wait() // all writers are running before the first read
+
+	observedWhileWriting := false
 	for r := 0; r < 200; r++ {
+		before := writes.Load()
 		snap := store.Snapshot()
-		for _, ex := range snap.Exchanges {
-			if len(ex.Request) != 5 || ex.Response[0] != 3 {
-				t.Errorf("torn exchange: %+v", ex)
-			}
-			if len(ex.Response) > 0 {
-				ex.Response[0] = 0xFF // mutating a snapshot must not affect the store
-			}
+		if len(snap.Exchanges) < writers {
+			t.Fatalf("snapshot %d has %d exchanges, want >= %d", r, len(snap.Exchanges), writers)
 		}
+		for _, ex := range snap.Exchanges {
+			if len(ex.Request) != 5 || len(ex.Response) != 4 || int(ex.Response[0]) != len(ex.Response)-1 || ex.Response[2] != 2 || ex.Response[3] != 3 {
+				t.Fatalf("torn exchange: %+v", ex)
+			}
+			ex.Response[0] = 0xFF // mutating a snapshot must not affect the store
+		}
+		if writes.Load() > before {
+			observedWhileWriting = true
+		}
+		runtime.Gosched()
+	}
+	// Keep reading until a write is provably interleaved with a read.
+	for tries := 0; !observedWhileWriting && tries < 100000; tries++ {
+		before := writes.Load()
+		_ = store.Snapshot()
+		observedWhileWriting = writes.Load() > before
+		runtime.Gosched()
 	}
 	close(done)
 	wg.Wait()
+	if !observedWhileWriting {
+		t.Fatalf("no write was observed concurrently with a snapshot read")
+	}
 	for _, ex := range store.Snapshot().Exchanges {
 		if ex.Response[0] != 3 {
 			t.Fatalf("snapshot mutation leaked into the store: %+v", ex)

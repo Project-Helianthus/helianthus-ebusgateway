@@ -1161,6 +1161,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	case toolBusIdentificationEvidenceListName:
 		// Retained evidence is an append-only bounded ring; snapshot
 		// consistency does not apply. Always return live data.
+		if err := rejectUnknownIdentificationEvidenceArgs(call.Arguments); err != nil {
+			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil
+		}
 		limit, err := parseOptionalLimit(call.Arguments)
 		if err != nil {
 			return callToolResultText(mustJSON(newToolEnvelope(nil, err)), true), nil

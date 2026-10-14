@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"time"
+
+	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 )
 
 const toolBusIdentificationEvidenceListName = "ebus.v1.bus.identification_evidence.list"
@@ -117,4 +120,21 @@ func (s *Server) snapshotIdentificationEvidence(limit int) *IdentificationEviden
 		})
 	}
 	return list
+}
+
+// rejectUnknownIdentificationEvidenceArgs enforces the advertised
+// additionalProperties:false schema: only "limit" is accepted, matching the
+// GraphQL query which rejects unknown arguments.
+func rejectUnknownIdentificationEvidenceArgs(args map[string]any) error {
+	unknown := make([]string, 0)
+	for key := range args {
+		if key != "limit" {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("unknown argument %q: %w", unknown[0], ebuserrors.ErrInvalidPayload)
 }

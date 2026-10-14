@@ -146,3 +146,21 @@ func TestIdentificationEvidenceToolSchemaSignature(t *testing.T) {
 		t.Fatalf("input schema hash = %s, want %s", got, wantHash)
 	}
 }
+
+func TestIdentificationEvidenceRejectsUnknownArguments(t *testing.T) {
+	server := newIdentificationEvidenceServer(t, true)
+	for _, args := range []string{`{"unexpected":true}`, `{"limit":1,"unexpected":true}`, `{"Limit":1}`} {
+		res := doRPC(t, server.Handler(), rpcRequest{
+			JSONRPC: "2.0", ID: 1, Method: "tools/call",
+			Params: json.RawMessage(`{"name":"ebus.v1.bus.identification_evidence.list","arguments":` + args + `}`),
+		})
+		env := envelopeFromResult(t, res)
+		errObj, _ := env["error"].(map[string]any)
+		if errObj == nil || env["data"] != nil {
+			t.Fatalf("args %s accepted: %v", args, env)
+		}
+		if msg, _ := errObj["message"].(string); !strings.Contains(msg, "unknown argument") {
+			t.Fatalf("args %s error message = %q", args, msg)
+		}
+	}
+}

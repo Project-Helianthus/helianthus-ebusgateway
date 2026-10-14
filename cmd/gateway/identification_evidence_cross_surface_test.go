@@ -143,6 +143,7 @@ func TestIdentificationEvidenceMCPAndGraphQLAgreeOnSharedStore(t *testing.T) {
 		{"limit_zero", `{"limit":0}`, "0", true, 0},
 		{"limit_negative", `{"limit":-1}`, "-1", true, 0},
 		{"limit_string", `{"limit":"x"}`, `"x"`, true, 0},
+		{"unknown_argument", `{"limit":1,"unexpected":true}`, "1, unexpected: true", true, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

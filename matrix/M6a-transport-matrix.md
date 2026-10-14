@@ -5,7 +5,7 @@
 **Repo:** helianthus-ebusgateway
 **Issue:** #513
 **Predecessors (all merged):** M4B semantic lock, M4D responder capability lock, M4c2 gateway responder runtime (`meta.capabilities.responder` @ minor=1), M5_PORTAL consumer UI, M5b HA no-op compat.
-**Plan reference:** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/00-canonical.md` — M6a row.
+**Plan reference:** [`helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/00-canonical.md`](https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/ebus-standard-l7-services-w16-26.maintenance/00-canonical.md) — M6a row.
 
 ---
 
@@ -85,8 +85,8 @@ The NM (network manager) stream has cadence + framing invariants that are indepe
 
 The 07 FF NM cadence contract is a merged normative obligation. M6a references — does not redefine — that contract:
 
-- `helianthus-docs-ebus/architecture/ebus_standard/05-execution-safety.md` — execution-safety cadence floor.
-- `helianthus-docs-ebus/architecture/ebus_standard/06-nm-adoption.md` — NM adoption / stream invariants.
+- [`helianthus-docs-ebus/architecture/ebus_standard/05-execution-safety.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/ebus_standard/05-execution-safety.md) — execution-safety cadence floor.
+- [`helianthus-docs-ebus/architecture/ebus_standard/06-nm-adoption.md`](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/ebus_standard/06-nm-adoption.md) — NM adoption / stream invariants.
 
 Concrete obligation: the gateway NM runtime MUST NOT emit an unsolicited 07 FF at a rate that violates the arbitration floor documented in the two chapters above. Observed via `internal/nm_runtime/nm_runtime_test.go` cadence assertions. Any regression in those tests is a rollback trigger for the gateway (see §6).
 
@@ -141,20 +141,20 @@ Each subsection states (a) the concrete signals that would trigger rollback, (b)
 
 ## §7 Timing budget: BENCH-REPLACE carry-forward
 
-**Origin.** `helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/decisions/m4b2-responder-go-no-go.md` §7.1(1): the responder ACK timing budget was approved as a literature-backed placeholder to unblock M4c2. The decision doc requires a follow-up measurement once a BASV2 live-bus rig is available.
+**Origin.** [`helianthus-execution-plans/ebus-standard-l7-services-w16-26.maintenance/decisions/m4b2-responder-go-no-go.md`](https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/ebus-standard-l7-services-w16-26.maintenance/decisions/m4b2-responder-go-no-go.md) §7.1(1): the responder ACK timing budget was approved as a literature-backed placeholder to unblock M4c2. The decision doc requires a follow-up measurement once a BASV2 live-bus rig is available.
 
 **Current placeholder.** `15 * time.Millisecond` — derived from the eBUS target-response-window published in Vaillant adapter documentation (literature-grade, NOT empirical).
 
 **Production sites of the placeholder.**
 
-1. `helianthus-ebusgo/protocol/responder/timing_harness.go` — the canonical site; exported as `responderAckBudget` (or equivalent symbol). This is the authoritative constant.
+1. [`helianthus-ebusgo/protocol/responder/timing_harness.go`](https://github.com/Project-Helianthus/helianthus-ebusgo/blob/main/protocol/responder/timing_harness.go) — the canonical site; exported as `responderAckBudget` (or equivalent symbol). This is the authoritative constant.
 2. `helianthus-ebusgateway/cmd/gateway/main.go` / `internal/nm_runtime/responder_runtime.go` — any gateway-side reflection of the budget used to decide cadence floor in responder emission. Grep for `15 * time.Millisecond` or direct import of `responderAckBudget` from ebusgo.
 
 **Operator follow-up obligation (carry-forward).** The operator MUST, in a separate manual PR:
 
 1. Attach a BASV2 rig to the passive tap.
-2. Run the ebusgo responder harness bench (instructions in `helianthus-ebusgo/protocol/responder/`) and record the p99 ACK window over ≥10k frames under representative bus load.
-3. Commit the measured value as the new budget (supersedes the 15ms placeholder) in `helianthus-ebusgo/protocol/responder/timing_harness.go`. Bump any gateway-side pin via `go.mod` in a follow-up PR.
+2. Run the ebusgo responder harness bench (instructions in [`helianthus-ebusgo/protocol/responder/`](https://github.com/Project-Helianthus/helianthus-ebusgo/tree/main/protocol/responder/)) and record the p99 ACK window over ≥10k frames under representative bus load.
+3. Commit the measured value as the new budget (supersedes the 15ms placeholder) in [`helianthus-ebusgo/protocol/responder/timing_harness.go`](https://github.com/Project-Helianthus/helianthus-ebusgo/blob/main/protocol/responder/timing_harness.go). Bump any gateway-side pin via `go.mod` in a follow-up PR.
 4. Flip this matrix artifact's §7 status line from `PLACEHOLDER` to `MEASURED (p99 = <value> ms over <N> frames)` with the measurement date + rig identifier.
 
 **Status:** `PLACEHOLDER` — no measurement attempted in this session (no BASV2 rig available).

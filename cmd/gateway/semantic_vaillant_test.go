@@ -6947,7 +6947,7 @@ func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
 	poller := &vaillantSemanticPoller{provider: provider}
 
 	calls := 0
-	poller.acquireEnergy(func(q b524EnergyQuery) (uint32, bool) {
+	poller.acquireEnergy(func(q b524EnergyQuery, _ time.Time) (uint32, bool) {
 		calls++
 		if calls == 6 { // second monthly reply arrives after midnight
 			clock = time.Date(2027, time.January, 1, 0, 0, 1, 0, time.UTC)
@@ -6969,5 +6969,62 @@ func TestAcquireEnergy_BoundaryCrossingDiscardsLaterReplies(t *testing.T) {
 	// Reply 6 crossed midnight and must not be stored under any month.
 	if got := totals.Gas.DHW.Monthly; len(got) == 2 && (got[0] != 0 || got[1] != 0) {
 		t.Fatalf("Gas.DHW.Monthly = %v; want discarded reply (zeros)", got)
+	}
+}
+
+// Cache path: a monthly reply cached before the reference month started must
+// not be returned to a pass whose reference is in the new month; it is re-read
+// fresh. Lifetime totals are unfenced and still served from cache.
+func TestReadEnergyRegister_MonthlyCacheFencedAtMonthStart(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	poller := &vaillantSemanticPoller{
+		scheduler: ebusgateway.NewSemanticReadScheduler(),
+		sendFrameFn: func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+			calls++
+			addr := uint16(frame.Data[4]) | uint16(frame.Data[5])<<8
+			return &protocol.Frame{Data: []byte{0x01, 0x00, localRegulator.group, byte(addr), byte(addr >> 8), 0x64, 0x00, 0x00, 0x00}}, nil
+		},
+		source:         0x7F,
+		controller:     0x15,
+		requestTimeout: 50 * time.Millisecond,
+	}
+	var month, life b524EnergyQuery
+	for _, q := range b524EnergyQueries {
+		if q.period == "month" && month.addr == 0 {
+			month = q
+		}
+		if q.period == "all" && life.addr == 0 {
+			life = q
+		}
+	}
+	ctx := context.Background()
+
+	// Warm the cache (as the 23:59 pass would have).
+	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, month.addr); !ok {
+		t.Fatal("warm read failed")
+	}
+	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, life.addr); !ok {
+		t.Fatal("warm lifetime read failed")
+	}
+	warm := calls
+
+	// Precondition: the unfenced path is served from cache.
+	if _, ok := poller.readB524Uint32LE(ctx, vaillantB524OpcodeLocal, localRegulator.group, regulatorInstance, month.addr); !ok || calls != warm {
+		t.Fatalf("unfenced second read calls=%d; want cache hit (%d)", calls, warm)
+	}
+
+	// Pass at 00:00:00 of the new month: the cached monthly observation predates it.
+	ref := time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if _, ok := poller.readEnergyRegister(ctx, month, ref); !ok {
+		t.Fatal("fenced monthly read failed")
+	}
+	if calls != warm+1 {
+		t.Fatalf("monthly read calls=%d; want a fresh bus read (%d)", calls, warm+1)
+	}
+	// Lifetime total is undated: cache still served.
+	if _, ok := poller.readEnergyRegister(ctx, life, ref); !ok || calls != warm+1 {
+		t.Fatalf("lifetime read calls=%d; want cache hit (%d)", calls, warm+1)
 	}
 }

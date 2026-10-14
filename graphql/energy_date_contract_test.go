@@ -297,3 +297,68 @@ func TestEnergy_LifetimeTotalSurvivesRolloverAndBroadcast(t *testing.T) {
 		t.Fatalf("Yearly after newer register year = %v; want [0 7]", got)
 	}
 }
+
+// Pins the lifetime projection truth table (see PR body) at 2027-01-01.
+func TestEnergy_LifetimeProjectionTruthTable(t *testing.T) {
+	ref := time.Date(2027, time.January, 1, 12, 0, 0, 0, time.UTC)
+	t0 := ref.Add(-time.Hour)
+	apply := func(store *energyMergeStore, key energyMergeKey, v float64, src EnergyDataSource, at time.Time) {
+		if !store.Apply(key, v, src, at) {
+			t.Fatalf("Apply(%+v) rejected", key)
+		}
+	}
+	life := energyLifetimeKey("gas", "climate")
+	cur := energyWindowKey("gas", "climate", "year", "current", ref)
+	prev := energyWindowKey("gas", "climate", "year", "previous", ref)
+	day := energyWindowKey("gas", "climate", "day", "", ref)
+
+	check := func(name string, setup func(*energyMergeStore), wantCur, wantPrev, wantToday float64, pc, pp, pt EnergyProvenance) {
+		t.Run(name, func(t *testing.T) {
+			store := newEnergyMergeStore()
+			setup(store)
+			c := store.SnapshotWithContext(ref, "").Gas.Climate
+			if c.Yearly[1] != wantCur || c.YearlyMeta[1].Provenance != pc {
+				t.Errorf("current = %v/%s; want %v/%s", c.Yearly[1], c.YearlyMeta[1].Provenance, wantCur, pc)
+			}
+			if c.Yearly[0] != wantPrev || c.YearlyMeta[0].Provenance != pp {
+				t.Errorf("previous = %v/%s; want %v/%s", c.Yearly[0], c.YearlyMeta[0].Provenance, wantPrev, pp)
+			}
+			if c.Today != wantToday || c.TodayMeta.Provenance != pt {
+				t.Errorf("today = %v/%s; want %v/%s", c.Today, c.TodayMeta.Provenance, wantToday, pt)
+			}
+		})
+	}
+	R, B, N := EnergyProvenanceRegister, EnergyProvenanceBroadcast, EnergyProvenanceNone
+
+	check("lifetime only", func(s *energyMergeStore) { apply(s, life, 100, EnergySourceRegister, t0) },
+		100, 0, 0, R, R, R)
+	check("lifetime + newer dated register current", func(s *energyMergeStore) {
+		apply(s, life, 100, EnergySourceRegister, t0)
+		apply(s, cur, 7, EnergySourceRegister, t0.Add(time.Minute))
+	}, 7, 0, 0, R, R, R)
+	check("lifetime + older dated register current", func(s *energyMergeStore) {
+		apply(s, cur, 7, EnergySourceRegister, t0.Add(-time.Minute))
+		apply(s, life, 100, EnergySourceRegister, t0)
+	}, 100, 0, 0, R, R, R)
+	check("lifetime + dated broadcast current", func(s *energyMergeStore) {
+		apply(s, life, 100, EnergySourceRegister, t0)
+		apply(s, cur, 3, EnergySourceBroadcast, t0.Add(time.Minute))
+	}, 100, 0, 0, R, R, R)
+	check("lifetime + dated register previous and day", func(s *energyMergeStore) {
+		apply(s, life, 100, EnergySourceRegister, t0)
+		apply(s, prev, 40, EnergySourceRegister, t0)
+		apply(s, day, 2, EnergySourceRegister, t0)
+	}, 100, 40, 2, R, R, R)
+	check("lifetime + dated broadcast previous and day", func(s *energyMergeStore) {
+		apply(s, life, 100, EnergySourceRegister, t0)
+		apply(s, prev, 40, EnergySourceBroadcast, t0)
+		apply(s, day, 2, EnergySourceBroadcast, t0)
+	}, 100, 0, 0, R, R, R)
+	check("dated only (broadcast)", func(s *energyMergeStore) {
+		apply(s, cur, 3, EnergySourceBroadcast, t0)
+		apply(s, prev, 40, EnergySourceBroadcast, t0)
+		apply(s, day, 2, EnergySourceBroadcast, t0)
+	}, 3, 40, 2, B, B, B)
+	check("dated current only", func(s *energyMergeStore) { apply(s, cur, 3, EnergySourceBroadcast, t0) },
+		3, 0, 0, B, N, N)
+}

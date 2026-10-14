@@ -5,9 +5,9 @@ go 1.22.0
 require (
 	github.com/Project-Helianthus/helianthus-ebusgo v0.5.1-0.20260921041247-2ebba9fb05fe
 	github.com/Project-Helianthus/helianthus-ebusreg v0.0.0-20261014092418-2342a8d80c2b
-	github.com/Project-Helianthus/helianthus-eebusreg v0.1.35
-	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20260909115211-f670287d0d86
-	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20260905063817-ed75fdfbed0d
+	github.com/Project-Helianthus/helianthus-eebusreg v0.1.36
+	github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261014112527-df5bdc80771c
+	github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261014144202-2bfecd2f7408
 	github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260911082644-089ed6ae9004
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/graphql-go/graphql v0.8.1
@@ -19,8 +19,8 @@ require (
 )
 
 require (
-	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.20 // indirect
-	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.18 // indirect
+	github.com/Project-Helianthus/helianthus-eebus-go v0.7.1-helianthus.21 // indirect
+	github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.19 // indirect
 	github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 // indirect
 	github.com/ahmetb/go-linq/v3 v3.2.0 // indirect
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect

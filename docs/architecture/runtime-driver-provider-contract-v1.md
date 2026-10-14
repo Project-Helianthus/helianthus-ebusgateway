@@ -4,6 +4,44 @@ Status: proposed software 0.7 contract. This document specifies a subsequent
 implementation; the current binary does not expose the lifecycle service or a
 universal manager for every protocol family.
 
+Implementation status (issue
+[#1024](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1024)):
+the gateway-internal semantic publication hub (`internal/semhub`) implements
+the publication side of sections 4 to 8 for in-process publishers: stable
+asset and source identities with per-incarnation binding, service and
+capability identities; source epochs admitted before a provider opens, with
+distinct epoch and driver-generation identities; one transactional
+publication path over the SemReg publication kernel with the kernel's own
+replay and error identifiers; ordered, bounded event fan-out; and the
+generation fence, epoch retirement, activation and reprojection rules of the
+withdrawal sequence. The hub is runtime composition, not a public API, and
+persists nothing: epochs are journalled in memory only. The `list`, `get`,
+`start`, `stop` and `restart` service, desired-state persistence and every
+public lifecycle projection remain unimplemented.
+
+A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
+as its publication instant. The requesting family supplies them on the same
+wall and monotonic clocks as its own facts, so the kernel can evaluate the
+retained observations it keeps across the transition.
+
+Deviation record (the normative passages are amended where they apply):
+
+1. The single source-generation publication sequence becomes per-asset
+   cursors: a sequence is scoped to (asset, source, epoch, generation) and the
+   first sequence of an unseen key is 1, because the SemReg publication kernel
+   is asset-local. Order across assets is the hub's in-process commit order
+   only.
+2. A legacy publisher's declared epoch may repeat across process
+   incarnations (it may not repeat within one), instead of a new epoch per
+   source on every process start (section 5, epoch barrier).
+3. A legacy publisher's starting driver generation may be any nonzero value
+   instead of 1 (section 4, generation identity).
+4. The legacy EVSE successor is admitted with a new epoch and generation
+   current+1 on the retained kernel, instead of a per-epoch generation reset
+   (section 4, generation identity).
+5. The legacy PV epoch is sampled after the endpoint factory, dial and open,
+   not before the provider factory runs (section 5, epoch barrier).
+
 Contract ID: `helianthus.gateway.driver-runtime/v1`
 
 Gateway baseline: `Project-Helianthus/helianthus-ebusgateway` commit

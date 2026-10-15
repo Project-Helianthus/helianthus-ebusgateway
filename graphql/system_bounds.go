@@ -70,7 +70,7 @@ func (b ConfigBound) Describe() string {
 	return fmt.Sprintf("controller identity unmatched (%s): conservative policy bound [%.4g, %.4g] applies", b.Reason, b.MinC, b.MaxC)
 }
 
-// ControllerIdentityFromEntry builds the part of the B524 controller identity
+// ControllerIdentityFromSnapshot builds the part of the B524 controller identity
 // that the device registry knows (EID, raw software and hardware). The API
 // version and revision are not registry data and remain absent here. Callers
 // may supply them only from qualified identity data already held by the gateway;
@@ -79,15 +79,31 @@ func (b ConfigBound) Describe() string {
 // The identity is matched exactly by ebusreg: a missing field only matches a
 // profile that did not record it, so an identity without the API qualifier
 // never matches a profile that recorded one.
-func ControllerIdentityFromEntry(entry registry.DeviceEntry) vaillantsystem.B524ControllerIdentity {
-	if entry == nil {
+func ControllerIdentityFromSnapshot(entry registry.DeviceEntrySnapshot) vaillantsystem.B524ControllerIdentity {
+	return vaillantsystem.B524ControllerIdentity{
+		EID:         strings.ToUpper(strings.TrimSpace(entry.DeviceID)),
+		SoftwareRaw: strings.TrimSpace(entry.SoftwareVersion),
+		HardwareRaw: strings.TrimSpace(entry.HardwareVersion),
+	}
+}
+
+// controllerIdentityFromRegistry uses the same canonical target priority as
+// findControllerEntry, but never reads identity accessors on a live entry.
+// Registries without atomic snapshots supply no identity, so the conservative
+// unmatched policy applies.
+func controllerIdentityFromRegistry(reg InvokeRegistry) vaillantsystem.B524ControllerIdentity {
+	snapshots, ok := reg.(interface {
+		LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool)
+	})
+	if !ok {
 		return vaillantsystem.B524ControllerIdentity{}
 	}
-	return vaillantsystem.B524ControllerIdentity{
-		EID:         strings.ToUpper(strings.TrimSpace(entry.DeviceID())),
-		SoftwareRaw: strings.TrimSpace(entry.SoftwareVersion()),
-		HardwareRaw: strings.TrimSpace(entry.HardwareVersion()),
+	for _, addr := range canonicalRegulatorTargetAddresses {
+		if snap, found := snapshots.LookupEntrySnapshot(addr); found {
+			return ControllerIdentityFromSnapshot(snap)
+		}
 	}
+	return vaillantsystem.B524ControllerIdentity{}
 }
 
 func unmatchedDHWBivalenceBound(reason string) ConfigBound {

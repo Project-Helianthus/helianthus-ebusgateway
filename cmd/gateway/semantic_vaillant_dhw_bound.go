@@ -1,8 +1,6 @@
 package main
 
 import (
-	"strings"
-
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
@@ -21,11 +19,7 @@ func (p *vaillantSemanticPoller) registryControllerIdentity(controller byte) vai
 		if !ebusgateway.SnapshotContainsAddress(snap, controller) {
 			return true
 		}
-		identity = vaillantsystem.B524ControllerIdentity{
-			EID:         strings.ToUpper(strings.TrimSpace(snap.DeviceID)),
-			SoftwareRaw: strings.TrimSpace(snap.SoftwareVersion),
-			HardwareRaw: strings.TrimSpace(snap.HardwareVersion),
-		}
+		identity = graphql.ControllerIdentityFromSnapshot(snap)
 		return false
 	})
 	return identity

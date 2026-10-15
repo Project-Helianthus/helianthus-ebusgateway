@@ -359,3 +359,60 @@ func TestDHWBivalenceProfileBoundOnlyNarrowsPolicy(t *testing.T) {
 		})
 	}
 }
+
+// Register updates the same live entry while both identity selection and the
+// fallback mutation's bound validation run. Every observed tuple must be one
+// complete registration, even when all three identity fields change together.
+func TestDHWBivalenceBoundRegistrySnapshotConcurrentRegister(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	infos := []registry.DeviceInfo{
+		{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV0", SoftwareVersion: "0217", HardwareVersion: "8803"},
+		{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2", SoftwareVersion: "0507", HardwareVersion: "1704"},
+	}
+	entry := reg.Register(infos[0])
+	start, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		<-start
+		for i := 0; i < 3000; i++ {
+			if got := reg.Register(infos[i%len(infos)]); got != entry {
+				t.Error("Register replaced the entry; test must exercise live entry updates")
+				return
+			}
+		}
+	}()
+	defer func() { <-done }()
+	close(start)
+	for i := 0; i < 3000; i++ {
+		identity := controllerIdentityFromRegistry(reg)
+		a, b := boundTestBASV0, boundTestBASV2
+		a.APIVersion, a.Revision, b.APIVersion, b.Revision = "", "", "", ""
+		if identity != a && identity != b {
+			t.Fatalf("incoherent controller snapshot: %+v", identity)
+		}
+		bound := ResolveDHWBivalenceBound(identity)
+		if bound != unmatchedDHWBivalenceBound(ConfigBoundReasonUnknownProfile) {
+			t.Fatalf("bound = %+v; want conservative unmatched policy", bound)
+		}
+		invoker := &mutationTestInvoker{}
+		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "21", systemConfigFieldSpecs)
+		if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 20]") || len(invoker.calls) != 0 {
+			t.Fatalf("fallback bound validation: result=%+v calls=%d", result, len(invoker.calls))
+		}
+	}
+}
+
+func TestDHWBivalenceBoundRegistrySnapshotCanonicalPriority(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	for _, info := range []registry.DeviceInfo{
+		{Address: 0x42, DeviceID: "off-canonical"},
+		{Address: 0x35, DeviceID: "alternate"},
+		{Address: 0x15, DeviceID: " basv0 ", SoftwareVersion: " 0217 ", HardwareVersion: " 8803 "},
+	} {
+		reg.Register(info)
+	}
+	want := vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803"}
+	if got := controllerIdentityFromRegistry(reg); got != want {
+		t.Fatalf("controller identity = %+v; want %+v", got, want)
+	}
+}

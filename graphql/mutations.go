@@ -22,7 +22,6 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 	"github.com/Project-Helianthus/helianthus-ebusreg/schema"
-	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 	graphqlgo "github.com/graphql-go/graphql"
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/graphql-go/handler"
@@ -892,10 +891,7 @@ func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invo
 		return configMutationError(err)
 	}
 	if fieldName == SystemConfigFieldDHWBivalencePoint {
-		var identity vaillantsystem.B524ControllerIdentity
-		if entry, entryErr := findControllerEntry(registry); entryErr == nil {
-			identity = ControllerIdentityFromEntry(entry)
-		}
+		identity := controllerIdentityFromRegistry(registry)
 		bound := ResolveDHWBivalenceBound(identity)
 		spec.min, spec.max = bound.MinC, bound.MaxC
 		if _, encodeErr := encodeConfigValue(spec, rawValue); encodeErr != nil {

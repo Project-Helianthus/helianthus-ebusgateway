@@ -23,12 +23,11 @@ const (
 
 func toolClassificationPolicy() map[string]toolClass {
 	return map[string]toolClass{
-		toolRuntimeStatusGetName:   toolClassCoreStable,
-		toolBusSummaryGetName:      toolClassReservedDraft,
-		toolBusMessagesListName:    toolClassReservedDraft,
-		toolBusPeriodicityListName: toolClassReservedDraft,
-		// The existing v1 specimen contract is stable and protected by goldens.
-		toolBusProtocolSpecimensListName: toolClassCoreStable,
+		toolRuntimeStatusGetName:         toolClassCoreStable,
+		toolBusSummaryGetName:            toolClassReservedDraft,
+		toolBusMessagesListName:          toolClassReservedDraft,
+		toolBusPeriodicityListName:       toolClassReservedDraft,
+		toolBusProtocolSpecimensListName: toolClassReservedDraft,
 		toolWatchSummaryGetName:          toolClassReservedDraft,
 		// Raw 07 04 identification evidence (#1017); graduates to GraphQL
 		// (busIdentificationEvidence), so it must be core stable.
@@ -104,7 +103,7 @@ func testInstallB503ForClassification(server *Server) {
 
 func isReservedDraftTool(name string) bool {
 	switch name {
-	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolWatchSummaryGetName:
+	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolBusProtocolSpecimensListName, toolWatchSummaryGetName:
 		return true
 	default:
 		return false
@@ -279,6 +278,7 @@ func TestBusObservabilityToolClassificationReservation(t *testing.T) {
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
 		toolWatchSummaryGetName,
+		toolBusProtocolSpecimensListName,
 	} {
 		if !hasToolName(tools, name) {
 			t.Fatalf("tools list missing reserved draft tool %q", name)

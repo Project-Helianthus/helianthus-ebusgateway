@@ -957,6 +957,13 @@ func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFiel
 }
 
 func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
+	// Reject non-finite numeric input before range comparisons or conversion:
+	// NaN makes both comparisons false and must never become a bus payload.
+	if spec.valueType == configValueFloat32 || spec.valueType == configValueUint16 {
+		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && (math.IsNaN(value) || math.IsInf(value, 0)) {
+			return nil, fmt.Errorf("numeric value %q must be finite: %w", raw, ebuserrors.ErrInvalidPayload)
+		}
+	}
 	switch spec.valueType {
 	case configValueFloat32:
 		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)

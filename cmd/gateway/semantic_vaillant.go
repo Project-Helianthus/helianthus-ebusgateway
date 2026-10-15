@@ -373,7 +373,6 @@ type vaillantSemanticPoller struct {
 	fm5IdentityObservedAt       time.Time
 	solar                       *vaillantSolarSnapshot
 	solarCylinders              map[byte]*vaillantCylinderSnapshot
-	controllerAPI               controllerAPIIdentityCache // guarded by mu; see semantic_vaillant_dhw_bound.go
 
 	adapterInfo    *vaillantAdapterInfoState
 	startupBarrier <-chan struct{}
@@ -3143,8 +3142,6 @@ func (p *vaillantSemanticPoller) refreshSystem(ctx context.Context) {
 	if controller == 0 {
 		return
 	}
-
-	p.ensureControllerAPIIdentity(ctx)
 
 	snapshot := &vaillantSystemSnapshot{Controller: controller}
 	updated := false
@@ -6205,12 +6202,8 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
 	}
 
-	// dhwBivalencePointC is bounded by the controller profile (conservative
-	// policy for an unmatched identity); the API qualifier is read from OP00
-	// first when it is not cached. Validation runs before any bus write.
-	if fieldName == graphql.SystemConfigFieldDHWBivalencePoint {
-		p.ensureControllerAPIIdentity(ctx)
-	}
+	// Bound validation consults only identity already held in the registry and
+	// completes before any bus I/O. Missing API qualifiers stay unmatched.
 	payload, spec, _, err := graphql.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}

@@ -68,8 +68,9 @@ func (b ConfigBound) Describe() string {
 
 // ControllerIdentityFromEntry builds the part of the B524 controller identity
 // that the device registry knows (EID, raw software and hardware). The API
-// version and revision are not registry data; callers that know them (read from
-// B524 OP00 identifiers 0006h/0007h) set them afterwards.
+// version and revision are not registry data and remain absent here. Callers
+// may supply them only from qualified identity data already held by the gateway;
+// validation must never acquire them on demand.
 //
 // The identity is matched exactly by ebusreg: a missing field only matches a
 // profile that did not record it, so an identity without the API qualifier
@@ -109,6 +110,12 @@ func controllerIdentityLabel(id vaillantsystem.B524ControllerIdentity) string {
 // No profile value is ever substituted for a different identity.
 func ResolveDHWBivalenceBound(identity vaillantsystem.B524ControllerIdentity) ConfigBound {
 	result := vaillantsystem.LookupB524Bound(identity, mutationB524OpcodeLocal, 0x00, dhwBivalenceInstance, 0x0001)
+	return dhwBivalenceBoundFromResult(identity, result)
+}
+
+// dhwBivalenceBoundFromResult keeps the conservative policy total even for an
+// unknown lookup status, unqualified evidence, or malformed numeric bounds.
+func dhwBivalenceBoundFromResult(identity vaillantsystem.B524ControllerIdentity, result vaillantsystem.B524BoundResult) ConfigBound {
 	switch result.Status {
 	case vaillantsystem.B524BoundFound:
 		bound := result.Bound

@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"math"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -15,14 +16,14 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
 
-// dhwBoundFakeBus is a fake B524 controller: it answers OP00 identifiers 6 and
-// 7, acknowledges OP02 writes and answers OP02 reads with the last written
-// value. It records every frame so tests can prove nothing was written.
+// dhwBoundFakeBus acknowledges OP02 writes and reads back the last written
+// value. It counts all requests, including unexpected OP00 acquisition.
 type dhwBoundFakeBus struct {
 	mu        sync.Mutex
-	apiAnswer map[uint16][]byte // OP00 id -> reply payload; missing -> no answer
+	requests  int
 	store     map[uint16][]byte // OP02 addr -> value
 	writes    [][]byte
 	op00Reads []uint16
@@ -31,14 +32,14 @@ type dhwBoundFakeBus struct {
 func (bus *dhwBoundFakeBus) send(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 	bus.mu.Lock()
 	defer bus.mu.Unlock()
+	bus.requests++
 	data := frame.Data
 	if len(data) == 3 && data[0] == 0x00 {
 		id := uint16(data[1]) | uint16(data[2])<<8
 		bus.op00Reads = append(bus.op00Reads, id)
-		if reply, ok := bus.apiAnswer[id]; ok {
-			return &protocol.Frame{Data: reply}, nil
-		}
-		return nil, errors.New("no OP00 answer")
+		// This unqualified layout used to be accepted as API 1.1. No bound
+		// validation or publication may ask for or consume it.
+		return &protocol.Frame{Data: []byte{0x00, 0x00, 0x80, 0x3f}}, nil
 	}
 	if len(data) < 6 || data[0] != 0x02 {
 		return nil, errors.New("unexpected frame")
@@ -65,12 +66,6 @@ func (bus *dhwBoundFakeBus) writeCount() int {
 	return len(bus.writes)
 }
 
-func f32(value float64) []byte {
-	out := make([]byte, 4)
-	binary.LittleEndian.PutUint32(out, math.Float32bits(float32(value)))
-	return out
-}
-
 func newDHWBoundPoller(t *testing.T, deviceID, software, hardware string, bus *dhwBoundFakeBus) (*vaillantSemanticPoller, *graphql.LiveSemanticProvider) {
 	t.Helper()
 	reg := registry.NewDeviceRegistry(nil)
@@ -89,12 +84,8 @@ func newDHWBoundPoller(t *testing.T, deviceID, software, hardware string, bus *d
 	return poller, provider
 }
 
-func apiAnswers(version, revision float64) map[uint16][]byte {
-	return map[uint16][]byte{0x0006: f32(version), 0x0007: f32(revision)}
-}
-
-func TestSetSystemConfigDHWBivalenceBASV0ProfileBound(t *testing.T) {
-	bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, provider := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 
 	for _, value := range []string{"21", "50", "-21", "20.5"} {
@@ -102,9 +93,12 @@ func TestSetSystemConfigDHWBivalenceBASV0ProfileBound(t *testing.T) {
 		if result.Success {
 			t.Fatalf("BASV0 value %s accepted; want rejection", value)
 		}
-		if !strings.Contains(result.Error, "controller profile BASV0/SW0217/HW8803/API1.1 allows [-20, 20]") {
-			t.Fatalf("BASV0 value %s error = %q; want the profile bound named", value, result.Error)
+		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 20] applies") {
+			t.Fatalf("BASV0 value %s error = %q; want the unmatched policy named", value, result.Error)
 		}
+	}
+	if bus.requests != 0 {
+		t.Fatalf("invalid values issued %d bus requests; want zero", bus.requests)
 	}
 	if got := bus.writeCount(); got != 0 {
 		t.Fatalf("bus writes after rejected BASV0 values = %d; want 0 (reject before any bus write)", got)
@@ -120,7 +114,7 @@ func TestSetSystemConfigDHWBivalenceBASV0ProfileBound(t *testing.T) {
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	want := graphql.ConfigBound{MinC: -20, MaxC: 20, Source: graphql.ConfigBoundSourceControllerProfile, Profile: "BASV0/SW0217/HW8803/API1.1"}
+	want := graphql.ConfigBound{MinC: -20, MaxC: 20, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
 	if bound == nil || *bound != want {
 		t.Fatalf("published bound = %+v; want %+v", bound, want)
 	}
@@ -129,7 +123,7 @@ func TestSetSystemConfigDHWBivalenceBASV0ProfileBound(t *testing.T) {
 func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 	// BASV2 has no seeded profile in ebusreg, so its 50 maximum is not kept: the
 	// conservative unmatched policy applies and says so.
-	bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, provider := newDHWBoundPoller(t, "BASV2", "0507", "1704", bus)
 
 	for _, value := range []string{"21", "50"} {
@@ -140,6 +134,9 @@ func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 20] applies") {
 			t.Fatalf("BASV2 value %s error = %q; want the unmatched policy named", value, result.Error)
 		}
+	}
+	if bus.requests != 0 {
+		t.Fatalf("invalid values issued %d bus requests; want zero", bus.requests)
 	}
 	if got := bus.writeCount(); got != 0 {
 		t.Fatalf("bus writes after rejected BASV2 values = %d; want 0", got)
@@ -154,66 +151,49 @@ func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 	}
 }
 
-func TestSetSystemConfigDHWBivalenceAPIQualifierFailsClosed(t *testing.T) {
-	cases := map[string]map[uint16][]byte{
-		"no OP00 answer":           {},
-		"only the version answers": {0x0006: f32(1)},
-		"non-integral revision":    {0x0006: f32(1), 0x0007: f32(1.5)},
-		"NaN version":              {0x0006: f32(math.NaN()), 0x0007: f32(1)},
-		"negative version":         {0x0006: f32(-1), 0x0007: f32(1)},
-		"wrong reply width":        {0x0006: {0x01, 0x00}, 0x0007: f32(1)},
-		"other API revision":       apiAnswers(1, 2),
-	}
-	for name, answers := range cases {
-		bus := &dhwBoundFakeBus{apiAnswer: answers, store: map[uint16][]byte{}}
-		poller, provider := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
-		result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", "21")
-		if result.Success || !strings.Contains(result.Error, "unmatched (unknown_profile)") {
-			t.Errorf("%s: result = %+v; want rejection under the unmatched policy", name, result)
-		}
-		if bus.writeCount() != 0 {
-			t.Errorf("%s: bus writes = %d; want 0", name, bus.writeCount())
+func TestControllerB524IdentityUsesOnlyRegistry(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+	poller, provider := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
+	for attempt := 0; attempt < 2; attempt++ {
+		id := poller.controllerB524Identity()
+		if id.EID != "BASV0" || id.SoftwareRaw != "0217" || id.HardwareRaw != "8803" || id.APIVersion != "" || id.Revision != "" {
+			t.Fatalf("registry identity = %+v; want BASV0/SW0217/HW8803 without API", id)
 		}
 		poller.publishSystem(semanticSnapshotSourceLive)
-		if bound := provider.System().Config.DhwBivalenceBound; bound == nil || bound.Source != graphql.ConfigBoundSourceUnmatchedPolicy {
-			t.Errorf("%s: published bound = %+v; want unmatched policy", name, bound)
+		if bound := provider.System().Config.DhwBivalenceBound; bound == nil || bound.Source != graphql.ConfigBoundSourceUnmatchedPolicy || bound.Reason != graphql.ConfigBoundReasonUnknownProfile || bound.Profile != "" {
+			t.Fatalf("published bound = %+v; want unmatched policy without a substituted profile", bound)
 		}
+	}
+	if bus.requests != 0 {
+		t.Fatalf("identity/publication issued %d bus requests; want zero", bus.requests)
+	}
+
+	// A replacement at the same address is invisible until discovery/import
+	// changes registry metadata. Validation itself must not refresh identity.
+	poller.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2", SoftwareVersion: "0507", HardwareVersion: "1704"})
+	if id := poller.controllerB524Identity(); id.EID != "BASV2" || id.SoftwareRaw != "0507" || id.HardwareRaw != "1704" || id.APIVersion != "" || id.Revision != "" {
+		t.Fatalf("updated registry identity = %+v; want BASV2 without API", id)
+	}
+	if bus.requests != 0 {
+		t.Fatalf("registry identity update issued %d bus requests; want zero", bus.requests)
 	}
 }
 
-func TestEnsureControllerAPIIdentityCachesAndSkipsWithoutIdentity(t *testing.T) {
-	bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+func TestRefreshSystemDoesNotAcquireAPIIdentity(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
-	poller.ensureControllerAPIIdentity(context.Background())
-	poller.ensureControllerAPIIdentity(context.Background())
-	if got := len(bus.op00Reads); got != 2 {
-		t.Fatalf("OP00 reads = %d (%v); want one version + one revision read, cached afterwards", got, bus.op00Reads)
+	poller.refreshSystem(context.Background())
+	if bus.requests == 0 {
+		t.Fatal("refresh did not exercise the existing system poll set")
 	}
-	if id := poller.controllerB524Identity(); id.APIVersion != "1" || id.Revision != "1" || id.EID != "BASV0" {
-		t.Fatalf("identity = %+v; want BASV0 with API 1.1", id)
-	}
-
-	// A failed read is not retried inside the backoff window.
-	failBus := &dhwBoundFakeBus{apiAnswer: map[uint16][]byte{}, store: map[uint16][]byte{}}
-	failing, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", failBus)
-	failing.ensureControllerAPIIdentity(context.Background())
-	failing.ensureControllerAPIIdentity(context.Background())
-	if got := len(failBus.op00Reads); got != 2 {
-		t.Fatalf("OP00 reads after a failure = %d; want 2 (version read, revision read, then backoff)", got)
-	}
-
-	// Without software/hardware nothing can match; no OP00 request is sent.
-	bareBus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
-	bare, _ := newDHWBoundPoller(t, "BASV0", "", "", bareBus)
-	bare.ensureControllerAPIIdentity(context.Background())
-	if len(bareBus.op00Reads) != 0 {
-		t.Fatalf("OP00 reads without SW/HW = %v; want none", bareBus.op00Reads)
+	if len(bus.op00Reads) != 0 || bus.writeCount() != 0 {
+		t.Fatalf("refresh added OP00 acquisition or writes: reads=%v writes=%d", bus.op00Reads, bus.writeCount())
 	}
 }
 
 func TestSetSystemConfigOtherSystemNumbersUnchangedAndSkipOP00(t *testing.T) {
 	for _, identity := range [][3]string{{"BASV0", "0217", "8803"}, {"BASV2", "0507", "1704"}} {
-		bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+		bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 		poller, _ := newDHWBoundPoller(t, identity[0], identity[1], identity[2], bus)
 
 		accepted := map[string]string{"maxRoomHumidityPct": "80", "hcBivalencePointC": "30", "hcEmergencyTempC": "80", "hwcMaxFlowTempC": "80"}
@@ -243,9 +223,8 @@ func TestSetSystemConfigOtherSystemNumbersUnchangedAndSkipOP00(t *testing.T) {
 // envelope field names.
 func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 	for _, identity := range [][3]string{{"BASV0", "0217", "8803"}, {"BASV2", "0507", "1704"}} {
-		bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+		bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 		poller, provider := newDHWBoundPoller(t, identity[0], identity[1], identity[2], bus)
-		poller.ensureControllerAPIIdentity(context.Background())
 		poller.publishSystem(semanticSnapshotSourceLive)
 
 		gql := provider.System().Config.DhwBivalenceBound
@@ -272,43 +251,81 @@ func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 	}
 }
 
-func TestParseB524SystemInformationInt(t *testing.T) {
-	cases := []struct {
-		name    string
-		payload []byte
-		want    int
-		ok      bool
-	}{
-		{"one", f32(1), 1, true},
-		{"zero", f32(0), 0, true},
-		{"fraction", f32(0.5), 0, false},
-		{"negative", f32(-2), 0, false},
-		{"infinity", f32(math.Inf(1)), 0, false},
-		{"short", []byte{0x01, 0x02, 0x03}, 0, false},
-		{"long", []byte{0x00, 0x00, 0x80, 0x3f, 0x00}, 0, false},
-		{"empty", nil, 0, false},
-	}
-	for _, tc := range cases {
-		got, ok := parseB524SystemInformationInt(tc.payload)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("%s: got (%d, %v); want (%d, %v)", tc.name, got, ok, tc.want, tc.ok)
-		}
-	}
-}
-
 func TestMCPConfigWriterDHWBivalenceRejectsBeforeBusWrite(t *testing.T) {
-	bus := &dhwBoundFakeBus{apiAnswer: apiAnswers(1, 1), store: map[uint16][]byte{}}
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 	writer := &mcpConfigWriterAdapter{poller: poller}
 
 	result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "35")
-	if result.Success || !strings.Contains(result.Error, "allows [-20, 20]") {
-		t.Fatalf("MCP set_config 35 on BASV0 = %+v; want rejection naming the profile bound", result)
+	if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 20]") {
+		t.Fatalf("MCP set_config 35 on BASV0 = %+v; want rejection naming the unmatched policy bound", result)
 	}
 	if bus.writeCount() != 0 {
 		t.Fatalf("bus writes = %d; want 0", bus.writeCount())
 	}
 	if result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "20"); !result.Success {
 		t.Fatalf("MCP set_config 20 on BASV0 rejected: %q", result.Error)
+	}
+}
+
+// dhwBoundInvoker catches any accidental fallback to the registry invoke path.
+type dhwBoundInvoker struct{ calls int }
+
+func (invoker *dhwBoundInvoker) Invoke(context.Context, router.Plane, string, map[string]any) (any, error) {
+	invoker.calls++
+	return nil, errors.New("unexpected invoke")
+}
+
+func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
+	fields := []string{"dhwBivalencePointC", "hcBivalencePointC", "hcEmergencyTempC", "hwcMaxFlowTempC", "maxRoomHumidityPct", "installerMenuCode"}
+	for _, path := range []string{"GraphQL", "MCP"} {
+		for _, field := range fields {
+			for _, value := range []string{"NaN", "Inf", "-Inf"} {
+				t.Run(path+"/"+field+"/"+value, func(t *testing.T) {
+					bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+					poller, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
+					invoker := &dhwBoundInvoker{}
+					var success bool
+					var message string
+					if path == "GraphQL" {
+						builder := graphql.NewBuilder(poller.reg, nil)
+						builder.SetSystemConfigWriter(poller)
+						builder.SetAdmittedMutationSource(0x71)
+						handler, err := graphql.NewInvokeHandler(builder, poller.reg, invoker)
+						if err != nil {
+							t.Fatal(err)
+						}
+						query := fmt.Sprintf(`mutation { setSystemConfig(field: %q, value: %q) { success error } }`, field, value)
+						body, err := json.Marshal(map[string]string{"query": query})
+						if err != nil {
+							t.Fatal(err)
+						}
+						req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+						req.Header.Set("Content-Type", "application/json")
+						rec := httptest.NewRecorder()
+						handler.ServeHTTP(rec, req)
+						var response struct {
+							Data struct {
+								Result graphql.ConfigMutationResult `json:"setSystemConfig"`
+							} `json:"data"`
+							Errors []any `json:"errors"`
+						}
+						if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || len(response.Errors) != 0 {
+							t.Fatalf("GraphQL response: err=%v status=%d body=%s", err, rec.Code, rec.Body.String())
+						}
+						success, message = response.Data.Result.Success, response.Data.Result.Error
+					} else {
+						result := (&mcpConfigWriterAdapter{poller: poller}).SetSystemConfig(context.Background(), field, value)
+						success, message = result.Success, result.Error
+					}
+					if success || !strings.Contains(message, "must be finite") {
+						t.Fatalf("success=%v error=%q; want explicit non-finite rejection", success, message)
+					}
+					if bus.writeCount() != 0 || bus.requests != 0 || invoker.calls != 0 {
+						t.Fatalf("writes=%d requests=%d invokes=%d; want all zero", bus.writeCount(), bus.requests, invoker.calls)
+					}
+				})
+			}
+		}
 	}
 }

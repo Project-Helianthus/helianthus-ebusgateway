@@ -3,6 +3,8 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -222,5 +224,98 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 	}
 	if response.Data.System.Config.DhwBivalencePoint != 5 || response.Data.System.Config.Snake.MaxC != 20 || response.Data.System.Config.Snake.Source != "unmatched_policy" {
 		t.Fatalf("config = %+v; want value 5 and the snake_case alias to match", response.Data.System.Config)
+	}
+}
+
+func TestDHWBivalenceBoundLookupFallbacks(t *testing.T) {
+	type fallbackCase struct {
+		name   string
+		result vaillantsystem.B524BoundResult
+		reason string
+	}
+	cases := []fallbackCase{
+		{"unknown profile", vaillantsystem.B524BoundResult{Status: vaillantsystem.B524BoundUnknownProfile}, ConfigBoundReasonUnknownProfile},
+		{"unknown register", vaillantsystem.B524BoundResult{Status: vaillantsystem.B524BoundUnknownRegister}, ConfigBoundReasonUnknownRegister},
+		{"unexpected status", vaillantsystem.B524BoundResult{Status: vaillantsystem.B524BoundStatus(99)}, ConfigBoundReasonUnknownProfile},
+		{"unqualified bound", vaillantsystem.B524BoundResult{Status: vaillantsystem.B524BoundFound, Bound: vaillantsystem.B524RegisterBound{Min: -20, Max: 50}}, ConfigBoundReasonUnqualifiedBound},
+	}
+	for _, invalid := range []struct {
+		name     string
+		min, max float64
+	}{
+		{"NaN min", math.NaN(), 50},
+		{"NaN max", -20, math.NaN()},
+		{"negative infinity min", math.Inf(-1), 50},
+		{"positive infinity min", math.Inf(1), 50},
+		{"negative infinity max", -20, math.Inf(-1)},
+		{"positive infinity max", -20, math.Inf(1)},
+		{"inverted range", 50, -20},
+	} {
+		cases = append(cases, fallbackCase{
+			name: invalid.name,
+			result: vaillantsystem.B524BoundResult{
+				Status: vaillantsystem.B524BoundFound,
+				Bound:  vaillantsystem.B524RegisterBound{Qualified: true, Min: invalid.min, Max: invalid.max},
+			},
+			reason: ConfigBoundReasonInvalidBound,
+		})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dhwBivalenceBoundFromResult(boundTestBASV0, tc.result)
+			want := ConfigBound{MinC: -20, MaxC: 20, Source: ConfigBoundSourceUnmatchedPolicy, Reason: tc.reason}
+			if got != want {
+				t.Fatalf("bound = %+v; want %+v with no substituted profile or catalog bound", got, want)
+			}
+		})
+	}
+}
+
+func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
+	reg := mutationTestRegistry{
+		entries: map[byte]registry.DeviceEntry{
+			0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		},
+		order: []byte{0x15},
+	}
+	for _, scope := range []struct {
+		name, mutation string
+		specs          map[string]configFieldSpec
+	}{
+		{"system", "setSystemConfig", systemConfigFieldSpecs},
+		{"circuit", "setCircuitConfig", circuitConfigFieldSpecs},
+		{"zone", "setZoneConfig", zoneConfigFieldSpecs},
+	} {
+		for field, spec := range scope.specs {
+			if spec.valueType != configValueFloat32 && spec.valueType != configValueUint16 {
+				continue
+			}
+			for _, value := range []string{"NaN", "Inf", "-Inf"} {
+				t.Run(scope.name+"/"+field+"/"+value, func(t *testing.T) {
+					// The registry/invoker system adapter used outside GraphQL.
+					invoker := &mutationTestInvoker{}
+					var result ConfigMutationResult
+					if scope.name == "system" {
+						result = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, field, value, scope.specs)
+					} else {
+						result = applyConfigMutation(context.Background(), reg, invoker, 0x7F, true, spec, 0x00, value)
+					}
+					if result.Success || !strings.Contains(result.Error, "must be finite") || len(invoker.calls) != 0 {
+						t.Fatalf("registry result=%+v invokes=%d; want non-finite rejection and zero invokes/writes", result, len(invoker.calls))
+					}
+
+					index := ""
+					if scope.name != "system" {
+						index = "index: 0, "
+					}
+					query := fmt.Sprintf(`mutation { %s(%sfield: %q, value: %q) { success error } }`, scope.mutation, index, field, value)
+					data := executeMutation(t, buildMutationSchema(t, reg, invoker, nil, nil), query)
+					payload, ok := data[scope.mutation].(map[string]any)
+					if !ok || payload["success"] != false || !strings.Contains(fmt.Sprint(payload["error"]), "must be finite") || len(invoker.calls) != 0 {
+						t.Fatalf("GraphQL result=%v invokes=%d; want non-finite rejection and zero invokes/writes", data, len(invoker.calls))
+					}
+				})
+			}
+		}
 	}
 }

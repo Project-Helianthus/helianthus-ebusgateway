@@ -14,14 +14,14 @@ import (
 // ebus.v1.semantic.system.get output (including data_hash) for the two shapes
 // of the active dhwBivalencePointC bound: a matched controller profile and the
 // conservative unmatched policy. Regenerate with
-// UPDATE=1 go test ./mcp -run TestSemanticSystemDHWBivalenceBoundGoldenEnvelope.
+// TZ=UTC UPDATE=1 go test ./mcp -run TestSemanticSystemDHWBivalenceBoundGoldenEnvelope.
 func TestSemanticSystemDHWBivalenceBoundGoldenEnvelope(t *testing.T) {
 	value := 8.0
 	cases := []struct {
 		name  string
 		bound *ConfigBound
 	}{
-		{"profile", &ConfigBound{MinC: -20, MaxC: 20, Source: "controller_profile", Profile: "BASV0/SW0217/HW8803/API1.1"}},
+		{"profile", &ConfigBound{MinC: -20, MaxC: 20, Source: "controller_profile", NarrowedOnly: true, Profile: "BASV0/SW0217/HW8803/API1.1"}},
 		{"unmatched", &ConfigBound{MinC: -20, MaxC: 20, Source: "unmatched_policy", Reason: "unknown_profile"}},
 	}
 	out := map[string]any{}

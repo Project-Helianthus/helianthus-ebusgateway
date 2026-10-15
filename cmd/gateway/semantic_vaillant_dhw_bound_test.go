@@ -17,6 +17,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
+	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 )
 
 // dhwBoundFakeBus acknowledges OP02 writes and reads back the last written
@@ -233,7 +234,7 @@ func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 			t.Fatalf("%s: bound missing (graphql=%v mcp=%v)", identity[0], gql, mcpStatus)
 		}
 		mb := mcpStatus.Config.DhwBivalenceBound
-		if mb.MinC != gql.MinC || mb.MaxC != gql.MaxC || mb.Source != gql.Source || mb.Reason != gql.Reason || mb.Profile != gql.Profile {
+		if mb.MinC != gql.MinC || mb.MaxC != gql.MaxC || mb.Source != gql.Source || mb.Reason != gql.Reason || mb.Profile != gql.Profile || mb.NarrowedOnly != gql.NarrowedOnly {
 			t.Fatalf("%s: MCP bound %+v != GraphQL bound %+v", identity[0], mb, gql)
 		}
 		raw, err := json.Marshal(mcpStatus.Config)
@@ -245,7 +246,7 @@ func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		envelope, ok := decoded["dhw_bivalence_point_bound"].(map[string]any)
-		if !ok || envelope["min_c"] != float64(-20) || envelope["max_c"] != float64(20) || envelope["source"] != gql.Source {
+		if !ok || envelope["min_c"] != float64(-20) || envelope["max_c"] != float64(20) || envelope["source"] != gql.Source || envelope["narrowed_only"] != gql.NarrowedOnly {
 			t.Fatalf("%s: MCP envelope bound = %#v; want dhw_bivalence_point_bound{min_c:-20,max_c:20,source:%s}", identity[0], decoded["dhw_bivalence_point_bound"], gql.Source)
 		}
 	}
@@ -326,6 +327,29 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestMCPConfigBoundPreservesNarrowedOnly(t *testing.T) {
+	for _, bound := range []graphql.ConfigBound{
+		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803", APIVersion: "1", Revision: "1"}),
+		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{}),
+	} {
+		got := mcpConfigBound(&bound)
+		if got.NarrowedOnly != bound.NarrowedOnly || got.Source != bound.Source || got.Profile != bound.Profile {
+			t.Fatalf("MCP bound = %+v; GraphQL bound = %+v", got, bound)
+		}
+		raw, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded["narrowed_only"] != bound.NarrowedOnly {
+			t.Fatalf("MCP narrowed_only = %v; want %v", decoded["narrowed_only"], bound.NarrowedOnly)
 		}
 	}
 }

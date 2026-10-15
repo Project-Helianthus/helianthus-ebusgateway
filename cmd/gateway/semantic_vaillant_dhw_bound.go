@@ -61,10 +61,11 @@ func mcpConfigBound(bound *graphql.ConfigBound) *mcp.ConfigBound {
 		return nil
 	}
 	return &mcp.ConfigBound{
-		MinC:    bound.MinC,
-		MaxC:    bound.MaxC,
-		Source:  bound.Source,
-		Reason:  bound.Reason,
-		Profile: bound.Profile,
+		NarrowedOnly: bound.NarrowedOnly,
+		MinC:         bound.MinC,
+		MaxC:         bound.MaxC,
+		Source:       bound.Source,
+		Reason:       bound.Reason,
+		Profile:      bound.Profile,
 	}
 }

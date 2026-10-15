@@ -10,13 +10,14 @@ import (
 )
 
 // SystemConfigFieldDHWBivalencePoint is the system-config field whose bound is
-// resolved per controller profile instead of being a fixed range.
+// conservatively narrowed by controller-profile evidence.
 const SystemConfigFieldDHWBivalencePoint = "dhwBivalencePointC"
 
 // Sources of an active config bound.
 const (
 	// ConfigBoundSourceControllerProfile: the bound comes from a controller
-	// profile whose identity matched exactly (ebusreg LookupB524Bound found).
+	// profile whose identity matched exactly (ebusreg LookupB524Bound found),
+	// intersected with the conservative policy; it does not qualify an installation.
 	ConfigBoundSourceControllerProfile = "controller_profile"
 	// ConfigBoundSourceUnmatchedPolicy: no profile bound applies; the
 	// conservative gateway policy bound is active.
@@ -33,9 +34,9 @@ const (
 	ConfigBoundReasonInvalidBound     = "invalid_bound"
 )
 
-// Unmatched-identity policy for dhwBivalencePointC: the range every retained
-// controller profile agrees on (the smallest published maximum). The operator
-// may change this policy to reject the write instead.
+// Conservative policy window for dhwBivalencePointC. A controller-profile
+// match identifies an observation context, not the target installation; profile
+// evidence may narrow this window but must never widen it.
 // dhwBivalenceInstance is the II byte every system-config write and read of
 // dhwBivalencePointC sends; the profile bound is selector-scoped to it.
 const dhwBivalenceInstance = byte(0x00)
@@ -56,6 +57,9 @@ type ConfigBound struct {
 	// Profile names the matched controller identity (EID/software/hardware/API
 	// version.revision); empty for the unmatched policy.
 	Profile string
+	// NarrowedOnly means profile evidence can only narrow the conservative
+	// policy window, even when the effective endpoints are unchanged.
+	NarrowedOnly bool
 }
 
 // Describe renders the bound for mutation errors.
@@ -106,7 +110,8 @@ func controllerIdentityLabel(id vaillantsystem.B524ControllerIdentity) string {
 // ResolveDHWBivalenceBound resolves the dhwBivalencePointC bound from the exact
 // controller identity through the ebusreg controller-profile lookup (OP02,
 // GG=0x00, RR=0x0001). Only a found, retained-record-qualified, sane bound is
-// used; every other outcome yields the conservative unmatched policy bound.
+// intersected with the conservative policy window; an empty intersection or
+// any other outcome yields the conservative unmatched policy bound.
 // No profile value is ever substituted for a different identity.
 func ResolveDHWBivalenceBound(identity vaillantsystem.B524ControllerIdentity) ConfigBound {
 	result := vaillantsystem.LookupB524Bound(identity, mutationB524OpcodeLocal, 0x00, dhwBivalenceInstance, 0x0001)
@@ -125,11 +130,17 @@ func dhwBivalenceBoundFromResult(identity vaillantsystem.B524ControllerIdentity,
 		if math.IsNaN(bound.Min) || math.IsNaN(bound.Max) || math.IsInf(bound.Min, 0) || math.IsInf(bound.Max, 0) || bound.Min > bound.Max {
 			return unmatchedDHWBivalenceBound(ConfigBoundReasonInvalidBound)
 		}
+		minC := math.Max(bound.Min, unmatchedDHWBivalenceMinC)
+		maxC := math.Min(bound.Max, unmatchedDHWBivalenceMaxC)
+		if minC > maxC {
+			return unmatchedDHWBivalenceBound(ConfigBoundReasonInvalidBound)
+		}
 		return ConfigBound{
-			MinC:    bound.Min,
-			MaxC:    bound.Max,
-			Source:  ConfigBoundSourceControllerProfile,
-			Profile: controllerIdentityLabel(identity),
+			NarrowedOnly: true,
+			MinC:         minC,
+			MaxC:         maxC,
+			Source:       ConfigBoundSourceControllerProfile,
+			Profile:      controllerIdentityLabel(identity),
 		}
 	case vaillantsystem.B524BoundUnknownRegister:
 		return unmatchedDHWBivalenceBound(ConfigBoundReasonUnknownRegister)

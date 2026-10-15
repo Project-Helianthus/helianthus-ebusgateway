@@ -3298,6 +3298,16 @@ func buildSchemaTypes() graphqlSchemaTypes {
 	systemConfigBoundType := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "SystemConfigBound",
 		Fields: graphqlgo.Fields{
+			"narrowedOnly": &graphqlgo.Field{
+				Type:        graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Description: "Controller-profile evidence can only narrow the conservative policy window; it does not qualify the target installation.",
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if bound, ok := params.Source.(ConfigBound); ok {
+						return bound.NarrowedOnly, nil
+					}
+					return nil, nil
+				},
+			},
 			"minC": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Float),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {

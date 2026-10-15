@@ -226,13 +226,15 @@ type SystemState struct {
 
 // ConfigBound is the active write bound of one config field. Source is
 // "controller_profile" (Profile names the matched identity) or
-// "unmatched_policy" (Reason names why no profile bound applies).
+// "unmatched_policy" (Reason names why no profile bound applies). NarrowedOnly
+// marks profile evidence that can only narrow policy, not qualify an installation.
 type ConfigBound struct {
-	MinC    float64 `json:"min_c"`
-	MaxC    float64 `json:"max_c"`
-	Source  string  `json:"source"`
-	Reason  string  `json:"reason,omitempty"`
-	Profile string  `json:"profile,omitempty"`
+	NarrowedOnly bool    `json:"narrowed_only"`
+	MinC         float64 `json:"min_c"`
+	MaxC         float64 `json:"max_c"`
+	Source       string  `json:"source"`
+	Reason       string  `json:"reason,omitempty"`
+	Profile      string  `json:"profile,omitempty"`
 }
 
 type SystemConfig struct {

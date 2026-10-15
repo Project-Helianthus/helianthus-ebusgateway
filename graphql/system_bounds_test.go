@@ -23,7 +23,7 @@ var (
 
 func TestResolveDHWBivalenceBoundBASV0UsesProfile(t *testing.T) {
 	got := ResolveDHWBivalenceBound(boundTestBASV0)
-	want := ConfigBound{MinC: -20, MaxC: 20, Source: ConfigBoundSourceControllerProfile, Profile: "BASV0/SW0217/HW8803/API1.1"}
+	want := ConfigBound{MinC: -20, MaxC: 20, Source: ConfigBoundSourceControllerProfile, NarrowedOnly: true, Profile: "BASV0/SW0217/HW8803/API1.1"}
 	if got != want {
 		t.Fatalf("BASV0 bound = %+v; want %+v", got, want)
 	}
@@ -43,7 +43,7 @@ func TestResolveDHWBivalenceBoundUnmatchedIdentitiesUseConservativePolicy(t *tes
 	}
 	for _, tc := range cases {
 		got := ResolveDHWBivalenceBound(tc.id)
-		if got.MinC != -20 || got.MaxC != 20 || got.Source != ConfigBoundSourceUnmatchedPolicy || got.Reason != ConfigBoundReasonUnknownProfile || got.Profile != "" {
+		if got.MinC != -20 || got.MaxC != 20 || got.Source != ConfigBoundSourceUnmatchedPolicy || got.Reason != ConfigBoundReasonUnknownProfile || got.Profile != "" || got.NarrowedOnly {
 			t.Errorf("%s: bound = %+v; want unmatched policy -20..20 (unknown_profile)", tc.name, got)
 		}
 	}
@@ -173,57 +173,71 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 }
 
 func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
-	provider := NewLiveSemanticProvider()
-	value := 5.0
-	provider.SetSystem(&SystemStatus{Config: SystemConfig{
-		DhwBivalencePoint: &value,
-		DhwBivalenceBound: &ConfigBound{MinC: -20, MaxC: 20, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile},
-	}})
-	builder := NewBuilder(registry.NewDeviceRegistry(nil), nil)
-	builder.SetSemanticProvider(provider)
-	handler, err := NewHandler(builder)
-	if err != nil {
-		t.Fatalf("NewHandler error = %v", err)
-	}
-	query := `{ system { config { dhwBivalencePoint dhwBivalencePointBound { minC maxC source reason profile } dhw_bivalence_point_bound { minC maxC source } } } }`
-	body, _ := json.Marshal(map[string]string{"query": query})
-	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
-	}
-	var response struct {
-		Data struct {
-			System struct {
-				Config struct {
-					DhwBivalencePoint      float64 `json:"dhwBivalencePoint"`
-					DhwBivalencePointBound struct {
-						MinC    float64 `json:"minC"`
-						MaxC    float64 `json:"maxC"`
-						Source  string  `json:"source"`
-						Reason  *string `json:"reason"`
-						Profile *string `json:"profile"`
-					} `json:"dhwBivalencePointBound"`
-					Snake struct {
-						MaxC   float64 `json:"maxC"`
-						Source string  `json:"source"`
-					} `json:"dhw_bivalence_point_bound"`
-				} `json:"config"`
-			} `json:"system"`
-		} `json:"data"`
-		Errors []any `json:"errors"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || len(response.Errors) != 0 {
-		t.Fatalf("response err=%v errors=%v body=%s", err, response.Errors, rec.Body.String())
-	}
-	bound := response.Data.System.Config.DhwBivalencePointBound
-	if bound.MinC != -20 || bound.MaxC != 20 || bound.Source != "unmatched_policy" || bound.Reason == nil || *bound.Reason != "unknown_profile" || bound.Profile != nil {
-		t.Fatalf("dhwBivalencePointBound = %+v; want -20..20 unmatched_policy/unknown_profile without profile", bound)
-	}
-	if response.Data.System.Config.DhwBivalencePoint != 5 || response.Data.System.Config.Snake.MaxC != 20 || response.Data.System.Config.Snake.Source != "unmatched_policy" {
-		t.Fatalf("config = %+v; want value 5 and the snake_case alias to match", response.Data.System.Config)
+	for _, active := range []ConfigBound{
+		{MinC: -20, MaxC: 20, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile},
+		ResolveDHWBivalenceBound(boundTestBASV0),
+	} {
+		t.Run(active.Source, func(t *testing.T) {
+			provider := NewLiveSemanticProvider()
+			value := 5.0
+			provider.SetSystem(&SystemStatus{Config: SystemConfig{
+				DhwBivalencePoint: &value,
+				DhwBivalenceBound: &active,
+			}})
+			builder := NewBuilder(registry.NewDeviceRegistry(nil), nil)
+			builder.SetSemanticProvider(provider)
+			handler, err := NewHandler(builder)
+			if err != nil {
+				t.Fatalf("NewHandler error = %v", err)
+			}
+			query := `{ system { config { dhwBivalencePoint dhwBivalencePointBound { minC maxC source reason profile narrowedOnly } dhw_bivalence_point_bound { minC maxC source narrowedOnly } } } }`
+			body, _ := json.Marshal(map[string]string{"query": query})
+			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Data struct {
+					System struct {
+						Config struct {
+							DhwBivalencePoint      float64 `json:"dhwBivalencePoint"`
+							DhwBivalencePointBound struct {
+								NarrowedOnly *bool   `json:"narrowedOnly"`
+								MinC         float64 `json:"minC"`
+								MaxC         float64 `json:"maxC"`
+								Source       string  `json:"source"`
+								Reason       *string `json:"reason"`
+								Profile      *string `json:"profile"`
+							} `json:"dhwBivalencePointBound"`
+							Snake struct {
+								NarrowedOnly *bool   `json:"narrowedOnly"`
+								MaxC         float64 `json:"maxC"`
+								Source       string  `json:"source"`
+							} `json:"dhw_bivalence_point_bound"`
+						} `json:"config"`
+					} `json:"system"`
+				} `json:"data"`
+				Errors []any `json:"errors"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || len(response.Errors) != 0 {
+				t.Fatalf("response err=%v errors=%v body=%s", err, response.Errors, rec.Body.String())
+			}
+			bound := response.Data.System.Config.DhwBivalencePointBound
+			if bound.MinC != active.MinC || bound.MaxC != active.MaxC || bound.Source != active.Source || bound.NarrowedOnly == nil || *bound.NarrowedOnly != active.NarrowedOnly {
+				t.Fatalf("dhwBivalencePointBound = %+v; want %+v", bound, active)
+			}
+			if (active.Reason == "" && bound.Reason != nil) || (active.Reason != "" && (bound.Reason == nil || *bound.Reason != active.Reason)) ||
+				(active.Profile == "" && bound.Profile != nil) || (active.Profile != "" && (bound.Profile == nil || *bound.Profile != active.Profile)) {
+				t.Fatalf("reason/profile = %v/%v; want %+v", bound.Reason, bound.Profile, active)
+			}
+			snake := response.Data.System.Config.Snake
+			if response.Data.System.Config.DhwBivalencePoint != 5 || snake.MaxC != active.MaxC || snake.Source != active.Source || snake.NarrowedOnly == nil || *snake.NarrowedOnly != active.NarrowedOnly {
+				t.Fatalf("config = %+v; want value 5 and the snake_case alias to match", response.Data.System.Config)
+			}
+		})
 	}
 }
 
@@ -250,6 +264,8 @@ func TestDHWBivalenceBoundLookupFallbacks(t *testing.T) {
 		{"negative infinity max", -20, math.Inf(-1)},
 		{"positive infinity max", -20, math.Inf(1)},
 		{"inverted range", 50, -20},
+		{"empty intersection above policy", 25, 30},
+		{"empty intersection below policy", -30, -25},
 	} {
 		cases = append(cases, fallbackCase{
 			name: invalid.name,
@@ -317,5 +333,29 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestDHWBivalenceProfileBoundOnlyNarrowsPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		min, max, wantMin, wantMax float64
+	}{
+		{"cannot widen maximum", -20, 30, -20, 20},
+		{"narrows maximum", -20, 15, -20, 15},
+		{"cannot widen minimum", -30, 15, -20, 15},
+		{"narrows minimum", -15, 20, -15, 20},
+		{"single point intersection", 20, 30, 20, 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dhwBivalenceBoundFromResult(boundTestBASV0, vaillantsystem.B524BoundResult{
+				Status: vaillantsystem.B524BoundFound,
+				Bound:  vaillantsystem.B524RegisterBound{Qualified: true, Min: tc.min, Max: tc.max},
+			})
+			want := ConfigBound{MinC: tc.wantMin, MaxC: tc.wantMax, Source: ConfigBoundSourceControllerProfile, Profile: "BASV0/SW0217/HW8803/API1.1", NarrowedOnly: true}
+			if got != want {
+				t.Fatalf("bound = %+v; want %+v", got, want)
+			}
+		})
 	}
 }

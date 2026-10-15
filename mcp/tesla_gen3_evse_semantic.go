@@ -663,13 +663,22 @@ func (p *TeslaGen3EVSESemanticPublication) provisional(v *modbusreg.TeslaGen3Pro
 	return &value, ""
 }
 
+func teslaGen3EVSEDigestLifecycle(lifecycle TeslaGen3EVSESemanticEvidence) TeslaGen3EVSESemanticEvidence {
+	// JSON omits Go monotonic readings; normalize wall clocks on this copy only.
+	lifecycle.ObservedAt = lifecycle.ObservedAt.UTC()
+	lifecycle.EvaluatedAt = lifecycle.EvaluatedAt.UTC()
+	lifecycle.PersistentObservedAt = lifecycle.PersistentObservedAt.UTC()
+	lifecycle.ProvisionalObservedAt = lifecycle.ProvisionalObservedAt.UTC()
+	return lifecycle
+}
+
 func teslaGen3EVSEPersistentRecord(value *modbusreg.TeslaGen3PersistentCurrentLimit, lifecycle TeslaGen3EVSESemanticEvidence) teslaGen3EVSEPersistentEvidence {
 	return teslaGen3EVSEPersistentEvidence{
 		OperationVersion:     value.OperationVersion(),
 		MaxOutputCurrentAmps: value.MaxOutputCurrentAmps(),
 		RequestPayload:       append([]byte(nil), value.RequestPayload()...),
 		TerminalPayload:      append([]byte(nil), value.TerminalPayload()...),
-		Lifecycle:            lifecycle,
+		Lifecycle:            teslaGen3EVSEDigestLifecycle(lifecycle),
 	}
 }
 
@@ -686,7 +695,7 @@ func teslaGen3EVSEProvisionalRecord(value *modbusreg.TeslaGen3ProvisionalCurrent
 		AckPayload:              append([]byte(nil), value.AckPayload()...),
 		ReadbackRequestPayload:  append([]byte(nil), value.ReadbackRequestPayload()...),
 		ReadbackTerminalPayload: append([]byte(nil), value.ReadbackTerminalPayload()...),
-		Lifecycle:               lifecycle,
+		Lifecycle:               teslaGen3EVSEDigestLifecycle(lifecycle),
 	}
 }
 

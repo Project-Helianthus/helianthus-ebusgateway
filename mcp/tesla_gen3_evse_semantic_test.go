@@ -25,6 +25,77 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
+// Canonical snapshot goldens are specific to issue #1026. They include both
+// persistent and provisional facts and their unchanged native evidence.
+func TestTeslaGen3EVSESemanticCanonicalCurrentDecimals(t *testing.T) {
+	for _, tc := range []struct {
+		amps        uint32
+		coefficient string
+		exponent    int32
+	}{
+		{10, "1", 1}, {20, "2", 1}, {30, "3", 1}, {100, "1", 2},
+		{18, "18", 0}, {0, "0", 0},
+	} {
+		t.Run(strconv.FormatUint(uint64(tc.amps), 10), func(t *testing.T) {
+			p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			persistentBody := []byte{0x0a, 0x02, 0x08, byte(tc.amps)}
+			persistent, err := modbusreg.NewTeslaGen3PersistentCurrentLimit(modbusreg.TeslaGen3PersistentCurrentLimitSpec{
+				OperationVersion:     modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+				MaxOutputCurrentAmps: tc.amps,
+				RequestPayload:       teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCConfigureSettings, persistentBody),
+				TerminalPayload:      teslaGen3EVSECurrentLimitV1Terminal(8, persistentBody),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			provisionalBody := []byte{0x0a, 0x07, 0x08, byte(tc.amps), 0x10, 0xd8, 0x04, 0x18, 0x00}
+			provisional, err := modbusreg.NewTeslaGen3ProvisionalCurrentLimit(modbusreg.TeslaGen3ProvisionalCurrentLimitSpec{
+				OperationVersion:    modbusreg.TeslaGen3CurrentLimitOperationVersion24443,
+				LimitCurrentMaxAmps: tc.amps, LimitTimeoutSeconds: 600,
+				SetRequestPayload:       teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCSetProvisional, provisionalBody),
+				AckPayload:              teslaGen3EVSECurrentLimitV1Terminal(26, nil),
+				ReadbackRequestPayload:  teslaGen3EVSECurrentLimitV1Request(t, modbusreg.TeslaFC100OperationWCGetProvisional, nil),
+				ReadbackTerminalPayload: teslaGen3EVSECurrentLimitV1Terminal(28, append(append([]byte(nil), provisionalBody...), 0x10, 0x20)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			if err := p.Publish(TeslaGen3EVSECurrentLimitV1Source{Persistent: &persistent, Provisional: &provisional}, TeslaGen3EVSESemanticEvidence{
+				ObservationID: "observation:canonical-decimal", ObservedAt: base, EvaluatedAt: base,
+				MonotonicNS: 1, EvaluatedMonotonicNS: 1, Sequence: 1,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.current.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			for _, fact := range []semreg.DefinitionID{"evse.limit.configured_current", "evse.limit.allocated_current"} {
+				candidate := teslaGen3EVSECandidate(t, p.current, fact)
+				want := semreg.Decimal{Coefficient: tc.coefficient, Exponent10: tc.exponent}
+				if got := candidate.Value.Quantity.Number; got != want {
+					t.Fatalf("%s decimal=%+v want=%+v", fact, got, want)
+				}
+			}
+			canonical, err := semreg.CanonicalJSON(p.current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join("testdata", "issue1026_evse_decimal_"+strconv.FormatUint(uint64(tc.amps), 10)+".canonical.json")
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(canonical) != string(want) {
+				t.Fatalf("canonical snapshot changed: %s", path)
+			}
+		})
+	}
+}
+
 func TestTeslaGen3EVSESemanticPublicationMapsConfiguredAndAllocated(t *testing.T) {
 	p := newTeslaGen3EVSESemanticFixture(t)
 	view, err := p.TeslaGen3EVSESemanticCurrent(context.Background())

@@ -692,7 +692,14 @@ func teslaGen3EVSEProvisionalRecord(value *modbusreg.TeslaGen3ProvisionalCurrent
 
 func (p *TeslaGen3EVSESemanticPublication) candidate(id, dimension, value string, amps uint32, freshFor, retainFor time.Duration, current semreg.Snapshot, binding semreg.NativeBindingID, source semreg.SourceID, epoch semreg.SourceEpochID, generation semreg.Uint64, evidence semreg.EvidenceRef, receivedAt semreg.TimePoint, receiptMono semreg.MonotonicPoint, evaluatedAt semreg.TimePoint, evaluationMono semreg.MonotonicPoint) semreg.FactCandidate {
 	key := semreg.FactKey{PackID: "helianthus.pack.evse", PackVersion: "1.0.0", FactID: semreg.DefinitionID(id), Dimensions: []semreg.Dimension{{ID: semreg.DefinitionID(dimension), Value: semreg.Value{Kind: semreg.ValueText, Text: &value}}}}
-	v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: semreg.Decimal{Coefficient: strconv.FormatUint(uint64(amps), 10), Exponent10: 0}, Unit: "unit.ampere"}}
+	// SemReg requires nonzero coefficients without trailing zeros. Keep zero
+	// at exponent zero and move each power of ten without rounding the value.
+	number := semreg.Decimal{Coefficient: strconv.FormatUint(uint64(amps), 10)}
+	for number.Coefficient != "0" && strings.HasSuffix(number.Coefficient, "0") {
+		number.Coefficient = strings.TrimSuffix(number.Coefficient, "0")
+		number.Exponent10++
+	}
+	v := semreg.Value{Kind: semreg.ValueQuantity, Quantity: &semreg.Quantity{Number: number, Unit: "unit.ampere"}}
 	h := evseHash(p.cfg.AssetID, string(binding), id)
 	candidateID := semreg.CandidateID("candidate:tesla-wc3:" + h[:32])
 	return semreg.FactCandidate{CandidateID: candidateID, Key: key, Value: &v, Quality: semreg.Quality{Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationQualified, Promotion: semreg.PromotionPromoted, Validity: semreg.ValidityGood, Availability: semreg.AvailabilityAvailable, Freshness: semreg.FreshnessFresh, Reasons: []semreg.DefinitionID{}}, Times: semreg.Times{ReceivedAt: receivedAt, ReceiptMonotonic: receiptMono, EvaluatedAt: evaluatedAt, EvaluateMonotonic: evaluationMono}, FreshnessPolicy: semreg.FreshnessPolicy{PolicyID: "policy:tesla-wc3-native-receipt", Version: "1.0.0", FreshForNS: semreg.Uint64(strconv.FormatInt(freshFor.Nanoseconds(), 10)), RetainForNS: semreg.Uint64(strconv.FormatInt(retainFor.Nanoseconds(), 10)), MaxWallUncertaintyNS: "0"}, BindingID: &binding, SourceEpochID: &epoch, DriverGeneration: &generation, Origin: semreg.OriginRef{OriginID: semreg.OriginID("origin:tesla-wc3:" + h[:32]), Kind: semreg.OriginNativeObservation, SourceID: &source, SourceEpochID: &epoch, BindingID: &binding, Evidence: []semreg.EvidenceRef{evidence}}, Evidence: []semreg.EvidenceRef{evidence}, Revision: p.nextCandidateRevision(current, candidateID)}

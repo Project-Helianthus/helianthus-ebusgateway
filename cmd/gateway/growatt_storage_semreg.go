@@ -459,6 +459,11 @@ func growattStorageHash(parts ...string) string {
 	return hex.EncodeToString(sum[:])
 }
 func growattStorageEvidence(kind semreg.DefinitionID, value any) semreg.EvidenceRef {
+	// Canonicalize only the digest copy; retained native evidence keeps its clock.
+	if evidence, ok := value.(GrowattBMSRS485ObservationEvidence); ok {
+		evidence.ReceiptWall = evidence.ReceiptWall.UTC()
+		value = evidence
+	}
 	encoded, _ := json.Marshal(value)
 	return growattStorageDigestEvidence(kind, string(encoded))
 }

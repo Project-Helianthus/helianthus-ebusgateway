@@ -457,9 +457,9 @@ func TestOperationReadInFlightRejectsConcurrentDisable(t *testing.T) {
 	}
 }
 
-// These are real AfterFunc wiring checks. The 100 ms idle interval leaves room
-// for the initial epoch notification; the 10 s observation budget is 100 idle
-// intervals, tolerating runner contention without approaching Go's suite timeout.
+// These are real AfterFunc wiring checks. Arm the timer only after the initial
+// epoch notification, so setup ordering does not depend on the idle interval.
+// The 10 s observation budget tolerates runner contention during completion.
 const operationIdleWiringInterval = 100 * time.Millisecond
 const operationIdleWiringBudget = 10 * time.Second
 
@@ -538,7 +538,7 @@ func setOperationIdleDispatcher(t *testing.T, manager *b503session.Manager, disp
 
 func TestOperationIdleExpiryRefreshesBeforeDefensiveDisable(t *testing.T) {
 	refreshed := make(chan struct{}, 1)
-	manager := b503session.New(newTK(testEpoch), operationIdleWiringInterval, func(context.Context) (b503session.TransportKey, error) {
+	manager := b503session.New(newTK(testEpoch), 0, func(context.Context) (b503session.TransportKey, error) {
 		refreshed <- struct{}{}
 		return newTK(testEpoch + 1), nil
 	})
@@ -563,6 +563,7 @@ func TestOperationIdleExpiryRefreshesBeforeDefensiveDisable(t *testing.T) {
 		t.Fatalf("enable = %v", err)
 	}
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	b503session.ArmIdleTimerForTest(manager, operationIdleWiringInterval)
 	awaitOperationIdleSignal(t, refreshed, "admitted idle refresh")
 	timer := time.NewTimer(operationIdleWiringBudget)
 	defer timer.Stop()
@@ -597,7 +598,7 @@ func TestOperationIdleRefreshRolloverBeforeEmissionRetainsLatestCleanup(t *testi
 	dispatchReturned := make(chan struct{}, 1)
 	var release sync.Once
 	var dispatches, emissions atomic.Int32
-	manager := b503session.New(newTK(testEpoch), operationIdleWiringInterval, func(context.Context) (b503session.TransportKey, error) {
+	manager := b503session.New(newTK(testEpoch), 0, func(context.Context) (b503session.TransportKey, error) {
 		refreshed <- struct{}{}
 		return newTK(testEpoch + 1), nil
 	})
@@ -625,6 +626,7 @@ func TestOperationIdleRefreshRolloverBeforeEmissionRetainsLatestCleanup(t *testi
 		t.Fatalf("enable = %v", err)
 	}
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	b503session.ArmIdleTimerForTest(manager, operationIdleWiringInterval)
 	awaitOperationIdleSignal(t, refreshed, "admitted idle refresh")
 	awaitOperationIdleSignal(t, dispatchEntered, "refreshed idle dispatcher")
 	manager.OnEpochAdvance(context.Background(), testEpoch+2)

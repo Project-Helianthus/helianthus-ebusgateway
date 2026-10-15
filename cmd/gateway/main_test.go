@@ -556,13 +556,27 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var runErr error
 	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			// Do not restore hooks while a worker may still be reading them.
+			t.Fatal("run() did not exit after context cancellation; hooks not restored")
+		}
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
 		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
 		startHTTPServerFn = origStartHTTPServerFn
+		if runErr != nil {
+			t.Errorf("run() error = %v", runErr)
+		}
 	})
 
+	ready := make(chan struct{})
 	semanticSource := make(chan byte, 1)
 	semanticAuto := make(chan bool, 1)
 	expectedStartupSource := make(chan byte, 1)
@@ -577,6 +591,7 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 		expectedStartupSource <- resolved.ScanSource
 		expectedStartupAuto <- resolved.ScanSourceAuto
 		startupTargets <- append([]byte(nil), cfg.StartupProbeTargets...)
+		close(ready)
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, _ <-chan struct{}) *vaillantSemanticPoller {
@@ -585,9 +600,7 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
 		return nil, nil, nil
 	}
 
@@ -602,51 +615,48 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
-	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg)
+		defer close(done)
+		runErr = run(ctx, cfg)
 	}()
 
-	wantSource := byte(0x7F)
-	var gotSemanticSource byte
 	select {
-	case gotSemanticSource = <-semanticSource:
-	case <-time.After(2 * time.Second):
-		t.Fatal("semantic poller was not initialized")
+	case <-ready:
+	case <-done:
+		t.Fatalf("run() exited before startup observations were ready: %v", runErr)
+	case <-time.After(30 * time.Second):
+		t.Fatal("startup observations were not ready")
 	}
+
+	wantSource := byte(0x7F)
+	gotSemanticSource := <-semanticSource
 	if gotSemanticSource != wantSource {
 		t.Fatalf("semantic poller source = 0x%02X; want default-selected source 0x%02X", gotSemanticSource, wantSource)
 	}
 
-	select {
-	case got := <-semanticAuto:
+	{
+		got := <-semanticAuto
 		if got {
 			t.Fatal("semantic poller source remained auto; want explicit proxy startup source")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("semantic poller auto flag was not observed")
 	}
 
-	select {
-	case got := <-expectedStartupSource:
+	{
+		got := <-expectedStartupSource
 		if got != gotSemanticSource {
 			t.Fatalf("startup confirmation source = 0x%02X; want semantic source 0x%02X", got, gotSemanticSource)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("startup confirmation source was not observed")
 	}
 
-	select {
-	case got := <-expectedStartupAuto:
+	{
+		got := <-expectedStartupAuto
 		if got {
 			t.Fatal("startup confirmation source remained auto; want explicit proxy startup source")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("startup confirmation auto flag was not observed")
 	}
 
-	select {
-	case got := <-startupTargets:
+	{
+		got := <-startupTargets
 		// Structural fallback: when source-selection's passive warmup
 		// observed no probable targets, the startup probe seed is the
 		// bounded Vaillant structural set so 0x15 (regulator) and 0x26
@@ -655,17 +665,6 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("startup probe targets = % X; want % X", got, want)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("startup probe targets were not observed")
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("run() did not exit after context cancellation")
 	}
 }
 

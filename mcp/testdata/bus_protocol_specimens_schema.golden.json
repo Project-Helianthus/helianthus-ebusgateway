@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"family":{"type":"string"},"limit":{"minimum":1,"type":"integer"}},"type":"object"}

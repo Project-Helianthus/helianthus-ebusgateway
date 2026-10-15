@@ -457,75 +457,189 @@ func TestOperationReadInFlightRejectsConcurrentDisable(t *testing.T) {
 	}
 }
 
+// These are real AfterFunc wiring checks. The 100 ms idle interval leaves room
+// for the initial epoch notification; the 10 s observation budget is 100 idle
+// intervals, tolerating runner contention without approaching Go's suite timeout.
+const operationIdleWiringInterval = 100 * time.Millisecond
+const operationIdleWiringBudget = 10 * time.Second
+
+func awaitOperationIdleSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	timer := time.NewTimer(operationIdleWiringBudget)
+	defer timer.Stop()
+	select {
+	case <-signal:
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func awaitOperationIdleCompletion(t *testing.T, manager *b503session.Manager) {
+	t.Helper()
+	// Rollover cancels the dispatch context before the callback finalizes, so
+	// cancellation cannot signal completion there. No public completion hook
+	// exists: observe the terminal owner/pending state only after dispatch returns.
+	timer := time.NewTimer(operationIdleWiringBudget)
+	defer timer.Stop()
+	ticker := time.NewTicker(operationIdleWiringInterval / 10)
+	defer ticker.Stop()
+	for {
+		_, pending := manager.PendingOperation()
+		if !manager.IsOwned() && !pending {
+			return
+		}
+		select {
+		case <-timer.C:
+			t.Fatal("idle callback did not release owner and pending operation")
+		case <-ticker.C:
+		}
+	}
+}
+
+// Register cleanup before enabling the real timer. Closing the hook gate fences
+// callbacks that have not entered yet; admitted test work is released and joined
+// before reset, including when a signal wait fails.
+func setOperationIdleDispatcher(t *testing.T, manager *b503session.Manager, dispatch b503session.DispatchFunc, release func()) {
+	t.Helper()
+	var mu sync.Mutex
+	stopped, started := false, false
+	returned := make(chan struct{})
+	manager.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		mu.Lock()
+		if stopped {
+			mu.Unlock()
+			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown}
+		}
+		if started {
+			mu.Unlock()
+			t.Error("idle timer dispatched cleanup more than once")
+			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown}
+		}
+		started = true
+		mu.Unlock()
+		defer close(returned)
+		return dispatch(ctx, target)
+	})
+	t.Cleanup(func() {
+		if release != nil {
+			release()
+		}
+		defer manager.ResetForRestart()
+		mu.Lock()
+		stopped = true
+		join := started
+		mu.Unlock()
+		if join {
+			awaitOperationIdleSignal(t, returned, "released idle dispatcher")
+			awaitOperationIdleCompletion(t, manager)
+		}
+	})
+}
+
 func TestOperationIdleExpiryRefreshesBeforeDefensiveDisable(t *testing.T) {
 	refreshed := make(chan struct{}, 1)
-	manager := b503session.New(newTK(testEpoch), 20*time.Millisecond, func(context.Context) (b503session.TransportKey, error) {
+	manager := b503session.New(newTK(testEpoch), operationIdleWiringInterval, func(context.Context) (b503session.TransportKey, error) {
 		refreshed <- struct{}{}
 		return newTK(testEpoch + 1), nil
 	})
-	cleanup := &dispatchRecorder{outcomes: []b503session.DispatchOutcome{{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}}}
-	manager.SetCleanupDispatcher(cleanup.dispatch)
+	dispatched := make(chan context.Context, 1)
+	var dispatches atomic.Int32
+	setOperationIdleDispatcher(t, manager, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		dispatches.Add(1)
+		operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+		pending, present := manager.PendingOperation()
+		if !ok || !present || operationID != pending.OperationID || pending.Kind != b503session.OperationDisable ||
+			pending.Transport != newTK(testEpoch+1) || pending.Target != operationTarget || target != operationTarget ||
+			!manager.AdmitPendingEmission(operationID, target) {
+			t.Error("idle cleanup did not admit a target-bound disable with the refreshed transport key")
+			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown}
+		}
+		dispatched <- ctx
+		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}
+	}, nil)
 	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
 	}); err != nil {
 		t.Fatalf("enable = %v", err)
 	}
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
+	awaitOperationIdleSignal(t, refreshed, "admitted idle refresh")
+	timer := time.NewTimer(operationIdleWiringBudget)
+	defer timer.Stop()
 	select {
-	case <-refreshed:
-	case <-time.After(time.Second):
-		t.Fatal("idle expiry did not refresh current epoch")
+	case ctx := <-dispatched:
+		// With no rollover, deferred context cancellation follows recording the
+		// cleanup result and is a completion signal for the real timer path.
+		awaitOperationIdleSignal(t, ctx.Done(), "idle cleanup completion")
+	case <-timer.C:
+		t.Fatal("idle expiry did not issue refreshed defensive disable")
 	}
-	deadline := time.After(time.Second)
-	for len(cleanup.snapshot()) == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("idle expiry did not issue refreshed defensive disable")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	if got := cleanup.snapshot(); len(got) != 1 || got[0] != operationTarget {
-		t.Fatalf("idle cleanup targets = %v, want one %#x", got, operationTarget)
+	if got := dispatches.Load(); got != 1 {
+		t.Fatalf("idle cleanup dispatches = %d, want one", got)
 	}
 	if got := manager.TransportKey(); got != newTK(testEpoch+1) {
 		t.Fatalf("idle cleanup transport = %+v, want refreshed epoch", got)
 	}
+	cleanup, ok := manager.CleanupObligation()
+	if !ok || cleanup.Target != operationTarget || cleanup.TransportEpoch != testEpoch ||
+		!cleanup.LastAttempted || !cleanup.LastEmitted || cleanup.LastAttemptEpoch != testEpoch+1 || cleanup.LastNative != b503session.NativeACK {
+		t.Fatalf("idle cleanup evidence = %+v, present=%v", cleanup, ok)
+	}
+	if got := manager.StatusSnapshot(); got.Owned || got.State != b503session.Idle {
+		t.Fatalf("idle cleanup state = %+v, want ownerless Idle", got)
+	}
 }
 
 func TestOperationIdleRefreshRolloverBeforeEmissionRetainsLatestCleanup(t *testing.T) {
-	dispatchEntered := make(chan struct{})
+	refreshed := make(chan struct{}, 1)
+	dispatchEntered := make(chan struct{}, 1)
 	dispatchRelease := make(chan struct{})
-	manager := b503session.New(newTK(testEpoch), 20*time.Millisecond, func(context.Context) (b503session.TransportKey, error) {
+	dispatchReturned := make(chan struct{}, 1)
+	var release sync.Once
+	var dispatches, emissions atomic.Int32
+	manager := b503session.New(newTK(testEpoch), operationIdleWiringInterval, func(context.Context) (b503session.TransportKey, error) {
+		refreshed <- struct{}{}
 		return newTK(testEpoch + 1), nil
 	})
-	manager.SetCleanupDispatcher(func(ctx context.Context, target byte) b503session.DispatchOutcome {
-		close(dispatchEntered)
-		<-dispatchRelease
-		if ctx.Err() != nil {
-			return b503session.DispatchOutcome{Err: b503session.ErrTransportDown, Transport: newTK(testEpoch + 1)}
+	setOperationIdleDispatcher(t, manager, func(ctx context.Context, target byte) b503session.DispatchOutcome {
+		defer func() { dispatchReturned <- struct{}{} }()
+		dispatches.Add(1)
+		operationID, ok := b503session.PendingOperationIDFromContext(ctx)
+		pending, present := manager.PendingOperation()
+		if !ok || !present || operationID != pending.OperationID || pending.Kind != b503session.OperationDisable ||
+			pending.Target != operationTarget || target != operationTarget || pending.Transport != newTK(testEpoch+1) {
+			t.Error("idle rollover did not reach a target-bound disable with the refreshed transport key")
 		}
-		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}
-	})
+		dispatchEntered <- struct{}{}
+		<-dispatchRelease
+		if ctx.Err() == nil || manager.AdmitPendingEmission(operationID, target) {
+			t.Error("rollover did not cancel and fence stale idle emission")
+			emissions.Add(1)
+			return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch + 1)}
+		}
+		return b503session.DispatchOutcome{Err: b503session.ErrTransportDown, Transport: newTK(testEpoch + 1)}
+	}, func() { release.Do(func() { close(dispatchRelease) }) })
 	if _, err := manager.EnableOperation(context.Background(), operationTarget, func(context.Context, byte) b503session.DispatchOutcome {
 		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: newTK(testEpoch)}
 	}); err != nil {
 		t.Fatalf("enable = %v", err)
 	}
 	manager.OnEpochAdvance(context.Background(), testEpoch+1)
-	<-dispatchEntered
+	awaitOperationIdleSignal(t, refreshed, "admitted idle refresh")
+	awaitOperationIdleSignal(t, dispatchEntered, "refreshed idle dispatcher")
 	manager.OnEpochAdvance(context.Background(), testEpoch+2)
-	close(dispatchRelease)
-	deadline := time.After(time.Second)
-	for manager.IsOwned() {
-		select {
-		case <-deadline:
-			t.Fatal("idle rollover retained owner")
-		case <-time.After(time.Millisecond):
-		}
+	release.Do(func() { close(dispatchRelease) })
+	awaitOperationIdleSignal(t, dispatchReturned, "stale idle dispatcher return")
+	awaitOperationIdleCompletion(t, manager)
+	if got := dispatches.Load(); got != 1 || emissions.Load() != 0 {
+		t.Fatalf("idle rollover dispatches = %d, emissions = %d, want one dispatch without stale emission", got, emissions.Load())
 	}
 	cleanup, ok := manager.CleanupObligation()
-	if !ok || cleanup.TransportEpoch != testEpoch+2 || cleanup.LastAttempted {
+	if !ok || cleanup.Target != operationTarget || cleanup.TransportEpoch != testEpoch+2 || cleanup.LastAttempted || cleanup.LastEmitted {
 		t.Fatalf("idle rollover cleanup = %+v, present=%v", cleanup, ok)
+	}
+	if got := manager.TransportKey(); got != newTK(testEpoch+2) {
+		t.Fatalf("idle rollover transport = %+v, want latest epoch", got)
 	}
 }
 

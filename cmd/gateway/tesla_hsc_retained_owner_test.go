@@ -19,14 +19,16 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func TestTeslaHSCRetainedOwnerConfigurationFailsClosed(t *testing.T) {
-	if owner, err := startTeslaHSCRetainedOwner(ebusgateway.TeslaGen3HSCRetainedConfig{}); err != nil || owner != nil {
+	if owner, err := startTeslaHSCRetainedOwner(ebusgateway.TeslaGen3HSCRetainedConfig{}, newTestSemanticHub(t)); err != nil || owner != nil {
 		t.Fatalf("disabled zero config = %T, %v", owner, err)
 	}
 	for name, mutate := range map[string]func(*ebusgateway.TeslaGen3HSCRetainedConfig){
@@ -40,7 +42,7 @@ func TestTeslaHSCRetainedOwnerConfigurationFailsClosed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := teslaRetainedConfig()
 			mutate(&config)
-			if _, err := startTeslaHSCRetainedOwner(config); err == nil {
+			if _, err := startTeslaHSCRetainedOwner(config, newTestSemanticHub(t)); err == nil {
 				t.Fatal("invalid configuration accepted")
 			}
 		})
@@ -784,7 +786,7 @@ func teslaRetainedConfig() ebusgateway.TeslaGen3HSCRetainedConfig {
 
 func startTeslaRetainedFixture(t *testing.T, config ebusgateway.TeslaGen3HSCRetainedConfig) *teslaHSCRetainedOwner {
 	t.Helper()
-	owner, err := startTeslaHSCRetainedOwner(config)
+	owner, err := startTeslaHSCRetainedOwner(config, newTestSemanticHub(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,3 +998,204 @@ func encodeTeslaTestVarint(value uint32) []byte {
 var _ mcp.TeslaGen3EVSECurrentLimitV1Provider = (*teslaHSCRetainedOwner)(nil)
 var _ mcp.TeslaGen3EVSESemanticProvider = (*teslaHSCRetainedOwner)(nil)
 var _ mcp.SemanticEVSEPrometheusProvider = (*teslaHSCRetainedOwner)(nil)
+
+// TestTeslaCharacterizationOwnerFirstIncarnationLegacyIdentityAndPublicBytes
+// pins the legacy Tesla IDs and public bytes of the first incarnation through
+// the retained owner with an injected publication clock (issue #1024). The
+// successor generation is deliberately absent: its identities are the one
+// documented observable change of the hub migration.
+func TestTeslaCharacterizationOwnerFirstIncarnationLegacyIdentityAndPublicBytes(t *testing.T) {
+	owner, clock := startTeslaCharacterizationOwner(t)
+	const dir = "tesla_owner_first_incarnation"
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newGatewayModbusMCPProviderWithRuntimes(nil, nil, owner))
+	read := func(name string, wall time.Time, readClock time.Duration) {
+		t.Helper()
+		clock.set(wall, readClock)
+		value, err := owner.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		public := characterizationJSON(t, value)
+		canonical, snapshot := characterizationCanonical(t, public)
+		characterizationGolden(t, dir, name+".public.json", public)
+		characterizationGolden(t, dir, name+".canonical.json", canonical)
+		characterizationGolden(t, dir, name+".ids.json", characterizationIdentity(t, snapshot))
+		current, ok := owner.SemanticEVSECurrentAt(wall.Add(time.Second))
+		if !ok {
+			t.Fatal("EVSE CurrentAt unavailable")
+		}
+		characterizationGolden(t, dir, name+".current_at.json", characterizationJSON(t, current))
+	}
+	read("sequence2", characterizationAnchor.Add(5*time.Second), 3*time.Second)
+	clock.set(characterizationAnchor.Add(7*time.Second), 4*time.Second)
+	persistent := teslaPersistentOutcome(t, 4, 18)
+	persistent.Exchange.ReceiptWall = characterizationAnchor.Add(6 * time.Second)
+	if err := owner.IngestPersistent(context.Background(), persistent); err != nil {
+		t.Fatal(err)
+	}
+	read("sequence3", characterizationAnchor.Add(8*time.Second), 5*time.Second)
+	clock.set(characterizationAnchor.Add(9*time.Second), 6*time.Second)
+	characterizationGolden(t, dir, "mcp_sequence3.json", characterizationMCPCall(t, server.Handler(), mcp.SemanticV1EVSECurrentGetTool, `{}`))
+}
+
+func teslaSuccessorOutcome(t *testing.T, config ebusgateway.TeslaGen3HSCRetainedConfig, correlation uint64, amps uint32) TeslaGen3PersistentOutcome {
+	t.Helper()
+	outcome := teslaPersistentOutcome(t, correlation, amps)
+	outcome.Exchange.SourceEpoch, outcome.Exchange.DriverGeneration = config.SourceEpoch, config.DriverGeneration
+	return outcome
+}
+
+// TestTeslaHSCRetainedOwnerSuccessorFirstPublicationIsAcceptedOnTheRetainedKernel
+// proves the documented observable change of issue #1024: the successor
+// generation publishes on the same retained kernel with per-incarnation
+// binding, service and capability identities.
+func TestTeslaHSCRetainedOwnerSuccessorFirstPublicationIsAcceptedOnTheRetainedKernel(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	config := teslaRetainedConfig()
+	owner, err := startTeslaHSCRetainedOwner(config, hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	predecessor, _ := hub.Inspect(semreg.AssetID(config.AssetID))
+	if err := owner.Fence(config.DriverGeneration, config.DriverGeneration+1); err != nil {
+		t.Fatal(err)
+	}
+	next := config
+	next.SourceEpoch = "epoch:tesla-wc3-b"
+	next.DriverGeneration++
+	successor, err := owner.Successor(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := successor.IngestPersistent(context.Background(), teslaSuccessorOutcome(t, next, 1, 18)); err != nil {
+		t.Fatalf("successor first publication: %v", err)
+	}
+	view, _ := hub.Inspect(semreg.AssetID(config.AssetID))
+	oldBinding := predecessor.Snapshot.Bindings[0].BindingID
+	for _, binding := range view.Snapshot.Bindings {
+		if binding.BindingID == oldBinding && binding.State == semreg.BindingCurrent {
+			t.Fatal("predecessor binding stayed current")
+		}
+		if binding.BindingID != oldBinding && (binding.State != semreg.BindingCurrent || binding.SourceEpochID != "epoch:tesla-wc3-b" || binding.DriverGeneration != "8") {
+			t.Fatalf("successor binding=%+v", binding)
+		}
+	}
+	if len(view.Snapshot.Bindings) != 2 {
+		t.Fatalf("bindings=%+v", view.Snapshot.Bindings)
+	}
+	for _, service := range view.Snapshot.Services {
+		if (service.BindingID == oldBinding) != (service.Availability == semreg.AvailabilityWithdrawn) {
+			t.Fatalf("service=%+v", service)
+		}
+	}
+	for _, capability := range view.Snapshot.Capabilities {
+		if (capability.BindingID == oldBinding) != (capability.Availability == semreg.AvailabilityWithdrawn) {
+			t.Fatalf("capability=%+v", capability)
+		}
+	}
+	if _, err := successor.TeslaGen3EVSESemanticCurrent(context.Background()); err != nil {
+		t.Fatalf("successor read: %v", err)
+	}
+	characterizationGolden(t, "tesla_successor", "first_publication.ids.json", characterizationIdentity(t, view.Snapshot))
+}
+
+func TestTeslaHSCRetainedOwnerReadsFollowTheHubControlGate(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	owner, err := startTeslaHSCRetainedOwner(teslaRetainedConfig(), hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.IngestPersistent(context.Background(), teslaPersistentOutcome(t, 1, 16)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := owner.SemanticEVSECurrentAt(time.Unix(1_700_000_002, 0)); !ok {
+		t.Fatal("published EVSE view unavailable")
+	}
+	_, err = hub.Fence(semhub.FenceRequest{Source: "source:tesla-wc3-a", Epoch: "epoch:tesla-wc3-a", Generation: 7, Reason: "lifecycle.generation_replaced",
+		Evidence:   []semreg.EvidenceRef{{Owner: "helianthus.pack.evse", Kind: "native.tesla.wc3.generation_fence", Digest: semreg.Digest("sha256:" + strings.Repeat("a", 64)), Contract: semreg.ContractKernelV1, Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionMetadataOnly}},
+		ObservedAt: semreg.TimePoint{UnixNanoseconds: "1700000003000000123", ClockID: "wall.utc", UncertaintyNS: "0"}, Monotonic: semreg.MonotonicPoint{ClockEpochID: "clock:tesla-wc3-a", Nanoseconds: "3000000000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := owner.SemanticEVSECurrentAt(time.Unix(1_700_000_004, 0)); ok {
+		t.Fatal("withdrawn EVSE scrape view stayed public")
+	}
+	if _, err := owner.TeslaGen3EVSESemanticCurrent(context.Background()); err == nil {
+		t.Fatal("withdrawn EVSE semantic view stayed public")
+	}
+}
+
+func TestTeslaHSCRetainedOwnerSuccessorAttachFailureIsRetriedWithTheAdmittedSuccessor(t *testing.T) {
+	hub := newTestSemanticHub(t)
+	config := teslaRetainedConfig()
+	owner, err := startTeslaHSCRetainedOwner(config, hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attachGatewayPortalEVSEContribution(owner, contributions); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Fence(config.DriverGeneration, config.DriverGeneration+1); err != nil {
+		t.Fatal(err)
+	}
+	next := config
+	next.SourceEpoch = "epoch:tesla-wc3-b"
+	next.DriverGeneration++
+	original := attachTeslaSuccessorContribution
+	attachTeslaSuccessorContribution = func(*teslaHSCRetainedOwner, *gatewayPortalCatalogContributions) error {
+		return errors.New("portal contribution unavailable")
+	}
+	if successor, err := owner.Successor(next); err == nil || successor != nil {
+		t.Fatalf("successor with failed attachment=%T/%v", successor, err)
+	}
+	attachTeslaSuccessorContribution = original
+	successor, err := owner.Successor(next)
+	if err != nil || successor == nil || successor.contribution == nil {
+		t.Fatalf("successor retry=%T/%v", successor, err)
+	}
+	if err := successor.IngestPersistent(context.Background(), teslaSuccessorOutcome(t, next, 1, 18)); err != nil {
+		t.Fatalf("retried successor cannot publish: %v", err)
+	}
+}
+
+func TestTeslaStartupFailureAfterAdmissionWithdrawsTheAdmission(t *testing.T) {
+	journal := semhub.NewMemoryJournal()
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := teslaRetainedConfig()
+	original := newTeslaEVSESemanticPublication
+	t.Cleanup(func() { newTeslaEVSESemanticPublication = original })
+	newTeslaEVSESemanticPublication = func(mcp.TeslaGen3EVSESemanticConfig, *semhub.Declaration, *semhub.Handle) (*mcp.TeslaGen3EVSESemanticPublication, error) {
+		return nil, errors.New("construction refused")
+	}
+	if _, err := startTeslaHSCRetainedOwner(config, hub); err == nil {
+		t.Fatal("startup succeeded without a publication")
+	}
+	if info, _ := hub.Source(semreg.SourceID(config.SourceID)); info.Live {
+		t.Fatalf("source still live after a failed startup: %+v", info)
+	}
+	newTeslaEVSESemanticPublication = original
+	if _, err := startTeslaHSCRetainedOwner(config, hub); err != nil {
+		t.Fatalf("retry with the same configuration=%v", err)
+	}
+	kinds := []semhub.EventKind{}
+	for _, record := range journal.Records() {
+		kinds = append(kinds, record.Kind)
+	}
+	if len(kinds) != 3 || kinds[0] != semhub.EventEpochAdmitted || kinds[1] != semhub.EventSourceRetired || kinds[2] != semhub.EventEpochAdmitted {
+		t.Fatalf("journal=%v, want admitted, retired, admitted", kinds)
+	}
+}

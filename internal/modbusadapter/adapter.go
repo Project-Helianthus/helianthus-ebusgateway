@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -45,6 +46,9 @@ type Config struct {
 	// Clock is optional deterministic lifecycle time for offline integration
 	// evidence. Production configuration leaves it nil and uses time.Now.
 	Clock func() time.Time
+	// SemanticPV is the PV asset class of the process's semantic publication
+	// hub. Every discovered PV asset is declared and published through it.
+	SemanticPV *semhub.Class
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -127,7 +131,7 @@ func Start(
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
 	}
-	semanticPV, err := newPVPublicationCore()
+	semanticPV, err := newPVPublicationCore(config.SemanticPV)
 	if err != nil {
 		return nil, fmt.Errorf("construct SemReg PV publication: %w", err)
 	}
@@ -166,7 +170,12 @@ func Start(
 	}
 	processStarted := clock()
 	startedWall := processStarted.UTC()
-	epochHash := pvCoreHash("semantic-pv-source-epoch", []byte(config.Endpoint.Endpoint+"\x00"+startedWall.Format(time.RFC3339Nano)))
+	epoch := semhub.PVEpochID(config.Endpoint.Endpoint, startedWall.Format(time.RFC3339Nano))
+	// The provisional PV source epoch is admitted exactly at the historical
+	// sample point, after the endpoint factory, dial and open.
+	if err := semanticPV.admitEpoch(epoch, 1); err != nil {
+		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), connection.Close(), endpoint.Close())
+	}
 	return &Adapter{
 		endpoint:        endpoint,
 		connection:      handle,
@@ -177,7 +186,7 @@ func Start(
 		qualifications:  make(map[string]sunSpecQualificationRecord),
 		refreshEvidence: make(map[string]sunSpecQualificationRecord),
 		semanticPV:      semanticPV,
-		pvSourceEpoch:   semreg.SourceEpochID("source-epoch:semantic-pv:" + epochHash[:32]),
+		pvSourceEpoch:   epoch,
 		startedWall:     startedWall,
 		startedMono:     processStarted,
 		wallNow:         clock,
@@ -449,7 +458,13 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 		observation: observation, encoded: append([]byte(nil), encoded...),
 	}
 	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
-		delete(adapter.qualifications, key)
+		// A CoverError reports an accepted publication: its snapshot is public
+		// and cites this record, so the record is kept and only the cover
+		// failure is reported.
+		var cover *semhub.CoverError
+		if !errors.As(err, &cover) {
+			delete(adapter.qualifications, key)
+		}
 		return err
 	}
 	return nil
@@ -509,7 +524,12 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 		encoded:     append([]byte(nil), encoded...),
 	}
 	adapter.refreshOrder = append(adapter.refreshOrder, key)
-	if err := adapter.publishSemanticPVWithEvidenceValidation(observation); err != nil {
+	err = adapter.publishSemanticPVWithEvidenceValidation(observation)
+	// A CoverError reports an accepted publication whose cover is unfinished:
+	// the evidence is kept and pruned as for any accepted publication, and
+	// only the cover failure is reported.
+	var cover *semhub.CoverError
+	if err != nil && !errors.As(err, &cover) {
 		delete(adapter.refreshEvidence, key)
 		adapter.refreshOrder = adapter.refreshOrder[:len(adapter.refreshOrder)-1]
 		return err
@@ -517,7 +537,7 @@ func (adapter *Adapter) RecordSunSpecCurrentObservation(observation modbusreg.Su
 	// A successful replacement can retire old candidate evidence. Pruning only
 	// after commit preserves every digest referenced by the newly public view.
 	adapter.pruneSunSpecRefreshEvidenceLocked(adapter.semanticPV.currentSunSpecObservationDigests())
-	return nil
+	return err
 }
 
 func sunSpecObservationDigest(encoded []byte) string {
@@ -819,11 +839,13 @@ func (adapter *Adapter) Close() error {
 	if adapter == nil || adapter.endpoint == nil {
 		return nil
 	}
+	// The endpoint shuts down once; the provisional retirement is retried on
+	// every Close until it is journalled (retire is idempotent once done).
 	adapter.closeOnce.Do(func() {
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
 	})
-	return adapter.closeErr
+	return errors.Join(adapter.closeErr, adapter.semanticPV.retire())
 }

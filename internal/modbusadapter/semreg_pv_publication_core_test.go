@@ -2,15 +2,25 @@ package modbusadapter
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -146,7 +156,7 @@ func TestPVPublicationDraftWithholdsUnsupportedOperatingSymbolOnly(t *testing.T)
 }
 
 func TestPUBLIC05ValidPowerIsAvailableInPublicSemRegView(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +193,7 @@ func TestPUBLIC05ValidPowerIsAvailableInPublicSemRegView(t *testing.T) {
 }
 
 func TestPVPublicationCoreEnforcesSequenceAndExpectedRevision(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +227,7 @@ func TestPVPublicationCoreEnforcesSequenceAndExpectedRevision(t *testing.T) {
 }
 
 func TestPVPublicationCoreRejectsSameEpochSourceStartDrift(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +255,7 @@ func TestPVPublicationCoreRejectsSameEpochSourceStartDrift(t *testing.T) {
 }
 
 func TestPVPublicationCoreFencesGenerationAndRetiresEpoch(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +307,7 @@ func TestPVPublicationCoreFencesGenerationAndRetiresEpoch(t *testing.T) {
 }
 
 func TestPVPublicationCorePublishesGeneratedEnergyAndKeepsCompleteProjection(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +371,7 @@ func TestPVPublicationCorePublishesCanonicalZeroGeneratedEnergy(t *testing.T) {
 }
 
 func TestPUBLIC05InvalidFrequencyIsUnavailableWhilePowerRefreshes(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +449,7 @@ func TestPUBLIC05InvalidFrequencyIsUnavailableWhilePowerRefreshes(t *testing.T) 
 }
 
 func TestPVPublicationCoreReturnsDeterministicImmutableReadback(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +489,7 @@ func TestPVPublicationCoreReturnsDeterministicImmutableReadback(t *testing.T) {
 }
 
 func TestAdapterPublishesOneSemRegPVProjection(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +504,7 @@ func TestAdapterPublishesOneSemRegPVProjection(t *testing.T) {
 }
 
 func TestAdapterPVCurrentSingleFollowsLatestIdentityRotation(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +560,7 @@ func TestAdapterPVCurrentSingleFollowsLatestIdentityRotation(t *testing.T) {
 }
 
 func TestAdapterPVCurrentSingleAtRetriesNewerSameAssetAtDetachedFloor(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +601,7 @@ func TestAdapterPVCurrentSingleAtRetriesNewerSameAssetAtDetachedFloor(t *testing
 }
 
 func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +633,7 @@ func TestAdapterReevaluatesPVFreshnessAtEveryRead(t *testing.T) {
 }
 
 func TestAdapterPVClockUsesMonotonicElapsedAcrossWallAdjustment(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +655,7 @@ func TestAdapterPVClockUsesMonotonicElapsedAcrossWallAdjustment(t *testing.T) {
 }
 
 func TestAdapterPVReadClampsWallRollbackToDetachedSnapshotFloor(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +723,7 @@ func TestAdapterPVReadClampsWallRollbackToDetachedSnapshotFloor(t *testing.T) {
 }
 
 func TestAdapterPVConcurrentRefreshAndReadKeepsPublicViewAvailable(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +775,7 @@ func TestAdapterPVConcurrentRefreshAndReadKeepsPublicViewAvailable(t *testing.T)
 }
 
 func TestAdapterPVReadCapturesContextAfterDetachingSnapshot(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,7 +840,7 @@ func TestAdapterPVReadCapturesContextAfterDetachingSnapshot(t *testing.T) {
 }
 
 func TestAdapterQualificationEvidenceStagesBeforePublicationAndRollsBack(t *testing.T) {
-	core, err := newPVPublicationCore()
+	core, err := newTestPVPublicationCore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,6 +942,13 @@ func pvCoreMonotonic(nanoseconds uint64) semreg.MonotonicPoint {
 
 func pvCoreObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64) modbusreg.SunSpecQualificationObservation {
 	t.Helper()
+	return pvCoreScopedObservation(t, words, pollGeneration, deadlineIdentity, "fixture:pv-publication-core")
+}
+
+// pvCoreScopedObservation replays words under one authorization scope; a
+// different scope is a different native resource tuple and PV source.
+func pvCoreScopedObservation(t *testing.T, words []uint16, pollGeneration, deadlineIdentity uint64, scope string) modbusreg.SunSpecQualificationObservation {
+	t.Helper()
 	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
 	if err != nil {
 		t.Fatal(err)
@@ -962,7 +979,7 @@ func pvCoreObservation(t *testing.T, words []uint16, pollGeneration, deadlineIde
 			Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5,
 			UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters,
 			Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(),
-			AuthorizationScope: "fixture:pv-publication-core", PollGeneration: pollGeneration, DeadlineIdentity: deadlineIdentity,
+			AuthorizationScope: scope, PollGeneration: pollGeneration, DeadlineIdentity: deadlineIdentity,
 			LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceOffset: 0, SliceWordCount: request.WordCount(),
 			Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)},
 		})
@@ -1090,4 +1107,652 @@ func pvCoreViewJSON(view pvPublicationView) ([]byte, error) {
 		Selections []semreg.Selection          `json:"selections"`
 		Projection projection.ProjectionReport `json:"projection"`
 	}{view.snapshot, view.canonical, view.evaluation, view.selections, view.projection})
+}
+
+// Characterization goldens for issue #1024. They were captured from the
+// pre-hub PV publication path and must stay byte-identical when the kernel
+// moves behind the semantic publication hub. Regenerate them only on a
+// deliberate, reviewed change with HELIANTHUS_UPDATE_CHARACTERIZATION=1.
+
+type pvCharacterizationEndpoint struct {
+	*fakeEndpoint
+	advance func()
+}
+
+func (endpoint pvCharacterizationEndpoint) OpenConnection(connection net.Conn) (modbus.TCPConnectionHandle, error) {
+	endpoint.advance()
+	return endpoint.fakeEndpoint.OpenConnection(connection)
+}
+
+func TestPVCharacterizationFirstIncarnationLegacyIdentityAndCanonicalSnapshots(t *testing.T) {
+	origin := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
+	current := origin
+	advance := func() {
+		clockMu.Lock()
+		current = current.Add(time.Second)
+		clockMu.Unlock()
+	}
+	set := func(at time.Time) {
+		clockMu.Lock()
+		current = at
+		clockMu.Unlock()
+	}
+	config := validConfig()
+	config.Clock = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return current
+	}
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	// The factory, the dial and the open each advance the injected clock, so
+	// a PV epoch sampled anywhere but after all three changes every golden.
+	adapter, err := Start(context.Background(), config,
+		func(context.Context, string, string) (net.Conn, error) { advance(); return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) {
+			advance()
+			return pvCharacterizationEndpoint{fakeEndpoint: &fakeEndpoint{}, advance: advance}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	wantEpoch := pvCharacterizationEpoch(config.Endpoint.Endpoint, origin.Add(3*time.Second))
+	words := observedFroniusFloatControlsWords()
+	set(origin.Add(5 * time.Second))
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, words, 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("first PV publication unavailable")
+	}
+	if got := pvCharacterizationSourceEpoch(t, first.Snapshot); got != wantEpoch {
+		t.Fatalf("PV epoch=%q want %q: the epoch sample point moved", got, wantEpoch)
+	}
+	set(origin.Add(10 * time.Second))
+	refreshed := append([]uint16(nil), words...)
+	pvCoreSetFloat(refreshed, 20, 4_321.5)
+	if err := adapter.RecordSunSpecCurrentObservation(pvCoreObservation(t, refreshed, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	set(origin.Add(12 * time.Second))
+	second, ok := adapter.SemanticPVCurrentByAsset(string(first.Snapshot.AssetID))
+	if !ok {
+		t.Fatal("second PV publication unavailable")
+	}
+	single, ok := adapter.SemanticPVCurrentSingleAt(origin.Add(14 * time.Second))
+	if !ok {
+		t.Fatal("single PV view unavailable")
+	}
+	dir := filepath.Join("testdata", "characterization", "pv_first_incarnation")
+	pvCharacterizationGolden(t, dir, "ids.json", pvCharacterizationIdentity(t, second.Snapshot))
+	pvCharacterizationGolden(t, dir, "publish1.canonical.json", first.Canonical)
+	pvCharacterizationGolden(t, dir, "publish2.canonical.json", second.Canonical)
+	pvCharacterizationGolden(t, dir, "read1.json", pvCharacterizationJSON(t, first))
+	pvCharacterizationGolden(t, dir, "read2.json", pvCharacterizationJSON(t, second))
+	pvCharacterizationGolden(t, dir, "single_at.json", pvCharacterizationJSON(t, single))
+}
+
+func pvCharacterizationEpoch(endpoint string, started time.Time) semreg.SourceEpochID {
+	sum := sha256.Sum256([]byte("semantic-pv-source-epoch\x00" + endpoint + "\x00" + started.UTC().Format(time.RFC3339Nano)))
+	return semreg.SourceEpochID("source-epoch:semantic-pv:" + hex.EncodeToString(sum[:])[:32])
+}
+
+func pvCharacterizationSourceEpoch(t *testing.T, snapshot semreg.Snapshot) semreg.SourceEpochID {
+	t.Helper()
+	for _, source := range snapshot.Sources {
+		if source.State == semreg.SourceCurrent {
+			return source.SourceEpochID
+		}
+	}
+	t.Fatal("PV snapshot has no current source")
+	return ""
+}
+
+func pvCharacterizationJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// pvCharacterizationIdentity summarizes every identifier family the hub
+// minters must reproduce: asset, source, epoch, generation, binding, service,
+// capability, candidate and cursor key.
+func pvCharacterizationIdentity(t *testing.T, snapshot semreg.Snapshot) []byte {
+	t.Helper()
+	summary := map[string][]string{"asset": {string(snapshot.AssetID)}}
+	add := func(kind string, fields ...string) {
+		summary[kind] = append(summary[kind], strings.Join(fields, " "))
+	}
+	for _, source := range snapshot.Sources {
+		add("sources", string(source.SourceID), string(source.SourceEpochID), string(source.State))
+	}
+	for _, binding := range snapshot.Bindings {
+		add("bindings", string(binding.BindingID), string(binding.SourceID), string(binding.SourceEpochID), string(binding.DriverGeneration), string(binding.State))
+	}
+	for _, link := range snapshot.IdentityLinks {
+		add("identity_links", string(link.BindingID), string(link.State))
+	}
+	for _, service := range snapshot.Services {
+		add("services", string(service.InstanceID), string(service.Definition.ID), string(service.BindingID))
+	}
+	for _, capability := range snapshot.Capabilities {
+		add("capabilities", string(capability.InstanceID), string(capability.Definition.ID), string(capability.ServiceInstance), string(capability.BindingID))
+	}
+	for _, envelope := range snapshot.Facts {
+		for _, candidate := range envelope.Candidates {
+			add("candidates", string(candidate.CandidateID), string(envelope.Key.FactID), string(candidate.Origin.OriginID))
+		}
+	}
+	for _, cursor := range snapshot.Cursors {
+		add("cursors", string(cursor.SourceID), string(cursor.SourceEpochID), string(cursor.DriverGeneration), string(cursor.LastSequence))
+	}
+	for _, values := range summary {
+		sort.Strings(values)
+	}
+	encoded, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(encoded, '\n')
+}
+
+func pvCharacterizationGolden(t *testing.T, dir, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if os.Getenv("HELIANTHUS_UPDATE_CHARACTERIZATION") == "1" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read characterization golden %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("characterization golden %s changed:\n got: %s\nwant: %s", path, got, want)
+	}
+}
+
+func newPVTestHub(t *testing.T) (*semhub.Hub, *semhub.Class) {
+	t.Helper()
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hub, class
+}
+
+func startPVOnHub(t *testing.T, class *semhub.Class, now time.Time) *Adapter {
+	t.Helper()
+	config := validConfig()
+	config.Clock = func() time.Time { return now }
+	config.SemanticPV = class
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	adapter, err := Start(context.Background(), config, func(context.Context, string, string) (net.Conn, error) { return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) { return &fakeEndpoint{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adapter
+}
+
+func TestPVPublicViewFollowsTheHubControlGate(t *testing.T) {
+	hub, class := newPVTestHub(t)
+	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	adapter := startPVOnHub(t, class, now)
+	t.Cleanup(func() { _ = adapter.Close() })
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	current, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("PV view unavailable")
+	}
+	source := current.Snapshot.Sources[0]
+	if _, err := hub.Fence(semhub.FenceRequest{Source: source.SourceID, Epoch: source.SourceEpochID, Generation: 1, Reason: "lifecycle.driver_generation_replaced",
+		Evidence:   []semreg.EvidenceRef{pvEvidence("sunspec.generation_fence", semreg.Digest("sha256:"+pvCoreHash("fence", nil)))},
+		ObservedAt: pvPublicationWall(now), Monotonic: pvPublicationMonotonic(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := adapter.SemanticPVCurrentByAsset(string(current.Snapshot.AssetID)); ok {
+		t.Fatal("withdrawn PV view stayed public")
+	}
+	if _, ok := adapter.SemanticPVCurrentSingleAt(now.Add(time.Second)); ok {
+		t.Fatal("withdrawn single PV view stayed public")
+	}
+	if view, err := hub.Inspect(current.Snapshot.AssetID); err != nil || view.Snapshot.Bindings[0].State != semreg.BindingFenced {
+		t.Fatalf("hub inspect=%+v err=%v", view.Snapshot.Bindings, err)
+	}
+}
+
+func TestPVDynamicDeclarationCollisionIsAPerAssetRefusal(t *testing.T) {
+	hub, class := newPVTestHub(t)
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: "pv-asset-5c57adba3ad8a529617c1f8627ae32f1", SourceID: "source:static-owner", Driver: "growatt_storage", Validators: []semreg.PackValidator{pvpack.New()}}); err != nil {
+		t.Fatal(err)
+	}
+	subscription := hub.Subscribe()
+	defer subscription.Close()
+	adapter := startPVOnHub(t, class, time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC))
+	t.Cleanup(func() { _ = adapter.Close() })
+	err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2))
+	var collision *semhub.CollisionError
+	if !errors.As(err, &collision) || !strings.Contains(err.Error(), "publish SemReg PV observation") {
+		t.Fatalf("colliding PV asset=%v", err)
+	}
+	refused := false
+	for !refused {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		event, nextErr := subscription.Next(ctx)
+		cancel()
+		if nextErr != nil {
+			t.Fatal("no DeclareRefused event")
+		}
+		refused = event.Kind == semhub.EventDeclareRefused && len(event.Drivers) == 2 && event.Drivers[0] == "pv_sunspec" && event.Drivers[1] == "growatt_storage"
+	}
+	rotated := observedFroniusFloatControlsWords()
+	putSunSpecString(rotated[52:68], "rotated-identity")
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, rotated, 3, 4)); err != nil {
+		t.Fatalf("refusal was process-wide: %v", err)
+	}
+}
+
+func TestPVProvisionalSourceRetiresWithTheRuntime(t *testing.T) {
+	hub, class := newPVTestHub(t)
+	adapter := startPVOnHub(t, class, time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC))
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	cursor := hub.Cursor()
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	events, err := hub.Since(cursor)
+	if err != nil || len(events) != 1 || events[0].Kind != semhub.EventSourceRetired || !events[0].NoPublication {
+		t.Fatalf("close events=%+v err=%v", events, err)
+	}
+	for _, info := range hub.Sources() {
+		if info.Live {
+			t.Fatalf("source stayed live after close: %+v", info)
+		}
+	}
+}
+
+// newTestPVPublicationCore binds a PV core to a fresh hub incarnation.
+func newTestPVPublicationCore() (*pvPublicationCore, error) {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		return nil, err
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		return nil, err
+	}
+	return newPVPublicationCore(class)
+}
+
+// testSemanticPVClass is the PV class of a fresh hub incarnation.
+func testSemanticPVClass() *semhub.Class {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		panic(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		panic(err)
+	}
+	return class
+}
+
+func TestPVFailedGenerationReplacementKeepsThePreviousViewAndFencesNothing(t *testing.T) {
+	core, err := newTestPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := observedFroniusFloatControlsWords()
+	first := pvCoreDraft(t, words, "source-epoch:pv:lkg", 1, 2_000)
+	if _, err := core.ingest(first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := core.publicView(first.assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := core.hub.Cursor()
+	replacement := pvCoreDraft(t, words, "source-epoch:pv:lkg", 2, 3_000)
+	refused := errors.New("capacity breach")
+	if _, err := core.ingestWithValidation(replacement, func(semreg.AssetID, semreg.Snapshot) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("replacement validation error=%v", err)
+	}
+	after, err := core.publicView(first.assetID)
+	if err != nil || after.snapshot.SnapshotID != before.snapshot.SnapshotID {
+		t.Fatalf("previous public view was withdrawn or replaced: %v", err)
+	}
+	view, _ := core.hub.Inspect(first.assetID)
+	if len(view.Snapshot.Fences) != 0 || core.hub.Cursor() != cursor {
+		t.Fatalf("a failed replacement committed a fence: %+v", view.Snapshot.Fences)
+	}
+	if info, _ := core.hub.Source(first.source.SourceID); info.Generation != 1 || !info.Live {
+		t.Fatalf("a failed replacement activated the new generation: %+v", info)
+	}
+	if _, err := core.ingest(replacement); err != nil {
+		t.Fatalf("replacement retry=%v", err)
+	}
+}
+
+func TestPVRejectedNewEpochDraftKeepsTheOldEpochWorking(t *testing.T) {
+	core, err := newTestPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := observedFroniusFloatControlsWords()
+	first := pvCoreDraft(t, words, "source-epoch:pv:keep-a", 1, 2_000)
+	if _, err := core.ingest(first); err != nil {
+		t.Fatal(err)
+	}
+	next := pvCoreDraft(t, words, "source-epoch:pv:keep-b", 1, 3_000)
+	next.lifecycle.sourceStartedAt = pvCoreWall(2_500)
+	next.source.StartedAt = next.lifecycle.sourceStartedAt
+	refused := errors.New("capacity breach")
+	if _, err := core.ingestWithValidation(next, func(semreg.AssetID, semreg.Snapshot) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("new-epoch validation error=%v", err)
+	}
+	if info, _ := core.hub.Source(first.source.SourceID); info.Epoch != "source-epoch:pv:keep-a" || !info.Live {
+		t.Fatalf("a rejected new-epoch draft replaced the epoch: %+v", info)
+	}
+	refresh := pvCoreDraft(t, words, "source-epoch:pv:keep-a", 1, 4_000)
+	if _, err := core.ingest(refresh); err != nil {
+		t.Fatalf("old-epoch observation after a rejected new-epoch draft=%v", err)
+	}
+	retry := pvCoreDraft(t, words, "source-epoch:pv:keep-b", 1, 5_000)
+	retry.lifecycle.sourceStartedAt = pvCoreWall(4_500)
+	retry.source.StartedAt = retry.lifecycle.sourceStartedAt
+	if _, err := core.ingest(retry); err != nil {
+		t.Fatalf("new-epoch retry=%v", err)
+	}
+	if info, _ := core.hub.Source(first.source.SourceID); info.Epoch != "source-epoch:pv:keep-b" || !info.Live {
+		t.Fatalf("committed new epoch=%+v", info)
+	}
+}
+
+// onceFailingJournal fails the first retirement append for one source.
+type onceFailingJournal struct {
+	semhub.EpochJournal
+	mu     sync.Mutex
+	source semreg.SourceID
+	failed bool
+}
+
+func (j *onceFailingJournal) Append(records ...semhub.EpochRecord) error {
+	j.mu.Lock()
+	for _, record := range records {
+		if record.Kind == semhub.EventSourceRetired && record.Source == j.source && !j.failed {
+			j.failed = true
+			j.mu.Unlock()
+			return errors.New("store unavailable")
+		}
+	}
+	j.mu.Unlock()
+	return j.EpochJournal.Append(records...)
+}
+
+func TestPVPendingRetirementIsRetriedBeforeRequalification(t *testing.T) {
+	words := observedFroniusFloatControlsWords()
+	rotated := append([]uint16(nil), words...)
+	putSunSpecString(rotated[52:68], "second-inverter")
+	scoped := func(w []uint16, scope, epoch string, receipt uint64, started uint64) pvPublicationDraft {
+		t.Helper()
+		lifecycle := pvCoreLifecycle(epoch, 1, receipt)
+		if started != 0 {
+			lifecycle.sourceStartedAt = pvCoreWall(started)
+		}
+		draft, err := buildPVPublicationDraft(pvCoreScopedObservation(t, w, receipt/10+1, receipt/10+2, scope), lifecycle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return draft
+	}
+	s1a := scoped(words, "fixture:pv-s1", "source-epoch:pv:r-a", 2_000, 0)
+	s2a := scoped(rotated, "fixture:pv-s2", "source-epoch:pv:r-a", 2_100, 0)
+	journal := &onceFailingJournal{EpochJournal: semhub.NewMemoryJournal(), source: s2a.source.SourceID}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := newPVPublicationCore(class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s1a.source.SourceID == s2a.source.SourceID || s1a.assetID == s2a.assetID {
+		t.Fatal("fixture sources are not distinct")
+	}
+	for _, draft := range []pvPublicationDraft{s1a, s2a} {
+		if _, err := core.ingest(draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := core.ingest(scoped(words, "fixture:pv-s1", "source-epoch:pv:r-b", 3_000, 2_500)); err != nil {
+		t.Fatalf("S1 replacement epoch=%v", err)
+	}
+	if !journal.failed {
+		t.Fatal("the old S2 retirement was never attempted")
+	}
+	if _, err := core.ingest(scoped(rotated, "fixture:pv-s2", "source-epoch:pv:r-b", 3_100, 2_500)); err != nil {
+		t.Fatalf("S2 observation in the new epoch after the journal recovered=%v", err)
+	}
+	if info, _ := hub.Source(s2a.source.SourceID); info.Epoch != "source-epoch:pv:r-b" || !info.Live {
+		t.Fatalf("S2 after recovery=%+v", info)
+	}
+}
+
+// retireFailingJournal fails every retirement append while failing is set.
+type retireFailingJournal struct {
+	semhub.EpochJournal
+	mu      sync.Mutex
+	failing bool
+}
+
+func (j *retireFailingJournal) Append(records ...semhub.EpochRecord) error {
+	j.mu.Lock()
+	failing := j.failing
+	j.mu.Unlock()
+	for _, record := range records {
+		if failing && record.Kind == semhub.EventSourceRetired {
+			return errors.New("store unavailable")
+		}
+	}
+	return j.EpochJournal.Append(records...)
+}
+
+func TestAdapterCloseRetriesAFailedProvisionalRetirement(t *testing.T) {
+	journal := &retireFailingJournal{EpochJournal: semhub.NewMemoryJournal()}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := newPVPublicationCore(class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &fakeEndpoint{}
+	started := time.Now().Add(-time.Second)
+	adapter := &Adapter{endpoint: endpoint, semanticPV: core, pvSourceEpoch: "source-epoch:pv:close-retry", startedWall: started.UTC(), startedMono: started, wallNow: time.Now, monotonicNow: time.Now}
+	if err := adapter.publishSemanticPV(pvCoreObservation(t, observedFroniusFloatControlsWords(), 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	sources := hub.Sources()
+	if len(sources) != 1 || !sources[0].Live {
+		t.Fatalf("sources=%+v", sources)
+	}
+	journal.mu.Lock()
+	journal.failing = true
+	journal.mu.Unlock()
+	if err := adapter.Close(); err == nil {
+		t.Fatal("close reported success although the retirement was not journalled")
+	}
+	journal.mu.Lock()
+	journal.failing = false
+	journal.mu.Unlock()
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("close retry=%v", err)
+	}
+	if info, _ := hub.Source(sources[0].Source); info.Live {
+		t.Fatalf("source still live after a successful close retry: %+v", info)
+	}
+	endpoint.mu.Lock()
+	calls := endpoint.closeCalls
+	endpoint.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("endpoint closed %d times", calls)
+	}
+}
+
+func TestPVRetryCoversDropsResolvedAndSupersededCovers(t *testing.T) {
+	core, err := newTestPVPublicationCore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := pvCoreDraft(t, observedFroniusFloatControlsWords(), "source-epoch:pv:covers", 1, 2_000)
+	if _, err := core.ingest(draft); err != nil {
+		t.Fatal(err)
+	}
+	evidence := draft.source.RegistryEvidence
+	result, err := core.hub.Fence(semhub.FenceRequest{Source: draft.source.SourceID, Epoch: "source-epoch:pv:covers", Generation: 1, Reason: "lifecycle.generation_replaced", Evidence: []semreg.EvidenceRef{evidence}, ObservedAt: pvCoreWall(3_000), Monotonic: draft.lifecycle.receiptMonotonic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := semhub.ControlID{Incarnation: core.hub.Incarnation(), Source: draft.source.SourceID, N: 99}
+	core.recordCover(result.ID)
+	core.recordCover(unknown)
+	done := make(chan struct{})
+	go func() {
+		core.retryCovers()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cover retry blocked")
+	}
+	core.lifecycleMu.Lock()
+	defer core.lifecycleMu.Unlock()
+	if len(core.covers) != 0 {
+		t.Fatalf("covers kept=%+v", core.covers)
+	}
+}
+
+func TestPVCoverFailureAfterCommitRetainsTheStagedEvidence(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		target semreg.AssetID
+	)
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, asset semreg.AssetID) {
+		mu.Lock()
+		hit := stage == "before-swap" && asset != "" && asset == target
+		if hit {
+			target = ""
+		}
+		mu.Unlock()
+		if hit {
+			panic("injected cover interruption")
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := newPVPublicationCore(class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:cover-a", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current },
+		qualifications: make(map[string]sunSpecQualificationRecord), profiles: make(map[string]ProfileObservationRecord), refreshEvidence: make(map[string]sunSpecQualificationRecord)}
+	firstWords := observedFroniusFloatControlsWords()
+	first := pvCoreObservation(t, firstWords, 1, 2)
+	if err := adapter.RecordSunSpecQualificationObservation(first); err != nil {
+		t.Fatal(err)
+	}
+	firstIdentity, _, err := resolvePVPublicationIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(firstIdentity)[:32])
+	current = current.Add(time.Second)
+	rotatedWords := append([]uint16(nil), firstWords...)
+	putSunSpecString(rotatedWords[52:68], "rotated-identity")
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, rotatedWords, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	// A new epoch on the rotated asset retires the old epoch on the first
+	// asset through a cover, whose submission is interrupted.
+	current = current.Add(time.Second)
+	adapter.startedWall = current.UTC()
+	adapter.pvSourceEpoch = "source-epoch:pv:cover-b"
+	mu.Lock()
+	target = firstAsset
+	mu.Unlock()
+	observation := pvCoreObservation(t, rotatedWords, 5, 6)
+	err = adapter.RecordSunSpecQualificationObservation(observation)
+	var cover *semhub.CoverError
+	if !errors.As(err, &cover) {
+		t.Fatalf("record with an interrupted cover=%v, want a CoverError", err)
+	}
+	key := observation.Capability().ProfileID() + "\x00" + observation.SampleID()
+	adapter.profileMu.Lock()
+	_, retained := adapter.qualifications[key]
+	adapter.profileMu.Unlock()
+	if !retained {
+		t.Fatal("the accepted publication's staged evidence was deleted")
+	}
+	if hub.Readable(firstAsset) {
+		t.Fatal("the asset behind the interrupted cover is readable")
+	}
+	core.retryCovers()
+	waitForPV(t, func() bool { return hub.Readable(firstAsset) })
+	core.lifecycleMu.Lock()
+	pending := len(core.covers)
+	core.lifecycleMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("covers still pending: %d", pending)
+	}
+}
+
+func waitForPV(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

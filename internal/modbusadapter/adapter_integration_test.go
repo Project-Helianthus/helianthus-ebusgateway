@@ -50,6 +50,7 @@ func integrationConfig(t *testing.T, endpoint string) Config {
 	}
 	return Config{
 		Enabled:     true,
+		SemanticPV:  testSemanticPVClass(),
 		DialTimeout: time.Second,
 		Endpoint: modbus.TCPEndpointConfig{
 			Endpoint: endpoint,

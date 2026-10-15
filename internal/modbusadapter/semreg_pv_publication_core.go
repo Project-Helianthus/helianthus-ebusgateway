@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	pvpack "github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/pv"
@@ -445,16 +446,55 @@ func pvPublicationServices(draft pvPublicationDraft) ([]semreg.ServiceInstance, 
 	return services, capabilities
 }
 
+// pvSemanticDriver is the PV driver label on the semantic publication hub.
+const pvSemanticDriver = "pv_sunspec"
+
+// NewSemanticPVClass declares the lazily declared PV asset class on hub.
+// Every discovered SunSpec asset is declared through it, per asset.
+func NewSemanticPVClass(hub *semhub.Hub) (*semhub.Class, error) {
+	if hub == nil {
+		return nil, errors.New("SemReg PV publication hub is unavailable")
+	}
+	return hub.DeclareClass(semhub.ClassSpec{Name: pvSemanticDriver, Driver: pvSemanticDriver, Validators: func() []semreg.PackValidator { return []semreg.PackValidator{pvpack.New()} }})
+}
+
 type pvPublicationCore struct {
 	mu            sync.RWMutex
 	assets        map[semreg.AssetID]*pvPublicationAsset
 	activeAssetID semreg.AssetID
 	selection     *semreg.SelectionKernel
+	hub           *semhub.Hub
+	class         *semhub.Class
+	// lifecycleMu guards the provisional source and the per-source handles.
+	// It is taken alone or inside mu, never the other way round.
+	lifecycleMu sync.Mutex
+	provisional *semhub.Provisional
+	handles     map[semreg.SourceID]*semhub.Handle
+	epochs      map[semreg.SourceEpochID]bool
+	// staged is a new epoch's provisional source that becomes current only
+	// when its first publication commits; retiring holds replaced provisional
+	// sources whose hub-level retirement still has to be journalled.
+	staged   *semhub.Provisional
+	retiring []*semhub.Provisional
+	// covers holds transition covers whose initial submission failed after
+	// their publication was accepted; each ingest retries them first.
+	covers []semhub.ControlID
+}
+
+// pvLifecycle is the lifecycle plan of one publication: the handle to
+// publish with, an optional generation or epoch transition the commit
+// performs atomically, and a staged provisional source installed on commit.
+type pvLifecycle struct {
+	handle          *semhub.Handle
+	generation      uint64
+	epoch           semreg.SourceEpochID
+	epochGeneration uint64
+	staged          *semhub.Provisional
 }
 
 type pvPublicationAsset struct {
-	kernel  *semreg.PublicationKernel
-	current *pvPublicationView
+	declaration *semhub.Declaration
+	current     *pvPublicationView
 }
 
 type pvPublicationView struct {
@@ -483,12 +523,212 @@ type pvPublicationOrder struct {
 // current public snapshot.
 type pvPublicationValidator func(assetID semreg.AssetID, snapshot semreg.Snapshot) error
 
-func newPVPublicationCore() (*pvPublicationCore, error) {
+func newPVPublicationCore(class *semhub.Class) (*pvPublicationCore, error) {
+	if class == nil {
+		return nil, errors.New("SemReg PV publication hub is unavailable")
+	}
 	selection, err := semreg.NewSelectionKernel(pvSingleQualifiedSelection{})
 	if err != nil {
 		return nil, err
 	}
-	return &pvPublicationCore{assets: make(map[semreg.AssetID]*pvPublicationAsset), selection: selection}, nil
+	return &pvPublicationCore{assets: make(map[semreg.AssetID]*pvPublicationAsset), selection: selection, hub: class.Hub(), class: class, handles: make(map[semreg.SourceID]*semhub.Handle), epochs: make(map[semreg.SourceEpochID]bool)}, nil
+}
+
+// admitEpoch admits the runtime's provisional PV source epoch. Its qualified
+// legacy sources, one per native resource tuple, share this epoch.
+func (c *pvPublicationCore) admitEpoch(epoch semreg.SourceEpochID, generation uint64) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.admitEpochLocked(epoch, generation)
+}
+
+func (c *pvPublicationCore) admitEpochLocked(epoch semreg.SourceEpochID, generation uint64) error {
+	if c.epochs[epoch] {
+		return &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "retired PV source epoch"}
+	}
+	if c.provisional != nil {
+		if err := c.provisional.Retire(); err != nil {
+			return err
+		}
+	}
+	provisional, err := c.hub.AdmitProvisional(pvSemanticDriver, semhub.LegacyPVSunSpec, epoch, generation)
+	if err != nil {
+		return err
+	}
+	c.epochs[epoch] = true
+	c.provisional, c.handles = provisional, make(map[semreg.SourceID]*semhub.Handle)
+	return nil
+}
+
+// retire retires the provisional source with its runtime. No SemReg batch
+// is submitted; the retained public state is unchanged.
+func (c *pvPublicationCore) retire() error {
+	if c == nil {
+		return nil
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if err := c.retirePendingLocked(); err != nil {
+		return err
+	}
+	if c.staged != nil {
+		if err := c.staged.Retire(); err != nil {
+			return err
+		}
+	}
+	return c.provisional.Retire()
+}
+
+// retirePendingLocked retires replaced provisional sources journal-first and
+// keeps any whose retirement failed for the next attempt.
+func (c *pvPublicationCore) retirePendingLocked() error {
+	var failure error
+	kept := c.retiring[:0]
+	for _, provisional := range c.retiring {
+		if err := provisional.Retire(); err != nil {
+			kept = append(kept, provisional)
+			if failure == nil {
+				failure = err
+			}
+		}
+	}
+	c.retiring = kept
+	return failure
+}
+
+// handleFor plans the lifecycle of one publication. A later generation of the
+// same epoch, or a new epoch, is not activated here: the publication's own
+// batch carries the fence or the retirement and the hub switches generation
+// or epoch atomically with that commit, so a rejected draft leaves the
+// current epoch, its handles and the public views untouched.
+func (c *pvPublicationCore) handleFor(draft pvPublicationDraft) (pvLifecycle, error) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	generation, err := strconv.ParseUint(string(draft.lifecycle.driverGeneration), 10, 64)
+	if err != nil || generation == 0 {
+		return pvLifecycle{}, &semreg.Error{ID: semreg.InvalidIdentifier, Detail: "PV driver generation"}
+	}
+	epoch, source := draft.lifecycle.sourceEpochID, draft.source.SourceID
+	// A replaced provisional source whose retirement journal append failed
+	// is retried before any requalification: until then its sources stay live
+	// in the old epoch and cannot be admitted in the new one.
+	if err := c.retirePendingLocked(); err != nil {
+		return pvLifecycle{}, err
+	}
+	if c.provisional == nil {
+		if err := c.admitEpochLocked(epoch, generation); err != nil {
+			return pvLifecycle{}, err
+		}
+	}
+	if c.provisional.Epoch() != epoch {
+		if c.epochs[epoch] {
+			return pvLifecycle{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "retired PV source epoch"}
+		}
+		if c.staged == nil || c.staged.Epoch() != epoch {
+			if c.staged != nil {
+				if err := c.staged.Retire(); err != nil {
+					return pvLifecycle{}, err
+				}
+			}
+			staged, err := c.hub.AdmitProvisional(pvSemanticDriver, semhub.LegacyPVSunSpec, epoch, generation)
+			if err != nil {
+				return pvLifecycle{}, err
+			}
+			c.staged = staged
+		}
+		if current := c.handles[source]; current != nil {
+			return pvLifecycle{handle: current, epoch: epoch, epochGeneration: generation, staged: c.staged}, nil
+		}
+		handle, err := c.staged.Qualify(source)
+		if err != nil {
+			return pvLifecycle{}, err
+		}
+		return pvLifecycle{handle: handle, staged: c.staged}, nil
+	}
+	handle := c.handles[source]
+	if handle == nil {
+		if handle, err = c.provisional.Qualify(source); err != nil {
+			return pvLifecycle{}, err
+		}
+		c.handles[source] = handle
+	}
+	switch {
+	case handle.Generation() > generation:
+		return pvLifecycle{}, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "regressed PV driver generation"}
+	case handle.Generation() < generation:
+		return pvLifecycle{handle: handle, generation: generation}, nil
+	}
+	return pvLifecycle{handle: handle}, nil
+}
+
+// commitLifecycle applies a committed publication's plan: it adopts the new
+// handle and, for a new epoch, installs the staged provisional source and
+// retires the replaced one journal-first (a failed retirement is retried at
+// the next epoch change and at Close).
+func (c *pvPublicationCore) commitLifecycle(source semreg.SourceID, plan pvLifecycle, handle *semhub.Handle) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if plan.staged == nil {
+		c.handles[source] = handle
+		return
+	}
+	if plan.epoch != "" {
+		if err := plan.staged.Adopt(handle); err != nil {
+			return
+		}
+	}
+	replaced := c.provisional
+	c.provisional, c.staged = plan.staged, nil
+	c.epochs[plan.staged.Epoch()] = true
+	c.handles = map[semreg.SourceID]*semhub.Handle{source: handle}
+	if replaced != nil {
+		c.retiring = append(c.retiring, replaced)
+	}
+	_ = c.retirePendingLocked()
+}
+
+func (c *pvPublicationCore) recordCover(id semhub.ControlID) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	c.covers = append(c.covers, id)
+}
+
+// retryCovers retries every pending transition cover outside c.mu. A cover
+// that resolves, or that a later control operation of its source superseded,
+// is dropped; any other failure keeps it for the next ingest.
+func (c *pvPublicationCore) retryCovers() {
+	c.lifecycleMu.Lock()
+	pending := append([]semhub.ControlID(nil), c.covers...)
+	c.lifecycleMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	done := make(map[semhub.ControlID]bool, len(pending))
+	for _, id := range pending {
+		if _, err := c.hub.RetryControl(id); err == nil || errors.Is(err, semhub.ErrControlRequest) {
+			done[id] = true
+		}
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	kept := c.covers[:0]
+	for _, id := range c.covers {
+		if !done[id] {
+			kept = append(kept, id)
+		}
+	}
+	c.covers = kept
+}
+
+// onControl drops the public view of an asset whose withdrawal the hub
+// accepted. The kernel keeps the withdrawn snapshot.
+func (c *pvPublicationCore) onControl(event semhub.ControlEvent) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if asset := c.assets[event.Asset]; asset != nil {
+		asset.current = nil
+	}
+	return nil
 }
 
 func (c *pvPublicationCore) ingest(draft pvPublicationDraft) (pvPublicationReceipt, error) {
@@ -514,29 +754,45 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	if err := detached.validate(); err != nil {
 		return pvPublicationReceipt{}, err
 	}
+	// RetryControl runs reprojection callbacks, which take c.mu, so pending
+	// covers are retried before c.mu is taken.
+	c.retryCovers()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	plan, err := c.handleFor(detached)
+	if err != nil {
+		return pvPublicationReceipt{}, err
+	}
 	asset := c.assets[detached.assetID]
 	if asset == nil {
-		kernel, err := semreg.NewPublicationKernel(detached.assetID, pvpack.New())
+		// A discovered asset is declared per asset; a collision refuses only
+		// this asset and is emitted as DeclareRefused.
+		declaration, err := c.class.Declare(detached.assetID, detached.source.SourceID)
 		if err != nil {
 			return pvPublicationReceipt{}, err
 		}
-		asset = &pvPublicationAsset{kernel: kernel}
+		declaration.SetReprojection(c.onControl)
+		asset = &pvPublicationAsset{declaration: declaration}
 	}
-	if asset.kernel == nil {
-		return pvPublicationReceipt{}, errors.New("PV publication kernel is unavailable")
+	var tx *semhub.Tx
+	switch {
+	case plan.epoch != "":
+		tx, err = c.hub.BeginEpoch(plan.handle, detached.assetID, plan.epoch, plan.epochGeneration)
+	case plan.generation != 0:
+		tx, err = c.hub.BeginGeneration(plan.handle, detached.assetID, plan.generation)
+	default:
+		tx, err = c.hub.Begin(plan.handle, detached.assetID)
 	}
-	staged, err := asset.kernel.Fork()
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
-	current, _, exists := staged.Current()
-	batch, err := pvPublicationBatch(detached, current, exists, order)
+	defer tx.Abort()
+	current, exists := tx.Current()
+	batch, err := pvPublicationBatch(detached, current, exists, order, tx.NextSequence(), tx.SourceRetirements(), tx.GenerationFences())
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
-	snapshot, canonical, err := staged.Apply(batch, detached.lifecycle.receiptMonotonic)
+	snapshot, canonical, err := tx.Apply(batch, detached.lifecycle.receiptMonotonic)
 	if err != nil {
 		return pvPublicationReceipt{}, err
 	}
@@ -573,13 +829,30 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	// snapshot was committed. Read-time wall clocks may roll back, but cannot be
 	// allowed to precede this snapshot's receipt/evaluation coordinate.
 	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
-	asset.kernel, asset.current = staged, view
-	c.assets[detached.assetID] = asset
-	// Keep historical identity-keyed public evidence addressable, while the
-	// existing single-domain metric surface follows the most recently accepted
-	// bounded PV publication across a SunSpec Common identity rotation.
-	c.activeAssetID = detached.assetID
-	return pvPublicationReceipt{assetID: detached.assetID, snapshotID: snapshot.SnapshotID, revisions: snapshot.Revisions}, nil
+	_, err = tx.Commit(func(semhub.Committed) {
+		asset.current = view
+		c.assets[detached.assetID] = asset
+		// Keep historical identity-keyed public evidence addressable, while the
+		// existing single-domain metric surface follows the most recently
+		// accepted bounded PV publication across a SunSpec Common identity
+		// rotation.
+		c.activeAssetID = detached.assetID
+	})
+	// A CoverError reports an accepted publication whose transition cover
+	// over the source's other assets is unfinished: the publication and its
+	// lifecycle are committed, the cover is retried by the next ingest, and
+	// the failure is reported.
+	var cover *semhub.CoverError
+	if err != nil && !errors.As(err, &cover) {
+		return pvPublicationReceipt{}, err
+	}
+	c.commitLifecycle(detached.source.SourceID, plan, tx.Handle())
+	receipt := pvPublicationReceipt{assetID: detached.assetID, snapshotID: snapshot.SnapshotID, revisions: snapshot.Revisions}
+	if cover != nil {
+		c.recordCover(cover.ID)
+		return receipt, err
+	}
+	return receipt, nil
 }
 
 // nextPVPublicationWallFloor preserves one comparable, nondecreasing trusted
@@ -670,7 +943,7 @@ func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationVie
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	asset := c.assets[assetID]
-	if asset == nil || asset.current == nil {
+	if asset == nil || asset.current == nil || !c.hub.Admitted(assetID) {
 		return pvPublicationView{}, errors.New("PV publication state is unavailable")
 	}
 	return asset.current.detached()
@@ -683,7 +956,7 @@ func (c *pvPublicationCore) singleAssetID() (semreg.AssetID, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	asset := c.assets[c.activeAssetID]
-	return c.activeAssetID, c.activeAssetID != "" && asset != nil && asset.current != nil
+	return c.activeAssetID, c.activeAssetID != "" && asset != nil && asset.current != nil && c.hub.Admitted(c.activeAssetID)
 }
 
 // evaluatePublicView evaluates an already detached snapshot. Callers that
@@ -706,6 +979,8 @@ func (c *pvPublicationCore) evaluatePublicView(view pvPublicationView, context s
 	return view, nil
 }
 
+// currentForValidation is the internal, ungated validation read. Its
+// snapshot comes from the hub's Inspect seam, never from a public gate.
 func (c *pvPublicationCore) currentForValidation(assetID semreg.AssetID) (pvPublicationView, error) {
 	if c == nil {
 		return pvPublicationView{}, errors.New("PV publication core is unavailable")
@@ -716,7 +991,16 @@ func (c *pvPublicationCore) currentForValidation(assetID semreg.AssetID) (pvPubl
 	if asset == nil || asset.current == nil {
 		return pvPublicationView{}, errors.New("PV publication state is unavailable")
 	}
-	return asset.current.detached()
+	view, err := asset.current.detached()
+	if err != nil {
+		return pvPublicationView{}, err
+	}
+	inspected, err := c.hub.Inspect(assetID)
+	if err != nil || !inspected.Present {
+		return pvPublicationView{}, errors.New("PV publication state is unavailable")
+	}
+	view.snapshot, view.canonical = inspected.Snapshot, inspected.Canonical
+	return view, nil
 }
 
 // currentSunSpecObservationDigests reads every current asset under one core
@@ -799,56 +1083,34 @@ func (v *pvPublicationView) detached() (pvPublicationView, error) {
 	return clone, nil
 }
 
-func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exists bool, override *pvPublicationOrder) (semreg.PublicationBatch, error) {
-	sequence, expected := semreg.Uint64("1"), semreg.Uint64("0")
-	transitionObjects := !exists
-	newEpoch := false
-	newGeneration := false
-	var currentSource semreg.SourceDescriptor
-	var activeCursor *semreg.PublicationCursor
+// pvPublicationBatch builds one publication of the hub-admitted (source,
+// epoch, generation). The sequence comes from the asset cursor; epoch
+// retirements and the older unfenced generations come from the hub
+// transaction, and both travel inside this one batch.
+func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exists bool, override *pvPublicationOrder, next semreg.Uint64, retirements []semreg.SourceEpochID, fenced []semreg.Uint64) (semreg.PublicationBatch, error) {
+	sequence, expected := next, semreg.Uint64("0")
+	hasSource, hasBinding := false, false
 	if exists {
 		expected = current.Revisions.Semantic
+		known := false
 		for _, source := range current.Sources {
 			if source.SourceID != draft.source.SourceID {
 				continue
 			}
-			if source.SourceEpochID == draft.lifecycle.sourceEpochID && source.State == semreg.SourceRetired {
-				return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "retired PV source epoch"}
-			}
-			if source.State == semreg.SourceCurrent {
-				currentSource = source
+			known = true
+			if source.SourceEpochID == draft.lifecycle.sourceEpochID {
+				hasSource = true
+				if source.State == semreg.SourceCurrent && source.StartedAt != draft.source.StartedAt {
+					return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "same-epoch PV source start drift"}
+				}
 			}
 		}
-		if currentSource.SourceID == "" {
+		if !known {
 			return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "PV source identity changed"}
 		}
-		if currentSource.SourceEpochID != draft.lifecycle.sourceEpochID {
-			newEpoch, transitionObjects = true, true
-		} else {
-			if currentSource.StartedAt != draft.source.StartedAt {
-				return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "same-epoch PV source start drift"}
-			}
-			for i := range current.Cursors {
-				cursor := current.Cursors[i]
-				if cursor.SourceID != draft.source.SourceID || cursor.SourceEpochID != draft.lifecycle.sourceEpochID {
-					continue
-				}
-				if cursor.DriverGeneration == draft.lifecycle.driverGeneration {
-					if cursor.Fenced {
-						return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "fenced PV driver generation"}
-					}
-					copy := cursor
-					activeCursor = &copy
-				}
-				if !cursor.Fenced && comparePVUint(draft.lifecycle.driverGeneration, cursor.DriverGeneration) < 0 {
-					return semreg.PublicationBatch{}, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "regressed PV driver generation"}
-				}
-				if !cursor.Fenced && comparePVUint(draft.lifecycle.driverGeneration, cursor.DriverGeneration) > 0 {
-					newGeneration, transitionObjects = true, true
-				}
-			}
-			if activeCursor != nil {
-				sequence = incrementPVUint(activeCursor.LastSequence)
+		for _, binding := range current.Bindings {
+			if binding.BindingID == draft.binding.BindingID {
+				hasBinding = true
 			}
 		}
 	}
@@ -860,26 +1122,19 @@ func pvPublicationBatch(draft pvPublicationDraft, current semreg.Snapshot, exist
 		Contract: semreg.ContractKernelV1, BatchID: semreg.BatchID("batch:semantic-pv:" + batchIDHash[:32]), AssetID: draft.assetID,
 		SourceID: draft.source.SourceID, SourceEpochID: draft.lifecycle.sourceEpochID, DriverGeneration: draft.lifecycle.driverGeneration,
 		Sequence: sequence, ExpectedSemanticRevision: expected, ObservedAt: draft.lifecycle.receivedAt,
-		SourceUpserts: []semreg.SourceDescriptor{}, SourceRetirements: []semreg.SourceEpochID{}, BindingUpserts: []semreg.NativeBinding{}, IdentityLinkUpserts: []semreg.IdentityLink{},
+		SourceUpserts: []semreg.SourceDescriptor{}, SourceRetirements: append([]semreg.SourceEpochID{}, retirements...), BindingUpserts: []semreg.NativeBinding{}, IdentityLinkUpserts: []semreg.IdentityLink{},
 		FactUpserts: []semreg.FactCandidate{}, FactWithdrawals: []semreg.CandidateID{}, ServiceUpserts: []semreg.ServiceInstance{}, ServiceWithdrawals: []semreg.ServiceInstanceID{},
 		CapabilityUpserts: []semreg.CapabilityInstance{}, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{},
 	}
-	if !exists || newEpoch {
+	if !hasSource {
 		source := draft.source
 		source.Revision = "1"
 		batch.SourceUpserts = append(batch.SourceUpserts, source)
 	}
-	if newEpoch {
-		batch.SourceRetirements = append(batch.SourceRetirements, currentSource.SourceEpochID)
+	for _, generation := range fenced {
+		batch.GenerationFences = append(batch.GenerationFences, semreg.GenerationFence{SourceID: draft.source.SourceID, SourceEpochID: draft.lifecycle.sourceEpochID, DriverGeneration: generation, Reason: "lifecycle.driver_generation_replaced", Evidence: []semreg.EvidenceRef{draft.observationEvidence}, Revision: "1"})
 	}
-	if newGeneration {
-		for _, cursor := range current.Cursors {
-			if cursor.SourceID == draft.source.SourceID && cursor.SourceEpochID == draft.lifecycle.sourceEpochID && !cursor.Fenced {
-				batch.GenerationFences = append(batch.GenerationFences, semreg.GenerationFence{SourceID: cursor.SourceID, SourceEpochID: cursor.SourceEpochID, DriverGeneration: cursor.DriverGeneration, Reason: "lifecycle.driver_generation_replaced", Evidence: []semreg.EvidenceRef{draft.observationEvidence}, Revision: "1"})
-			}
-		}
-	}
-	if transitionObjects {
+	if !hasBinding {
 		binding := draft.binding
 		binding.Revision = "1"
 		link := draft.identityLink
@@ -1044,18 +1299,6 @@ func incrementPVUint(value semreg.Uint64) semreg.Uint64 {
 		return ""
 	}
 	return semreg.Uint64(strconv.FormatUint(n+1, 10))
-}
-
-func comparePVUint(left, right semreg.Uint64) int {
-	l, _ := strconv.ParseUint(string(left), 10, 64)
-	r, _ := strconv.ParseUint(string(right), 10, 64)
-	if l < r {
-		return -1
-	}
-	if l > r {
-		return 1
-	}
-	return 0
 }
 
 func nextPVCandidateRevision(snapshot semreg.Snapshot, id semreg.CandidateID) semreg.Uint64 {

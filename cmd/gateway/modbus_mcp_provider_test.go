@@ -297,6 +297,7 @@ func TestGatewayModbusMCPProviderReturnsOnlyRecoveredConnectionData(t *testing.T
 	config.Endpoint.Backoff.Floor = time.Millisecond
 	config.Endpoint.Backoff.Ceiling = time.Millisecond
 	config.Endpoint.Backoff.MaxAttempts = 1
+	config.SemanticPV = newTestSemanticPVClass(t)
 	adapter, err := modbusadapter.Start(
 		context.Background(), config,
 		(&net.Dialer{}).DialContext,

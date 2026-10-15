@@ -288,7 +288,15 @@ func fieldMatchesManifest(field Field, resource Resource, manifest contributionv
 }
 
 func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
-	if c == nil || claim.Deadline.IsZero() || !c.now().Before(claim.Deadline) || claim.IdempotencyKey == "" {
+	if c == nil {
+		return nil, ErrStale
+	}
+	// Capture the clock under the lock and call it after unlocking, as
+	// Catalog does.
+	c.mu.RLock()
+	now := c.now
+	c.mu.RUnlock()
+	if claim.Deadline.IsZero() || !now().Before(claim.Deadline) || claim.IdempotencyKey == "" {
 		return nil, ErrStale
 	}
 	catalog, err := c.Catalog(caller)

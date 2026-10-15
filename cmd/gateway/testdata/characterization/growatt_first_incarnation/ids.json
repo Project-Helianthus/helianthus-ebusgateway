@@ -1,0 +1,28 @@
+{
+  "asset": [
+    "asset:growatt-bms-a"
+  ],
+  "bindings": [
+    "binding:semantic-storage:04a8bb2b4c91c682072f865033c62669 growatt-bms-a source-epoch-1 1 current"
+  ],
+  "candidates": [
+    "candidate:semantic-storage:77b1720113ad333d63dbae036d6172b9 storage.pack.current origin:semantic-storage:77b1720113ad333d63dbae036d6172b9",
+    "candidate:semantic-storage:7b67658f100cfe4ae5a40123d25d850e storage.capacity.discharge origin:semantic-storage:7b67658f100cfe4ae5a40123d25d850e",
+    "candidate:semantic-storage:85fbd5827f90be01056e2eb51565f877 storage.capacity.charge origin:semantic-storage:85fbd5827f90be01056e2eb51565f877",
+    "candidate:semantic-storage:986339947bd2088bf9922e0b8c0c6ce7 storage.temperature.pack origin:semantic-storage:986339947bd2088bf9922e0b8c0c6ce7",
+    "candidate:semantic-storage:b3ce27f740bbff93b542287a929968b5 storage.pack.voltage origin:semantic-storage:b3ce27f740bbff93b542287a929968b5",
+    "candidate:semantic-storage:e0560792eb3bacd5fbe01031cc0f30bf storage.state.soc origin:semantic-storage:e0560792eb3bacd5fbe01031cc0f30bf"
+  ],
+  "cursors": [
+    "growatt-bms-a source-epoch-1 1 3"
+  ],
+  "identity_links": [
+    "binding:semantic-storage:04a8bb2b4c91c682072f865033c62669 qualified"
+  ],
+  "services": [
+    "service:semantic-storage:a26997ed2bbdde6a4285189518c4440d storage.service.pack binding:semantic-storage:04a8bb2b4c91c682072f865033c62669"
+  ],
+  "sources": [
+    "growatt-bms-a source-epoch-1 current"
+  ]
+}

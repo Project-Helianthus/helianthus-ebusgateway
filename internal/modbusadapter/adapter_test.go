@@ -76,6 +76,7 @@ func validConfig() Config {
 			Endpoint: "tcp://127.0.0.1:1502",
 		},
 		DialTimeout: time.Second,
+		SemanticPV:  testSemanticPVClass(),
 	}
 }
 

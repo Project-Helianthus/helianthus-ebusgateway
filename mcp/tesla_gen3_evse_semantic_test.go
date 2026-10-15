@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -14,10 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/m2mgraphql"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/evse"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
@@ -51,7 +55,7 @@ func TestTeslaGen3EVSESemanticPublicationMapsConfiguredAndAllocated(t *testing.T
 }
 
 func TestTeslaGen3EVSESemanticPublicationWithholdsOnlyAllocated(t *testing.T) {
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +88,7 @@ func TestTeslaGen3EVSESemanticPublicationRejectsProvisionalVectorsFieldLocally(t
 		{name: "expired", want: "withheld_provisional_expired", timeout: 1, evaluated: base.Add(time.Second)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -210,7 +214,7 @@ func TestTeslaGen3EVSESemanticPublicationRejectsUnrepresentableUnixNanoLifecycle
 
 func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +269,7 @@ func TestTeslaGen3EVSESemanticPublicationRequiresContiguousSequences(t *testing.
 
 func TestTeslaGen3EVSESemanticPublicationConcurrentPublishSerializesLifecycle(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +353,7 @@ func TestTeslaGen3EVSESemanticPublicationAdvancesStableCandidateRevisions(t *tes
 
 func TestTeslaGen3EVSESemanticPublicationReevaluatesProvisionalExpiryWithMCPGraphQLParity(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +407,7 @@ func TestTeslaGen3EVSESemanticPublicationReevaluatesProvisionalExpiryWithMCPGrap
 
 func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +460,7 @@ func TestTeslaGen3EVSESemanticPublicationCountsDelayedIngestionInMonotonicAge(t 
 
 func TestTeslaGen3EVSESemanticPublicationMCPAndGraphQLUseDelayedPublicationAgeFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +492,7 @@ func TestTeslaGen3EVSESemanticPublicationMCPAndGraphQLUseDelayedPublicationAgeFl
 
 func TestTeslaGen3EVSESemanticPublicationAccumulatesPartialDelayAcrossMCPAndGraphQLReads(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +585,7 @@ func TestTeslaGen3EVSESemanticPublicationReadFloorRejectsRollbackOverflowAndEpoc
 func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonotonic(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	t.Run("equal zero coordinate uses receipt", func(t *testing.T) {
-		p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+		p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -594,7 +598,7 @@ func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonoto
 		}
 	})
 	t.Run("delayed zero coordinate fails closed with parity", func(t *testing.T) {
-		p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+		p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -645,7 +649,7 @@ func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonoto
 		{name: "delayed timeout boundary", timeout: 1, allocated: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -666,7 +670,7 @@ func TestTeslaGen3EVSESemanticPublicationRequiresExplicitDelayedEvaluationMonoto
 
 func TestTeslaGen3EVSESemanticPublicationDoesNotRegressAfterWallClockRollback(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +718,7 @@ func TestTeslaGen3EVSESemanticPublicationDoesNotRegressAfterWallClockRollback(t 
 
 func TestTeslaGen3EVSESemanticPublicationUsesIndependentReadMonotonicClock(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +768,7 @@ func TestTeslaGen3EVSESemanticPublicationUsesIndependentReadMonotonicClock(t *te
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtIsDetachedAndMonotonic(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +797,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtIsDetachedAndMonoton
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesSnapshot(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +825,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesSnapshot(t
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesProjectionInputs(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -849,7 +853,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtDeepCopiesProjection
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusHighWaterPreventsConnectorResurrection(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +914,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDela
 		{"after expiry", 120 * time.Second, projection.ProjectionWithheld, projection.ProjectionWithheld},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -942,7 +946,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusScrapeIncludesPublicationDela
 
 func TestTeslaGen3EVSESemanticPublicationRejectsPublicationWallRollback(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +965,7 @@ func TestTeslaGen3EVSESemanticPublicationRejectsPublicationWallRollback(t *testi
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +991,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtRetriesNewSnapshotFl
 
 func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtStaysCoherentDuringPublish(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1025,7 +1029,7 @@ func TestTeslaGen3EVSESemanticPublicationPrometheusCurrentAtStaysCoherentDuringP
 
 func TestTeslaGen3EVSESemanticPublicationClampsBufferedOutcomeToReadFloor(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1137,7 +1141,7 @@ func TestTeslaGen3EVSESemanticPublicationConcurrentExpiryReadsRemainStable(t *te
 }
 
 func TestTeslaGen3EVSESemanticPublicationRejectsMalformedPersistent(t *testing.T) {
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1174,7 +1178,7 @@ func TestTeslaGen3EVSESemanticPublicationWithdrawsSupersededAllocatedCurrent(t *
 		}, evaluatedNS: int64(time.Second) + 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+			p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1214,7 +1218,7 @@ func TestTeslaGen3EVSESemanticPublicationWithdrawsSupersededAllocatedCurrent(t *
 
 func TestTeslaGen3EVSESemanticPublicationReactivatesWithdrawnAllocatedCurrentAboveHighWater(t *testing.T) {
 	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,7 +1287,7 @@ func teslaGen3EVSESnapshotHasFact(snapshot semreg.Snapshot, id semreg.Definition
 }
 
 func TestTeslaGen3EVSESemanticCapabilityActivationRequiresNativePublicationEvidence(t *testing.T) {
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1346,7 +1350,7 @@ func TestTeslaGen3EVSESemanticCapabilityActivationRequiresNativePublicationEvide
 	if !reflect.DeepEqual(after, p.current) {
 		t.Fatal("rejected evidence changed the current capability")
 	}
-	other, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	other, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1475,7 +1479,7 @@ func teslaSemanticConfig() TeslaGen3EVSESemanticConfig {
 }
 func newTeslaGen3EVSESemanticFixture(t *testing.T) *TeslaGen3EVSESemanticPublication {
 	t.Helper()
-	p, err := NewTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1486,4 +1490,176 @@ func newTeslaGen3EVSESemanticFixture(t *testing.T) *TeslaGen3EVSESemanticPublica
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestTeslaGen3EVSECharacterizationFirstIncarnationLegacyIdentityAndPublicBytes
+// pins the legacy Tesla publication IDs and public bytes (MCP tool, M2M
+// GraphQL handler, scrape tuple, canonical snapshots) of the first
+// incarnation with injected clocks (issue #1024).
+func TestTeslaGen3EVSECharacterizationFirstIncarnationLegacyIdentityAndPublicBytes(t *testing.T) {
+	p, err := newTestTeslaGen3EVSESemanticPublication(teslaSemanticConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	wall, read := base.Add(2*time.Second), uint64(0)
+	set := func(at time.Time, clock time.Duration) {
+		mu.Lock()
+		wall, read = at, uint64(clock)
+		mu.Unlock()
+	}
+	p.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return wall }
+	p.readClock = func() (uint64, error) { mu.Lock(); defer mu.Unlock(); return read, nil }
+	source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
+	if err := p.Publish(source, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:characterization:1", ObservedAt: base, EvaluatedAt: base.Add(time.Second), MonotonicNS: 1, EvaluatedMonotonicNS: 1_000_000_001, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mcpHandler := teslaGen3EVSEMCPHandler(t, p)
+	graphqlHandler := teslaGen3EVSEGraphQLHandler(t, p)
+	capture := func(name string, at time.Time, clock time.Duration) {
+		t.Helper()
+		set(at, clock)
+		value, err := p.TeslaGen3EVSESemanticCurrent(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Snapshot semreg.Snapshot `json:"snapshot"`
+		}
+		if err := json.Unmarshal(public, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := semreg.CanonicalJSON(decoded.Snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		teslaGen3EVSECharacterizationGolden(t, name+".public.json", public)
+		teslaGen3EVSECharacterizationGolden(t, name+".canonical.json", canonical)
+		set(at.Add(time.Second), clock+time.Second)
+		teslaGen3EVSECharacterizationGolden(t, name+".mcp.json", teslaGen3EVSECharacterizationMCP(t, mcpHandler))
+		set(at.Add(2*time.Second), clock+2*time.Second)
+		teslaGen3EVSECharacterizationGolden(t, name+".graphql.json", teslaGen3EVSECharacterizationGraphQL(t, graphqlHandler, "principal-"+name))
+		current, ok := p.SemanticEVSECurrentAt(at.Add(3 * time.Second))
+		if !ok {
+			t.Fatal("scrape tuple unavailable")
+		}
+		encoded, err := json.Marshal(current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		teslaGen3EVSECharacterizationGolden(t, name+".current_at.json", encoded)
+	}
+	capture("sequence1", base.Add(3*time.Second), 2*time.Second)
+	set(base.Add(10*time.Second), 9*time.Second)
+	withdrawn := source
+	withdrawn.Provisional = nil
+	if err := p.Publish(withdrawn, TeslaGen3EVSESemanticEvidence{ObservationID: "observation:characterization:2", ObservedAt: base.Add(9 * time.Second), EvaluatedAt: base.Add(9 * time.Second), MonotonicNS: 9_000_000_000, EvaluatedMonotonicNS: 9_000_000_000, Sequence: 2}); err != nil {
+		t.Fatal(err)
+	}
+	capture("sequence2", base.Add(11*time.Second), 10*time.Second)
+}
+
+func teslaGen3EVSECharacterizationMCP(t *testing.T, handler http.Handler) []byte {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + SemanticV1EVSECurrentGetTool + `","arguments":{}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"isError":true`) {
+		t.Fatalf("MCP status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response.Body.Bytes()
+}
+
+func teslaGen3EVSECharacterizationGraphQL(t *testing.T, handler http.Handler, principal string) []byte {
+	t.Helper()
+	request := `{"operationName":"SemanticEVSECurrent","query":` + strconv.Quote(`query SemanticEVSECurrent($request: M2MCurrentSnapshotRequest!) { semanticEVSECurrent(request: $request) { snapshot evaluation selections projection } }`) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1","assetRef":"asset:tesla-wc3-a"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(request)).WithContext(m2mgraphql.WithMTLSPrincipal(context.Background(), principal)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+		t.Fatalf("GraphQL status=%d body=%s", response.Code, response.Body.String())
+	}
+	return response.Body.Bytes()
+}
+
+func teslaGen3EVSECharacterizationGolden(t *testing.T, name string, got []byte) {
+	t.Helper()
+	path := filepath.Join("testdata", "characterization", "tesla_publication_first_incarnation", name)
+	if os.Getenv("HELIANTHUS_UPDATE_CHARACTERIZATION") == "1" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read characterization golden %s: %v", path, err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("characterization golden %s changed:\n got: %s\nwant: %s", path, got, want)
+	}
+}
+
+func TestTeslaGen3EVSEPublicationPublishesThroughTheHubAndHonoursItsGate(t *testing.T) {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := teslaSemanticConfig()
+	declaration, err := hub.Declare(semhub.AssetSpec{AssetID: semreg.AssetID(cfg.AssetID), SourceID: semreg.SourceID(cfg.SourceID), Driver: "tesla_evse", Validators: []semreg.PackValidator{evse.New()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: semreg.SourceID(cfg.SourceID), Driver: "tesla_evse", Legacy: semhub.LegacyTeslaEVSE, Epoch: semreg.SourceEpochID(cfg.SourceEpoch), Generation: cfg.DriverGeneration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewTeslaGen3EVSESemanticPublication(cfg, declaration, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p.readClock = func() (uint64, error) { return 0, nil }
+	p.now = func() time.Time { return when.Add(2 * time.Second) }
+	if err := p.Publish(teslaGen3EVSECurrentLimitV1FixtureSource(t), TeslaGen3EVSESemanticEvidence{ObservationID: "observation:hub", ObservedAt: when, EvaluatedAt: when.Add(time.Second), MonotonicNS: 1, EvaluatedMonotonicNS: 1_000_000_001, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if view, err := hub.Inspect(semreg.AssetID(cfg.AssetID)); err != nil || !view.Present || view.Snapshot.Cursors[0].LastSequence != "1" {
+		t.Fatalf("hub kernel did not receive the publication: %+v %v", view.Snapshot.Cursors, err)
+	}
+	if _, err := hub.Fence(semhub.FenceRequest{Source: semreg.SourceID(cfg.SourceID), Epoch: semreg.SourceEpochID(cfg.SourceEpoch), Generation: cfg.DriverGeneration, Reason: "lifecycle.generation_replaced",
+		Evidence: []semreg.EvidenceRef{evseDigestEvidence("native.tesla.wc3.generation_fence", "fence")}, ObservedAt: evseWall(when.Add(3 * time.Second)), Monotonic: teslaGen3EVSEMonotonic(cfg.ClockEpoch, 3_000_000_000)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.TeslaGen3EVSESemanticCurrent(context.Background()); err == nil {
+		t.Fatal("withdrawn publication stayed readable")
+	}
+	if _, ok := p.SemanticEVSECurrentAt(when.Add(4 * time.Second)); ok {
+		t.Fatal("withdrawn scrape tuple stayed readable")
+	}
+}
+
+// newTestTeslaGen3EVSESemanticPublication declares and admits the
+// configured identity on a fresh hub incarnation.
+func newTestTeslaGen3EVSESemanticPublication(cfg TeslaGen3EVSESemanticConfig) (*TeslaGen3EVSESemanticPublication, error) {
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		return nil, err
+	}
+	declaration, err := hub.Declare(semhub.AssetSpec{AssetID: semreg.AssetID(cfg.AssetID), SourceID: semreg.SourceID(cfg.SourceID), Driver: "tesla_evse", Validators: []semreg.PackValidator{evse.New()}})
+	if err != nil {
+		return nil, err
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: semreg.SourceID(cfg.SourceID), Driver: "tesla_evse", Legacy: semhub.LegacyTeslaEVSE, Epoch: semreg.SourceEpochID(cfg.SourceEpoch), Generation: cfg.DriverGeneration})
+	if err != nil {
+		return nil, err
+	}
+	return NewTeslaGen3EVSESemanticPublication(cfg, declaration, handle)
 }

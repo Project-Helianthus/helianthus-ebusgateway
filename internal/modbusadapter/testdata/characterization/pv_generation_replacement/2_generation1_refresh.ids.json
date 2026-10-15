@@ -1,0 +1,40 @@
+{
+  "asset": [
+    "pv-asset-5c57adba3ad8a529617c1f8627ae32f1"
+  ],
+  "bindings": [
+    "binding:semantic-pv:774b61bbf5098788fba918e3850cb773 source:semantic-pv:af0b34ae1c1350f052fceb5289c655ad source-epoch:pv:char-a 1 current"
+  ],
+  "candidates": [
+    "candidate:semantic-pv:35697894041974367ad21b52f751e0f1 pv.ac.current origin:semantic-pv:35697894041974367ad21b52f751e0f1",
+    "candidate:semantic-pv:43aba538ab4417739fd84619f036bb0b pv.ac.voltage origin:semantic-pv:43aba538ab4417739fd84619f036bb0b",
+    "candidate:semantic-pv:67792ed7c1b6a982a97ac3be8c41a17c pv.ac.frequency origin:semantic-pv:67792ed7c1b6a982a97ac3be8c41a17c",
+    "candidate:semantic-pv:7dc068981259d3287704fb7f9ad2bd7b pv.ac.current origin:semantic-pv:7dc068981259d3287704fb7f9ad2bd7b",
+    "candidate:semantic-pv:818f90a8c2b58f9f3690c54cbd0890a7 pv.status.operating origin:semantic-pv:818f90a8c2b58f9f3690c54cbd0890a7",
+    "candidate:semantic-pv:9ec977e7758f6d3aa6a2fb569fe35605 pv.ac.voltage origin:semantic-pv:9ec977e7758f6d3aa6a2fb569fe35605",
+    "candidate:semantic-pv:c3c2d7d64d789e41e1f61891b9dd316b pv.temperature.inverter origin:semantic-pv:c3c2d7d64d789e41e1f61891b9dd316b",
+    "candidate:semantic-pv:c6c6c90f4a74238f45d7d3c071b3ab99 pv.ac.aggregate_active_power origin:semantic-pv:c6c6c90f4a74238f45d7d3c071b3ab99",
+    "candidate:semantic-pv:dd82bf1bdf9c24a1093aed48665221c5 pv.energy.generated origin:semantic-pv:dd82bf1bdf9c24a1093aed48665221c5",
+    "candidate:semantic-pv:e2e82fb6c095d255275b825aeee79fab pv.ac.voltage origin:semantic-pv:e2e82fb6c095d255275b825aeee79fab",
+    "candidate:semantic-pv:f2bc8654f4c348bc5b1ac595a0f1b337 pv.ac.current origin:semantic-pv:f2bc8654f4c348bc5b1ac595a0f1b337"
+  ],
+  "capabilities": [
+    "capability:semantic-pv:7e211c33580c19f9f252b28780082f50 pv.capability.read.inverter service:semantic-pv:5cfa337a0e905af24a48a51d9984a355 binding:semantic-pv:774b61bbf5098788fba918e3850cb773",
+    "capability:semantic-pv:97295f882d7f8eb146d5f2d18a2c009f pv.capability.read.system service:semantic-pv:11604573e1f1da098d57c72fd444bb58 binding:semantic-pv:774b61bbf5098788fba918e3850cb773",
+    "capability:semantic-pv:a79b5a0189295e8838f0af422561331f pv.capability.read.phase service:semantic-pv:4c7897c35d56484c9da87df8ff192480 binding:semantic-pv:774b61bbf5098788fba918e3850cb773"
+  ],
+  "cursors": [
+    "source:semantic-pv:af0b34ae1c1350f052fceb5289c655ad source-epoch:pv:char-a 1 2"
+  ],
+  "identity_links": [
+    "binding:semantic-pv:774b61bbf5098788fba918e3850cb773 qualified"
+  ],
+  "services": [
+    "service:semantic-pv:11604573e1f1da098d57c72fd444bb58 pv.service.system binding:semantic-pv:774b61bbf5098788fba918e3850cb773",
+    "service:semantic-pv:4c7897c35d56484c9da87df8ff192480 pv.service.phase binding:semantic-pv:774b61bbf5098788fba918e3850cb773",
+    "service:semantic-pv:5cfa337a0e905af24a48a51d9984a355 pv.service.inverter binding:semantic-pv:774b61bbf5098788fba918e3850cb773"
+  ],
+  "sources": [
+    "source:semantic-pv:af0b34ae1c1350f052fceb5289c655ad source-epoch:pv:char-a current"
+  ]
+}

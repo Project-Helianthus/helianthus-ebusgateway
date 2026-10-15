@@ -603,3 +603,20 @@ func TestWireMembersUseClosedSnakeCaseNames(t *testing.T) {
 		}
 	}
 }
+
+func TestSetClockAndInvokeDoNotRace(t *testing.T) {
+	c := New(nil, nil, nil, nil)
+	at := time.Unix(1_800_000_000, 0).UTC()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			c.SetClock(func() time.Time { return at })
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_, _ = c.Invoke(nil, Claims{})
+		_, _ = c.Invoke(nil, Claims{Deadline: at.Add(time.Second), IdempotencyKey: "k"})
+	}
+	<-done
+}

@@ -488,3 +488,48 @@ func assertM2MTLSDial(t *testing.T, addr string, roots *x509.CertPool, name stri
 		t.Fatalf("TLS dial serverName=%q certificate=%t err=%v want success=%t", name, len(certificate.Certificate) != 0, err, want)
 	}
 }
+
+// TestCharacterizationM2MGraphQLOfAllThreeFamilies pins the exact M2M GraphQL
+// response bytes of the three PublicationKernel owners (issue #1024).
+func TestCharacterizationM2MGraphQLOfAllThreeFamilies(t *testing.T) {
+	families := startCharacterizationFamilies(t)
+	families.clock.set(characterizationAnchor.Add(10*time.Second), 9*time.Second)
+	certs := newM2MTLSCertificates(t)
+	storageAsset := string(families.growatt.storage.assetID)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{families.pvAsset, storageAsset, families.tesla.cfg.AssetID},
+	}}
+	runtime, err := newM2MGraphQLRuntimeWithTesla(cfg, families.pv, families.growatt, families.tesla)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	dir := t.TempDir()
+	clientCert := writeM2MPEM(t, dir, "client.pem", "CERTIFICATE", certs.goodClient.Certificate[0])
+	clientKey := writeM2MPEM(t, dir, "client-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(certs.goodClient.PrivateKey.(*rsa.PrivateKey)))
+	client := func(asset string) *m2mgraphql.Client {
+		t.Helper()
+		value, err := m2mgraphql.NewClient(m2mgraphql.ClientConfig{
+			URL: "https://localhost:" + strings.TrimPrefix(runtime.Addr(), "127.0.0.1:") + "/graphql/m2m/v1", ServerName: "m2m.gateway.test",
+			CAFile: certs.caFile, ClientCertFile: clientCert, ClientKeyFile: clientKey, AssetRef: asset,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	body := func(response m2mgraphql.Response, err error) []byte {
+		t.Helper()
+		if err != nil || bytes.Contains(response.Body, []byte(`"errors"`)) {
+			t.Fatalf("M2M response=%s err=%v", response.Body, err)
+		}
+		return response.Body
+	}
+	characterizationGolden(t, "m2m", "pv.json", body(client(families.pvAsset).Current(context.Background())))
+	characterizationGolden(t, "m2m", "storage.json", body(client(storageAsset).StorageCurrent(context.Background())))
+	// One principal holds two request tokens refilled once per second.
+	time.Sleep(1100 * time.Millisecond)
+	characterizationGolden(t, "m2m", "evse.json", body(client(families.tesla.cfg.AssetID).EVSECurrent(context.Background())))
+}

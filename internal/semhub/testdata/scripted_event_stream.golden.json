@@ -1,0 +1,109 @@
+[
+  {
+    "hub_seq": 1,
+    "kind": "epoch_admitted",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 1
+  },
+  {
+    "hub_seq": 2,
+    "kind": "published",
+    "asset": "asset:golden",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 1,
+    "sequence": "1",
+    "snapshot_id": "sha256:6c76c0da59711a9a6f64abc7c73f06cdf2f11681e67bd1578e99efae5ac9a64a",
+    "revisions": {
+      "semantic": "1",
+      "identity": "1",
+      "facts": "1",
+      "services": "1",
+      "capabilities": "1"
+    },
+    "digest": "sha256:a0884bed3c7b73f4adecfcfd264aea88b6e28a07f6cf4cbb3912c22ef4523043"
+  },
+  {
+    "hub_seq": 3,
+    "kind": "published",
+    "asset": "asset:golden",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 1,
+    "sequence": "2",
+    "snapshot_id": "sha256:4eeabea3898ddea1aa869f3890df22c230ac72b76d9c56e985f53860d02a9673",
+    "revisions": {
+      "semantic": "2",
+      "identity": "1",
+      "facts": "2",
+      "services": "1",
+      "capabilities": "1"
+    },
+    "digest": "sha256:2e170e69699ce2c4a84582adeef4177b377ad5f7c33e4e2885ef8d58529d83a4"
+  },
+  {
+    "hub_seq": 4,
+    "kind": "generation_revoked",
+    "asset": "asset:golden-idle",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 1,
+    "control": {
+      "incarnation": "\u003cincarnation\u003e",
+      "source": "source:golden",
+      "n": 1
+    },
+    "reason": "lifecycle.generation_replaced",
+    "no_publication": true
+  },
+  {
+    "hub_seq": 5,
+    "kind": "generation_fenced",
+    "asset": "asset:golden",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 1,
+    "sequence": "3",
+    "snapshot_id": "sha256:6b4df647bdf487af41b01fadb8cfea3524689777a00de2a324d6460c95a6bad1",
+    "revisions": {
+      "semantic": "3",
+      "identity": "2",
+      "facts": "3",
+      "services": "2",
+      "capabilities": "2"
+    },
+    "digest": "sha256:3c90d788816b11448d4f9e6419d57317b21021d1f3ff15346826da7bde2defa0",
+    "control": {
+      "incarnation": "\u003cincarnation\u003e",
+      "source": "source:golden",
+      "n": 1
+    },
+    "reason": "lifecycle.generation_replaced"
+  },
+  {
+    "hub_seq": 6,
+    "kind": "generation_activated",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 2
+  },
+  {
+    "hub_seq": 7,
+    "kind": "published",
+    "asset": "asset:golden",
+    "source": "source:golden",
+    "epoch": "epoch:golden-1",
+    "generation": 2,
+    "sequence": "1",
+    "snapshot_id": "sha256:79a0f53a22887ef24faf37bb5fc7a109e953110c8684a5fddceb1ce2614363ab",
+    "revisions": {
+      "semantic": "4",
+      "identity": "3",
+      "facts": "4",
+      "services": "3",
+      "capabilities": "3"
+    },
+    "digest": "sha256:021bdcba8a36c0d4f481fdaa696df060df1e281b0f97cbe2dd44bd641a0f897b"
+  }
+]

@@ -43,8 +43,8 @@ func TestResolveDHWBivalenceBoundUnmatchedIdentitiesUseConservativePolicy(t *tes
 	}
 	for _, tc := range cases {
 		got := ResolveDHWBivalenceBound(tc.id)
-		if got.MinC != -20 || got.MaxC != 20 || got.Source != ConfigBoundSourceUnmatchedPolicy || got.Reason != ConfigBoundReasonUnknownProfile || got.Profile != "" || got.NarrowedOnly {
-			t.Errorf("%s: bound = %+v; want unmatched policy -20..20 (unknown_profile)", tc.name, got)
+		if got.MinC != -20 || got.MaxC != 50 || got.Source != ConfigBoundSourceUnmatchedPolicy || got.Reason != ConfigBoundReasonUnknownProfile || got.Profile != "" || got.NarrowedOnly {
+			t.Errorf("%s: bound = %+v; want unmatched policy -20..50 (unknown_profile)", tc.name, got)
 		}
 	}
 }
@@ -63,9 +63,12 @@ func TestEncodeSystemConfigValueForControllerDHWBivalence(t *testing.T) {
 		{"BASV0 rejects 50", boundTestBASV0, "50", true, "allows [-20, 20]"},
 		{"BASV0 rejects -21", boundTestBASV0, "-21", true, "allows [-20, 20]"},
 		{"BASV2 falls to unmatched policy and accepts 20", boundTestBASV2, "20", false, ""},
-		{"BASV2 rejects 21 under the unmatched policy", boundTestBASV2, "21", true, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 20] applies"},
-		{"BASV2 rejects 50 under the unmatched policy", boundTestBASV2, "50", true, "unmatched"},
-		{"unknown identity rejects 21", vaillantsystem.B524ControllerIdentity{}, "21", true, "unmatched"},
+		{"BASV2 accepts 21 under the unmatched policy", boundTestBASV2, "21", false, ""},
+		{"BASV2 accepts 50 under the unmatched policy", boundTestBASV2, "50", false, ""},
+		{"BASV2 rejects 51 under the unmatched policy", boundTestBASV2, "51", true, "conservative policy bound [-20, 50]"},
+		{"unknown identity accepts 50", vaillantsystem.B524ControllerIdentity{}, "50", false, ""},
+		{"unknown identity rejects 51", vaillantsystem.B524ControllerIdentity{}, "51", true, "conservative policy bound [-20, 50]"},
+		{"unknown identity accepts 21", vaillantsystem.B524ControllerIdentity{}, "21", false, ""},
 		{"unknown identity accepts 0", vaillantsystem.B524ControllerIdentity{}, "0", false, ""},
 	}
 	for _, tc := range cases {
@@ -136,11 +139,11 @@ func TestEncodeSystemConfigValueForControllerKeepsOtherSystemNumbers(t *testing.
 func TestSystemConfigFieldSpecDefaultIsConservative(t *testing.T) {
 	// EncodeSystemConfigValue has no identity; it must never be wider than the
 	// unmatched policy.
-	if _, _, err := EncodeSystemConfigValue(SystemConfigFieldDHWBivalencePoint, "21"); err == nil {
-		t.Fatal("identity-free encode accepted 21; want the conservative -20..20 default")
+	if _, _, err := EncodeSystemConfigValue(SystemConfigFieldDHWBivalencePoint, "51"); err == nil {
+		t.Fatal("identity-free encode accepted 51; want the released -20..50 default")
 	}
-	if _, _, err := EncodeSystemConfigValue(SystemConfigFieldDHWBivalencePoint, "20"); err != nil {
-		t.Fatalf("identity-free encode rejected 20: %v", err)
+	if _, _, err := EncodeSystemConfigValue(SystemConfigFieldDHWBivalencePoint, "50"); err != nil {
+		t.Fatalf("identity-free encode rejected 50: %v", err)
 	}
 }
 
@@ -151,13 +154,13 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 		},
 		order: []byte{0x15},
 	}
-	for _, value := range []string{"21", "50", "-21"} {
+	for _, value := range []string{"51", "50.5", "-21"} {
 		invoker := &mutationTestInvoker{}
 		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, value, systemConfigFieldSpecs)
 		if result.Success {
 			t.Errorf("value %s: success = true; want rejection", value)
 		}
-		if !strings.Contains(result.Error, "unmatched") || !strings.Contains(result.Error, "[-20, 20]") {
+		if !strings.Contains(result.Error, "unmatched") || !strings.Contains(result.Error, "[-20, 50]") {
 			t.Errorf("value %s: error = %q; want the unmatched policy bound named", value, result.Error)
 		}
 		if len(invoker.calls) != 0 {
@@ -166,15 +169,15 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 
 	invoker := &mutationTestInvoker{}
-	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "20", systemConfigFieldSpecs)
+	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs)
 	if len(invoker.calls) == 0 {
-		t.Fatal("in-bound value 20 never reached the invoker")
+		t.Fatal("in-bound value 50 never reached the invoker")
 	}
 }
 
 func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 	for _, active := range []ConfigBound{
-		{MinC: -20, MaxC: 20, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile},
+		{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile},
 		ResolveDHWBivalenceBound(boundTestBASV0),
 	} {
 		t.Run(active.Source, func(t *testing.T) {
@@ -264,7 +267,7 @@ func TestDHWBivalenceBoundLookupFallbacks(t *testing.T) {
 		{"negative infinity max", -20, math.Inf(-1)},
 		{"positive infinity max", -20, math.Inf(1)},
 		{"inverted range", 50, -20},
-		{"empty intersection above policy", 25, 30},
+		{"empty intersection above policy", 51, 60},
 		{"empty intersection below policy", -30, -25},
 	} {
 		cases = append(cases, fallbackCase{
@@ -279,7 +282,7 @@ func TestDHWBivalenceBoundLookupFallbacks(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dhwBivalenceBoundFromResult(boundTestBASV0, tc.result)
-			want := ConfigBound{MinC: -20, MaxC: 20, Source: ConfigBoundSourceUnmatchedPolicy, Reason: tc.reason}
+			want := ConfigBound{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: tc.reason}
 			if got != want {
 				t.Fatalf("bound = %+v; want %+v with no substituted profile or catalog bound", got, want)
 			}
@@ -341,11 +344,13 @@ func TestDHWBivalenceProfileBoundOnlyNarrowsPolicy(t *testing.T) {
 		name                       string
 		min, max, wantMin, wantMax float64
 	}{
-		{"cannot widen maximum", -20, 30, -20, 20},
+		{"cannot widen maximum", -20, 60, -20, 50},
+		{"released maximum profile", -20, 50, -20, 50},
+		{"BASV0 profile narrows maximum", -20, 20, -20, 20},
 		{"narrows maximum", -20, 15, -20, 15},
 		{"cannot widen minimum", -30, 15, -20, 15},
 		{"narrows minimum", -15, 20, -15, 20},
-		{"single point intersection", 20, 30, 20, 20},
+		{"single point intersection", 50, 60, 50, 50},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := dhwBivalenceBoundFromResult(boundTestBASV0, vaillantsystem.B524BoundResult{
@@ -395,8 +400,8 @@ func TestDHWBivalenceBoundRegistrySnapshotConcurrentRegister(t *testing.T) {
 			t.Fatalf("bound = %+v; want conservative unmatched policy", bound)
 		}
 		invoker := &mutationTestInvoker{}
-		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "21", systemConfigFieldSpecs)
-		if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 20]") || len(invoker.calls) != 0 {
+		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "51", systemConfigFieldSpecs)
+		if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 50]") || len(invoker.calls) != 0 {
 			t.Fatalf("fallback bound validation: result=%+v calls=%d", result, len(invoker.calls))
 		}
 	}

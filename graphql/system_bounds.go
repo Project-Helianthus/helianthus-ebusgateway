@@ -34,7 +34,7 @@ const (
 	ConfigBoundReasonInvalidBound     = "invalid_bound"
 )
 
-// Conservative policy window for dhwBivalencePointC. A controller-profile
+// Released compatibility policy window for dhwBivalencePointC. A controller-profile
 // match identifies an observation context, not the target installation; profile
 // evidence may narrow this window but must never widen it.
 // dhwBivalenceInstance is the II byte every system-config write and read of
@@ -43,7 +43,7 @@ const dhwBivalenceInstance = byte(0x00)
 
 const (
 	unmatchedDHWBivalenceMinC = -20.0
-	unmatchedDHWBivalenceMaxC = 20.0
+	unmatchedDHWBivalenceMaxC = 50.0
 )
 
 // ConfigBound is the active write bound of one config field.

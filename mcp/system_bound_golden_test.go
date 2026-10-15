@@ -22,7 +22,7 @@ func TestSemanticSystemDHWBivalenceBoundGoldenEnvelope(t *testing.T) {
 		bound *ConfigBound
 	}{
 		{"profile", &ConfigBound{MinC: -20, MaxC: 20, Source: "controller_profile", NarrowedOnly: true, Profile: "BASV0/SW0217/HW8803/API1.1"}},
-		{"unmatched", &ConfigBound{MinC: -20, MaxC: 20, Source: "unmatched_policy", Reason: "unknown_profile"}},
+		{"unmatched", &ConfigBound{MinC: -20, MaxC: 50, Source: "unmatched_policy", Reason: "unknown_profile"}},
 	}
 	out := map[string]any{}
 	for _, tc := range cases {
@@ -80,7 +80,7 @@ func TestSemanticSnapshotDHWBivalenceBoundGoldenEnvelope(t *testing.T) {
 		bound *ConfigBound
 	}{
 		{"profile", &ConfigBound{MinC: -20, MaxC: 20, Source: "controller_profile", NarrowedOnly: true, Profile: "BASV0/SW0217/HW8803/API1.1"}},
-		{"unmatched", &ConfigBound{MinC: -20, MaxC: 20, Source: "unmatched_policy", Reason: "unknown_profile"}},
+		{"unmatched", &ConfigBound{MinC: -20, MaxC: 50, Source: "unmatched_policy", Reason: "unknown_profile"}},
 	}
 	out := map[string]any{}
 	for _, tc := range cases {

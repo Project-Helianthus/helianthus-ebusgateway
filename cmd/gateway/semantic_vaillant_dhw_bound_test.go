@@ -89,12 +89,12 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, provider := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 
-	for _, value := range []string{"21", "50", "-21", "20.5"} {
+	for _, value := range []string{"51", "-21", "50.5"} {
 		result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value)
 		if result.Success {
 			t.Fatalf("BASV0 value %s accepted; want rejection", value)
 		}
-		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 20] applies") {
+		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 50] applies") {
 			t.Fatalf("BASV0 value %s error = %q; want the unmatched policy named", value, result.Error)
 		}
 	}
@@ -105,34 +105,33 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 		t.Fatalf("bus writes after rejected BASV0 values = %d; want 0 (reject before any bus write)", got)
 	}
 
-	for _, value := range []string{"20", "-20"} {
+	for _, value := range []string{"20", "-20", "21", "50", "20.5"} {
 		if result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value); !result.Success {
 			t.Fatalf("BASV0 value %s rejected: %q", value, result.Error)
 		}
 	}
-	if got := bus.writeCount(); got != 2 {
-		t.Fatalf("bus writes for in-bound BASV0 values = %d; want 2", got)
+	if got := bus.writeCount(); got != 5 {
+		t.Fatalf("bus writes for in-bound BASV0 values = %d; want 5", got)
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	want := graphql.ConfigBound{MinC: -20, MaxC: 20, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
+	want := graphql.ConfigBound{MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
 	if bound == nil || *bound != want {
 		t.Fatalf("published bound = %+v; want %+v", bound, want)
 	}
 }
 
 func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
-	// BASV2 has no seeded profile in ebusreg, so its 50 maximum is not kept: the
-	// conservative unmatched policy applies and says so.
+	// Without a seeded profile, the released unmatched policy applies.
 	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
 	poller, provider := newDHWBoundPoller(t, "BASV2", "0507", "1704", bus)
 
-	for _, value := range []string{"21", "50"} {
+	for _, value := range []string{"51", "-21"} {
 		result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value)
 		if result.Success {
 			t.Fatalf("BASV2 value %s accepted; want rejection under the unmatched policy", value)
 		}
-		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 20] applies") {
+		if !strings.Contains(result.Error, "controller identity unmatched (unknown_profile): conservative policy bound [-20, 50] applies") {
 			t.Fatalf("BASV2 value %s error = %q; want the unmatched policy named", value, result.Error)
 		}
 	}
@@ -142,13 +141,15 @@ func TestSetSystemConfigDHWBivalenceBASV2FallsToUnmatchedPolicy(t *testing.T) {
 	if got := bus.writeCount(); got != 0 {
 		t.Fatalf("bus writes after rejected BASV2 values = %d; want 0", got)
 	}
-	if result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", "20"); !result.Success {
-		t.Fatalf("BASV2 value 20 rejected: %q", result.Error)
+	for _, value := range []string{"21", "50"} {
+		if result := poller.SetSystemConfig(context.Background(), "dhwBivalencePointC", value); !result.Success {
+			t.Fatalf("BASV2 value %s rejected: %q", value, result.Error)
+		}
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	if bound == nil || bound.Source != graphql.ConfigBoundSourceUnmatchedPolicy || bound.Reason != graphql.ConfigBoundReasonUnknownProfile || bound.MinC != -20 || bound.MaxC != 20 || bound.Profile != "" {
-		t.Fatalf("published bound = %+v; want unmatched policy -20..20", bound)
+	if bound == nil || bound.Source != graphql.ConfigBoundSourceUnmatchedPolicy || bound.Reason != graphql.ConfigBoundReasonUnknownProfile || bound.MinC != -20 || bound.MaxC != 50 || bound.Profile != "" {
+		t.Fatalf("published bound = %+v; want unmatched policy -20..50", bound)
 	}
 }
 
@@ -246,8 +247,8 @@ func TestSystemConfigBoundMCPGraphQLParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		envelope, ok := decoded["dhw_bivalence_point_bound"].(map[string]any)
-		if !ok || envelope["min_c"] != float64(-20) || envelope["max_c"] != float64(20) || envelope["source"] != gql.Source || envelope["narrowed_only"] != gql.NarrowedOnly {
-			t.Fatalf("%s: MCP envelope bound = %#v; want dhw_bivalence_point_bound{min_c:-20,max_c:20,source:%s}", identity[0], decoded["dhw_bivalence_point_bound"], gql.Source)
+		if !ok || envelope["min_c"] != float64(-20) || envelope["max_c"] != float64(50) || envelope["source"] != gql.Source || envelope["narrowed_only"] != gql.NarrowedOnly {
+			t.Fatalf("%s: MCP envelope bound = %#v; want dhw_bivalence_point_bound{min_c:-20,max_c:50,source:%s}", identity[0], decoded["dhw_bivalence_point_bound"], gql.Source)
 		}
 	}
 }
@@ -257,15 +258,15 @@ func TestMCPConfigWriterDHWBivalenceRejectsBeforeBusWrite(t *testing.T) {
 	poller, _ := newDHWBoundPoller(t, "BASV0", "0217", "8803", bus)
 	writer := &mcpConfigWriterAdapter{poller: poller}
 
-	result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "35")
-	if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 20]") {
-		t.Fatalf("MCP set_config 35 on BASV0 = %+v; want rejection naming the unmatched policy bound", result)
+	result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "51")
+	if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 50]") {
+		t.Fatalf("MCP set_config 51 on BASV0 = %+v; want rejection naming the unmatched policy bound", result)
 	}
 	if bus.writeCount() != 0 {
 		t.Fatalf("bus writes = %d; want 0", bus.writeCount())
 	}
-	if result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "20"); !result.Success {
-		t.Fatalf("MCP set_config 20 on BASV0 rejected: %q", result.Error)
+	if result := writer.SetSystemConfig(context.Background(), "dhwBivalencePointC", "50"); !result.Success {
+		t.Fatalf("MCP set_config 50 on BASV0 rejected: %q", result.Error)
 	}
 }
 

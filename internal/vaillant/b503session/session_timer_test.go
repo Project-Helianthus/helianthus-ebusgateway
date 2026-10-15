@@ -28,12 +28,16 @@ func idleTimerGeneration(m *Manager) uint64 {
 
 func TestSession_IdleTimeout_AutoDisable(t *testing.T) {
 	m := newIdleTimerTestManager(t)
+	transport := m.TransportKey()
 	if _, err := m.Enable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	m.idleTimerFired(idleTimerGeneration(m))
 	if got := m.StatusSnapshot(); got.State != Idle || got.Owned {
 		t.Fatalf("expired snapshot = %+v; want Idle without ownership", got)
+	}
+	if err := m.Read(transport); !errors.Is(err, ErrNotActive) {
+		t.Fatalf("Read after expiry = %v; want ErrNotActive", err)
 	}
 	if _, ok := m.CleanupObligation(); !ok {
 		t.Fatal("expiry must retain a cleanup obligation")
@@ -42,6 +46,7 @@ func TestSession_IdleTimeout_AutoDisable(t *testing.T) {
 
 func TestSession_ReadResetsIdleTimer(t *testing.T) {
 	m := newIdleTimerTestManager(t)
+	transport := m.TransportKey()
 	if _, err := m.Enable(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +54,7 @@ func TestSession_ReadResetsIdleTimer(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		old := idleTimerGeneration(m)
 		staleGenerations = append(staleGenerations, old)
-		if err := m.Read(TransportKey{}); err != nil {
+		if err := m.Read(transport); err != nil {
 			t.Fatalf("Read iteration %d: %v", i, err)
 		}
 		if current := idleTimerGeneration(m); current <= old {
@@ -71,30 +76,36 @@ func TestSession_ReadResetsIdleTimer(t *testing.T) {
 	if got := m.StatusSnapshot(); got.State != Idle || got.Owned {
 		t.Fatalf("current expiry snapshot = %+v; want Idle without ownership", got)
 	}
+	if err := m.Read(transport); !errors.Is(err, ErrNotActive) {
+		t.Fatalf("Read after expiry = %v; want ErrNotActive", err)
+	}
 	if _, ok := m.CleanupObligation(); !ok {
 		t.Fatal("current expiry must retain cleanup")
 	}
 }
 
-func TestSession_IdleCallbackAfterStop(t *testing.T) {
+// Direct delivery after Disable observes generation fencing, not Timer.Stop.
+func TestSession_IdleStaleCallbackAfterDisable(t *testing.T) {
 	m := newIdleTimerTestManager(t)
 	key, err := m.Enable(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	generation := idleTimerGeneration(m)
-	started, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	resume, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		close(started)
 		<-resume
 		m.idleTimerFired(generation)
 	}()
-	<-started
 	err = m.Disable(key)
-	// Always join the callback before reporting an error.
+	// Release and join the stale callback before checking the resulting state.
 	close(resume)
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale callback did not complete after Disable")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,10 +113,10 @@ func TestSession_IdleCallbackAfterStop(t *testing.T) {
 		t.Fatalf("Disable did not invalidate callback: old=%d current=%d", generation, current)
 	}
 	if got := m.StatusSnapshot(); got.State != Idle || got.Owned {
-		t.Fatalf("callback after stop changed snapshot: %+v", got)
+		t.Fatalf("stale callback after Disable changed snapshot: %+v", got)
 	}
 	if _, ok := m.CleanupObligation(); ok {
-		t.Fatal("callback after stop created cleanup")
+		t.Fatal("stale callback after Disable created cleanup")
 	}
 }
 

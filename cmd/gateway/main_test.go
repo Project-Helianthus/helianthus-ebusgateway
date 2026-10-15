@@ -1031,11 +1031,28 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
+	ctx, cancel := context.WithCancel(context.Background())
+	watchdog, stopWatchdog := context.WithTimeout(context.Background(), 30*time.Second)
+	semanticRelease := make(chan struct{})
+	done := make(chan struct{})
+	var runErr error
 	t.Cleanup(func() {
+		defer stopWatchdog()
+		cancel()
+		close(semanticRelease)
+		select {
+		case <-done:
+		case <-watchdog.Done():
+			// Never restore hooks while run may still read them.
+			t.Fatal("run() did not exit after cancellation and barrier release; hooks not restored")
+		}
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
 		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
 		startHTTPServerFn = origStartHTTPServerFn
+		if runErr != nil {
+			t.Errorf("run() error = %v", runErr)
+		}
 	})
 
 	barrierObserved := make(chan bool, 1)
@@ -1048,12 +1065,11 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	}
 	startVaillantSemanticPollingFn = func(_ context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
 		barrierObserved <- startupBarrier != nil
+		<-semanticRelease
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
 		return nil, nil, nil
 	}
 
@@ -1063,9 +1079,9 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	cfg.ScanOnStart = true
 	cfg.BroadcastListen = false
 
-	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg)
+		defer close(done)
+		runErr = run(ctx, cfg)
 	}()
 
 	select {
@@ -1073,17 +1089,10 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 		if observed {
 			t.Fatal("semantic startup barrier should be disabled outside passive observe-first path")
 		}
-	case <-time.After(2 * time.Second):
+	case <-done:
+		t.Fatalf("run() exited before semantic poller initialization: %v", runErr)
+	case <-watchdog.Done():
 		t.Fatal("semantic poller was not initialized")
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("run() did not exit after context cancellation")
 	}
 }
 

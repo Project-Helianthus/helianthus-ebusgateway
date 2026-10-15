@@ -246,13 +246,22 @@ func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
 					completed++
 				case <-cleanup.C:
 					cancel()
-					<-drained
+					// Cancellation cannot interrupt Next waiting on blocked.mu.
+					select {
+					case <-drained:
+					case <-time.After(watchdog):
+						t.Fatal("commit watchdog expired; publishers and subscriber consumer did not join after cancellation")
+					}
 					t.Fatal("commit watchdog expired; publishers did not join after subscriber release")
 				}
 			}
 			cleanup.Stop()
 			cancel()
-			<-drained
+			select {
+			case <-drained:
+			case <-time.After(watchdog):
+				t.Fatal("commit watchdog expired; subscriber consumer did not join after cancellation")
+			}
 			blocked.Close()
 			t.Fatalf("commits did not complete within %s while subscriber was undrained; released and joined all workers", watchdog)
 		}

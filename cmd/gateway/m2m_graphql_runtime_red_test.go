@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,7 +299,7 @@ func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	dir := t.TempDir()
 	clientCert := writeM2MPEM(t, dir, "portal-client.pem", "CERTIFICATE", certs.goodClient.Certificate[0])
 	clientKey := writeM2MPEM(t, dir, "portal-client-key.pem", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(certs.goodClient.PrivateKey.(*rsa.PrivateKey)))
-	portalConfig := ebusgateway.PortalStorageConfig{SemanticEnabled: true, M2MURL: "https://localhost:" + strings.TrimPrefix(runtime.Addr(), "127.0.0.1:") + "/graphql/m2m/v1", M2MServerName: "m2m.gateway.test", M2MCAFile: certs.caFile, M2MClientCert: clientCert, M2MClientKey: clientKey, AssetRef: "asset:growatt-bms-a"}
+	portalConfig := ebusgateway.PortalStorageConfig{SemanticEnabled: true, M2MURL: (&url.URL{Scheme: "https", Host: runtime.Addr(), Path: "/graphql/m2m/v1"}).String(), M2MServerName: "m2m.gateway.test", M2MCAFile: certs.caFile, M2MClientCert: clientCert, M2MClientKey: clientKey, AssetRef: "asset:growatt-bms-a"}
 	forward, err := newPortalStorageClient(portalConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +513,7 @@ func TestCharacterizationM2MGraphQLOfAllThreeFamilies(t *testing.T) {
 	client := func(asset string) *m2mgraphql.Client {
 		t.Helper()
 		value, err := m2mgraphql.NewClient(m2mgraphql.ClientConfig{
-			URL: "https://localhost:" + strings.TrimPrefix(runtime.Addr(), "127.0.0.1:") + "/graphql/m2m/v1", ServerName: "m2m.gateway.test",
+			URL: (&url.URL{Scheme: "https", Host: runtime.Addr(), Path: "/graphql/m2m/v1"}).String(), ServerName: "m2m.gateway.test",
 			CAFile: certs.caFile, ClientCertFile: clientCert, ClientKeyFile: clientKey, AssetRef: asset,
 		})
 		if err != nil {

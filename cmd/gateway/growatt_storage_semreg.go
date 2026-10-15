@@ -449,6 +449,10 @@ func growattDecimal(value float64) semreg.Decimal {
 	if coefficient == "" {
 		return semreg.Decimal{Coefficient: "0", Exponent10: 0}
 	}
+	for strings.HasSuffix(coefficient, "0") && exponent < 18 {
+		coefficient = strings.TrimSuffix(coefficient, "0")
+		exponent++
+	}
 	if negative {
 		coefficient = "-" + coefficient
 	}

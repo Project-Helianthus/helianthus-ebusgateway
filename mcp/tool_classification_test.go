@@ -27,8 +27,8 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolBusSummaryGetName:      toolClassReservedDraft,
 		toolBusMessagesListName:    toolClassReservedDraft,
 		toolBusPeriodicityListName: toolClassReservedDraft,
-		// Passive retained specimens share the bus-observability draft reservation.
-		toolBusProtocolSpecimensListName: toolClassReservedDraft,
+		// The existing v1 specimen contract is stable and protected by goldens.
+		toolBusProtocolSpecimensListName: toolClassCoreStable,
 		toolWatchSummaryGetName:          toolClassReservedDraft,
 		// Raw 07 04 identification evidence (#1017); graduates to GraphQL
 		// (busIdentificationEvidence), so it must be core stable.
@@ -104,7 +104,7 @@ func testInstallB503ForClassification(server *Server) {
 
 func isReservedDraftTool(name string) bool {
 	switch name {
-	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolBusProtocolSpecimensListName, toolWatchSummaryGetName:
+	case toolBusSummaryGetName, toolBusMessagesListName, toolBusPeriodicityListName, toolWatchSummaryGetName:
 		return true
 	default:
 		return false
@@ -278,7 +278,6 @@ func TestBusObservabilityToolClassificationReservation(t *testing.T) {
 		toolBusSummaryGetName,
 		toolBusMessagesListName,
 		toolBusPeriodicityListName,
-		toolBusProtocolSpecimensListName,
 		toolWatchSummaryGetName,
 	} {
 		if !hasToolName(tools, name) {

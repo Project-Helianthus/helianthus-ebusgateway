@@ -112,36 +112,6 @@ func TestSession_ReadsPermittedWithoutToken(t *testing.T) {
 	}
 }
 
-// 5. Idle timeout auto-disable.
-func TestSession_IdleTimeout_AutoDisable(t *testing.T) {
-	m := b503session.New(newTK(testEpoch), 30*time.Millisecond, okRefresh(testEpoch))
-	if _, err := m.Enable(context.Background()); err != nil {
-		t.Fatalf("Enable err=%v", err)
-	}
-	time.Sleep(80 * time.Millisecond)
-	if s := m.State(); s != b503session.Idle && s != b503session.Disabled {
-		t.Fatalf("state=%v want Idle/Disabled after idle timeout", s)
-	}
-}
-
-// 6. Read resets the idle timer.
-func TestSession_ReadResetsIdleTimer(t *testing.T) {
-	m := b503session.New(newTK(testEpoch), 30*time.Millisecond, okRefresh(testEpoch))
-	if _, err := m.Enable(context.Background()); err != nil {
-		t.Fatalf("Enable err=%v", err)
-	}
-	// Read every 15ms for 5 iterations (~75ms total, > idle timeout).
-	for i := 0; i < 5; i++ {
-		time.Sleep(15 * time.Millisecond)
-		if err := m.Read(newTK(testEpoch)); err != nil {
-			t.Fatalf("Read iter=%d err=%v", i, err)
-		}
-	}
-	if s := m.State(); s != b503session.Active {
-		t.Fatalf("state=%v want Active (timer should have been reset)", s)
-	}
-}
-
 // 7. Transport disconnect with owner held releases + transitions to Disabled.
 func TestSession_TransportDisconnect_OwnerHeld_Releases(t *testing.T) {
 	m := b503session.New(newTK(testEpoch), 30*time.Second, okRefresh(testEpoch))

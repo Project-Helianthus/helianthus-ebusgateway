@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -20,7 +19,6 @@ func TestTeslaEvidenceTimezoneDigests(t *testing.T) {
 		p.SetClock(func() time.Time { return base.Add(time.Second) }, func() (uint64, error) { return 0, nil })
 		source := teslaGen3EVSECurrentLimitV1FixtureSource(t)
 		evidence := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:timezone", ObservedAt: at, EvaluatedAt: at.Add(time.Second), PersistentObservedAt: at, ProvisionalObservedAt: at, MonotonicNS: 1, PersistentMonotonicNS: 1, ProvisionalMonotonicNS: 1, EvaluatedMonotonicNS: 1_000_000_001, Sequence: 1}
-		before := evidence
 		sourceBefore, err := json.Marshal([]any{teslaGen3EVSEPersistentRecord(source.Persistent, evidence), teslaGen3EVSEProvisionalRecord(source.Provisional, evidence)})
 		if err != nil {
 			t.Fatal(err)
@@ -49,7 +47,8 @@ func TestTeslaEvidenceTimezoneDigests(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(evidence, before) || !bytes.Equal(sourceBefore, sourceAfter) {
+		// Serialized records own their bytes independently of source payload slices.
+		if !bytes.Equal(sourceBefore, sourceAfter) {
 			t.Fatal("publication changed caller-owned input")
 		}
 		var snapshot struct {
@@ -113,12 +112,8 @@ func TestTeslaEvidenceTimezoneZeroAndMonotonic(t *testing.T) {
 	for _, loc := range []*time.Location{time.UTC, time.FixedZone("positive", 3600), time.FixedZone("negative", -3600)} {
 		zero := time.Time{}.In(loc)
 		evidence := TeslaGen3EVSESemanticEvidence{ObservationID: "observation:zero", ObservedAt: zero, EvaluatedAt: zero, Sequence: 1}
-		before := evidence
 		if err := p.Publish(source, evidence); err == nil {
 			t.Error("zero receipt was admitted")
-		}
-		if evidence != before {
-			t.Error("zero caller input changed")
 		}
 	}
 }

@@ -28,20 +28,34 @@ func TestGrowattEvidenceTimezoneDigests(t *testing.T) {
 		}
 		evidence.ReceiptWall = at
 		before := evidence.clone()
-		// Canonical decimals isolate the receipt-wall regression from #1029's
-		// separately classified production decimal defect.
+		// Canonical decimals keep the #1029 receipt-wall fixture explicit;
+		// the separate Decimal defect was fixed in #1051.
 		native.Status.PackVoltageVolts = 52
 		native.Status.PackCurrentAmps = -12.5
 		native.Status.SOCPercent = 75
 		native.Status.TemperatureCelsius = 24
 		native.Status.CumulativeChargeAmpHours = 123.5
 		native.Status.CumulativeDischargeAmpHours = 42.25
-		statusBefore := native.Status
+		// JSON captures public scalar fields independently; retained native
+		// evidence is checked separately through its public accessor.
+		statusBefore, err := json.Marshal(native.Status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nativeBefore := native.Status.NativeObservation()
+		slicesBefore := nativeBefore.Slices()
 		public, err := runtime.storage.Publish(native.Status, evidence)
 		if err != nil {
 			t.Fatalf("canonical fixture publication: %v", err)
 		}
-		if !reflect.DeepEqual(evidence, before) || !reflect.DeepEqual(native.Status, statusBefore) {
+		statusAfter, err := json.Marshal(native.Status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nativeAfter := native.Status.NativeObservation()
+		if !reflect.DeepEqual(evidence, before) || !bytes.Equal(statusAfter, statusBefore) ||
+			nativeAfter.UnitID() != nativeBefore.UnitID() || nativeAfter.Revision() != nativeBefore.Revision() ||
+			!reflect.DeepEqual(nativeAfter.Slices(), slicesBefore) {
 			t.Fatal("publication changed caller-owned input")
 		}
 		encoded, err := json.Marshal(evidence)

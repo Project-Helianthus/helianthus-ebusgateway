@@ -77,16 +77,12 @@ func TestPVEvidenceTimezoneZeroAndMonotonic(t *testing.T) {
 	zero := time.Time{}
 	for _, loc := range []*time.Location{time.UTC, time.FixedZone("positive", 3600), time.FixedZone("negative", -3600)} {
 		at := zero.In(loc)
-		before := at
 		if pvPublicationWall(at) != pvPublicationWall(zero) {
 			t.Error("zero wall point depends on offset")
 		}
 		adapter := &Adapter{startedWall: at, startedMono: at}
 		if _, err := adapter.semanticPVReadContext(); err == nil {
 			t.Error("zero clock admitted")
-		}
-		if at != before {
-			t.Error("caller time changed")
 		}
 	}
 	anchor := time.Now()

@@ -167,6 +167,12 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if energyWindowObsolete(key, ingestAt) {
+		semanticEnergyRejectionsTotal.Add("obsolete_window", 1)
+		log.Printf("semantic_energy_merge_reject reason=obsolete_window source=%s", sourceLabel)
+		return false
+	}
+
 	if key.Period == "day" {
 		s.pruneOlderDaysLocked(key)
 	}
@@ -175,6 +181,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	if !exists {
 		// No existing point: accept any source.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.pruneObsoleteWindowsLocked(key, ingestAt)
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
@@ -190,6 +197,7 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 	case existing.Source == EnergySourceBroadcast && source == EnergySourceRegister:
 		// Register always wins over broadcast, regardless of timestamp.
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.pruneObsoleteWindowsLocked(key, ingestAt)
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
@@ -202,10 +210,40 @@ func (s *energyMergeStore) Apply(key energyMergeKey, value float64, source Energ
 			return false
 		}
 		s.points[key] = energyDataPoint{Value: value, Source: source, IngestAt: ingestAt}
+		s.pruneObsoleteWindowsLocked(key, ingestAt)
 		s.revision++
 		semanticEnergyMergesTotal.Add(sourceLabel, 1)
 		log.Printf("semantic_energy_merge_accept source=%s", sourceLabel)
 		return true
+	}
+}
+
+// energyWindowObsolete uses the ingest reference calendar, not the incoming
+// window's date. Future windows are retained: a clock rollback must not erase
+// data that can become projectable again when the clock catches up.
+func energyWindowObsolete(key energyMergeKey, ref time.Time) bool {
+	switch key.Period {
+	case "year":
+		return key.Year < ref.Year()-1
+	case "month":
+		previous := energyWindowKey(key.Channel, key.Usage, "month", "previous", ref)
+		return key.Year < previous.Year || (key.Year == previous.Year && key.Month < previous.Month)
+	default:
+		return false
+	}
+}
+
+// pruneObsoleteWindowsLocked runs only after an accepted month/year write.
+// It leaves other selectors, days and lifetime totals untouched. Without new
+// accepted writes, snapshots keep projecting retained state without mutation.
+func (s *energyMergeStore) pruneObsoleteWindowsLocked(key energyMergeKey, ref time.Time) {
+	if key.Period != "month" && key.Period != "year" {
+		return
+	}
+	for existing := range s.points {
+		if existing.Channel == key.Channel && existing.Usage == key.Usage && existing.Period == key.Period && energyWindowObsolete(existing, ref) {
+			delete(s.points, existing)
+		}
 	}
 }
 

@@ -415,10 +415,8 @@ func cacheBoilerToGraphQL(cache *semanticCacheBoiler) *graphql.BoilerStatus {
 			DhwStatusRaw:     cloneIntPtr(cache.DhwStatusRaw),
 		},
 	}
-	if cache.CentralHeatingPumpActive != nil {
-		v := *cache.CentralHeatingPumpActive
-		out.State.CentralHeatingPumpActive = &v
-	}
+	// Cached pump booleans have no provenance and may originate from circuit 0.
+	// Leave the boiler pump unknown until independent live evidence arrives.
 	if cache.DhwOperatingMode != nil {
 		v := *cache.DhwOperatingMode
 		out.Config.DhwOperatingMode = &v
@@ -438,10 +436,6 @@ func graphQLBoilerToCache(status *graphql.BoilerStatus) *semanticCacheBoiler {
 		DhwOperatingMode:      cloneStringPtr(status.Config.DhwOperatingMode),
 		HeatingStatusRaw:      cloneIntPtr(status.Diagnostics.HeatingStatusRaw),
 		DhwStatusRaw:          cloneIntPtr(status.Diagnostics.DhwStatusRaw),
-	}
-	if status.State.CentralHeatingPumpActive != nil {
-		v := *status.State.CentralHeatingPumpActive
-		out.CentralHeatingPumpActive = &v
 	}
 	return out
 }

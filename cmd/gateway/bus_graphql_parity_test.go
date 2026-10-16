@@ -166,6 +166,69 @@ func busParityCompare(name string, mcpValue, graphqlValue any) error {
 	return nil
 }
 
+// The runtime store rejects response-less attempts. Use provider snapshots to
+// exercise retained rows with absent response bytes at the dispatch boundary.
+type busParityMCPIdentificationFixture struct {
+	mcp.IdentificationEvidenceSnapshot
+}
+
+func (f busParityMCPIdentificationFixture) IdentificationEvidence() mcp.IdentificationEvidenceSnapshot {
+	return f.IdentificationEvidenceSnapshot
+}
+
+type busParityGraphQLIdentificationFixture struct {
+	gql.IdentificationEvidenceSnapshot
+}
+
+func (f busParityGraphQLIdentificationFixture) IdentificationEvidence() gql.IdentificationEvidenceSnapshot {
+	return f.IdentificationEvidenceSnapshot
+}
+
+func TestBusGraphQLParityMissingIdentificationResponse(t *testing.T) {
+	reg := registry.NewDeviceRegistry(nil)
+	invoker := &busParityInvoker{}
+	server, err := mcp.NewServer(reg, invoker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturedAt := time.Unix(100, 123).UTC()
+	request := []byte{0x71, 0x15, 0x07, 0x04, 0x00}
+	server.SetIdentificationEvidenceProvider(busParityMCPIdentificationFixture{mcp.IdentificationEvidenceSnapshot{
+		SessionID: "synthetic", Exchanges: []mcp.IdentificationEvidenceExchange{{
+			Address: 0x15, Sequence: 1, SessionID: "synthetic", CapturedAt: capturedAt, Request: request,
+		}},
+	}})
+	builder := gql.NewBuilder(reg, nil)
+	builder.SetIdentificationEvidenceProvider(busParityGraphQLIdentificationFixture{gql.IdentificationEvidenceSnapshot{
+		SessionID: "synthetic", Exchanges: []gql.IdentificationEvidenceExchange{{
+			Address: 0x15, Sequence: 1, SessionID: "synthetic", CapturedAt: capturedAt, Request: request,
+		}},
+	}})
+	handler, err := gql.NewHandler(builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := busParityJSON(t, handler, 1)["identification"]
+	data := busParityMCP(t, server, "ebus.v1.bus.identification_evidence.list", 1)["data"]
+	if err := busParityCompare("identification", data, graph); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]any{"MCP": data, "GraphQL": graph} {
+		list := value.(map[string]any)
+		items := list["items"].([]any)
+		if list["count"] != float64(1) || len(items) != 1 {
+			t.Fatalf("%s: missing retained row: %v", name, list)
+		}
+		item := items[0].(map[string]any)
+		if item["request_hex"] != "7115070400" || item["response_hex"] != "" {
+			t.Fatalf("%s: absent response must be an empty string: %v", name, item)
+		}
+	}
+	if invoker.calls != 0 {
+		t.Fatal("read invoked native method")
+	}
+}
+
 func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.BroadcastListen = true

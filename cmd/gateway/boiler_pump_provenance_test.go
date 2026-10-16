@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -75,6 +76,60 @@ func TestK01PartialUpdatesPreserveIndependentBoilerPump(t *testing.T) {
 			})
 			poller.publishBoilerStatus(semanticSnapshotSourceLive)
 			k01AssertPublishedPump(t, poller, &next)
+		})
+	}
+}
+
+func TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded(t *testing.T) {
+	for _, cachedActive := range []bool{false, true} {
+		name := "cached_off"
+		if cachedActive {
+			name = "cached_on"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newSemanticCacheStore(filepath.Join(t.TempDir(), "semantic-cache.json"), t.Logf)
+			flow := 39.5
+			// Reproduce an existing cache, including the legacy circuit-derived field.
+			if err := store.writeV3(semanticCacheV3{
+				SchemaVersion: semanticCacheSchemaVersionV3,
+				Boiler: &semanticCacheBoiler{
+					CentralHeatingPumpActive: &cachedActive,
+					FlowTemperatureC:         &flow,
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			poller := k01PumpPoller(1, nil)
+			snapshot, ok := preloadSemanticCache(poller.provider, store)
+			if !ok {
+				t.Fatal("legacy cache was discarded wholesale")
+			}
+			k01AssertPublishedPump(t, poller, nil)
+			poller.hydrateFromCache(snapshot)
+			if poller.boiler == nil || poller.boiler.CentralHeatingPumpActive != nil {
+				t.Fatal("hydrated boiler pump must be unknown")
+			}
+			if got := poller.boiler.FlowTemperatureC; got == nil || *got != flow {
+				t.Fatalf("cached flow = %v; want retained %v", got, flow)
+			}
+			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+			k01AssertPublishedPump(t, poller, nil)
+
+			// Independent evidence can still replace Unknown after hydration.
+			poller.boiler = mergeBoilerSnapshotNonDestructive(poller.boiler, &vaillantBoilerSnapshot{
+				CentralHeatingPumpActive: &cachedActive,
+			})
+			poller.publishBoilerStatus(semanticSnapshotSourceLive)
+			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+			k01AssertPublishedPump(t, poller, &cachedActive)
+			if err := store.Save(semanticCacheSnapshot{Boiler: poller.provider.BoilerStatus()}); err != nil {
+				t.Fatal(err)
+			}
+			cached, ok := store.Load()
+			if !ok || cached.Boiler == nil || cached.Boiler.State.CentralHeatingPumpActive != nil {
+				t.Fatal("cache must not restore pump state without provenance")
+			}
 		})
 	}
 }

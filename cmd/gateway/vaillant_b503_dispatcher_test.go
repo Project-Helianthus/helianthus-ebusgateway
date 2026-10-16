@@ -690,19 +690,62 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 	}
 	readMu := newB503BlockingReadLocker()
 	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	// Arm expiry only after the dispatcher requests readMu. A wall-clock
+	// deadline started before goroutine admission can expire before Lock and
+	// leave the test waiting forever for readMu.entered under runner load.
+	ctx := newB503LaggingParentContext()
+	var expireOnce, releaseOnce sync.Once
+	expire := func() {
+		expireOnce.Do(func() {
+			ctx.expire()
+			// Deliver the held deadline callback synchronously so the Manager's
+			// derived operation context is expired before readMu is released.
+			ctx.mu.Lock()
+			f := ctx.afterFunc
+			ctx.afterFunc = nil
+			ctx.mu.Unlock()
+			if f != nil {
+				f()
+			}
+		})
+	}
+	release := func() { releaseOnce.Do(func() { close(readMu.release) }) }
 	done := make(chan error, 1)
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		expire()
+		release()
+		select {
+		case <-joined:
+		case <-time.After(5 * time.Second):
+			t.Error("Disable worker did not join after cancellation and readMu release")
+		}
+	})
 	go func() {
+		defer close(joined)
 		done <- mgr.DisableOperation(ctx, key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
 			return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
 		})
 	}()
-	<-readMu.entered
-	<-ctx.Done()
-	close(readMu.release)
-	if err := <-done; err == nil {
-		t.Fatal("pre-emission readMu deadline unexpectedly confirmed Disable")
+	select {
+	case <-readMu.entered:
+	case <-joined:
+		t.Fatalf("Disable returned before requesting readMu: %v", <-done)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Disable did not request readMu")
+	}
+	if pending, ok := mgr.PendingOperation(); !ok || pending.Kind != b503session.OperationDisable || pending.Emitted {
+		t.Fatalf("blocked disable = %+v, present=%v; want pending without emission", pending, ok)
+	}
+	expire()
+	release()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expired Disable did not complete after readMu release")
+	}
+	if err := <-done; !errors.Is(err, errRawFrameUpstreamTimeout) {
+		t.Fatalf("pre-emission readMu deadline error = %v, want upstream timeout", err)
 	}
 	if calls := bus.callCount(); calls != 0 {
 		t.Fatalf("readMu-deadline bus.Send count = %d, want 0", calls)
@@ -714,10 +757,16 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttempted || after.LastEmitted {
 		t.Fatalf("pre-emission readMu deadline recorded a nonexistent cleanup attempt: before=%+v after=%+v present=%v", before, after, ok)
 	}
-	if err := mgr.DisableOperation(context.Background(), key, 0x15, func(context.Context, byte) b503session.DispatchOutcome {
-		return b503session.DispatchOutcome{Emitted: true, Native: b503session.NativeACK, Transport: mgr.TransportKey()}
+	if err := mgr.DisableOperation(context.Background(), key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
+		return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
 	}); err != nil {
-		t.Fatalf("retry disable: %v", err)
+		t.Fatalf("nonexpired retry disable: %v", err)
+	}
+	if calls := bus.callCount(); calls != 1 {
+		t.Fatalf("nonexpired retry bus.Send count = %d, want 1", calls)
+	}
+	if got := mgr.StatusSnapshot(); got.Owned || got.State != b503session.Idle {
+		t.Fatalf("nonexpired retry state = %+v, want ownerless Idle", got)
 	}
 }
 

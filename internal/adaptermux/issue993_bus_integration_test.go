@@ -3,7 +3,6 @@ package adaptermux
 import (
 	"context"
 	"errors"
-	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,7 +92,9 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 	requestCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
-	go func() {
+	var senders p3TestSenders
+	defer senders.releaseAndWait(func() { cancel(); stop() })
+	senders.start(func() {
 		_, err := bus.Send(requestCtx, protocol.Frame{
 			Source:    gatewaySource,
 			Target:    protocol.AddressBroadcast,
@@ -101,7 +102,7 @@ func TestIssue993_ProtocolBusRetriesAfterFirstForeignInitiator(t *testing.T) {
 			Secondary: 0x16,
 		})
 		result <- err
-	}()
+	})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -213,10 +214,12 @@ func TestIssue993_CollisionRecoverySurvivesActiveReadTimeout(t *testing.T) {
 	requestCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	go func() {
+	var senders p3TestSenders
+	defer senders.releaseAndWait(func() { cancel(); stop() })
+	senders.start(func() {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
-	}()
+	})
 
 	deadline := time.Now().Add(activeChanTimeout + time.Second)
 	for time.Now().Before(deadline) && mux.activeTxn.readTimeoutTot.Load() == 0 {
@@ -306,16 +309,8 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 	mux.lastWireActivity = time.Time{}
 	mux.stateMu.Unlock()
 
-	client, server := net.Pipe()
-	defer func() {
-		if err := client.Close(); err != nil {
-			t.Errorf("client.Close error = %v", err)
-		}
-	}()
-	externalID := mux.AddSession(server)
-	if externalID == 0 {
-		t.Fatal("AddSession returned zero external ID")
-	}
+	externalID, closeExternal := newP3TestSession(t, mux)
+	defer closeExternal()
 	var gatewayStarts, externalStarts atomic.Uint32
 	mock.setRequestStartHook(func(initiator byte) {
 		switch initiator {
@@ -344,10 +339,12 @@ func TestIssue993_CollisionRecoveryCancelAfterActiveReadTimeout(t *testing.T) {
 	requestCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	result := make(chan error, 1)
-	go func() {
+	var senders p3TestSenders
+	defer senders.releaseAndWait(func() { cancel(); stop() })
+	senders.start(func() {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
-	}()
+	})
 
 	deadline := time.Now().Add(activeChanTimeout + time.Second)
 	for time.Now().Before(deadline) && mux.activeTxn.readTimeoutTot.Load() == 0 {
@@ -544,10 +541,12 @@ func TestIssue993_CollisionRecoveryIgnoresLaterForeignInitiator(t *testing.T) {
 	requestCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
-	go func() {
+	var senders p3TestSenders
+	defer senders.releaseAndWait(func() { cancel(); stop() })
+	senders.start(func() {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
-	}()
+	})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -621,16 +620,8 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 	mux.lastWireActivity = time.Time{}
 	mux.stateMu.Unlock()
 
-	client, server := net.Pipe()
-	defer func() {
-		if err := client.Close(); err != nil {
-			t.Errorf("client.Close error = %v", err)
-		}
-	}()
-	externalID := mux.AddSession(server)
-	if externalID == 0 {
-		t.Fatal("AddSession returned zero external ID")
-	}
+	externalID, closeExternal := newP3TestSession(t, mux)
+	defer closeExternal()
 
 	var gatewayStarts atomic.Uint32
 	var externalStarts atomic.Uint32
@@ -681,10 +672,12 @@ func TestIssue993_CollisionRecoveryDefersF26ForPendingExternal(t *testing.T) {
 	requestCtx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
-	go func() {
+	var senders p3TestSenders
+	defer senders.releaseAndWait(func() { cancel(); stop() })
+	senders.start(func() {
 		_, err := bus.Send(requestCtx, protocol.Frame{Source: gatewaySource, Target: protocol.AddressBroadcast, Primary: 0xB5, Secondary: 0x16})
 		result <- err
-	}()
+	})
 
 	var externalStart <-chan startResult
 	select {
@@ -799,9 +792,8 @@ func TestIssue993_CollisionHandoffCancelsAbandonedWatchdog(t *testing.T) {
 			releaseRetryStart := func() {
 				releaseRetryStartOnce.Do(func() { close(allowRetryStart) })
 			}
-			// Cleanup waits for the read loop. Every failing assertion below must
-			// therefore release the deliberately paused RequestStart hook first.
-			defer releaseRetryStart()
+			var senders p3TestSenders
+			defer senders.releaseAndWait(releaseRetryStart)
 			mock.setRequestStartHook(func(initiator byte) {
 				if initiator != gatewaySource {
 					t.Errorf("RequestStart initiator = 0x%02X", initiator)
@@ -815,9 +807,9 @@ func TestIssue993_CollisionHandoffCancelsAbandonedWatchdog(t *testing.T) {
 				retryWrite <- wireByte // hold echo until the replacement watchdog is armed.
 			})
 			handoff := make(chan (<-chan startResult), 1)
-			go func() {
+			senders.start(func() {
 				handoff <- mux.requestStartForSession(gatewaySessionID, gatewaySource)
-			}()
+			})
 			// Retry-ready is queued behind the lifecycle boundary until SYN3.
 			deadline = time.Now().Add(time.Second)
 			for time.Now().Before(deadline) && !mux.arb.hasPending() {
@@ -835,7 +827,7 @@ func TestIssue993_CollisionHandoffCancelsAbandonedWatchdog(t *testing.T) {
 			if shouldGrant {
 				// The test hook deliberately pauses RequestStart. Keep the
 				// arbitration path asynchronous as the production read loop does.
-				go mux.tryGrantAndStart()
+				senders.start(mux.tryGrantAndStart)
 			}
 
 			select {

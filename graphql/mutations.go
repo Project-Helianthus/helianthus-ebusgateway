@@ -1,9 +1,7 @@
 package graphql
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,8 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/types"
@@ -96,7 +94,7 @@ type configFieldSpec struct {
 
 const (
 	mutationControllerFallbackAddr = byte(0x15)
-	mutationB524OpcodeLocal        = byte(0x02)
+	mutationB524OpcodeLocal        = systemconfig.OpcodeLocal
 	mutationSystemPlane            = "system"
 	mutationSetExtRegisterMethod   = "set_ext_register"
 	mutationGetExtRegisterMethod   = "get_ext_register"
@@ -147,21 +145,10 @@ var zoneConfigFieldSpecs = map[string]configFieldSpec{
 	"holidaySetpoint":      {group: 0x03, addr: 0x0005, valueType: configValueFloat32, min: 5.0, max: 30.0},
 }
 
-var systemConfigFieldSpecs = map[string]configFieldSpec{
-	// dhwBivalencePointC: the fixed range here is the conservative unmatched-
-	// identity policy (-20..20). A matched controller profile overrides it per
-	// write through EncodeSystemConfigValueForController; no path may use a
-	// wider range than the policy without a profile bound (system_bounds.go).
-	"dhwBivalencePointC":   {group: 0x00, addr: 0x0001, valueType: configValueFloat32, min: unmatchedDHWBivalenceMinC, max: unmatchedDHWBivalenceMaxC},
-	"maxRoomHumidityPct":   {group: 0x00, addr: 0x000E, valueType: configValueUint16, min: 30, max: 80},
-	"adaptiveHeatingCurve": {group: 0x00, addr: 0x0014, valueType: configValueBoolU8},
-	"hcBivalencePointC":    {group: 0x00, addr: 0x0023, valueType: configValueFloat32, min: -20.0, max: 30.0},
-	"hcEmergencyTempC":     {group: 0x00, addr: 0x0026, valueType: configValueFloat32, min: 20.0, max: 80.0},
-	"hwcMaxFlowTempC":      {group: 0x00, addr: 0x0046, valueType: configValueFloat32, min: 15.0, max: 80.0},
-	"maintenanceDate":      {group: 0x00, addr: 0x002C, valueType: configValueDateHDA3},
-	"installerName":        {group: 0x00, addr: 0x006C, valueType: configValueCString, maxLen: 12},
-	"installerPhone":       {group: 0x00, addr: 0x006F, valueType: configValueCString, maxLen: 12},
-	"installerMenuCode":    {group: 0x00, addr: 0x0076, valueType: configValueUint16, min: 0, max: 999},
+var systemConfigFieldSpecs = SystemConfigFieldSpecs()
+
+func adaptSystemConfigSpec(s systemconfig.ConfigFieldSpec) configFieldSpec {
+	return configFieldSpec{group: s.RegisterGroup, addr: s.RegisterAddr, valueType: configValueType(s.ValueType), min: s.Min, max: s.Max, maxLen: s.MaxLen, enum: s.Enum}
 }
 
 type paramSchemaProvider interface {
@@ -898,30 +885,21 @@ func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invo
 			return configMutationError(fmt.Errorf("%s: %s: %w", fieldName, bound.Describe(), encodeErr))
 		}
 	}
-	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, 0x00, rawValue)
+	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, systemconfig.Instance, rawValue)
 }
 
 // SystemConfigFieldSpecs returns a copy of the system config field specs map.
 func SystemConfigFieldSpecs() map[string]configFieldSpec {
-	cp := make(map[string]configFieldSpec, len(systemConfigFieldSpecs))
-	for k, v := range systemConfigFieldSpecs {
-		cp[k] = v
+	cp := make(map[string]configFieldSpec)
+	for k, v := range systemconfig.SystemConfigFieldSpecs() {
+		cp[k] = adaptSystemConfigSpec(v)
 	}
 	return cp
 }
 
-// EncodeSystemConfigValue validates and encodes a system config field value.
-// Returns the encoded payload, the field spec (for readback), and any error.
 func EncodeSystemConfigValue(fieldName, rawValue string) ([]byte, configFieldSpec, error) {
-	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
-	if err != nil {
-		return nil, configFieldSpec{}, err
-	}
-	payload, err := encodeConfigValue(spec, rawValue)
-	if err != nil {
-		return nil, configFieldSpec{}, err
-	}
-	return payload, spec, nil
+	payload, spec, err := systemconfig.EncodeSystemConfigValue(fieldName, rawValue)
+	return payload, adaptSystemConfigSpec(spec), err
 }
 
 // ConfigFieldSpecGroup returns the B524 group byte for a field spec.
@@ -952,138 +930,12 @@ func resolveConfigFieldSpec(scope, fieldName string, specs map[string]configFiel
 	return configFieldSpec{}, fmt.Errorf("unknown %s field %q (allowed: %s): %w", scope, fieldName, strings.Join(allowed, ", "), ebuserrors.ErrInvalidPayload)
 }
 
+func nativeConfigSpec(s configFieldSpec) systemconfig.ConfigFieldSpec {
+	return systemconfig.ConfigFieldSpec{RegisterGroup: s.group, RegisterAddr: s.addr, ValueType: systemconfig.ValueType(s.valueType), Min: s.min, Max: s.max, MaxLen: s.maxLen, Enum: s.enum}
+}
+
 func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
-	// Reject non-finite numeric input before range comparisons or conversion:
-	// NaN makes both comparisons false and must never become a bus payload.
-	if spec.valueType == configValueFloat32 || spec.valueType == configValueUint16 {
-		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && (math.IsNaN(value) || math.IsInf(value, 0)) {
-			return nil, fmt.Errorf("numeric value %q must be finite: %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-	}
-	switch spec.valueType {
-	case configValueFloat32:
-		value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid float value %q: %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if value < spec.min || value > spec.max {
-			return nil, fmt.Errorf("value %.4g out of range [%.4g, %.4g]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 4)
-		binary.LittleEndian.PutUint32(payload, math.Float32bits(float32(value)))
-		return payload, nil
-	case configValueUint16:
-		value, err := parseIntegerString(strings.TrimSpace(raw))
-		if err != nil {
-			return nil, fmt.Errorf("invalid integer value %q: %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if float64(value) < spec.min || float64(value) > spec.max {
-			return nil, fmt.Errorf("value %d out of range [%.0f, %.0f]: %w", value, spec.min, spec.max, ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 2)
-		binary.LittleEndian.PutUint16(payload, uint16(value))
-		return payload, nil
-	case configValueBoolU8:
-		parsed, ok := parseBoolString(raw)
-		if !ok {
-			return nil, fmt.Errorf("invalid boolean value %q (expected true/false): %w", raw, ebuserrors.ErrInvalidPayload)
-		}
-		if parsed {
-			return []byte{1}, nil
-		}
-		return []byte{0}, nil
-	case configValueEnumU16:
-		key := strings.ToLower(strings.TrimSpace(raw))
-		if spec.enum == nil {
-			return nil, fmt.Errorf("missing enum mapping: %w", ebuserrors.ErrInvalidPayload)
-		}
-		mapped, ok := spec.enum[key]
-		if !ok {
-			return nil, fmt.Errorf("invalid enum value %q (allowed: %s): %w", raw, strings.Join(sortedEnumKeys(spec.enum), ", "), ebuserrors.ErrInvalidPayload)
-		}
-		payload := make([]byte, 2)
-		binary.LittleEndian.PutUint16(payload, mapped)
-		return payload, nil
-	case configValueCString:
-		return encodeCStringValue(raw, spec.maxLen)
-	case configValueDateHDA3:
-		return encodeDateHDA3Value(raw)
-	default:
-		return nil, fmt.Errorf("unsupported value encoding: %w", ebuserrors.ErrInvalidPayload)
-	}
-}
-
-func encodeCStringValue(raw string, maxLen int) ([]byte, error) {
-	trimmed := strings.TrimSpace(raw)
-	for i := 0; i < len(trimmed); i++ {
-		b := trimmed[i]
-		if b < 0x20 || b > 0x7E {
-			return nil, fmt.Errorf("invalid byte 0x%02X at position %d (only printable ASCII 0x20-0x7E allowed): %w", b, i, ebuserrors.ErrInvalidPayload)
-		}
-	}
-	if maxLen > 0 && len(trimmed) > maxLen {
-		return nil, fmt.Errorf("string length %d exceeds maxLen %d: %w", len(trimmed), maxLen, ebuserrors.ErrInvalidPayload)
-	}
-	padLen := len(trimmed) + 1
-	if maxLen > 0 && padLen < maxLen+1 {
-		padLen = maxLen + 1
-	}
-	payload := make([]byte, padLen)
-	copy(payload, trimmed)
-	return payload, nil
-}
-
-func encodeDateHDA3Value(raw string) ([]byte, error) {
-	trimmed := strings.TrimSpace(raw)
-	t, err := time.Parse("2006-01-02", trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("invalid date %q (expected YYYY-MM-DD): %w", raw, ebuserrors.ErrInvalidPayload)
-	}
-	year := t.Year()
-	if year < 2000 || year > 2099 {
-		return nil, fmt.Errorf("year %d out of range [2000, 2099]: %w", year, ebuserrors.ErrInvalidPayload)
-	}
-	if trimmed == "2015-01-01" {
-		return nil, fmt.Errorf("sentinel date 2015-01-01 rejected: %w", ebuserrors.ErrInvalidPayload)
-	}
-	return []byte{byte(t.Day()), byte(t.Month()), byte(year - 2000)}, nil
-}
-
-func parseBoolString(raw string) (bool, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "true", "1", "on", "yes":
-		return true, true
-	case "false", "0", "off", "no":
-		return false, true
-	default:
-		return false, false
-	}
-}
-
-func parseIntegerString(raw string) (int, error) {
-	if raw == "" {
-		return 0, fmt.Errorf("empty integer")
-	}
-	if strings.ContainsAny(raw, ".eE") {
-		value, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return 0, err
-		}
-		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value {
-			return 0, fmt.Errorf("not an integer")
-		}
-		return int(value), nil
-	}
-	return strconv.Atoi(raw)
-}
-
-func sortedEnumKeys(values map[string]uint16) []string {
-	out := make([]string, 0, len(values))
-	for key := range values {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out
+	return systemconfig.EncodeValue(nativeConfigSpec(spec), raw)
 }
 
 func resolveControllerSystemPlane(reg InvokeRegistry) (router.Plane, error) {
@@ -1251,89 +1103,11 @@ func toByte(value any) (byte, bool) {
 }
 
 func confirmDecodableReadback(spec configFieldSpec, payload []byte) error {
-	switch spec.valueType {
-	case configValueFloat32:
-		if len(payload) < 4 {
-			return fmt.Errorf("float32 payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		raw := binary.LittleEndian.Uint32(payload[:4])
-		value := float64(math.Float32frombits(raw))
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return fmt.Errorf("float32 payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueUint16:
-		_, ok := decodePayloadUint16(payload)
-		if !ok {
-			return fmt.Errorf("uint16 payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueBoolU8:
-		if len(payload) < 1 {
-			return fmt.Errorf("bool payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		if payload[0] > 1 {
-			return fmt.Errorf("bool payload out of range: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueCString:
-		return nil
-	case configValueDateHDA3:
-		if len(payload) < 3 {
-			return fmt.Errorf("date payload too short: %w", ebuserrors.ErrInvalidPayload)
-		}
-		return nil
-	case configValueEnumU16:
-		value, ok := decodePayloadUint16(payload)
-		if !ok {
-			return fmt.Errorf("enum payload invalid: %w", ebuserrors.ErrInvalidPayload)
-		}
-		for _, candidate := range spec.enum {
-			if value == candidate {
-				return nil
-			}
-		}
-		return fmt.Errorf("enum payload unknown value %d: %w", value, ebuserrors.ErrInvalidPayload)
-	default:
-		return fmt.Errorf("unsupported readback decode: %w", ebuserrors.ErrInvalidPayload)
-	}
+	return systemconfig.ConfirmDecodableReadback(nativeConfigSpec(spec), payload)
 }
 
 func configReadbackMatchesWrite(spec configFieldSpec, written, readback []byte) bool {
-	switch spec.valueType {
-	case configValueFloat32:
-		if len(written) < 4 || len(readback) < 4 {
-			return false
-		}
-		return binary.LittleEndian.Uint32(readback[:4]) == binary.LittleEndian.Uint32(written[:4])
-	case configValueUint16, configValueEnumU16:
-		want, okWant := decodePayloadUint16(written)
-		got, okGot := decodePayloadUint16(readback)
-		return okWant && okGot && want == got
-	case configValueBoolU8:
-		return len(written) > 0 && len(readback) > 0 && (readback[0] == 0 || readback[0] == 1) && readback[0] == written[0]
-	case configValueCString:
-		wTrimmed := bytes.TrimRight(written, "\x00")
-		rTrimmed := bytes.TrimRight(readback, "\x00")
-		return bytes.Equal(wTrimmed, rTrimmed)
-	case configValueDateHDA3:
-		if len(written) < 3 || len(readback) < 3 {
-			return false
-		}
-		return bytes.Equal(written[:3], readback[:3])
-	default:
-		return false
-	}
-}
-
-func decodePayloadUint16(payload []byte) (uint16, bool) {
-	if len(payload) == 0 {
-		return 0, false
-	}
-	if len(payload) == 1 {
-		return uint16(payload[0]), true
-	}
-	return binary.LittleEndian.Uint16(payload[:2]), true
+	return systemconfig.ConfigReadbackMatchesWrite(nativeConfigSpec(spec), written, readback)
 }
 
 func invokeResolve(params graphqlgo.ResolveParams, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool) (InvokeResult, error) {

@@ -1,4 +1,4 @@
-package mcp_test
+package main
 
 import (
 	"context"
@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	gql "github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 )
@@ -43,62 +45,6 @@ const busParityQuery = `query($limit: Int) {
  identification: busIdentificationEvidence(limit: $limit) { evidence_class: evidenceClass decoded qualification notice
  session_id: sessionId count items { address sequence session_id: sessionId captured_at: capturedAt request_hex: requestHex response_hex: responseHex } }
 }`
-
-// One synthetic retained store; adapters only translate provider types. No
-// acquisition interface is supplied to either read surface.
-type busParityStore struct {
-	bus                     mcp.BusObservabilitySnapshot
-	evidence                mcp.IdentificationEvidenceSnapshot
-	busReads, evidenceReads int
-}
-
-func (p *busParityStore) Snapshot() mcp.BusObservabilitySnapshot { p.busReads++; return p.bus }
-func (p *busParityStore) ProtocolSpecimens(string) []mcp.BusProtocolSpecimen {
-	panic("unexpected specimen acquisition")
-}
-func (p *busParityStore) IdentificationEvidence() mcp.IdentificationEvidenceSnapshot {
-	p.evidenceReads++
-	return p.evidence
-}
-
-type busParityGraphQL struct{ store *busParityStore }
-
-func (p busParityGraphQL) Snapshot() gql.BusObservabilitySnapshot {
-	s := p.store.Snapshot()
-	out := gql.BusObservabilitySnapshot{}
-	if s.Summary != nil {
-		v := s.Summary
-		out.Summary = &gql.BusSummary{LastUpdatedAt: v.LastUpdatedAt,
-			Messages:    gql.BusBoundedListSummary{Count: v.Messages.Count, Capacity: v.Messages.Capacity},
-			Periodicity: gql.BusBoundedListSummary{Count: v.Periodicity.Count, Capacity: v.Periodicity.Capacity}}
-		if v.Status != nil {
-			out.Summary.Status = &gql.BusObservabilityStatus{LastUpdatedAt: v.Status.LastUpdatedAt, TransportClass: v.Status.TransportClass,
-				Capability: gql.BusObservabilityCapability{PassiveAvailable: v.Status.Capability.PassiveAvailable,
-					PassiveState: v.Status.Capability.PassiveState, PassiveReason: v.Status.Capability.PassiveReason}}
-		}
-	}
-	for _, v := range s.Messages {
-		out.Messages = append(out.Messages, gql.BusMessage{Scope: v.Scope, Family: v.Family,
-			FrameType: v.FrameType, Outcome: v.Outcome, ObservedAt: v.ObservedAt.UTC().Format(time.RFC3339Nano), SourceAddress: v.SourceAddress,
-			TargetAddress: v.TargetAddress, RequestLen: v.RequestLen, ResponseLen: v.ResponseLen})
-	}
-	for _, v := range s.Periodicity {
-		out.Periodicity = append(out.Periodicity, gql.BusPeriodicityEntry{
-			SourceBucket: v.SourceBucket, TargetBucket: v.TargetBucket, Primary: v.Primary, Secondary: v.Secondary,
-			Family: v.Family, State: v.State, LastSeen: v.LastSeen.UTC().Format(time.RFC3339Nano), SampleCount: v.SampleCount, LastInterval: v.LastInterval,
-			MeanInterval: v.MeanInterval, MinInterval: v.MinInterval, MaxInterval: v.MaxInterval})
-	}
-	return out
-}
-func (p busParityGraphQL) IdentificationEvidence() gql.IdentificationEvidenceSnapshot {
-	s := p.store.IdentificationEvidence()
-	out := gql.IdentificationEvidenceSnapshot{SessionID: s.SessionID}
-	for _, v := range s.Exchanges {
-		out.Exchanges = append(out.Exchanges, gql.IdentificationEvidenceExchange{
-			Address: v.Address, Sequence: v.Sequence, SessionID: v.SessionID, CapturedAt: v.CapturedAt, Request: v.Request, Response: v.Response})
-	}
-	return out
-}
 
 func busParityJSON(t *testing.T, handler http.Handler, limit int) map[string]any {
 	t.Helper()
@@ -221,20 +167,28 @@ func busParityCompare(name string, mcpValue, graphqlValue any) error {
 }
 
 func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
-	// Synthetic logical clock, unrelated to any capture or installation.
-	at := time.Unix(100, 123).UTC()
-	provider := &busParityStore{}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.BroadcastListen = true
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.ObserveFirstRecentMessageCapacity = 8
+	cfg.ObserveFirstPeriodicityCapacity = 4
+	store := ebusgateway.NewBusObservabilityStore(cfg)
+	// Anchor synthetic events to construction so runtime TTL checks retain them.
+	at := *store.Snapshot().Summary.LastUpdatedAt
+	evidenceAt := time.Unix(100, 123).UTC()
+	evidence := ebusgateway.NewIdentificationEvidenceStore(func() time.Time { return evidenceAt })
+	previous := currentIdentificationEvidenceStore()
+	publishIdentificationEvidenceStore(evidence)
+	t.Cleanup(func() { publishIdentificationEvidenceStore(previous) })
 	reg := registry.NewDeviceRegistry(nil)
 	invoker := &busParityInvoker{}
 	server, err := mcp.NewServer(reg, invoker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.SetBusObservabilityProvider(provider)
-	server.SetIdentificationEvidenceProvider(provider)
+	server.SetBusObservabilityProvider(newMCPBusObservabilityProvider(store))
 	builder := gql.NewBuilder(reg, nil)
-	builder.SetBusObservabilityProvider(busParityGraphQL{provider})
-	builder.SetIdentificationEvidenceProvider(busParityGraphQL{provider})
+	builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(store))
 	handler, err := gql.NewHandler(builder)
 	if err != nil {
 		t.Fatal(err)
@@ -243,28 +197,59 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 	for _, state := range []string{"empty", "populated", "partial_unavailable"} {
 		t.Run(state, func(t *testing.T) {
 			switch state {
-			case "empty":
-				provider.bus.Summary = &mcp.BusSummary{}
 			case "populated":
-				provider.bus = mcp.BusObservabilitySnapshot{Summary: &mcp.BusSummary{LastUpdatedAt: &at,
-					Status: &mcp.BusObservabilityStatus{LastUpdatedAt: &at, TransportClass: "synthetic", Capability: mcp.BusObservabilityCapability{
-						PassiveAvailable: true, PassiveState: "available"}}, Messages: mcp.BusBoundedListSummary{Count: 2, Capacity: 8}, Periodicity: mcp.BusBoundedListSummary{Count: 2, Capacity: 4}},
-					Messages: []mcp.BusMessage{{Scope: "passive", Family: "synthetic-a", ObservedAt: at},
-						{Scope: "passive", Family: "synthetic-b", FrameType: "response", Outcome: "ok", ObservedAt: at.Add(time.Second), SourceAddress: 8, TargetAddress: 21, RequestLen: 5, ResponseLen: 2}},
-					Periodicity: []mcp.BusPeriodicityEntry{{Family: "synthetic-a", LastSeen: at},
-						{SourceBucket: "synthetic-source", TargetBucket: "synthetic-target", Primary: 7, Secondary: 4, Family: "synthetic-b", State: "observed", LastSeen: at.Add(time.Second), SampleCount: 2, LastInterval: "1s"}}}
-				provider.evidence = mcp.IdentificationEvidenceSnapshot{SessionID: "synthetic-session", Exchanges: []mcp.IdentificationEvidenceExchange{
-					{Address: 21, Sequence: 2, SessionID: "synthetic-session", CapturedAt: at.Add(time.Second), Request: []byte{0x71, 21, 7, 4, 0}, Response: []byte{1, 0}},
-					{Address: 8, Sequence: 1, SessionID: "synthetic-session", CapturedAt: at, Request: []byte{0x71, 8, 7, 4, 0}, Response: []byte{1, 1}}}}
+				// Two retained periodicity series with nonzero interval statistics.
+				for _, secondary := range []byte{4, 5} {
+					for n := 0; n < 2; n++ {
+						store.OnPassiveClassifiedEvent(testPassiveTransactionEvent(at.Add(time.Duration(n+1)*time.Second), 0x10, 0x08, 0x07, secondary))
+					}
+				}
+				// Insert out of address order; the runtime store owns ordering and provenance.
+				for _, target := range []byte{21, 8} {
+					evidenceAt = evidenceAt.Add(time.Second)
+					if err := evidence.OnBusEvent(protocol.BusEvent{
+						Kind: protocol.BusEventAttemptComplete, Outcome: protocol.BusOutcomeSuccess, HasRequest: true, HasResponse: true,
+						Request:  protocol.Frame{Source: 0x71, Target: target, Primary: 7, Secondary: 4},
+						Response: protocol.Frame{Data: []byte{1, 0}},
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			case "partial_unavailable":
-				// Failed acquisition is represented by availability, not replacement of
-				// the retained evidence. The read projections must keep old identity/age.
-				provider.bus.Summary.Status.Capability = mcp.BusObservabilityCapability{PassiveState: "unavailable", PassiveReason: "synthetic_failure"}
-				provider.bus.Periodicity[1].State = "stale"
-				provider.evidence.Exchanges = append(provider.evidence.Exchanges, mcp.IdentificationEvidenceExchange{
-					Address: 31, Sequence: 3, SessionID: "synthetic-session", CapturedAt: at.Add(2 * time.Second), Request: []byte{0x71, 31, 7, 4, 0}})
+				// A disconnect preserves retained bus rows, and a failed identification
+				// attempt must not replace successful exchanges or their capture times.
+				store.OnPassiveClassifiedEvent(ebusgateway.PassiveClassifiedEvent{
+					Kind:                ebusgateway.PassiveClassifiedEventDiscontinuity,
+					DiscontinuityReason: ebusgateway.PassiveDiscontinuityDisconnected, ObservedAt: at.Add(2 * time.Second),
+				})
+				retained := evidence.Snapshot()
+				if err := evidence.OnBusEvent(protocol.BusEvent{
+					Kind: protocol.BusEventAttemptComplete, HasRequest: true,
+					Request: protocol.Frame{Source: 0x71, Target: 31, Primary: 7, Secondary: 4},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(retained, evidence.Snapshot()) {
+					t.Fatal("failed acquisition replaced retained evidence")
+				}
 			}
-			before, _ := json.Marshal([]any{provider.bus, provider.evidence})
+			busBefore, evidenceBefore := store.Snapshot(), evidence.Snapshot()
+			if state == "partial_unavailable" {
+				capability := busBefore.Summary.Status.Capability
+				if capability.PassiveAvailable || capability.PassiveState != "unavailable" || capability.PassiveReason != "socket_loss" {
+					t.Fatalf("expected unavailable passive capability: %+v", capability)
+				}
+			}
+			wantMessages, wantSeries, wantEvidence := 0, 0, 0
+			if state != "empty" {
+				wantMessages, wantSeries, wantEvidence = 4, 2, 2
+			}
+			if len(busBefore.Messages) != wantMessages || len(busBefore.Periodicity) != wantSeries || len(evidenceBefore.Exchanges) != wantEvidence {
+				t.Fatal("runtime fixture did not retain expected rows")
+			}
+			// Compare retained rows and age; warmup elapsed time and busy ratios
+			// are derived from the runtime clock and outside this parity slice.
+			before, _ := json.Marshal([]any{busBefore.Messages, busBefore.Periodicity, busBefore.Summary.LastUpdatedAt, evidenceBefore})
 			for _, limit := range []int{1, 10} {
 				graph := busParityJSON(t, handler, limit)
 				for _, surface := range []struct{ name, tool string }{
@@ -287,15 +272,12 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 						if state != "empty" {
 							items := data["items"].([]any)
 							last := items[len(items)-1].(map[string]any)
-							wantCount, wantSequence, age := float64(2), float64(2), time.Second
-							if state == "partial_unavailable" {
-								wantCount, wantSequence, age = 3, 3, 2*time.Second
+							wantSequence, wantTime := float64(1), time.Unix(101, 123).UTC()
+							if limit == 1 {
+								wantSequence, wantTime = 2, time.Unix(102, 123).UTC()
 							}
-							if data["count"] != wantCount || last["session_id"] != "synthetic-session" || last["sequence"] != wantSequence || last["captured_at"] != at.Add(age).Format(time.RFC3339Nano) {
+							if data["count"] != float64(2) || last["session_id"] != evidenceBefore.SessionID || last["sequence"] != wantSequence || last["captured_at"] != wantTime.Format(time.RFC3339Nano) {
 								t.Fatal("retained provenance/age changed")
-							}
-							if state == "partial_unavailable" && last["response_hex"] != "" {
-								t.Fatal("missing response must remain empty raw evidence")
 							}
 						}
 					}
@@ -316,12 +298,13 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 				}
 				if state != "empty" {
 					summary := graph["summary"].(map[string]any)
-					if summary["last_updated_at"] != at.Format(time.RFC3339Nano) {
+					if summary["last_updated_at"] != busBefore.Summary.LastUpdatedAt.Format(time.RFC3339Nano) {
 						t.Fatal("last-known-good age lost")
 					}
 				}
 			}
-			after, _ := json.Marshal([]any{provider.bus, provider.evidence})
+			busAfter := store.Snapshot()
+			after, _ := json.Marshal([]any{busAfter.Messages, busAfter.Periodicity, busAfter.Summary.LastUpdatedAt, evidence.Snapshot()})
 			if string(before) != string(after) {
 				t.Fatal("read changed retained native evidence")
 			}
@@ -329,9 +312,6 @@ func TestBusGraphQLParityRetainedEvidence(t *testing.T) {
 				t.Fatal("read invoked native method")
 			}
 		})
-	}
-	if provider.busReads == 0 || provider.evidenceReads == 0 {
-		t.Fatal("provider was not exercised")
 	}
 }
 
@@ -350,16 +330,17 @@ const busParityNotice = "Raw bytes of the directed 07 04 identification exchange
 // This is a discrepancy handoff, not a claim of null parity. A contract owner
 // must decide whether the empty GraphQL wrapper or the MCP null should change.
 func TestBusGraphQLParityAbsentSummaryDiscrepancy(t *testing.T) {
-	provider := &busParityStore{}
+	previous := currentIdentificationEvidenceStore()
+	publishIdentificationEvidenceStore(nil)
+	t.Cleanup(func() { publishIdentificationEvidenceStore(previous) })
 	reg := registry.NewDeviceRegistry(nil)
 	server, err := mcp.NewServer(reg, &busParityInvoker{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.SetBusObservabilityProvider(provider)
+	server.SetBusObservabilityProvider(newMCPBusObservabilityProvider(nil))
 	builder := gql.NewBuilder(reg, nil)
-	builder.SetBusObservabilityProvider(busParityGraphQL{provider})
-	builder.SetIdentificationEvidenceProvider(busParityGraphQL{provider})
+	builder.SetBusObservabilityProvider(newGraphQLBusObservabilityProvider(nil))
 	handler, err := gql.NewHandler(builder)
 	if err != nil {
 		t.Fatal(err)

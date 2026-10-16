@@ -164,3 +164,109 @@ func TestK02RuntimeLabelDimensions(t *testing.T) {
 		}
 	}
 }
+
+func TestM54AbsoluteMetricSeriesMatrix(t *testing.T) {
+	store := NewBusObservabilityStore(DefaultConfig())
+	errors := []struct {
+		kind   protocol.BusEventKind
+		labels string
+	}{
+		{protocol.BusEventTimeout, `class="timeout",phase="terminal",scope="active"`},
+		{protocol.BusEventNACK, `class="nack",phase="ack",scope="active"`},
+		{protocol.BusEventCRCMismatch, `class="crc_mismatch",phase="response",scope="active"`},
+		{protocol.BusEventEchoMismatch, `class="echo_mismatch",phase="request",scope="active"`},
+	}
+	// Public emitted subclasses, independent of the classifier under test.
+	// The bit_flip fallback has no reachable byte in the current address table.
+	subclasses := []struct {
+		name     string
+		perSweep int
+	}{
+		{"pre_echo_syn_raw", 1},
+		{"pre_echo_syn_escaped_data", 1},
+		{"post_grant_collision_initiator", 1},
+		{"post_grant_collision_target", 2},
+		{"post_grant_ack", 1},
+		{"post_grant_nack", 1},
+		{"post_grant_reserved", 1},
+	}
+	echoes := []struct {
+		value   byte
+		escaped bool
+	}{
+		{protocol.SymbolSyn, false}, {protocol.SymbolSyn, true},
+		{0xF1, false}, {0x15, false}, {protocol.AddressBroadcast, false},
+		{protocol.SymbolAck, false}, {protocol.SymbolNack, false},
+		{protocol.SymbolEscape, false},
+	}
+	// Count only the K02 contract families so unrelated semantic collectors
+	// cannot change this absolute bound. Runtime exposes one row per protocol,
+	// rather than the Cartesian product of its state/reason/outcome vocabulary.
+	const runtimeMetric = "helianthus_transport_runtime_status"
+	protocols := []string{"modbus_tcp", "eebus"}
+	wantSeries := len(errors) + len(subclasses) + len(protocols)
+	var baseline map[string]bool
+	for i := 0; i < 512; i++ {
+		identity := fmt.Sprintf("%s_request_%d", k02SecretMarker, i)
+		store.RecordBusAdmissionTransition("degraded", byte(i), byte(i+1), identity)
+		request := protocol.Frame{
+			Source: byte(i), Target: byte(i + 1),
+			Primary: byte(i + 2), Secondary: byte(i + 3), Data: []byte(identity),
+		}
+		// Every request sees every echo case; event.Byte is never derived
+		// from the independently varied request or admission identity.
+		for _, echo := range echoes {
+			for _, item := range errors {
+				if err := store.OnBusEvent(protocol.BusEvent{
+					Kind: item.kind, Byte: echo.value, EchoWasEscaped: echo.escaped,
+					Initiator: byte(i), Request: request, HasRequest: i%2 == 0,
+				}); err != nil {
+					t.Fatalf("record synthetic event: %v", err)
+				}
+			}
+		}
+		for _, p := range protocols {
+			store.SetTransportRuntimeStatus(TransportRuntimeStatus{
+				Protocol: TransportRuntimeProtocol(p), State: TransportRuntimeState(identity),
+				Reason: identity, Outcome: TransportRuntimeOutcome(identity), Revision: uint64(i + 1),
+			})
+		}
+		output := store.RenderPrometheus()
+		shape := make(map[string]bool)
+		for key := range k02ExpositionShape(t, output) {
+			if strings.HasPrefix(key, "ebus_errors_total{") ||
+				strings.HasPrefix(key, "ebus_active_echo_mismatch_subclass_total{") ||
+				strings.HasPrefix(key, runtimeMetric+"{") {
+				shape[key] = true
+			}
+		}
+		if len(shape) != wantSeries {
+			t.Fatalf("input %d: contract series = %d; want %d error + %d subclass + %d runtime = %d",
+				i, len(shape), len(errors), len(subclasses), len(protocols), wantSeries)
+		}
+		if i == 0 {
+			baseline = shape
+		} else if !reflect.DeepEqual(shape, baseline) {
+			t.Fatalf("input %d changed bounded public label tuples", i)
+		}
+		for _, item := range errors {
+			want := fmt.Sprintf("ebus_errors_total{%s} %d\n", item.labels, (i+1)*len(echoes))
+			if !strings.Contains(output, want) {
+				t.Fatalf("missing cumulative error sample %q", want)
+			}
+		}
+		for _, subclass := range subclasses {
+			want := fmt.Sprintf("ebus_active_echo_mismatch_subclass_total{subclass=%q} %d\n",
+				subclass.name, (i+1)*subclass.perSweep)
+			if !strings.Contains(output, want) {
+				t.Fatalf("missing emitted subclass sample %q", want)
+			}
+		}
+		for _, p := range protocols {
+			want := fmt.Sprintf(`%s{outcome="unknown",protocol=%q,reason="unknown",state="unknown"} 1`+"\n", runtimeMetric, p)
+			if !strings.Contains(output, want) {
+				t.Fatalf("missing fail-closed runtime sample %q", want)
+			}
+		}
+	}
+}

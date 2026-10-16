@@ -3,9 +3,9 @@
 Status: application contract for issue
 [#1101](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1101),
 a partial slice of
-[#1033](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1033)
+merged PR [#1033](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/1033)
 following review of
-[#1088](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1088).
+merged PR [#1088](https://github.com/Project-Helianthus/helianthus-ebusgateway/pull/1088).
 This specifies the seam; it does not claim that every existing mutation path
 implements it or expose a public lifecycle/configuration service.
 
@@ -38,7 +38,10 @@ The application composition passes the driver's resolved `ConfigBound` in
 `SystemStatus.Config.DhwBivalenceBound` through the semantic provider:
 
 1. `vaillantSemanticPoller.publishSystem` resolves from
-   `controllerB524Identity()` and assembles the system snapshot.
+   `controllerB524Identity()` and assembles the system snapshot. This driver
+   path retains the discovered controller address `p.controller` and selects
+   its registry snapshot through `SnapshotContainsAddress`; it must not switch
+   to regulator-priority selection.
 2. `LiveSemanticProvider.SetSystem` (or `SetSystemFromCache`) receives that
    snapshot. Its config retains `MinC`, `MaxC`, `Source`, `Reason`, `Profile`
    and `NarrowedOnly`; cloning preserves the optional bound by value.
@@ -52,7 +55,8 @@ optional bound, not a raw identity or an instruction to resolve one. This
 contract introduces no additional exported provider method. Without an
 installed semantic provider, the builder uses `staticSemanticProvider`, whose
 `System()` is nil. With a system snapshot but no bound, both bound aliases
-return null. Absence must not be replaced by a zero-valued bound or interpreted
+return null in GraphQL; MCP omits the bound field, including before first
+resolution. Absence must not be replaced by a zero-valued bound or interpreted
 as unrestricted writes. A missing provider is distinct from a driver-resolved
 unmatched-controller policy bound.
 
@@ -68,7 +72,9 @@ requirement for completing the seam, not a claim about today's fallback.
 ## Sole regulator-address owner
 
 `internal/vaillant/systemconfig` is the sole application owner of the canonical
-regulator target priority used for identity selection and config routing.
+regulator target priority used for registry-based identity selection and config
+routing. This priority does not replace the driver's discovered-controller
+selection described above.
 The current priority is `0x15`, `0x35`, `0x75`, `0xF5`, `0x76`, `0xF6`.
 Consumers must obtain this policy from that owner without a second literal
 list, independent reordering, or identifier-prefix scan. The owner must not
@@ -100,9 +106,16 @@ use an unchecked cast.
 Every other value returns an unsupported-type error before encoding, readback
 comparison or invocation. Do not coerce it to the zero enum member or silently
 drop the affected spec. Conversion preserves group, register address, min/max,
-maximum length and enum entries. An adapter failure must not erase unrelated
-last-known-good fields. These enum representations are internal; this mapping
-does not add a GraphQL schema enum.
+maximum length and enum entries.
+
+The current table is built at package initialization by
+`var systemConfigFieldSpecs = SystemConfigFieldSpecs()` through error-less
+adapter functions. Completing the conversion contract must retain per-field
+conversion errors and reject the affected field at use, before encoding,
+readback comparison or invocation; it must not panic at package initialization
+or silently omit an invalid spec. Valid specs remain available, and runtime
+rejection preserves unrelated last-known-good fields. These enum
+representations are internal; this mapping does not add a GraphQL schema enum.
 
 ## Decision-D and compatibility invariants
 
@@ -126,8 +139,12 @@ Preserve the G03 projection aliases and their null behavior:
 | `source`, `reason`, `profile` | corresponding bound metadata |
 | `dhwBivalencePoint`, `dhw_bivalence_point` | existing measured/configured value |
 
-Empty reason/profile strings continue to project as null. MCP conversion must
-preserve the same bound fields and existing executable MCP/GraphQL parity.
+Empty reason/profile strings project as null in GraphQL and are omitted in MCP.
+The whole bound is likewise null in GraphQL and omitted in MCP when absent,
+including before first resolution. MCP conversion preserves bound values with
+these surface-specific absence rules and existing executable MCP/GraphQL parity,
+as documented in the public [GraphQL contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/graphql.md)
+and [MCP contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md).
 All MCP namespaces remain pre-stable; this document grants no stability promise
 or new namespace.
 
@@ -149,10 +166,18 @@ remaining differences prevent claiming complete runtime conformance:
   `setSystemConfigResolve` uses that fallback when no writer is installed.
 - GraphQL and `systemconfig` still contain separate regulator-address lists.
 - `adaptSystemConfigSpec` and `nativeConfigSpec` still use ordinal casts.
+- `graphql/system_bounds.go` still re-exports `ResolveDHWBivalenceBound`,
+  `EncodeSystemConfigValueForController` and `ControllerIdentityFromSnapshot`,
+  and retains `controllerIdentityFromRegistry`. Remove or re-home these native
+  wrappers to their driver-owned boundary and migrate their callers; the
+  `cmd/gateway` poller still calls `graphql.ControllerIdentityFromSnapshot` and
+  must retain its discovered-controller selection when that call is migrated.
 
 Those implementation changes are outside this documentation slice. Their
 acceptance requires focused coverage for absent resolved-bound inputs, one
-address-policy owner, every supported conversion and unknown enum rejection,
+registry-priority owner without changing discovered-controller selection, every
+supported conversion and per-field unknown enum rejection at use without an
+initialization panic or loss of valid specs,
 plus unchanged Decision-D and parity checks. Existing resolver/alias tests
 cannot prove those missing properties. Dependency merge identity and any newer
 companion snapshot must be reconciled by the orchestrator before acceptance.

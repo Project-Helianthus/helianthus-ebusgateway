@@ -3300,7 +3300,17 @@ func buildSchemaTypes() graphqlSchemaTypes {
 		Fields: graphqlgo.Fields{
 			"narrowedOnly": &graphqlgo.Field{
 				Type:        graphqlgo.NewNonNull(graphqlgo.Boolean),
-				Description: "Controller-profile evidence can only narrow the conservative policy window; it does not qualify the target installation.",
+				Description: "Qualified controller-profile evidence can only narrow the released -20..50 policy window; unmatched controllers retain that window. A profile match does not qualify the target installation.",
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if bound, ok := params.Source.(ConfigBound); ok {
+						return bound.NarrowedOnly, nil
+					}
+					return nil, nil
+				},
+			},
+			"narrowed_only": &graphqlgo.Field{
+				Type:        graphqlgo.NewNonNull(graphqlgo.Boolean),
+				Description: "Qualified controller-profile evidence can only narrow the released -20..50 policy window; unmatched controllers retain that window. A profile match does not qualify the target installation.",
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if bound, ok := params.Source.(ConfigBound); ok {
 						return bound.NarrowedOnly, nil
@@ -3317,7 +3327,25 @@ func buildSchemaTypes() graphqlSchemaTypes {
 					return nil, nil
 				},
 			},
+			"min_c": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Float),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if bound, ok := params.Source.(ConfigBound); ok {
+						return bound.MinC, nil
+					}
+					return nil, nil
+				},
+			},
 			"maxC": &graphqlgo.Field{
+				Type: graphqlgo.NewNonNull(graphqlgo.Float),
+				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
+					if bound, ok := params.Source.(ConfigBound); ok {
+						return bound.MaxC, nil
+					}
+					return nil, nil
+				},
+			},
+			"max_c": &graphqlgo.Field{
 				Type: graphqlgo.NewNonNull(graphqlgo.Float),
 				Resolve: func(params graphqlgo.ResolveParams) (any, error) {
 					if bound, ok := params.Source.(ConfigBound); ok {

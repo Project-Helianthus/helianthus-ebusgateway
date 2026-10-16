@@ -193,7 +193,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewHandler error = %v", err)
 			}
-			query := `{ system { config { dhwBivalencePoint dhwBivalencePointBound { minC maxC source reason profile narrowedOnly } dhw_bivalence_point_bound { minC maxC source narrowedOnly } } } }`
+			query := `{ system { config { dhwBivalencePoint dhwBivalencePointBound { minC maxC source reason profile narrowedOnly } dhw_bivalence_point_bound { min_c max_c source narrowed_only } } } }`
 			body, _ := json.Marshal(map[string]string{"query": query})
 			req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
 			req.Header.Set("Content-Type", "application/json")
@@ -216,8 +216,9 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 								Profile      *string `json:"profile"`
 							} `json:"dhwBivalencePointBound"`
 							Snake struct {
-								NarrowedOnly *bool   `json:"narrowedOnly"`
-								MaxC         float64 `json:"maxC"`
+								NarrowedOnly *bool   `json:"narrowed_only"`
+								MinC         float64 `json:"min_c"`
+								MaxC         float64 `json:"max_c"`
 								Source       string  `json:"source"`
 							} `json:"dhw_bivalence_point_bound"`
 						} `json:"config"`
@@ -237,7 +238,7 @@ func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 				t.Fatalf("reason/profile = %v/%v; want %+v", bound.Reason, bound.Profile, active)
 			}
 			snake := response.Data.System.Config.Snake
-			if response.Data.System.Config.DhwBivalencePoint != 5 || snake.MaxC != active.MaxC || snake.Source != active.Source || snake.NarrowedOnly == nil || *snake.NarrowedOnly != active.NarrowedOnly {
+			if response.Data.System.Config.DhwBivalencePoint != 5 || snake.MinC != active.MinC || snake.MaxC != active.MaxC || snake.Source != active.Source || snake.NarrowedOnly == nil || *snake.NarrowedOnly != active.NarrowedOnly {
 				t.Fatalf("config = %+v; want value 5 and the snake_case alias to match", response.Data.System.Config)
 			}
 		})

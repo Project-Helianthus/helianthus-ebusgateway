@@ -59,8 +59,10 @@ private network, Home Assistant instance, or physical bus.
 ### eBUS MCP compatibility (pre-1.0) and invoke safety
 
 Until 1.0, `ebus.v1.*` and every other MCP namespace are pre-stable; the
-version in the name is historical, not a stability promise. Everything before
-1.0 is experimental:
+version in the name is historical, not a stability promise. This namespace
+compatibility status is separate from per-tool maturity classifications such as
+`core_stable` and `experimental`. A `core_stable` classification supports
+GraphQL graduation but does not promise namespace stability before 1.0:
 
 - Every tool returns the top-level `meta`, `data`, and `error` envelope. `meta`
   contains `contract`, `consistency`, `data_timestamp`, and deterministic
@@ -89,7 +91,7 @@ version in the name is historical, not a stability promise. Everything before
 For eBUS capabilities, MCP remains the discovery and stabilization surface. A
 capability may graduate to GraphQL only when:
 
-1. it exists as a core `ebus.v1.*` MCP capability;
+1. it exists as an `ebus.v1.*` MCP capability classified as `core_stable`;
 2. its determinism, contract, classification, and golden-snapshot tests are
    green; and
 3. executable MCP-to-GraphQL parity coverage for that capability is green.

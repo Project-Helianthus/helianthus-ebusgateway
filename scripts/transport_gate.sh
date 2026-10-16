@@ -49,6 +49,10 @@ requires_ebus_transport_gate() {
     internal/adaptermux/*)
       return 0
       ;;
+    go.mod)
+      ebus_dependency_changed
+      return
+      ;;
   esac
   return 1
 }
@@ -77,6 +81,17 @@ requires_b503_native_transport_gate() {
       ;;
   esac
   return 1
+}
+
+# Dependency-only repins can replace production eBUS transport/protocol code.
+ebus_dependency_changed() {
+  local changes
+  changes="$({
+    git diff --unified=0 "${base_ref}...HEAD" -- go.mod
+    git diff --cached --unified=0 -- go.mod
+    git diff --unified=0 -- go.mod
+  } | awk '/^[+-][^+-]/ { print substr($0, 2) }')"
+  grep -Eq '(^|[[:space:]])github\.com/Project-Helianthus/helianthus-ebusgo[[:space:]]+' <<< "${changes}"
 }
 
 # The Modbus RTU gate is deliberately separate from the eBUS M6a topology

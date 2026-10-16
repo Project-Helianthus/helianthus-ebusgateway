@@ -590,6 +590,48 @@ type Config struct {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("pinned Modbus RTU endpoint inventory missing or duplicates", result.stdout)
 
+    def test_ebus_dependency_repin_requires_and_validates_matrix(self) -> None:
+        base_text = (
+            "module test\n\ngo 1.22\n\n"
+            "require github.com/Project-Helianthus/helianthus-ebusgo v0.1.0\n"
+        )
+        for state in ("unstaged", "staged", "committed"):
+            with self.subTest(state=state):
+                repo_path, report_path = self._create_temp_repo(
+                    "go.mod", base_text, base_text.replace("v0.1.0", "v0.1.1")
+                )
+                if state != "unstaged":
+                    subprocess.run(["git", "add", "go.mod"], cwd=repo_path, check=True, capture_output=True, text=True)
+                if state == "committed":
+                    subprocess.run(["git", "commit", "-m", "repin eBUS dependency"], cwd=repo_path, check=True, capture_output=True, text=True)
+
+                def run_gate(**extra: str) -> subprocess.CompletedProcess[str]:
+                    return subprocess.run(
+                        ["bash", "scripts/transport_gate.sh"], cwd=repo_path,
+                        env=self._script_env(
+                            TRANSPORT_GATE_BASE_REF="HEAD^" if state == "committed" else "HEAD",
+                            **extra,
+                        ),
+                        text=True, capture_output=True, check=False,
+                    )
+
+                missing = run_gate()
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertIn("TRANSPORT_MATRIX_REPORT is required", missing.stdout)
+
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                for outcome in ("pass", "fail", "xpass"):
+                    with self.subTest(outcome=outcome):
+                        report["cases"][0]["outcome"] = outcome
+                        report_path.write_text(json.dumps(report), encoding="utf-8")
+                        result = run_gate(TRANSPORT_MATRIX_REPORT=str(report_path))
+                        self.assertEqual(result.returncode == 0, outcome == "pass", msg=result.stdout + result.stderr)
+                        self.assertNotIn("Modbus RTU production conformance", result.stdout)
+                        if outcome == "pass":
+                            self.assertIn("transport gate: PASS", result.stdout)
+                        else:
+                            self.assertIn("T01", result.stdout)
+
     def test_modbus_rtu_gate_skips_unrelated_go_mod_change(self) -> None:
         base_text = "module test\n\ngo 1.22\n\nrequire example.com/other v1.0.0\n"
         repo_path, _ = self._create_temp_repo("go.mod", base_text, base_text.replace("v1.0.0", "v1.0.1"))

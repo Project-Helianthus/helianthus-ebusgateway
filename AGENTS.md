@@ -56,9 +56,11 @@ private network, Home Assistant instance, or physical bus.
 - Existing eBUS MCP namespaces are compatibility surfaces, not a universal
   delivery rule for other protocol families.
 
-### eBUS MCP v1 compatibility and invoke safety
+### eBUS MCP compatibility (pre-1.0) and invoke safety
 
-Existing `ebus.v1.*` tools are stable consumer contracts:
+Until 1.0, `ebus.v1.*` and every other MCP namespace are pre-stable; the
+version in the name is historical, not a stability promise. Everything before
+1.0 is experimental:
 
 - Every tool returns the top-level `meta`, `data`, and `error` envelope. `meta`
   contains `contract`, `consistency`, `data_timestamp`, and deterministic
@@ -66,11 +68,10 @@ Existing `ebus.v1.*` tools are stable consumer contracts:
 - Keep list ordering and snapshot hashes deterministic for identical inputs and
   state. Every tool schema and output has a golden snapshot. Update and review
   those goldens whenever an intentional compatible output change occurs.
-- A breaking schema or behavior change requires a new major namespace; changing
-  existing goldens does not by itself make a breaking `ebus.v1.*` change
-  compatible.
-- Keep experimental surfaces outside stable consumer dependencies until their
-  contract, determinism, and golden coverage are ready for promotion.
+- An intentional schema or behavior change before 1.0 updates its goldens and
+  its documentation companion and states the change in the pull request. It
+  needs no new namespace.
+- The major-namespace and experimental-namespace rules are decided after 1.0.
 
 `ebus.v1.rpc.invoke` is an eBUS compatibility and safety surface:
 

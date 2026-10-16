@@ -9,21 +9,20 @@ this partial slice does not close the parent or implement G5.
 
 The [runtime/driver contract](runtime-driver-provider-contract-v1.md) assigns
 native evidence to the driver. That is the intended destination, not a claim
-that current construction already follows it. The supplied G5 operator decisions
-D1–D5 and J01–J17 are planned lifecycle work. This inventory adds no lifecycle
-API, recovery design, protocol interpretation, or namespace. In particular,
-J12/J14/J15 require process-scoped retained S7 evidence with capture paused
-while unadmitted; G5 itself does not relocate or clear these stores. The later
-#1021 move must preserve that bridge contract.
+that current construction already follows it. The planned lifecycle contract is
+recorded in [gateway #1032 decisions](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1032)
+and the [native documentation companion #639](https://github.com/Project-Helianthus/helianthus-docs-ebus/issues/639).
+This inventory adds no lifecycle API, recovery design, protocol interpretation,
+or namespace. The lifecycle contract requires process-scoped retained evidence
+with capture paused while unadmitted; G5 itself does not relocate or clear these
+stores. The later #1021 move must preserve that bridge contract.
 
 Current entry is [main.go](../../cmd/gateway/main.go): `main` calls `run`, which
 delegates to `runGatewayLifecycle` in
 [gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go).
-The read-only current-main reference still contains the orchestration and
-observer factory in `main.go`; in this checkout those bodies are respectively
-in `gateway_run_lifecycle.go` and
+The orchestration is in `gateway_run_lifecycle.go`; the observer factory
+`wireObserveFirstObservers` is in
 [gateway_admission.go](../../cmd/gateway/gateway_admission.go).
-Use these local equivalents for implementation planning.
 
 `runGatewayLifecycle` prepares/starts the managed eBUS transport, then calls
 `wireObserveFirstObservers`, constructs the gateway bus, installs retained-view
@@ -47,9 +46,9 @@ new STOP contract. In-memory data has no implied process-restart durability.
 | Protocol specimen rings: same `BusObservabilityStore` constructor/owner. | `OnPassiveClassifiedEvent` → `pushSpecimenLocked` only for successful or abandoned events with a request and `!isImplementedFamily(family)`, excluding B509, B516, B524 and B555. Equal payload/outcome keys increment count and update last seen. Payload bytes copied on insertion. | 32 specimens per family, 64 families maximum; per-family overwrite oldest unique specimen, refuse additional families at cap. First/last-seen and count retained; no TTL or disk persistence. | `ProtocolSpecimens` in [bus_observability_api.go](../../bus_observability_api.go), through MCP adapter `ProtocolSpecimens`. No equivalent GraphQL specimen field in the current parity mapping. |
 | Periodicity and observability aggregates: same `BusObservabilityStore`; includes frame/error/byte series, address buckets, busy window, warmup and watch-efficiency state. These are derived observations, not raw payload archives. | Active/passive recorders; `recordPeriodicityLocked`, `recordBusyLocked`, `ObserveWatchRead`, `ObserveWatchDirectApply`; composition also supplies admission and other transport status. | Periodicity uses configured `ObserveFirstPeriodicityCapacity`, stale TTL and LRU eviction. Frame/error series budget and hard-cap checks increment overflow accounting but still insert new keys; no dropping or eviction is enforced by those checks. Address buckets have no configured budget; the byte-sized protocol address space limits them to at most 256 addresses. Busy segments are windowed. Counters otherwise accumulate for store lifetime. `Snapshot` and `RenderPrometheus` can refresh derived state/expire periodicity even without new capture. | [Snapshot and summary](../../bus_observability_api.go), MCP/GraphQL adapters above, `MetricsHandler`/`RenderPrometheus`. Not all aggregates are in the existing parity mapping. |
 | Discovery `EvidenceBuffer`: nested in `BusObservabilityStore`, constructed with `NewEvidenceBuffer` in [evidence_buffer.go](../../evidence_buffer.go). | `recordEvidenceFromEventLocked` records passive address evidence; [PassiveDiscoveryPromoter](../../passive_discovery_promoter.go) reads `PromotedAddresses` and can `Demote` after failed confirmation. | Runtime construction uses 128 address entries with baseline-protected LRU; records retain last-observed and observation counts, not frame bytes. No TTL/persistence; `Demote` clears promotion/counts, not the address. | `EvidenceBuffer` accessor passed by process composition to `NewPassiveDiscoveryPromoter`; directed discovery/registry enrichment, not direct raw-byte export. Promotion here is discovery candidacy, not semantic qualification or a Proven protocol claim. |
-| Passive reconstruction state and fanout queues: process composition starts `StartPassiveTransactionReconstructorWithTransport` in [passive_transaction_reconstructor.go](../../passive_transaction_reconstructor.go). | `OnPassiveTapEvent` assembles/classifies; watchdog, discontinuity/reset and shutdown paths retire partial transactions. | Partial request/response state plus bounded subscriber queues; no historical frame archive. `Close` cancels tap, publishes shutdown events and closes subscribers once. | Observability store, deduplicator, admission/discovery consumers; aggregate `Snapshot` reaches bus summary. These queues must not be confused with retained specimen/exchange rings. |
+| Passive reconstruction state and fanout queues: process composition calls `startPassiveTransactionReconstructor` in [gateway_run_lifecycle.go](../../cmd/gateway/gateway_run_lifecycle.go). Its [binding](../../cmd/gateway/gateway_v8_admin_http.go) delegates to `StartPassiveTransactionReconstructor`, which calls `StartPassiveTransactionReconstructorWithTransport` in [passive_transaction_reconstructor.go](../../passive_transaction_reconstructor.go). | `OnPassiveTapEvent` assembles/classifies; watchdog, discontinuity/reset and shutdown paths retire partial transactions. | Partial request/response state plus bounded subscriber queues; no historical frame archive. `Close` cancels tap, publishes shutdown events and closes subscribers once. | Observability store, deduplicator, admission/discovery consumers; aggregate `Snapshot` reaches bus summary. These queues must not be confused with retained specimen/exchange rings. |
 | Active/passive fingerprint and pending-event windows: `NewActivePassiveDeduplicator` in [active_passive_deduplicator.go](../../active_passive_deduplicator.go), constructed by observer wiring when broadcast listening is enabled. | `OnBusEvent`, `OnPassiveClassifiedEvent`, expiry and discontinuity handling. | Configured active/pending budgets, dedup windows and grace expiry. Discontinuity advances its own epoch and flushes windows; that epoch is not a G5 source epoch. `Close` cancels/joins and closes subscribers. | Watch observer fallback and adjudicated passive consumers; feeds shadow/semantic paths. Current windows are transient admission machinery, not durable raw-evidence history. |
-| Raw watch-value `ShadowCache`: semantic poller owns `NewShadowCache`, constructed by `newVaillantSemanticPoller` in [semantic_vaillant_snapshots.go](../../cmd/gateway/semantic_vaillant_snapshots.go). | `Write`/`Invalidate` in [shadow_cache.go](../../shadow_cache.go); active confirmed writes from [semantic_read_scheduler.go](../../semantic_read_scheduler.go), passive writes/invalidation from [semantic_vaillant_passive.go](../../cmd/gateway/semantic_vaillant_passive.go), operator invalidation in [semantic_vaillant.go](../../cmd/gateway/semantic_vaillant.go). | Bounded entries/pinned budgets; per-key generations, observed/expiry times, source and confidence. Stale/conflicting/generation-obsolete writes rejected. Tombstone retention/compaction differs from capture retention. `Close` concerns compactor shutdown; no proof here of a G5-managed compactor lifecycle. | Scheduler `Lookup`/eligibility and poller consumption; detached watch summaries through [watch_summary_provider.go](../../cmd/gateway/watch_summary_provider.go). No permission to serve stale values as current or to move semantic ownership into this cache. |
+| Raw watch-value `ShadowCache`: semantic poller owns `NewShadowCache`, constructed by `newVaillantSemanticPoller` in [semantic_vaillant_snapshots.go](../../cmd/gateway/semantic_vaillant_snapshots.go). | `Write`/`Invalidate` in [shadow_cache.go](../../shadow_cache.go); active confirmed writes from [semantic_read_scheduler.go](../../semantic_read_scheduler.go), passive writes/invalidation from [semantic_vaillant_passive.go](../../cmd/gateway/semantic_vaillant_passive.go), operator invalidation in [semantic_vaillant.go](../../cmd/gateway/semantic_vaillant.go). | Bounded entries/pinned budgets; per-key generations, observed/expiry times, source and confidence. Stale/conflicting/generation-obsolete writes rejected. Tombstone retention/compaction differs from capture retention. `StartCompactor` and `Close` have no production caller; `Close` only concerns compactor shutdown. Construction does not start the compactor. | Scheduler `Lookup`/eligibility and poller consumption; detached watch summaries through [watch_summary_provider.go](../../cmd/gateway/watch_summary_provider.go). No permission to serve stale values as current or to move semantic ownership into this cache. |
 | Synchronized evidence `FileStore`: gateway recorder, opened by `openSynchronizedEvidenceRuntime` in [synchronized_evidence_runtime.go](../../cmd/gateway/synchronized_evidence_runtime.go), implementation [store.go](../../internal/syncevidence/store.go). | `Capture` reserves quota, recorder acquires, reservation `Publish` persists; store also exposes `Drop`/`EnforceRetention` and open-time recovery. | Explicit config retention/quota, durable bundles with journals/locking; recovery applies retention. `Close` releases resources, not deletion of bundles. Generic recorder is disabled by default; current eBUS source registrations use `unavailableEBusEvidenceReader`, not a live bridge to the above rings. | Generic runtime returns bundle bytes/ID to its caller; no generic public capture call is wired by `runGatewayLifecycle`. The separate [one-shot runtime](../../cmd/gateway/synchronized_evidence_runtime.go) and [executor](../../internal/syncevidence/oneshot.go) open the same storage implementation per operation with their own fixed quota/retention; [MCP synchronized evidence](../../mcp/synchronized_evidence.go), registered in [gateway_http_server.go](../../cmd/gateway/gateway_http_server.go), is a separate control surface. This mixed-source facility is not wholly an eBUS-driver store. |
 
 ## STOP, retained age and provenance
@@ -95,7 +94,8 @@ acquisition/value ownership must be split from semantic publication by its
 existing owner before relocation. Mixed-source synchronized storage and durable
 runtime-state persistence remain gateway facilities; only an accepted eBUS
 acquisition adapter would move behind the driver. This is an outline, not an
-accepted descriptor evidence hook (J07 reserves/rejects such hooks).
+accepted descriptor evidence hook; the [lifecycle scope](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1032)
+reserves/rejects such hooks.
 
 Unresolved edges blocking implementation:
 
@@ -110,10 +110,11 @@ Unresolved edges blocking implementation:
   for other protocols; split those responsibilities before moving construction.
 - Reconstructor/dedup subscription teardown and retained-store worker restart
   need separate ownership. Old queues must not feed new-generation shadow state.
-- Shadow compactor start/close wiring and cache-generation/source-epoch mapping
-  need a dedicated lifecycle trace; current constructor ownership is established,
-  but G5 coverage is Unknown. Preserve partial last-known-good fields under
-  existing identity/age rules rather than replacing a valid snapshot wholesale.
+- Shadow compactor `StartCompactor`/`Close` have no production caller. Future
+  lifecycle wiring and cache-generation/source-epoch mapping remain unresolved;
+  current constructor ownership does not establish G5 lifecycle coverage. Preserve
+  partial last-known-good fields under existing identity/age rules rather than
+  replacing a valid snapshot wholesale.
 - B503 has a separate session owner and request-time history reads in
   [vaillant_b503_wiring.go](../../cmd/gateway/vaillant_b503_wiring.go) and
   [mcp/vaillant_b503.go](../../mcp/vaillant_b503.go); it is not an additional
@@ -125,7 +126,7 @@ Unresolved edges blocking implementation:
 
 | Later file group | Minimal responsibility / required evidence |
 | --- | --- |
-| `gateway_admission.go`, `ebus_driver_runtime.go`, `gateway_run_lifecycle.go` (linked above) | Move eBUS construction/writer lifetime under driver, retain shell provider handles; keep native generation fencing and current failure isolation. Do not perform this move before the G5 J01–J17 contracts and relevant implementation are accepted. |
+| `gateway_admission.go`, `ebus_driver_runtime.go`, `gateway_run_lifecycle.go` (linked above) | Move eBUS construction/writer lifetime under driver, retain shell provider handles; keep native generation fencing and current failure isolation. Do not perform this move before the [G5 lifecycle contract](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1032), its [native documentation companion](https://github.com/Project-Helianthus/helianthus-docs-ebus/issues/639) and relevant implementation are accepted. |
 | `identification_evidence_wiring.go`, `bus_observability_provider.go` | Replace process publication/direct concrete-store coupling with driver-owned retained snapshots; prove absent/stopped/failed reads perform zero bus I/O and preserve historical provenance. |
 | `identification_evidence.go`, `bus_observability_store.go`, `bus_observability_api.go`, `evidence_buffer.go` | Preserve bounded retention/copy ownership, deterministic ordering and age; separate gateway diagnostic fields; distinguish pause, worker close, eviction and explicit destruction. |
 | `passive_transaction_reconstructor.go`, `active_passive_deduplicator.go`, `shadow_cache.go` and poller/scheduler files above | Coordinate subscription withdrawal, stale callback fencing, new-generation admission and source-aware last-known-good behavior with their owners; do not silently change retry, dedup, qualification or semantic policy. |

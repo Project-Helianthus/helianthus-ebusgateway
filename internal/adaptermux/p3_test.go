@@ -224,6 +224,51 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 	return mux, mock, cancel, cleanup
 }
 
+// newP3TestSession retires arbitration synchronously before closing the pipe.
+// Closing the client alone lets readLoop's deferred RemoveSession start another
+// mock hook after the fixture has closed eventCh. The session wait group excludes
+// that deferred removal, so waiting for it alone cannot join the sender either.
+func newP3TestSession(t *testing.T, mux *Mux) (uint64, func()) {
+	t.Helper()
+	client, server := net.Pipe()
+	id := mux.AddSession(server)
+	if id == 0 {
+		closeOrLog(t, client, "rejected session client")
+		t.Fatal("AddSession returned zero external ID")
+	}
+	mux.sessionsMu.Lock()
+	sess := mux.sessions[id]
+	mux.sessionsMu.Unlock()
+	var once sync.Once
+	return id, func() {
+		once.Do(func() {
+			mux.RemoveSession(id)
+			closeOrLog(t, client, "session client")
+			sess.wg.Wait()
+		})
+	}
+}
+
+// p3TestSenders owns asynchronous test calls into synchronous mock hooks.
+// Defer release-and-wait after fixture cleanup so even Fatal's Goexit joins
+// every sender before eventCh is closed. Add all workers before waiting.
+type p3TestSenders struct {
+	wg sync.WaitGroup
+}
+
+func (s *p3TestSenders) start(fn func()) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn()
+	}()
+}
+
+func (s *p3TestSenders) releaseAndWait(release func()) {
+	release()
+	s.wg.Wait()
+}
+
 // --- P3 tests ---
 
 // TestObserverContinuityDuringArbitration verifies that bus bytes

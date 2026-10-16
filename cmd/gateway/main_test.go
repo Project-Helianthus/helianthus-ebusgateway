@@ -741,11 +741,24 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	var runErr error
 	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			// Do not restore hooks while a worker may still be reading them.
+			t.Fatal("run() did not exit after context cancellation; hooks not restored")
+		}
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
 		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
 		startHTTPServerFn = origStartHTTPServerFn
+		if runErr != nil {
+			t.Errorf("run() error = %v", runErr)
+		}
 	})
 
 	type startupCapture struct {
@@ -769,9 +782,7 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
 		return nil, nil, nil
 	}
 
@@ -785,9 +796,9 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 	cfg.ScanSource = 0xF0
 	cfg.ScanSourceAuto = false
 
-	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg)
+		defer close(done)
+		runErr = run(ctx, cfg)
 	}()
 
 	select {
@@ -805,17 +816,10 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 		if !reflect.DeepEqual(got.targets, wantTargets) {
 			t.Fatalf("startup probe targets = % X; want % X", got.targets, wantTargets)
 		}
-	case <-time.After(2 * time.Second):
+	case <-done:
+		t.Fatalf("run() exited before startup scan config was observed: %v", runErr)
+	case <-time.After(30 * time.Second):
 		t.Fatal("startup scan config was not observed")
-	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("run() did not exit after context cancellation")
 	}
 }
 

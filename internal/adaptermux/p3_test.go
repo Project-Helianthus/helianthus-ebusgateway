@@ -50,7 +50,8 @@ type p3MockTransport struct {
 
 	// eventCh is the stream of events read by readLoop.
 	// Tests push StreamEvents here to simulate adapter responses.
-	eventCh chan transport.StreamEvent
+	eventCh  chan transport.StreamEvent
+	readDone <-chan struct{}
 
 	// startRequests records RequestStart calls.
 	startRequests []byte
@@ -91,6 +92,8 @@ func (t *p3MockTransport) ReadEvent() (transport.StreamEvent, error) {
 	// AM33: optional read timeout for more realistic mock behavior.
 	if t.readTimeout > 0 {
 		select {
+		case <-t.readDone:
+			return transport.StreamEvent{}, io.EOF
 		case ev, ok := <-t.eventCh:
 			if !ok {
 				return transport.StreamEvent{}, io.EOF
@@ -100,11 +103,15 @@ func (t *p3MockTransport) ReadEvent() (transport.StreamEvent, error) {
 			return transport.StreamEvent{}, ebuserrors.ErrTimeout
 		}
 	}
-	ev, ok := <-t.eventCh
-	if !ok {
+	select {
+	case <-t.readDone:
 		return transport.StreamEvent{}, io.EOF
+	case ev, ok := <-t.eventCh:
+		if !ok {
+			return transport.StreamEvent{}, io.EOF
+		}
+		return ev, nil
 	}
-	return ev, nil
 }
 
 func (t *p3MockTransport) ReadByte() (byte, error) {
@@ -197,6 +204,7 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 
 	ctx, cancel := context.WithCancel(context.Background())
 	mux.ctx, mux.cancel = ctx, cancel
+	mock.readDone = ctx.Done()
 
 	// Inject mock transport.
 	mux.connMu.Lock()
@@ -215,10 +223,18 @@ func newP3TestMux(t *testing.T) (*Mux, *p3MockTransport, context.CancelFunc, fun
 	go mux.readLoop()
 	go mux.sendLoop()
 
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		cancel()
-		closeOrLog(t, mock, "p3 mock transport")
-		mux.wg.Wait()
+		cleanupOnce.Do(func() {
+			// Retire admission before joining. Cancellation unblocks ReadEvent
+			// without closing the event channel beneath an in-flight sender.
+			mux.closeMu.Lock()
+			mux.closing.Store(true)
+			mux.closeMu.Unlock()
+			cancel()
+			mux.wg.Wait()
+			closeOrLog(t, mux, "p3 mux")
+		})
 	}
 
 	return mux, mock, cancel, cleanup

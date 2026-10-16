@@ -2813,11 +2813,8 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 		updated = true
 	}
 	if circuit != nil && circuit.Controller == controller {
-		if circuit.PumpStatusRaw != nil && semanticSnapshotObservedWithin(circuit.PumpStatusLiveAt, now, maxAge) {
-			active := *circuit.PumpStatusRaw != 0
-			snapshot.CentralHeatingPumpActive = &active
-			updated = true
-		}
+		// Circuit pump evidence does not identify the boiler pump. Leave that
+		// field absent so partial merges preserve independent boiler evidence.
 		if circuit.CircuitStateRaw != nil && semanticSnapshotObservedWithin(circuit.CircuitStateLiveAt, now, maxAge) {
 			status := int(*circuit.CircuitStateRaw)
 			snapshot.HeatingStatusRaw = &status

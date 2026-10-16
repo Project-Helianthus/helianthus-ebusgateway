@@ -3942,6 +3942,8 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
 		},
 	}
+	dhwBound := graphql.ResolveDHWBivalenceBound(p.controllerB524Identity())
+	current.Config.DhwBivalenceBound = &dhwBound
 
 	switch source {
 	case semanticSnapshotSourceCache:
@@ -4941,6 +4943,7 @@ func systemStatusEquals(a, b *graphql.SystemStatus) bool {
 		floatPtrEquals(a.Config.AlternativePoint, b.Config.AlternativePoint) &&
 		floatPtrEquals(a.Config.HeatingCircuitBivalencePoint, b.Config.HeatingCircuitBivalencePoint) &&
 		floatPtrEquals(a.Config.DhwBivalencePoint, b.Config.DhwBivalencePoint) &&
+		configBoundEquals(a.Config.DhwBivalenceBound, b.Config.DhwBivalenceBound) &&
 		floatPtrEquals(a.Config.HcEmergencyTemperature, b.Config.HcEmergencyTemperature) &&
 		floatPtrEquals(a.Config.HwcMaxFlowTempDesired, b.Config.HwcMaxFlowTempDesired) &&
 		intPtrEquals(a.Config.MaxRoomHumidity, b.Config.MaxRoomHumidity) &&
@@ -6199,7 +6202,9 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 		return p.writeSystemCStringPair(ctx, fieldName, rawValue, pair)
 	}
 
-	payload, spec, err := graphql.EncodeSystemConfigValue(fieldName, rawValue)
+	// Bound validation consults only identity already held in the registry and
+	// completes before any bus I/O. Missing API qualifiers stay unmatched.
+	payload, spec, _, err := graphql.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
@@ -8626,6 +8631,7 @@ func (adapter mcpSemanticProviderAdapter) System() *mcp.SystemStatus {
 			AlternativePoint:             cloneFloatPtr(status.Config.AlternativePoint),
 			HeatingCircuitBivalencePoint: cloneFloatPtr(status.Config.HeatingCircuitBivalencePoint),
 			DhwBivalencePoint:            cloneFloatPtr(status.Config.DhwBivalencePoint),
+			DhwBivalenceBound:            mcpConfigBound(status.Config.DhwBivalenceBound),
 			HcEmergencyTemperature:       cloneFloatPtr(status.Config.HcEmergencyTemperature),
 			HwcMaxFlowTempDesired:        cloneFloatPtr(status.Config.HwcMaxFlowTempDesired),
 			MaxRoomHumidity:              cloneIntPtr(status.Config.MaxRoomHumidity),

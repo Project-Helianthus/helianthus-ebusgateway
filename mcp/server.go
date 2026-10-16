@@ -224,18 +224,32 @@ type SystemState struct {
 	HwcCylinderTemperatureBottom *float64 `json:"hwc_cylinder_temperature_bottom,omitempty"`
 }
 
+// ConfigBound is the active write bound of one config field. Source is
+// "controller_profile" (Profile names the matched identity) or
+// "unmatched_policy" (Reason names why no profile bound applies). NarrowedOnly
+// marks profile evidence that can only narrow policy, not qualify an installation.
+type ConfigBound struct {
+	NarrowedOnly bool    `json:"narrowed_only"`
+	MinC         float64 `json:"min_c"`
+	MaxC         float64 `json:"max_c"`
+	Source       string  `json:"source"`
+	Reason       string  `json:"reason,omitempty"`
+	Profile      string  `json:"profile,omitempty"`
+}
+
 type SystemConfig struct {
-	AdaptiveHeatingCurve         *bool    `json:"adaptive_heating_curve,omitempty"`
-	AlternativePoint             *float64 `json:"alternative_point,omitempty"`
-	HeatingCircuitBivalencePoint *float64 `json:"heating_circuit_bivalence_point,omitempty"`
-	DhwBivalencePoint            *float64 `json:"dhw_bivalence_point,omitempty"`
-	HcEmergencyTemperature       *float64 `json:"hc_emergency_temperature,omitempty"`
-	HwcMaxFlowTempDesired        *float64 `json:"hwc_max_flow_temp_desired,omitempty"`
-	MaxRoomHumidity              *int     `json:"max_room_humidity,omitempty"`
-	MaintenanceDate              *string  `json:"maintenance_date,omitempty"`
-	InstallerName                *string  `json:"installer_name,omitempty"`
-	InstallerPhone               *string  `json:"installer_phone,omitempty"`
-	InstallerMenuCode            *int     `json:"installer_menu_code,omitempty"`
+	AdaptiveHeatingCurve         *bool        `json:"adaptive_heating_curve,omitempty"`
+	AlternativePoint             *float64     `json:"alternative_point,omitempty"`
+	HeatingCircuitBivalencePoint *float64     `json:"heating_circuit_bivalence_point,omitempty"`
+	DhwBivalencePoint            *float64     `json:"dhw_bivalence_point,omitempty"`
+	DhwBivalenceBound            *ConfigBound `json:"dhw_bivalence_point_bound,omitempty"`
+	HcEmergencyTemperature       *float64     `json:"hc_emergency_temperature,omitempty"`
+	HwcMaxFlowTempDesired        *float64     `json:"hwc_max_flow_temp_desired,omitempty"`
+	MaxRoomHumidity              *int         `json:"max_room_humidity,omitempty"`
+	MaintenanceDate              *string      `json:"maintenance_date,omitempty"`
+	InstallerName                *string      `json:"installer_name,omitempty"`
+	InstallerPhone               *string      `json:"installer_phone,omitempty"`
+	InstallerMenuCode            *int         `json:"installer_menu_code,omitempty"`
 }
 
 type SystemProperties struct {
@@ -3182,6 +3196,10 @@ func cloneMCPSystemStatus(status *SystemStatus) *SystemStatus {
 		if config.DhwBivalencePoint != nil {
 			v := *config.DhwBivalencePoint
 			config.DhwBivalencePoint = &v
+		}
+		if config.DhwBivalenceBound != nil {
+			v := *config.DhwBivalenceBound
+			config.DhwBivalenceBound = &v
 		}
 		if config.HcEmergencyTemperature != nil {
 			v := *config.HcEmergencyTemperature

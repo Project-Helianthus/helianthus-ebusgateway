@@ -413,13 +413,17 @@ type SystemConfig struct {
 	AlternativePoint             *float64
 	HeatingCircuitBivalencePoint *float64
 	DhwBivalencePoint            *float64
-	HcEmergencyTemperature       *float64
-	HwcMaxFlowTempDesired        *float64
-	MaxRoomHumidity              *int
-	MaintenanceDate              *string
-	InstallerName                *string
-	InstallerPhone               *string
-	InstallerMenuCode            *int
+	// DhwBivalenceBound is the active write bound of dhwBivalencePointC
+	// (controller profile or conservative unmatched policy). Nil only before
+	// the gateway has resolved it.
+	DhwBivalenceBound      *ConfigBound
+	HcEmergencyTemperature *float64
+	HwcMaxFlowTempDesired  *float64
+	MaxRoomHumidity        *int
+	MaintenanceDate        *string
+	InstallerName          *string
+	InstallerPhone         *string
+	InstallerMenuCode      *int
 }
 
 type SystemProperties struct {
@@ -781,6 +785,10 @@ func cloneSystemConfig(config SystemConfig) SystemConfig {
 	if config.DhwBivalencePoint != nil {
 		v := *config.DhwBivalencePoint
 		config.DhwBivalencePoint = &v
+	}
+	if config.DhwBivalenceBound != nil {
+		v := *config.DhwBivalenceBound
+		config.DhwBivalenceBound = &v
 	}
 	if config.HcEmergencyTemperature != nil {
 		v := *config.HcEmergencyTemperature

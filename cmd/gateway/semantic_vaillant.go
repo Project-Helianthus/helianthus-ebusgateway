@@ -17,6 +17,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -3942,7 +3943,7 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
 		},
 	}
-	dhwBound := graphql.ResolveDHWBivalenceBound(p.controllerB524Identity())
+	dhwBound := systemconfig.ResolveDHWBivalenceBound(p.controllerB524Identity())
 	current.Config.DhwBivalenceBound = &dhwBound
 
 	switch source {
@@ -6204,7 +6205,7 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 
 	// Bound validation consults only identity already held in the registry and
 	// completes before any bus I/O. Missing API qualifiers stay unmatched.
-	payload, spec, _, err := graphql.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
+	payload, spec, _, err := systemconfig.EncodeSystemConfigValueForController(fieldName, rawValue, p.controllerB524Identity())
 	if err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: err.Error()}
 	}
@@ -6212,10 +6213,10 @@ func (p *vaillantSemanticPoller) SetSystemConfig(ctx context.Context, fieldName 
 	return p.writeSystemSingleRegister(ctx, fieldName, rawValue, spec, payload)
 }
 
-func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec graphql.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
-	opcode := byte(0x02)
+func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, fieldName, rawValue string, spec systemconfig.ConfigFieldSpec, payload []byte) graphql.ConfigMutationResult {
+	opcode := systemconfig.OpcodeLocal
 	group := spec.Group()
-	instance := byte(0x00)
+	instance := systemconfig.Instance
 	addr := spec.Addr()
 
 	if err := p.writeB524Value(ctx, opcode, group, instance, addr, payload); err != nil {
@@ -6226,10 +6227,10 @@ func (p *vaillantSemanticPoller) writeSystemSingleRegister(ctx context.Context, 
 	if !ok {
 		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back unavailable"}
 	}
-	if err := graphql.ConfirmDecodableReadback(spec, readback); err != nil {
+	if err := systemconfig.ConfirmDecodableReadback(spec, readback); err != nil {
 		return graphql.ConfigMutationResult{Success: false, Error: fmt.Sprintf("b524 write confirm failed: %v", err)}
 	}
-	if !graphql.ConfigReadbackMatchesWrite(spec, payload, readback) {
+	if !systemconfig.ConfigReadbackMatchesWrite(spec, payload, readback) {
 		return graphql.ConfigMutationResult{Success: false, Error: "b524 write confirm failed: read-back mismatch"}
 	}
 

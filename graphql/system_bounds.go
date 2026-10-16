@@ -1,193 +1,32 @@
 package graphql
 
 import (
-	"fmt"
-	"math"
-	"strings"
-
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
-	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 )
 
-// SystemConfigFieldDHWBivalencePoint is the system-config field whose bound is
-// conservatively narrowed by controller-profile evidence.
-const SystemConfigFieldDHWBivalencePoint = "dhwBivalencePointC"
-
-// Sources of an active config bound.
-const (
-	// ConfigBoundSourceControllerProfile: the bound comes from a controller
-	// profile whose identity matched exactly (ebusreg LookupB524Bound found),
-	// intersected with the conservative policy; it does not qualify an installation.
-	ConfigBoundSourceControllerProfile = "controller_profile"
-	// ConfigBoundSourceUnmatchedPolicy: no profile bound applies; the
-	// conservative gateway policy bound is active.
-	ConfigBoundSourceUnmatchedPolicy = "unmatched_policy"
-)
-
-// Reasons the unmatched policy is active. They mirror the ebusreg lookup
-// statuses; "unqualified_bound" and "invalid_bound" cover a found bound that
-// must not be trusted for writes.
-const (
-	ConfigBoundReasonUnknownProfile   = "unknown_profile"
-	ConfigBoundReasonUnknownRegister  = "unknown_register"
-	ConfigBoundReasonUnqualifiedBound = "unqualified_bound"
-	ConfigBoundReasonInvalidBound     = "invalid_bound"
-)
-
-// Released compatibility policy window for dhwBivalencePointC. A controller-profile
-// match identifies an observation context, not the target installation; profile
-// evidence may narrow this window but must never widen it.
-// dhwBivalenceInstance is the II byte every system-config write and read of
-// dhwBivalencePointC sends; the profile bound is selector-scoped to it.
-const dhwBivalenceInstance = byte(0x00)
+type ConfigBound = systemconfig.ConfigBound
 
 const (
-	unmatchedDHWBivalenceMinC = -20.0
-	unmatchedDHWBivalenceMaxC = 50.0
+	SystemConfigFieldDHWBivalencePoint = systemconfig.SystemConfigFieldDHWBivalencePoint
+	ConfigBoundSourceControllerProfile = systemconfig.ConfigBoundSourceControllerProfile
+	ConfigBoundSourceUnmatchedPolicy   = systemconfig.ConfigBoundSourceUnmatchedPolicy
+	ConfigBoundReasonUnknownProfile    = systemconfig.ConfigBoundReasonUnknownProfile
+	ConfigBoundReasonUnknownRegister   = systemconfig.ConfigBoundReasonUnknownRegister
+	ConfigBoundReasonUnqualifiedBound  = systemconfig.ConfigBoundReasonUnqualifiedBound
+	ConfigBoundReasonInvalidBound      = systemconfig.ConfigBoundReasonInvalidBound
 )
 
-// ConfigBound is the active write bound of one config field.
-type ConfigBound struct {
-	MinC   float64
-	MaxC   float64
-	Source string
-	// Reason is empty for a controller-profile bound; for the unmatched policy
-	// it names why no profile bound applies.
-	Reason string
-	// Profile names the matched controller identity (EID/software/hardware/API
-	// version.revision); empty for the unmatched policy.
-	Profile string
-	// NarrowedOnly means profile evidence can only narrow the conservative
-	// policy window, even when the effective endpoints are unchanged.
-	NarrowedOnly bool
+func ControllerIdentityFromSnapshot(entry registry.DeviceEntrySnapshot) systemconfig.ControllerIdentity {
+	return systemconfig.ControllerIdentityFromSnapshot(entry)
 }
-
-// Describe renders the bound for mutation errors.
-func (b ConfigBound) Describe() string {
-	if b.Source == ConfigBoundSourceControllerProfile {
-		return fmt.Sprintf("controller profile %s allows [%.4g, %.4g]", b.Profile, b.MinC, b.MaxC)
-	}
-	return fmt.Sprintf("controller identity unmatched (%s): conservative policy bound [%.4g, %.4g] applies", b.Reason, b.MinC, b.MaxC)
+func controllerIdentityFromRegistry(reg InvokeRegistry) systemconfig.ControllerIdentity {
+	return systemconfig.ControllerIdentityFromRegistry(reg)
 }
-
-// ControllerIdentityFromSnapshot builds the part of the B524 controller identity
-// that the device registry knows (EID, raw software and hardware). The API
-// version and revision are not registry data and remain absent here. Callers
-// may supply them only from qualified identity data already held by the gateway;
-// validation must never acquire them on demand.
-//
-// The identity is matched exactly by ebusreg: a missing field only matches a
-// profile that did not record it, so an identity without the API qualifier
-// never matches a profile that recorded one.
-func ControllerIdentityFromSnapshot(entry registry.DeviceEntrySnapshot) vaillantsystem.B524ControllerIdentity {
-	return vaillantsystem.B524ControllerIdentity{
-		EID:         strings.ToUpper(strings.TrimSpace(entry.DeviceID)),
-		SoftwareRaw: strings.TrimSpace(entry.SoftwareVersion),
-		HardwareRaw: strings.TrimSpace(entry.HardwareVersion),
-	}
+func ResolveDHWBivalenceBound(identity systemconfig.ControllerIdentity) ConfigBound {
+	return systemconfig.ResolveDHWBivalenceBound(identity)
 }
-
-// controllerIdentityFromRegistry uses the same canonical target priority as
-// findControllerEntry, but never reads identity accessors on a live entry.
-// Registries without atomic snapshots supply no identity, so the conservative
-// unmatched policy applies.
-func controllerIdentityFromRegistry(reg InvokeRegistry) vaillantsystem.B524ControllerIdentity {
-	snapshots, ok := reg.(interface {
-		LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool)
-	})
-	if !ok {
-		return vaillantsystem.B524ControllerIdentity{}
-	}
-	for _, addr := range canonicalRegulatorTargetAddresses {
-		if snap, found := snapshots.LookupEntrySnapshot(addr); found {
-			return ControllerIdentityFromSnapshot(snap)
-		}
-	}
-	return vaillantsystem.B524ControllerIdentity{}
-}
-
-func unmatchedDHWBivalenceBound(reason string) ConfigBound {
-	return ConfigBound{
-		MinC:   unmatchedDHWBivalenceMinC,
-		MaxC:   unmatchedDHWBivalenceMaxC,
-		Source: ConfigBoundSourceUnmatchedPolicy,
-		Reason: reason,
-	}
-}
-
-func controllerIdentityLabel(id vaillantsystem.B524ControllerIdentity) string {
-	label := fmt.Sprintf("%s/SW%s/HW%s", id.EID, id.SoftwareRaw, id.HardwareRaw)
-	if id.APIVersion != "" || id.Revision != "" {
-		label += fmt.Sprintf("/API%s.%s", id.APIVersion, id.Revision)
-	}
-	return label
-}
-
-// ResolveDHWBivalenceBound resolves the dhwBivalencePointC bound from the exact
-// controller identity through the ebusreg controller-profile lookup (OP02,
-// GG=0x00, RR=0x0001). Only a found, retained-record-qualified, sane bound is
-// intersected with the conservative policy window; an empty intersection or
-// any other outcome yields the conservative unmatched policy bound.
-// No profile value is ever substituted for a different identity.
-func ResolveDHWBivalenceBound(identity vaillantsystem.B524ControllerIdentity) ConfigBound {
-	result := vaillantsystem.LookupB524Bound(identity, mutationB524OpcodeLocal, 0x00, dhwBivalenceInstance, 0x0001)
-	return dhwBivalenceBoundFromResult(identity, result)
-}
-
-// dhwBivalenceBoundFromResult keeps the conservative policy total even for an
-// unknown lookup status, unqualified evidence, or malformed numeric bounds.
-func dhwBivalenceBoundFromResult(identity vaillantsystem.B524ControllerIdentity, result vaillantsystem.B524BoundResult) ConfigBound {
-	switch result.Status {
-	case vaillantsystem.B524BoundFound:
-		bound := result.Bound
-		if !bound.Qualified {
-			return unmatchedDHWBivalenceBound(ConfigBoundReasonUnqualifiedBound)
-		}
-		if math.IsNaN(bound.Min) || math.IsNaN(bound.Max) || math.IsInf(bound.Min, 0) || math.IsInf(bound.Max, 0) || bound.Min > bound.Max {
-			return unmatchedDHWBivalenceBound(ConfigBoundReasonInvalidBound)
-		}
-		minC := math.Max(bound.Min, unmatchedDHWBivalenceMinC)
-		maxC := math.Min(bound.Max, unmatchedDHWBivalenceMaxC)
-		if minC > maxC {
-			return unmatchedDHWBivalenceBound(ConfigBoundReasonInvalidBound)
-		}
-		return ConfigBound{
-			NarrowedOnly: true,
-			MinC:         minC,
-			MaxC:         maxC,
-			Source:       ConfigBoundSourceControllerProfile,
-			Profile:      controllerIdentityLabel(identity),
-		}
-	case vaillantsystem.B524BoundUnknownRegister:
-		return unmatchedDHWBivalenceBound(ConfigBoundReasonUnknownRegister)
-	default:
-		return unmatchedDHWBivalenceBound(ConfigBoundReasonUnknownProfile)
-	}
-}
-
-// EncodeSystemConfigValueForController validates and encodes a system config
-// value. For dhwBivalencePointC the range is the bound resolved from identity;
-// every other field keeps its fixed spec range. The returned spec carries the
-// effective range, so the read-back checks are unchanged. A value outside the
-// bound fails here, before any bus write, and the error names the active bound.
-func EncodeSystemConfigValueForController(fieldName, rawValue string, identity vaillantsystem.B524ControllerIdentity) ([]byte, configFieldSpec, *ConfigBound, error) {
-	spec, err := resolveConfigFieldSpec("system", fieldName, systemConfigFieldSpecs)
-	if err != nil {
-		return nil, configFieldSpec{}, nil, err
-	}
-	var bound *ConfigBound
-	if fieldName == SystemConfigFieldDHWBivalencePoint {
-		resolved := ResolveDHWBivalenceBound(identity)
-		bound = &resolved
-		spec.min = resolved.MinC
-		spec.max = resolved.MaxC
-	}
-	payload, err := encodeConfigValue(spec, rawValue)
-	if err != nil {
-		if bound != nil {
-			return nil, configFieldSpec{}, bound, fmt.Errorf("%s: %s: %w", fieldName, bound.Describe(), err)
-		}
-		return nil, configFieldSpec{}, nil, err
-	}
-	return payload, spec, bound, nil
+func EncodeSystemConfigValueForController(fieldName, rawValue string, identity systemconfig.ControllerIdentity) ([]byte, configFieldSpec, *ConfigBound, error) {
+	payload, spec, bound, err := systemconfig.EncodeSystemConfigValueForController(fieldName, rawValue, identity)
+	return payload, adaptSystemConfigSpec(spec), bound, err
 }

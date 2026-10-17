@@ -53,6 +53,8 @@ type Options struct {
 	// Journal records epoch lifecycle events. A nil journal uses an
 	// in-memory journal; durable storage is not provided by this package.
 	Journal EpochJournal
+	// Recovery exports detached records; callbacks run outside the hub mutex.
+	Recovery *RecoveryHooks
 	// Faults, when set by a test in another package, is called at the hub's
 	// named fault stages (for example "before-swap" of a control submission)
 	// so the test can interrupt a submission. Production leaves it nil.
@@ -61,14 +63,24 @@ type Options struct {
 
 // Hub is one in-process hub incarnation.
 type Hub struct {
-	mu          sync.RWMutex
-	incarnation string
-	journal     EpochJournal
-	bus         *eventBus
-	ids         map[string]idOwner
-	assets      map[semreg.AssetID]*asset
-	sources     map[semreg.SourceID]*source
-	faults      func(stage string, asset semreg.AssetID)
+	mu           sync.RWMutex
+	incarnation  string
+	journal      EpochJournal
+	bus          *eventBus
+	ids          map[string]idOwner
+	assets       map[semreg.AssetID]*asset
+	sources      map[semreg.SourceID]*source
+	faults       func(stage string, asset semreg.AssetID)
+	recovery     *RecoveryHooks
+	epochHistory []EpochRecord
+	// restoredEpochs reserves every epoch named in restored history, including
+	// epochs of sources that have no record in this hub yet, so no admission can
+	// reuse a historical epoch (D1: a restore always moves to a new epoch).
+	restoredEpochs  map[semreg.SourceID]map[semreg.SourceEpochID]bool
+	restoredRegimes map[semreg.SourceID]LegacyFamily
+	// restoring is set while Restore installs state; declarations and
+	// admissions are refused meanwhile.
+	restoring bool
 	// queue holds accepted control assets awaiting their first reprojection,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
@@ -114,15 +126,18 @@ type idOwner struct {
 }
 
 type asset struct {
-	commit    sync.Mutex
-	id        semreg.AssetID
-	source    semreg.SourceID
-	driver    string
-	packs     []semreg.PackRef
-	kernel    *semreg.PublicationKernel
-	onControl func(ControlEvent) error
-	hubSeq    uint64
-	gate      *controlAsset
+	commit        sync.Mutex
+	id            semreg.AssetID
+	source        semreg.SourceID
+	driver        string
+	packs         []semreg.PackRef
+	kernel        *semreg.PublicationKernel
+	onControl     func(ControlEvent) error
+	hubSeq        uint64
+	gate          *controlAsset
+	records       []AcceptedBatch
+	restoreFailed bool
+	restored      bool
 }
 
 type source struct {
@@ -182,7 +197,7 @@ func newHub(options Options, queueLimit int) (*Hub, error) {
 	return &Hub{
 		incarnation: incarnation, journal: journal, bus: newEventBus(incarnation, queueLimit),
 		ids: make(map[string]idOwner), assets: make(map[semreg.AssetID]*asset), sources: make(map[semreg.SourceID]*source),
-		faults: options.Faults,
+		faults: options.Faults, recovery: options.Recovery,
 	}, nil
 }
 
@@ -267,7 +282,10 @@ func (h *Hub) claimAvailableLocked(id string, kind Kind, driver string) error {
 
 // regimeLocked refuses an admission whose identity regime differs from the
 // regime fixed by the source's first successful admission. h.mu must be held.
-func regimeLocked(src *source, legacy LegacyFamily) error {
+func (h *Hub) regimeLocked(src *source, legacy LegacyFamily) error {
+	if family, ok := h.restoredRegimes[src.id]; ok && family != legacy {
+		return fmt.Errorf("%w: restored source belongs to another identity regime", ErrAdmission)
+	}
 	if src.admissions > 0 && src.legacy != legacy {
 		return fmt.Errorf("%w: source belongs to another identity regime", ErrAdmission)
 	}
@@ -324,6 +342,10 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		packs = append(packs, validator.Pack())
 	}
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, ErrRestoreInProgress
+	}
 	defer h.unlock()
 	if existing := h.assets[spec.AssetID]; existing != nil {
 		if existing.driver != spec.Driver {
@@ -451,13 +473,17 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	// together with the journalled admission, so a failed append leaves no
 	// source and no claim behind.
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrRestoreInProgress)
+	}
 	src := h.sources[request.Source]
 	err := h.claimAvailableLocked(string(request.Source), KindSource, request.Driver)
 	if err == nil && src == nil {
 		src = newSource(request.Source, request.Driver)
 	}
 	if err == nil {
-		err = regimeLocked(src, request.Legacy)
+		err = h.regimeLocked(src, request.Legacy)
 	}
 	h.unlock()
 	if err != nil {
@@ -468,7 +494,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	// Admissions serialize on the source control mutex, so the regime checked
 	// here holds until this admission completes.
 	h.mu.RLock()
-	err = regimeLocked(src, request.Legacy)
+	err = h.regimeLocked(src, request.Legacy)
 	h.mu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -492,11 +518,16 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 			return nil, fmt.Errorf("%w: successor generation must be the fenced generation plus one", ErrAdmission)
 		}
 	}
+	h.fault("admit-commit", "")
 	epoch, generation := request.Epoch, request.Generation
 	if request.Legacy == "" {
 		epoch, generation = semreg.SourceEpochID("source-epoch:semhub:"+idHash("helianthus.semhub.epoch.v1", h.incarnation, string(request.Source))), 1
 	}
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrRestoreInProgress)
+	}
 	register := h.sources[src.id] != src
 	if register {
 		// The record is not registered yet: another declaration or admission
@@ -511,13 +542,19 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 			return nil, err
 		}
 	}
-	if src.retired[epoch] || src.epochs[epoch] {
+	if src.retired[epoch] || src.epochs[epoch] || h.restoredEpochs[src.id][epoch] {
 		h.unlock()
 		return nil, fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
 	}
+	// A restore may have installed this source's regime after the earlier
+	// checks, so the regime is checked again where the admission commits.
+	if err := h.regimeLocked(src, request.Legacy); err != nil {
+		h.unlock()
+		return nil, err
+	}
 	// The admission is journalled before it becomes visible: a failed append
 	// leaves the source exactly as it was, so the admission can be retried.
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: epoch, Generation: generation, Kind: EventEpochAdmitted}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: epoch, Generation: generation, Kind: EventEpochAdmitted}); err != nil {
 		h.unlock()
 		return nil, fmt.Errorf("semhub: journal epoch admission: %w", err)
 	}
@@ -528,7 +565,9 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	src.prior = priorAdmission{admitted: src.admitted, epoch: src.epoch, generation: src.generation, first: src.first, live: src.live, fenced: src.fenced, legacy: src.legacy}
 	src.epochs[epoch] = true
 	src.legacy = request.Legacy
-	src.admitted, src.epoch, src.generation, src.first = true, epoch, generation, src.admissions == 0
+	// Restored history means the source already had admissions in an earlier
+	// incarnation: the next admission is a successor, never the historical first.
+	src.admitted, src.epoch, src.generation, src.first = true, epoch, generation, src.admissions == 0 && len(h.restoredEpochs[src.id]) == 0
 	src.admissions++
 	src.admission++
 	src.token++
@@ -577,7 +616,7 @@ func (h *Hub) Withdraw(handle *Handle) error {
 			}
 		}
 	}
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: handle.epoch, Generation: handle.generation, Kind: EventSourceRetired, Assets: []semreg.AssetID{}}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: handle.epoch, Generation: handle.generation, Kind: EventSourceRetired, Assets: []semreg.AssetID{}}); err != nil {
 		return fmt.Errorf("semhub: journal admission withdrawal: %w", err)
 	}
 	delete(src.epochs, handle.epoch)
@@ -720,6 +759,9 @@ type Tx struct {
 // held.
 func publicationGateLocked(target *asset) error {
 	gate := target.gate
+	if target.restoreFailed {
+		return ErrControlPending
+	}
 	switch {
 	case gate == nil || gate.semantic == SemanticRevokedUnpublished:
 		return nil
@@ -787,7 +829,7 @@ func (h *Hub) BeginEpoch(previous *Handle, id semreg.AssetID, epoch semreg.Sourc
 	}
 	h.mu.RLock()
 	src := h.sources[previous.source]
-	repeated := src.epochs[epoch] || src.retired[epoch]
+	repeated := src.epochs[epoch] || src.retired[epoch] || h.restoredEpochs[previous.source][epoch]
 	h.mu.RUnlock()
 	if repeated {
 		tx.Abort()
@@ -1029,6 +1071,20 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		return "", ErrTransaction
 	}
 	h := tx.hub
+	var recovery AcceptedBatch
+	defer func() {
+		if recovery.HubSeq != 0 {
+			h.exportAccepted(recovery)
+		}
+	}()
+	if h.recovery != nil {
+		var exportErr error
+		recovery, exportErr = tx.Export()
+		if exportErr != nil {
+			tx.Abort()
+			return "", exportErr
+		}
+	}
 	// A generation transition covers every asset the source owns: the other
 	// assets still holding the replaced generation are fenced by a control
 	// operation whose read gates close in this commit's critical section and
@@ -1062,6 +1118,9 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	}
 	h.fault("commit-locked", tx.asset.id)
 	if tx.replayed {
+		// An exact replay repeats the stored acceptance with its original
+		// HubSeq, so an interrupted Accepted delivery heals at least once.
+		recovery = replayedAcceptanceLocked(tx.asset, recovery)
 		h.unlock()
 		return Replayed, nil
 	}
@@ -1095,7 +1154,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		retirementRecords = append(retirementRecords, EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: retired, Generation: retiredGenerations[retired], Kind: EventSourceRetired, Assets: []semreg.AssetID{tx.asset.id}})
 	}
 	if !tx.transition && !tx.epochTransition && len(retirementRecords) != 0 {
-		if err := h.journal.Append(retirementRecords...); err != nil {
+		if err := h.appendEpochLocked(retirementRecords...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal source retirement: %w", err)
 		}
@@ -1114,7 +1173,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.handle.epoch, Generation: tx.handle.generation, Kind: EventGenerationFenced, Assets: fenced},
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.handle.epoch, Generation: tx.generation, Kind: EventGenerationActivated},
 		}, retirementRecords...)
-		if err := h.journal.Append(records...); err != nil {
+		if err := h.appendEpochLocked(records...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal generation transition: %w", err)
 		}
@@ -1129,7 +1188,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		// covers, and the new epoch's admission are journalled as one
 		// operation; the other assets still holding the replaced epoch are
 		// retired by a cover control operation, as for a generation transition.
-		if src.epochs[tx.epoch] || src.retired[tx.epoch] {
+		if src.epochs[tx.epoch] || src.retired[tx.epoch] || h.restoredEpochs[src.id][tx.epoch] {
 			h.unlock()
 			return "", fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
 		}
@@ -1144,7 +1203,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 			{Incarnation: h.incarnation, Source: src.id, Epoch: old, Generation: tx.handle.generation, Kind: EventSourceRetired, Assets: retired},
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.epoch, Generation: tx.generation, Kind: EventEpochAdmitted},
 		}, retirementRecords...)
-		if err := h.journal.Append(records...); err != nil {
+		if err := h.appendEpochLocked(records...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal epoch transition: %w", err)
 		}
@@ -1163,6 +1222,9 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		h.ids[claim.id] = idOwner{driver: tx.asset.driver, kind: claim.kind}
 	}
 	tx.asset.kernel = tx.fork
+	if h.recovery != nil {
+		tx.asset.records = append(tx.asset.records, recovery)
+	}
 	for _, retired := range tx.applied.SourceRetirements {
 		h.bus.emit(Event{Kind: EventSourceRetired, Asset: tx.asset.id, Source: tx.applied.SourceID, Epoch: retired, Generation: retiredGenerations[retired], Sequence: tx.applied.Sequence, SnapshotID: tx.snapshot.SnapshotID, Revisions: &tx.snapshot.Revisions, Digest: tx.applied.BatchDigest})
 	}
@@ -1172,6 +1234,10 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	}
 	seq := h.bus.emit(Event{Kind: EventPublished, Asset: tx.asset.id, Source: tx.applied.SourceID, Epoch: tx.applied.SourceEpochID, Generation: tx.generation, Sequence: tx.applied.Sequence, SnapshotID: tx.snapshot.SnapshotID, Revisions: &tx.snapshot.Revisions, Digest: tx.applied.BatchDigest})
 	tx.asset.hubSeq = seq
+	if h.recovery != nil {
+		tx.asset.records[len(tx.asset.records)-1].HubSeq = seq
+	}
+	recovery.HubSeq = seq
 	h.unlock()
 	if onCommit != nil {
 		onCommit(Committed{Snapshot: tx.snapshot, Canonical: append([]byte(nil), tx.canonical...), HubSeq: seq})

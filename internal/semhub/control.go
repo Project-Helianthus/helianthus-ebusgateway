@@ -214,6 +214,7 @@ type controlOp struct {
 }
 
 type controlAsset struct {
+	exporting    bool
 	op           *controlOp
 	asset        *asset
 	semantic     SemanticState
@@ -227,6 +228,9 @@ type controlAsset struct {
 	canonical    []byte
 	inFlight     chan struct{}
 	entry        *reprojectionEntry
+	// undelivered marks a committed acceptance whose Accepted callback was
+	// interrupted; RetryControl delivers it again.
+	undelivered bool
 }
 
 // reprojectionEntry is one scheduled reprojection attempt. done closes when
@@ -304,7 +308,7 @@ func (h *Hub) ReadAdmitted(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	target := h.assets[id]
-	if target == nil {
+	if target == nil || target.restoreFailed {
 		return false
 	}
 	gate := target.gate
@@ -317,7 +321,7 @@ func (h *Hub) Settled(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	target := h.assets[id]
-	if target == nil {
+	if target == nil || target.restoreFailed {
 		return false
 	}
 	return target.gate == nil || target.gate.reprojection == ReprojectionSettled
@@ -330,7 +334,7 @@ func (h *Hub) Admitted(id semreg.AssetID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	target := h.assets[id]
-	if target == nil {
+	if target == nil || target.restoreFailed {
 		return false
 	}
 	gate := target.gate
@@ -581,7 +585,7 @@ func (h *Hub) runControl(id semreg.SourceID, op *controlOp) (ControlResult, erro
 				generation = src.generation
 			}
 		}
-		if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: op.epoch, Generation: generation, Kind: kind, Assets: covered}); err != nil {
+		if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: op.epoch, Generation: generation, Kind: kind, Assets: covered}); err != nil {
 			h.unlock()
 			return ControlResult{}, fmt.Errorf("semhub: journal control transition: %w", err)
 		}
@@ -799,13 +803,25 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	// never submitted again.
 	h.mu.RLock()
 	resolved := semanticSuccess(ca.semantic) || ca.semantic == SemanticRevokedUnpublished
+	exporting := ca.exporting
 	h.mu.RUnlock()
+	if exporting {
+		return ErrControlPending
+	}
 	if resolved {
 		return nil
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			h.lock()
+			if semanticSuccess(ca.semantic) {
+				// The batch committed before the interruption (the Accepted
+				// callback): a callback cannot roll back an acceptance.
+				ca.undelivered = true
+				failure = fmt.Errorf("semhub: accepted control delivery interrupted: %v", recovered)
+				h.unlock()
+				return
+			}
 			ca.semantic, ca.errID, ca.err = SemanticUncertain, "", fmt.Errorf("semhub: control submission interrupted: %v", recovered)
 			failure = ca.err
 			control := op.id
@@ -833,6 +849,20 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	if err := json.Unmarshal(attempt.Batch, &batch); err != nil {
 		return h.reject(ca, err)
 	}
+	if h.recovery != nil && h.recovery.BeforeControl != nil {
+		staged := ControlAttempt{Control: op.id, Asset: target.id, Kind: op.kind, Attempt: copyAttempt(attempt), Monotonic: op.monotonic}
+		var exportErr error
+		h.outsideControlLocks(ca, func() { exportErr = h.recovery.BeforeControl(staged) })
+		if exportErr != nil {
+			return h.reject(ca, fmt.Errorf("%w: %w", &semreg.Error{ID: "semhub.control_export_refused", Detail: "BeforeControl refused submission"}, exportErr))
+		}
+		h.mu.RLock()
+		superseded := op.abandoned || target.gate != ca
+		h.mu.RUnlock()
+		if superseded {
+			return ErrControlAbandoned
+		}
+	}
 	h.fault("before-submit", target.id)
 	h.mu.RLock()
 	kernel = target.kernel
@@ -849,6 +879,11 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	snapshot, canonical, err := fork.Apply(batch, op.monotonic)
 	if err != nil {
 		return h.reject(ca, err)
+	}
+	var recovery AcceptedBatch
+	if h.recovery != nil {
+		recovery = acceptedBatch(attempt.Batch, op.monotonic, snapshot, canonical)
+		recovery.Incarnation = h.incarnation
 	}
 	replayed := priorKnown && prior.LastSequence == batch.Sequence
 	h.fault("before-swap", target.id)
@@ -870,10 +905,23 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 		defer h.unlock()
 		if !replayed {
 			target.kernel = fork
+			if h.recovery != nil {
+				target.records = append(target.records, recovery)
+			}
 		}
 		h.fault("after-swap", target.id)
 		seq := h.bus.emit(Event{Kind: kind, Asset: target.id, Source: op.src.id, Epoch: op.epoch, Generation: generation, Sequence: batch.Sequence, SnapshotID: snapshot.SnapshotID, Revisions: &snapshot.Revisions, Digest: batch.BatchDigest, Control: &control, Reason: reason})
 		target.hubSeq = seq
+		recovery.HubSeq = seq
+		if h.recovery != nil && len(target.records) > 0 {
+			last := &target.records[len(target.records)-1]
+			if !replayed || last.HubSeq == 0 && last.Cursor == recovery.Cursor {
+				last.HubSeq = seq
+			}
+			if replayed && last.Cursor == recovery.Cursor {
+				recovery = *last
+			}
+		}
 		ca.hubSeq, ca.snapshot, ca.canonical = seq, snapshot, canonical
 		ca.semantic, ca.errID, ca.err = SemanticAccepted, "", nil
 		if replayed {
@@ -882,6 +930,9 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 		ca.reprojection, ca.reprojErr = ReprojectionUnsettled, nil
 		h.enqueueLocked(ca)
 	}()
+	if h.recovery != nil {
+		h.outsideControlLocks(ca, func() { h.exportAccepted(recovery) })
+	}
 	h.fault("after-commit", target.id)
 	return nil
 }
@@ -954,11 +1005,14 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 	}
 	target := ca.asset
 	event := ControlEvent{Asset: target.id, SnapshotID: ca.snapshot.SnapshotID, HubSeq: ca.hubSeq, Kind: EventGenerationFenced, Control: ca.op.id,
-		View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: true}}
+		View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: ca.snapshot.SnapshotID != ""}}
 	if ca.op.kind == ControlRetire {
 		event.Kind = EventSourceRetired
 	}
 	callback := target.onControl
+	if target.restored && callback == nil {
+		return nil, ErrReprojectionPending
+	}
 	done := make(chan struct{})
 	ca.inFlight = done
 	go func() {
@@ -1017,6 +1071,12 @@ func (h *Hub) Resettle(id semreg.AssetID) error {
 	}
 	ca := target.gate
 	switch {
+	case target.restoreFailed:
+		h.unlock()
+		return ErrControlPending
+	case target.restored && target.onControl == nil:
+		h.unlock()
+		return ErrReprojectionPending
 	case ca == nil:
 		h.unlock()
 		return nil
@@ -1145,10 +1205,18 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 	if err != nil {
 		return ControlResult{}, err
 	}
+	var redeliver []*controlAsset
 	failure := func() error {
 		h.lockSourceControl(op.src)
 		defer op.src.control.Unlock()
 		h.lock()
+		// An interrupted acceptance stays owed to the service even after a
+		// newer operation supersedes this one, so it is collected first.
+		for _, ca := range op.assets {
+			if ca.undelivered {
+				redeliver = append(redeliver, ca)
+			}
+		}
 		latest, abandoned, state := op.src.last == op, op.abandoned, op.stateLocked()
 		if !latest || abandoned {
 			h.unlock()
@@ -1174,8 +1242,33 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 		}
 		return nil
 	}()
+	// Interrupted acceptances are delivered again outside every lock, with
+	// their original HubSeq; the service deduplicates repeated deliveries.
+	for _, ca := range redeliver {
+		h.mu.RLock()
+		record, found := acceptedRecordLocked(ca.asset, ca.hubSeq)
+		h.mu.RUnlock()
+		if !found {
+			continue
+		}
+		h.exportAccepted(record)
+		h.lock()
+		ca.undelivered = false
+		h.unlock()
+	}
 	h.drain()
 	return h.result(op), failure
+}
+
+// acceptedRecordLocked returns the stored acceptance committed at seq.
+// h.mu must be held.
+func acceptedRecordLocked(target *asset, seq uint64) (AcceptedBatch, bool) {
+	for i := len(target.records) - 1; i >= 0 && seq != 0; i-- {
+		if target.records[i].HubSeq == seq {
+			return target.records[i], true
+		}
+	}
+	return AcceptedBatch{}, false
 }
 
 // lockSourceControl takes the source control mutex. When the mutex is held
@@ -1268,7 +1361,7 @@ func (h *Hub) Activate(previous *Handle, generation uint64) (*Handle, error) {
 		return nil, &semreg.Error{ID: semreg.StaleDriverGeneration, Detail: "activation generation"}
 	}
 	// Journal before exposure: a failed append changes nothing.
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: src.epoch, Generation: generation, Kind: EventGenerationActivated}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: src.epoch, Generation: generation, Kind: EventGenerationActivated}); err != nil {
 		h.unlock()
 		return nil, fmt.Errorf("semhub: journal generation activation: %w", err)
 	}

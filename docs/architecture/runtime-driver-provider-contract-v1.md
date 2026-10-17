@@ -17,7 +17,11 @@ generation fence, epoch retirement, activation and reprojection rules of the
 withdrawal sequence. The hub is runtime composition, not a public API, and
 persists nothing: epochs are journalled in memory only. The `list`, `get`,
 `start`, `stop` and `restart` service, desired-state persistence and every
-public lifecycle projection remain unimplemented.
+public lifecycle projection remain unimplemented. Issue
+[#1112](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1112)
+adds unused, opt-in export/restore hooks for a future service-owned recovery
+path. Existing production publishers do not enable them and retain their
+in-memory-only recovery boundary.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -54,11 +58,12 @@ Deviation record (the normative passages are amended where they apply):
 
 Contract ID: `helianthus.gateway.driver-runtime/v1`
 
-Gateway baseline: `Project-Helianthus/helianthus-ebusgateway` commit
-[`e31106c9c726fbb8df7546901763e19b93659e72`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/e31106c9c726fbb8df7546901763e19b93659e72)
+Gateway source:
+[public runtime repository](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main).
 
-Program source: software 0.7 guide commit
-[`ec6050fb31738f201c96203c52be0702671df343`](https://github.com/Project-Helianthus/helianthus-execution-plans/tree/ec6050fb31738f201c96203c52be0702671df343/software-stabilization-07-08.implementing)
+Program source:
+[software 0.7 guide](https://github.com/Project-Helianthus/helianthus-execution-plans/tree/main/software-stabilization-07-08.implementing).
+Historical review coordinates remain in the linked issue and PR records.
 
 ## 1. Decision and boundary
 
@@ -98,14 +103,13 @@ and implemented by
 The accepted dependency is docs-semantic
 [#3](https://github.com/Project-Helianthus/helianthus-docs-semantic/issues/3),
 merged PR [#5](https://github.com/Project-Helianthus/helianthus-docs-semantic/pull/5),
-remote-main commit `b16667d719defc7b0fef0400ee3ad387469018ac`, specifically
-[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/kernel.md),
-[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/serialization.md),
-[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance.md),
+with public contract files
+[`api/v1/kernel.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/kernel.md),
+[`serialization.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/serialization.md),
+[`acceptance.md`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/acceptance.md),
 and
-[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/b16667d719defc7b0fef0400ee3ad387469018ac/api/v1/acceptance-vectors.json).
-That squash commit has contract content identical to independently accepted PR
-HEAD `395733fd19c1e5d92a9d1fbc0afb79bddd107a22`. The complete exact-HEAD Astra
+[`acceptance-vectors.json`](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/acceptance-vectors.json).
+The merged dependency preserves the independently accepted PR content. The complete exact-HEAD Astra
 audit returned `NO_BLOCKING_FINDINGS`; issue #3 is closed. A future successor
 requires its own compatibility reconciliation before replacing this pin.
 
@@ -554,6 +558,108 @@ epoch, generation, sequence, batch ID, and digest. Crash recovery therefore
 cannot omit an accepted, possibly submitted, or cleanup-incomplete asset. The
 index is never rebuilt from a live provider, current discovery result, or
 compatibility alias.
+
+A6 recovery prerequisite (S3.8): the future control service owns write-ahead
+persistence outside every hub mutex. `internal/semhub` supplies only opt-in
+`Options.Recovery` hooks, `Tx.Export`, `ExportRecovery`, and `Restore`; these
+perform no filesystem, fsync, provider, or native I/O. `BeforeControl` receives
+an owned copy of the exact staged JSON batch, its sequence/digest, control key,
+and persisted monotonic point before submission, and can refuse submission.
+`Accepted` receives a separate owned copy of an accepted publication or control
+result after commit, including the exact canonical snapshot, snapshot ID,
+revision vector, cursor/digest, incarnation, and HubSeq. Publication intent can
+be exported after `Apply` and before `Commit`; that draft is never acceptance.
+Accepted delivery is at-least-once: the service deduplicates by asset,
+publication key (source, epoch, generation), sequence and digest. A replayed
+control acceptance retains its original incarnation, HubSeq and exact result;
+an exact replay of an accepted publication repeats its stored acceptance with
+the original HubSeq, so an interrupted delivery is repeated; a new event
+position does not identify a new accepted batch.
+An accepted callback cannot roll back a committed batch: if it is interrupted,
+the batch stays accepted, the call reports the interruption, and an exact
+publication replay or a `RetryControl` delivers the stored acceptance again with
+its original HubSeq. Callbacks run outside
+the hub, source and asset locks while the exact pending attempt remains reserved;
+they must not reenter a hub mutation. Storage failures and uncertain response windows remain
+the service's WAL obligations. A `BeforeControl` refusal is a terminal
+`Rejected` outcome with error ID `semhub.control_export_refused`; `RetryControl`
+does not retry that refusal. After repairing storage, the service must
+`AbandonControl` and issue a new fence or retirement request. The rejected
+attempt's exact bytes remain historical; the new operation builds its own
+attempt from the current snapshot. No refused attempt advances a cursor.
+
+`ExportRecovery` captures a coherent detached record of declaration identities,
+pack references, every accepted batch in per-asset commit order, its original
+monotonic point and exact result, the last control gate/attempts, epoch
+history, and each historically admitted source's identity regime (hub-native
+or its legacy family) with the driver that owns the source. A source whose
+every admission was withdrawn is listed as unfixed instead, so every source
+with epoch history carries exactly one of a regime or an unfixed marker.
+Copying coherent metadata uses the existing hub
+synchronization; serialization, buffer export, validators, and persistence run
+outside it.
+Rejected attempts remain control history and never enter the accepted replay
+log or advance a restored cursor. Enabled recovery retains the complete log;
+the service must bound admission and retain replay material until a verified
+restore point permits compaction. Default production hubs do not collect it.
+
+Restore requires the same declared asset/source/driver identity and compatible
+validators, empty asset kernels, and no prior admission of an affected source
+in the new incarnation, including withdrawn admissions. Every declared recovery
+asset must be present, including assets of sources omitted entirely from the
+checkpoint; missing coverage rejects the record and closes all empty declared
+assets. Checkpoint entries with undeclared asset IDs also reject the record and
+close all empty declared assets. Malformed epoch identities, zero generations, non-lifecycle
+event kinds, invalid or unordered asset IDs, missing or invalid source
+identity regimes (including a source with history that has neither a regime
+nor an unfixed marker), unfixed markers without history or with an admitted
+epoch that was never retired, and missing,
+unknown or conflicting source driver ownership reject the checkpoint before
+replay or epoch reservation. A control status that reports an attempt the
+accepted log already holds as pending, rejected or uncertain also rejects it.
+Restored cursor and history epoch IDs are reserved against admission and epoch
+transitions, even for assetless sources or with a different generation:
+restoration requires a new epoch, and the generation sequence restarts with
+that epoch (as in LIFE-06); generation current+1 applies to successors on the
+retained kernel within one incarnation. Successor admission must retain the
+restored identity regime; changing legacy family or switching between legacy
+and hub-native identity is refused. An unfixed source admits any regime, as
+after a withdrawn first admission. Restored sources stay claimed by their
+owning driver, including sources without assets; another driver's admission
+or declaration is a collision. A source restores once per incarnation: a
+second restore of the same source, or an admission that lands before the
+restored state is installed, refuses the checkpoint. `ExportRecovery` during a restore returns the zero record (version 0), which no
+restore accepts, so a partially installed hub never becomes a checkpoint.
+Restore and admission never
+interleave: from the coverage scan to the end of installation, declarations and
+admissions are refused with a restore-in-progress error and retried by the
+caller afterwards. Ownership, regimes and historical epochs are installed in
+one critical section, and an admission that commits afterwards rechecks the
+restored regime. A withdrawn epoch may be admitted again; the later admission
+is the current one. A regime requires an
+admission in the history or accepted publications, and an unfixed marker
+requires an admission in the history.
+It replays accepted publication and control batches on detached kernels using
+the persisted monotonic points, verifies every exact result, and reinstates retained
+history/tombstones and per-key cursors. A corrupt step or changed validator
+behavior installs no partial asset state and leaves that asset closed;
+independent valid assets may restore but remain closed too until each fresh
+family reprojection acknowledges its restored snapshot through `Resettle`.
+A missing callback cannot acknowledge restoration. The current prerequisite
+uses a synthetic reprojection gate for publication-only and empty entries:
+`Resettle` reports `Kind=generation_fenced` with a zero `ControlID` when no
+historical control exists. For a never-published entry that callback view has
+`Present=false` and an empty `SnapshotID`; it acknowledges rebuilding an empty
+cache. The callback preserves the absence reported by `Inspect`. These callback
+markers confer no control authority.
+Historical settlement grants no current read acknowledgement. Outstanding
+semantic gates remain closed; the future service must resolve their original WAL work before new admission.
+Prior admissions, activations, revocations, and retirements remain inert
+history and never create live handles, native-close proof, or a current epoch.
+No historical control operation is revived as a current-incarnation retry.
+The active epoch journal remains in memory and is not replayed by restoration.
+Full service loss/crash-at-acceptance integration (S3.9) remains subsequent
+work; this prerequisite does not implement the lifecycle service.
 
 For each recorded asset, the manager reads the exact immutable current
 `Snapshot`, verifies that its `SnapshotID` and semantic revision match the
@@ -1813,37 +1919,37 @@ outside this composition.
 Exact public source anchors for these statements:
 
 - eBUS manager configuration and declared capabilities:
-  [`cmd/gateway/ebus_driver_runtime.go#L18-L94`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L18-L94)
+  [`cmd/gateway/ebus_driver_runtime.go#L18-L94`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L18-L94)
 - eBUS source/write admission and lifecycle callbacks:
-  [`cmd/gateway/ebus_driver_runtime.go#L241-L282`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L241-L282) and
-  [`#L345-L573`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/ebus_driver_runtime.go#L345-L573)
+  [`cmd/gateway/ebus_driver_runtime.go#L241-L282`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L241-L282) and
+  [`#L345-L573`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/ebus_driver_runtime.go#L345-L573)
 - eBUS public tool inventory, invoke guard, and B503 read-only surface:
-  [`mcp/server_tools.go#L1-L369`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/server_tools.go#L1-L369),
-  [`mcp/server.go#L1932-L1989`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/server.go#L1932-L1989), and
-  [`mcp/vaillant_b503.go#L46-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/vaillant_b503.go#L46-L152)
+  [`mcp/server_tools.go#L1-L369`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/server_tools.go#L1-L369),
+  [`mcp/server.go#L1932-L1989`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/server.go#L1932-L1989), and
+  [`mcp/vaillant_b503.go#L46-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/vaillant_b503.go#L46-L152)
 - current manager lifecycle, late admission retirement, generation callback
   fencing, and admission:
-  [`internal/drivermanager/manager.go#L93-L189`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L93-L189),
-  [`#L325-L658`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L325-L658), and
-  [`#L764-L845`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/drivermanager/manager.go#L764-L845)
+  [`internal/drivermanager/manager.go#L93-L189`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L93-L189),
+  [`#L325-L658`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L325-L658), and
+  [`#L764-L845`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/drivermanager/manager.go#L764-L845)
 - eeBUS slot replacement/retirement and provider adapter:
-  [`cmd/gateway/eebus_runtime_adapter.go#L26-L156`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/eebus_runtime_adapter.go#L26-L156)
+  [`cmd/gateway/eebus_runtime_adapter.go#L26-L156`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/eebus_runtime_adapter.go#L26-L156)
 - eeBUS public read inventory and owner-only raw command inventory:
-  [`mcp/eebus_v1.go#L19-L108`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/eebus_v1.go#L19-L108) and
-  [`mcp/eebus_v1_commands.go#L18-L69`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/eebus_v1_commands.go#L18-L69)
+  [`mcp/eebus_v1.go#L19-L108`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/eebus_v1.go#L19-L108) and
+  [`mcp/eebus_v1_commands.go#L18-L69`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/eebus_v1_commands.go#L18-L69)
 - eeBUS native authorization and optional mutation runtime:
-  [`internal/eebuscommand/router.go#L50-L127`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/eebuscommand/router.go#L50-L127)
+  [`internal/eebuscommand/router.go#L50-L127`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/eebuscommand/router.go#L50-L127)
   and the closed mutation-lab profile loader
-  [`cmd/gateway/eebus_mutation_lab_profile.go#L12-L84`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/eebus_mutation_lab_profile.go#L12-L84)
+  [`cmd/gateway/eebus_mutation_lab_profile.go#L12-L84`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/eebus_mutation_lab_profile.go#L12-L84)
 - Modbus public tool/provider surface and composition:
-  [`mcp/modbus_v1.go#L15-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/mcp/modbus_v1.go#L15-L152),
-  [`cmd/gateway/modbus_mcp_provider.go#L32-L159`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/modbus_mcp_provider.go#L32-L159), and
-  [`cmd/gateway/gateway_http_server.go#L68-L85`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/gateway_http_server.go#L68-L85)
+  [`mcp/modbus_v1.go#L15-L152`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/mcp/modbus_v1.go#L15-L152),
+  [`cmd/gateway/modbus_mcp_provider.go#L32-L159`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/modbus_mcp_provider.go#L32-L159), and
+  [`cmd/gateway/gateway_http_server.go#L68-L85`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_http_server.go#L68-L85)
 - Modbus adapter ownership and reconnect boundary:
-  [`internal/modbusadapter/adapter.go#L19-L75`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/modbusadapter/adapter.go#L19-L75) and
-  [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/internal/modbusadapter/adapter.go#L257-L299)
+  [`internal/modbusadapter/adapter.go#L19-L75`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L19-L75) and
+  [`#L257-L299`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/modbusadapter/adapter.go#L257-L299)
 - independent driver startup and process availability behavior:
-  [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/e31106c9c726fbb8df7546901763e19b93659e72/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
+  [`cmd/gateway/gateway_run_lifecycle.go#L43-L140`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/gateway_run_lifecycle.go#L43-L140)
 
 ## 12. SemReg cutover and retained native evidence
 

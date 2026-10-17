@@ -2803,7 +2803,7 @@ func TestStartupScanB524InterfaceIdentityUsesEnrichmentBudget(t *testing.T) {
 		}
 	}
 	// No serial candidates: interface discovery must still be invoked.
-	enrichVaillantIdentity(ctx, gw, cfg)
+	enrichVaillantB524InterfaceIdentity(ctx, gw, cfg)
 	if !called {
 		t.Fatal("interface enrichment skipped")
 	}
@@ -2868,11 +2868,130 @@ func TestStartupScanB524InterfaceIdentityDiscoveryToBound(t *testing.T) {
 		}
 		original(ctx, r, &timeoutBus{bus: endpoint, timeout: wrapper.timeout}, source, companion)
 	}
-	// The unstarted loopback bus bounds the pre-existing serial attempt; only
-	// the two OP00 reads are served by this synthetic endpoint.
-	enrichVaillantIdentity(context.Background(), gw, cfg)
+	// Only the two OP00 reads are served by this synthetic endpoint.
+	enrichVaillantB524InterfaceIdentity(context.Background(), gw, cfg)
 	assertB524InterfaceBound(t, poller, 20, "controller_profile")
 	if len(endpoint.requests()) != 2 {
 		t.Fatal("discovery-to-bound added endpoint requests")
+	}
+}
+
+func TestStartupScanB524InterfaceIdentityAfterSerialEnrichment(t *testing.T) {
+	for _, path := range []string{"preload", "direct", "fallback", "delayed_retry"} {
+		t.Run(path, func(t *testing.T) {
+			originalScan, originalDirected := registryScanFn, registryScanDirectedFn
+			originalTargets, originalResults, originalInfos := ebusdScanTargetCandidatesFn, ebusdScanResultTargetsFn, ebusdScanResultInfosFn
+			originalIdentity, originalSerials, originalB524 := enrichVaillantIdentityFn, enrichSerialsFromEbusdFn, enrichB524InterfaceIdentityFn
+			originalRetry, originalExit := postStartupIdentityRetryFn, startupScanLoopExitFn
+			originalDelay, originalAttempts := postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts
+			t.Cleanup(func() {
+				registryScanFn, registryScanDirectedFn = originalScan, originalDirected
+				ebusdScanTargetCandidatesFn, ebusdScanResultTargetsFn, ebusdScanResultInfosFn = originalTargets, originalResults, originalInfos
+				enrichVaillantIdentityFn, enrichSerialsFromEbusdFn, enrichB524InterfaceIdentityFn = originalIdentity, originalSerials, originalB524
+				postStartupIdentityRetryFn, startupScanLoopExitFn = originalRetry, originalExit
+				postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts = originalDelay, originalAttempts
+			})
+			_, poller, endpoint := newB524InterfaceIdentityFixture(t)
+			reg := registry.NewDeviceRegistry(nil)
+			poller.reg = reg
+			t.Cleanup(func() { b524InterfaceIdentityStores.Delete(reg) })
+			gw, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = gw.Close() })
+			gw.Registry = reg
+			// Synthetic controller-family identity; no captured device data.
+			info := registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV0", SoftwareVersion: "0217", HardwareVersion: "8803"}
+			ebusdScanTargetCandidatesFn = func(cfg ebusgateway.TransportConfig) []ebusgateway.TransportConfig {
+				return []ebusgateway.TransportConfig{cfg}
+			}
+			ebusdScanResultTargetsFn = func(context.Context, ebusgateway.TransportConfig) ([]byte, error) { return []byte{0x15}, nil }
+			ebusdScanResultInfosFn = func(context.Context, ebusgateway.TransportConfig) ([]registry.DeviceInfo, error) {
+				return []registry.DeviceInfo{info}, nil
+			}
+			scan := func(ctx context.Context, bus registry.ScanBus, r *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				if path == "fallback" {
+					bus.(*statsBus).stats.timeouts++
+					return nil, nil
+				}
+				return []registry.DeviceEntry{r.Register(info)}, nil
+			}
+			registryScanFn, registryScanDirectedFn = scan, scan
+			postStartupIdentityRetryFn = func(context.Context, *ebusgateway.Gateway, *graphql.Builder, ebusgateway.Config, *ebusgateway.TransportConfig) {
+			}
+			serialBudgetExpired := false
+			enrichVaillantIdentityFn = func(ctx context.Context, _ *ebusgateway.Gateway, _ ebusgateway.Config) {
+				// Simulate B5.09 exhausting its child budget without waiting 30s.
+				serialCtx, cancel := context.WithTimeout(ctx, time.Nanosecond)
+				defer cancel()
+				<-serialCtx.Done()
+				serialBudgetExpired = true
+			}
+			serialRegistered := false
+			enrichSerialsFromEbusdFn = func(ctx context.Context, _ *registry.DeviceRegistry, _ ebusgateway.TransportConfig) {
+				if ctx.Err() != nil {
+					return
+				}
+				withSerial := info
+				withSerial.SerialNumber = "SYNTHETIC"
+				reg.Register(withSerial)
+				serialRegistered = true
+			}
+			acquired := make(chan struct{})
+			var acquireOnce sync.Once
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			enrichB524InterfaceIdentityFn = func(enrichCtx context.Context, r *registry.DeviceRegistry, _ registry.ScanBus, source, companion byte) {
+				acquireOnce.Do(func() {
+					defer close(acquired)
+					if !serialBudgetExpired || !serialRegistered {
+						t.Error("OP00 ran before serial enrichment completed")
+					}
+					deadline, bounded := enrichCtx.Deadline()
+					if !bounded || enrichCtx.Err() != nil || time.Until(deadline) < vaillantIdentityEnrichTimeout-time.Second {
+						t.Error("OP00 did not receive an independent live budget")
+					}
+					originalB524(enrichCtx, r, endpoint, source, companion)
+					cancel()
+				})
+			}
+			cfg := ebusgateway.DefaultConfig()
+			cfg.ScanOnStart = true
+			cfg.ScanSource = 0x71
+			cfg.BackgroundScanInterval = 0
+			cfg.ScanRequestTimeout = time.Millisecond
+			cfg.StartupProbeTargets = []byte{0x15}
+			cfg.TransportConfig.Protocol = ebusgateway.TransportENH
+			if path == "preload" {
+				cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
+			}
+			if path == "delayed_retry" {
+				reg.Register(info)
+				postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts = time.Millisecond, 1
+				schedulePostStartupIdentityRetry(ctx, gw, nil, cfg, &cfg.TransportConfig)
+			} else {
+				exited := make(chan struct{})
+				startupScanLoopExitFn = func() { close(exited) }
+				startDiscoveryScanLoopWithClassifier(ctx, cfg, gw, nil, nil)
+				select {
+				case <-exited:
+				case <-time.After(2 * time.Second):
+					t.Fatal("startup loop did not finish")
+				}
+			}
+			select {
+			case <-acquired:
+			case <-time.After(2 * time.Second):
+				t.Fatal("OP00 acquisition skipped")
+			}
+			assertB524InterfaceBound(t, poller, 20, "controller_profile")
+			if len(endpoint.requests()) != 2 {
+				t.Fatal("expected both OP00 requests")
+			}
+		})
 	}
 }

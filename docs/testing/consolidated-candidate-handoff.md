@@ -4,11 +4,12 @@ Refs [#1118](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues
 [#1099](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1099).
 This is a partial preparation slice for the **0.7 candidate**, not parent closure,
 a hardware verdict, a release decision, or permission to operate equipment.
-One consolidated operator session is planned; no documentation worker needs a device.
+One consolidated operator session is planned; preparing this document needed no device.
 
 ## Order and candidate identity
 
-Follow **INT-17 → INT-19 → INT-20 → INT-21**, downstream of INT-16:
+Follow **INT-17 → INT-19 → INT-20 → INT-21**, downstream of INT-16. INT-12 and
+INT-13 sit upstream of INT-16 and are therefore gated through INT-17:
 
 1. **INT-17**: complete offline acceptance and hardware-test preparation against
    the frozen INT-16 BOM; establish `HARDWARE_TEST_READY` using integrated
@@ -19,7 +20,7 @@ Follow **INT-17 → INT-19 → INT-20 → INT-21**, downstream of INT-16:
    below against that same candidate, including retained live obligations.
 4. **INT-21**: publish only the BOM covered by final review and required results.
 
-All four packages are pending in the supplied planning state. They are release-plan
+All four packages are pending in the release plan. They are release-plan
 IDs, not issue numbers. The plan defines no intervening package.
 The [milestone map][plan] and [canonical hard stops][canonical] govern this sequence.
 
@@ -64,7 +65,7 @@ and public-safe evidence references.
 | HA/Ingress physical checks and implementation procedure | Add-on and gateway Portal owners; [offline checklist][ha], [Portal scope][portal-plan] | Not run | Unknown |
 | ESERA passive capture remains pending | FOLLOWUP-01 owners; [K05 worksheet][k05] and its parent links | Not run | Unknown |
 
-K05, K06 and M44 preparation dependencies are supplied as merged. Their documents
+The K05, K06 and M44 preparation dependencies are merged. Their documents
 are references, not completed physical evidence. These pending prerequisites do
 not prevent finishing this handoff; they remain visible for operator readiness.
 
@@ -209,12 +210,12 @@ positive/negative, live-observable and transport obligations without inventing I
 | Explorer Pi | [Offline card][explorer] is fixture/build evidence only; Pi procedure pending owner assignment | Not run | Unknown | Unassessed |
 | INT-12 eeBUS output binding | [Plan][plan] and [native participation owner][eebus-owner]; accepted contract/procedure pending | Not run | Unknown | Unassessed |
 | INT-13 Matter output binding | [Projection contract](../architecture/matter-output-binding-v1.md) plus [native binding owner][matter-owner]; projection alone supplies no runtime or fabric evidence | Not run | Unknown | Unassessed |
-| Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Fixture-only |
+| Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Unassessed |
 
 ### Prior RTU evidence and its limits
 
-The supplied R01/J19 summary records all checks passing in a one-time read-only
-run of function codes 03 and 04 against a standard Modbus RTU slave through a
+The R01/J19 record (modbus PR #40) reports all checks passing in a one-time read-only
+run of function codes 03 and 04 against a standard Modbus RTU server device through a
 USB-to-RS-485 adapter family on Linux aarch64, using 8N1 and a deliberately stale
 starting speed. Scope covered open/speed inheritance, a long chunked FC03 response,
 200 back-to-back reads, absent-unit timeout and recovery, two concurrent callers,
@@ -229,13 +230,13 @@ Not run / Unknown for this candidate. Retain the historical result with its scop
 do not convert it into a new live acceptance claim or use it to bypass a triggered
 offline RTU gate.
 
-[plan]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/91-milestone-map.md
-[canonical]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/00-canonical.md
-[legacy]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/92-retained-acceptance.md
-[legacy-persist]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/92-retained-acceptance.md#legacy-persist--execution-plans-27
-[legacy-identity]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/92-retained-acceptance.md#legacy-identity--execution-plans-23
-[legacy-mux]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/92-retained-acceptance.md#legacy-mux--execution-plans-30
-[portal-plan]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07-08.implementing/94-portal-configuration-and-ha-ingress.md
+[plan]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/91-milestone-map.md
+[canonical]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/00-canonical.md
+[legacy]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/92-retained-acceptance.md
+[legacy-persist]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/92-retained-acceptance.md#legacy-persist--execution-plans-27
+[legacy-identity]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/92-retained-acceptance.md#legacy-identity--execution-plans-23
+[legacy-mux]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/92-retained-acceptance.md#legacy-mux--execution-plans-30
+[portal-plan]: https://github.com/Project-Helianthus/helianthus-execution-plans/blob/main/software-stabilization-07.implementing/94-portal-configuration-and-ha-ingress.md
 [k05]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/esera-passive-evidence-package.md
 [k06]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/ad01-ad12-evidence-index.md#retained-rows
 [matrix]: https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/development/smoke-matrix.md#matrix-coverage

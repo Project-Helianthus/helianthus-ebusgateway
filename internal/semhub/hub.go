@@ -73,6 +73,10 @@ type Hub struct {
 	faults       func(stage string, asset semreg.AssetID)
 	recovery     *RecoveryHooks
 	epochHistory []EpochRecord
+	// restoredEpochs reserves every epoch named in restored history, including
+	// epochs of sources that have no record in this hub yet, so no admission can
+	// reuse a historical epoch (D1: a restore always moves to a new epoch).
+	restoredEpochs map[semreg.SourceID]map[semreg.SourceEpochID]bool
 	// queue holds accepted control assets awaiting their first reprojection,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
@@ -518,7 +522,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 			return nil, err
 		}
 	}
-	if src.retired[epoch] || src.epochs[epoch] {
+	if src.retired[epoch] || src.epochs[epoch] || h.restoredEpochs[src.id][epoch] {
 		h.unlock()
 		return nil, fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
 	}
@@ -797,7 +801,7 @@ func (h *Hub) BeginEpoch(previous *Handle, id semreg.AssetID, epoch semreg.Sourc
 	}
 	h.mu.RLock()
 	src := h.sources[previous.source]
-	repeated := src.epochs[epoch] || src.retired[epoch]
+	repeated := src.epochs[epoch] || src.retired[epoch] || h.restoredEpochs[previous.source][epoch]
 	h.mu.RUnlock()
 	if repeated {
 		tx.Abort()
@@ -1153,7 +1157,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		// covers, and the new epoch's admission are journalled as one
 		// operation; the other assets still holding the replaced epoch are
 		// retired by a cover control operation, as for a generation transition.
-		if src.epochs[tx.epoch] || src.retired[tx.epoch] {
+		if src.epochs[tx.epoch] || src.retired[tx.epoch] || h.restoredEpochs[src.id][tx.epoch] {
 			h.unlock()
 			return "", fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
 		}

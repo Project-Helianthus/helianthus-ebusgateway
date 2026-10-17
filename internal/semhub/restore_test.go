@@ -818,3 +818,30 @@ func TestRecoveryPreservesSemRegErrorCause(t *testing.T) {
 		t.Fatalf("restore lost SemReg error cause: %v", err)
 	}
 }
+
+func TestRecoveryEpochHistoryOfAssetlessSourceStaysReserved(t *testing.T) {
+	// A source admitted before it declared any asset exports epoch history only.
+	origin, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := admitLegacy(t, origin, "source:assetless", "synthetic-family", "epoch:assetless", 1)
+	record := origin.ExportRecovery()
+	if len(record.Assets) != 0 || len(record.Epochs) == 0 {
+		t.Fatalf("fixture must carry epoch history without assets: assets=%d epochs=%d", len(record.Assets), len(record.Epochs))
+	}
+	// The fresh hub has no record of that source when the checkpoint is restored.
+	fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	for _, generation := range []uint64{1, 2} {
+		if _, err := fresh.AdmitSource(Admission{Source: handle.Source(), Driver: "synthetic-family", Epoch: handle.Epoch(), Generation: generation, Legacy: LegacyGrowattStorage}); !errors.Is(err, ErrAdmission) {
+			t.Fatalf("historical epoch of an assetless source readmitted (generation %d): %v", generation, err)
+		}
+	}
+	admitLegacy(t, fresh, handle.Source(), "synthetic-family", "epoch:assetless-new", 1)
+}

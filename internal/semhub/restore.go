@@ -277,6 +277,13 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	h.lock()
 	for _, epoch := range record.Epochs {
 		h.epochHistory = append(h.epochHistory, cloneRecord(epoch))
+		if h.restoredEpochs == nil {
+			h.restoredEpochs = map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
+		}
+		if h.restoredEpochs[epoch.Source] == nil {
+			h.restoredEpochs[epoch.Source] = map[semreg.SourceEpochID]bool{}
+		}
+		h.restoredEpochs[epoch.Source][epoch.Epoch] = true
 		if src := h.sources[epoch.Source]; src != nil {
 			src.epochs[epoch.Epoch] = true
 		}

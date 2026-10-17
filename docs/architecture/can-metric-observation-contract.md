@@ -118,7 +118,8 @@ eBUS/semantic series:
 | --- | --- |
 | CAN absent from configuration | Omit every CAN value and availability series. |
 | CAN collector/host owner not implemented | Omit every CAN series, even if another configuration layer mentions CAN. Expected-collector inventory must detect the missing owner separately. |
-| Owner implemented, CAN configured, provider absent or selection unsupported/ambiguous | Emit unavailable for each of the four counter kinds; omit all numeric counters. Do not claim connection failure or unsupported native semantics. |
+| Owner implemented, CAN configured, selection `Missing`, `Ambiguous` or `Invalid` | Emit availability zero with `selection_unavailable` for each of the four counter kinds; omit all numeric counters. Do not treat selection failure as absence or unsupported native semantics. |
+| Owner implemented, CAN configured, selection `Selected`, provider absent | Emit availability zero with `no_provider` for each of the four counter kinds; omit all numeric counters. Do not claim connection failure. |
 | Provider present, individual counter unsupported | That configured kind has availability zero and no numeric sample; valid siblings continue. |
 | Counter unavailable, stale or invalid | Availability zero, no numeric sample; retain last-known-good data internally with its original receipt. |
 | Valid supported counter with current receipt and admitted baseline | Availability one and host cumulative counter sample, including legitimate zero. |
@@ -162,10 +163,12 @@ sources' constraints; none is an executed runtime test.
 | Case | Input / transition | Required proposed result |
 | --- | --- | --- |
 | Absent CAN | Configuration absent | No CAN series, no provider invocation. |
-| Configured, no provider | Implemented owner, configured selection, no attachment | All four kinds unavailable with `no_provider`; no counters, no fabricated zero. |
+| Selection unavailable | Implemented owner, CAN configured, selection `Missing`, `Ambiguous` or `Invalid` | All four kinds unavailable with `selection_unavailable`; no counters. |
+| Configured, no provider | Implemented owner, selection `Selected`, no attachment | All four kinds unavailable with `no_provider`; no counters, no fabricated zero. |
 | First baseline / no traffic | Fresh `rx_frames` baseline 20, then newer total 20 | Host counter 0 remains available; two actual accepted receipts, no invented traffic. |
 | Normal increment | Same epoch, fresh total 20 then 27 | Host count increases by 7 only. |
-| Provider restart | Host count 7; new driver generation with baseline 3 | `reset_pending` until baseline; host count remains 7, no cross-generation delta. |
+| Provider restart, baseline pending | Host count 7; new driver generation, no accepted baseline yet | Availability zero/`reset_pending`; host count retained internally at 7, no numeric sample. |
+| Provider restart, baseline accepted | New driver generation accepts fresh supported baseline 3 | Availability one/`none`; host counter available at retained value 7, no cross-generation delta. |
 | Source replacement | New selected source generation, baseline 40 | Fence prior source, rebaseline without adding 40 or mixing native evidence. |
 | Declared counter reset | Same driver/source, new counter epoch with total 2 | Rebaseline; retained host count unchanged; `counter_reset` diagnostic. |
 | Unannounced decrease | Same epoch total 27 then 2 | Affected kind unavailable/invalid; no negative delta; require new epoch. |

@@ -331,6 +331,9 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	for id, driver := range record.Drivers {
 		if err := h.claimAvailableLocked(string(id), KindSource, driver); err != nil {
 			h.unlock()
+			// The checkpoint contradicts the declared ownership, so its empty
+			// declared assets close as for any other rejected checkpoint.
+			h.failRestoreAssets(record.Assets)
 			return fmt.Errorf("%w: source owned by another driver: %w", ErrRestore, err)
 		}
 	}

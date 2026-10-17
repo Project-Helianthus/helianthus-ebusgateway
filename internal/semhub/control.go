@@ -228,6 +228,9 @@ type controlAsset struct {
 	canonical    []byte
 	inFlight     chan struct{}
 	entry        *reprojectionEntry
+	// undelivered marks a committed acceptance whose Accepted callback was
+	// interrupted; RetryControl delivers it again.
+	undelivered bool
 }
 
 // reprojectionEntry is one scheduled reprojection attempt. done closes when
@@ -811,6 +814,14 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			h.lock()
+			if semanticSuccess(ca.semantic) {
+				// The batch committed before the interruption (the Accepted
+				// callback): a callback cannot roll back an acceptance.
+				ca.undelivered = true
+				failure = fmt.Errorf("semhub: accepted control delivery interrupted: %v", recovered)
+				h.unlock()
+				return
+			}
 			ca.semantic, ca.errID, ca.err = SemanticUncertain, "", fmt.Errorf("semhub: control submission interrupted: %v", recovered)
 			failure = ca.err
 			control := op.id
@@ -1194,6 +1205,7 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 	if err != nil {
 		return ControlResult{}, err
 	}
+	var redeliver []*controlAsset
 	failure := func() error {
 		h.lockSourceControl(op.src)
 		defer op.src.control.Unlock()
@@ -1202,6 +1214,11 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 		if !latest || abandoned {
 			h.unlock()
 			return ErrControlRequest
+		}
+		for _, ca := range op.assets {
+			if ca.undelivered {
+				redeliver = append(redeliver, ca)
+			}
 		}
 		if state == opSettling {
 			defer h.unlock()
@@ -1223,8 +1240,33 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 		}
 		return nil
 	}()
+	// Interrupted acceptances are delivered again outside every lock, with
+	// their original HubSeq; the service deduplicates repeated deliveries.
+	for _, ca := range redeliver {
+		h.mu.RLock()
+		record, found := acceptedRecordLocked(ca.asset, ca.hubSeq)
+		h.mu.RUnlock()
+		if !found {
+			continue
+		}
+		h.exportAccepted(record)
+		h.lock()
+		ca.undelivered = false
+		h.unlock()
+	}
 	h.drain()
 	return h.result(op), failure
+}
+
+// acceptedRecordLocked returns the stored acceptance committed at seq.
+// h.mu must be held.
+func acceptedRecordLocked(target *asset, seq uint64) (AcceptedBatch, bool) {
+	for i := len(target.records) - 1; i >= 0 && seq != 0; i-- {
+		if target.records[i].HubSeq == seq {
+			return target.records[i], true
+		}
+	}
+	return AcceptedBatch{}, false
 }
 
 // lockSourceControl takes the source control mutex. When the mutex is held

@@ -1238,6 +1238,11 @@ func TestRecoveryRejectsInconsistentDriverOwnership(t *testing.T) {
 			if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
 				t.Fatal("rejected checkpoint reserved history or regimes")
 			}
+			for _, id := range recoveryAssets {
+				if fresh.Readable(id) {
+					t.Fatalf("rejected checkpoint left %s readable", id)
+				}
+			}
 		})
 	}
 }
@@ -1345,5 +1350,64 @@ func TestRecoveryRejectsControlStatusContradictingAcceptedLog(t *testing.T) {
 				t.Fatalf("control status %s contradicting the accepted log was restored: %v", state, err)
 			}
 		})
+	}
+}
+
+func TestRecoveryControlDeliveryInterruptionKeepsAcceptance(t *testing.T) {
+	var delivered []AcceptedBatch
+	interrupt := false
+	hooks := &RecoveryHooks{Accepted: func(record AcceptedBatch) {
+		delivered = append(delivered, record)
+		if interrupt {
+			interrupt = false
+			panic("synthetic storage interruption")
+		}
+	}}
+	hub, handle := populatedRecoveryHub(t, hooks)
+	published := len(delivered)
+	interrupt = true
+	result, err := hub.Fence(FenceRequest{Source: handle.Source(), Epoch: handle.Epoch(), Generation: handle.Generation(),
+		Reason: "semhubtest.stop", Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.fence")}, ObservedAt: testWall(3), Monotonic: testMono(3)})
+	if err == nil || len(delivered) != published+1 {
+		t.Fatalf("fixture must interrupt the first control delivery: err=%v deliveries=%d", err, len(delivered)-published)
+	}
+	interrupted := delivered[published]
+	record := hub.ExportRecovery()
+	// The interrupted asset stays accepted; assets not yet submitted stay
+	// unbuilt until RetryControl continues the operation.
+	found := false
+	for _, entry := range record.Assets {
+		if entry.Control != nil && entry.HubSeq == interrupted.HubSeq {
+			found = true
+			if !semanticSuccess(entry.Control.Status.Semantic) {
+				t.Fatalf("committed control reported %s after an interrupted delivery", entry.Control.Status.Semantic)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("checkpoint must carry the interrupted acceptance")
+	}
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := fresh.Restore(record); err != nil {
+		t.Fatalf("hub-produced checkpoint after an interrupted delivery rejected: %v", err)
+	}
+	if _, err := hub.RetryControl(result.ID); err != nil {
+		t.Fatalf("retry after an interrupted delivery: %v", err)
+	}
+	var redelivered *AcceptedBatch
+	for i := published + 1; i < len(delivered); i++ {
+		if delivered[i].HubSeq == interrupted.HubSeq {
+			redelivered = &delivered[i]
+		}
+	}
+	if redelivered == nil || interrupted.HubSeq == 0 || !bytes.Equal(redelivered.Batch, interrupted.Batch) {
+		t.Fatalf("retry must redeliver the interrupted acceptance with its HubSeq: %+v", delivered[published:])
+	}
+	before := len(delivered)
+	if _, err := hub.RetryControl(result.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivered) != before {
+		t.Fatal("a delivered acceptance must not be redelivered on every retry")
 	}
 }

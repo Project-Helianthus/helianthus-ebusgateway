@@ -2,6 +2,7 @@
 package m2mgraphql
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,26 @@ const (
 	maxJSONDepth              = 64
 	maxQueryDepth             = 8
 	maxSelectedFields         = 256
+)
+
+// The request-budget table is bounded because remote hosts are not
+// authenticated: a client rotating source addresses (for example across an
+// IPv6 prefix) would otherwise create one permanent entry per address.
+//
+// rateLimitTableCapacity is the hard ceiling on budget entries. Inserting a
+// new key at capacity first evicts idle entries, then the least recently used
+// entry; a new key always receives an entry and is never refused for table
+// pressure. rateLimitIdleMillis is the idle window after which an untouched
+// entry is evicted. Any entry idle for longer than two refill intervals is
+// already back at its full budget, so idle eviction cannot change admission;
+// only LRU eviction under pressure can, and it can only grant a returning key
+// a fresh budget, never deny one. Explicit in-process partitions ("key:")
+// share the same table and policy.
+const (
+	rateLimitTableCapacity = 4096
+	rateLimitIdleMillis    = 60_000
+	rateLimitBurst         = 2
+	rateLimitRefillMillis  = 1000
 )
 
 const semanticPVFixedQuery = `query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) {
@@ -58,13 +79,17 @@ type handler struct {
 	storageQueryShape string
 	evseQueryShape    string
 	mu                sync.Mutex
-	limits            map[string]*requestLimit
+	limits            map[string]*list.Element // value: *requestLimit
+	lru               *list.List               // front = most recently used
+	limitCapacity     int
 }
 
 type requestLimit struct {
+	key      string
 	inFlight bool
 	tokens   int
 	at       int64
+	lastUsed int64
 }
 
 type rateLimitKey struct{}
@@ -120,7 +145,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("invalid embedded SemReg EVSE query")
 	}
-	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, limits: make(map[string]*requestLimit)}, nil
+	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, limits: make(map[string]*list.Element), lru: list.New(), limitCapacity: rateLimitTableCapacity}, nil
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -184,12 +209,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, root, "ASSET_FORBIDDEN")
 		return
 	}
-	limitKey := requestRateLimitKey(r)
-	if !h.admit(limitKey) {
+	limit := h.admit(requestRateLimitKey(r))
+	if limit == nil {
 		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
-	defer h.release(limitKey)
+	defer h.release(limit)
 	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
 		writeError(w, root, "SOURCE_UNAVAILABLE")
@@ -211,34 +236,66 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(encoded)
 }
 
-func (h *handler) admit(key string) bool {
+// admit returns the admitted budget entry, or nil when the key's budget is
+// exhausted or a request for the key is already in flight.
+func (h *handler) admit(key string) *requestLimit {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.cfg.MonotonicMilliseconds()
-	limit := h.limits[key]
-	if limit == nil {
-		limit = &requestLimit{tokens: 2, at: now}
-		h.limits[key] = limit
+	h.evictIdleLocked(now)
+	var limit *requestLimit
+	if element := h.limits[key]; element != nil {
+		limit = element.Value.(*requestLimit)
+		h.lru.MoveToFront(element)
+	} else {
+		for h.lru.Len() >= h.limitCapacity {
+			h.removeLocked(h.lru.Back())
+		}
+		limit = &requestLimit{key: key, tokens: rateLimitBurst, at: now}
+		h.limits[key] = h.lru.PushFront(limit)
 	}
+	limit.lastUsed = now
 	if now > limit.at {
-		elapsedIntervals := (now - limit.at) / 1000
-		limit.tokens = min(2, limit.tokens+int(elapsedIntervals))
-		limit.at += elapsedIntervals * 1000
+		elapsedIntervals := (now - limit.at) / rateLimitRefillMillis
+		limit.tokens = min(rateLimitBurst, limit.tokens+int(elapsedIntervals))
+		limit.at += elapsedIntervals * rateLimitRefillMillis
 	}
 	if limit.inFlight || limit.tokens == 0 {
-		return false
+		return nil
 	}
 	limit.inFlight = true
 	limit.tokens--
-	return true
+	return limit
 }
 
-func (h *handler) release(key string) {
+// release clears the in-flight mark on the entry admit returned. The entry is
+// addressed by pointer so that an entry evicted and recreated meanwhile is
+// never cleared by a stale request.
+func (h *handler) release(limit *requestLimit) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if limit := h.limits[key]; limit != nil {
-		limit.inFlight = false
+	limit.inFlight = false
+	if element := h.limits[limit.key]; element != nil && element.Value == limit {
+		limit.lastUsed = h.cfg.MonotonicMilliseconds()
+		h.lru.MoveToFront(element)
 	}
+}
+
+// evictIdleLocked drops entries untouched for longer than the idle window.
+// The list is ordered by last use, so expired entries sit at the back and the
+// sweep costs O(1) amortised per admission.
+func (h *handler) evictIdleLocked(now int64) {
+	for back := h.lru.Back(); back != nil; back = h.lru.Back() {
+		if now-back.Value.(*requestLimit).lastUsed <= rateLimitIdleMillis {
+			return
+		}
+		h.removeLocked(back)
+	}
+}
+
+func (h *handler) removeLocked(element *list.Element) {
+	limit := h.lru.Remove(element).(*requestLimit)
+	delete(h.limits, limit.key)
 }
 
 func min(a, b int) int {

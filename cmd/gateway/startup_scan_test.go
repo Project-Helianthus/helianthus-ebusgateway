@@ -2776,3 +2776,103 @@ func TestCoherentVaillantRootSkipsAdmittedCompanion(t *testing.T) {
 		t.Fatal("startupScanHasCoherentVaillantRoot returned true; companion was the only coherent target and it must not count as a coherent root")
 	}
 }
+
+func TestStartupScanB524InterfaceIdentityUsesEnrichmentBudget(t *testing.T) {
+	original := enrichB524InterfaceIdentityFn
+	t.Cleanup(func() { enrichB524InterfaceIdentityFn = original })
+	gw, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	called := false
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanSource, cfg.StartupCompanionTarget = 0x71, 0x26
+	cfg.ScanRequestTimeout = time.Millisecond
+	enrichB524InterfaceIdentityFn = func(enrichCtx context.Context, reg *registry.DeviceRegistry, bus registry.ScanBus, source, companion byte) {
+		called = true
+		deadline, ok := enrichCtx.Deadline()
+		if !ok || time.Until(deadline) > time.Second || enrichCtx.Err() != nil {
+			t.Fatal("enrichment budget not inherited or canceled early")
+		}
+		wrapped, ok := bus.(*timeoutBus)
+		if !ok || wrapped.bus != gw.Bus || wrapped.timeout != cfg.ScanRequestTimeout || reg != gw.Registry || source != cfg.ScanSource || companion != cfg.StartupCompanionTarget {
+			t.Fatal("identity acquisition bypasses scan provenance/wrapper")
+		}
+	}
+	// No serial candidates: interface discovery must still be invoked.
+	enrichVaillantIdentity(ctx, gw, cfg)
+	if !called {
+		t.Fatal("interface enrichment skipped")
+	}
+}
+
+func TestStartupScanB524InterfaceIdentityBackgroundSameCount(t *testing.T) {
+	originalScan, originalEnrich, originalB524 := registryScanDirectedFn, enrichVaillantIdentityFn, enrichB524InterfaceIdentityFn
+	t.Cleanup(func() {
+		registryScanDirectedFn, enrichVaillantIdentityFn, enrichB524InterfaceIdentityFn = originalScan, originalEnrich, originalB524
+	})
+	gw, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.Registry.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "SYNTH", SoftwareVersion: "1", HardwareVersion: "1"})
+	registryScanDirectedFn = func(_ context.Context, _ registry.ScanBus, _ *registry.DeviceRegistry, _ byte, _ []byte) ([]registry.DeviceEntry, error) {
+		return nil, nil
+	}
+	called := false
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		t.Error("same-count scan added serial retry")
+	}
+	enrichB524InterfaceIdentityFn = func(ctx context.Context, reg *registry.DeviceRegistry, bus registry.ScanBus, source, companion byte) {
+		called = true
+		deadline, bounded := ctx.Deadline()
+		if !bounded || time.Until(deadline) > vaillantIdentityEnrichTimeout {
+			t.Error("background identity enrichment unbounded")
+		}
+		if wrapper, ok := bus.(*timeoutBus); !ok || wrapper.timeout != time.Millisecond || reg != gw.Registry || source != 0x71 || companion != 0x26 {
+			t.Error("background scan provenance/wrapper lost")
+		}
+	}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+	cfg.StartupProbeTargets = []byte{0x15}
+	cfg.ScanSource, cfg.StartupCompanionTarget = 0x71, 0x26
+	cfg.ScanRequestTimeout = time.Millisecond
+	runBackgroundFullScan(context.Background(), cfg, gw, nil)
+	if !called {
+		t.Fatal("unchanged inventory count skipped B524 identity refresh")
+	}
+}
+
+func TestStartupScanB524InterfaceIdentityDiscoveryToBound(t *testing.T) {
+	reg, poller, endpoint := newB524InterfaceIdentityFixture(t)
+	gw, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.Registry = reg
+	original := enrichB524InterfaceIdentityFn
+	t.Cleanup(func() { enrichB524InterfaceIdentityFn = original })
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ScanSource = 0x71
+	cfg.ScanRequestTimeout = time.Millisecond
+	enrichB524InterfaceIdentityFn = func(ctx context.Context, r *registry.DeviceRegistry, scanBus registry.ScanBus, source, companion byte) {
+		wrapper, ok := scanBus.(*timeoutBus)
+		if !ok || wrapper.timeout != cfg.ScanRequestTimeout {
+			t.Fatal("scan timeout wrapper missing")
+		}
+		original(ctx, r, &timeoutBus{bus: endpoint, timeout: wrapper.timeout}, source, companion)
+	}
+	// The unstarted loopback bus bounds the pre-existing serial attempt; only
+	// the two OP00 reads are served by this synthetic endpoint.
+	enrichVaillantIdentity(context.Background(), gw, cfg)
+	assertB524InterfaceBound(t, poller, 20, "controller_profile")
+	if len(endpoint.requests()) != 2 {
+		t.Fatal("discovery-to-bound added endpoint requests")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -113,6 +114,34 @@ func TestB524InterfaceIdentityDiscoveryToBound(t *testing.T) {
 	}
 }
 
+// Unrelated inventory refreshes must not discard current controller qualifiers.
+func TestB524InterfaceIdentityUnrelatedInventoryRefresh(t *testing.T) {
+	for _, duringAcquisition := range []bool{false, true} {
+		t.Run(strconv.FormatBool(duringAcquisition), func(t *testing.T) {
+			reg, poller, bus := newB524InterfaceIdentityFixture(t)
+			registerInventory := func() {
+				reg.Register(registry.DeviceInfo{Address: 0x26, Manufacturer: "Vaillant", DeviceID: "SYNTH"})
+			}
+			if duringAcquisition {
+				bus.reply = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+					registerInventory()
+					return &protocol.Frame{Data: b524InterfaceFloat(1)}, nil
+				}
+			}
+			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+			assertB524InterfaceBound(t, poller, 20, "controller_profile")
+			for range 3 {
+				registerInventory()
+				assertB524InterfaceBound(t, poller, 20, "controller_profile")
+			}
+			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+			if len(bus.requests()) != 2 {
+				t.Fatal("unrelated refresh caused qualifier reacquisition")
+			}
+		})
+	}
+}
+
 func TestB524InterfaceIdentityInvalidReplies(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -206,7 +235,7 @@ func TestB524InterfaceIdentityExactFields(t *testing.T) {
 }
 
 func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
-	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "address", "source", "session", "registryGeneration", "missing version", "missing revision"} {
+	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "address", "source", "session", "controller observation", "missing version", "missing revision"} {
 		t.Run(field, func(t *testing.T) {
 			reg, poller, bus := newB524InterfaceIdentityFixture(t)
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
@@ -226,8 +255,8 @@ func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
 				record.source = 0x31
 			case "session":
 				record.session++
-			case "registryGeneration":
-				record.registryGeneration++
+			case "controller observation":
+				record.controllerObservedAt = record.controllerObservedAt.Add(time.Nanosecond)
 			case "missing version":
 				record.identity.APIVersion = ""
 			case "missing revision":
@@ -244,7 +273,7 @@ func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
 }
 
 func TestB524InterfaceIdentitySwap(t *testing.T) {
-	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "generation"} {
+	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "controller observation"} {
 		t.Run(field, func(t *testing.T) {
 			reg, poller, bus := newB524InterfaceIdentityFixture(t)
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
@@ -261,7 +290,7 @@ func TestB524InterfaceIdentitySwap(t *testing.T) {
 			assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
 			if len(bus.requests()) != 4 {
-				t.Fatalf("requests = %d; want two per generation", len(bus.requests()))
+				t.Fatalf("requests = %d; want two per controller observation", len(bus.requests()))
 			}
 			id := poller.controllerB524Identity()
 			if id.EID != info.DeviceID || id.SoftwareRaw != info.SoftwareVersion || id.HardwareRaw != info.HardwareVersion || id.APIVersion != "1" || id.Revision != "1" {
@@ -471,7 +500,7 @@ func TestB524InterfaceIdentityExpiryAndRefresh(t *testing.T) {
 				store.mu.Lock()
 				refreshed := store.records[0x15]
 				store.mu.Unlock()
-				if refreshed.acquiredAt.Before(refreshStarted) || refreshed.session <= record.session || refreshed.registryGeneration != record.registryGeneration {
+				if refreshed.acquiredAt.Before(refreshStarted) || refreshed.session <= record.session || refreshed.controllerObservedAt != record.controllerObservedAt {
 					t.Fatalf("refresh provenance = %+v; previous = %+v", refreshed, record)
 				}
 				enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
@@ -483,12 +512,12 @@ func TestB524InterfaceIdentityExpiryAndRefresh(t *testing.T) {
 	}
 }
 
-func TestB524InterfaceIdentityGenerationAndSessionInvalidate(t *testing.T) {
-	t.Run("registry generation", func(t *testing.T) {
+func TestB524InterfaceIdentityObservationAndSessionInvalidate(t *testing.T) {
+	t.Run("controller observation", func(t *testing.T) {
 		reg, poller, bus := newB524InterfaceIdentityFixture(t)
 		enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
 		assertB524InterfaceBound(t, poller, 20, "controller_profile")
-		// Same identity registered again still advances the generation.
+		// Re-observing this controller requires fresh qualifiers even with unchanged identity.
 		reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV0", SoftwareVersion: "0217", HardwareVersion: "8803"})
 		assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
 		if len(bus.requests()) != 2 {

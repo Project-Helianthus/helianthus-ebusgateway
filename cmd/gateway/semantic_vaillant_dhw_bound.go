@@ -7,7 +7,7 @@ import (
 )
 
 // controllerB524Identity overlays only complete discovery data from the
-// same registry identity, generation and scan source. It never sends a request.
+// same registry identity, controller observation and scan source. It never sends a request.
 func (p *vaillantSemanticPoller) controllerB524Identity() vaillantsystem.B524ControllerIdentity {
 	if p == nil {
 		return vaillantsystem.B524ControllerIdentity{}
@@ -15,11 +15,11 @@ func (p *vaillantSemanticPoller) controllerB524Identity() vaillantsystem.B524Con
 	p.mu.Lock()
 	controller, source := p.controller, p.source
 	p.mu.Unlock()
-	identity, generation, ok := b524RegistryIdentity(p.reg, controller)
+	identity, revision, ok := b524RegistryIdentity(p.reg, controller)
 	if !ok {
 		return vaillantsystem.B524ControllerIdentity{}
 	}
-	return storedB524InterfaceIdentity(p.reg, controller, source, identity, generation)
+	return storedB524InterfaceIdentity(p.reg, controller, source, identity, revision)
 }
 
 func configBoundEquals(a, b *graphql.ConfigBound) bool {

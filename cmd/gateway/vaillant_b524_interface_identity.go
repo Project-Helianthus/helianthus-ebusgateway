@@ -17,16 +17,16 @@ import (
 
 // The numeric guards below are conservative gateway policy, not additional
 // OP00 protocol semantics or installation qualification. Records are reusable
-// for at most five minutes, while the registry generation, session, source and
+// for at most five minutes, while the controller observation, session, source and
 // registry identity still match.
 
 type b524InterfaceIdentityRecord struct {
-	identity           vaillantsystem.B524ControllerIdentity
-	address, source    byte
-	session            uint64
-	registryGeneration uint64
-	acquiredAt         time.Time
-	raw                [2][4]byte
+	identity             vaillantsystem.B524ControllerIdentity
+	address, source      byte
+	session              uint64
+	controllerObservedAt time.Time
+	acquiredAt           time.Time
+	raw                  [2][4]byte
 }
 
 func (record b524InterfaceIdentityRecord) fresh(now time.Time) bool {
@@ -62,20 +62,28 @@ func b524InterfaceQualifier(data []byte) (string, bool) {
 	return strconv.FormatUint(uint64(value), 10), true
 }
 
-// Snapshot identity and its generation must be coherent. Any intervening registry
-// mutation, including a swap back to the original identity, fails closed.
-func b524RegistryIdentity(reg *registry.DeviceRegistry, address byte) (vaillantsystem.B524ControllerIdentity, uint64, bool) {
+type b524RegistryRevision struct {
+	generation uint64
+	observedAt time.Time
+}
+
+// Snapshot identity and the address observation must be coherent. The global
+// generation fences snapshot reads only; unrelated inventory changes do not
+// retire controller evidence. Re-observing the controller requires fresh OP00.
+func b524RegistryIdentity(reg *registry.DeviceRegistry, address byte) (vaillantsystem.B524ControllerIdentity, b524RegistryRevision, bool) {
 	if reg == nil {
-		return vaillantsystem.B524ControllerIdentity{}, 0, false
+		return vaillantsystem.B524ControllerIdentity{}, b524RegistryRevision{}, false
 	}
 	var before, after uint64
 	reg.WithObservationGeneration(func(g uint64) { before = g })
 	snap, found := reg.LookupEntrySnapshot(address)
+	slot, slotFound := reg.LookupSlotSnapshot(address)
 	reg.WithObservationGeneration(func(g uint64) { after = g })
-	if !found || before != after || !strings.EqualFold(snap.Manufacturer, "Vaillant") {
-		return vaillantsystem.B524ControllerIdentity{}, after, false
+	revision := b524RegistryRevision{generation: after, observedAt: slot.LastObservedAt}
+	if !found || !slotFound || !slot.DeviceAttached || slot.LastObservedAt.IsZero() || before != after || !strings.EqualFold(snap.Manufacturer, "Vaillant") {
+		return vaillantsystem.B524ControllerIdentity{}, revision, false
 	}
-	return graphql.ControllerIdentityFromSnapshot(snap), after, true
+	return graphql.ControllerIdentityFromSnapshot(snap), revision, true
 }
 
 func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegistry, bus registry.ScanBus, source, companion byte) {
@@ -91,7 +99,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 		if address == companion {
 			continue
 		}
-		identity, generation, ok := b524RegistryIdentity(reg, address)
+		identity, revision, ok := b524RegistryIdentity(reg, address)
 		if !ok || identity.EID == "" || identity.SoftwareRaw == "" || identity.HardwareRaw == "" {
 			continue
 		}
@@ -101,7 +109,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 		base.APIVersion, base.Revision = "", ""
 		if exists && base == identity && previous.identity.APIVersion != "" && previous.identity.Revision != "" &&
 			previous.address == address && previous.source == source && previous.session == store.sessions[address] &&
-			previous.registryGeneration == generation && previous.fresh(time.Now()) {
+			previous.controllerObservedAt.Equal(revision.observedAt) && previous.fresh(time.Now()) {
 			store.mu.Unlock()
 			continue
 		}
@@ -112,7 +120,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 
 		record := b524InterfaceIdentityRecord{
 			identity: identity, address: address, source: source, session: session,
-			registryGeneration: generation,
+			controllerObservedAt: revision.observedAt,
 		}
 		complete := true
 		for index, id := range [...]byte{0x06, 0x07} {
@@ -144,17 +152,21 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 			continue
 		}
 		record.acquiredAt = time.Now()
+		currentIdentity, currentRevision, valid := b524RegistryIdentity(reg, address)
+		if !valid || currentIdentity != identity || currentRevision.observedAt != revision.observedAt {
+			continue
+		}
 		reg.WithObservationGeneration(func(current uint64) {
 			store.mu.Lock()
 			defer store.mu.Unlock()
-			if current == generation && store.sessions[address] == session {
+			if current == currentRevision.generation && store.sessions[address] == session {
 				store.records[address] = record
 			}
 		})
 	}
 }
 
-func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source byte, identity vaillantsystem.B524ControllerIdentity, generation uint64) vaillantsystem.B524ControllerIdentity {
+func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source byte, identity vaillantsystem.B524ControllerIdentity, revision b524RegistryRevision) vaillantsystem.B524ControllerIdentity {
 	value, found := b524InterfaceIdentityStores.Load(reg)
 	if !found {
 		return identity
@@ -167,7 +179,7 @@ func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source b
 		base := record.identity
 		base.APIVersion, base.Revision = "", ""
 		if ok && record.identity.APIVersion != "" && record.identity.Revision != "" && base == identity && record.address == address && record.source == source &&
-			record.registryGeneration == generation && current == generation &&
+			record.controllerObservedAt.Equal(revision.observedAt) && current == revision.generation &&
 			record.session == store.sessions[address] && record.fresh(time.Now()) {
 			identity = record.identity
 		}

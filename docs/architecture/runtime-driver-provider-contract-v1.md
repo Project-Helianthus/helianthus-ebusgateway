@@ -462,6 +462,41 @@ entries and `CatalogRevision` come from one read transaction. `GetDriver`
 returns `NOT_FOUND` for an unknown ID; it never constructs a driver as a read
 side effect.
 
+### S0 registry and typed provider seam
+
+Package [`internal/runtimecontrol`](../../internal/runtimecontrol) implements
+the S0 slice of the registration companion
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+(A1): descriptor format `v1`, validation before effects, a frozen in-memory
+registry with coherent list/get reads, and the typed lifecycle-adapter seam
+(`NewAdapter` over a factory returning a `drivermanager.Runtime`). It has no
+production registration, construction, desired-state persistence, lifecycle
+control or runtime composition, and it imports only the standard library and
+`internal/drivermanager`.
+
+`Register` validates a whole batch, disabled entries included, and installs it
+in one step or not at all. Per descriptor, in order: format, `DriverID`,
+direction, disposition, `NativeContractRef`, adapter, owned sources, hooks.
+Then, against the installed registry and the batch: duplicate `DriverID`,
+duplicate source ownership, and a source the hub already attributes to
+another driver. Any refusal invokes no adapter, bumps no `CatalogRevision` and
+mutates no hub ownership; the hub is consulted through a read-only view. A
+`NativeContractRef` field is 1 to 256 bytes of `[A-Za-z0-9._/+-]`, starting
+alphanumeric, with no `..`, no `//` and no IP literal, so URLs, host:port
+pairs and userinfo cannot pass. A source ID follows the SemReg opaque rule.
+An empty owned-source set is accepted. Every hook declaration fails:
+`mcp`, `setup`, `portal`, `semantic` and `evidence` as unimplemented, any
+other name as unknown; `ResolveHook` returns the same refusals for a
+registered driver. Reads return detached copies; `Binding` returns the frozen
+construction material and stored adapter without invoking it, and unknown or
+noncanonical IDs return `NOT_FOUND`.
+
+`DriverID`, `SourceID`, `SourceEpoch`, `DriverGeneration`, `NativeGeneration`,
+`DesiredRevision`, `CatalogRevision`, `LifecycleSequence` and `HubSeq` are
+distinct defined types in this package, not aliases of each other or of the
+publication hub's identifiers. The snapshot and correlation types carry no
+receipt, idempotency key, principal or authorization field (final D3/D4).
+
 An epoch transition has a non-zero `AttemptLimit` and finite `DeadlineUTC` from
 the manager's lifecycle-construction policy. Those bounds persist across
 component/reconciler recovery in one source epoch and are not reset by a wakeup.

@@ -389,6 +389,37 @@ func TestM2MGraphQLConfig_RejectsIncompleteActiveConfiguration(t *testing.T) {
 	}
 }
 
+func TestM2MGraphQLConfig_ClientCAIsOptionalButServerTLSIsRequired(t *testing.T) {
+	base := M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test",
+		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-one"},
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("enabled listener without client CA rejected: %v", err)
+	}
+	withCA := base
+	withCA.ClientCAFile = "ca.pem"
+	if err := withCA.Validate(); err != nil {
+		t.Fatalf("enabled listener with optional client CA rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*M2MGraphQLConfig){
+		"listen-address": func(config *M2MGraphQLConfig) { config.ListenAddr = "" },
+		"server-name":    func(config *M2MGraphQLConfig) { config.ServerName = " " },
+		"server-cert":    func(config *M2MGraphQLConfig) { config.ServerCertFile = "" },
+		"server-key":     func(config *M2MGraphQLConfig) { config.ServerKeyFile = " " },
+		"allowed-assets": func(config *M2MGraphQLConfig) { config.AllowedAssets = nil },
+		"only-client-ca": func(config *M2MGraphQLConfig) { *config = M2MGraphQLConfig{ClientCAFile: "ca.pem"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatalf("incomplete enabled listener accepted: %+v", candidate)
+			}
+		})
+	}
+}
+
 func TestM2MGraphQLConfig_RejectsMalformedOrDuplicateAuthority(t *testing.T) {
 	base := M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",

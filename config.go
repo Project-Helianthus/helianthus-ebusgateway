@@ -100,7 +100,11 @@ type EEBusConfig struct {
 // and CLI prefix retain their pre-v1 name while the listener also hosts other
 // versioned M2M contracts such as the Matter binding feed.
 // An all-zero value is disabled. Any partially populated value is rejected by
-// the command runtime rather than being silently enabled.
+// the command runtime rather than being silently enabled. An enabled listener
+// requires the listen address, server identity, server certificate and key and
+// at least one allowed asset; the client CA is optional. When it is set, a
+// presented client certificate is verified, but a client without one is still
+// accepted. DeniedPrincipalFingerprints applies only to presented certificates.
 type M2MGraphQLConfig struct {
 	ListenAddr                  string
 	ServerName                  string
@@ -244,8 +248,8 @@ func (config M2MGraphQLConfig) Validate() error {
 		return nil
 	}
 	if strings.TrimSpace(config.ListenAddr) == "" || strings.TrimSpace(config.ServerName) == "" ||
-		strings.TrimSpace(config.ClientCAFile) == "" || strings.TrimSpace(config.ServerCertFile) == "" ||
-		strings.TrimSpace(config.ServerKeyFile) == "" || len(config.AllowedAssets) == 0 {
+		strings.TrimSpace(config.ServerCertFile) == "" || strings.TrimSpace(config.ServerKeyFile) == "" ||
+		len(config.AllowedAssets) == 0 {
 		return errors.New("M2M GraphQL configuration is incomplete")
 	}
 	assets := make(map[string]struct{}, len(config.AllowedAssets))

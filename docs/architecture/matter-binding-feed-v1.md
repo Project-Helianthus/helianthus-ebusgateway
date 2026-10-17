@@ -1,23 +1,69 @@
 # Matter binding feed v1
 
 Issue #997 defines the Gateway half of the public Matter output binding. The
-Gateway owns semantic composition, driver lifecycle, authorization and exact
+Gateway owns semantic composition, driver lifecycle, request admission and exact
 native dispatch. A separately built public Matter binding consumes this feed and
 owns the Matter SDK, node, endpoints, fabric state, commissioning, reporting and
 controller fixture.
 
 The wire contract is `helianthus.gateway.matter-binding-feed/v1`. It is exposed
-only on the existing dedicated M2M listener after mutual-TLS client
-authentication:
+only on the existing dedicated M2M listener, over server-authenticated TLS:
 
 - `GET /matter-binding/v1/snapshot`
 - `GET /matter-binding/v1/changes?cursor=<instance>:<sequence>`
 - `POST /matter-binding/v1/invoke`
 
-The listener remains disabled unless its existing M2M TLS configuration is
-complete. The feed is not mounted on the general Gateway HTTP listener. Client
-certificate fingerprints become request-context principals after certificate
-chain validation; a caller cannot provide a principal or native route in JSON.
+The listener remains disabled unless its server TLS configuration (listen
+address, server name, server certificate and key) is complete. The feed is not
+mounted on the general Gateway HTTP listener.
+
+## Transport and request budget
+
+The listener requires TLS 1.3 and presents the configured server certificate.
+The client CA is optional. When a client CA is configured, a certificate that a
+client presents is verified against it and against the denied-fingerprint list,
+and a failing certificate ends the handshake; a client that presents no
+certificate is accepted. Without a client CA no client certificate is requested.
+A client certificate never becomes a principal: the Gateway derives no identity
+from it, and a caller cannot provide a principal or native route in JSON.
+
+There is no authentication or authorization gate on this listener in this
+release. Authentication and authorization frameworks arrive in a later release;
+until then the feed, like the GraphQL route on the same listener, is exposed to
+whatever network the operator chooses to bind the listener to. The M2M asset
+allowlist filters what is published; it does not identify or authorize a caller.
+
+Every request on the listener, to the GraphQL route and to the three feed
+routes alike, first spends one request budget keyed by the remote host (the
+source port is ignored). The budget is admitted before the request body is read
+or parsed, and released on every exit path:
+
+| Property | Value |
+| --- | --- |
+| Concurrent requests per host | 1 in flight, burst of 2 tokens |
+| Refill | 1 token per second, up to the burst |
+| Table bound | 4096 host entries |
+| Idle eviction | entries untouched for more than 60 s |
+| Pressure eviction | least recently used entry without a request in flight |
+| In-flight entries | never evicted; the table exceeds 4096 only by in-flight entries |
+
+A refused request is answered before any feed capture, cursor parse or intent
+decode. On the GraphQL route it receives the GraphQL error envelope with code
+`REQUEST_LIMIT_EXCEEDED`, an empty path and HTTP 200. On the three feed routes
+it receives the feed's own schema-defined error, `{"contract": ..., "error":
+"unavailable"}`, with HTTP 503, so the response stays inside the feed schema. A
+new host is never refused because the table is full; pressure can only evict an idle or
+released entry, which returns with a full budget.
+
+| Vector | Expected outcome |
+| --- | --- |
+| Client without a certificate, client CA configured | handshake accepted; feed served |
+| Certificate that fails the configured client CA or is denied | handshake rejected |
+| Second concurrent feed request from one host | feed error `unavailable`, HTTP 503, before capture |
+| Feed request from a host whose GraphQL request is in flight | feed error `unavailable`, HTTP 503 (shared budget) |
+| Concurrent feed request from a different host | admitted; waits for the serialized capture |
+| Malformed body from a refused host | refused without reading the body |
+| Third GraphQL request from one host within one second | `REQUEST_LIMIT_EXCEEDED` |
 
 ## Target and ownership pins
 
@@ -78,10 +124,11 @@ native route. The client returns that exact claim with a bounded idempotency key
 deadline, opaque arguments and a valid SemReg causal context. The server
 re-captures before invocation and accepts only an exact current operation.
 
-The Gateway provider remains the final authority. It must revalidate the mTLS
-principal, authorization, capability, operation, snapshot/revision, lifecycle,
-source epoch, driver generation, route ownership, preconditions, deadline,
-idempotency and causal path immediately before native I/O. ACK, readback and
+The Gateway provider remains the final authority. It must revalidate the
+capability, operation, snapshot/revision, lifecycle, source epoch, driver
+generation, route ownership, preconditions, deadline, idempotency and causal
+path immediately before native I/O. No caller principal or authorization
+decision is part of that check in this release. ACK, readback and
 outcome are separate response members. An indeterminate mutation is never retried
 or redirected.
 
@@ -96,8 +143,9 @@ execution record without claiming an enabled device operation.
 
 The normative JSON shape is
 [`docs/schemas/matter-binding-feed-v1.schema.json`](../schemas/matter-binding-feed-v1.schema.json).
-Unknown JSON members, oversized requests, malformed cursors, missing principals,
-expired deadlines, non-current claims and injected route fields fail closed.
+Unknown JSON members, oversized requests, malformed cursors, expired deadlines,
+non-current claims and injected route fields fail closed. A request without a
+client certificate or principal is not rejected for that reason.
 The same M2M asset allowlist used by the listener's GraphQL surface filters feed
 resources and operations before projection and serialization.
 

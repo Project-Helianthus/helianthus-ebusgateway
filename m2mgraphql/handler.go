@@ -2,11 +2,13 @@
 package m2mgraphql
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +29,31 @@ const (
 	maxJSONDepth              = 64
 	maxQueryDepth             = 8
 	maxSelectedFields         = 256
+)
+
+// The request-budget table is bounded because remote hosts are not
+// authenticated: a client rotating source addresses (for example across an
+// IPv6 prefix) would otherwise create one permanent entry per address.
+//
+// rateLimitTableCapacity bounds the budget entries. Inserting a new key at
+// capacity first evicts idle entries, then the least recently used entry; a
+// new key always receives an entry and is never refused for table pressure.
+// An entry whose request is in flight is never evicted, by the idle sweep or
+// by LRU, so its one-in-flight guard always holds. When every entry is in
+// flight the table grows past capacity instead; the table is therefore bounded
+// by rateLimitTableCapacity plus the number of in-flight requests, which the
+// HTTP server already bounds, and the next insertion of a new key trims it
+// back to capacity once those requests are released. rateLimitIdleMillis is
+// the idle window after which an untouched entry is evicted. Any entry idle
+// for longer than two refill intervals is already back at its full budget, so
+// idle eviction cannot change admission; only LRU eviction under pressure can,
+// and it can only grant a returning idle key a fresh budget, never deny one.
+// Explicit in-process partitions ("key:") share the same table and policy.
+const (
+	rateLimitTableCapacity = 4096
+	rateLimitIdleMillis    = 60_000
+	rateLimitBurst         = 2
+	rateLimitRefillMillis  = 1000
 )
 
 const semanticPVFixedQuery = `query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) {
@@ -57,19 +84,47 @@ type handler struct {
 	storageQueryShape string
 	evseQueryShape    string
 	mu                sync.Mutex
-	principals        map[string]*principalLimit
+	limits            map[string]*list.Element // value: *requestLimit
+	lru               *list.List               // front = most recently used
+	limitCapacity     int
 }
 
-type principalLimit struct {
+type requestLimit struct {
+	key      string
 	inFlight bool
 	tokens   int
 	at       int64
+	lastUsed int64
 }
 
-type principalKey struct{}
+type rateLimitKey struct{}
 
-func WithMTLSPrincipal(ctx context.Context, fingerprint string) context.Context {
-	return context.WithValue(ctx, principalKey{}, fingerprint)
+// WithRateLimitKey lets an in-process caller choose the request-budget
+// partition. It carries no identity and grants no access. Requests from the
+// network listener never carry it and are partitioned by remote host.
+func WithRateLimitKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, rateLimitKey{}, key)
+}
+
+// WithMTLSPrincipal is a compatibility alias of WithRateLimitKey kept for
+// in-process callers until the M2M cleanup removes it; despite its name, no
+// client principal is derived or required.
+func WithMTLSPrincipal(ctx context.Context, key string) context.Context {
+	return WithRateLimitKey(ctx, key)
+}
+
+// requestRateLimitKey partitions the request budget by the remote host (the
+// port is ignored so reconnecting does not refill the budget), unless an
+// in-process caller supplied an explicit partition.
+func requestRateLimitKey(r *http.Request) string {
+	if key, ok := r.Context().Value(rateLimitKey{}).(string); ok && strings.TrimSpace(key) != "" {
+		return "key:" + key
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return "remote:" + host
 }
 
 func NewHandler(cfg Config) (http.Handler, error) {
@@ -95,21 +150,63 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("invalid embedded SemReg EVSE query")
 	}
-	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, principals: make(map[string]*principalLimit)}, nil
+	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, limits: make(map[string]*list.Element), lru: list.New(), limitCapacity: rateLimitTableCapacity}, nil
 }
 
+// ServeHTTP spends the remote host's request budget before any other work, so
+// a refused host never has its body read or its document parsed.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.budgeted(http.HandlerFunc(h.serve)).ServeHTTP(w, r)
+}
+
+// RequestBudget wraps next so that every request it serves first spends the
+// per-host request budget owned by budget, which must be a handler returned by
+// NewHandler. The wrapped routes share that handler's bounded table, key
+// derivation and refusal response, so one remote host has a single budget
+// across the GraphQL route and every route wrapped here. A refused request is
+// answered by refuse, which lets a wrapped route use its own protocol's error
+// shape; a nil refuse writes the GraphQL refusal. It carries no identity and
+// grants no access.
+func RequestBudget(budget http.Handler, next http.Handler, refuse func(http.ResponseWriter)) (http.Handler, error) {
+	owner, ok := budget.(*handler)
+	if !ok || owner == nil {
+		return nil, errors.New("request budget owner must be an M2M GraphQL handler")
+	}
+	if next == nil {
+		return nil, errors.New("request budget requires a wrapped handler")
+	}
+	return owner.budgetedWith(next, refuse), nil
+}
+
+// budgeted admits the request before next runs and releases the entry on every
+// exit path, including a panic unwinding through next.
+func (h *handler) budgeted(next http.Handler) http.Handler {
+	return h.budgetedWith(next, nil)
+}
+
+func (h *handler) budgetedWith(next http.Handler, refuse func(http.ResponseWriter)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := h.admit(requestRateLimitKey(r))
+		if limit == nil {
+			if refuse != nil {
+				refuse(w)
+				return
+			}
+			writeError(w, "", "REQUEST_LIMIT_EXCEEDED")
+			return
+		}
+		defer h.release(limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	if r.URL.Path != route || r.URL.RawQuery != "" {
 		writeError(w, "", "QUERY_REJECTED")
-		return
-	}
-	principal, _ := r.Context().Value(principalKey{}).(string)
-	if strings.TrimSpace(principal) == "" {
-		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
@@ -164,11 +261,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, root, "ASSET_FORBIDDEN")
 		return
 	}
-	if !h.admit(principal) {
-		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
-		return
-	}
-	defer h.release(principal)
 	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
 		writeError(w, root, "SOURCE_UNAVAILABLE")
@@ -190,34 +282,89 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(encoded)
 }
 
-func (h *handler) admit(principal string) bool {
+// admit returns the admitted budget entry, or nil when the key's budget is
+// exhausted or a request for the key is already in flight.
+func (h *handler) admit(key string) *requestLimit {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.cfg.MonotonicMilliseconds()
-	limit := h.principals[principal]
-	if limit == nil {
-		limit = &principalLimit{tokens: 2, at: now}
-		h.principals[principal] = limit
+	h.evictIdleLocked(now)
+	var limit *requestLimit
+	if element := h.limits[key]; element != nil {
+		limit = element.Value.(*requestLimit)
+		h.lru.MoveToFront(element)
+	} else {
+		for h.lru.Len() >= h.limitCapacity {
+			victim := h.lruVictimLocked()
+			if victim == nil {
+				// Every entry is in flight: exceed capacity rather than
+				// drop a guard or refuse the new key.
+				break
+			}
+			h.removeLocked(victim)
+		}
+		limit = &requestLimit{key: key, tokens: rateLimitBurst, at: now}
+		h.limits[key] = h.lru.PushFront(limit)
 	}
+	limit.lastUsed = now
 	if now > limit.at {
-		elapsedIntervals := (now - limit.at) / 1000
-		limit.tokens = min(2, limit.tokens+int(elapsedIntervals))
-		limit.at += elapsedIntervals * 1000
+		elapsedIntervals := (now - limit.at) / rateLimitRefillMillis
+		limit.tokens = min(rateLimitBurst, limit.tokens+int(elapsedIntervals))
+		limit.at += elapsedIntervals * rateLimitRefillMillis
 	}
 	if limit.inFlight || limit.tokens == 0 {
-		return false
+		return nil
 	}
 	limit.inFlight = true
 	limit.tokens--
-	return true
+	return limit
 }
 
-func (h *handler) release(principal string) {
+// release clears the in-flight mark on the entry admit returned. In-flight
+// entries are never evicted; the entry is still addressed by pointer so that a
+// release can never clear or touch a different entry for the same key.
+func (h *handler) release(limit *requestLimit) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if limit := h.principals[principal]; limit != nil {
-		limit.inFlight = false
+	limit.inFlight = false
+	if element := h.limits[limit.key]; element != nil && element.Value == limit {
+		limit.lastUsed = h.cfg.MonotonicMilliseconds()
+		h.lru.MoveToFront(element)
 	}
+}
+
+// evictIdleLocked drops entries untouched for longer than the idle window,
+// skipping entries with a request in flight. The list is ordered by last use,
+// so expired entries sit at the back and the sweep costs O(1) amortised per
+// admission plus one step per in-flight entry passed over.
+func (h *handler) evictIdleLocked(now int64) {
+	for element := h.lru.Back(); element != nil; {
+		limit := element.Value.(*requestLimit)
+		if now-limit.lastUsed <= rateLimitIdleMillis {
+			return
+		}
+		prev := element.Prev()
+		if !limit.inFlight {
+			h.removeLocked(element)
+		}
+		element = prev
+	}
+}
+
+// lruVictimLocked returns the least recently used entry without a request in
+// flight, or nil when every entry is in flight.
+func (h *handler) lruVictimLocked() *list.Element {
+	for element := h.lru.Back(); element != nil; element = element.Prev() {
+		if !element.Value.(*requestLimit).inFlight {
+			return element
+		}
+	}
+	return nil
+}
+
+func (h *handler) removeLocked(element *list.Element) {
+	limit := h.lru.Remove(element).(*requestLimit)
+	delete(h.limits, limit.key)
 }
 
 func min(a, b int) int {

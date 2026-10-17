@@ -539,7 +539,9 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	src.prior = priorAdmission{admitted: src.admitted, epoch: src.epoch, generation: src.generation, first: src.first, live: src.live, fenced: src.fenced, legacy: src.legacy}
 	src.epochs[epoch] = true
 	src.legacy = request.Legacy
-	src.admitted, src.epoch, src.generation, src.first = true, epoch, generation, src.admissions == 0
+	// Restored history means the source already had admissions in an earlier
+	// incarnation: the next admission is a successor, never the historical first.
+	src.admitted, src.epoch, src.generation, src.first = true, epoch, generation, src.admissions == 0 && len(h.restoredEpochs[src.id]) == 0
 	src.admissions++
 	src.admission++
 	src.token++

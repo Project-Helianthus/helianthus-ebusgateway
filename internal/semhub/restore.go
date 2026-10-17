@@ -277,13 +277,7 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	h.lock()
 	for _, epoch := range record.Epochs {
 		h.epochHistory = append(h.epochHistory, cloneRecord(epoch))
-		if h.restoredEpochs == nil {
-			h.restoredEpochs = map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
-		}
-		if h.restoredEpochs[epoch.Source] == nil {
-			h.restoredEpochs[epoch.Source] = map[semreg.SourceEpochID]bool{}
-		}
-		h.restoredEpochs[epoch.Source][epoch.Epoch] = true
+		h.reserveRestoredEpochLocked(epoch.Source, epoch.Epoch)
 		if src := h.sources[epoch.Source]; src != nil {
 			src.epochs[epoch.Epoch] = true
 		}
@@ -386,10 +380,23 @@ func (h *Hub) restoreAsset(target *asset, entry RecoveryAsset) (failure error) {
 	}
 	for _, cursor := range snapshot.Cursors {
 		h.sources[target.source].epochs[cursor.SourceEpochID] = true
+		h.reserveRestoredEpochLocked(target.source, cursor.SourceEpochID)
 	}
 	target.kernel, target.hubSeq, target.records = kernel, lastSeq, entry.Accepted
 	target.gate, target.restored = gate, true
 	return nil
+}
+
+// reserveRestoredEpochLocked records one restored epoch for a source, whether or
+// not this hub has a record of the source yet. h.mu must be held.
+func (h *Hub) reserveRestoredEpochLocked(source semreg.SourceID, epoch semreg.SourceEpochID) {
+	if h.restoredEpochs == nil {
+		h.restoredEpochs = map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
+	}
+	if h.restoredEpochs[source] == nil {
+		h.restoredEpochs[source] = map[semreg.SourceEpochID]bool{}
+	}
+	h.restoredEpochs[source][epoch] = true
 }
 
 func restoredGate(target *asset, control *RecoveryControl, snapshot semreg.Snapshot, canonical []byte, seq uint64) (*controlAsset, error) {

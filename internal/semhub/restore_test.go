@@ -845,3 +845,24 @@ func TestRecoveryEpochHistoryOfAssetlessSourceStaysReserved(t *testing.T) {
 	}
 	admitLegacy(t, fresh, handle.Source(), "synthetic-family", "epoch:assetless-new", 1)
 }
+
+func TestRecoveryLegacyRestoreAdmitsSuccessorAndPublishes(t *testing.T) {
+	hub, handle := populatedRecoveryHub(t, nil)
+	record := hub.ExportRecovery()
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	successor := admitLegacy(t, fresh, handle.Source(), "synthetic-family", "epoch:after-restore", 1)
+	for _, id := range recoveryAssets {
+		if inc := successor.Incarnation(id); inc.First {
+			t.Fatalf("admission after a restore must be a successor, got First for %s", id)
+		}
+		if err := fresh.Resettle(id); err != nil {
+			t.Fatal(err)
+		}
+		// A successor binding is scoped by epoch and generation, so publishing
+		// cannot collide with the immutable bindings of the restored history.
+		mustPublish(t, fresh, successor, id, "synthetic", 30, 4)
+	}
+}

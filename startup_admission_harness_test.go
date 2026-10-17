@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebus/evidence/discovery"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
 
@@ -126,9 +127,7 @@ func TestM2aHarness_EvidenceBufferFloodBaselineProtection(t *testing.T) {
 		b.Record(EvidenceRecord{Address: addr, Strength: EvidenceWeak, Observed: now.Add(time.Duration(i) * time.Millisecond)})
 	}
 	for _, addr := range VaillantBaselineTopologySeed {
-		b.mu.Lock()
-		_, ok := b.entries[addr]
-		b.mu.Unlock()
+		ok := discovery.Contains(b, addr)
 		if !ok {
 			t.Fatalf("baseline address 0x%02X was evicted", addr)
 		}

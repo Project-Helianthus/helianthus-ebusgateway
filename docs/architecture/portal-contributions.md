@@ -194,8 +194,12 @@ descriptor transport exists, so a newly registered contribution cannot yet be
 rendered generically. The implementation slice adds a versioned `descriptors`
 member to the `PortalCatalogV1` response on `endpoints.portal_catalog`: an array
 keyed by full contribution identity, each entry carrying `descriptor_version`,
-groups, fields, labels and views, and its own digest so the renderer caches by
-identity. A member on the catalog response is chosen over a separate
+groups, fields, labels, views and diagnostics, and its own digest so the renderer
+caches by identity. Preserve every admitted diagnostic's `id`, `group`, `label`,
+`member_id`, `kind` and `order` so each view's `diagnostic_ids` resolves within
+the same descriptor entry; retain `diagnostics: []` when empty. Diagnostic
+definitions are descriptive metadata and do not expose actions or enable invocation.
+A member on the catalog response is chosen over a separate
 `PortalDescribeV1` operation because the catalog is already fetched on every
 render, so descriptors and resources share one capture and cannot drift apart.
 The catalog schema (currently closed) and contract must be opened for this member

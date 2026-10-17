@@ -426,6 +426,16 @@ func (h *Hub) restoreAsset(target *asset, entry RecoveryAsset) (failure error) {
 	if entry.CommitCount != len(entry.Accepted) || entry.SnapshotID != snapshot.SnapshotID || entry.Revisions != snapshot.Revisions || entry.HubSeq != lastSeq {
 		return errors.New("incomplete accepted log or terminal checkpoint")
 	}
+	// An attempt the accepted log already holds was accepted, so a checkpoint
+	// that reports it as still outstanding or refused contradicts the log.
+	if entry.Control != nil && !semanticSuccess(entry.Control.Status.Semantic) && len(entry.Control.Attempts) > 0 {
+		last := entry.Control.Attempts[len(entry.Control.Attempts)-1]
+		for _, accepted := range entry.Accepted {
+			if bytes.Equal(last.Batch, accepted.Batch) {
+				return errors.New("control status contradicts the accepted log")
+			}
+		}
+	}
 	if entry.Control != nil && semanticSuccess(entry.Control.Status.Semantic) {
 		if len(entry.Control.Attempts) == 0 {
 			return errors.New("accepted control lacks an attempt")
@@ -610,9 +620,30 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			}
 		}
 	}
+	// Withdrawal retires the admitted epoch, so an unfixed source has no
+	// admitted epoch left unretired; a current admission keeps its regime.
+	admitted := map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
+	retired := map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
+	for _, epoch := range record.Epochs {
+		set := admitted
+		if epoch.Kind == EventSourceRetired {
+			set = retired
+		} else if epoch.Kind != EventEpochAdmitted {
+			continue
+		}
+		if set[epoch.Source] == nil {
+			set[epoch.Source] = map[semreg.SourceEpochID]bool{}
+		}
+		set[epoch.Source][epoch.Epoch] = true
+	}
 	for _, id := range record.Unfixed {
 		if !history[id] {
 			return errors.New("unfixed source without epoch history")
+		}
+		for epoch := range admitted[id] {
+			if !retired[id][epoch] {
+				return errors.New("unfixed source with a current admission")
+			}
 		}
 	}
 	for _, entry := range record.Assets {

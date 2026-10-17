@@ -1154,8 +1154,9 @@ func TestRecoveryRejectsInconsistentUnfixedRegimes(t *testing.T) {
 		"omitted":                func(r *RecoveryRecord) { r.Unfixed = nil; delete(r.Drivers, "source:withdrawn") },
 		"also-fixed":             func(r *RecoveryRecord) { r.Regimes["source:withdrawn"] = LegacyGrowattStorage },
 		"fixed-moved": func(r *RecoveryRecord) {
+			// Sorted, so only the current admission of source:kept can reject it.
 			delete(r.Regimes, "source:kept")
-			r.Unfixed = append(r.Unfixed, "source:kept")
+			r.Unfixed = []semreg.SourceID{"source:kept", "source:withdrawn"}
 		},
 		"without-history": func(r *RecoveryRecord) {
 			r.Unfixed = append(r.Unfixed, "source:zz-unknown")
@@ -1318,5 +1319,31 @@ func TestRecoveryReplayRedeliversInterruptedAcceptance(t *testing.T) {
 	}
 	if len(delivered) != 2 || delivered[0].HubSeq == 0 || delivered[1].HubSeq != delivered[0].HubSeq || !bytes.Equal(delivered[1].Batch, delivered[0].Batch) {
 		t.Fatalf("replay must redeliver the original acceptance: %+v", delivered)
+	}
+}
+
+func TestRecoveryRejectsControlStatusContradictingAcceptedLog(t *testing.T) {
+	for _, state := range []SemanticState{SemanticPending, SemanticRejected, SemanticUncertain} {
+		t.Run(string(state), func(t *testing.T) {
+			hub, handle := populatedRecoveryHub(t, nil)
+			if err := fenceRecovery(t, hub, handle); err != nil {
+				t.Fatal(err)
+			}
+			record := hub.ExportRecovery()
+			tampered := false
+			for i := range record.Assets {
+				if control := record.Assets[i].Control; control != nil && semanticSuccess(control.Status.Semantic) {
+					control.Status.Semantic = state
+					tampered = true
+				}
+			}
+			if !tampered {
+				t.Fatal("fixture must carry an accepted control")
+			}
+			fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("control status %s contradicting the accepted log was restored: %v", state, err)
+			}
+		})
 	}
 }

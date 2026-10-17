@@ -609,9 +609,11 @@ assets. Checkpoint entries with undeclared asset IDs also reject the record and
 close all empty declared assets. Malformed epoch identities, zero generations, non-lifecycle
 event kinds, invalid or unordered asset IDs, missing or invalid source
 identity regimes (including a source with history that has neither a regime
-nor an unfixed marker), unfixed markers without history, and missing,
+nor an unfixed marker), unfixed markers without history or with an admitted
+epoch that was never retired, and missing,
 unknown or conflicting source driver ownership reject the checkpoint before
-replay or epoch reservation.
+replay or epoch reservation. A control status that reports an attempt the
+accepted log already holds as pending, rejected or uncertain also rejects it.
 Restored cursor and history epoch IDs are reserved against admission and epoch
 transitions, even for assetless sources or with a different generation:
 restoration requires a new epoch, and the generation sequence restarts with

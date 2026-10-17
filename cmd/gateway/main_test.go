@@ -1035,18 +1035,28 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
+	runtimeStateDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
-	watchdog, stopWatchdog := context.WithTimeout(context.Background(), 30*time.Second)
+	startupWatchdog, stopStartupWatchdog := context.WithTimeout(context.Background(), 30*time.Second)
 	semanticRelease := make(chan struct{})
+	firstPassDone := make(chan struct{})
+	activeProbePassed := make(chan struct{})
+	semanticReady := make(chan struct{})
+	close(firstPassDone)
+	close(activeProbePassed)
 	done := make(chan struct{})
 	var runErr error
 	t.Cleanup(func() {
-		defer stopWatchdog()
+		stopStartupWatchdog()
 		cancel()
 		close(semanticRelease)
+		close(semanticReady)
+		// Cleanup gets its own headroom even when startup exhausted its watchdog.
+		cleanupWatchdog, stopCleanupWatchdog := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCleanupWatchdog()
 		select {
 		case <-done:
-		case <-watchdog.Done():
+		case <-cleanupWatchdog.Done():
 			// Never restore hooks while run may still read them.
 			t.Fatal("run() did not exit after cancellation and barrier release; hooks not restored")
 		}
@@ -1065,7 +1075,13 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 		return nil, nil, nil
 	}
 	startDiscoveryScanLoopFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, activeTxnClassifier) startupScanSignals {
-		return startupScanSignals{}
+		// Scan readiness is deterministic; passive semantic readiness stays
+		// unreleased until cleanup. It must not gate this initializer.
+		return startupScanSignals{
+			firstPassDone:          firstPassDone,
+			activeProbePassed:      activeProbePassed,
+			semanticBootstrapReady: semanticReady,
+		}
 	}
 	startVaillantSemanticPollingFn = func(_ context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, startupBarrier <-chan struct{}) *vaillantSemanticPoller {
 		barrierObserved <- startupBarrier != nil
@@ -1078,6 +1094,8 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	}
 
 	cfg := ebusgateway.DefaultConfig()
+	cfg.HTTPAddr = "" // Keep release discovery offline.
+	cfg.RuntimeStatePath = runtimeStateDir + "/runtime-state.json"
 	cfg.Transport = transport.NewLoopback()
 	cfg.TransportConfig.Protocol = ebusgateway.TransportEbusdTCP
 	cfg.ScanOnStart = true
@@ -1095,7 +1113,7 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 		}
 	case <-done:
 		t.Fatalf("run() exited before semantic poller initialization: %v", runErr)
-	case <-watchdog.Done():
+	case <-startupWatchdog.Done():
 		t.Fatal("semantic poller was not initialized")
 	}
 }

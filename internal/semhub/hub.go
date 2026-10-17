@@ -53,6 +53,8 @@ type Options struct {
 	// Journal records epoch lifecycle events. A nil journal uses an
 	// in-memory journal; durable storage is not provided by this package.
 	Journal EpochJournal
+	// Recovery exports detached records; callbacks run outside the hub mutex.
+	Recovery *RecoveryHooks
 	// Faults, when set by a test in another package, is called at the hub's
 	// named fault stages (for example "before-swap" of a control submission)
 	// so the test can interrupt a submission. Production leaves it nil.
@@ -61,14 +63,16 @@ type Options struct {
 
 // Hub is one in-process hub incarnation.
 type Hub struct {
-	mu          sync.RWMutex
-	incarnation string
-	journal     EpochJournal
-	bus         *eventBus
-	ids         map[string]idOwner
-	assets      map[semreg.AssetID]*asset
-	sources     map[semreg.SourceID]*source
-	faults      func(stage string, asset semreg.AssetID)
+	mu           sync.RWMutex
+	incarnation  string
+	journal      EpochJournal
+	bus          *eventBus
+	ids          map[string]idOwner
+	assets       map[semreg.AssetID]*asset
+	sources      map[semreg.SourceID]*source
+	faults       func(stage string, asset semreg.AssetID)
+	recovery     *RecoveryHooks
+	epochHistory []EpochRecord
 	// queue holds accepted control assets awaiting their first reprojection,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
@@ -114,15 +118,18 @@ type idOwner struct {
 }
 
 type asset struct {
-	commit    sync.Mutex
-	id        semreg.AssetID
-	source    semreg.SourceID
-	driver    string
-	packs     []semreg.PackRef
-	kernel    *semreg.PublicationKernel
-	onControl func(ControlEvent) error
-	hubSeq    uint64
-	gate      *controlAsset
+	commit        sync.Mutex
+	id            semreg.AssetID
+	source        semreg.SourceID
+	driver        string
+	packs         []semreg.PackRef
+	kernel        *semreg.PublicationKernel
+	onControl     func(ControlEvent) error
+	hubSeq        uint64
+	gate          *controlAsset
+	records       []AcceptedBatch
+	restoreFailed bool
+	restored      bool
 }
 
 type source struct {
@@ -182,7 +189,7 @@ func newHub(options Options, queueLimit int) (*Hub, error) {
 	return &Hub{
 		incarnation: incarnation, journal: journal, bus: newEventBus(incarnation, queueLimit),
 		ids: make(map[string]idOwner), assets: make(map[semreg.AssetID]*asset), sources: make(map[semreg.SourceID]*source),
-		faults: options.Faults,
+		faults: options.Faults, recovery: options.Recovery,
 	}, nil
 }
 
@@ -517,7 +524,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	}
 	// The admission is journalled before it becomes visible: a failed append
 	// leaves the source exactly as it was, so the admission can be retried.
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: epoch, Generation: generation, Kind: EventEpochAdmitted}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: epoch, Generation: generation, Kind: EventEpochAdmitted}); err != nil {
 		h.unlock()
 		return nil, fmt.Errorf("semhub: journal epoch admission: %w", err)
 	}
@@ -577,7 +584,7 @@ func (h *Hub) Withdraw(handle *Handle) error {
 			}
 		}
 	}
-	if err := h.journal.Append(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: handle.epoch, Generation: handle.generation, Kind: EventSourceRetired, Assets: []semreg.AssetID{}}); err != nil {
+	if err := h.appendEpochLocked(EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: handle.epoch, Generation: handle.generation, Kind: EventSourceRetired, Assets: []semreg.AssetID{}}); err != nil {
 		return fmt.Errorf("semhub: journal admission withdrawal: %w", err)
 	}
 	delete(src.epochs, handle.epoch)
@@ -720,6 +727,9 @@ type Tx struct {
 // held.
 func publicationGateLocked(target *asset) error {
 	gate := target.gate
+	if target.restoreFailed {
+		return ErrControlPending
+	}
 	switch {
 	case gate == nil || gate.semantic == SemanticRevokedUnpublished:
 		return nil
@@ -1029,6 +1039,20 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		return "", ErrTransaction
 	}
 	h := tx.hub
+	var recovery AcceptedBatch
+	defer func() {
+		if recovery.HubSeq != 0 {
+			h.exportAccepted(recovery)
+		}
+	}()
+	if h.recovery != nil {
+		var exportErr error
+		recovery, exportErr = tx.Export()
+		if exportErr != nil {
+			tx.Abort()
+			return "", exportErr
+		}
+	}
 	// A generation transition covers every asset the source owns: the other
 	// assets still holding the replaced generation are fenced by a control
 	// operation whose read gates close in this commit's critical section and
@@ -1095,7 +1119,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		retirementRecords = append(retirementRecords, EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: retired, Generation: retiredGenerations[retired], Kind: EventSourceRetired, Assets: []semreg.AssetID{tx.asset.id}})
 	}
 	if !tx.transition && !tx.epochTransition && len(retirementRecords) != 0 {
-		if err := h.journal.Append(retirementRecords...); err != nil {
+		if err := h.appendEpochLocked(retirementRecords...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal source retirement: %w", err)
 		}
@@ -1114,7 +1138,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.handle.epoch, Generation: tx.handle.generation, Kind: EventGenerationFenced, Assets: fenced},
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.handle.epoch, Generation: tx.generation, Kind: EventGenerationActivated},
 		}, retirementRecords...)
-		if err := h.journal.Append(records...); err != nil {
+		if err := h.appendEpochLocked(records...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal generation transition: %w", err)
 		}
@@ -1144,7 +1168,7 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 			{Incarnation: h.incarnation, Source: src.id, Epoch: old, Generation: tx.handle.generation, Kind: EventSourceRetired, Assets: retired},
 			{Incarnation: h.incarnation, Source: src.id, Epoch: tx.epoch, Generation: tx.generation, Kind: EventEpochAdmitted},
 		}, retirementRecords...)
-		if err := h.journal.Append(records...); err != nil {
+		if err := h.appendEpochLocked(records...); err != nil {
 			h.unlock()
 			return "", fmt.Errorf("semhub: journal epoch transition: %w", err)
 		}
@@ -1163,6 +1187,9 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 		h.ids[claim.id] = idOwner{driver: tx.asset.driver, kind: claim.kind}
 	}
 	tx.asset.kernel = tx.fork
+	if h.recovery != nil {
+		tx.asset.records = append(tx.asset.records, recovery)
+	}
 	for _, retired := range tx.applied.SourceRetirements {
 		h.bus.emit(Event{Kind: EventSourceRetired, Asset: tx.asset.id, Source: tx.applied.SourceID, Epoch: retired, Generation: retiredGenerations[retired], Sequence: tx.applied.Sequence, SnapshotID: tx.snapshot.SnapshotID, Revisions: &tx.snapshot.Revisions, Digest: tx.applied.BatchDigest})
 	}
@@ -1172,6 +1199,10 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	}
 	seq := h.bus.emit(Event{Kind: EventPublished, Asset: tx.asset.id, Source: tx.applied.SourceID, Epoch: tx.applied.SourceEpochID, Generation: tx.generation, Sequence: tx.applied.Sequence, SnapshotID: tx.snapshot.SnapshotID, Revisions: &tx.snapshot.Revisions, Digest: tx.applied.BatchDigest})
 	tx.asset.hubSeq = seq
+	if h.recovery != nil {
+		tx.asset.records[len(tx.asset.records)-1].HubSeq = seq
+	}
+	recovery.HubSeq = seq
 	h.unlock()
 	if onCommit != nil {
 		onCommit(Committed{Snapshot: tx.snapshot, Canonical: append([]byte(nil), tx.canonical...), HubSeq: seq})

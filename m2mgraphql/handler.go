@@ -35,15 +35,20 @@ const (
 // authenticated: a client rotating source addresses (for example across an
 // IPv6 prefix) would otherwise create one permanent entry per address.
 //
-// rateLimitTableCapacity is the hard ceiling on budget entries. Inserting a
-// new key at capacity first evicts idle entries, then the least recently used
-// entry; a new key always receives an entry and is never refused for table
-// pressure. rateLimitIdleMillis is the idle window after which an untouched
-// entry is evicted. Any entry idle for longer than two refill intervals is
-// already back at its full budget, so idle eviction cannot change admission;
-// only LRU eviction under pressure can, and it can only grant a returning key
-// a fresh budget, never deny one. Explicit in-process partitions ("key:")
-// share the same table and policy.
+// rateLimitTableCapacity bounds the budget entries. Inserting a new key at
+// capacity first evicts idle entries, then the least recently used entry; a
+// new key always receives an entry and is never refused for table pressure.
+// An entry whose request is in flight is never evicted, by the idle sweep or
+// by LRU, so its one-in-flight guard always holds. When every entry is in
+// flight the table grows past capacity instead; the table is therefore bounded
+// by rateLimitTableCapacity plus the number of in-flight requests, which the
+// HTTP server already bounds, and the next insertion of a new key trims it
+// back to capacity once those requests are released. rateLimitIdleMillis is
+// the idle window after which an untouched entry is evicted. Any entry idle
+// for longer than two refill intervals is already back at its full budget, so
+// idle eviction cannot change admission; only LRU eviction under pressure can,
+// and it can only grant a returning idle key a fresh budget, never deny one.
+// Explicit in-process partitions ("key:") share the same table and policy.
 const (
 	rateLimitTableCapacity = 4096
 	rateLimitIdleMillis    = 60_000
@@ -249,7 +254,13 @@ func (h *handler) admit(key string) *requestLimit {
 		h.lru.MoveToFront(element)
 	} else {
 		for h.lru.Len() >= h.limitCapacity {
-			h.removeLocked(h.lru.Back())
+			victim := h.lruVictimLocked()
+			if victim == nil {
+				// Every entry is in flight: exceed capacity rather than
+				// drop a guard or refuse the new key.
+				break
+			}
+			h.removeLocked(victim)
 		}
 		limit = &requestLimit{key: key, tokens: rateLimitBurst, at: now}
 		h.limits[key] = h.lru.PushFront(limit)
@@ -268,9 +279,9 @@ func (h *handler) admit(key string) *requestLimit {
 	return limit
 }
 
-// release clears the in-flight mark on the entry admit returned. The entry is
-// addressed by pointer so that an entry evicted and recreated meanwhile is
-// never cleared by a stale request.
+// release clears the in-flight mark on the entry admit returned. In-flight
+// entries are never evicted; the entry is still addressed by pointer so that a
+// release can never clear or touch a different entry for the same key.
 func (h *handler) release(limit *requestLimit) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -281,16 +292,33 @@ func (h *handler) release(limit *requestLimit) {
 	}
 }
 
-// evictIdleLocked drops entries untouched for longer than the idle window.
-// The list is ordered by last use, so expired entries sit at the back and the
-// sweep costs O(1) amortised per admission.
+// evictIdleLocked drops entries untouched for longer than the idle window,
+// skipping entries with a request in flight. The list is ordered by last use,
+// so expired entries sit at the back and the sweep costs O(1) amortised per
+// admission plus one step per in-flight entry passed over.
 func (h *handler) evictIdleLocked(now int64) {
-	for back := h.lru.Back(); back != nil; back = h.lru.Back() {
-		if now-back.Value.(*requestLimit).lastUsed <= rateLimitIdleMillis {
+	for element := h.lru.Back(); element != nil; {
+		limit := element.Value.(*requestLimit)
+		if now-limit.lastUsed <= rateLimitIdleMillis {
 			return
 		}
-		h.removeLocked(back)
+		prev := element.Prev()
+		if !limit.inFlight {
+			h.removeLocked(element)
+		}
+		element = prev
 	}
+}
+
+// lruVictimLocked returns the least recently used entry without a request in
+// flight, or nil when every entry is in flight.
+func (h *handler) lruVictimLocked() *list.Element {
+	for element := h.lru.Back(); element != nil; element = element.Prev() {
+		if !element.Value.(*requestLimit).inFlight {
+			return element
+		}
+	}
+	return nil
 }
 
 func (h *handler) removeLocked(element *list.Element) {

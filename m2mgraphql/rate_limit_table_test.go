@@ -132,7 +132,7 @@ func TestM2MRateLimitLRUVictimIsLeastRecentlyUsedKey(t *testing.T) {
 }
 
 func TestM2MRateLimitEvictedHostReturnsWithFreshBudget(t *testing.T) {
-	// Accepted trade-off: eviction can only widen a budget, never deny one.
+	// LRU eviction of a released entry can only widen a budget, never deny one.
 	var now atomic.Int64
 	h := newRateLimitTableHandler(t, &now)
 	h.limitCapacity = 2
@@ -149,17 +149,18 @@ func TestM2MRateLimitEvictedHostReturnsWithFreshBudget(t *testing.T) {
 func TestM2MRateLimitReleaseDoesNotClearRecreatedEntry(t *testing.T) {
 	var now atomic.Int64
 	h := newRateLimitTableHandler(t, &now)
-	h.limitCapacity = 1
 	stale := h.admit("remote:192.0.2.1")
 	if stale == nil {
 		t.Fatal("first admission refused")
 	}
-	if h.admit("remote:192.0.2.2") == nil { // evicts the in-flight .1 entry
-		t.Fatal("new key refused under table pressure")
-	}
-	fresh := h.admit("remote:192.0.2.1") // recreated, evicting .2
+	// In-flight entries are never evicted by policy; drop the entry directly
+	// to exercise release's pointer guard against a recreated entry.
+	h.mu.Lock()
+	h.removeLocked(h.limits["remote:192.0.2.1"])
+	h.mu.Unlock()
+	fresh := h.admit("remote:192.0.2.1")
 	if fresh == nil || fresh == stale {
-		t.Fatal("evicted key was not recreated with a fresh entry")
+		t.Fatal("dropped key was not recreated with a fresh entry")
 	}
 	h.release(stale)
 	if h.admit("remote:192.0.2.1") != nil {
@@ -168,5 +169,76 @@ func TestM2MRateLimitReleaseDoesNotClearRecreatedEntry(t *testing.T) {
 	h.release(fresh)
 	if h.admit("remote:192.0.2.1") == nil {
 		t.Fatal("released entry with a remaining token was refused")
+	}
+}
+
+func TestM2MRateLimitInFlightEntrySurvivesRotatingHostChurn(t *testing.T) {
+	var now atomic.Int64
+	h := newRateLimitTableHandler(t, &now)
+	const busy = "[2001:db8:beef::1]:40001"
+	r := httptest.NewRequest(http.MethodPost, route, nil)
+	r.RemoteAddr = busy
+	busyKey := requestRateLimitKey(r)
+	held := h.admit(busyKey)
+	if held == nil {
+		t.Fatal("first request from the busy host refused")
+	}
+	// Rotate enough fresh hosts to cycle the whole table twice over, and run
+	// one churn pass past the idle window, while the busy request is running.
+	for i := 0; i < 2*rateLimitTableCapacity+512; i++ {
+		if i == rateLimitTableCapacity {
+			now.Store(rateLimitIdleMillis + 1)
+		}
+		if got := serveStorageFrom(t, h, fmt.Sprintf("10.%d.%d.%d:40001", (i>>16)&0xff, (i>>8)&0xff, i&0xff)); got != "ok" {
+			t.Fatalf("rotated host %d=%s; want admitted", i, got)
+		}
+		if size := h.rateLimitTableLen(t); size > rateLimitTableCapacity+1 {
+			t.Fatalf("rate-limit table=%d exceeds capacity %d plus one in-flight entry", size, rateLimitTableCapacity)
+		}
+	}
+	if !h.hasRateLimitKey(busyKey) {
+		t.Fatal("in-flight entry was evicted under host churn")
+	}
+	// The busy host still holds a token, so only the in-flight guard can
+	// reject this second concurrent request.
+	if got := serveStorageFrom(t, h, "[2001:db8:beef::1]:40002"); got != "limited" {
+		t.Fatalf("second concurrent request from busy host=%s; want limited", got)
+	}
+	h.release(held)
+	if got := serveStorageFrom(t, h, "[2001:db8:beef::1]:40003"); got != "ok" {
+		t.Fatalf("busy host after release=%s; want admitted", got)
+	}
+}
+
+func TestM2MRateLimitTableOverflowsOnlyByInFlightEntries(t *testing.T) {
+	var now atomic.Int64
+	h := newRateLimitTableHandler(t, &now)
+	h.limitCapacity = 3
+	var held []*requestLimit
+	for i := 1; i <= 5; i++ {
+		limit := h.admit(fmt.Sprintf("remote:192.0.2.%d", i))
+		if limit == nil {
+			t.Fatalf("host %d refused with %d in-flight entries; want admitted", i, len(held))
+		}
+		held = append(held, limit)
+	}
+	// Capacity 3 entries are in flight; the two extra hosts were admitted and
+	// the table holds capacity plus the in-flight overflow.
+	if size := h.rateLimitTableLen(t); size != h.limitCapacity+2 {
+		t.Fatalf("rate-limit table=%d want capacity %d plus 2 in-flight overflow", size, h.limitCapacity)
+	}
+	for _, limit := range held {
+		h.release(limit)
+	}
+	// The next new key trims the released entries back to capacity.
+	serveStorageFrom(t, h, "192.0.2.6:40001")
+	if size := h.rateLimitTableLen(t); size != h.limitCapacity {
+		t.Fatalf("rate-limit table after release=%d want capacity %d", size, h.limitCapacity)
+	}
+	// Past the idle window the released entries go and the table drops below capacity.
+	now.Store(rateLimitIdleMillis + 1)
+	serveStorageFrom(t, h, "192.0.2.7:40001")
+	if size := h.rateLimitTableLen(t); size >= h.limitCapacity {
+		t.Fatalf("rate-limit table after idle window=%d want below capacity %d", size, h.limitCapacity)
 	}
 }

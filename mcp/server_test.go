@@ -244,21 +244,6 @@ func (p *testWatchSummaryProvider) Snapshot() WatchSummary {
 	return *copy
 }
 
-type testDeadlineContext struct {
-	context.Context
-	done chan struct{}
-}
-
-func (c testDeadlineContext) Done() <-chan struct{} { return c.done }
-func (c testDeadlineContext) Err() error {
-	select {
-	case <-c.done:
-		return context.DeadlineExceeded
-	default:
-		return nil
-	}
-}
-
 type testSemanticProvider struct {
 	zones             []Zone
 	zonesPublished    bool
@@ -1404,11 +1389,49 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 }
 
 func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
+	// Reserve time before the process timeout for diagnostics and provider cleanup.
+	// Snapshot expiry is controlled by provider barriers, not this outer watchdog.
+	watchdogTimeout := 180 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		watchdogTimeout = min(watchdogTimeout, time.Until(deadline)/2)
+	}
+	watchdogCtx, stopWatchdog := context.WithTimeout(context.Background(), watchdogTimeout)
+	t.Cleanup(stopWatchdog)
+	withoutTimer := func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		return context.WithCancel(parent)
+	}
+	checkBudget := func(t *testing.T, total time.Duration, planes int) func(time.Duration) {
+		t.Helper()
+		calls := 0
+		t.Cleanup(func() {
+			if calls != planes+1 {
+				t.Errorf("snapshot timeout seam calls = %d; want %d", calls, planes+1)
+			}
+		})
+		return func(got time.Duration) {
+			want := total
+			if calls > 0 {
+				want = total / time.Duration(planes)
+			}
+			calls++
+			if got != want {
+				t.Errorf("snapshot timeout budget call %d = %v; want %v", calls, got, want)
+			}
+		}
+	}
+	// Keep all handler calls in memory and bounded by the outer test watchdog.
+	doRPC := func(t *testing.T, handler http.Handler, request rpcRequest) rpcResponse {
+		return doRPC(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler.ServeHTTP(w, r.WithContext(watchdogCtx))
+		}), request)
+	}
+
 	reg := &testRegistry{entries: make(map[byte]registry.DeviceEntry)}
 	server, err := NewServer(reg, &testInvoker{})
 	if err != nil {
 		t.Fatalf("NewServer error = %v", err)
 	}
+	server.semanticSnapshotTimeout = withoutTimer
 	server.SetSemanticProvider(testSemanticProvider{
 		zones: []Zone{
 			{ID: "zone-b", Name: "Bedroom", Config: ZoneConfig{OperatingMode: "AUTO", Preset: "COMFORT"}},
@@ -1495,6 +1518,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		emptyServer.semanticSnapshotTimeout = withoutTimer
 		emptyServer.SetSemanticProvider(testSemanticProvider{
 			zones:          []Zone{},
 			zonesPublished: true,
@@ -1584,6 +1608,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		emptyServer.semanticSnapshotTimeout = withoutTimer
 		emptyServer.SetSemanticProvider(testSemanticProvider{
 			circuits:          []CircuitStatus{},
 			circuitsPublished: true,
@@ -1657,6 +1682,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		emptyServer.semanticSnapshotTimeout = withoutTimer
 		emptyServer.SetSemanticProvider(testSemanticProvider{
 			radio: []RadioDevice{},
 		})
@@ -1705,6 +1731,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 				if err != nil {
 					t.Fatalf("NewServer error = %v", err)
 				}
+				verdictServer.semanticSnapshotTimeout = withoutTimer
 				verdictServer.SetSemanticProvider(testFM5InterpretationProvider{
 					testSemanticProvider: testSemanticProvider{fm5Mode: test.mode},
 					verdict: Fm5Interpretation{
@@ -1743,6 +1770,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		unavailableServer.semanticSnapshotTimeout = withoutTimer
 		unavailableServer.SetSemanticProvider(testFM5InterpretationProvider{
 			testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeAbsent},
 		})
@@ -1764,6 +1792,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		legacyServer.semanticSnapshotTimeout = withoutTimer
 		legacyServer.SetSemanticProvider(testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly})
 
 		modeEnvelope := envelopeFromResult(t, doRPC(t, legacyServer.Handler(), rpcRequest{
@@ -1793,6 +1822,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Fatalf("NewServer error = %v", err)
 		}
 		reason := Fm5SemanticDegradedReason("EVIDENCE_STALE")
+		invalidServer.semanticSnapshotTimeout = withoutTimer
 		invalidServer.SetSemanticProvider(testFM5InterpretationProvider{
 			testSemanticProvider: testSemanticProvider{fm5Mode: Fm5SemanticModeGPIOOnly},
 			verdict: Fm5Interpretation{
@@ -1857,6 +1887,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
+		emptyServer.semanticSnapshotTimeout = withoutTimer
 		emptyServer.SetSemanticProvider(testSemanticProvider{
 			cylinders: []CylinderStatus{},
 		})
@@ -1948,6 +1979,11 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot default planes", func(t *testing.T) {
+		budget := checkBudget(t, 10*time.Second, 13)
+		server.semanticSnapshotTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			budget(duration)
+			return withoutTimer(parent, duration)
+		}
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
 			ID:      4,
@@ -1975,6 +2011,11 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot supports circuits plane", func(t *testing.T) {
+		budget := checkBudget(t, 10*time.Second, 1)
+		server.semanticSnapshotTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			budget(duration)
+			return withoutTimer(parent, duration)
+		}
 		res := doRPC(t, server.Handler(), rpcRequest{
 			JSONRPC: "2.0",
 			ID:      5,
@@ -2006,7 +2047,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot timeout atomic", func(t *testing.T) {
-		deadlineCtx, expire := context.WithCancel(context.Background())
+		deadlineCtx, expire := context.WithCancel(watchdogCtx)
 		defer expire()
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
@@ -2018,8 +2059,12 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 				Status: "connected",
 			},
 		})
-		slowServer.semanticSnapshotTimeout = func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
-			return controlledSnapshotDeadline{deadlineCtx}, func() {}
+		budget := checkBudget(t, 10*time.Millisecond, 2)
+		slowServer.semanticSnapshotTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			budget(duration)
+			// The controlled root propagates cancellation to every plane.
+			ctx, cancel := context.WithCancel(deadlineCtx)
+			return controlledSnapshotDeadline{ctx}, cancel
 		}
 		zonesEntered, zonesRelease, zonesDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		var releaseOnce sync.Once
@@ -2037,16 +2082,15 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			},
 		})
 
-		const watchdog = 5 * time.Second
 		wait := func(signal <-chan struct{}, name string) {
 			t.Helper()
 			select {
 			case <-signal:
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				t.Fatalf("timed out waiting for %s", name)
 			}
 		}
-		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":10}}}`))
+		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":10}}}`)).WithContext(watchdogCtx)
 		w := httptest.NewRecorder()
 		handlerDone := make(chan struct{})
 		t.Cleanup(func() {
@@ -2077,13 +2121,18 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 	})
 
 	t.Run("semantic snapshot timeout partial", func(t *testing.T) {
-		deadlineDone := make(chan struct{})
+		deadlineCtx, expire := context.WithCancel(watchdogCtx)
+		defer expire()
+		zonesDone := make(chan struct{})
 		slowServer, err := NewServer(reg, &testInvoker{})
 		if err != nil {
 			t.Fatalf("NewServer error = %v", err)
 		}
-		slowServer.semanticSnapshotTimeout = func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
-			return testDeadlineContext{Context: context.Background(), done: deadlineDone}, func() {}
+		budget := checkBudget(t, 35*time.Millisecond, 2)
+		slowServer.semanticSnapshotTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			budget(duration)
+			ctx, cancel := context.WithCancel(deadlineCtx)
+			return controlledSnapshotDeadline{ctx}, cancel
 		}
 		slowServer.SetStatusProvider(testStatusProvider{
 			daemon: ServiceStatus{Status: "running"},
@@ -2092,9 +2141,13 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			},
 		})
 		slowServer.SetSemanticProvider(testSemanticProvider{
-			zones:        []Zone{{ID: "zone-a", Name: "Living"}},
-			dhw:          &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
-			zonesEntered: func() { close(deadlineDone) },
+			zones: []Zone{{ID: "zone-a", Name: "Living"}},
+			dhw:   &DhwStatus{Config: DhwConfig{OperatingMode: "AUTO"}},
+			zonesEntered: func() {
+				defer close(zonesDone)
+				// Entry into the requested provider is the expiry barrier.
+				expire()
+			},
 		})
 
 		res := doRPC(t, slowServer.Handler(), rpcRequest{
@@ -2103,6 +2156,11 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			Method:  "tools/call",
 			Params:  json.RawMessage(`{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["dhw","zones"],"timeout_ms":35,"allow_partial":true}}`),
 		})
+		select {
+		case <-zonesDone:
+		case <-watchdogCtx.Done():
+			t.Fatal("zones callback did not join")
+		}
 		envelope := envelopeFromResult(t, res)
 		data, ok := envelope["data"].(map[string]any)
 		if !ok {
@@ -2133,21 +2191,22 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 				Status: "connected",
 			},
 		})
-		const watchdog = 5 * time.Second
 		type controlledDeadline struct {
 			ctx    context.Context
 			expire context.CancelFunc
 		}
 		deadlines := make(chan controlledDeadline, 3)
 		abort := make(chan struct{})
-		slowServer.semanticSnapshotTimeout = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		budget := checkBudget(t, time.Millisecond, 2)
+		slowServer.semanticSnapshotTimeout = func(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+			budget(duration)
 			ctx, cancel := context.WithCancel(parent)
 			deadline := controlledSnapshotDeadline{ctx}
 			select {
 			case deadlines <- controlledDeadline{deadline, cancel}:
 			case <-abort:
 				cancel()
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				cancel()
 			}
 			return deadline, cancel
@@ -2162,7 +2221,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			select {
 			case <-release:
 			case <-abort:
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				providerTimeout <- name
 			}
 		}
@@ -2175,7 +2234,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			readDHW:   func() { readPlane("dhw", dhwEntered, dhwRelease, dhwDone) },
 		})
 
-		requestCtx, cancelRequest := context.WithCancel(context.Background())
+		requestCtx, cancelRequest := context.WithCancel(watchdogCtx)
 		r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"ebus.v1.semantic.snapshot.get","arguments":{"planes":["zones","dhw"],"timeout_ms":1,"allow_partial":true}}}`)).WithContext(requestCtx)
 		w := httptest.NewRecorder()
 		handlerDone := make(chan struct{})
@@ -2184,7 +2243,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			close(abort)
 			select {
 			case <-handlerDone:
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				t.Error("RPC handler did not join after cancellation and provider release")
 			}
 		})
@@ -2196,7 +2255,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			t.Helper()
 			select {
 			case <-signal:
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				t.Fatalf("timed out waiting for %s", name)
 			}
 		}
@@ -2205,7 +2264,7 @@ func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
 			select {
 			case deadline := <-deadlines:
 				return deadline
-			case <-time.After(watchdog):
+			case <-watchdogCtx.Done():
 				t.Fatal("timed out waiting for snapshot deadline creation")
 				return controlledDeadline{}
 			}

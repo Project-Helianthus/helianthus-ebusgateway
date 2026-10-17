@@ -1,0 +1,536 @@
+{
+  "bus_summary_admission_active": {
+    "arguments": {},
+    "changes_when": "1b durable control or 1c bridge changes the admitted-source projection",
+    "envelope": {
+      "data": {
+        "last_updated_at": "2001-02-03T04:05:06Z",
+        "status": {
+          "last_updated_at": "2001-02-03T04:05:06Z",
+          "transport_class": "synthetic",
+          "publisher_cadence_sec": 5,
+          "publisher_cadence_source": "default",
+          "capability": {
+            "active_supported": true,
+            "passive_supported": true,
+            "broadcast_supported": false,
+            "passive_available": false,
+            "passive_state": "warming_up",
+            "endpoint_state": "connected",
+            "tap_connected": false
+          },
+          "warmup": {
+            "state": "warming_up",
+            "completed_transactions": 0,
+            "required_transactions": 3
+          },
+          "timing_quality": {
+            "active": "estimated",
+            "passive": "unavailable",
+            "busy": "unavailable",
+            "periodicity": "unavailable"
+          },
+          "degraded": {
+            "active": false
+          },
+          "bus_admission": {
+            "source_selection": {
+              "state": "active",
+              "mode": "source_selection",
+              "outcome": "active_probe_passed",
+              "selected_source": 26,
+              "companion_target": 31,
+              "active_probe": {
+                "target": 42,
+                "opcode": "07 04",
+                "status": "passed"
+              },
+              "retryable": false,
+              "automatic_retry_scheduled": false
+            }
+          },
+          "startup": {
+            "last_updated_at": "2001-02-03T04:05:06Z",
+            "phase": "live",
+            "cache_epoch": 1,
+            "live_epoch": 0
+          },
+          "feature_flags": {
+            "observe_first_enabled": true,
+            "passive_state_direct_apply": false,
+            "passive_config_direct_apply": false,
+            "external_write_policy": "record_only"
+          }
+        },
+        "messages": {
+          "count": 0,
+          "capacity": 16
+        },
+        "periodicity": {
+          "count": 0,
+          "capacity": 16
+        },
+        "counters": {
+          "series_budget_overflow_total": 0,
+          "periodicity_budget_overflow_total": 0
+        },
+        "specimen_families": 0,
+        "specimen_count": 0
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.bus.summary.get"
+  },
+  "bus_summary_admission_degraded": {
+    "arguments": {},
+    "changes_when": "1b durable control changes degraded admission retry projection",
+    "envelope": {
+      "data": {
+        "last_updated_at": "2001-02-03T04:05:06Z",
+        "status": {
+          "last_updated_at": "2001-02-03T04:05:06Z",
+          "transport_class": "synthetic",
+          "publisher_cadence_sec": 5,
+          "publisher_cadence_source": "default",
+          "capability": {
+            "active_supported": true,
+            "passive_supported": true,
+            "broadcast_supported": false,
+            "passive_available": false,
+            "passive_state": "warming_up",
+            "endpoint_state": "connected",
+            "tap_connected": false
+          },
+          "warmup": {
+            "state": "warming_up",
+            "completed_transactions": 0,
+            "required_transactions": 3
+          },
+          "timing_quality": {
+            "active": "estimated",
+            "passive": "unavailable",
+            "busy": "unavailable",
+            "periodicity": "unavailable"
+          },
+          "degraded": {
+            "active": false
+          },
+          "bus_admission": {
+            "source_selection": {
+              "state": "degraded",
+              "reason": "active_probe_failed",
+              "failed_source": 26,
+              "retryable": true,
+              "next_action": "retry",
+              "automatic_retry_scheduled": false
+            }
+          },
+          "startup": {
+            "last_updated_at": "2001-02-03T04:05:06Z",
+            "phase": "cache",
+            "cache_epoch": 1,
+            "live_epoch": 0
+          },
+          "feature_flags": {
+            "observe_first_enabled": true,
+            "passive_state_direct_apply": false,
+            "passive_config_direct_apply": false,
+            "external_write_policy": "record_only"
+          }
+        },
+        "messages": {
+          "count": 0,
+          "capacity": 16
+        },
+        "periodicity": {
+          "count": 0,
+          "capacity": 16
+        },
+        "counters": {
+          "series_budget_overflow_total": 0,
+          "periodicity_budget_overflow_total": 0
+        },
+        "specimen_families": 0,
+        "specimen_count": 0
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.bus.summary.get"
+  },
+  "bus_summary_admission_pending_warmup": {
+    "arguments": {},
+    "changes_when": "1b durable control changes bus admission/startup projection while source selection is pending",
+    "envelope": {
+      "data": {
+        "last_updated_at": "2001-02-03T04:05:06Z",
+        "status": {
+          "last_updated_at": "2001-02-03T04:05:06Z",
+          "transport_class": "synthetic",
+          "publisher_cadence_sec": 5,
+          "publisher_cadence_source": "default",
+          "capability": {
+            "active_supported": true,
+            "passive_supported": true,
+            "broadcast_supported": false,
+            "passive_available": false,
+            "passive_state": "warming_up",
+            "endpoint_state": "connected",
+            "tap_connected": false
+          },
+          "warmup": {
+            "state": "warming_up",
+            "completed_transactions": 0,
+            "required_transactions": 3
+          },
+          "timing_quality": {
+            "active": "estimated",
+            "passive": "unavailable",
+            "busy": "unavailable",
+            "periodicity": "unavailable"
+          },
+          "degraded": {
+            "active": false
+          },
+          "bus_admission": {
+            "source_selection": {
+              "state": "pending",
+              "reason": "source_selection_warmup_in_progress",
+              "retryable": true,
+              "automatic_retry_scheduled": false
+            }
+          },
+          "startup": {
+            "last_updated_at": "2001-02-03T04:05:06Z",
+            "phase": "cache",
+            "cache_epoch": 1,
+            "live_epoch": 0
+          },
+          "feature_flags": {
+            "observe_first_enabled": true,
+            "passive_state_direct_apply": false,
+            "passive_config_direct_apply": false,
+            "external_write_policy": "record_only"
+          }
+        },
+        "messages": {
+          "count": 0,
+          "capacity": 16
+        },
+        "periodicity": {
+          "count": 0,
+          "capacity": 16
+        },
+        "counters": {
+          "series_budget_overflow_total": 0,
+          "periodicity_budget_overflow_total": 0
+        },
+        "specimen_families": 0,
+        "specimen_count": 0
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.bus.summary.get"
+  },
+  "bus_summary_without_provider": {
+    "arguments": {},
+    "changes_when": "1a.2 registry seam always installs a bus observability provider",
+    "envelope": {
+      "rpc_error": {
+        "code": -32602,
+        "message": "unknown tool \"ebus.v1.bus.summary.get\""
+      }
+    },
+    "tool": "ebus.v1.bus.summary.get"
+  },
+  "identification_evidence_list": {
+    "arguments": {},
+    "changes_when": "identification evidence gains decoding/qualification or changes ordering (must stay raw, evidence grade separate from qualification)",
+    "envelope": {
+      "data": {
+        "evidence_class": "raw",
+        "decoded": false,
+        "qualification": "none",
+        "notice": "Raw bytes of the directed 07 04 identification exchange as seen by the gateway bus observer. request_hex is QQ ZZ PB SB NN [data]; response_hex is NN [data]; CRC and ACK bytes are not retained. Nothing is decoded, normalised or qualified.",
+        "session_id": "observer-synthetic-session",
+        "count": 2,
+        "items": [
+          {
+            "address": 42,
+            "sequence": 1,
+            "session_id": "observer-synthetic-session",
+            "captured_at": "2001-02-03T04:05:06Z",
+            "request_hex": "1a2a070400",
+            "response_hex": "05ee46414d41"
+          },
+          {
+            "address": 58,
+            "sequence": 2,
+            "session_id": "observer-synthetic-session",
+            "captured_at": "2001-02-03T04:05:07Z",
+            "request_hex": "1a3a070400",
+            "response_hex": "05ee46414d42"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.bus.identification_evidence.list"
+  },
+  "identification_evidence_list_limit_one": {
+    "arguments": {
+      "limit": 1
+    },
+    "changes_when": "limit stops keeping the newest sequence",
+    "envelope": {
+      "data": {
+        "evidence_class": "raw",
+        "decoded": false,
+        "qualification": "none",
+        "notice": "Raw bytes of the directed 07 04 identification exchange as seen by the gateway bus observer. request_hex is QQ ZZ PB SB NN [data]; response_hex is NN [data]; CRC and ACK bytes are not retained. Nothing is decoded, normalised or qualified.",
+        "session_id": "observer-synthetic-session",
+        "count": 2,
+        "items": [
+          {
+            "address": 58,
+            "sequence": 2,
+            "session_id": "observer-synthetic-session",
+            "captured_at": "2001-02-03T04:05:07Z",
+            "request_hex": "1a3a070400",
+            "response_hex": "05ee46414d42"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.bus.identification_evidence.list"
+  },
+  "runtime_status_admitted": {
+    "arguments": {},
+    "changes_when": "1b durable control or 1c bridge changes daemon/adapter status fields after admission",
+    "envelope": {
+      "data": {
+        "adapter_status": {
+          "status": "running",
+          "firmware_version": "char-adapter-1",
+          "updates_available": false
+        },
+        "daemon_status": {
+          "status": "running",
+          "firmware_version": "0.0.0-char",
+          "updates_available": true,
+          "initiator_address": "0x1A"
+        },
+        "vaillant_regulator_capability": "NONE"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.runtime.status.get"
+  },
+  "runtime_status_default_provider": {
+    "arguments": {},
+    "changes_when": "1a.2 registry seam installs a non-static default status provider or adds driver lifecycle fields to runtime status",
+    "envelope": {
+      "data": {
+        "adapter_status": {
+          "status": "unknown",
+          "firmware_version": "",
+          "updates_available": false
+        },
+        "daemon_status": {
+          "status": "running",
+          "firmware_version": "",
+          "updates_available": false
+        },
+        "vaillant_regulator_capability": "UNKNOWN"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.runtime.status.get"
+  },
+  "runtime_status_pre_admission": {
+    "arguments": {},
+    "changes_when": "1b durable control adds desired/observed driver state to runtime status or changes the pre-admission initiator projection",
+    "envelope": {
+      "data": {
+        "adapter_status": {
+          "status": "unknown",
+          "firmware_version": "",
+          "updates_available": false
+        },
+        "daemon_status": {
+          "status": "running",
+          "firmware_version": "0.0.0-char",
+          "updates_available": false,
+          "initiator_address": "auto"
+        },
+        "vaillant_regulator_capability": "PRESENT"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.runtime.status.get"
+  },
+  "runtime_status_unrecognised_capability": {
+    "arguments": {},
+    "changes_when": "a capability value outside NONE/PRESENT stops collapsing to UNKNOWN",
+    "envelope": {
+      "data": {
+        "adapter_status": {
+          "status": "unknown",
+          "firmware_version": "",
+          "updates_available": false
+        },
+        "daemon_status": {
+          "status": "running",
+          "firmware_version": "0.0.0-char",
+          "updates_available": false,
+          "initiator_address": "auto"
+        },
+        "vaillant_regulator_capability": "UNKNOWN"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.runtime.status.get"
+  },
+  "runtime_status_without_capability_method": {
+    "arguments": {},
+    "changes_when": "the capability probe stops being optional on the status provider",
+    "envelope": {
+      "data": {
+        "adapter_status": {
+          "status": "running",
+          "firmware_version": "char-adapter-1",
+          "updates_available": false
+        },
+        "daemon_status": {
+          "status": "running",
+          "firmware_version": "0.0.0-char",
+          "updates_available": true,
+          "initiator_address": "0x1A"
+        },
+        "vaillant_regulator_capability": "UNKNOWN"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "tool": "ebus.v1.runtime.status.get"
+  }
+}

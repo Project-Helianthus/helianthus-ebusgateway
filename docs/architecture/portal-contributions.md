@@ -55,6 +55,21 @@ changed generation instead of combining mismatched descriptor and data state.
 No provider can supply executable components, routes, query text or decoding.
 The host owns rendering, navigation, accessibility and transport policy.
 
+### Catalog and read coherence
+
+The browser issues two independent requests: `PortalCatalogV1` at the catalog
+endpoint, then `semanticSnapshot` at the ordinary GraphQL endpoint. Coherence
+between them is never assumed. The shared read is the sole authority for field
+values; catalog `fields[].value` is descriptive only and is never displayed as a
+second value. Before rendering any value, the client compares the catalog
+resource's `source` identity (asset ID, snapshot ID, revision vector, evaluation
+digest and driver generation, as the catalog already carries them) with the
+shared read's per-asset `snapshot` and `evaluation` identity. On mismatch it
+refetches both, at most two times. While refetching it shows an
+inconsistent/refreshing state and renders no values; if the mismatch persists it
+stays in the generation-conflict state below. Identities are compared exactly
+and never recomputed from the selected GraphQL response.
+
 Use M07's 1–32 distinct, byte-exact opaque asset IDs, coherent request capture,
 4 MiB whole-view limit and conflict/error semantics. Each readable entry carries
 `asset_id`, complete `snapshot`, `evaluation`, `projection`, and `selections`.
@@ -113,17 +128,18 @@ additive target `portal_read` block is host-produced transport metadata:
 {
   "portal_read": {
     "base_path": "/console/portal/",
-    "catalog_endpoint": "/console/graphql/portal/v1",
-    "snapshot_endpoint": "/console/graphql",
     "snapshot_operation": "semanticSnapshot",
     "stream_endpoint": null
   }
 }
 ```
 
-This block is proposed, not emitted by the current handler. Fetch descriptors
-through the existing fixed `PortalCatalogV1` operation on the catalog endpoint;
-obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)`
+This block is proposed, not emitted by the current handler. It adds no endpoint
+fields: the existing bootstrap `endpoints.portal_catalog` and `endpoints.graphql`
+members remain the authoritative catalog and shared-read URLs, so a separate
+`catalog_endpoint` or `snapshot_endpoint` is not introduced. Fetch descriptors
+through the existing fixed `PortalCatalogV1` operation on `endpoints.portal_catalog`;
+obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
 only once M07 exposure and applicable parity gates are accepted. Ask for the
 complete metadata needed above; recursively restore SemReg member names before
 treating GraphQL data as a kernel record. Never recompute source IDs/digests
@@ -184,6 +200,14 @@ bootstrap paths; production prefix support needs a separate implementation.
 The host retains its listener, proxy, TLS, origin and trust configuration.
 Prefix handling neither relaxes those controls nor introduces a new trust source.
 
+Only the enumerated read routes in the table above sit behind the embed prefix.
+Endpoints the entry point does not forward, for example `mcp` and `eebus_admin`,
+are omitted from the bootstrap response rather than advertised under the prefix.
+This is a route allowlist, not an authorization gate: it avoids accidental
+administrative-route exposure ([#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999))
+and keeps native protocol endpoints off Ingress
+([ha-addon #239](https://github.com/Project-Helianthus/helianthus-ha-addon/issues/239)).
+
 ## Stream and error states
 
 The existing SSE route remains a legacy Portal stream; its presence does not
@@ -206,7 +230,7 @@ Reconnect only to the same advertised URL, preserving prefix and query policy.
 | M07 per-asset unavailable reason | Show the reason for that asset; valid siblings remain readable. |
 | Stream disabled | Live updates unavailable; explicit read refresh remains usable. |
 | Stream disconnect/parse failure | Mark disconnected/degraded, retain last-known data with source freshness; never mark it fresh on reconnect. |
-| Generation conflict or whole-read limit exceeded | Display the contract error; do not splice/truncate a successful view. |
+| Generation conflict (catalog/read identity mismatch persisting after the bounded refetch, or a changed registry/publication generation) or whole-read limit exceeded | Display the inconsistent/contract error and no values; do not splice/truncate a successful view. |
 
 ## Already trusted external caller context
 
@@ -219,7 +243,7 @@ Only the existing host trust boundary can populate it; arbitrary identity,
 forwarding or prefix headers never become trusted merely by reaching Portal.
 
 Do not add users, principals, roles, login redirects or an authorization gate
-before 0.9. Preserve existing host trust configuration and native qualification,
+before the 0.11 authentication and authorization frameworks. Preserve existing host trust configuration and native qualification,
 read/write safeguards and fail-closed action admission. Existing catalog action
 interfaces are separate: this read-only adapter does not implement an authorizer,
 turn caller presence into permission, expose actions or enable invocation.

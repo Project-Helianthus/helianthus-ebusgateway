@@ -31,6 +31,8 @@ type ControlAttempt struct {
 }
 
 // AcceptedBatch is a complete replay step and its exact accepted result.
+// Delivery is at-least-once, keyed by asset, publication key, sequence and
+// digest; duplicate deliveries retain the original incarnation and HubSeq.
 // Batch is the JSON envelope; Canonical is the kernel's canonical snapshot.
 type AcceptedBatch struct {
 	Incarnation string
@@ -205,7 +207,24 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 			sources[epoch.Source] = src
 		}
 	}
+	// A checkpoint covers every declared asset of each restored source. An
+	// omitted entry cannot silently become an empty, readable asset.
+	named := make(map[semreg.AssetID]bool, len(record.Assets))
+	for _, entry := range record.Assets {
+		named[entry.Asset] = true
+	}
+	missing := false
+	for id, target := range h.assets {
+		if sources[target.source] != nil && !named[id] {
+			missing = true
+			record.Assets = append(record.Assets, RecoveryAsset{Asset: id})
+		}
+	}
 	h.mu.RUnlock()
+	if missing {
+		h.failRestoreAssets(record.Assets)
+		return fmt.Errorf("%w: incomplete source asset coverage", ErrRestore)
+	}
 	sourceIDs := make([]semreg.SourceID, 0, len(sources))
 	for id := range sources {
 		sourceIDs = append(sourceIDs, id)
@@ -244,13 +263,16 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	var failures []error
 	for i, entry := range record.Assets {
 		if err := h.restoreAsset(targets[i], entry); err != nil {
-			failures = append(failures, fmt.Errorf("%w: asset %s: %v", ErrRestore, entry.Asset, err))
+			failures = append(failures, fmt.Errorf("%w: asset %s: %w", ErrRestore, entry.Asset, err))
 		}
 	}
 	// Epoch history is inert and is never appended to the active EpochJournal.
 	h.lock()
 	for _, epoch := range record.Epochs {
 		h.epochHistory = append(h.epochHistory, cloneRecord(epoch))
+		if src := h.sources[epoch.Source]; src != nil {
+			src.epochs[epoch.Epoch] = true
+		}
 	}
 	h.unlock()
 	return errors.Join(failures...)
@@ -347,6 +369,9 @@ func (h *Hub) restoreAsset(target *asset, entry RecoveryAsset) (failure error) {
 	}
 	for id, kind := range claims {
 		h.ids[id] = idOwner{driver: target.driver, kind: kind}
+	}
+	for _, cursor := range snapshot.Cursors {
+		h.sources[target.source].epochs[cursor.SourceEpochID] = true
 	}
 	target.kernel, target.hubSeq, target.records = kernel, lastSeq, entry.Accepted
 	target.gate, target.restored = gate, true

@@ -502,3 +502,313 @@ func TestRecoveryUnsupportedRecordFailsNamedEmptyAssetsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryAcceptedReplayRetainsOriginalPosition(t *testing.T) {
+	for _, interruption := range []string{"after-commit", "accepted-hook"} {
+		t.Run(interruption, func(t *testing.T) {
+			var deliveries []AcceptedBatch
+			interrupted := false
+			hub, handle := populatedRecoveryHub(t, &RecoveryHooks{Accepted: func(record AcceptedBatch) {
+				deliveries = append(deliveries, record)
+				if interruption == "accepted-hook" && record.Cursor.LastSequence == "3" && !interrupted {
+					interrupted = true
+					panic("synthetic hook interruption")
+				}
+			}})
+			hub.faults = func(stage string, id semreg.AssetID) {
+				if interruption == "after-commit" && stage == interruption && id == recoveryAssets[0] && !interrupted {
+					interrupted = true
+					panic("synthetic commit interruption")
+				}
+			}
+			result, err := hub.Fence(FenceRequest{Source: handle.Source(), Epoch: handle.Epoch(), Generation: 1,
+				Reason: "semhubtest.stop", Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.fence")}, ObservedAt: testWall(3), Monotonic: testMono(3)})
+			if err == nil || !interrupted {
+				t.Fatal("expected interruption after acceptance")
+			}
+			hub.faults = nil
+			if _, err := hub.RetryControl(result.ID); err != nil {
+				t.Fatal(err)
+			}
+			record := hub.ExportRecovery()
+			var original *AcceptedBatch
+			duplicates := 0
+			// Model the service deduplicating callback deliveries by original position.
+			record.Assets[0].Accepted = nil
+			for _, delivery := range deliveries {
+				var batch semreg.PublicationBatch
+				if err := json.Unmarshal(delivery.Batch, &batch); err != nil {
+					t.Fatal(err)
+				}
+				if batch.AssetID != recoveryAssets[0] {
+					continue
+				}
+				if batch.Sequence == "3" {
+					if original != nil {
+						duplicates++
+						if !reflect.DeepEqual(*original, delivery) {
+							t.Fatal("duplicate acceptance changed its original result or position")
+						}
+						continue
+					}
+					copy := delivery
+					original = &copy
+				}
+				record.Assets[0].Accepted = append(record.Assets[0].Accepted, delivery)
+			}
+			if duplicates != 1 || original == nil || original.HubSeq != record.Assets[0].HubSeq {
+				t.Fatal("missing stable duplicate acceptance")
+			}
+			if err := recoveryHub(t, nil, func(ControlEvent) error { return nil }).Restore(record); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRecoveryOmittedAssetClosesRestoredSource(t *testing.T) {
+	hub, _ := populatedRecoveryHub(t, nil)
+	for _, historyOnly := range []bool{false, true} {
+		record := hub.ExportRecovery()
+		if historyOnly {
+			record.Assets = nil
+		} else {
+			record.Assets = record.Assets[:1]
+		}
+		fresh := recoveryHub(t, nil, nil)
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatal("incomplete source restored")
+		}
+		for _, id := range recoveryAssets {
+			if fresh.ReadAdmitted(id) || fresh.Settled(id) || fresh.Admitted(id) {
+				t.Fatal("omitted source asset left open")
+			}
+		}
+	}
+}
+
+func TestRecoveryEpochsCannotBeReadmitted(t *testing.T) {
+	hub, handle := populatedRecoveryHub(t, nil)
+	for _, material := range []string{"cursors", "history", "both"} {
+		t.Run(material, func(t *testing.T) {
+			record := hub.ExportRecovery()
+			switch material {
+			case "cursors":
+				record.Epochs = nil
+			case "history":
+				record = recoveryHub(t, nil, nil).ExportRecovery()
+				record.Epochs = hub.ExportRecovery().Epochs
+			}
+			fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+			if err := fresh.Restore(record); err != nil {
+				t.Fatal(err)
+			}
+			for _, generation := range []uint64{1, 2} {
+				if _, err := fresh.AdmitSource(Admission{Source: handle.Source(), Driver: "synthetic-family", Epoch: handle.Epoch(), Generation: generation, Legacy: LegacyGrowattStorage}); !errors.Is(err, ErrAdmission) {
+					t.Fatalf("restored epoch readmitted: %v", err)
+				}
+			}
+			newHandle := admitLegacy(t, fresh, handle.Source(), "synthetic-family", "epoch:fresh", 1)
+			for _, id := range recoveryAssets {
+				if err := fresh.Resettle(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tx, err := fresh.BeginEpoch(newHandle, recoveryAssets[0], handle.Epoch(), 2); !errors.Is(err, ErrAdmission) {
+				if tx != nil {
+					tx.Abort()
+				}
+				t.Fatalf("transition reused a restored epoch: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecoveryNegativeCheckpointPreconditions(t *testing.T) {
+	hub, handle := populatedRecoveryHub(t, nil)
+	publication := hub.ExportRecovery()
+	if err := fenceRecovery(t, hub, handle); err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string]func(*testing.T, *RecoveryAsset){
+		"source":                func(t *testing.T, a *RecoveryAsset) { a.Source = "source:other" },
+		"driver":                func(t *testing.T, a *RecoveryAsset) { a.Driver = "other-family" },
+		"pack":                  func(t *testing.T, a *RecoveryAsset) { a.Packs[0].ID = "other.pack" },
+		"hub-sequence":          func(t *testing.T, a *RecoveryAsset) { a.Accepted[1].HubSeq = a.Accepted[0].HubSeq },
+		"control-identity":      func(t *testing.T, a *RecoveryAsset) { a.Control.Status.ID.Source = "source:other" },
+		"control-attempt-count": func(t *testing.T, a *RecoveryAsset) { a.Control.Status.Attempts++ },
+		"control-digest":        func(t *testing.T, a *RecoveryAsset) { a.Control.Attempts[0].Digest = "sha256:corrupt" },
+		"fence-generation":      func(t *testing.T, a *RecoveryAsset) { a.Control.Generation++ },
+		"retire-metadata":       func(t *testing.T, a *RecoveryAsset) { a.Control.Kind = ControlRetire },
+		"fence-metadata": func(t *testing.T, a *RecoveryAsset) {
+			a.Control.Status.Semantic = SemanticRejected
+			var batch semreg.PublicationBatch
+			if err := json.Unmarshal(a.Control.Attempts[0].Batch, &batch); err != nil {
+				t.Fatal(err)
+			}
+			batch.GenerationFences = batch.GenerationFences[:0]
+			digest, err := batch.ComputedDigest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch.BatchDigest = digest
+			a.Control.Attempts[0].Digest = digest
+			a.Control.Attempts[0].Batch, err = json.Marshal(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			record := hub.ExportRecovery()
+			mutate(t, &record.Assets[0])
+			fresh := recoveryHub(t, nil, nil)
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatal("corrupt checkpoint accepted")
+			}
+			if view, _ := fresh.Inspect(recoveryAssets[0]); view.Present {
+				t.Fatal("corrupt checkpoint installed")
+			}
+			// Assert each public predicate independently, including a nil gate.
+			if fresh.ReadAdmitted(recoveryAssets[0]) {
+				t.Error("ReadAdmitted ignored restore failure")
+			}
+			if fresh.Settled(recoveryAssets[0]) {
+				t.Error("Settled ignored restore failure")
+			}
+			if fresh.Admitted(recoveryAssets[0]) {
+				t.Error("Admitted ignored restore failure")
+			}
+		})
+	}
+	t.Run("publication-only-truncation", func(t *testing.T) {
+		publication.Assets[0].Accepted = publication.Assets[0].Accepted[:1]
+		if err := recoveryHub(t, nil, nil).Restore(publication); !errors.Is(err, ErrRestore) {
+			t.Fatal("truncated publication-only log accepted")
+		}
+	})
+	t.Run("undeclared-asset", func(t *testing.T) {
+		record := hub.ExportRecovery()
+		record.Assets[0].Asset = "asset:undeclared"
+		if err := recoveryHub(t, nil, nil).Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatal("undeclared asset accepted")
+		}
+	})
+	for _, state := range []string{"hub-sequence", "records", "restored", "failed"} {
+		t.Run("populated-"+state, func(t *testing.T) {
+			fresh := recoveryHub(t, nil, nil)
+			// Isolate asset preconditions from the separate source admission guard.
+			target := fresh.assets[recoveryAssets[0]]
+			switch state {
+			case "hub-sequence":
+				target.hubSeq = 1
+			case "records":
+				target.records = []AcceptedBatch{{}}
+			case "restored":
+				target.restored = true
+			case "failed":
+				target.restoreFailed = true
+			}
+			if err := fresh.Restore(hub.ExportRecovery()); !errors.Is(err, ErrRestore) {
+				t.Fatal("populated asset accepted without prior admission")
+			}
+		})
+	}
+}
+
+func TestRecoverySupersededDuringExportIsNotSubmitted(t *testing.T) {
+	entered := make(chan ControlID, 1)
+	release, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hub, handle := populatedRecoveryHub(t, &RecoveryHooks{BeforeControl: func(attempt ControlAttempt) error {
+		if attempt.Asset == recoveryAssets[0] {
+			entered <- attempt.Control
+			<-release
+		}
+		return nil
+	}})
+	var failure error
+	go func() { failure = fenceRecovery(t, hub, handle); close(done) }()
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("control did not finish")
+		}
+	})
+	select {
+	case id := <-entered:
+		if err := hub.AbandonControl(id); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("export did not start")
+	}
+	once.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("control did not finish")
+	}
+	if !errors.Is(failure, ErrControlAbandoned) {
+		t.Fatalf("abandoned export submitted: %v", failure)
+	}
+	if len(hub.ExportRecovery().Assets[0].Accepted) != 2 {
+		t.Fatal("abandoned attempt committed")
+	}
+}
+
+func TestRecoveryExportRefusalRequiresAbandonAndReissue(t *testing.T) {
+	refusal := errors.New("synthetic storage refusal")
+	refuse := true
+	hub, handle := populatedRecoveryHub(t, &RecoveryHooks{BeforeControl: func(ControlAttempt) error {
+		if refuse {
+			return refusal
+		}
+		return nil
+	}})
+	request := FenceRequest{Source: handle.Source(), Epoch: handle.Epoch(), Generation: 1,
+		Reason: "semhubtest.stop", Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.fence")}, ObservedAt: testWall(3), Monotonic: testMono(3)}
+	result, err := hub.Fence(request)
+	if !errors.Is(err, refusal) {
+		t.Fatalf("refusal cause lost: %v", err)
+	}
+	before := hub.ExportRecovery()
+	if status := before.Assets[0].Control.Status; status.ErrorID != "semhub.control_export_refused" || status.Semantic != SemanticRejected {
+		t.Fatal("refusal lacks explicit terminal error")
+	}
+	if before.Assets[1].Control.Status.Semantic != SemanticUnbuilt {
+		t.Fatal("control continued after refusal")
+	}
+	refuse = false
+	if _, err := hub.RetryControl(result.ID); !errors.Is(err, refusal) {
+		t.Fatalf("terminal refusal retried: %v", err)
+	}
+	if !reflect.DeepEqual(before, hub.ExportRecovery()) {
+		t.Fatal("retry changed refused bytes or cursor")
+	}
+	if err := hub.AbandonControl(result.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Fence(request); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range hub.ExportRecovery().Assets {
+		if len(entry.Accepted) != 3 {
+			t.Fatal("reissue did not commit exactly once")
+		}
+	}
+}
+
+func TestRecoveryPreservesSemRegErrorCause(t *testing.T) {
+	hub, _ := populatedRecoveryHub(t, nil)
+	record := hub.ExportRecovery()
+	record.Assets[0].Accepted[0].Monotonic = semreg.MonotonicPoint{}
+	err := recoveryHub(t, nil, nil).Restore(record)
+	var cause *semreg.Error
+	if !errors.Is(err, ErrRestore) || !errors.As(err, &cause) || !errors.Is(err, cause) {
+		t.Fatalf("restore lost SemReg error cause: %v", err)
+	}
+}

@@ -843,7 +843,7 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 		var exportErr error
 		h.outsideControlLocks(ca, func() { exportErr = h.recovery.BeforeControl(staged) })
 		if exportErr != nil {
-			return h.reject(ca, exportErr)
+			return h.reject(ca, fmt.Errorf("%w: %w", &semreg.Error{ID: "semhub.control_export_refused", Detail: "BeforeControl refused submission"}, exportErr))
 		}
 		h.mu.RLock()
 		superseded := op.abandoned || target.gate != ca
@@ -906,6 +906,9 @@ func (h *Hub) submit(ca *controlAsset, mode submitMode) (failure error) {
 			last := &target.records[len(target.records)-1]
 			if !replayed || last.HubSeq == 0 && last.Cursor == recovery.Cursor {
 				last.HubSeq = seq
+			}
+			if replayed && last.Cursor == recovery.Cursor {
+				recovery = *last
 			}
 		}
 		ca.hubSeq, ca.snapshot, ca.canonical = seq, snapshot, canonical

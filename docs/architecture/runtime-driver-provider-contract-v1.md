@@ -569,10 +569,19 @@ and persisted monotonic point before submission, and can refuse submission.
 result after commit, including the exact canonical snapshot, snapshot ID,
 revision vector, cursor/digest, incarnation, and HubSeq. Publication intent can
 be exported after `Apply` and before `Commit`; that draft is never acceptance.
+Accepted delivery is at-least-once: the service deduplicates by asset,
+publication key (source, epoch, generation), sequence and digest. A replayed
+control acceptance retains its original incarnation, HubSeq and exact result;
+a new event position does not identify a new accepted batch.
 An accepted callback cannot roll back a committed batch. Callbacks run outside
 the hub, source and asset locks while the exact pending attempt remains reserved;
 they must not reenter a hub mutation. Storage failures and uncertain response windows remain
-the service's WAL obligations.
+the service's WAL obligations. A `BeforeControl` refusal is a terminal
+`Rejected` outcome with error ID `semhub.control_export_refused`; `RetryControl`
+does not retry that refusal. After repairing storage, the service must
+`AbandonControl` and issue a new fence or retirement request. The rejected
+attempt's exact bytes remain historical; the new operation builds its own
+attempt from the current snapshot. No refused attempt advances a cursor.
 
 `ExportRecovery` captures a coherent detached record of declaration identities,
 pack references, every accepted batch in per-asset commit order, its original
@@ -586,16 +595,27 @@ restore point permits compaction. Default production hubs do not collect it.
 
 Restore requires the same declared asset/source/driver identity and compatible
 validators, empty asset kernels, and no prior admission of an affected source
-in the new incarnation, including withdrawn admissions. It replays accepted
-publication and control batches on detached kernels using the persisted
-monotonic points, verifies every exact result, and reinstates retained
+in the new incarnation, including withdrawn admissions. Every declared asset
+of a source named by asset entries or epoch history must be present; missing
+coverage rejects the record and closes that source's empty assets. Restored
+cursor and history epoch IDs are reserved against admission and epoch
+transitions, even with a different generation: restoration requires a new epoch.
+It replays accepted publication and control batches on detached kernels using
+the persisted monotonic points, verifies every exact result, and reinstates retained
 history/tombstones and per-key cursors. A corrupt step or changed validator
 behavior installs no partial asset state and leaves that asset closed;
 independent valid assets may restore but remain closed too until each fresh
 family reprojection acknowledges its restored snapshot through `Resettle`.
-A missing callback cannot acknowledge restoration. Historical settlement grants
-no current read acknowledgement. Outstanding semantic gates remain closed;
-the future service must resolve their original WAL work before new admission.
+A missing callback cannot acknowledge restoration. The current prerequisite
+uses a synthetic reprojection gate for publication-only and empty entries:
+`Resettle` reports `Kind=generation_fenced` with a zero `ControlID` when no
+historical control exists. For a never-published entry that callback view has
+`Present=true` and an empty `SnapshotID`; it acknowledges rebuilding an empty
+cache, not a publication or fence. Consumers must use the empty snapshot ID
+and zero control identity to recognize this case. `Inspect` continues to report
+that entry as absent. These callback markers confer no control authority.
+Historical settlement grants no current read acknowledgement. Outstanding
+semantic gates remain closed; the future service must resolve their original WAL work before new admission.
 Prior admissions, activations, revocations, and retirements remain inert
 history and never create live handles, native-close proof, or a current epoch.
 No historical control operation is revived as a current-incarnation retry.

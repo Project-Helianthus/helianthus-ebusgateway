@@ -37,6 +37,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          # The persistent runner keeps its module directory; restoring the
+          # setup-go cache over it only adds tar conflicts and minutes.
+          cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -61,6 +64,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          # The persistent runner keeps its module directory; restoring the
+          # setup-go cache over it only adds tar conflicts and minutes.
+          cache: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -84,6 +90,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          # The persistent runner keeps its module directory; restoring the
+          # setup-go cache over it only adds tar conflicts and minutes.
+          cache: false
       - uses: golangci/golangci-lint-action@v8
         with:
           # Keep in sync with GOLANGCI_LINT_EXPECTED_VERSION in scripts/ci_local.sh.

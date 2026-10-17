@@ -67,7 +67,7 @@ func TestM2MRateLimitMalformedRequestsSpendBudgetAndRelease(t *testing.T) {
 func TestM2MRequestBudgetReleasesOnPanic(t *testing.T) {
 	var now atomic.Int64
 	h := newRateLimitTableHandler(t, &now)
-	wrapped, err := RequestBudget(h, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("handler failure") }))
+	wrapped, err := RequestBudget(h, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("handler failure") }), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,11 +87,11 @@ func TestM2MRequestBudgetReleasesOnPanic(t *testing.T) {
 }
 
 func TestM2MRequestBudgetRejectsForeignOwner(t *testing.T) {
-	if _, err := RequestBudget(http.NotFoundHandler(), http.NotFoundHandler()); err == nil {
+	if _, err := RequestBudget(http.NotFoundHandler(), http.NotFoundHandler(), nil); err == nil {
 		t.Fatal("request budget accepted a handler that owns no budget table")
 	}
 	var now atomic.Int64
-	if _, err := RequestBudget(newRateLimitTableHandler(t, &now), nil); err == nil {
+	if _, err := RequestBudget(newRateLimitTableHandler(t, &now), nil, nil); err == nil {
 		t.Fatal("request budget accepted a nil wrapped handler")
 	}
 }
@@ -106,7 +106,7 @@ func TestM2MRequestBudgetSharesGraphQLTableAndRefusal(t *testing.T) {
 			<-unblock
 		}
 		w.WriteHeader(http.StatusOK)
-	}))
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,4 +143,37 @@ func errorCode(body string) string {
 		}
 	}
 	return ""
+}
+
+func TestM2MRequestBudgetCustomRefusalLeavesGraphQLRefusalUnchanged(t *testing.T) {
+	var now atomic.Int64
+	h := newRateLimitTableHandler(t, &now)
+	entered, unblock := make(chan struct{}), make(chan struct{})
+	wrapped, err := RequestBudget(h, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RemoteAddr == "192.0.2.50:1" {
+			close(entered)
+			<-unblock
+		}
+		w.WriteHeader(http.StatusOK)
+	}), func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"custom":"refused"}`))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan int, 1)
+	go func() { done <- serveRaw(wrapped, http.MethodGet, "/v1/snapshot", "192.0.2.50:1", nil).Code }()
+	<-entered
+	custom := serveRaw(wrapped, http.MethodGet, "/v1/changes", "192.0.2.50:2", nil)
+	if custom.Code != http.StatusServiceUnavailable || custom.Body.String() != `{"custom":"refused"}` {
+		t.Fatalf("custom refusal=%d %s", custom.Code, custom.Body.String())
+	}
+	assertLimitRefusal(t, serveRaw(h, http.MethodPost, route, "192.0.2.50:3", unreadableBody{t}))
+	if other := serveRaw(wrapped, http.MethodGet, "/v1/snapshot", "192.0.2.51:1", nil); other.Code != http.StatusOK || other.Body.Len() != 0 {
+		t.Fatalf("different host refused: %d %s", other.Code, other.Body.String())
+	}
+	close(unblock)
+	<-done
 }

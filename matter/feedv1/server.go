@@ -219,6 +219,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
 }
+
+// WriteUnavailable answers a request the listener refuses before it reaches
+// the feed (for example a spent per-host request budget) with the feed's own
+// unavailable error, so the response stays inside the published schema.
+func WriteUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusServiceUnavailable, "unavailable")
+}
 func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, errorResponse{Contract: Contract, Error: code})
 }

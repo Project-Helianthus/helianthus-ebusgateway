@@ -142,8 +142,8 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 			return nil, errors.New("matter binding feed handler configuration is invalid")
 		}
 		// The Matter routes spend the same per-host request budget as GraphQL
-		// before reaching the feed's serialized catalog capture.
-		budgetedMatter, err := m2mgraphql.RequestBudget(graphqlHandler, http.StripPrefix("/matter-binding", matterHandler))
+		// before the serialized capture; a refusal is the feed's own error.
+		budgetedMatter, err := m2mgraphql.RequestBudget(graphqlHandler, http.StripPrefix("/matter-binding", matterHandler), feedv1.WriteUnavailable)
 		if err != nil {
 			return nil, errors.New("matter binding feed request budget is unavailable")
 		}

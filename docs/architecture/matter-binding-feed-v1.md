@@ -47,21 +47,23 @@ or parsed, and released on every exit path:
 | Pressure eviction | least recently used entry without a request in flight |
 | In-flight entries | never evicted; the table exceeds 4096 only by in-flight entries |
 
-A refused request receives the GraphQL error envelope with code
-`REQUEST_LIMIT_EXCEEDED`, an empty path and HTTP 200 on every route of the
-listener, before any feed capture, cursor parse or intent decode. A new host is
-never refused because the table is full; pressure can only evict an idle or
+A refused request is answered before any feed capture, cursor parse or intent
+decode. On the GraphQL route it receives the GraphQL error envelope with code
+`REQUEST_LIMIT_EXCEEDED`, an empty path and HTTP 200. On the three feed routes
+it receives the feed's own schema-defined error, `{"contract": ..., "error":
+"unavailable"}`, with HTTP 503, so the response stays inside the feed schema. A
+new host is never refused because the table is full; pressure can only evict an idle or
 released entry, which returns with a full budget.
 
 | Vector | Expected outcome |
 | --- | --- |
 | Client without a certificate, client CA configured | handshake accepted; feed served |
 | Certificate that fails the configured client CA or is denied | handshake rejected |
-| Second concurrent feed request from one host | `REQUEST_LIMIT_EXCEEDED` before capture |
-| Feed request from a host whose GraphQL request is in flight | `REQUEST_LIMIT_EXCEEDED` (shared budget) |
+| Second concurrent feed request from one host | feed error `unavailable`, HTTP 503, before capture |
+| Feed request from a host whose GraphQL request is in flight | feed error `unavailable`, HTTP 503 (shared budget) |
 | Concurrent feed request from a different host | admitted; waits for the serialized capture |
 | Malformed body from a refused host | refused without reading the body |
-| Third request from one host within one second | `REQUEST_LIMIT_EXCEEDED` |
+| Third GraphQL request from one host within one second | `REQUEST_LIMIT_EXCEEDED` |
 
 ## Target and ownership pins
 

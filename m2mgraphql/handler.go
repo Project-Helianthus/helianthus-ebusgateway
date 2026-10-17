@@ -163,9 +163,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // per-host request budget owned by budget, which must be a handler returned by
 // NewHandler. The wrapped routes share that handler's bounded table, key
 // derivation and refusal response, so one remote host has a single budget
-// across the GraphQL route and every route wrapped here. It carries no
-// identity and grants no access.
-func RequestBudget(budget http.Handler, next http.Handler) (http.Handler, error) {
+// across the GraphQL route and every route wrapped here. A refused request is
+// answered by refuse, which lets a wrapped route use its own protocol's error
+// shape; a nil refuse writes the GraphQL refusal. It carries no identity and
+// grants no access.
+func RequestBudget(budget http.Handler, next http.Handler, refuse func(http.ResponseWriter)) (http.Handler, error) {
 	owner, ok := budget.(*handler)
 	if !ok || owner == nil {
 		return nil, errors.New("request budget owner must be an M2M GraphQL handler")
@@ -173,15 +175,23 @@ func RequestBudget(budget http.Handler, next http.Handler) (http.Handler, error)
 	if next == nil {
 		return nil, errors.New("request budget requires a wrapped handler")
 	}
-	return owner.budgeted(next), nil
+	return owner.budgetedWith(next, refuse), nil
 }
 
 // budgeted admits the request before next runs and releases the entry on every
 // exit path, including a panic unwinding through next.
 func (h *handler) budgeted(next http.Handler) http.Handler {
+	return h.budgetedWith(next, nil)
+}
+
+func (h *handler) budgetedWith(next http.Handler, refuse func(http.ResponseWriter)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit := h.admit(requestRateLimitKey(r))
 		if limit == nil {
+			if refuse != nil {
+				refuse(w)
+				return
+			}
 			writeError(w, "", "REQUEST_LIMIT_EXCEEDED")
 			return
 		}

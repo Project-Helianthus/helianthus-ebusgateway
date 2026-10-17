@@ -362,8 +362,11 @@ func TestM2MRuntimeMatterRoutesShareThePerHostRequestBudget(t *testing.T) {
 	matterRefusal := serveRefused(http.MethodGet, "/matter-binding/v1/changes?cursor=x:1", "198.51.100.7:40002", "")
 	graphqlBody := `{"operationName":"SemanticPVCurrent","query":"query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","assetRef":"pv-asset-known"}}}`
 	graphqlRefusal := serveRefused(http.MethodPost, "/graphql/m2m/v1", "198.51.100.7:40003", graphqlBody)
-	if !strings.Contains(matterRefusal.Body.String(), `"REQUEST_LIMIT_EXCEEDED"`) || matterRefusal.Code != graphqlRefusal.Code || matterRefusal.Body.String() != graphqlRefusal.Body.String() {
-		t.Fatalf("concurrent same-host Matter refusal=%d %s; GraphQL refusal=%d %s", matterRefusal.Code, matterRefusal.Body.String(), graphqlRefusal.Code, graphqlRefusal.Body.String())
+	if matterRefusal.Code != http.StatusServiceUnavailable || strings.TrimSpace(matterRefusal.Body.String()) != `{"contract":"`+feedv1.Contract+`","error":"unavailable"}` {
+		t.Fatalf("concurrent same-host Matter refusal=%d %s; want the feed's unavailable error", matterRefusal.Code, matterRefusal.Body.String())
+	}
+	if graphqlRefusal.Code != http.StatusOK || !strings.Contains(graphqlRefusal.Body.String(), `"REQUEST_LIMIT_EXCEEDED"`) || !strings.Contains(graphqlRefusal.Body.String(), `"path":[]`) {
+		t.Fatalf("GraphQL refusal changed: %d %s", graphqlRefusal.Code, graphqlRefusal.Body.String())
 	}
 	// A different host has its own budget: it is admitted and then waits for
 	// the feed's serialized capture rather than being refused.

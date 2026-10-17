@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -41,6 +43,8 @@ func TestSchemaCorpusMatchesFeedWireValues(t *testing.T) {
 		"intent":      intent,
 		"execution":   execution,
 		"error":       map[string]any{"contract": Contract, "error": "invalid_intent"},
+		// The listener's spent-budget refusal must stay inside the schema.
+		"budget_refusal": budgetRefusalWire(t),
 	}
 	for name, value := range valid {
 		t.Run(name, func(t *testing.T) {
@@ -285,4 +289,18 @@ func feedSchemaPointer(root map[string]any, reference string) (map[string]any, e
 		return nil, fmt.Errorf("reference %q is not a schema", reference)
 	}
 	return result, nil
+}
+
+func budgetRefusalWire(t *testing.T) any {
+	t.Helper()
+	response := httptest.NewRecorder()
+	WriteUnavailable(response)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("budget refusal status=%d content-type=%q", response.Code, response.Header().Get("Content-Type"))
+	}
+	var value map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }

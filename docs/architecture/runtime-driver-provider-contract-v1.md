@@ -597,7 +597,9 @@ Restore requires the same declared asset/source/driver identity and compatible
 validators, empty asset kernels, and no prior admission of an affected source
 in the new incarnation, including withdrawn admissions. Every declared asset
 of a source named by asset entries or epoch history must be present; missing
-coverage rejects the record and closes that source's empty assets. Restored
+coverage rejects the record and closes that source's empty assets. Checkpoint
+entries with undeclared asset IDs also reject the record and close all empty
+assets of the source identified by the rejected entry. Restored
 cursor and history epoch IDs are reserved against admission and epoch
 transitions, even with a different generation: restoration requires a new epoch.
 It replays accepted publication and control batches on detached kernels using

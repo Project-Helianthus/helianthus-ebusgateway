@@ -195,6 +195,13 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	for i, entry := range record.Assets {
 		target := h.assets[entry.Asset]
 		if target == nil || i > 0 && entry.Asset == record.Assets[i-1].Asset {
+			// An invalid asset ID must not bypass closure of its source's
+			// declared empty assets when source coverage cannot be checked.
+			for id, declared := range h.assets {
+				if declared.source == entry.Source {
+					record.Assets = append(record.Assets, RecoveryAsset{Asset: id})
+				}
+			}
 			h.mu.RUnlock()
 			h.failRestoreAssets(record.Assets)
 			return fmt.Errorf("%w: missing or duplicate asset", ErrRestore)

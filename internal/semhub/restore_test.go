@@ -691,8 +691,14 @@ func TestRecoveryNegativeCheckpointPreconditions(t *testing.T) {
 	t.Run("undeclared-asset", func(t *testing.T) {
 		record := hub.ExportRecovery()
 		record.Assets[0].Asset = "asset:undeclared"
-		if err := recoveryHub(t, nil, nil).Restore(record); !errors.Is(err, ErrRestore) {
+		fresh := recoveryHub(t, nil, nil)
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
 			t.Fatal("undeclared asset accepted")
+		}
+		for _, id := range recoveryAssets {
+			if fresh.ReadAdmitted(id) || fresh.Settled(id) || fresh.Admitted(id) {
+				t.Fatalf("undeclared checkpoint left source asset %s open", id)
+			}
 		}
 	})
 	for _, state := range []string{"hub-sequence", "records", "restored", "failed"} {

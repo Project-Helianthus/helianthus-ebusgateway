@@ -61,14 +61,50 @@ The browser issues two independent requests: `PortalCatalogV1` at the catalog
 endpoint, then `semanticSnapshot` at the ordinary GraphQL endpoint. Coherence
 between them is never assumed. The shared read is the sole authority for field
 values; catalog `fields[].value` is descriptive only and is never displayed as a
-second value. Before rendering any value, the client compares the catalog
-resource's `source` identity (asset ID, snapshot ID, revision vector, evaluation
-digest and driver generation, as the catalog already carries them) with the
-shared read's per-asset `snapshot` and `evaluation` identity. On mismatch it
-refetches both, at most two times. While refetching it shows an
-inconsistent/refreshing state and renders no values; if the mismatch persists it
-stays in the generation-conflict state below. Identities are compared exactly
-and never recomputed from the selected GraphQL response.
+second value.
+
+Coherence uses a clock-independent source identity, not the evaluation digest.
+Each request reevaluates the same stored snapshot at its own instant, so its
+evaluation clocks (`evaluated_at`, `evaluate_monotonic`) and the evaluation
+digest over them differ between any two requests even when the underlying data
+is unchanged. An exact digest comparison across independent requests would
+therefore never converge and would hide unchanged data. **Proven** from the
+current code: the Storage current-read reevaluates at each supplied instant
+without changing the stored snapshot or its revisions, and the catalog digest
+covers the whole evaluation including those clocks.
+
+Participating fields, compared exactly, from the catalog resource `source` and
+the shared read's per-asset entry: asset ID, snapshot ID, the complete snapshot
+revision vector, driver generation, source epoch and binding ID. Excluded
+fields: the evaluation digest, `evaluated_at`, `evaluate_monotonic` and any other
+evaluation clock coordinate. Render freshness and disposition solely from the
+shared read's captured evaluation, selections and projection, never from the
+catalog's evaluation or eligibility. Validate the shared tuple's internal
+snapshot/revision and evaluation references under M07; cross-request evaluation
+equality is not required. Before rendering any value,
+the client requires the participating fields to be equal. Sequential reads of
+unchanged data then converge to equal identities. A new publication or driver
+generation changes the identity, which is the intended mismatch.
+
+On mismatch the client refetches both requests, at most two times. While
+refetching it shows an inconsistent/refreshing state and renders no values; if
+the mismatch persists it stays in the generation-conflict state below. It never
+presents rows from one response under the identity of the other. Identities are
+compared exactly and never recomputed from the selected GraphQL response. The
+shared GraphQL read is **Unknown** in the current code (not yet exposed), so
+this rule is the contract it must satisfy; the catalog side already carries every
+participating field.
+
+Implementation acceptance must exercise sequential catalog/shared reads:
+
+| Sequence | Required result |
+| --- | --- |
+| Unchanged Storage publication; evaluation clocks and digests advance on every request | Publication/lifecycle identities match; render on the first pair without refetching. Repeated pairs remain readable. |
+| Same publication; shared evaluation crosses a freshness boundary after catalog capture | Render the shared read's updated freshness/disposition, including withholding values when required by M07; do not retain catalog freshness or refetch solely for evaluation drift. |
+| Publication, binding, source epoch or driver generation changes between requests | Withhold values and refetch both within the bound; render once a pair matches. Persistent mismatch remains a generation conflict. |
+
+These are required tests for the future shared-read implementation, not claims
+of current production coverage.
 
 Use M07's 1–32 distinct, byte-exact opaque asset IDs, coherent request capture,
 4 MiB whole-view limit and conflict/error semantics. Each readable entry carries

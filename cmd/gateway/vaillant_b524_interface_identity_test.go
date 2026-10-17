@@ -206,7 +206,7 @@ func TestB524InterfaceIdentityExactFields(t *testing.T) {
 }
 
 func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
-	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "address", "source", "session", "registryGeneration", "missing version", "missing revision", "expired", "future", "zero time"} {
+	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "address", "source", "session", "registryGeneration", "missing version", "missing revision"} {
 		t.Run(field, func(t *testing.T) {
 			reg, poller, bus := newB524InterfaceIdentityFixture(t)
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
@@ -232,12 +232,6 @@ func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
 				record.identity.APIVersion = ""
 			case "missing revision":
 				record.identity.Revision = ""
-			case "expired":
-				record.acquiredAt = time.Now().Add(-b524InterfaceIdentityMaxAge)
-			case "future":
-				record.acquiredAt = time.Now().Add(time.Hour)
-			case "zero time":
-				record.acquiredAt = time.Time{}
 			}
 			store.records[0x15] = record
 			store.mu.Unlock()
@@ -249,8 +243,8 @@ func TestB524InterfaceIdentityProvenanceFields(t *testing.T) {
 	}
 }
 
-func TestB524InterfaceIdentitySwapAndExpiry(t *testing.T) {
-	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "generation", "age"} {
+func TestB524InterfaceIdentitySwap(t *testing.T) {
+	for _, field := range []string{"EID", "SoftwareRaw", "HardwareRaw", "generation"} {
 		t.Run(field, func(t *testing.T) {
 			reg, poller, bus := newB524InterfaceIdentityFixture(t)
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
@@ -262,17 +256,8 @@ func TestB524InterfaceIdentitySwapAndExpiry(t *testing.T) {
 				info.SoftwareVersion = "0218"
 			case "HardwareRaw":
 				info.HardwareVersion = "8804"
-			case "age":
-				store := b524InterfaceIdentities(reg)
-				store.mu.Lock()
-				record := store.records[0x15]
-				record.acquiredAt = time.Now().Add(-b524InterfaceIdentityMaxAge)
-				store.records[0x15] = record
-				store.mu.Unlock()
 			}
-			if field != "age" {
-				reg.Register(info)
-			}
+			reg.Register(info)
 			assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
 			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
 			if len(bus.requests()) != 4 {
@@ -415,5 +400,68 @@ func TestB524InterfaceIdentityRegistryAndSourceIsolation(t *testing.T) {
 	assertB524InterfaceBound(t, poller, 20, "controller_profile")
 	if len(bus.requests()) != 4 {
 		t.Fatal("source change did not acquire exactly two new replies")
+	}
+}
+
+// The record has no wall-clock lifetime: with no background scan it keeps the
+// matched bound however long ago it was acquired, without any new bus read.
+func TestB524InterfaceIdentityNoWallClockExpiry(t *testing.T) {
+	reg, poller, bus := newB524InterfaceIdentityFixture(t)
+	enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+	assertB524InterfaceBound(t, poller, 20, "controller_profile")
+	store := b524InterfaceIdentities(reg)
+	for _, age := range []time.Duration{6 * time.Minute, 2 * time.Hour, 48 * time.Hour} {
+		store.mu.Lock()
+		record := store.records[0x15]
+		record.acquiredAt = time.Now().Add(-age)
+		store.records[0x15] = record
+		store.mu.Unlock()
+		assertB524InterfaceBound(t, poller, 20, "controller_profile")
+	}
+	if len(bus.requests()) != 2 {
+		t.Fatal("aged record triggered reads")
+	}
+}
+
+func TestB524InterfaceIdentityGenerationAndSessionInvalidate(t *testing.T) {
+	t.Run("registry generation", func(t *testing.T) {
+		reg, poller, bus := newB524InterfaceIdentityFixture(t)
+		enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+		assertB524InterfaceBound(t, poller, 20, "controller_profile")
+		// Same identity registered again still advances the generation.
+		reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV0", SoftwareVersion: "0217", HardwareVersion: "8803"})
+		assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
+		if len(bus.requests()) != 2 {
+			t.Fatal("overlay validation acquired data")
+		}
+	})
+	t.Run("session", func(t *testing.T) {
+		reg, poller, bus := newB524InterfaceIdentityFixture(t)
+		enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+		assertB524InterfaceBound(t, poller, 20, "controller_profile")
+		store := b524InterfaceIdentities(reg)
+		store.mu.Lock()
+		store.sessions[0x15]++
+		store.mu.Unlock()
+		assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
+	})
+}
+
+func TestB524InterfaceIdentityNonVaillantFamilyNoReadsNoOverlay(t *testing.T) {
+	reg, poller, bus := newB524InterfaceIdentityFixture(t)
+	reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Other", DeviceID: "BASV0", SoftwareVersion: "0217", HardwareVersion: "8803"})
+	enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+	if n := len(bus.requests()); n != 0 {
+		t.Fatalf("non-Vaillant controller received %d OP00 reads", n)
+	}
+	if id := poller.controllerB524Identity(); id.APIVersion != "" || id.Revision != "" {
+		t.Fatalf("non-Vaillant overlay present: %+v", id)
+	}
+	store := b524InterfaceIdentities(reg)
+	store.mu.Lock()
+	_, stored := store.records[0x15]
+	store.mu.Unlock()
+	if stored {
+		t.Fatal("non-Vaillant record stored")
 	}
 }

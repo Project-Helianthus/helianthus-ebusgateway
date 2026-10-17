@@ -1,14 +1,12 @@
 package main
 
 import (
-	"time"
-
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 )
 
-// controllerB524Identity overlays only complete, fresh discovery data from the
+// controllerB524Identity overlays only complete discovery data from the
 // same registry identity, generation and scan source. It never sends a request.
 func (p *vaillantSemanticPoller) controllerB524Identity() vaillantsystem.B524ControllerIdentity {
 	if p == nil {
@@ -21,7 +19,7 @@ func (p *vaillantSemanticPoller) controllerB524Identity() vaillantsystem.B524Con
 	if !ok {
 		return vaillantsystem.B524ControllerIdentity{}
 	}
-	return storedB524InterfaceIdentity(p.reg, controller, source, identity, generation, time.Now())
+	return storedB524InterfaceIdentity(p.reg, controller, source, identity, generation)
 }
 
 func configBoundEquals(a, b *graphql.ConfigBound) bool {

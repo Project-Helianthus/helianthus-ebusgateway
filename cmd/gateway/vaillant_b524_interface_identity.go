@@ -15,9 +15,10 @@ import (
 	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
 )
 
-// This age limit and the numeric guards below are conservative gateway policy,
-// not additional OP00 protocol semantics or installation qualification.
-const b524InterfaceIdentityMaxAge = 5 * time.Minute
+// The numeric guards below are conservative gateway policy, not additional
+// OP00 protocol semantics or installation qualification. A record has no
+// wall-clock lifetime: it stays valid only while the registry generation, the
+// session, the source and the registry identity still match.
 
 type b524InterfaceIdentityRecord struct {
 	identity           vaillantsystem.B524ControllerIdentity
@@ -43,11 +44,6 @@ func b524InterfaceIdentities(reg *registry.DeviceRegistry) *b524InterfaceIdentit
 		sessions: make(map[byte]uint64), records: make(map[byte]b524InterfaceIdentityRecord),
 	})
 	return store.(*b524InterfaceIdentityStore)
-}
-
-func b524InterfaceIdentityFresh(record b524InterfaceIdentityRecord, now time.Time) bool {
-	age := now.Sub(record.acquiredAt)
-	return !record.acquiredAt.IsZero() && age >= 0 && age < b524InterfaceIdentityMaxAge
 }
 
 func b524InterfaceQualifier(data []byte) (string, bool) {
@@ -100,7 +96,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 		base.APIVersion, base.Revision = "", ""
 		if exists && base == identity && previous.identity.APIVersion != "" && previous.identity.Revision != "" &&
 			previous.address == address && previous.source == source && previous.session == store.sessions[address] &&
-			previous.registryGeneration == generation && b524InterfaceIdentityFresh(previous, time.Now()) {
+			previous.registryGeneration == generation {
 			store.mu.Unlock()
 			continue
 		}
@@ -153,7 +149,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 	}
 }
 
-func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source byte, identity vaillantsystem.B524ControllerIdentity, generation uint64, now time.Time) vaillantsystem.B524ControllerIdentity {
+func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source byte, identity vaillantsystem.B524ControllerIdentity, generation uint64) vaillantsystem.B524ControllerIdentity {
 	value, found := b524InterfaceIdentityStores.Load(reg)
 	if !found {
 		return identity
@@ -167,7 +163,7 @@ func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source b
 		base.APIVersion, base.Revision = "", ""
 		if ok && record.identity.APIVersion != "" && record.identity.Revision != "" && base == identity && record.address == address && record.source == source &&
 			record.registryGeneration == generation && current == generation &&
-			record.session == store.sessions[address] && b524InterfaceIdentityFresh(record, now) {
+			record.session == store.sessions[address] {
 			identity = record.identity
 		}
 	})

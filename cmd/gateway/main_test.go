@@ -393,24 +393,57 @@ func TestShouldStartPassiveObserveFirst(t *testing.T) {
 }
 
 func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing.T) {
+	cfgForDedup := ebusgateway.DefaultConfig()
+	deduplicator, err := ebusgateway.NewActivePassiveDeduplicator(cfgForDedup)
+	if err != nil {
+		t.Fatalf("NewActivePassiveDeduplicator() error = %v", err)
+	}
+
+	runtimeStatePath := t.TempDir() + "/runtime_state.json"
+
 	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origAttachPassiveShadowProducerFn := attachPassiveShadowProducerFn
 	origStartHTTPServerFn := startHTTPServerFn
+
+	ctx, cancel := context.WithCancel(context.Background())
+	httpEntered := make(chan struct{})
+	httpRelease := make(chan struct{})
+	releaseHTTP := func() {
+		select {
+		case <-httpRelease:
+		default:
+			close(httpRelease)
+		}
+	}
+	done := make(chan struct{})
+	var runErr error
+	deadline, ok := t.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	watchdog := func() *time.Timer {
+		// Reserve half the remaining test budget for cancellation and joining.
+		return time.NewTimer(time.Until(deadline) / 2)
+	}
 	t.Cleanup(func() {
+		cancel()
+		releaseHTTP()
+		timer := watchdog()
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			t.Error("run() did not exit during cleanup; hooks were not restored")
+			return
+		}
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
 		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
 		attachPassiveShadowProducerFn = origAttachPassiveShadowProducerFn
 		startHTTPServerFn = origStartHTTPServerFn
 	})
-
-	cfgForDedup := ebusgateway.DefaultConfig()
-	deduplicator, err := ebusgateway.NewActivePassiveDeduplicator(cfgForDedup)
-	if err != nil {
-		t.Fatalf("NewActivePassiveDeduplicator() error = %v", err)
-	}
 
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, deduplicator, nil
@@ -424,61 +457,75 @@ func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing
 		return poller
 	}
 
-	attached := make(chan struct{}, 1)
-	attachErr := make(chan string, 1)
+	type attachment struct {
+		poller       *vaillantSemanticPoller
+		deduplicator *ebusgateway.ActivePassiveDeduplicator
+	}
+	attached := make(chan attachment, 1)
 	attachPassiveShadowProducerFn = func(gotPoller *vaillantSemanticPoller, _ context.Context, gotDeduplicator *ebusgateway.ActivePassiveDeduplicator) error {
-		if gotPoller != poller {
-			select {
-			case attachErr <- "attach poller mismatch":
-			default:
-			}
-			return nil
-		}
-		if gotDeduplicator != deduplicator {
-			select {
-			case attachErr <- "attach deduplicator mismatch":
-			default:
-			}
-			return nil
-		}
-		select {
-		case attached <- struct{}{}:
-		default:
-		}
+		attached <- attachment{poller: gotPoller, deduplicator: gotDeduplicator}
 		return nil
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
+		close(httpEntered)
+		<-httpRelease
 		return nil, nil, nil
 	}
 
 	cfg := ebusgateway.DefaultConfig()
+	cfg.RuntimeStatePath = runtimeStatePath
 	cfg.Transport = transport.NewLoopback()
 	cfg.BroadcastListen = false
 	cfg.ObserveFirstEnabled = true
 	cfg.PassiveStateDirectApply = true
 
-	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg)
+		runErr = run(ctx, cfg)
+		close(done)
 	}()
 
+	timer := watchdog()
+	defer timer.Stop()
+	select {
+	case <-httpEntered:
+	case <-done:
+		t.Fatalf("run() exited before HTTP callback: %v", runErr)
+	case <-timer.C:
+		t.Fatal("HTTP callback was not reached")
+	}
+	// Deliberately hold the HTTP callback until the test observes its entry.
+	// Attachment must still happen after this callback is released.
 	select {
 	case <-attached:
-	case msg := <-attachErr:
-		t.Fatal(msg)
-	case <-time.After(2 * time.Second):
+		t.Fatal("passive shadow attached before the delayed HTTP callback returned")
+	default:
+	}
+	releaseHTTP()
+
+	select {
+	case got := <-attached:
+		if got.poller != poller {
+			t.Error("attach poller mismatch")
+		}
+		if got.deduplicator != deduplicator {
+			t.Error("attach deduplicator mismatch")
+		}
+		if err := ctx.Err(); err != nil {
+			t.Errorf("context canceled before attachment was observed: %v", err)
+		}
+	case <-done:
+		t.Fatalf("run() exited before passive shadow attachment: %v", runErr)
+	case <-timer.C:
 		t.Fatal("attachPassiveShadowProducerFn was not called")
 	}
 
+	cancel()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run() error = %v", err)
+	case <-done:
+		if runErr != nil {
+			t.Fatalf("run() error = %v", runErr)
 		}
-	case <-time.After(2 * time.Second):
+	case <-timer.C:
 		t.Fatal("run() did not exit after context cancellation")
 	}
 }

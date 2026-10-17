@@ -90,7 +90,7 @@ produce no public artifact. These bounds are proposed, not current limits.
 | Field or class | Proposed allowed public content | Proposed omitted/changed selection and loss |
 | --- | --- | --- |
 | `format_version` | Existing literal discriminator | No alternate format or stability promise |
-| `generated_at`, every `captured_at`, `at`, `captured_utc`; Explorer `started_utc`, `finished_utc` | No absolute times in this public selection | Omit rather than invent a clock; disclose `withheld_time`. This changes today's output, including mandatory timestamp fields; consumer compatibility remains to be tested |
+| `generated_at`, every `captured_at`, `at`, `captured_utc`; Explorer `started_utc`, `finished_utc` | No absolute times in this public selection | Omit rather than invent a clock; disclose `withheld_time` and report freshness as unknown, never fresh or stale without a disclosed reference instant. This changes today's output, including mandatory timestamp fields; consumer compatibility remains to be tested |
 | `title`, `filename_hint` | Generic issue description and corresponding generic filename | Remove identities, installation labels, build identifiers and user-supplied private text; filename character filtering alone is insufficient |
 | `markdown` context and all free text | Reviewed observation, family-level context, separate evidence/hypothesis/unknown statements and loss notes | Withhold build identifiers, contributor identities, coordinates, secrets, private reproduction detail, original controller/device identifiers and capture times; inspect code fences and duplicated evidence too |
 | `evidence.snapshots[].id`, timeline/provenance `correlation_id` | Bundle-local opaque aliases, consistently remapped where a relationship is known | Do not export original identifiers, time-derived identifiers, source hashes or stable cross-export fingerprints; aliases prove neither identity nor continuity |
@@ -127,7 +127,10 @@ Outcomes are collected, failed, unavailable, or unknown; freshness is fresh,
 stale, or unknown; disclosure is included, partial, or withheld. These are
 proposed narrative terms, not new JSON enum fields. An empty current array or
 absent callback does not by itself establish any of them. Freshness needs an
-owner-provided criterion and trustworthy observation; otherwise write unknown.
+owner-provided criterion, trustworthy observation and a disclosed reference
+instant for that evaluation; otherwise write unknown. Since this public
+selection withholds all absolute times, freshness must be unknown throughout
+the bundle; do not label any component fresh or stale.
 No global freshness label may conceal mixed components.
 
 For every included artifact, identify it by an opaque alias such as
@@ -144,8 +147,9 @@ global artifact identity and persistence are outside this slice.
 
 Where independently available, preserve lineage relationships through consistent
 aliases after redaction. On source replacement, use a different source alias;
-retain the old source's last-known artifact separately as historical/stale only
-when that classification is supported. Never rebind an old receipt or evaluation
+retain the old source's last-known artifact separately as historical only
+when that classification is supported, with freshness unknown when its reference
+instant is withheld. Never rebind an old receipt or evaluation
 to the new source, merge generations, or label old values current because a new
 source is present. If replacement cannot be established, report source continuity
 unknown. A failed component must not erase valid last-known fields from other
@@ -177,13 +181,13 @@ illustrations, not claims that current providers supply them. Status and
 lineage remain prose in `markdown`; no new schema is implied. No specimen
 contains private native evidence, a digest, or a capture time.
 
-### Mixed fresh and stale components
+### Mixed components with freshness withheld
 
 ```json
 {
   "format_version": "helianthus-issue-bundle/v1",
   "title": "Mixed component observations",
-  "markdown": "Synthetic. Timeline artifact-a: collected/fresh/partial under an assumed producer freshness criterion. Snapshot artifact-b: collected/stale/partial under that same assumed criterion. Source, receipt and evaluation links unknown: lineage_unknown. Registry: unknown/unknown/withheld. Absolute times withheld_time; snapshot payload unsafe_raw_evidence. Proven: retained summary reports energy-object presence. Hypothesis: components may have diverged. Unknown: native values, qualification and admission. This selection cannot prove wire behavior.",
+  "markdown": "Synthetic. Timeline artifact-a: collected/unknown/partial. Snapshot artifact-b: collected/unknown/partial. Freshness unknown for both because the evaluation reference instant is withheld_time, even if a producer classified them differently locally. Source, receipt and evaluation links unknown: lineage_unknown. Registry: unknown/unknown/withheld. Absolute times withheld_time; snapshot payload unsafe_raw_evidence. Proven: retained summary reports energy-object presence. Hypothesis: components may have diverged. Unknown: native values, qualification and admission. This selection cannot prove wire behavior.",
   "evidence": {
     "snapshots": [{"id": "artifact-b", "payload": {}}],
     "timeline": [{"type": "snapshot", "layer": "composite", "correlation_id": "artifact-a", "payload": {"semantic": {"has_energy": true, "energy_series": true}}, "provenance": {"source": "poll:composite", "dropped": 0, "interval_ms": 1000}}],
@@ -224,7 +228,7 @@ evidence and must not be inferred from an absent or empty `registry_devices`.
 {
   "format_version": "helianthus-issue-bundle/v1",
   "title": "Source continuity investigation",
-  "markdown": "Synthetic assumed external lineage: artifact-a belongs to source-a, receipt-a and evaluation-a; source-b replaced source-a. Snapshot artifact-a: collected/stale/partial, historical. New source-b receipt and evaluation: unknown, lineage_unknown; no new artifact asserted. Timeline and provenance: unknown/unknown/withheld, not_collected in this scenario. Registry: unknown/unknown/withheld. Native payload unsafe_raw_evidence; times withheld_time. Hypothesis: replacement may explain discontinuity. Unknown: current values, qualification and admission. Source-a evidence must not be attributed to source-b.",
+  "markdown": "Synthetic assumed external lineage: artifact-a belongs to source-a, receipt-a and evaluation-a; source-b replaced source-a. Snapshot artifact-a: collected/unknown/partial, historical; freshness unknown because the evaluation reference instant is withheld_time. New source-b receipt and evaluation: unknown, lineage_unknown; no new artifact asserted. Timeline and provenance: unknown/unknown/withheld, not_collected in this scenario. Registry: unknown/unknown/withheld. Native payload unsafe_raw_evidence; times withheld_time. Hypothesis: replacement may explain discontinuity. Unknown: current values, qualification and admission. Source-a evidence must not be attributed to source-b.",
   "evidence": {"snapshots": [{"id": "artifact-a", "payload": {}}]},
   "filename_hint": "source-continuity-investigation.json"
 }
@@ -263,7 +267,7 @@ Manual source review covers envelope and nested inventory against
 `handleIssueExport`, `buildIssueDraft`, `collectIssueEvidence`,
 `buildSnapshotPayload`, the serialized structs and Explorer result types. The
 selection table and four cases are proposals reviewed against those limits:
-mixed freshness has no current freshness basis; component failure has no
+mixed components have no disclosed freshness reference; component failure has no
 structured callback outcome; replacement has no generation lineage; unavailable
 evidence has no authoritative reason field. Opaque aliases, allowlisting,
 redaction of both evidence copies, byte limits and omission narratives all need

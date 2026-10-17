@@ -403,23 +403,83 @@ func TestB524InterfaceIdentityRegistryAndSourceIsolation(t *testing.T) {
 	}
 }
 
-// The record has no wall-clock lifetime: with no background scan it keeps the
-// matched bound however long ago it was acquired, without any new bus read.
-func TestB524InterfaceIdentityNoWallClockExpiry(t *testing.T) {
-	reg, poller, bus := newB524InterfaceIdentityFixture(t)
-	enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
-	assertB524InterfaceBound(t, poller, 20, "controller_profile")
-	store := b524InterfaceIdentities(reg)
-	for _, age := range []time.Duration{6 * time.Minute, 2 * time.Hour, 48 * time.Hour} {
-		store.mu.Lock()
-		record := store.records[0x15]
-		record.acquiredAt = time.Now().Add(-age)
-		store.records[0x15] = record
-		store.mu.Unlock()
-		assertB524InterfaceBound(t, poller, 20, "controller_profile")
+func TestB524InterfaceIdentityFreshness(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name       string
+		acquiredAt time.Time
+		want       bool
+	}{
+		{"fresh", now, true},
+		{"before expiry", now.Add(-5*time.Minute + time.Nanosecond), true},
+		{"at expiry", now.Add(-5 * time.Minute), true},
+		{"expired", now.Add(-5*time.Minute - time.Nanosecond), false},
+		{"missing", time.Time{}, false},
+		{"future", now.Add(time.Nanosecond), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := b524InterfaceIdentityRecord{acquiredAt: tc.acquiredAt}
+			if got := record.fresh(now); got != tc.want {
+				t.Fatalf("fresh = %v; want %v", got, tc.want)
+			}
+		})
 	}
-	if len(bus.requests()) != 2 {
-		t.Fatal("aged record triggered reads")
+}
+
+func TestB524InterfaceIdentityExpiryAndRefresh(t *testing.T) {
+	for _, failedRefresh := range []bool{false, true} {
+		name := "complete refresh"
+		if failedRefresh {
+			name = "partial refresh"
+		}
+		t.Run(name, func(t *testing.T) {
+			reg, poller, bus := newB524InterfaceIdentityFixture(t)
+			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+			assertB524InterfaceBound(t, poller, 20, "controller_profile")
+			store := b524InterfaceIdentities(reg)
+			store.mu.Lock()
+			record := store.records[0x15]
+			record.acquiredAt = time.Now().Add(-5*time.Minute - time.Second)
+			store.records[0x15] = record
+			store.mu.Unlock()
+
+			// Unchanged provenance cannot keep expired qualifiers in either
+			// the enforced bound or the GraphQL/MCP publication. No read occurs.
+			assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
+			if len(bus.requests()) != 2 {
+				t.Fatal("expired overlay triggered reads")
+			}
+			bus.reply = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+				if failedRefresh && frame.Data[1] == 7 {
+					return nil, context.DeadlineExceeded
+				}
+				return &protocol.Frame{Data: b524InterfaceFloat(1)}, nil
+			}
+			refreshStarted := time.Now()
+			enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+			if len(bus.requests()) != 4 {
+				t.Fatalf("requests = %d; want two new qualifier reads", len(bus.requests()))
+			}
+			if failedRefresh {
+				assertB524InterfaceBound(t, poller, 50, "unmatched_policy")
+				id := poller.controllerB524Identity()
+				if id.APIVersion != "" || id.Revision != "" {
+					t.Fatalf("partial refresh retained qualifiers: %+v", id)
+				}
+			} else {
+				assertB524InterfaceBound(t, poller, 20, "controller_profile")
+				store.mu.Lock()
+				refreshed := store.records[0x15]
+				store.mu.Unlock()
+				if refreshed.acquiredAt.Before(refreshStarted) || refreshed.session <= record.session || refreshed.registryGeneration != record.registryGeneration {
+					t.Fatalf("refresh provenance = %+v; previous = %+v", refreshed, record)
+				}
+				enrichB524InterfaceIdentity(context.Background(), reg, bus, 0x71, 0)
+			}
+			if len(bus.requests()) != 4 {
+				t.Fatal("publication or fresh cache reuse triggered reads")
+			}
+		})
 	}
 }
 

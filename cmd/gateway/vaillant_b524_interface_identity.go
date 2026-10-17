@@ -16,9 +16,9 @@ import (
 )
 
 // The numeric guards below are conservative gateway policy, not additional
-// OP00 protocol semantics or installation qualification. A record has no
-// wall-clock lifetime: it stays valid only while the registry generation, the
-// session, the source and the registry identity still match.
+// OP00 protocol semantics or installation qualification. Records are reusable
+// for at most five minutes, while the registry generation, session, source and
+// registry identity still match.
 
 type b524InterfaceIdentityRecord struct {
 	identity           vaillantsystem.B524ControllerIdentity
@@ -27,6 +27,11 @@ type b524InterfaceIdentityRecord struct {
 	registryGeneration uint64
 	acquiredAt         time.Time
 	raw                [2][4]byte
+}
+
+func (record b524InterfaceIdentityRecord) fresh(now time.Time) bool {
+	age := now.Sub(record.acquiredAt)
+	return !record.acquiredAt.IsZero() && age >= 0 && age <= 5*time.Minute
 }
 
 type b524InterfaceIdentityStore struct {
@@ -96,7 +101,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 		base.APIVersion, base.Revision = "", ""
 		if exists && base == identity && previous.identity.APIVersion != "" && previous.identity.Revision != "" &&
 			previous.address == address && previous.source == source && previous.session == store.sessions[address] &&
-			previous.registryGeneration == generation {
+			previous.registryGeneration == generation && previous.fresh(time.Now()) {
 			store.mu.Unlock()
 			continue
 		}
@@ -163,7 +168,7 @@ func storedB524InterfaceIdentity(reg *registry.DeviceRegistry, address, source b
 		base.APIVersion, base.Revision = "", ""
 		if ok && record.identity.APIVersion != "" && record.identity.Revision != "" && base == identity && record.address == address && record.source == source &&
 			record.registryGeneration == generation && current == generation &&
-			record.session == store.sessions[address] {
+			record.session == store.sessions[address] && record.fresh(time.Now()) {
 			identity = record.identity
 		}
 	})

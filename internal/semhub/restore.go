@@ -510,9 +510,9 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		if ValidateOpaque(epoch.Incarnation) != nil || ValidateOpaque(string(epoch.Source)) != nil || ValidateOpaque(string(epoch.Epoch)) != nil || epoch.Generation == 0 {
 			return errors.New("invalid epoch identity")
 		}
-		if _, ok := record.Regimes[epoch.Source]; !ok {
-			return errors.New("missing source identity regime")
-		}
+		// Epoch history alone does not fix a regime: a withdrawn first admission
+		// leaves history behind and returns the source to an unfixed regime.
+		// Published entries (below) do require the regime that produced them.
 		switch epoch.Kind {
 		case EventEpochAdmitted, EventGenerationActivated:
 			if len(epoch.Assets) != 0 {

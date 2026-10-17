@@ -1061,3 +1061,33 @@ func TestRecoveryRejectsMissingOrInvalidIdentityRegime(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryWithdrawnFirstAdmissionRoundTrips(t *testing.T) {
+	origin, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustDeclare(t, origin, "asset:withdrawn", "source:withdrawn", "growatt_storage", nil)
+	handle, err := origin.AdmitSource(Admission{Source: "source:withdrawn", Driver: "growatt_storage", Legacy: LegacyGrowattStorage, Epoch: "epoch:withdrawn", Generation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := origin.Withdraw(handle); err != nil {
+		t.Fatal(err)
+	}
+	record := origin.ExportRecovery()
+	if len(record.Epochs) == 0 {
+		t.Fatal("fixture must carry the withdrawn admission's history")
+	}
+	fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustDeclare(t, fresh, "asset:withdrawn", "source:withdrawn", "growatt_storage", nil)
+	if err := fresh.Restore(record); err != nil {
+		t.Fatalf("valid checkpoint after a withdrawn first admission rejected: %v", err)
+	}
+	if _, err := fresh.AdmitSource(Admission{Source: "source:withdrawn", Driver: "growatt_storage", Legacy: LegacyGrowattStorage, Epoch: "epoch:withdrawn", Generation: 1}); !errors.Is(err, ErrAdmission) {
+		t.Fatalf("the withdrawn admission's epoch must stay reserved: %v", err)
+	}
+}

@@ -130,9 +130,10 @@ contracts; visibility through HA, Portal or an output does not grant write autho
 ## Blank candidate result template
 
 Every candidate result below starts **Not run**, with evidence **Unknown** and
-qualification **Unassessed**. Evidence grades are **Proven / Hypothesis / Unknown**;
-qualification and admission are separate decisions. Proven for one bounded
-observation does not qualify a family, codec, profile, write or binding.
+qualification and admission **Unassessed**. Evidence grades are
+**Proven / Hypothesis / Unknown**; qualification and admission are separate
+decisions. Proven for one bounded observation does not qualify a family, codec,
+profile, write or binding.
 
 For each later result, record the M44 association, family/topology/firmware and
 operation scope, procedure/case reference, expected versus actual observation,
@@ -142,32 +143,32 @@ package alongside its interpretation. A family summary requires per-case account
 it cannot conceal an unexecuted or blocked case. Failed or unverified rows stay
 unaccepted. The tables below do not duplicate K05/K06 evidence indexes.
 
-| Case / family | Governing reference and scope | Result | Evidence grade | Qualification |
-|---|---|---|---|---|
-| T01–T04 | [Smoke matrix][matrix]: direct adapter, four transport cases | Not run | Unknown | Unassessed |
-| T05–T08 | [Smoke matrix][matrix]: via ebusd-tcp, four cases; retain documented expected-fail inventory | Not run | Unknown | Unassessed |
-| T09–T24 | [Smoke matrix][matrix]: proxy single-client, sixteen cases | Not run | Unknown | Unassessed |
-| T25–T88 | [Smoke matrix][matrix]: proxy dual-client, sixty-four cases | Not run | Unknown | Unassessed |
-| PX01–PX12 | [Proxy adjunct][px]: additional proof when proxy wire semantics are in scope | Not run | Unknown | Unassessed |
-| AD01 | [K06 AD01][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD02 | [K06 AD02][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD03 | [K06 AD03][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD04 | [K06 AD04][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD05 | [K06 AD05][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD06 | [K06 AD06][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD07 | [K06 AD07][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD08 | [K06 AD08][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD09 | [K06 AD09][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD10 | [K06 AD10][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD11 | [K06 AD11][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| AD12 | [K06 AD12][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed |
-| P01 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed |
-| P02 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed |
-| P03 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed |
-| P04 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed |
-| P05 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed |
-| P06 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed |
-| ESERA / FOLLOWUP-01 | [K05][k05]: boundary, four independent decisions and negative controls; capture remains pending | Not run | Unknown | Unassessed |
+| Case / family | Governing reference and scope | Result | Evidence grade | Qualification | Admission |
+|---|---|---|---|---|---|
+| T01–T04 | [Smoke matrix][matrix]: direct adapter, four transport cases | Not run | Unknown | Unassessed | Unassessed |
+| T05–T08 | [Smoke matrix][matrix]: via ebusd-tcp, four cases; retain documented expected-fail inventory | Not run | Unknown | Unassessed | Unassessed |
+| T09–T24 | [Smoke matrix][matrix]: proxy single-client, sixteen cases | Not run | Unknown | Unassessed | Unassessed |
+| T25–T88 | [Smoke matrix][matrix]: proxy dual-client, sixty-four cases | Not run | Unknown | Unassessed | Unassessed |
+| PX01–PX12 | [Proxy adjunct][px]: additional proof when proxy wire semantics are in scope | Not run | Unknown | Unassessed | Unassessed |
+| AD01 | [K06 AD01][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD02 | [K06 AD02][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD03 | [K06 AD03][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD04 | [K06 AD04][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD05 | [K06 AD05][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD06 | [K06 AD06][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD07 | [K06 AD07][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD08 | [K06 AD08][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD09 | [K06 AD09][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD10 | [K06 AD10][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD11 | [K06 AD11][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| AD12 | [K06 AD12][k06]; use that ID's assertion and evidence requirements | Not run | Unknown | Unassessed | Unassessed |
+| P01 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
+| P02 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
+| P03 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
+| P04 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
+| P05 | [Passive gate](../../scripts/passive_smoke_gate.sh): required passive proof within the owning topology scope | Not run | Unknown | Unassessed | Unassessed |
+| P06 | [Passive gate](../../scripts/passive_smoke_gate.sh): unsupported_or_misconfigured rejection, not passive receipt proof | Not run | Unknown | Unassessed | Unassessed |
+| ESERA / FOLLOWUP-01 | [K05][k05]: boundary, four independent decisions and negative controls; capture remains pending | Not run | Unknown | Unassessed | Unassessed |
 
 The P03 [bounded observe-first proof][p03] is specific to its proxy-backed ENS
 family; it does not supply ESERA proof or universal passive capability.
@@ -177,40 +178,40 @@ P/N namespaces are local to each retained family. LEGACY-MUX has no P/N IDs in
 the retained source: use its existing ID and complete the owning disposition,
 positive/negative, live-observable and transport obligations without inventing IDs.
 
-| Retained ID | Governing reference | Result | Evidence grade | Qualification |
-|---|---|---|---|---|
-| LEGACY-PERSIST P1 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST P2 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST P3 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST P4 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST P5 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST P6 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST N1 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST N2 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST N3 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-PERSIST N4 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P1 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P2 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P3 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P4 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P5 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY P6 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY N1 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY N2 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY N3 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY N4 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-IDENTITY N5 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed |
-| LEGACY-MUX | [Retained acceptance][legacy-mux] | Not run | Unknown | Unassessed |
+| Retained ID | Governing reference | Result | Evidence grade | Qualification | Admission |
+|---|---|---|---|---|---|
+| LEGACY-PERSIST P1 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST P2 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST P3 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST P4 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST P5 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST P6 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST N1 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST N2 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST N3 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-PERSIST N4 | [Retained acceptance][legacy-persist] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P1 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P2 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P3 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P4 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P5 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY P6 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY N1 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY N2 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY N3 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY N4 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-IDENTITY N5 | [Retained acceptance][legacy-identity] | Not run | Unknown | Unassessed | Unassessed |
+| LEGACY-MUX | [Retained acceptance][legacy-mux] | Not run | Unknown | Unassessed | Unassessed |
 
-| Consumer / output / prior evidence | Governing reference and candidate scope | Result | Evidence grade | Qualification |
-|---|---|---|---|---|
-| HA/Ingress routing | [HA checklist][ha]: root/prefix navigation, assets, bootstrap, GraphQL, websocket and SSE, reconnect and session expiry | Not run | Unknown | Unassessed |
-| HA/Ingress trust | [HA checklist][ha]: denied untrusted/direct access and spoofed headers; selective publication independently checked | Not run | Unknown | Unassessed |
-| HA/Ingress lifecycle and identity | [HA checklist][ha], [smoke runbook][smoke]: onboarding, restart/update, preserved configuration/instance identity, fresh defaults and consumer compatibility | Not run | Unknown | Unassessed |
-| Explorer Pi | [Offline card][explorer] is fixture/build evidence only; Pi procedure pending owner assignment | Not run | Unknown | Unassessed |
-| INT-12 eeBUS output binding | [Plan][plan] and [native participation owner][eebus-owner]; accepted contract/procedure pending | Not run | Unknown | Unassessed |
-| INT-13 Matter output binding | [Projection contract](../architecture/matter-output-binding-v1.md) plus [native binding owner][matter-owner]; projection alone supplies no runtime or fabric evidence | Not run | Unknown | Unassessed |
-| Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Unassessed |
+| Consumer / output / prior evidence | Governing reference and candidate scope | Result | Evidence grade | Qualification | Admission |
+|---|---|---|---|---|---|
+| HA/Ingress routing | [HA checklist][ha]: root/prefix navigation, assets, bootstrap, GraphQL, websocket and SSE, reconnect and session expiry | Not run | Unknown | Unassessed | Unassessed |
+| HA/Ingress trust | [HA checklist][ha]: denied untrusted/direct access and spoofed headers; selective publication independently checked | Not run | Unknown | Unassessed | Unassessed |
+| HA/Ingress lifecycle and identity | [HA checklist][ha], [smoke runbook][smoke]: onboarding, restart/update, preserved configuration/instance identity, fresh defaults and consumer compatibility | Not run | Unknown | Unassessed | Unassessed |
+| Explorer Pi | [Offline card][explorer] is fixture/build evidence only; Pi procedure pending owner assignment | Not run | Unknown | Unassessed | Unassessed |
+| INT-12 eeBUS output binding | [Plan][plan] and [native participation owner][eebus-owner]; accepted contract/procedure pending | Not run | Unknown | Unassessed | Unassessed |
+| INT-13 Matter output binding | [Projection contract](../architecture/matter-output-binding-v1.md) plus [native binding owner][matter-owner]; projection alone supplies no runtime or fabric evidence | Not run | Unknown | Unassessed | Unassessed |
+| Prior RTU evidence applicability | [R01 upstream PR][rtu], [J19 gateway PR][rtu-pin]; historical evidence only, no repeated hardware session scheduled | Not run | Unknown | Unassessed | Unassessed |
 
 ### Prior RTU evidence and its limits
 

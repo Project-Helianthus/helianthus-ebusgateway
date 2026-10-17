@@ -1389,13 +1389,13 @@ func TestServer_ToolsCallBusObservability(t *testing.T) {
 }
 
 func TestServer_ToolsCallSemanticSnapshots(t *testing.T) {
-	// The test deadline is an outer watchdog only; snapshot expiry is controlled
-	// by provider barriers rather than elapsed wall-clock time.
-	watchdogDeadline, ok := t.Deadline()
-	if !ok {
-		watchdogDeadline = time.Now().Add(180 * time.Second)
+	// Reserve time before the process timeout for diagnostics and provider cleanup.
+	// Snapshot expiry is controlled by provider barriers, not this outer watchdog.
+	watchdogTimeout := 180 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		watchdogTimeout = min(watchdogTimeout, time.Until(deadline)/2)
 	}
-	watchdogCtx, stopWatchdog := context.WithDeadline(context.Background(), watchdogDeadline)
+	watchdogCtx, stopWatchdog := context.WithTimeout(context.Background(), watchdogTimeout)
 	t.Cleanup(stopWatchdog)
 	withoutTimer := func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 		return context.WithCancel(parent)

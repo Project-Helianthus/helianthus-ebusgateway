@@ -138,10 +138,21 @@ profile, write or binding.
 For each later result, record the M44 association, family/topology/firmware and
 operation scope, procedure/case reference, expected versus actual observation,
 public-safe evidence link and section, omissions/stop reason, independent review,
-qualification and admission separately. Keep raw native evidence outside the public
+qualification and admission separately. Every AD, passive, retained and consumer
+row that leaves **Not run** links its own per-row evidence record carrying exactly
+these fields; the Result cell cites that record, and a row without one stays
+**Not run**, whatever the observation. Keep raw native evidence outside the public
 package alongside its interpretation. A family summary requires per-case accounting;
 it cannot conceal an unexecuted or blocked case. Failed or unverified rows stay
 unaccepted. The tables below do not duplicate K05/K06 evidence indexes.
+
+For every individual AD, passive, ESERA, retained, consumer, output and prior-evidence
+applicability row below, attach a public-safe per-row evidence record and link its
+exact section in that row's governing-reference cell. The record must identify the
+row and include every field required above, including the M44 association, actual
+observation, evidence link, omissions/stop reason and independent review. Keep the
+row Not run / Unknown / Unassessed / Unassessed until its record is complete and
+independently reviewed; failed or unverified results remain unaccepted.
 
 The T01–T88 and PX01–PX12 range rows below are summaries only. Before assigning
 any aggregate disposition, attach and link a public-safe per-case report covering

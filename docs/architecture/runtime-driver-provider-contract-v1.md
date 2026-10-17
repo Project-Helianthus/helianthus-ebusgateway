@@ -1501,7 +1501,11 @@ same way. The implemented rules are:
    hub-native. No restored succession, handle or ordinal is current: a
    prior-incarnation handle cannot claim a successor, the new incarnation's
    first admission derives its own epoch, and its ordinal starts again at 1 under
-   the new incarnation identity. `Restore` does not validate ordinal ordering.
+   the new incarnation identity. `Restore` rejects ordinals on unrelated events,
+   malformed or nonadjacent retirement/admission pairs, and ordinals that do not
+   start at 1 and advance by one per source within each incarnation. Succession
+   pairs must retain a retired, previously admitted predecessor and the derived
+   successor identity at generation 1, with no assets on either paired record.
 
 For an ordinary promoted generation, the cleanup asset set is the bytewise union
 of every asset in its durable publication index and every pending/uncertain

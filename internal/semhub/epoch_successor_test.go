@@ -704,3 +704,85 @@ func TestSuccessorExportRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("second round trip=%s", got)
 	}
 }
+
+func TestRestoreRejectsMalformedSuccessionHistory(t *testing.T) {
+	mutations := map[string]func(*RecoveryRecord){
+		"unrelated-activation":    func(r *RecoveryRecord) { r.Epochs[0].Kind = EventGenerationActivated; r.Epochs[0].Ordinal = 1 },
+		"unrelated-fence":         func(r *RecoveryRecord) { r.Epochs[0].Kind = EventGenerationFenced; r.Epochs[0].Ordinal = 1 },
+		"unrelated-revocation":    func(r *RecoveryRecord) { r.Epochs[0].Kind = EventGenerationRevoked; r.Epochs[0].Ordinal = 1 },
+		"initial-admission":       func(r *RecoveryRecord) { r.Epochs[0].Ordinal = 1 },
+		"missing-admission":       func(r *RecoveryRecord) { r.Epochs = r.Epochs[:3] },
+		"missing-retirement":      func(r *RecoveryRecord) { r.Epochs = append(r.Epochs[:2], r.Epochs[3:]...) },
+		"zero-admission-ordinal":  func(r *RecoveryRecord) { r.Epochs[3].Ordinal = 0 },
+		"zero-retirement-ordinal": func(r *RecoveryRecord) { r.Epochs[2].Ordinal = 0 },
+		"mismatched-ordinal":      func(r *RecoveryRecord) { r.Epochs[3].Ordinal = 2 },
+		"mismatched-incarnation":  func(r *RecoveryRecord) { r.Epochs[3].Incarnation = "incarnation:other" },
+		"mismatched-source": func(r *RecoveryRecord) {
+			r.Regimes["source:other"] = ""
+			r.Drivers["source:other"] = "synthetic-family"
+			r.Epochs[3].Source = "source:other"
+		},
+		"wrong-admission-kind":         func(r *RecoveryRecord) { r.Epochs[3].Kind = EventGenerationActivated },
+		"wrong-generation":             func(r *RecoveryRecord) { r.Epochs[3].Generation = 2 },
+		"wrong-predecessor-generation": func(r *RecoveryRecord) { r.Epochs[2].Generation = 2 },
+		"unknown-predecessor":          func(r *RecoveryRecord) { r.Epochs[2].Epoch = "epoch:unknown" },
+		"unretired-predecessor":        func(r *RecoveryRecord) { r.Epochs[1].Kind = EventGenerationFenced },
+		"wrong-successor-epoch":        func(r *RecoveryRecord) { r.Epochs[3].Epoch = "epoch:other" },
+		"same-epoch":                   func(r *RecoveryRecord) { r.Epochs[3].Epoch = r.Epochs[2].Epoch },
+		"retirement-assets":            func(r *RecoveryRecord) { r.Epochs[2].Assets = []semreg.AssetID{recoveryAssets[0]} },
+		"admission-assets":             func(r *RecoveryRecord) { r.Epochs[3].Assets = []semreg.AssetID{recoveryAssets[0]} },
+		"legacy-regime":                func(r *RecoveryRecord) { r.Regimes["source:restore"] = LegacyGrowattStorage },
+		"nonadjacent-pair": func(r *RecoveryRecord) {
+			r.Epochs = append(r.Epochs[:3], append([]EpochRecord{r.Epochs[1]}, r.Epochs[3:]...)...)
+		},
+		"skipped-first-ordinal": func(r *RecoveryRecord) {
+			r.Epochs[2].Ordinal, r.Epochs[3].Ordinal = 2, 2
+			r.Epochs[3].Epoch = successorEpoch(r.Epochs[3].Incarnation, r.Epochs[3].Source, 2)
+		},
+		"duplicate-pair": func(r *RecoveryRecord) { r.Epochs = append(r.Epochs, r.Epochs[2:4]...) },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			origin := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+			initial := admitNativeAs(t, origin, "source:restore", "synthetic-family")
+			mustRetire(t, origin, initial, 1)
+			mustSucceed(t, origin, initial, "restart-1")
+			record := origin.ExportRecovery()
+			if len(record.Epochs) != 4 {
+				t.Fatalf("unexpected fixture history: %+v", record.Epochs)
+			}
+			mutate(&record)
+			fresh := recoveryHub(t, nil, nil)
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("malformed succession accepted: %v", err)
+			}
+			if len(fresh.ExportRecovery().Epochs) != 0 || len(fresh.restoredEpochs) != 0 {
+				t.Fatal("invalid succession retained or reserved")
+			}
+			for _, id := range recoveryAssets {
+				if fresh.Readable(id) {
+					t.Fatalf("invalid checkpoint left %s readable", id)
+				}
+			}
+		})
+	}
+}
+
+func TestRestoreSuccessionOrdinalsArePerSource(t *testing.T) {
+	origin := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	for _, id := range []semreg.SourceID{"source:restore", "source:other"} {
+		initial := admitNativeAs(t, origin, id, "synthetic-family")
+		mustRetire(t, origin, initial, 1)
+		next := mustSucceed(t, origin, initial, "restart-1")
+		mustRetire(t, origin, next, 2)
+		mustSucceed(t, origin, next, "restart-2")
+	}
+	record := origin.ExportRecovery()
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record.Epochs, fresh.ExportRecovery().Epochs) {
+		t.Fatal("valid succession history changed on restore")
+	}
+}

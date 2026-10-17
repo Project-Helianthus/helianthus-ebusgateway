@@ -17,6 +17,11 @@ type EpochRecord struct {
 	Kind        EventKind            `json:"kind"`
 	// Assets names the assets a fence or retirement covers, in bytewise order.
 	Assets []semreg.AssetID `json:"assets,omitempty"`
+	// Ordinal is the per-source admission ordinal of a hub-native succession
+	// within its incarnation. It is set on both records of the succession's
+	// single append (the retired predecessor and the admitted successor) and is
+	// zero on every other record.
+	Ordinal uint64 `json:"ordinal,omitempty"`
 }
 
 // EpochJournal records epoch lifecycle transitions. It is the seam for

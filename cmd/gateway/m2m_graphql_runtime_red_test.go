@@ -285,7 +285,7 @@ func TestM2MGraphQLRuntime_AllowedAssetWithoutPublicationReturnsSourceUnavailabl
 
 func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
-	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4, delay: time.Second}
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
 	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test", ClientCAFile: certs.caFile,
@@ -305,14 +305,13 @@ func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := portal.NewHandler(portal.Options{SemanticStorageEnabled: true, SemanticStorage: forward})
+	assertGrowattPublicReadCalls(t, fake, 0)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/storage/current", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("first Portal->GraphQL storage response=%d body=%s", response.Code, response.Body.String())
 	}
-	if len(fake.calls) != 4 {
-		t.Fatalf("first public read did not perform one native observation: calls=%d", len(fake.calls))
-	}
+	assertGrowattPublicReadCalls(t, fake, 4)
 	var public map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &public); err != nil {
 		t.Fatal(err)
@@ -328,6 +327,7 @@ func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	if !ok {
 		t.Fatal("first public GraphQL read did not commit current SemReg projection")
 	}
+	before = append(json.RawMessage(nil), before...)
 	fake.mu.Lock()
 	fake.failAt = len(fake.calls)
 	fake.mu.Unlock()
@@ -337,6 +337,106 @@ func TestGrowattStorageGraphQLAndPortalPublishWithoutMCPPriming(t *testing.T) {
 	after, ok := growatt.storage.Current("asset:growatt-bms-a")
 	if !ok || !bytes.Equal(before, after) {
 		t.Fatal("rejected native refresh replaced the last known good storage projection")
+	}
+}
+
+// The completed synchronous public request is the readiness boundary: recorded
+// calls, rather than incidental endpoint delay, establish native acquisition.
+func assertGrowattPublicReadCalls(t *testing.T, fake *growattEndpointFake, want int) {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.calls) != want {
+		t.Fatalf("public storage read native calls=%d; want %d", len(fake.calls), want)
+	}
+}
+
+func TestGrowattStoragePublicReadInMemory(t *testing.T) {
+	const asset = "asset:growatt-bms-a"
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	growatt := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	m2m, err := m2mgraphql.NewHandler(m2mgraphql.Config{
+		AllowedAssets:          map[string]struct{}{asset: {}},
+		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward := func(ctx context.Context) (portal.ForwardedResponse, error) {
+		request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(m2mgraphql.WithMTLSPrincipal(ctx, "synthetic-principal"))
+		response := httptest.NewRecorder()
+		m2m.ServeHTTP(response, request)
+		return portal.ForwardedResponse{Status: response.Code, ContentType: response.Header().Get("Content-Type"), Body: append([]byte(nil), response.Body.Bytes()...)}, nil
+	}
+	handler := portal.NewHandler(portal.Options{SemanticStorageEnabled: true, SemanticStorage: forward})
+	readPublic := func() *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/semantic/storage/current", nil))
+		return response
+	}
+	assertGrowattPublicReadCalls(t, fake, 0)
+	response := readPublic()
+	// Check acquisition independently of the public response shape.
+	assertGrowattPublicReadCalls(t, fake, 4)
+	if response.Code != http.StatusOK {
+		t.Fatalf("first public storage response=%d body=%s", response.Code, response.Body.String())
+	}
+	var public struct {
+		Data struct {
+			Storage map[string]json.RawMessage `json:"semanticStorageCurrent"`
+		} `json:"data"`
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &public); err != nil {
+		t.Fatal(err)
+	}
+	if len(public.Errors) != 0 || len(public.Data.Storage) != 4 {
+		t.Fatalf("public semanticStorageCurrent content missing: %s", response.Body.String())
+	}
+	for _, field := range []string{"snapshot", "evaluation", "selections", "projection"} {
+		value := bytes.TrimSpace(public.Data.Storage[field])
+		if len(value) == 0 || bytes.Equal(value, []byte("null")) {
+			t.Fatalf("public semanticStorageCurrent lacks %s: %s", field, response.Body.String())
+		}
+	}
+	before, ok := growatt.storage.Current(asset)
+	if !ok {
+		t.Fatal("first public storage read did not commit a projection")
+	}
+	before = append(json.RawMessage(nil), before...)
+	var retained map[string]json.RawMessage
+	if err := json.Unmarshal(before, &retained); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"snapshot", "evaluation", "selections", "projection"} {
+		if !bytes.Equal(public.Data.Storage[field], retained[field]) {
+			t.Fatalf("public %s differs from the acquired storage publication", field)
+		}
+	}
+	fake.mu.Lock()
+	fake.failAt = len(fake.calls)
+	fake.mu.Unlock()
+	failed := readPublic()
+	assertGrowattPublicReadCalls(t, fake, 5)
+	var rejected struct {
+		Data   map[string]json.RawMessage `json:"data"`
+		Errors []struct {
+			Extensions struct {
+				Code string `json:"code"`
+			} `json:"extensions"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(failed.Body.Bytes(), &rejected); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Code != http.StatusOK || len(rejected.Errors) != 1 || rejected.Errors[0].Extensions.Code != "SOURCE_UNAVAILABLE" || rejected.Data != nil {
+		t.Fatalf("failed public refresh did not fail closed: status=%d body=%s", failed.Code, failed.Body.String())
+	}
+	after, ok := growatt.storage.Current(asset)
+	if !ok || !bytes.Equal(before, after) {
+		t.Fatal("failed public refresh replaced the independently copied last-known-good projection")
 	}
 }
 

@@ -74,7 +74,7 @@ does not close INT-11 or the parent follow-up.
 
 ## Verification scope
 
-[`TestQ04FrameBytePairDomain`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1110-frame-metric-domain-bound/frame_metric_domain_test.go)
+[`TestQ04FrameBytePairDomain`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/frame_metric_domain_test.go)
 feeds the production `OnBusEvent` entrypoint all 65,536 synthetic byte pairs for
 one active family, then repeats the sweep twice with different request payloads.
 Each rendered pair must retain one identity and advance from one to three.

@@ -71,6 +71,9 @@ func TestQ04FrameDiagnosticThresholds(t *testing.T) {
 		budget, before int
 	}{
 		{"configured_budget", 1, 1},
+		// One event retains both a frame and a frameBytes series, so the
+		// next frame meets the configured budget exactly before insertion.
+		{"configured_budget_equality", 2, 1},
 		{"named_hard_cap", 1000000, 2048},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

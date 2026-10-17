@@ -54,6 +54,9 @@ var (
 type BusObservabilityStore struct {
 	cfg Config
 
+	// Captured before defaults; independent of readiness and transport counters.
+	ebusConfigured bool
+
 	now func() time.Time
 
 	ctx    context.Context
@@ -437,11 +440,14 @@ type watchEfficiencySnapshot struct {
 }
 
 func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
+	ebusConfigured := cfg.Transport != nil || cfg.PassiveTransport != nil ||
+		cfg.TransportConfig.Protocol != "" || cfg.TransportConfig.Address != ""
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg: cfg,
-		now: time.Now,
+		cfg:            cfg,
+		now:            time.Now,
+		ebusConfigured: ebusConfigured,
 		transportRuntimeStatus: map[TransportRuntimeProtocol]TransportRuntimeStatus{
 			TransportRuntimeProtocolModbusTCP: defaultTransportRuntimeStatus(TransportRuntimeProtocolModbusTCP),
 			TransportRuntimeProtocolEEBus:     defaultTransportRuntimeStatus(TransportRuntimeProtocolEEBus),
@@ -1276,7 +1282,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	if haveSemanticMetricsProvider {
 		writeSemanticMetrics(writer, semanticDomains, now)
 	}
-	writeTransportRuntimeMetrics(writer, transportRuntimeStatus)
+	writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)
 
 	writer.writeHelp("ebus_observability_transport_info", "Observe-first transport metadata.")
 	writer.writeType("ebus_observability_transport_info", "gauge")

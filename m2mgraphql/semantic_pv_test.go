@@ -139,6 +139,62 @@ func TestSemanticStorageErrorsUseStoragePathAndPreoperationErrorsAreNeutral(t *t
 	assertM2MError(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"), "REQUEST_LIMIT_EXCEEDED", []string{"semanticStorageCurrent"})
 }
 
+func TestM2MHandlerRequiresNoPrincipal(t *testing.T) {
+	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, MonotonicMilliseconds: func() int64 { return 0 }, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) {
+		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+		t.Fatalf("request without principal response=%d %s", response.Code, response.Body.String())
+	}
+	forbidden := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-other"}}}`
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(forbidden)))
+	if !strings.Contains(response.Body.String(), `"ASSET_FORBIDDEN"`) {
+		t.Fatalf("asset allow-list not applied without principal: %s", response.Body.String())
+	}
+}
+
+func TestM2MHandlerRateLimitIsKeyedByRemoteHost(t *testing.T) {
+	handler, err := NewHandler(Config{AllowedAssets: map[string]struct{}{"asset:storage-test": {}}, MonotonicMilliseconds: func() int64 { return 0 }, SemanticStorageCurrent: func(context.Context, string) (json.RawMessage, bool) {
+		return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := `{"operationName":"SemanticStorageCurrent","query":` + strconv.Quote(semanticStorageFixedQuery) + `,"variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:storage-test"}}}`
+	serve := func(remote string) string {
+		r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(request))
+		r.RemoteAddr = remote
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, r)
+		if strings.Contains(response.Body.String(), `"REQUEST_LIMIT_EXCEEDED"`) {
+			return "limited"
+		}
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"errors"`) {
+			t.Fatalf("remote %s response=%d %s", remote, response.Code, response.Body.String())
+		}
+		return "ok"
+	}
+	// Host 192.0.2.10 spends its two tokens on different source ports; the
+	// port is not part of the key, so a third connection is limited.
+	got := []string{serve("192.0.2.10:40001"), serve("192.0.2.10:40002"), serve("192.0.2.10:40003")}
+	// Exhaust an IPv6 host across ports too, then verify that another IPv6
+	// host has its own budget. Collapsing IPv6 hosts into one key must fail.
+	got = append(got, serve("192.0.2.11:40001"),
+		serve("[2001:db8::1]:40001"), serve("[2001:db8::1]:40002"), serve("[2001:db8::1]:40003"),
+		serve("[2001:db8::2]:40001"))
+	want := []string{"ok", "ok", "limited", "ok", "ok", "ok", "limited", "ok"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("per-remote-host admission=%v want=%v", got, want)
+	}
+}
+
 func assertM2MStorageSuccess(t *testing.T, handler http.Handler, request string) {
 	t.Helper()
 	response := httptest.NewRecorder()

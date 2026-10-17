@@ -152,17 +152,10 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 	}
 	listener := newBoundedM2MListener(rawListener, m2mMaxPreTLSConnections)
 	runtime := &m2mGraphQLRuntime{listener: listener}
-	verifiedHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
-			response.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		principal := m2mFingerprint(request.TLS.PeerCertificates[0].Raw)
-		requestContext := m2mgraphql.WithMTLSPrincipal(request.Context(), principal)
-		requestContext = feedv1.WithPrincipal(requestContext, principal)
-		handler.ServeHTTP(response, request.WithContext(requestContext))
-	})
-	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(verifiedHandler, m2mRequestTimeout)}
+	// The listener provides server-authenticated TLS 1.3 transport integrity
+	// only. No client principal is derived: client certificates are optional
+	// and publication is filtered by the configured asset allow-list.
+	runtime.server = &http.Server{TLSConfig: tlsConfig, ErrorLog: log.New(io.Discard, "", 0), ReadHeaderTimeout: m2mHTTPHeaderTimeout, ReadTimeout: m2mHTTPBodyTimeout, WriteTimeout: m2mHTTPBodyTimeout, IdleTimeout: m2mHTTPBodyTimeout, Handler: newM2MRequestDeadlineHandler(handler, m2mRequestTimeout)}
 	go func() { _ = runtime.server.Serve(tls.NewListener(listener, tlsConfig)) }()
 	return runtime, nil
 }
@@ -234,6 +227,13 @@ func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
 		return nil, errors.New("server certificate identity mismatch")
 	}
 	certificate.Leaf = leaf
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, ClientAuth: tls.NoClientCert, SessionTicketsDisabled: true}
+	if strings.TrimSpace(config.ClientCAFile) == "" {
+		return tlsConfig, nil
+	}
+	// Transition: when a client CA is configured, a presented certificate is
+	// still verified against it (and against the denied fingerprints), but a
+	// connection without a certificate is accepted.
 	caPEM, err := os.ReadFile(config.ClientCAFile)
 	if err != nil {
 		return nil, err
@@ -246,15 +246,21 @@ func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
 	for _, fingerprint := range config.DeniedPrincipalFingerprints {
 		denied[strings.ToLower(fingerprint)] = struct{}{}
 	}
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool, VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		if len(verifiedChains) == 0 || len(rawCerts) == 0 {
+	tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
+	tlsConfig.ClientCAs = pool
+	tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return nil
+		}
+		if len(verifiedChains) == 0 {
 			return errors.New("unverified client certificate")
 		}
 		if _, blocked := denied[m2mFingerprint(rawCerts[0])]; blocked {
 			return errors.New("denied client certificate")
 		}
 		return nil
-	}, SessionTicketsDisabled: true}, nil
+	}
+	return tlsConfig, nil
 }
 
 func m2mFingerprint(der []byte) string { sum := sha256.Sum256(der); return hex.EncodeToString(sum[:]) }
@@ -263,9 +269,6 @@ func (runtime *m2mGraphQLRuntime) Addr() string {
 		return ""
 	}
 	return runtime.listener.Addr().String()
-}
-func (runtime *m2mGraphQLRuntime) RequiresVerifiedClientCertificate() bool {
-	return runtime != nil && runtime.server != nil
 }
 func (runtime *m2mGraphQLRuntime) Close() error {
 	if runtime == nil || runtime.server == nil {

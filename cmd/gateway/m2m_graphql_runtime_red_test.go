@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"math/big"
 	"net"
@@ -41,6 +42,41 @@ func TestM2MGraphQLRuntime_IsDisabledByDefaultAndSeparateFromGenericHTTP(t *test
 	}
 }
 
+func TestM2MTLSConfigAcceptsMissingClientCertificate(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	for _, withCA := range []bool{false, true} {
+		name := "without-client-ca"
+		if withCA {
+			name = "with-client-ca"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := ebusgateway.M2MGraphQLConfig{
+				ServerName: "m2m.gateway.test", ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+			}
+			if withCA {
+				cfg.ClientCAFile = certs.caFile
+			}
+			config, err := newM2MTLSConfig(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch config.ClientAuth {
+			case tls.NoClientCert, tls.RequestClientCert, tls.VerifyClientCertIfGiven:
+			default:
+				t.Fatalf("TLS policy requires a client certificate: %v", config.ClientAuth)
+			}
+			if config.VerifyPeerCertificate != nil {
+				if err := config.VerifyPeerCertificate(nil, nil); err != nil {
+					t.Fatalf("missing client certificate rejected: %v", err)
+				}
+			}
+			if config.MinVersion != tls.VersionTLS13 || len(config.Certificates) != 1 {
+				t.Fatal("server TLS identity or TLS 1.3 floor lost")
+			}
+		})
+	}
+}
+
 func TestPortalRawModbusMainAuditLogListsOnlySanitizedFields(t *testing.T) {
 	source, err := os.ReadFile("gateway_http_server.go")
 	if err != nil {
@@ -54,7 +90,7 @@ func TestPortalRawModbusMainAuditLogListsOnlySanitizedFields(t *testing.T) {
 	}
 }
 
-func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
+func TestM2MGraphQLRuntime_ServerTLSWithOptionalVerifiedClientCertificateAndClosesListener(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
@@ -65,8 +101,11 @@ func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newM2MGraphQLRuntime: %v", err)
 	}
-	if runtime == nil || !runtime.RequiresVerifiedClientCertificate() {
-		t.Fatalf("runtime=%#v; want dedicated verified-mTLS listener", runtime)
+	if runtime == nil || runtime.server == nil || runtime.server.TLSConfig == nil {
+		t.Fatalf("runtime=%#v; want dedicated server-TLS listener", runtime)
+	}
+	if got := runtime.server.TLSConfig.ClientAuth; got != tls.VerifyClientCertIfGiven {
+		t.Fatalf("client auth with configured CA=%v; want VerifyClientCertIfGiven", got)
 	}
 	if runtime.server.ReadHeaderTimeout <= 0 || runtime.server.ReadTimeout <= 0 || runtime.server.WriteTimeout <= 0 || runtime.server.IdleTimeout <= 0 {
 		t.Fatalf("M2M listener has unbounded network deadlines: %#v", runtime.server)
@@ -75,14 +114,137 @@ func TestM2MGraphQLRuntime_RequiresMutualTLSAndClosesListener(t *testing.T) {
 
 	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)
 	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "wrong.m2m.gateway.test", certs.goodClient, false)
-	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", tls.Certificate{}, false)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", tls.Certificate{}, true)
 	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.untrustedClient, false)
 	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.deniedClient, false)
+	assertM2MTLS12Rejected(t, runtime.Addr(), certs.pool)
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("close dedicated M2M listener: %v", err)
 	}
 	if _, err := net.DialTimeout("tcp", runtime.Addr(), 100*time.Millisecond); err == nil {
 		t.Fatal("closed dedicated M2M listener still accepts TCP")
+	}
+}
+
+func TestM2MGraphQLRuntime_WithoutClientCAServesTLSToClientsWithAndWithoutCertificates(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-known"}, DeniedPrincipalFingerprints: []string{certs.deniedFingerprint},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil)
+	if err != nil {
+		t.Fatalf("listener without client CA rejected: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if got := runtime.server.TLSConfig.ClientAuth; got != tls.NoClientCert {
+		t.Fatalf("client auth without CA=%v; want NoClientCert", got)
+	}
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", tls.Certificate{}, true)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.goodClient, true)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "m2m.gateway.test", certs.deniedClient, true)
+	assertM2MTLSDial(t, runtime.Addr(), certs.pool, "wrong.m2m.gateway.test", tls.Certificate{}, false)
+	assertM2MTLS12Rejected(t, runtime.Addr(), certs.pool)
+	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"); code != "SOURCE_UNAVAILABLE" {
+		t.Fatalf("certificate-less client did not reach the GraphQL handler: code=%q", code)
+	}
+}
+
+func TestM2MGraphQLRuntime_NoCertificateClientReachesGraphQLAndAllowListStillFilters(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-known"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-other"); code != "ASSET_FORBIDDEN" {
+		t.Fatalf("certificate-less client bypassed the asset allow-list: code=%q", code)
+	}
+	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-other"); code != "ASSET_FORBIDDEN" {
+		t.Fatalf("certificate client bypassed the asset allow-list: code=%q", code)
+	}
+	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"); code != "SOURCE_UNAVAILABLE" {
+		t.Fatalf("certificate-less client did not reach the GraphQL handler: code=%q", code)
+	}
+}
+
+func TestM2MGraphQLRuntime_RateLimitIsKeyedByRemoteAddressNotCertificate(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-known"},
+	}}
+	runtime, err := newM2MGraphQLRuntime(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	// One remote host holds two request tokens refilled once per second. A
+	// certificate client and a certificate-less client from the same host on
+	// separate connections share that budget.
+	codes := []string{
+		m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-known"),
+		m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"),
+		m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-known"),
+	}
+	if codes[0] != "SOURCE_UNAVAILABLE" || codes[1] != "SOURCE_UNAVAILABLE" || codes[2] != "REQUEST_LIMIT_EXCEEDED" {
+		t.Fatalf("remote-address budget codes=%v; want two admitted then REQUEST_LIMIT_EXCEEDED", codes)
+	}
+}
+
+func m2mPVErrorCode(t *testing.T, addr string, roots *x509.CertPool, certificate tls.Certificate, asset string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"operationName": "SemanticPVCurrent", "query": "query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }",
+		"variables": map[string]any{"request": map[string]string{"contractId": "PUBLIC_GRAPHQL_SEMANTIC_PV_V1", "assetRef": asset}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := &tls.Config{RootCAs: roots, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13}
+	if len(certificate.Certificate) != 0 {
+		config.Certificates = []tls.Certificate{certificate}
+	}
+	transport := &http.Transport{TLSClientConfig: config, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	response, err := client.Post("https://"+addr+"/graphql/m2m/v1", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("M2M request certificate=%t: %v", len(certificate.Certificate) != 0, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("M2M status=%d certificate=%t", response.StatusCode, len(certificate.Certificate) != 0)
+	}
+	var envelope struct {
+		Errors []struct {
+			Extensions struct {
+				Code string `json:"code"`
+			} `json:"extensions"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.Errors) != 1 {
+		return ""
+	}
+	return envelope.Errors[0].Extensions.Code
+}
+
+func assertM2MTLS12Rejected(t *testing.T, addr string, roots *x509.CertPool) {
+	t.Helper()
+	connection, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", addr, &tls.Config{RootCAs: roots, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12})
+	if err == nil {
+		_ = connection.Close()
+		t.Fatal("M2M listener accepted a TLS 1.2 client")
 	}
 }
 
@@ -171,7 +333,6 @@ func TestM2MRequestDeadlineLeavesProcessingReserveBeforeStorageProvider(t *testi
 	}
 	preProvider := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(preProviderWork); handler.ServeHTTP(w, r) })
 	request := httptest.NewRequest(http.MethodPost, "/graphql/m2m/v1", strings.NewReader(`{"operationName":"SemanticStorageCurrent","query":"query SemanticStorageCurrent($request: M2MCurrentSnapshotRequest!) { semanticStorageCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1","assetRef":"asset:growatt-bms-a"}}}`))
-	request = request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), "principal"))
 	response := httptest.NewRecorder()
 	newM2MRequestDeadlineHandler(preProvider, timeout).ServeHTTP(response, request)
 	if !providerCalled || response.Code != http.StatusOK {
@@ -477,10 +638,15 @@ func assertM2MTLSDial(t *testing.T, addr string, roots *x509.CertPool, name stri
 	connection, err := tls.DialWithDialer(dialer, "tcp", addr, config)
 	// TLS 1.3 allows the client to finish locally before it observes the
 	// server's fatal client-certificate alert. Force one application read so
-	// this assertion observes the peer's final authentication outcome.
-	if err == nil && !want {
+	// this assertion observes the peer's final certificate outcome; an
+	// accepted connection only times out on that read.
+	if err == nil {
 		_ = connection.SetDeadline(time.Now().Add(250 * time.Millisecond))
 		_, err = connection.Read(make([]byte, 1))
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			err = nil
+		}
 	}
 	if connection != nil {
 		_ = connection.Close()
@@ -530,7 +696,7 @@ func TestCharacterizationM2MGraphQLOfAllThreeFamilies(t *testing.T) {
 	}
 	characterizationGolden(t, "m2m", "pv.json", body(client(families.pvAsset).Current(context.Background())))
 	characterizationGolden(t, "m2m", "storage.json", body(client(storageAsset).StorageCurrent(context.Background())))
-	// One principal holds two request tokens refilled once per second.
+	// One remote host holds two request tokens refilled once per second.
 	time.Sleep(1100 * time.Millisecond)
 	characterizationGolden(t, "m2m", "evse.json", body(client(families.tesla.cfg.AssetID).EVSECurrent(context.Background())))
 }

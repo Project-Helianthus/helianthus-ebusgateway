@@ -59,13 +59,7 @@ index 894ee19..af97158 100644
 +		mux.Handle("/matter-binding/", http.StripPrefix("/matter-binding", matterHandler))
 +		handler = mux
 +	}
-@@ -139 +160,4 @@ func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusada
--		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))
-+		principal := m2mFingerprint(request.TLS.PeerCertificates[0].Raw)
-+		requestContext := m2mgraphql.WithMTLSPrincipal(request.Context(), principal)
-+		requestContext = feedv1.WithPrincipal(requestContext, principal)
-+		handler.ServeHTTP(response, request.WithContext(requestContext))
-@@ -145,0 +170,8 @@ func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusada
+@@ -141,0 +163,8 @@ func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusada
 +func newMatterBindingFeedInstanceID() (string, error) {
 +	var value [16]byte
 +	if _, err := rand.Read(value[:]); err != nil {

@@ -74,7 +74,7 @@ func validIntent(snapshot Snapshot) Intent {
 	return Intent{AssetID: operation.AssetID, Claim: operation.Claim, IdempotencyKey: "key:test", Deadline: time.Now().Add(time.Minute).UTC(), Arguments: json.RawMessage(`{"setpoint":"32"}`), Causal: causal}
 }
 
-func request(t *testing.T, server http.Handler, method, path string, body any, principal bool) *httptest.ResponseRecorder {
+func request(t *testing.T, server http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var raw []byte
 	if body != nil {
@@ -83,9 +83,6 @@ func request(t *testing.T, server http.Handler, method, path string, body any, p
 	r := httptest.NewRequest(method, path, bytes.NewReader(raw))
 	if body != nil {
 		r.Header.Set("Content-Type", "application/json")
-	}
-	if principal {
-		r = r.WithContext(WithPrincipal(r.Context(), "m2m:test"))
 	}
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, r)
@@ -98,39 +95,39 @@ func TestStandaloneConsumerLifecycleAndAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := request(t, server, http.MethodGet, "/v1/snapshot", nil, false)
+	first := request(t, server, http.MethodGet, "/v1/snapshot", nil)
 	if first.Code != http.StatusOK {
 		t.Fatalf("snapshot=%d %s", first.Code, first.Body.String())
 	}
 	firstBytes := append([]byte(nil), first.Body.Bytes()...)
-	second := request(t, server, http.MethodGet, "/v1/snapshot", nil, false)
+	second := request(t, server, http.MethodGet, "/v1/snapshot", nil)
 	if !bytes.Equal(firstBytes, second.Body.Bytes()) {
 		t.Fatal("no-op capture changed deterministic response")
 	}
-	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil, false); got.Code != http.StatusOK || bytes.Contains(got.Body.Bytes(), []byte(`"changes":[]`)) == false {
+	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil); got.Code != http.StatusOK || bytes.Contains(got.Body.Bytes(), []byte(`"changes":[]`)) == false {
 		t.Fatalf("stable changes=%d %s", got.Code, got.Body.String())
 	}
 	fake.mu.Lock()
 	fake.snapshot = validSnapshot(t, ResourceWithdrawn, false)
 	fake.mu.Unlock()
-	changed := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil, false)
+	changed := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil)
 	if changed.Code != http.StatusOK || !bytes.Contains(changed.Body.Bytes(), []byte("WITHDRAWN")) {
 		t.Fatalf("withdrawal=%d %s", changed.Code, changed.Body.String())
 	}
 	fake.mu.Lock()
 	fake.snapshot = validSnapshot(t, ResourceUnavailable, false)
 	fake.mu.Unlock()
-	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:2", nil, false); got.Code != http.StatusOK {
+	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:2", nil); got.Code != http.StatusOK {
 		t.Fatalf("second change=%d", got.Code)
 	}
-	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil, false); got.Code != http.StatusConflict {
+	if got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-a:1", nil); got.Code != http.StatusConflict {
 		t.Fatalf("replay exhaustion=%d", got.Code)
 	}
 	restarted, err := New(fake, Options{InstanceID: "feed-b", ReplayLimit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := request(t, restarted, http.MethodGet, "/v1/changes?cursor=feed-a:2", nil, false); got.Code != http.StatusConflict {
+	if got := request(t, restarted, http.MethodGet, "/v1/changes?cursor=feed-a:2", nil); got.Code != http.StatusConflict {
 		t.Fatalf("restart resync=%d", got.Code)
 	}
 
@@ -138,13 +135,13 @@ func TestStandaloneConsumerLifecycleAndAdmission(t *testing.T) {
 	fake.snapshot = validSnapshot(t, ResourceCurrent, true)
 	fake.mu.Unlock()
 	intent := validIntent(fake.snapshot)
-	if got := request(t, server, http.MethodPost, "/v1/invoke", intent, false); got.Code != http.StatusUnauthorized {
-		t.Fatalf("missing principal=%d", got.Code)
+	if got := request(t, server, http.MethodPost, "/v1/invoke", intent); got.Code != http.StatusOK || bytes.Contains(got.Body.Bytes(), []byte("principal_required")) {
+		t.Fatalf("invoke without principal=%d %s", got.Code, got.Body.String())
 	}
 	fake.mu.Lock()
 	before := fake.invokes
 	fake.mu.Unlock()
-	if got := request(t, server, http.MethodPost, "/v1/invoke", intent, true); got.Code != http.StatusOK {
+	if got := request(t, server, http.MethodPost, "/v1/invoke", intent); got.Code != http.StatusOK {
 		t.Fatalf("invoke=%d %s", got.Code, got.Body.String())
 	}
 	fake.mu.Lock()
@@ -156,7 +153,7 @@ func TestStandaloneConsumerLifecycleAndAdmission(t *testing.T) {
 	fake.mu.Lock()
 	fake.reject = true
 	fake.mu.Unlock()
-	if got := request(t, server, http.MethodPost, "/v1/invoke", intent, true); got.Code != http.StatusForbidden {
+	if got := request(t, server, http.MethodPost, "/v1/invoke", intent); got.Code != http.StatusForbidden {
 		t.Fatalf("causal rejection=%d", got.Code)
 	}
 }
@@ -168,7 +165,7 @@ func TestInputDetachmentAndStrictRejectionHaveNoInvoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := validIntent(fake.snapshot)
-	if got := request(t, server, http.MethodPost, "/v1/invoke", map[string]any{"asset_id": "asset:test", "route": "native"}, true); got.Code != http.StatusBadRequest {
+	if got := request(t, server, http.MethodPost, "/v1/invoke", map[string]any{"asset_id": "asset:test", "route": "native"}); got.Code != http.StatusBadRequest {
 		t.Fatalf("route injection=%d", got.Code)
 	}
 	fake.mu.Lock()
@@ -179,12 +176,12 @@ func TestInputDetachmentAndStrictRejectionHaveNoInvoke(t *testing.T) {
 	}
 	expired := intent
 	expired.Deadline = time.Now().Add(-time.Second)
-	if got := request(t, server, http.MethodPost, "/v1/invoke", expired, true); got.Code != http.StatusBadRequest {
+	if got := request(t, server, http.MethodPost, "/v1/invoke", expired); got.Code != http.StatusBadRequest {
 		t.Fatalf("expired deadline=%d", got.Code)
 	}
 	tooLong := intent
 	tooLong.IdempotencyKey = strings.Repeat("a", 257)
-	if got := request(t, server, http.MethodPost, "/v1/invoke", tooLong, true); got.Code != http.StatusBadRequest {
+	if got := request(t, server, http.MethodPost, "/v1/invoke", tooLong); got.Code != http.StatusBadRequest {
 		t.Fatalf("long idempotency=%d", got.Code)
 	}
 	fake.mu.Lock()
@@ -196,7 +193,6 @@ func TestInputDetachmentAndStrictRejectionHaveNoInvoke(t *testing.T) {
 	raw, _ := json.Marshal(intent)
 	r := httptest.NewRequest(http.MethodPost, "/v1/invoke", bytes.NewReader(raw))
 	r.Header.Set("Content-Type", "application/json")
-	r = r.WithContext(WithPrincipal(r.Context(), "m2m:test"))
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
@@ -225,14 +221,14 @@ func TestConcurrentCaptureKeepsOneCursor(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			got := request(t, server, http.MethodGet, "/v1/snapshot", nil, false)
+			got := request(t, server, http.MethodGet, "/v1/snapshot", nil)
 			if got.Code != http.StatusOK {
 				t.Errorf("snapshot status=%d", got.Code)
 			}
 		}()
 	}
 	group.Wait()
-	got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-race:1", nil, false)
+	got := request(t, server, http.MethodGet, "/v1/changes?cursor=feed-race:1", nil)
 	if got.Code != http.StatusOK || !bytes.Contains(got.Body.Bytes(), []byte(`"changes":[]`)) {
 		t.Fatalf("concurrent cursor=%d %s", got.Code, got.Body.String())
 	}

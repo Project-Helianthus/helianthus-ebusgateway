@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,19 +58,43 @@ type handler struct {
 	storageQueryShape string
 	evseQueryShape    string
 	mu                sync.Mutex
-	principals        map[string]*principalLimit
+	limits            map[string]*requestLimit
 }
 
-type principalLimit struct {
+type requestLimit struct {
 	inFlight bool
 	tokens   int
 	at       int64
 }
 
-type principalKey struct{}
+type rateLimitKey struct{}
 
-func WithMTLSPrincipal(ctx context.Context, fingerprint string) context.Context {
-	return context.WithValue(ctx, principalKey{}, fingerprint)
+// WithRateLimitKey lets an in-process caller choose the request-budget
+// partition. It carries no identity and grants no access. Requests from the
+// network listener never carry it and are partitioned by remote host.
+func WithRateLimitKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, rateLimitKey{}, key)
+}
+
+// WithMTLSPrincipal is a compatibility alias of WithRateLimitKey kept for
+// in-process callers until the M2M cleanup removes it; despite its name, no
+// client principal is derived or required.
+func WithMTLSPrincipal(ctx context.Context, key string) context.Context {
+	return WithRateLimitKey(ctx, key)
+}
+
+// requestRateLimitKey partitions the request budget by the remote host (the
+// port is ignored so reconnecting does not refill the budget), unless an
+// in-process caller supplied an explicit partition.
+func requestRateLimitKey(r *http.Request) string {
+	if key, ok := r.Context().Value(rateLimitKey{}).(string); ok && strings.TrimSpace(key) != "" {
+		return "key:" + key
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return "remote:" + host
 }
 
 func NewHandler(cfg Config) (http.Handler, error) {
@@ -95,7 +120,7 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	if err != nil {
 		return nil, errors.New("invalid embedded SemReg EVSE query")
 	}
-	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, principals: make(map[string]*principalLimit)}, nil
+	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, limits: make(map[string]*requestLimit)}, nil
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -105,11 +130,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path != route || r.URL.RawQuery != "" {
 		writeError(w, "", "QUERY_REJECTED")
-		return
-	}
-	principal, _ := r.Context().Value(principalKey{}).(string)
-	if strings.TrimSpace(principal) == "" {
-		writeError(w, "", "REQUEST_INVALID")
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
@@ -164,11 +184,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, root, "ASSET_FORBIDDEN")
 		return
 	}
-	if !h.admit(principal) {
+	limitKey := requestRateLimitKey(r)
+	if !h.admit(limitKey) {
 		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
 		return
 	}
-	defer h.release(principal)
+	defer h.release(limitKey)
 	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
 		writeError(w, root, "SOURCE_UNAVAILABLE")
@@ -190,14 +211,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(encoded)
 }
 
-func (h *handler) admit(principal string) bool {
+func (h *handler) admit(key string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.cfg.MonotonicMilliseconds()
-	limit := h.principals[principal]
+	limit := h.limits[key]
 	if limit == nil {
-		limit = &principalLimit{tokens: 2, at: now}
-		h.principals[principal] = limit
+		limit = &requestLimit{tokens: 2, at: now}
+		h.limits[key] = limit
 	}
 	if now > limit.at {
 		elapsedIntervals := (now - limit.at) / 1000
@@ -212,10 +233,10 @@ func (h *handler) admit(principal string) bool {
 	return true
 }
 
-func (h *handler) release(principal string) {
+func (h *handler) release(key string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if limit := h.principals[principal]; limit != nil {
+	if limit := h.limits[key]; limit != nil {
 		limit.inFlight = false
 	}
 }

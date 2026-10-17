@@ -42,7 +42,6 @@ EXPECTED: dict[str, tuple[list[str], list[str]]] = {
     "cmd/gateway/m2m_graphql_runtime.go": (
         [
             "	handler, err := m2mgraphql.NewHandler(m2mgraphql.Config{",
-            "		handler.ServeHTTP(response, request.WithContext(m2mgraphql.WithMTLSPrincipal(request.Context(), m2mFingerprint(request.TLS.PeerCertificates[0].Raw))))",
         ],
         [
             '	"crypto/rand"',
@@ -67,18 +66,14 @@ EXPECTED: dict[str, tuple[list[str], list[str]]] = {
             '		mux.Handle("/matter-binding/", http.StripPrefix("/matter-binding", matterHandler))',
             "		handler = mux",
             "	}",
-            "		principal := m2mFingerprint(request.TLS.PeerCertificates[0].Raw)",
-            "		requestContext := m2mgraphql.WithMTLSPrincipal(request.Context(), principal)",
-            "		requestContext = feedv1.WithPrincipal(requestContext, principal)",
-            "		handler.ServeHTTP(response, request.WithContext(requestContext))",
-            "}",
-            "",
             "func newMatterBindingFeedInstanceID() (string, error) {",
             "	var value [16]byte",
             "	if _, err := rand.Read(value[:]); err != nil {",
             '		return "", err',
             "	}",
             '	return "matter-" + hex.EncodeToString(value[:]), nil',
+            "}",
+            "",
         ],
     ),
     "config.go": (

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,7 +117,7 @@ func TestGatewayMatterBindingFeedProviderAppliesM2MAssetAllowlistBeforeProjectio
 	if response.Code != http.StatusOK || bytes.Contains(response.Body.Bytes(), []byte("asset:blocked")) {
 		t.Fatalf("wire snapshot leaked disallowed asset: %d %s", response.Code, response.Body.String())
 	}
-	if _, err := provider.Invoke(feedv1.WithPrincipal(context.Background(), "principal:test"), feedv1.Invocation{Intent: feedv1.Intent{AssetID: "asset:blocked"}}); !errors.Is(err, errMatterBindingOperationUnavailable) {
+	if _, err := provider.Invoke(context.Background(), feedv1.Invocation{Intent: feedv1.Intent{AssetID: "asset:blocked"}}); !errors.Is(err, errMatterBindingOperationUnavailable) {
 		t.Fatalf("disallowed invocation error=%v", err)
 	}
 }
@@ -203,7 +204,7 @@ func (matterFeedRuntimeFixture) Invoke(context.Context, feedv1.Invocation) (feed
 	return feedv1.Execution{}, errors.New("not admitted")
 }
 
-func TestM2MRuntimeMountsMatterFeedOnlyBehindVerifiedMTLS(t *testing.T) {
+func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(t *testing.T) {
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
@@ -252,11 +253,32 @@ func TestM2MRuntimeMountsMatterFeedOnlyBehindVerifiedMTLS(t *testing.T) {
 		t.Fatalf("unexpected feed response: %+v", decoded)
 	}
 
-	unauthenticated := &http.Client{Timeout: time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+	withoutCertificate := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: certs.pool, ServerName: "m2m.gateway.test", MinVersion: tls.VersionTLS13,
 	}}}
-	if response, err := unauthenticated.Get("https://" + runtime.Addr() + "/matter-binding/v1/snapshot"); err == nil {
+	plain, err := withoutCertificate.Get("https://" + runtime.Addr() + "/matter-binding/v1/snapshot")
+	if err != nil {
+		t.Fatalf("feed rejected a client without a certificate: %v", err)
+	}
+	defer func() { _ = plain.Body.Close() }()
+	if plain.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(plain.Body)
+		t.Fatalf("certificate-less feed status=%d body=%s", plain.StatusCode, body)
+	}
+	invoke, err := withoutCertificate.Post("https://"+runtime.Addr()+"/matter-binding/v1/invoke", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = invoke.Body.Close() }()
+	invokeBody, _ := io.ReadAll(invoke.Body)
+	if invoke.StatusCode == http.StatusUnauthorized || bytes.Contains(invokeBody, []byte("principal_required")) || invoke.StatusCode != http.StatusBadRequest {
+		t.Fatalf("certificate-less invoke status=%d body=%s; want invalid_intent, not principal_required", invoke.StatusCode, invokeBody)
+	}
+	mismatched := &http.Client{Timeout: time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs: certs.pool, ServerName: "other.gateway.test", MinVersion: tls.VersionTLS13,
+	}}}
+	if response, err := mismatched.Get("https://" + runtime.Addr() + "/matter-binding/v1/snapshot"); err == nil {
 		_ = response.Body.Close()
-		t.Fatal("feed accepted a client without a verified certificate")
+		t.Fatal("feed client accepted a server certificate for a different identity")
 	}
 }

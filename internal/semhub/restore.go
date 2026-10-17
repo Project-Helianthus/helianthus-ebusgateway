@@ -78,6 +78,9 @@ type RecoveryRecord struct {
 	Version int
 	Assets  []RecoveryAsset
 	Epochs  []EpochRecord
+	// Regimes retains the identity regime of every historically admitted source.
+	// An empty family explicitly identifies a hub-native source.
+	Regimes map[semreg.SourceID]LegacyFamily
 }
 
 // ErrRestore reports a failed restore precondition or rejected recovery asset.
@@ -128,10 +131,18 @@ func (h *Hub) exportAccepted(record AcceptedBatch) {
 // then copies buffers outside the hub lock. It performs no persistence or I/O.
 func (h *Hub) ExportRecovery() RecoveryRecord {
 	h.mu.RLock()
-	record := RecoveryRecord{Version: 1}
+	record := RecoveryRecord{Version: 1, Regimes: map[semreg.SourceID]LegacyFamily{}}
 	if h.recovery == nil {
 		h.mu.RUnlock()
 		return RecoveryRecord{}
+	}
+	for id, family := range h.restoredRegimes {
+		record.Regimes[id] = family
+	}
+	for id, src := range h.sources {
+		if src.admissions > 0 {
+			record.Regimes[id] = src.legacy
+		}
 	}
 	for _, target := range h.assets {
 		entry := RecoveryAsset{Asset: target.id, Source: target.source, Driver: target.driver,
@@ -184,12 +195,12 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return fmt.Errorf("%w: decode record: %v", ErrRestore, err)
 	}
-	if record.Version != 1 {
+	if record.Version != 1 || validateRecoveryHistory(record) != nil {
 		h.mu.RLock()
-		closure := h.sourceClosureLocked(record)
+		closure := h.allRecoveryAssetsLocked(record)
 		h.mu.RUnlock()
 		h.failRestoreAssets(closure)
-		return fmt.Errorf("%w: record version", ErrRestore)
+		return fmt.Errorf("%w: record version or history", ErrRestore)
 	}
 	sort.Slice(record.Assets, func(i, j int) bool { return record.Assets[i].Asset < record.Assets[j].Asset })
 	h.mu.RLock()
@@ -200,7 +211,7 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		if target == nil || i > 0 && entry.Asset == record.Assets[i-1].Asset {
 			// An invalid asset ID must not bypass closure of its source's
 			// declared empty assets when source coverage cannot be checked.
-			closure := h.sourceClosureLocked(record)
+			closure := h.allRecoveryAssetsLocked(record)
 			h.mu.RUnlock()
 			h.failRestoreAssets(closure)
 			return fmt.Errorf("%w: missing or duplicate asset", ErrRestore)
@@ -208,20 +219,20 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		targets[i] = target
 		sources[target.source] = h.sources[target.source]
 	}
-	for _, epoch := range record.Epochs {
-		if src := h.sources[epoch.Source]; src != nil {
-			sources[epoch.Source] = src
+	for id := range record.Regimes {
+		if src := h.sources[id]; src != nil {
+			sources[id] = src
 		}
 	}
-	// A checkpoint covers every declared asset of each restored source. An
+	// A complete checkpoint covers every declared recovery asset. An
 	// omitted entry cannot silently become an empty, readable asset.
 	named := make(map[semreg.AssetID]bool, len(record.Assets))
 	for _, entry := range record.Assets {
 		named[entry.Asset] = true
 	}
 	missing := false
-	for id, target := range h.assets {
-		if sources[target.source] != nil && !named[id] {
+	for id := range h.assets {
+		if !named[id] {
 			missing = true
 			record.Assets = append(record.Assets, RecoveryAsset{Asset: id})
 		}
@@ -265,7 +276,21 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 			return fmt.Errorf("%w: populated asset or prior admission", ErrRestore)
 		}
 	}
+	for id, family := range record.Regimes {
+		if prior, ok := h.restoredRegimes[id]; ok && prior != family {
+			h.mu.RUnlock()
+			return fmt.Errorf("%w: conflicting restored identity regime", ErrRestore)
+		}
+	}
 	h.mu.RUnlock()
+	h.lock()
+	if h.restoredRegimes == nil {
+		h.restoredRegimes = map[semreg.SourceID]LegacyFamily{}
+	}
+	for id, family := range record.Regimes {
+		h.restoredRegimes[id] = family
+	}
+	h.unlock()
 	var failures []error
 	for i, entry := range record.Assets {
 		if err := h.restoreAsset(targets[i], entry); err != nil {
@@ -460,28 +485,57 @@ func (h *Hub) outsideControlLocks(ca *controlAsset, callback func()) {
 	callback()
 }
 
-// sourceClosureLocked lists the record's asset entries plus every declared asset
-// of each source the record names, whether through an asset entry or only
-// through epoch history, so an early rejection closes all of them. h.mu must be
-// held for reading.
-func (h *Hub) sourceClosureLocked(record RecoveryRecord) []RecoveryAsset {
-	named := map[semreg.SourceID]bool{}
-	for _, entry := range record.Assets {
-		named[entry.Source] = true
-		if target := h.assets[entry.Asset]; target != nil {
-			named[target.source] = true
-		}
-	}
-	for _, epoch := range record.Epochs {
-		named[epoch.Source] = true
-	}
+// allRecoveryAssetsLocked closes every declared asset on checkpoint rejection.
+// h.mu must be held for reading.
+func (h *Hub) allRecoveryAssetsLocked(record RecoveryRecord) []RecoveryAsset {
 	closure := append([]RecoveryAsset(nil), record.Assets...)
-	for id, declared := range h.assets {
-		if named[declared.source] {
-			closure = append(closure, RecoveryAsset{Asset: id})
-		}
+	for id := range h.assets {
+		closure = append(closure, RecoveryAsset{Asset: id})
 	}
 	return closure
+}
+
+// validateRecoveryHistory rejects malformed history before replay or reservation.
+func validateRecoveryHistory(record RecoveryRecord) error {
+	for id, family := range record.Regimes {
+		if ValidateOpaque(string(id)) != nil || family != "" && !family.valid() {
+			return errors.New("invalid source identity regime")
+		}
+	}
+	assets := map[semreg.AssetID]semreg.SourceID{}
+	for _, entry := range record.Assets {
+		assets[entry.Asset] = entry.Source
+	}
+	for _, epoch := range record.Epochs {
+		if ValidateOpaque(epoch.Incarnation) != nil || ValidateOpaque(string(epoch.Source)) != nil || ValidateOpaque(string(epoch.Epoch)) != nil || epoch.Generation == 0 {
+			return errors.New("invalid epoch identity")
+		}
+		if _, ok := record.Regimes[epoch.Source]; !ok {
+			return errors.New("missing source identity regime")
+		}
+		switch epoch.Kind {
+		case EventEpochAdmitted, EventGenerationActivated:
+			if len(epoch.Assets) != 0 {
+				return errors.New("unexpected epoch assets")
+			}
+		case EventGenerationFenced, EventGenerationRevoked, EventSourceRetired:
+		default:
+			return errors.New("invalid epoch event kind")
+		}
+		for i, id := range epoch.Assets {
+			if ValidateOpaque(string(id)) != nil || assets[id] != epoch.Source || i > 0 && id <= epoch.Assets[i-1] {
+				return errors.New("invalid epoch assets")
+			}
+		}
+	}
+	for _, entry := range record.Assets {
+		if len(entry.Accepted) > 0 {
+			if _, ok := record.Regimes[entry.Source]; !ok {
+				return errors.New("missing source identity regime")
+			}
+		}
+	}
+	return nil
 }
 
 func (h *Hub) failRestoreAssets(entries []RecoveryAsset) {

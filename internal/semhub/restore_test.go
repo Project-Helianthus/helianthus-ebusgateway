@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -598,6 +599,7 @@ func TestRecoveryEpochsCannotBeReadmitted(t *testing.T) {
 			case "history":
 				record = recoveryHub(t, nil, nil).ExportRecovery()
 				record.Epochs = hub.ExportRecovery().Epochs
+				record.Regimes = hub.ExportRecovery().Regimes
 			}
 			fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
 			if err := fresh.Restore(record); err != nil {
@@ -883,6 +885,179 @@ func TestRecoveryUnsupportedHistoryOnlyRecordClosesNamedSource(t *testing.T) {
 	for _, id := range recoveryAssets {
 		if fresh.Readable(id) {
 			t.Fatalf("unsupported history-only record left %s readable", id)
+		}
+	}
+}
+
+func TestRecoveryOmittedWholeSourceClosesAllAssets(t *testing.T) {
+	origin := recoveryHub(t, nil, nil)
+	record := origin.ExportRecovery()
+	record.Assets = nil // No history names the omitted, unpublished source.
+	fresh := recoveryHub(t, nil, nil)
+	if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+		t.Fatalf("incomplete checkpoint accepted: %v", err)
+	}
+	for _, id := range recoveryAssets {
+		if fresh.Readable(id) {
+			t.Fatalf("omitted asset %s remained readable", id)
+		}
+	}
+}
+
+func TestRecoveryUnpublishedAssetReprojectsAbsence(t *testing.T) {
+	origin := recoveryHub(t, nil, nil)
+	calls := 0
+	fresh := recoveryHub(t, nil, func(event ControlEvent) error {
+		calls++
+		if event.View.Present || event.View.Snapshot.SnapshotID != "" || len(event.View.Canonical) != 0 {
+			t.Error("unpublished asset materialized by reprojection")
+		}
+		return nil
+	})
+	if err := fresh.Restore(origin.ExportRecovery()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range recoveryAssets {
+		if err := fresh.Resettle(id); err != nil {
+			t.Fatal(err)
+		}
+		view, err := fresh.Inspect(id)
+		if err != nil || view.Present {
+			t.Fatalf("unexpected restored view: %+v, %v", view, err)
+		}
+	}
+	if calls != len(recoveryAssets) {
+		t.Fatalf("callbacks=%d", calls)
+	}
+}
+
+func TestRecoveryRejectsMalformedAssetlessEpochHistory(t *testing.T) {
+	mutations := map[string]func(*EpochRecord){
+		"incarnation":      func(e *EpochRecord) { e.Incarnation = "" },
+		"source":           func(e *EpochRecord) { e.Source = "" },
+		"epoch":            func(e *EpochRecord) { e.Epoch = "" },
+		"generation":       func(e *EpochRecord) { e.Generation = 0 },
+		"kind":             func(e *EpochRecord) { e.Kind = EventPublished },
+		"asset-id":         func(e *EpochRecord) { e.Kind = EventSourceRetired; e.Assets = []semreg.AssetID{""} },
+		"unknown-asset":    func(e *EpochRecord) { e.Kind = EventSourceRetired; e.Assets = []semreg.AssetID{"asset:missing"} },
+		"duplicate-assets": func(e *EpochRecord) { e.Kind = EventSourceRetired; e.Assets = []semreg.AssetID{"asset:a", "asset:a"} },
+		"unordered-assets": func(e *EpochRecord) { e.Kind = EventSourceRetired; e.Assets = []semreg.AssetID{"asset:b", "asset:a"} },
+		"admission-assets": func(e *EpochRecord) { e.Assets = []semreg.AssetID{"asset:a"} },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			origin, err := New(Options{Recovery: &RecoveryHooks{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			admitLegacy(t, origin, "source:assetless", "synthetic-family", "epoch:old", 1)
+			record := origin.ExportRecovery()
+			mutate(&record.Epochs[0])
+			fresh := recoveryHub(t, nil, nil)
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("invalid history accepted: %v", err)
+			}
+			if len(fresh.ExportRecovery().Epochs) != 0 || len(fresh.restoredEpochs) != 0 {
+				t.Fatal("invalid history retained or reserved")
+			}
+			for _, id := range recoveryAssets {
+				if fresh.Readable(id) {
+					t.Fatalf("invalid checkpoint left %s readable", id)
+				}
+			}
+		})
+	}
+}
+
+func TestRecoveryPreservesSourceIdentityRegime(t *testing.T) {
+	for _, assetless := range []bool{false, true} {
+		for _, family := range []LegacyFamily{"", LegacyGrowattStorage, LegacyPVSunSpec} {
+			t.Run(fmt.Sprintf("assetless=%t/family=%s", assetless, family), func(t *testing.T) {
+				origin := recoveryHub(t, nil, nil)
+				if assetless {
+					var err error
+					origin, err = New(Options{Recovery: &RecoveryHooks{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				request := Admission{Source: "source:restore", Driver: "synthetic-family", Legacy: family}
+				if family != "" {
+					request.Epoch, request.Generation = "epoch:old", 1
+				}
+				if _, err := origin.AdmitSource(request); err != nil {
+					t.Fatal(err)
+				}
+				fresh := recoveryHub(t, nil, nil)
+				if assetless {
+					var err error
+					fresh, err = New(Options{Recovery: &RecoveryHooks{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := fresh.Restore(origin.ExportRecovery()); err != nil {
+					t.Fatal(err)
+				}
+				// A second export/restore must retain the regime without a current handle.
+				record := fresh.ExportRecovery()
+				again := recoveryHub(t, nil, nil)
+				if assetless {
+					var err error
+					again, err = New(Options{Recovery: &RecoveryHooks{}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := again.Restore(record); err != nil {
+					t.Fatal(err)
+				}
+				fresh = again
+				for _, other := range []LegacyFamily{"", LegacyGrowattStorage, LegacyPVSunSpec} {
+					if other == family {
+						continue
+					}
+					wrong := request
+					wrong.Legacy, wrong.Epoch, wrong.Generation = other, "", 0
+					if other != "" {
+						wrong.Epoch, wrong.Generation = "epoch:new", 1
+					}
+					if _, err := fresh.AdmitSource(wrong); !errors.Is(err, ErrAdmission) {
+						t.Fatalf("changed regime admitted: %v", err)
+					}
+				}
+				if !reflect.DeepEqual(record, fresh.ExportRecovery()) {
+					t.Fatal("rejected admission changed checkpoint")
+				}
+				request.Epoch, request.Generation = "", 0
+				if family != "" {
+					request.Epoch, request.Generation = "epoch:new", 1
+				}
+				if _, err := fresh.AdmitSource(request); err != nil {
+					t.Fatalf("matching regime refused: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRecoveryRejectsMissingOrInvalidIdentityRegime(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		origin, _ := populatedRecoveryHub(t, nil)
+		record := origin.ExportRecovery()
+		if invalid {
+			record.Regimes["source:restore"] = LegacyFamily("unknown-family")
+		} else {
+			delete(record.Regimes, "source:restore")
+		}
+		fresh := recoveryHub(t, nil, nil)
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("invalid regime accepted: %v", err)
+		}
+		for _, id := range recoveryAssets {
+			if fresh.Readable(id) {
+				t.Fatalf("invalid regime left %s readable", id)
+			}
 		}
 	}
 }

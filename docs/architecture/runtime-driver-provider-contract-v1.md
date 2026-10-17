@@ -585,9 +585,11 @@ attempt from the current snapshot. No refused attempt advances a cursor.
 
 `ExportRecovery` captures a coherent detached record of declaration identities,
 pack references, every accepted batch in per-asset commit order, its original
-monotonic point and exact result, the last control gate/attempts, and epoch
-history. Copying coherent metadata uses the existing hub synchronization;
-serialization, buffer export, validators, and persistence run outside it.
+monotonic point and exact result, the last control gate/attempts, epoch
+history, and each historically admitted source's identity regime (hub-native
+or its legacy family). Copying coherent metadata uses the existing hub
+synchronization; serialization, buffer export, validators, and persistence run
+outside it.
 Rejected attempts remain control history and never enter the accepted replay
 log or advance a restored cursor. Enabled recovery retains the complete log;
 the service must bound admission and retain replay material until a verified
@@ -595,13 +597,18 @@ restore point permits compaction. Default production hubs do not collect it.
 
 Restore requires the same declared asset/source/driver identity and compatible
 validators, empty asset kernels, and no prior admission of an affected source
-in the new incarnation, including withdrawn admissions. Every declared asset
-of a source named by asset entries or epoch history must be present; missing
-coverage rejects the record and closes that source's empty assets. Checkpoint
-entries with undeclared asset IDs also reject the record and close all empty
-assets of the source identified by the rejected entry. Restored
-cursor and history epoch IDs are reserved against admission and epoch
-transitions, even with a different generation: restoration requires a new epoch.
+in the new incarnation, including withdrawn admissions. Every declared recovery
+asset must be present, including assets of sources omitted entirely from the
+checkpoint; missing coverage rejects the record and closes all empty declared
+assets. Checkpoint entries with undeclared asset IDs also reject the record and
+close all empty declared assets. Malformed epoch identities, zero generations, non-lifecycle
+event kinds, invalid or unordered asset IDs, and missing or invalid source
+identity regimes reject the checkpoint before replay or epoch reservation.
+Restored cursor and history epoch IDs are reserved against admission and epoch
+transitions, even for assetless sources or with a different generation:
+restoration requires a new epoch. Successor admission must retain the restored
+identity regime; changing legacy family or switching between legacy and
+hub-native identity is refused.
 It replays accepted publication and control batches on detached kernels using
 the persisted monotonic points, verifies every exact result, and reinstates retained
 history/tombstones and per-key cursors. A corrupt step or changed validator
@@ -612,10 +619,9 @@ A missing callback cannot acknowledge restoration. The current prerequisite
 uses a synthetic reprojection gate for publication-only and empty entries:
 `Resettle` reports `Kind=generation_fenced` with a zero `ControlID` when no
 historical control exists. For a never-published entry that callback view has
-`Present=true` and an empty `SnapshotID`; it acknowledges rebuilding an empty
-cache, not a publication or fence. Consumers must use the empty snapshot ID
-and zero control identity to recognize this case. `Inspect` continues to report
-that entry as absent. These callback markers confer no control authority.
+`Present=false` and an empty `SnapshotID`; it acknowledges rebuilding an empty
+cache. The callback preserves the absence reported by `Inspect`. These callback
+markers confer no control authority.
 Historical settlement grants no current read acknowledgement. Outstanding
 semantic gates remain closed; the future service must resolve their original WAL work before new admission.
 Prior admissions, activations, revocations, and retirements remain inert

@@ -76,7 +76,8 @@ type Hub struct {
 	// restoredEpochs reserves every epoch named in restored history, including
 	// epochs of sources that have no record in this hub yet, so no admission can
 	// reuse a historical epoch (D1: a restore always moves to a new epoch).
-	restoredEpochs map[semreg.SourceID]map[semreg.SourceEpochID]bool
+	restoredEpochs  map[semreg.SourceID]map[semreg.SourceEpochID]bool
+	restoredRegimes map[semreg.SourceID]LegacyFamily
 	// queue holds accepted control assets awaiting their first reprojection,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
@@ -278,7 +279,10 @@ func (h *Hub) claimAvailableLocked(id string, kind Kind, driver string) error {
 
 // regimeLocked refuses an admission whose identity regime differs from the
 // regime fixed by the source's first successful admission. h.mu must be held.
-func regimeLocked(src *source, legacy LegacyFamily) error {
+func (h *Hub) regimeLocked(src *source, legacy LegacyFamily) error {
+	if family, ok := h.restoredRegimes[src.id]; ok && family != legacy {
+		return fmt.Errorf("%w: restored source belongs to another identity regime", ErrAdmission)
+	}
 	if src.admissions > 0 && src.legacy != legacy {
 		return fmt.Errorf("%w: source belongs to another identity regime", ErrAdmission)
 	}
@@ -468,7 +472,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 		src = newSource(request.Source, request.Driver)
 	}
 	if err == nil {
-		err = regimeLocked(src, request.Legacy)
+		err = h.regimeLocked(src, request.Legacy)
 	}
 	h.unlock()
 	if err != nil {
@@ -479,7 +483,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	// Admissions serialize on the source control mutex, so the regime checked
 	// here holds until this admission completes.
 	h.mu.RLock()
-	err = regimeLocked(src, request.Legacy)
+	err = h.regimeLocked(src, request.Legacy)
 	h.mu.RUnlock()
 	if err != nil {
 		return nil, err

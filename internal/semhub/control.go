@@ -994,7 +994,7 @@ func (h *Hub) startAttemptLocked(ca *controlAsset) (chan struct{}, error) {
 	}
 	target := ca.asset
 	event := ControlEvent{Asset: target.id, SnapshotID: ca.snapshot.SnapshotID, HubSeq: ca.hubSeq, Kind: EventGenerationFenced, Control: ca.op.id,
-		View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: true}}
+		View: InspectView{Snapshot: cloneSnapshot(ca.snapshot), Canonical: append([]byte(nil), ca.canonical...), Revisions: ca.snapshot.Revisions, HubSeq: ca.hubSeq, Control: controlStatusLocked(ca), Present: ca.snapshot.SnapshotID != ""}}
 	if ca.op.kind == ControlRetire {
 		event.Kind = EventSourceRetired
 	}

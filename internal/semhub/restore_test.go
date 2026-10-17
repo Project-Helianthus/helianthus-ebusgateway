@@ -866,3 +866,23 @@ func TestRecoveryLegacyRestoreAdmitsSuccessorAndPublishes(t *testing.T) {
 		mustPublish(t, fresh, successor, id, "synthetic", 30, 4)
 	}
 }
+
+func TestRecoveryUnsupportedHistoryOnlyRecordClosesNamedSource(t *testing.T) {
+	hub, _ := populatedRecoveryHub(t, nil)
+	record := hub.ExportRecovery()
+	// The source is named only through epoch history.
+	record.Assets = nil
+	record.Version++
+	if len(record.Epochs) == 0 {
+		t.Fatal("fixture must carry epoch history")
+	}
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+		t.Fatal("unsupported record accepted")
+	}
+	for _, id := range recoveryAssets {
+		if fresh.Readable(id) {
+			t.Fatalf("unsupported history-only record left %s readable", id)
+		}
+	}
+}

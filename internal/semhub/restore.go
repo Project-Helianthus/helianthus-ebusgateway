@@ -185,7 +185,10 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		return fmt.Errorf("%w: decode record: %v", ErrRestore, err)
 	}
 	if record.Version != 1 {
-		h.failRestoreAssets(record.Assets)
+		h.mu.RLock()
+		closure := h.sourceClosureLocked(record)
+		h.mu.RUnlock()
+		h.failRestoreAssets(closure)
 		return fmt.Errorf("%w: record version", ErrRestore)
 	}
 	sort.Slice(record.Assets, func(i, j int) bool { return record.Assets[i].Asset < record.Assets[j].Asset })
@@ -197,13 +200,9 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		if target == nil || i > 0 && entry.Asset == record.Assets[i-1].Asset {
 			// An invalid asset ID must not bypass closure of its source's
 			// declared empty assets when source coverage cannot be checked.
-			for id, declared := range h.assets {
-				if declared.source == entry.Source {
-					record.Assets = append(record.Assets, RecoveryAsset{Asset: id})
-				}
-			}
+			closure := h.sourceClosureLocked(record)
 			h.mu.RUnlock()
-			h.failRestoreAssets(record.Assets)
+			h.failRestoreAssets(closure)
 			return fmt.Errorf("%w: missing or duplicate asset", ErrRestore)
 		}
 		targets[i] = target
@@ -459,6 +458,30 @@ func (h *Hub) outsideControlLocks(ca *controlAsset, callback func()) {
 		h.unlock()
 	}()
 	callback()
+}
+
+// sourceClosureLocked lists the record's asset entries plus every declared asset
+// of each source the record names, whether through an asset entry or only
+// through epoch history, so an early rejection closes all of them. h.mu must be
+// held for reading.
+func (h *Hub) sourceClosureLocked(record RecoveryRecord) []RecoveryAsset {
+	named := map[semreg.SourceID]bool{}
+	for _, entry := range record.Assets {
+		named[entry.Source] = true
+		if target := h.assets[entry.Asset]; target != nil {
+			named[target.source] = true
+		}
+	}
+	for _, epoch := range record.Epochs {
+		named[epoch.Source] = true
+	}
+	closure := append([]RecoveryAsset(nil), record.Assets...)
+	for id, declared := range h.assets {
+		if named[declared.source] {
+			closure = append(closure, RecoveryAsset{Asset: id})
+		}
+	}
+	return closure
 }
 
 func (h *Hub) failRestoreAssets(entries []RecoveryAsset) {

@@ -153,7 +153,44 @@ func NewHandler(cfg Config) (http.Handler, error) {
 	return &handler{cfg: cfg, queryShape: shape, storageQueryShape: storageShape, evseQueryShape: evseShape, limits: make(map[string]*list.Element), lru: list.New(), limitCapacity: rateLimitTableCapacity}, nil
 }
 
+// ServeHTTP spends the remote host's request budget before any other work, so
+// a refused host never has its body read or its document parsed.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.budgeted(http.HandlerFunc(h.serve)).ServeHTTP(w, r)
+}
+
+// RequestBudget wraps next so that every request it serves first spends the
+// per-host request budget owned by budget, which must be a handler returned by
+// NewHandler. The wrapped routes share that handler's bounded table, key
+// derivation and refusal response, so one remote host has a single budget
+// across the GraphQL route and every route wrapped here. It carries no
+// identity and grants no access.
+func RequestBudget(budget http.Handler, next http.Handler) (http.Handler, error) {
+	owner, ok := budget.(*handler)
+	if !ok || owner == nil {
+		return nil, errors.New("request budget owner must be an M2M GraphQL handler")
+	}
+	if next == nil {
+		return nil, errors.New("request budget requires a wrapped handler")
+	}
+	return owner.budgeted(next), nil
+}
+
+// budgeted admits the request before next runs and releases the entry on every
+// exit path, including a panic unwinding through next.
+func (h *handler) budgeted(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := h.admit(requestRateLimitKey(r))
+		if limit == nil {
+			writeError(w, "", "REQUEST_LIMIT_EXCEEDED")
+			return
+		}
+		defer h.release(limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, "", "REQUEST_INVALID")
 		return
@@ -214,12 +251,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, root, "ASSET_FORBIDDEN")
 		return
 	}
-	limit := h.admit(requestRateLimitKey(r))
-	if limit == nil {
-		writeError(w, root, "REQUEST_LIMIT_EXCEEDED")
-		return
-	}
-	defer h.release(limit)
 	data, ok := provider(r.Context(), asset)
 	if !ok || !json.Valid(data) {
 		writeError(w, root, "SOURCE_UNAVAILABLE")

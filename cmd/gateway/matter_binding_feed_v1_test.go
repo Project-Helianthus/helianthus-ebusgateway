@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,18 +212,7 @@ func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(
 		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
 		AllowedAssets: []string{"asset:test"},
 	}}
-	requested, dispositions := matter.Ledger()
-	provider := matterFeedRuntimeFixture{snapshot: feedv1.Snapshot{
-		Contract: feedv1.Contract,
-		Target: feedv1.Target{
-			ProjectionContract: matter.Contract,
-			TargetID:           string(matter.TargetID),
-			TargetVersion:      string(matter.TargetVersion),
-			MappingRevision:    string(matter.MappingRevision),
-		},
-		Ledger:    feedv1.Ledger{Manifest: matter.Manifest(), Requested: requested, Dispositions: dispositions},
-		Resources: []feedv1.Resource{}, Operations: []feedv1.AdmittedOperation{},
-	}}
+	provider := matterFeedRuntimeFixture{snapshot: matterFeedRuntimeEmptySnapshot()}
 	runtime, err := newM2MGraphQLRuntimeWithMatter(cfg, nil, nil, nil, provider)
 	if err != nil {
 		t.Fatal(err)
@@ -265,6 +255,9 @@ func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(
 		body, _ := io.ReadAll(plain.Body)
 		t.Fatalf("certificate-less feed status=%d body=%s", plain.StatusCode, body)
 	}
+	// The Matter routes spend the per-host request budget (two tokens, one
+	// refill per second); both snapshots above came from this loopback host.
+	time.Sleep(1100 * time.Millisecond)
 	invoke, err := withoutCertificate.Post("https://"+runtime.Addr()+"/matter-binding/v1/invoke", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -280,5 +273,117 @@ func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(
 	if response, err := mismatched.Get("https://" + runtime.Addr() + "/matter-binding/v1/snapshot"); err == nil {
 		_ = response.Body.Close()
 		t.Fatal("feed client accepted a server certificate for a different identity")
+	}
+}
+
+func matterFeedRuntimeEmptySnapshot() feedv1.Snapshot {
+	requested, dispositions := matter.Ledger()
+	return feedv1.Snapshot{
+		Contract: feedv1.Contract,
+		Target: feedv1.Target{
+			ProjectionContract: matter.Contract,
+			TargetID:           string(matter.TargetID),
+			TargetVersion:      string(matter.TargetVersion),
+			MappingRevision:    string(matter.MappingRevision),
+		},
+		Ledger:    feedv1.Ledger{Manifest: matter.Manifest(), Requested: requested, Dispositions: dispositions},
+		Resources: []feedv1.Resource{}, Operations: []feedv1.AdmittedOperation{},
+	}
+}
+
+// blockingMatterFeedProvider holds its first capture until released.
+type blockingMatterFeedProvider struct {
+	matterFeedRuntimeFixture
+	once    *sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p blockingMatterFeedProvider) Capture(ctx context.Context) (feedv1.Snapshot, error) {
+	p.once.Do(func() {
+		close(p.entered)
+		<-p.release
+	})
+	return p.matterFeedRuntimeFixture.Capture(ctx)
+}
+
+func TestM2MRuntimeMatterRoutesShareThePerHostRequestBudget(t *testing.T) {
+	certs := newM2MTLSCertificates(t)
+	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
+		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		AllowedAssets: []string{"pv-asset-known"},
+	}}
+	provider := blockingMatterFeedProvider{
+		matterFeedRuntimeFixture: matterFeedRuntimeFixture{snapshot: matterFeedRuntimeEmptySnapshot()},
+		once:                     &sync.Once{}, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	runtime, err := newM2MGraphQLRuntimeWithMatter(cfg, nil, nil, nil, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(provider.release)
+		}
+	})
+	// Drive the composed listener handler directly so distinct remote hosts
+	// can be presented; the composition is the one served over TLS.
+	serve := func(method, path, remote, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.RemoteAddr = remote
+		response := httptest.NewRecorder()
+		runtime.server.Handler.ServeHTTP(response, request)
+		return response
+	}
+	first := make(chan *httptest.ResponseRecorder, 1)
+	go func() { first <- serve(http.MethodGet, "/matter-binding/v1/snapshot", "198.51.100.7:40001", "") }()
+	select {
+	case <-provider.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Matter capture did not start")
+	}
+	// A refusal is immediate; without admission the Matter request would wait
+	// on the feed's serialized capture, so bound each call.
+	serveRefused := func(method, path, remote, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		result := make(chan *httptest.ResponseRecorder, 1)
+		go func() { result <- serve(method, path, remote, body) }()
+		select {
+		case response := <-result:
+			return response
+		case <-time.After(2 * time.Second):
+			t.Fatalf("concurrent same-host request to %s was not refused; it reached the serialized capture", path)
+			return nil
+		}
+	}
+	matterRefusal := serveRefused(http.MethodGet, "/matter-binding/v1/changes?cursor=x:1", "198.51.100.7:40002", "")
+	graphqlBody := `{"operationName":"SemanticPVCurrent","query":"query SemanticPVCurrent($request: M2MCurrentSnapshotRequest!) { semanticPVCurrent(request: $request) { snapshot evaluation selections projection } }","variables":{"request":{"contractId":"PUBLIC_GRAPHQL_SEMANTIC_PV_V1","assetRef":"pv-asset-known"}}}`
+	graphqlRefusal := serveRefused(http.MethodPost, "/graphql/m2m/v1", "198.51.100.7:40003", graphqlBody)
+	if !strings.Contains(matterRefusal.Body.String(), `"REQUEST_LIMIT_EXCEEDED"`) || matterRefusal.Code != graphqlRefusal.Code || matterRefusal.Body.String() != graphqlRefusal.Body.String() {
+		t.Fatalf("concurrent same-host Matter refusal=%d %s; GraphQL refusal=%d %s", matterRefusal.Code, matterRefusal.Body.String(), graphqlRefusal.Code, graphqlRefusal.Body.String())
+	}
+	// A different host has its own budget: it is admitted and then waits for
+	// the feed's serialized capture rather than being refused.
+	other := make(chan *httptest.ResponseRecorder, 1)
+	go func() { other <- serve(http.MethodGet, "/matter-binding/v1/snapshot", "198.51.100.8:40001", "") }()
+	select {
+	case response := <-other:
+		t.Fatalf("different host answered before the capture was released: %d %s", response.Code, response.Body.String())
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(provider.release)
+	released = true
+	for name, channel := range map[string]chan *httptest.ResponseRecorder{"first": first, "different-host": other} {
+		select {
+		case response := <-channel:
+			if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "REQUEST_LIMIT_EXCEEDED") {
+				t.Fatalf("%s Matter request=%d %s", name, response.Code, response.Body.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s Matter request did not complete", name)
+		}
 	}
 }

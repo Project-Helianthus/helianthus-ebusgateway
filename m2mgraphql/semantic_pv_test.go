@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -136,7 +137,13 @@ func TestSemanticStorageErrorsUseStoragePathAndPreoperationErrorsAreNeutral(t *t
 	}
 	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
 	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
-	assertM2MError(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"), "REQUEST_LIMIT_EXCEEDED", []string{"semanticStorageCurrent"})
+	// The request budget is now spent before the body is read, so a refused
+	// host is answered before its operation is known: the refusal is a
+	// neutral pre-operation error with an empty path and it precedes every
+	// body, document, contract and asset check.
+	assertM2MErrorForKey(t, quota, "test-principal", storageRequest(semanticStorageContractID, "asset:storage-test"), "REQUEST_LIMIT_EXCEEDED", []string{})
+	assertM2MErrorForKey(t, quota, "test-principal", `{`, "REQUEST_LIMIT_EXCEEDED", []string{})
+	assertM2MErrorForKey(t, quota, "test-principal", storageRequest("wrong", "asset:other"), "REQUEST_LIMIT_EXCEEDED", []string{})
 }
 
 func TestM2MHandlerRequiresNoPrincipal(t *testing.T) {
@@ -204,10 +211,21 @@ func assertM2MStorageSuccess(t *testing.T, handler http.Handler, request string)
 	}
 }
 
+var m2mErrorBudgetKeys atomic.Int64
+
+// assertM2MError gives every call its own budget partition. Admission now runs
+// before the body is read, so rejected requests spend budget too; a shared
+// partition would let the precedence assertions below exhaust it and turn
+// every later assertion into REQUEST_LIMIT_EXCEEDED.
 func assertM2MError(t *testing.T, handler http.Handler, request, wantCode string, wantPath []string) {
 	t.Helper()
+	assertM2MErrorForKey(t, handler, "test-error-"+strconv.FormatInt(m2mErrorBudgetKeys.Add(1), 10), request, wantCode, wantPath)
+}
+
+func assertM2MErrorForKey(t *testing.T, handler http.Handler, key, request, wantCode string, wantPath []string) {
+	t.Helper()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithMTLSPrincipal(context.Background(), "test-principal")))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(request)).WithContext(WithRateLimitKey(context.Background(), key)))
 	var decoded struct {
 		Errors []struct {
 			Path       []string `json:"path"`

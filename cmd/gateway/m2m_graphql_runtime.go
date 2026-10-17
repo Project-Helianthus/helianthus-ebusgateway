@@ -141,9 +141,15 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 		if err != nil {
 			return nil, errors.New("matter binding feed handler configuration is invalid")
 		}
+		// The Matter routes spend the same per-host request budget as GraphQL
+		// before reaching the feed's serialized catalog capture.
+		budgetedMatter, err := m2mgraphql.RequestBudget(graphqlHandler, http.StripPrefix("/matter-binding", matterHandler))
+		if err != nil {
+			return nil, errors.New("matter binding feed request budget is unavailable")
+		}
 		mux := http.NewServeMux()
 		mux.Handle("/graphql/m2m/v1", graphqlHandler)
-		mux.Handle("/matter-binding/", http.StripPrefix("/matter-binding", matterHandler))
+		mux.Handle("/matter-binding/", budgetedMatter)
 		handler = mux
 	}
 	rawListener, err := net.Listen("tcp", config.M2MGraphQL.ListenAddr)

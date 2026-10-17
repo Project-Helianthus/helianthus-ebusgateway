@@ -169,6 +169,9 @@ func TestM2MGraphQLRuntime_NoCertificateClientReachesGraphQLAndAllowListStillFil
 	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-other"); code != "ASSET_FORBIDDEN" {
 		t.Fatalf("certificate client bypassed the asset allow-list: code=%q", code)
 	}
+	// Admission now precedes body parsing, so the two forbidden requests above
+	// spent this loopback host's two tokens; wait for one refill.
+	time.Sleep(1100 * time.Millisecond)
 	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"); code != "SOURCE_UNAVAILABLE" {
 		t.Fatalf("certificate-less client did not reach the GraphQL handler: code=%q", code)
 	}

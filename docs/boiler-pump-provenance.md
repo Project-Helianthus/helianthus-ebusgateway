@@ -1,24 +1,58 @@
 # Boiler pump evidence
 
-The gateway's fast eBUS boiler refresh does not derive
-`CentralHeatingPumpActive` from circuit 0's `PumpStatusRaw`. A circuit pump
-observation identifies the circuit pump; it does not establish boiler pump
-state. Circuit pump evidence remains available in its native circuit snapshot.
+**Proven — software source:** in the Vaillant-family implementation,
+`refreshBoilerStatusB509` calls `readB509OnOff` for
+`boiler_b509_central_heating_pump` during the fast boiler refresh. A non-nil
+result supplies `CentralHeatingPumpActive` in the incoming boiler snapshot.
+`readB509OnOff` requires both a successful `readB509Value` and successful
+`decodeOnOff`; otherwise it returns nil. This identifies the implemented direct
+boiler on/off source, without establishing a new native wire interpretation.
+See [the boiler refresh and read helpers](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go).
 
-Without independent boiler pump evidence, the boiler pump field remains
-unknown. Independent true and false values survive circuit changes and partial
-updates that omit boiler pump evidence. A later independent boiler pump update
-may replace the retained value. Other supported mirror fields continue to
-refresh independently.
+The fast B524 path uses `mergeBoilerMirrorFieldsFromSnapshots`, which leaves the
+boiler pump field absent rather than deriving it from circuit 0's
+`PumpStatusRaw`. That circuit observation does not establish boiler pump state;
+the native value remains in
+[`vaillantCircuitSnapshot`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant_snapshots.go).
+Other supported mirror fields can still refresh independently. The unused
+circuit-zero register/decoder cleanup remains outside this explanation.
 
-Cached boiler pump values have Unknown provenance: older caches may contain a
-value derived from circuit 0. Cache loading discards that field before provider
-publication and poller hydration, while retaining other cached boiler fields.
-Pump state is no longer persisted; independent live evidence is required after
-each restart. Live partial updates continue to retain independent pump values.
+**Proven — load-time discard; Unknown — cached pump provenance:**
+`cacheBoilerToGraphQL` omits the cached pump boolean while restoring other
+supported boiler fields. The pump is therefore Unknown (nil) before cache
+preload publishes it and before poller hydration; an old circuit-derived value
+does not remain published awaiting a successful read. `graphQLBoilerToCache`
+also omits the pump field, so pump state is not persisted. Independent evidence
+is required again after a restart. See [both cache conversions](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_cache.go)
+and `TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded` in
+[the existing provenance regression](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/boiler_pump_provenance_test.go).
 
-This correction adds no new register qualification, wire mapping, or device
-support. The regression fixtures use synthetic state and establish gateway
-assembly behavior only.
+**Proven — software recovery path:** the next successful independent boiler
+pump read through `refreshBoilerStatusB509` supplies a new boolean, including
+false. `refreshBoilerStatusTier` merges that incoming snapshot and publishes
+the result. A successful read of another field alone does not recover the
+pump value. The cache regression demonstrates recovery by injecting independent
+synthetic boiler evidence; it does not execute a successful B509 wire read.
 
-Tracking: https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1094
+**Proven — partial-update retention:** once independent pump evidence exists,
+`mergeBoilerSnapshotNonDestructive` replaces it only when the incoming pump
+pointer is non-nil. Omission or a failed pump read leaves the last-known value
+intact while other successful fields can update. This applies to both true and
+false, independently of circuit pump changes. See the merge implementation in
+[the semantic poller](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/semantic_vaillant.go)
+and `TestK01PartialUpdatesPreserveIndependentBoilerPump` in the linked regression.
+This live retention is separate from the load-time discard of unproven cache
+state.
+
+**Hypothesis — native interpretation:** any broader claim that a circuit pump
+observation identifies the boiler pump remains a hypothesis, not an admitted
+source. **Unknown — physical applicability:** software source and synthetic
+assembly fixtures do not establish hardware behavior or qualification across
+device families. Proven/Hypothesis/Unknown describe evidence here independently
+of qualification. This explanation adds no native protocol fact, register
+qualification, device support, or stability promise; native interpretation
+requires the public native documentation contract first.
+
+Tracking: [direct-source and cache wording](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1116).
+Refs: [follow-up scope](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1109),
+[parent scope](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1012).

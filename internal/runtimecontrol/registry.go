@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -76,8 +77,16 @@ type Registry struct {
 }
 
 // NewRegistry returns an empty registry that checks source ownership against
-// the given hub view. A nil view means the hub owns no source.
+// the given hub view. A nil view, including a typed nil, means the hub owns no source.
 func NewRegistry(hub HubSourceOwnership) *Registry {
+	if value := reflect.ValueOf(hub); value.IsValid() {
+		switch value.Kind() {
+		case reflect.Pointer, reflect.Func, reflect.Map, reflect.Slice, reflect.Interface, reflect.Chan:
+			if value.IsNil() {
+				hub = nil
+			}
+		}
+	}
 	return &Registry{hub: hub, entries: make(map[DriverID]registered), sources: make(map[SourceID]DriverID)}
 }
 

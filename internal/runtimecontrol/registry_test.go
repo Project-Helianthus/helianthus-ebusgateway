@@ -49,6 +49,12 @@ func (h fakeHub) SourceOwner(source SourceID) (DriverID, bool) {
 	return owner, ok
 }
 
+type pointerHub struct{ owners fakeHub }
+
+func (h *pointerHub) SourceOwner(source SourceID) (DriverID, bool) {
+	return h.owners.SourceOwner(source)
+}
+
 func countingAdapter(calls *atomic.Int64) LifecycleAdapter {
 	return NewAdapter(func(context.Context, Construction) (*fakeRuntime, error) {
 		calls.Add(1)
@@ -69,6 +75,32 @@ func fixture(calls *atomic.Int64, id DriverID, direction Direction, sources ...S
 		},
 		Adapter: countingAdapter(calls),
 		Sources: append([]SourceID(nil), sources...),
+	}
+}
+
+func TestRegisterWithNilHub(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hub  HubSourceOwnership
+	}{
+		{"nil interface", nil},
+		{"typed nil pointer", (*pointerHub)(nil)},
+		{"typed nil map", fakeHub(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			registry := NewRegistry(tc.hub)
+			if err := registry.Register(fixture(&calls, "fake.nil-hub", DirectionSouthbound, "nil-hub-src")); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			got, err := registry.Get("fake.nil-hub")
+			if err != nil || got.CatalogRevision != 1 || got.Driver.DriverID != "fake.nil-hub" {
+				t.Fatalf("Get = %+v, %v; want registered driver at revision 1", got, err)
+			}
+			if calls.Load() != 0 {
+				t.Fatal("registration invoked the adapter")
+			}
+		})
 	}
 }
 

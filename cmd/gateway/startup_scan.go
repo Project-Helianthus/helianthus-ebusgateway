@@ -223,16 +223,17 @@ var (
 	// a full-range retry under the AD05 diagnostic flag. Tests override
 	// this to skip the AD05 guard for transport-agnostic scan-loop tests.
 	// Resolves cruise-run #20 M6 reviewer-flagged finding (#2).
-	evidenceHasVaillantRootFn   = defaultEvidenceHasVaillantRoot
-	registryScanDirectedFn      = registry.ScanDirected
-	ebusdScanTargetCandidatesFn = ebusdScanTargetCandidates
-	ebusdScanResultTargetsFn    = ebusdScanResultTargets
-	ebusdScanResultInfosFn      = ebusdScanResultInfos
-	startupScanB524ProbeFn      func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
-	startupScanLoopExitFn       func()
-	enrichVaillantIdentityFn    = enrichVaillantIdentity
-	enrichSerialsFromEbusdFn    = enrichSerialsFromEbusd
-	postStartupIdentityRetryFn  = schedulePostStartupIdentityRetry
+	evidenceHasVaillantRootFn     = defaultEvidenceHasVaillantRoot
+	registryScanDirectedFn        = registry.ScanDirected
+	ebusdScanTargetCandidatesFn   = ebusdScanTargetCandidates
+	ebusdScanResultTargetsFn      = ebusdScanResultTargets
+	ebusdScanResultInfosFn        = ebusdScanResultInfos
+	startupScanB524ProbeFn        func(ctx context.Context, target, opcode, group, instance byte, addr uint16) bool
+	startupScanLoopExitFn         func()
+	enrichB524InterfaceIdentityFn = enrichB524InterfaceIdentity
+	enrichVaillantIdentityFn      = enrichVaillantIdentity
+	enrichSerialsFromEbusdFn      = enrichSerialsFromEbusd
+	postStartupIdentityRetryFn    = schedulePostStartupIdentityRetry
 )
 
 // defaultEvidenceHasVaillantRoot scans the device registry for any device
@@ -630,6 +631,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 					if targetConfig != nil {
 						enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 					}
+					enrichVaillantB524InterfaceIdentity(ctx, gateway, startupCfg)
 					delayedIdentityRetryScheduled = scheduleDelayedIdentityRetryIfNeeded(
 						ctx,
 						gateway,
@@ -790,6 +792,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 				if targetConfig != nil {
 					enrichSerialsFn(ctx, gateway.Registry, *targetConfig)
 				}
+				enrichVaillantB524InterfaceIdentity(ctx, gateway, startupCfg)
 				delayedIdentityRetryScheduled = scheduleDelayedIdentityRetryIfNeeded(
 					ctx,
 					gateway,
@@ -977,6 +980,7 @@ func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.
 			if targetConfig != nil {
 				enrichSerialsFromEbusdFn(ctx, gateway.Registry, *targetConfig)
 			}
+			enrichVaillantB524InterfaceIdentity(ctx, gateway, cfg)
 
 			if !startupScanHasMissingVaillantSerials(gateway.Registry) {
 				gateway.RefreshRouterPlanes()
@@ -1397,18 +1401,31 @@ func dialContext(ctx context.Context, network, address string, timeout time.Dura
 	return dialer.DialContext(ctx, network, address)
 }
 
+const vaillantIdentityEnrichTimeout = 30 * time.Second
+
+// Acquire qualifiers after serial enrichment with a separate budget so registry
+// updates cannot immediately invalidate them and serial timeouts cannot starve OP00.
+func enrichVaillantB524InterfaceIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg ebusgateway.Config) {
+	if gw == nil || gw.Bus == nil || gw.Registry == nil {
+		return
+	}
+	enrichCtx, cancel := context.WithTimeout(ctx, vaillantIdentityEnrichTimeout)
+	defer cancel()
+	enrichB524InterfaceIdentityFn(enrichCtx, gw.Registry, &timeoutBus{bus: gw.Bus, timeout: cfg.ScanRequestTimeout}, cfg.ScanSource, cfg.StartupCompanionTarget)
+}
+
 // enrichVaillantIdentity iterates registered Vaillant devices that lack a
 // serial number and attempts a B5.09 identity read for each.  This fills in
 // serial numbers that the ebusd-tcp preload cannot provide (ebusd's
 // "scan result" only returns the 07 04 identification, not the Vaillant-
-// specific B5.09 chunks).  Failures are logged but never block startup.
+// specific B5.09 chunks). Failures never block serial enrichment beyond its
+// budget; callers acquire OP00 separately after all registry enrichment.
 func enrichVaillantIdentity(ctx context.Context, gw *ebusgateway.Gateway, cfg ebusgateway.Config) {
 	if gw == nil || gw.Bus == nil || gw.Registry == nil {
 		return
 	}
 
-	const enrichTimeout = 30 * time.Second
-	enrichCtx, cancel := context.WithTimeout(ctx, enrichTimeout)
+	enrichCtx, cancel := context.WithTimeout(ctx, vaillantIdentityEnrichTimeout)
 	defer cancel()
 
 	// Collect Vaillant devices that need enrichment before iterating,
@@ -1693,6 +1710,11 @@ func runBackgroundFullScan(ctx context.Context, cfg ebusgateway.Config, gateway 
 
 	if afterTotal > beforeTotal {
 		enrichVaillantIdentityFn(ctx, gateway, cfg)
+	}
+	// A controller replacement can retain the same inventory count.
+	// Always refresh OP00 after serial enrichment, preserving B5.09 retry bounds.
+	enrichVaillantB524InterfaceIdentity(ctx, gateway, cfg)
+	if afterTotal > beforeTotal {
 		gateway.RefreshRouterPlanes()
 		if builder != nil {
 			if err := builder.Rebuild(); err != nil {

@@ -143,6 +143,15 @@ package alongside its interpretation. A family summary requires per-case account
 it cannot conceal an unexecuted or blocked case. Failed or unverified rows stay
 unaccepted. The tables below do not duplicate K05/K06 evidence indexes.
 
+The T01–T88 and PX01–PX12 range rows below are summaries only. Before assigning
+any aggregate disposition, attach and link a public-safe per-case report covering
+every ID in that range, including unexecuted and blocked cases. Record all fields
+required above and each case's result, evidence grade, qualification and admission
+individually. Keep the summary Not run / Unknown / Unassessed / Unassessed until
+that report is complete and independently reviewed. Mixed outcomes must remain
+visible in the summary; any blocked, unexecuted, unexpected fail or xpass case
+prevents passing acceptance for the range.
+
 | Case / family | Governing reference and scope | Result | Evidence grade | Qualification | Admission |
 |---|---|---|---|---|---|
 | T01–T04 | [Smoke matrix][matrix]: direct adapter, four transport cases | Not run | Unknown | Unassessed | Unassessed |

@@ -1,7 +1,9 @@
 package ebusgateway
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -159,4 +161,67 @@ func TestM37BaudObservationReconnectResetAndTraffic(t *testing.T) {
 	// A fresh transport/store starts a new counter epoch, not a baud estimate.
 	cfg.Transport = &m37CounterTransport{}
 	m37AssertUnavailable(t, NewBusObservabilityStore(cfg))
+}
+
+func TestBaudConfiguredPresenceBeforeDefaults(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		present bool
+	}{
+		{name: "no eBUS"},
+		{name: "Modbus only", cfg: Config{ModbusTCPConfig: ModbusTCPConfig{Enabled: true}}},
+		{name: "eeBUS only", cfg: Config{EEBusConfig: EEBusConfig{Enabled: true}}},
+		{name: "protocol without counters", cfg: Config{TransportConfig: TransportConfig{Protocol: TransportENH}}, present: true},
+		{name: "address without counters", cfg: Config{TransportConfig: TransportConfig{Address: "synthetic-endpoint"}}, present: true},
+		{name: "injected active transport", cfg: Config{Transport: &m37CounterTransport{}}, present: true},
+		{name: "injected passive transport", cfg: Config{PassiveTransport: &m37CounterTransport{}}, present: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewBusObservabilityStore(tc.cfg)
+			// Other runtime readiness cannot establish eBUS configuration.
+			for _, protocol := range []TransportRuntimeProtocol{TransportRuntimeProtocolModbusTCP, TransportRuntimeProtocolEEBus} {
+				store.SetTransportRuntimeStatus(TransportRuntimeStatus{Protocol: protocol, State: TransportRuntimeStateReady, Reason: TransportRuntimeReasonNone, Outcome: TransportRuntimeOutcomeAvailable})
+			}
+			for range 2 {
+				if tc.present {
+					m37AssertUnavailable(t, store)
+				} else if got := store.RenderPrometheus(); strings.Contains(got, "ebus_baud_") {
+					t.Fatalf("unconfigured eBUS emitted baud metadata or samples:\n%s", got)
+				}
+			}
+		})
+	}
+}
+
+// Any transport I/O through the embedded nil interface panics. Counter reads
+// also panic: configuration presence must not probe transport capabilities.
+type baudConfiguredNoProbeTransport struct {
+	transport.RawTransport
+}
+
+func (*baudConfiguredNoProbeTransport) BaudObservabilitySnapshot() transport.BaudObservabilitySnapshot {
+	panic("scrape queried transport counters")
+}
+
+func TestBaudConfiguredStoppedAndScrapeDoesNoIO(t *testing.T) {
+	cfg := Config{
+		Transport: &baudConfiguredNoProbeTransport{},
+		TransportConfig: TransportConfig{Dial: func(context.Context, string, string, time.Duration) (net.Conn, error) {
+			panic("scrape dialed transport")
+		}},
+	}
+	store := NewBusObservabilityStore(cfg)
+	m37AssertUnavailable(t, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Retirement never removes configuration or supplies a timing window.
+	for _, protocol := range []TransportRuntimeProtocol{TransportRuntimeProtocolModbusTCP, TransportRuntimeProtocolEEBus} {
+		store.SetTransportRuntimeStatus(TransportRuntimeStatus{Protocol: protocol, State: TransportRuntimeStateRetired, Reason: TransportRuntimeReasonShutdown, Outcome: TransportRuntimeOutcomeUnavailable})
+	}
+	for range 2 {
+		m37AssertUnavailable(t, store)
+	}
 }

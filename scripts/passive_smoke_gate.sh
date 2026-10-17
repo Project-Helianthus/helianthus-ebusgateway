@@ -107,7 +107,8 @@ config_comment_only() {
 
 # A detached /metrics append is not a passive-capture behavior change. Keep
 # this exception deliberately narrow: it accepts only the pre-existing SemReg
-# hunk or #977's Gateway-owned two-protocol runtime snapshot hunk. Any passive
+# hunk, #977's Gateway-owned two-protocol runtime snapshot hunk, or #1137's
+# immutable configured-eBUS fact for baud metrics. Any passive
 # state, lock, counter, or unrelated RenderPrometheus change still requires the
 # ordinary deterministic passive-smoke report.
 bus_observability_metrics_only() {
@@ -170,6 +171,33 @@ transport_runtime_combined_expected = (
     + transport_runtime_expected[35:]
     + transport_runtime_expected[27:35]
 )
+# Configuration presence changes only the detached baud metric family. Match
+# both the isolated issue diff and its exact composition with the older runtime
+# snapshot addition used by the immutable regression fixture.
+baud_presence_field = [
+ "// Captured before defaults; independent of readiness and transport counters.",
+ "ebusConfigured bool",
+]
+baud_presence_capture = [
+ "ebusConfigured := cfg.Transport != nil || cfg.PassiveTransport != nil ||",
+ 'cfg.TransportConfig.Protocol != "" || cfg.TransportConfig.Address != ""',
+]
+baud_presence_init = [
+ "cfg:            cfg,", "now:            time.Now,",
+ "ebusConfigured: ebusConfigured,",
+]
+baud_presence_render = "writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)"
+baud_presence_expected = (
+    baud_presence_field + baud_presence_capture
+    + ["cfg: cfg,", "now: time.Now,"] + baud_presence_init
+    + ["writeTransportRuntimeMetrics(writer, transportRuntimeStatus)", baud_presence_render]
+)
+baud_runtime_combined_expected = (
+    baud_presence_field + transport_runtime_combined_expected[:4]
+    + baud_presence_capture + transport_runtime_combined_expected[4:6]
+    + baud_presence_init + transport_runtime_combined_expected[8:-1]
+    + [baud_presence_render]
+)
 diffs = []
 for args in (("git","diff","--unified=0",f"{base}...HEAD","--","bus_observability_store.go"),
              ("git","diff","--unified=0","--","bus_observability_store.go"),
@@ -183,6 +211,10 @@ if diffs == semreg_expected:
     required = {"semanticMetricsProvider func(time.Time) []SemanticMetricsDomain", "func (store *BusObservabilityStore) SetSemanticMetricsProvider(provider func(time.Time) []SemanticMetricsDomain) {", "semanticDomains = semanticMetricsProvider(now)", "writeSemanticMetrics(writer, semanticDomains, now)"}
 elif diffs in (transport_runtime_expected, transport_runtime_combined_expected):
     required = {"transportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus", "func (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {", "store.transportRuntimeStatus[status.Protocol] = status", "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)"}
+elif diffs in (baud_presence_expected, baud_runtime_combined_expected,
+               transport_runtime_expected + baud_presence_expected,
+               transport_runtime_combined_expected + baud_presence_expected):
+    required = {"ebusConfigured bool", "ebusConfigured: ebusConfigured,", baud_presence_render}
 else:
     raise SystemExit(1)
 if not required.issubset(diffs):

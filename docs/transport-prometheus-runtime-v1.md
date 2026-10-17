@@ -52,8 +52,39 @@ helianthus_transport_runtime_status{protocol="eebus",state="starting",outcome="p
 ```
 
 Current coverage is limited to already-composed Modbus TCP and eeBUS runtimes.
-eBUS keeps its existing transport/runtime exposition unchanged. CAN is
+The eBUS baud availability family is described below. CAN is
 `not_composed` until its own INT-07 runtime exists, so this family emits no CAN
 series. Thermal and Infrastructure semantic metrics, Matter/eeBUS output
 bindings, the Gateway rename, native mapping, SemReg packs, pollers, daemons,
 and transport changes remain outside this contract.
+
+
+## eBUS baud observation availability
+
+For configured eBUS, `/metrics` emits this unlabelled gauge with its HELP and
+TYPE metadata:
+
+```text
+# HELP ebus_baud_observation_available Whether a current qualified native baud timing observation is available.
+# TYPE ebus_baud_observation_available gauge
+ebus_baud_observation_available 0
+```
+
+The store captures eBUS configuration presence at construction, before filling
+in transport defaults: an injected active or passive eBUS transport, an explicit
+transport protocol, or a non-empty transport address establishes presence.
+An empty configuration, Modbus-only configuration, or eeBUS-only configuration
+omits the entire baud family, including HELP, TYPE, and samples. Configuration
+presence is independent of readiness, traffic, transport counters, and shutdown;
+a configured but stopped eBUS still emits availability `0`.
+
+Absence means eBUS was not configured for this store. Zero means eBUS was
+configured but no current qualified native timing observation is available. The
+current transport snapshot contains cumulative ingress and fault counters, not
+such a timing window, so the measured baud value is omitted. Configured baud,
+received-symbol counts, application timing, reconnects, and resets cannot
+establish a measured baud value or change availability to `1`. Rendering this
+family uses the stored configuration fact without dialing, reading transport
+counters, or performing device I/O. This does not change native evidence,
+qualification, admission, or MCP/GraphQL contracts. The historical `v1` page name
+does not promise stability before Helianthus 1.0.

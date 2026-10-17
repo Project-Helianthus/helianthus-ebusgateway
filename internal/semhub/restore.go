@@ -325,9 +325,22 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		}
 	}
 	h.mu.RUnlock()
+	h.fault("restore-install", "")
 	h.lock()
-	// An assetless source holds no control lock, so its claim is checked under
-	// the same lock that installs the restored state.
+	// An assetless source holds no control lock, so its claim, its admissions
+	// and any earlier restore are checked under the same lock that installs
+	// the restored state.
+	for id := range record.Drivers {
+		_, regime := h.restoredRegimes[id]
+		if len(h.restoredEpochs[id]) > 0 || regime {
+			h.unlock()
+			return fmt.Errorf("%w: source already restored", ErrRestore)
+		}
+		if src := h.sources[id]; src != nil && src.admission != 0 {
+			h.unlock()
+			return fmt.Errorf("%w: prior source admission", ErrRestore)
+		}
+	}
 	for id, driver := range record.Drivers {
 		if err := h.claimAvailableLocked(string(id), KindSource, driver); err != nil {
 			h.unlock()

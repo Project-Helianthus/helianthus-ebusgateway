@@ -626,7 +626,9 @@ restored identity regime; changing legacy family or switching between legacy
 and hub-native identity is refused. An unfixed source admits any regime, as
 after a withdrawn first admission. Restored sources stay claimed by their
 owning driver, including sources without assets; another driver's admission
-or declaration is a collision.
+or declaration is a collision. A source restores once per incarnation: a
+second restore of the same source, or an admission that lands before the
+restored state is installed, refuses the checkpoint.
 It replays accepted publication and control batches on detached kernels using
 the persisted monotonic points, verifies every exact result, and reinstates retained
 history/tombstones and per-key cursors. A corrupt step or changed validator

@@ -1210,15 +1210,17 @@ func (h *Hub) RetryControl(id ControlID) (ControlResult, error) {
 		h.lockSourceControl(op.src)
 		defer op.src.control.Unlock()
 		h.lock()
-		latest, abandoned, state := op.src.last == op, op.abandoned, op.stateLocked()
-		if !latest || abandoned {
-			h.unlock()
-			return ErrControlRequest
-		}
+		// An interrupted acceptance stays owed to the service even after a
+		// newer operation supersedes this one, so it is collected first.
 		for _, ca := range op.assets {
 			if ca.undelivered {
 				redeliver = append(redeliver, ca)
 			}
+		}
+		latest, abandoned, state := op.src.last == op, op.abandoned, op.stateLocked()
+		if !latest || abandoned {
+			h.unlock()
+			return ErrControlRequest
 		}
 		if state == opSettling {
 			defer h.unlock()

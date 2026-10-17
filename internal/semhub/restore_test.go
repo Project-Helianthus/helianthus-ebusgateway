@@ -1411,3 +1411,84 @@ func TestRecoveryControlDeliveryInterruptionKeepsAcceptance(t *testing.T) {
 		t.Fatal("a delivered acceptance must not be redelivered on every retry")
 	}
 }
+
+func TestRecoveryInterruptedControlAcceptanceSurvivesSupersession(t *testing.T) {
+	var delivered []AcceptedBatch
+	interrupt := false
+	hooks := &RecoveryHooks{Accepted: func(record AcceptedBatch) {
+		delivered = append(delivered, record)
+		if interrupt {
+			interrupt = false
+			panic("synthetic storage interruption")
+		}
+	}}
+	hub, handle := populatedRecoveryHub(t, hooks)
+	published := len(delivered)
+	interrupt = true
+	result, err := hub.Fence(FenceRequest{Source: handle.Source(), Epoch: handle.Epoch(), Generation: handle.Generation(),
+		Reason: "semhubtest.stop", Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.fence")}, ObservedAt: testWall(3), Monotonic: testMono(3)})
+	if err == nil || len(delivered) != published+1 {
+		t.Fatalf("fixture must interrupt the first control delivery: err=%v", err)
+	}
+	interrupted := delivered[published]
+	op, err := hub.lookupControl(result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A newer operation supersedes the interrupted one, as when a successor
+	// installs its own control while the callback is still running.
+	hub.lock()
+	op.src.last = &controlOp{src: op.src}
+	hub.unlock()
+	if _, err := hub.RetryControl(result.ID); !errors.Is(err, ErrControlRequest) {
+		t.Fatalf("a superseded operation must refuse a retry: %v", err)
+	}
+	found := false
+	for _, record := range delivered[published+1:] {
+		if record.HubSeq == interrupted.HubSeq && bytes.Equal(record.Batch, interrupted.Batch) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a superseded operation must still redeliver its interrupted acceptance")
+	}
+}
+
+func TestRecoveryAssetlessRestoreRunsOnceAndRechecksAdmission(t *testing.T) {
+	origin, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitLegacy(t, origin, "source:assetless", "synthetic-family", "epoch:old", 1)
+	record := origin.ExportRecovery()
+	t.Run("second restore", func(t *testing.T) {
+		fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Restore(record); err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("a second restore of the same assetless source was accepted: %v", err)
+		}
+	})
+	t.Run("admission during restore", func(t *testing.T) {
+		fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh.faults = func(stage string, _ semreg.AssetID) {
+			if stage == "restore-install" {
+				fresh.faults = nil
+				admitLegacy(t, fresh, "source:assetless", "synthetic-family", "epoch:racing", 1)
+			}
+		}
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("restore installed history over a concurrent admission: %v", err)
+		}
+		if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
+			t.Fatal("rejected checkpoint reserved history or regimes")
+		}
+	})
+}

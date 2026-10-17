@@ -600,6 +600,7 @@ func TestRecoveryEpochsCannotBeReadmitted(t *testing.T) {
 				record = recoveryHub(t, nil, nil).ExportRecovery()
 				record.Epochs = hub.ExportRecovery().Epochs
 				record.Regimes = hub.ExportRecovery().Regimes
+				record.Drivers = hub.ExportRecovery().Drivers
 			}
 			fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
 			if err := fresh.Restore(record); err != nil {
@@ -1089,5 +1090,153 @@ func TestRecoveryWithdrawnFirstAdmissionRoundTrips(t *testing.T) {
 	}
 	if _, err := fresh.AdmitSource(Admission{Source: "source:withdrawn", Driver: "growatt_storage", Legacy: LegacyGrowattStorage, Epoch: "epoch:withdrawn", Generation: 1}); !errors.Is(err, ErrAdmission) {
 		t.Fatalf("the withdrawn admission's epoch must stay reserved: %v", err)
+	}
+	if _, fixed := record.Regimes["source:withdrawn"]; fixed || !reflect.DeepEqual(record.Unfixed, []semreg.SourceID{"source:withdrawn"}) {
+		t.Fatalf("withdrawn first admission must export an explicit unfixed regime: regimes=%v unfixed=%v", record.Regimes, record.Unfixed)
+	}
+	if again := fresh.ExportRecovery(); !reflect.DeepEqual(again.Unfixed, record.Unfixed) {
+		t.Fatalf("restored unfixed regime not re-exported: %v", again.Unfixed)
+	}
+	// An unfixed regime lets the next admission choose any regime, as in the origin hub.
+	if _, err := fresh.AdmitSource(Admission{Source: "source:withdrawn", Driver: "growatt_storage", Legacy: LegacyTeslaEVSE, Epoch: "epoch:after-withdrawal", Generation: 1}); err != nil {
+		t.Fatalf("unfixed regime refused a new regime: %v", err)
+	}
+}
+
+func TestRecoveryRejectsOmittedRegimeOfAdmittedUnpublishedSource(t *testing.T) {
+	// An admitted, never-withdrawn source fixes its regime even before it publishes.
+	for _, assetless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("assetless=%t", assetless), func(t *testing.T) {
+			newHub := func() *Hub {
+				if !assetless {
+					return recoveryHub(t, nil, nil)
+				}
+				hub, err := New(Options{Recovery: &RecoveryHooks{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return hub
+			}
+			origin := newHub()
+			admitLegacy(t, origin, "source:restore", "synthetic-family", "epoch:old", 1)
+			record := origin.ExportRecovery()
+			if _, ok := record.Regimes["source:restore"]; !ok || len(record.Unfixed) != 0 {
+				t.Fatalf("admitted source must export its regime: regimes=%v unfixed=%v", record.Regimes, record.Unfixed)
+			}
+			delete(record.Regimes, "source:restore")
+			delete(record.Drivers, "source:restore") // the whole entry is omitted, ownership included
+			fresh := newHub()
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("checkpoint without the admitted source's regime accepted: %v", err)
+			}
+			if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
+				t.Fatal("rejected checkpoint reserved history or regimes")
+			}
+		})
+	}
+}
+
+func TestRecoveryRejectsInconsistentUnfixedRegimes(t *testing.T) {
+	withdrawn := func(t *testing.T) (*Hub, RecoveryRecord) {
+		origin, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handle := admitLegacy(t, origin, "source:withdrawn", "synthetic-family", "epoch:withdrawn", 1)
+		if err := origin.Withdraw(handle); err != nil {
+			t.Fatal(err)
+		}
+		admitLegacy(t, origin, "source:kept", "synthetic-family", "epoch:kept", 1)
+		return origin, origin.ExportRecovery()
+	}
+	mutations := map[string]func(*RecoveryRecord){
+		"unfixed-without-driver": func(r *RecoveryRecord) { delete(r.Drivers, "source:withdrawn") },
+		"omitted":                func(r *RecoveryRecord) { r.Unfixed = nil; delete(r.Drivers, "source:withdrawn") },
+		"also-fixed":             func(r *RecoveryRecord) { r.Regimes["source:withdrawn"] = LegacyGrowattStorage },
+		"fixed-moved": func(r *RecoveryRecord) {
+			delete(r.Regimes, "source:kept")
+			r.Unfixed = append(r.Unfixed, "source:kept")
+		},
+		"without-history": func(r *RecoveryRecord) {
+			r.Unfixed = append(r.Unfixed, "source:zz-unknown")
+			r.Drivers["source:zz-unknown"] = "synthetic-family"
+		},
+		"duplicate":  func(r *RecoveryRecord) { r.Unfixed = append(r.Unfixed, r.Unfixed[0]) },
+		"invalid-id": func(r *RecoveryRecord) { r.Unfixed = append([]semreg.SourceID{""}, r.Unfixed...) },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			_, record := withdrawn(t)
+			if !reflect.DeepEqual(record.Unfixed, []semreg.SourceID{"source:withdrawn"}) {
+				t.Fatalf("fixture must carry one unfixed source: %v", record.Unfixed)
+			}
+			mutate(&record)
+			fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("inconsistent unfixed regimes accepted: %v", err)
+			}
+			if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
+				t.Fatal("rejected checkpoint reserved history or regimes")
+			}
+		})
+	}
+}
+
+func TestRecoveryRestoresAssetlessSourceDriverOwnership(t *testing.T) {
+	origin, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitLegacy(t, origin, "source:assetless", "driver-a", "epoch:old", 1)
+	record := origin.ExportRecovery()
+	if record.Drivers["source:assetless"] != "driver-a" {
+		t.Fatalf("checkpoint must name the owning driver: %v", record.Drivers)
+	}
+	fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	var collision *CollisionError
+	if _, err := fresh.AdmitSource(Admission{Source: "source:assetless", Driver: "driver-b", Legacy: LegacyGrowattStorage, Epoch: "epoch:other", Generation: 1}); !errors.As(err, &collision) {
+		t.Fatalf("another driver admitted a restored source: %v", err)
+	}
+	if _, err := fresh.Declare(AssetSpec{AssetID: "asset:other", SourceID: "source:assetless", Driver: "driver-b", Validators: []semreg.PackValidator{newTestValidator()}}); !errors.As(err, &collision) {
+		t.Fatalf("another driver declared an asset of a restored source: %v", err)
+	}
+	if again := fresh.ExportRecovery(); !reflect.DeepEqual(again.Drivers, record.Drivers) {
+		t.Fatalf("restored ownership not re-exported: %v", again.Drivers)
+	}
+	admitLegacy(t, fresh, "source:assetless", "driver-a", "epoch:new", 1)
+}
+
+func TestRecoveryRejectsInconsistentDriverOwnership(t *testing.T) {
+	mutations := map[string]func(*RecoveryRecord){
+		"missing":    func(r *RecoveryRecord) { delete(r.Drivers, "source:restore") },
+		"empty":      func(r *RecoveryRecord) { r.Drivers["source:restore"] = "" },
+		"unknown":    func(r *RecoveryRecord) { r.Drivers["source:zz-unknown"] = "synthetic-family" },
+		"conflicted": func(r *RecoveryRecord) { r.Drivers["source:restore"] = "driver-other" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			origin, _ := populatedRecoveryHub(t, nil)
+			record := origin.ExportRecovery()
+			if record.Drivers["source:restore"] != "synthetic-family" {
+				t.Fatalf("fixture must name the declaring driver: %v", record.Drivers)
+			}
+			mutate(&record)
+			fresh := recoveryHub(t, nil, nil)
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("inconsistent driver ownership accepted: %v", err)
+			}
+			if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
+				t.Fatal("rejected checkpoint reserved history or regimes")
+			}
+		})
 	}
 }

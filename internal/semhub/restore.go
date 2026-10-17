@@ -81,6 +81,14 @@ type RecoveryRecord struct {
 	// Regimes retains the identity regime of every historically admitted source.
 	// An empty family explicitly identifies a hub-native source.
 	Regimes map[semreg.SourceID]LegacyFamily
+	// Unfixed lists, in ascending order, every source with epoch history whose
+	// identity regime is not fixed because each of its admissions was withdrawn.
+	// Every source with epoch history appears in exactly one of Regimes and
+	// Unfixed, so an omitted regime is detectable.
+	Unfixed []semreg.SourceID
+	// Drivers names the driver that owns every source in Regimes or Unfixed,
+	// so restoring an assetless source keeps its identifier claimed.
+	Drivers map[semreg.SourceID]string
 }
 
 // ErrRestore reports a failed restore precondition or rejected recovery asset.
@@ -159,6 +167,23 @@ func (h *Hub) ExportRecovery() RecoveryRecord {
 		record.Assets = append(record.Assets, entry)
 	}
 	record.Epochs = append([]EpochRecord(nil), h.epochHistory...)
+	h.mu.RUnlock()
+	unfixed := map[semreg.SourceID]bool{}
+	for _, epoch := range record.Epochs {
+		if _, ok := record.Regimes[epoch.Source]; !ok && !unfixed[epoch.Source] {
+			unfixed[epoch.Source] = true
+			record.Unfixed = append(record.Unfixed, epoch.Source)
+		}
+	}
+	sort.Slice(record.Unfixed, func(i, j int) bool { return record.Unfixed[i] < record.Unfixed[j] })
+	record.Drivers = map[semreg.SourceID]string{}
+	h.mu.RLock()
+	for id := range record.Regimes {
+		record.Drivers[id] = h.ids[string(id)].driver
+	}
+	for _, id := range record.Unfixed {
+		record.Drivers[id] = h.ids[string(id)].driver
+	}
 	h.mu.RUnlock()
 	for i := range record.Assets {
 		entry := &record.Assets[i]
@@ -284,11 +309,24 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	}
 	h.mu.RUnlock()
 	h.lock()
+	// An assetless source holds no control lock, so its claim is checked under
+	// the same lock that installs the restored state.
+	for id, driver := range record.Drivers {
+		if err := h.claimAvailableLocked(string(id), KindSource, driver); err != nil {
+			h.unlock()
+			return fmt.Errorf("%w: source owned by another driver: %w", ErrRestore, err)
+		}
+	}
 	if h.restoredRegimes == nil {
 		h.restoredRegimes = map[semreg.SourceID]LegacyFamily{}
 	}
 	for id, family := range record.Regimes {
 		h.restoredRegimes[id] = family
+	}
+	// Restored history keeps its source identifier claimed by the owning
+	// driver, even when no declared asset supplies that claim.
+	for id, driver := range record.Drivers {
+		h.ids[string(id)] = idOwner{driver: driver, kind: KindSource}
 	}
 	h.unlock()
 	var failures []error
@@ -502,6 +540,29 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			return errors.New("invalid source identity regime")
 		}
 	}
+	unfixed := map[semreg.SourceID]bool{}
+	for i, id := range record.Unfixed {
+		if _, fixed := record.Regimes[id]; ValidateOpaque(string(id)) != nil || fixed || i > 0 && id <= record.Unfixed[i-1] {
+			return errors.New("invalid unfixed source identity regime")
+		}
+		unfixed[id] = true
+	}
+	for id, driver := range record.Drivers {
+		if _, fixed := record.Regimes[id]; driver == "" || !fixed && !unfixed[id] {
+			return errors.New("invalid source driver ownership")
+		}
+	}
+	for id := range record.Regimes {
+		if record.Drivers[id] == "" {
+			return errors.New("missing source driver ownership")
+		}
+	}
+	for id := range unfixed {
+		if record.Drivers[id] == "" {
+			return errors.New("missing source driver ownership")
+		}
+	}
+	history := map[semreg.SourceID]bool{}
 	assets := map[semreg.AssetID]semreg.SourceID{}
 	for _, entry := range record.Assets {
 		assets[entry.Asset] = entry.Source
@@ -510,9 +571,13 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		if ValidateOpaque(epoch.Incarnation) != nil || ValidateOpaque(string(epoch.Source)) != nil || ValidateOpaque(string(epoch.Epoch)) != nil || epoch.Generation == 0 {
 			return errors.New("invalid epoch identity")
 		}
-		// Epoch history alone does not fix a regime: a withdrawn first admission
-		// leaves history behind and returns the source to an unfixed regime.
-		// Published entries (below) do require the regime that produced them.
+		// A withdrawn first admission leaves history behind and returns the
+		// source to an unfixed regime, which the checkpoint must say explicitly.
+		// Published entries (below) require the regime that produced them.
+		if _, fixed := record.Regimes[epoch.Source]; !fixed && !unfixed[epoch.Source] {
+			return errors.New("missing source identity regime")
+		}
+		history[epoch.Source] = true
 		switch epoch.Kind {
 		case EventEpochAdmitted, EventGenerationActivated:
 			if len(epoch.Assets) != 0 {
@@ -526,6 +591,11 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			if ValidateOpaque(string(id)) != nil || assets[id] != epoch.Source || i > 0 && id <= epoch.Assets[i-1] {
 				return errors.New("invalid epoch assets")
 			}
+		}
+	}
+	for _, id := range record.Unfixed {
+		if !history[id] {
+			return errors.New("unfixed source without epoch history")
 		}
 	}
 	for _, entry := range record.Assets {

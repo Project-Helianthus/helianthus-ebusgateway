@@ -587,7 +587,10 @@ attempt from the current snapshot. No refused attempt advances a cursor.
 pack references, every accepted batch in per-asset commit order, its original
 monotonic point and exact result, the last control gate/attempts, epoch
 history, and each historically admitted source's identity regime (hub-native
-or its legacy family). Copying coherent metadata uses the existing hub
+or its legacy family) with the driver that owns the source. A source whose
+every admission was withdrawn is listed as unfixed instead, so every source
+with epoch history carries exactly one of a regime or an unfixed marker.
+Copying coherent metadata uses the existing hub
 synchronization; serialization, buffer export, validators, and persistence run
 outside it.
 Rejected attempts remain control history and never enter the accepted replay
@@ -602,13 +605,21 @@ asset must be present, including assets of sources omitted entirely from the
 checkpoint; missing coverage rejects the record and closes all empty declared
 assets. Checkpoint entries with undeclared asset IDs also reject the record and
 close all empty declared assets. Malformed epoch identities, zero generations, non-lifecycle
-event kinds, invalid or unordered asset IDs, and missing or invalid source
-identity regimes reject the checkpoint before replay or epoch reservation.
+event kinds, invalid or unordered asset IDs, missing or invalid source
+identity regimes (including a source with history that has neither a regime
+nor an unfixed marker), unfixed markers without history, and missing,
+unknown or conflicting source driver ownership reject the checkpoint before
+replay or epoch reservation.
 Restored cursor and history epoch IDs are reserved against admission and epoch
 transitions, even for assetless sources or with a different generation:
-restoration requires a new epoch. Successor admission must retain the restored
-identity regime; changing legacy family or switching between legacy and
-hub-native identity is refused.
+restoration requires a new epoch, and the generation sequence restarts with
+that epoch (as in LIFE-06); generation current+1 applies to successors on the
+retained kernel within one incarnation. Successor admission must retain the
+restored identity regime; changing legacy family or switching between legacy
+and hub-native identity is refused. An unfixed source admits any regime, as
+after a withdrawn first admission. Restored sources stay claimed by their
+owning driver, including sources without assets; another driver's admission
+or declaration is a collision.
 It replays accepted publication and control batches on detached kernels using
 the persisted monotonic points, verifies every exact result, and reinstates retained
 history/tombstones and per-key cursors. A corrupt step or changed validator

@@ -507,6 +507,7 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 			return nil, fmt.Errorf("%w: successor generation must be the fenced generation plus one", ErrAdmission)
 		}
 	}
+	h.fault("admit-commit", "")
 	epoch, generation := request.Epoch, request.Generation
 	if request.Legacy == "" {
 		epoch, generation = semreg.SourceEpochID("source-epoch:semhub:"+idHash("helianthus.semhub.epoch.v1", h.incarnation, string(request.Source))), 1
@@ -529,6 +530,12 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	if src.retired[epoch] || src.epochs[epoch] || h.restoredEpochs[src.id][epoch] {
 		h.unlock()
 		return nil, fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
+	}
+	// A restore may have installed this source's regime after the earlier
+	// checks, so the regime is checked again where the admission commits.
+	if err := h.regimeLocked(src, request.Legacy); err != nil {
+		h.unlock()
+		return nil, err
 	}
 	// The admission is journalled before it becomes visible: a failed append
 	// leaves the source exactly as it was, so the admission can be retried.

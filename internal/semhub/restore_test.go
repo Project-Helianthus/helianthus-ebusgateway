@@ -1492,3 +1492,86 @@ func TestRecoveryAssetlessRestoreRunsOnceAndRechecksAdmission(t *testing.T) {
 		}
 	})
 }
+
+func TestRecoveryRestoreSerializesWithAssetlessAdmission(t *testing.T) {
+	origin := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	handle := admitLegacy(t, origin, "source:restore", "synthetic-family", "epoch:restore", 1)
+	mustPublish(t, origin, handle, recoveryAssets[0], "synthetic", 10, 1)
+	admitLegacy(t, origin, "source:assetless", "synthetic-family", "epoch:old", 1)
+	record := origin.ExportRecovery()
+	t.Run("epoch reserved before replay", func(t *testing.T) {
+		fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		var reused error
+		fresh.faults = func(stage string, _ semreg.AssetID) {
+			if stage == "restore-replay" {
+				fresh.faults = nil
+				_, reused = fresh.AdmitSource(Admission{Source: "source:assetless", Driver: "synthetic-family", Legacy: LegacyGrowattStorage, Epoch: "epoch:old", Generation: 1})
+			}
+		}
+		if err := fresh.Restore(record); err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(reused, ErrAdmission) {
+			t.Fatalf("historical epoch admitted while assets replayed: %v", reused)
+		}
+	})
+	t.Run("regime rechecked at admission commit", func(t *testing.T) {
+		fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		fresh.faults = func(stage string, _ semreg.AssetID) {
+			if stage == "admit-commit" {
+				fresh.faults = nil
+				if err := fresh.Restore(record); err != nil {
+					t.Errorf("restore during a paused admission: %v", err)
+				}
+			}
+		}
+		if _, err := fresh.AdmitSource(Admission{Source: "source:assetless", Driver: "synthetic-family", Legacy: LegacyTeslaEVSE, Epoch: "epoch:other-family", Generation: 1}); !errors.Is(err, ErrAdmission) {
+			t.Fatalf("admission committed a different regime after the restore installed one: %v", err)
+		}
+	})
+}
+
+func TestRecoveryRejectsRegimesWithoutAdmission(t *testing.T) {
+	t.Run("fixed regime without history", func(t *testing.T) {
+		origin, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		admitLegacy(t, origin, "source:assetless", "synthetic-family", "epoch:old", 1)
+		record := origin.ExportRecovery()
+		record.Regimes["source:ghost"] = LegacyGrowattStorage
+		record.Drivers["source:ghost"] = "synthetic-family"
+		fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("regime for a never-admitted source accepted: %v", err)
+		}
+	})
+	t.Run("unfixed with retirement only", func(t *testing.T) {
+		origin, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handle := admitLegacy(t, origin, "source:withdrawn", "synthetic-family", "epoch:withdrawn", 1)
+		if err := origin.Withdraw(handle); err != nil {
+			t.Fatal(err)
+		}
+		record := origin.ExportRecovery()
+		kept := record.Epochs[:0]
+		for _, epoch := range record.Epochs {
+			if epoch.Kind != EventEpochAdmitted {
+				kept = append(kept, epoch)
+			}
+		}
+		record.Epochs = kept
+		fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("unfixed source without an admission accepted: %v", err)
+		}
+	})
+}

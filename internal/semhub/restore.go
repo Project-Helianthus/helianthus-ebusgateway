@@ -361,15 +361,9 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 	for id, driver := range record.Drivers {
 		h.ids[string(id)] = idOwner{driver: driver, kind: KindSource}
 	}
-	h.unlock()
-	var failures []error
-	for i, entry := range record.Assets {
-		if err := h.restoreAsset(targets[i], entry); err != nil {
-			failures = append(failures, fmt.Errorf("%w: asset %s: %w", ErrRestore, entry.Asset, err))
-		}
-	}
-	// Epoch history is inert and is never appended to the active EpochJournal.
-	h.lock()
+	// Historical epochs are reserved in the same critical section, so no
+	// admission can reuse one between ownership and reservation. Epoch history
+	// is inert and is never appended to the active EpochJournal.
 	for _, epoch := range record.Epochs {
 		h.epochHistory = append(h.epochHistory, cloneRecord(epoch))
 		h.reserveRestoredEpochLocked(epoch.Source, epoch.Epoch)
@@ -378,6 +372,13 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		}
 	}
 	h.unlock()
+	h.fault("restore-replay", "")
+	var failures []error
+	for i, entry := range record.Assets {
+		if err := h.restoreAsset(targets[i], entry); err != nil {
+			failures = append(failures, fmt.Errorf("%w: asset %s: %w", ErrRestore, entry.Asset, err))
+		}
+	}
 	return errors.Join(failures...)
 }
 
@@ -652,9 +653,22 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		}
 		set[epoch.Source][epoch.Epoch] = true
 	}
+	published := map[semreg.SourceID]bool{}
+	for _, entry := range record.Assets {
+		if len(entry.Accepted) > 0 {
+			published[entry.Source] = true
+		}
+	}
+	// A regime is fixed by an admission: its history, or the accepted
+	// publications that only an admitted source can produce.
+	for id := range record.Regimes {
+		if len(admitted[id]) == 0 && !published[id] {
+			return errors.New("source identity regime without an admission")
+		}
+	}
 	for _, id := range record.Unfixed {
-		if !history[id] {
-			return errors.New("unfixed source without epoch history")
+		if !history[id] || len(admitted[id]) == 0 {
+			return errors.New("unfixed source without an admission")
 		}
 		for epoch := range admitted[id] {
 			if !retired[id][epoch] {

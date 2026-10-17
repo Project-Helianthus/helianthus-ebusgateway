@@ -10,8 +10,8 @@ github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261016201245-8407c525
 github.com/Project-Helianthus/helianthus-modbus v0.3.1-0.20261016201245-8407c5250771/go.mod h1:Nr8SW7fE3SIjnp+rj8PCOtwk8JZ9wqafu1ZCgq3Zz+Q=
 github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261016195321-5cef6f86fac9 h1:TmOgoT7QnsSBMrE1XSAYO75d//lRqz0c4LT+Imbo9So=
 github.com/Project-Helianthus/helianthus-modbusreg v0.6.8-0.20261016195321-5cef6f86fac9/go.mod h1:rt1LTSnaPVlcvxScql14XLg7OmeU/JzCBhxj18vsZm0=
-github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260911082644-089ed6ae9004 h1:o86gaEP+l2kjvIFFzdk+tyLYKjjMvkd1QjgFIwvUy3A=
-github.com/Project-Helianthus/helianthus-semreg v0.0.0-20260911082644-089ed6ae9004/go.mod h1:Nk9VAXLA7iJBXbWPRL6s5+DWqc2OJkUzg8zdlDdUdes=
+github.com/Project-Helianthus/helianthus-semreg v0.0.0-20261017143125-eee54cbd2159 h1:fx2NODirj/wRT4LT65vxeY9mOH9qDKPY4vKy2FWAs9M=
+github.com/Project-Helianthus/helianthus-semreg v0.0.0-20261017143125-eee54cbd2159/go.mod h1:Nk9VAXLA7iJBXbWPRL6s5+DWqc2OJkUzg8zdlDdUdes=
 github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.19 h1:h5JbzHvso2Z5YfBjn7NHZG8rruYhQQkoQSrPZalZu9I=
 github.com/Project-Helianthus/helianthus-ship-go v0.6.1-helianthus.19/go.mod h1:qPqQTDqmPjyOJCr0JMNjhSC1XW1k3h5P/EZqRGy80Vs=
 github.com/Project-Helianthus/helianthus-spine-go v0.7.1-helianthus.9 h1:pV1GQmlPJyy22YGK/Amf5FMu1C3IzL3qxIxGmGUUTEo=

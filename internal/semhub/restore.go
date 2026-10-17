@@ -516,7 +516,9 @@ func restoredGate(target *asset, control *RecoveryControl, snapshot semreg.Snaps
 		return nil, errors.New("invalid control identity")
 	}
 	switch control.Status.Semantic {
-	case SemanticAccepted, SemanticReplayed, SemanticUnbuilt, SemanticPending, SemanticRejected, SemanticUncertain, SemanticRevokedUnpublished:
+	// A revoked-unpublished asset never becomes a gate, so no exported
+	// checkpoint carries that outcome.
+	case SemanticAccepted, SemanticReplayed, SemanticUnbuilt, SemanticPending, SemanticRejected, SemanticUncertain:
 	default:
 		return nil, errors.New("invalid semantic outcome")
 	}
@@ -641,17 +643,24 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 	// admitted epoch left unretired; a current admission keeps its regime.
 	admitted := map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
 	retired := map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
+	// History is in journal order: a retirement only retires an epoch that an
+	// earlier record admitted.
 	for _, epoch := range record.Epochs {
-		set := admitted
-		if epoch.Kind == EventSourceRetired {
-			set = retired
-		} else if epoch.Kind != EventEpochAdmitted {
-			continue
+		switch epoch.Kind {
+		case EventEpochAdmitted:
+			if admitted[epoch.Source] == nil {
+				admitted[epoch.Source] = map[semreg.SourceEpochID]bool{}
+			}
+			admitted[epoch.Source][epoch.Epoch] = true
+		case EventSourceRetired:
+			if !admitted[epoch.Source][epoch.Epoch] {
+				continue
+			}
+			if retired[epoch.Source] == nil {
+				retired[epoch.Source] = map[semreg.SourceEpochID]bool{}
+			}
+			retired[epoch.Source][epoch.Epoch] = true
 		}
-		if set[epoch.Source] == nil {
-			set[epoch.Source] = map[semreg.SourceEpochID]bool{}
-		}
-		set[epoch.Source][epoch.Epoch] = true
 	}
 	published := map[semreg.SourceID]bool{}
 	for _, entry := range record.Assets {

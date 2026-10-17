@@ -1575,3 +1575,57 @@ func TestRecoveryRejectsRegimesWithoutAdmission(t *testing.T) {
 		}
 	})
 }
+
+func TestRecoveryRejectsImpossibleHistoryAndGateStates(t *testing.T) {
+	t.Run("revoked unpublished gate", func(t *testing.T) {
+		hub, handle := populatedRecoveryHub(t, nil)
+		if err := fenceRecovery(t, hub, handle); err != nil {
+			t.Fatal(err)
+		}
+		record := hub.ExportRecovery()
+		tampered := false
+		for i := range record.Assets {
+			if control := record.Assets[i].Control; control != nil {
+				control.Status.Semantic, control.Attempts, control.Status.Attempts = SemanticRevokedUnpublished, nil, 0
+				tampered = true
+			}
+		}
+		if !tampered {
+			t.Fatal("fixture must carry a control gate")
+		}
+		fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("revoked-unpublished gate restored: %v", err)
+		}
+	})
+	t.Run("retirement before admission", func(t *testing.T) {
+		origin, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handle := admitLegacy(t, origin, "source:withdrawn", "synthetic-family", "epoch:withdrawn", 1)
+		if err := origin.Withdraw(handle); err != nil {
+			t.Fatal(err)
+		}
+		record := origin.ExportRecovery()
+		var admitted, retired []EpochRecord
+		for _, epoch := range record.Epochs {
+			if epoch.Kind == EventEpochAdmitted {
+				admitted = append(admitted, epoch)
+			} else {
+				retired = append(retired, epoch)
+			}
+		}
+		if len(admitted) == 0 || len(retired) == 0 {
+			t.Fatal("fixture must carry an admission and its withdrawal")
+		}
+		record.Epochs = append(retired, admitted...)
+		fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+			t.Fatalf("unfixed source with a retirement before its admission accepted: %v", err)
+		}
+	})
+}

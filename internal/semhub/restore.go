@@ -660,6 +660,9 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			}
 		}
 	}
+	if err := validateRecoverySuccessions(record); err != nil {
+		return err
+	}
 	// Withdrawal retires the admitted epoch, so an unfixed source has no
 	// admitted epoch left unretired; a current admission keeps its regime.
 	admitted := map[semreg.SourceID]map[semreg.SourceEpochID]bool{}
@@ -714,6 +717,55 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			if _, ok := record.Regimes[entry.Source]; !ok {
 				return errors.New("missing source identity regime")
 			}
+		}
+	}
+	return nil
+}
+
+// Succession pairs are adjacent because the journal appends them atomically.
+// Counters belong to a source within an incarnation, not to restored authority.
+func validateRecoverySuccessions(record RecoveryRecord) error {
+	type sourceIncarnation struct {
+		source      semreg.SourceID
+		incarnation string
+	}
+	ordinals := map[sourceIncarnation]uint64{}
+	current := map[sourceIncarnation]semreg.SourceEpochID{}
+	retired := map[sourceIncarnation]EpochRecord{}
+	for i, epoch := range record.Epochs {
+		key := sourceIncarnation{epoch.Source, epoch.Incarnation}
+		if epoch.Ordinal != 0 {
+			if family, fixed := record.Regimes[epoch.Source]; !fixed || family != "" || len(epoch.Assets) != 0 {
+				return errors.New("invalid succession regime or assets")
+			}
+			switch epoch.Kind {
+			case EventSourceRetired:
+				if i+1 == len(record.Epochs) {
+					return errors.New("unpaired succession retirement")
+				}
+				next := record.Epochs[i+1]
+				prior := retired[key]
+				if next.Kind != EventEpochAdmitted || next.Source != epoch.Source || next.Incarnation != epoch.Incarnation || next.Ordinal != epoch.Ordinal || next.Generation != 1 ||
+					next.Epoch != successorEpoch(epoch.Incarnation, epoch.Source, epoch.Ordinal) || next.Epoch == epoch.Epoch ||
+					current[key] != epoch.Epoch || prior.Epoch != epoch.Epoch || prior.Generation != epoch.Generation ||
+					ordinals[key] == ^uint64(0) || epoch.Ordinal != ordinals[key]+1 {
+					return errors.New("invalid succession pair or ordinal")
+				}
+				ordinals[key] = epoch.Ordinal
+			case EventEpochAdmitted:
+				if i == 0 || record.Epochs[i-1].Kind != EventSourceRetired || record.Epochs[i-1].Ordinal != epoch.Ordinal {
+					return errors.New("unpaired succession admission")
+				}
+			default:
+				return errors.New("unexpected epoch ordinal")
+			}
+		}
+		switch epoch.Kind {
+		case EventEpochAdmitted:
+			current[key] = epoch.Epoch
+			delete(retired, key)
+		case EventSourceRetired:
+			retired[key] = epoch
 		}
 	}
 	return nil

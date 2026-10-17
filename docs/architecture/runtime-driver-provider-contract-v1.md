@@ -21,7 +21,12 @@ public lifecycle projection remain unimplemented. Issue
 [#1112](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1112)
 adds unused, opt-in export/restore hooks for a future service-owned recovery
 path. Existing production publishers do not enable them and retain their
-in-memory-only recovery boundary.
+in-memory-only recovery boundary. Issue
+[#1131](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1131)
+adds the asset-free hub-native successor admission (`Hub.AdmitSuccessor`,
+section 7, hub-native epoch succession) that a future lifecycle service uses
+for an explicit RESTART or a START after a completed STOP. No service, eBUS or
+production caller uses it yet.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -620,8 +625,9 @@ accepted log already holds as pending, rejected or uncertain also rejects it.
 Restored cursor and history epoch IDs are reserved against admission and epoch
 transitions, even for assetless sources or with a different generation:
 restoration requires a new epoch, and the generation sequence restarts with
-that epoch (as in LIFE-06); generation current+1 applies to successors on the
-retained kernel within one incarnation. Successor admission must retain the
+that epoch (as in LIFE-06); generation current+1 applies to legacy successors
+on the retained kernel within one incarnation, and a hub-native successor
+starts at generation 1 (section 7, hub-native epoch succession). Successor admission must retain the
 restored identity regime; changing legacy family or switching between legacy
 and hub-native identity is refused. An unfixed source admits any regime, as
 after a withdrawn first admission. Restored sources stay claimed by their
@@ -1422,12 +1428,84 @@ admission both succeed. Static catalog entries may remain `candidate`,
    Timeout or unconfirmed close publishes `FAILED/CLOSE_UNCONFIRMED`, retains any
    semantic work, and quarantines the source epoch.
 6. A close-before-Prepare RESTART claims the completed cleanup reservation at its
-   persisted next cursor only after both obligations complete. It never allocates
+   persisted next cursor only after both obligations complete. Under the A2
+   lifecycle amendment the composed service instead retires the old epoch and
+   admits one new hub-native epoch through the succession seam below; the
+   same-epoch text of this item remains the rule only until that service lands. It never allocates
    another generation, reuses the retired generation, or accepts an old callback.
    The sole exception is a native replacement seam that itself proves
    non-overlap, fencing, drain, and ownership transfer; it still persists one
    exact withdrawal/reservation transition and satisfies the same semantic
    supersession and cursor rules.
+
+### Hub-native epoch succession
+
+`Hub.AdmitSuccessor(Succession{Previous, Operation})` is the publication-free
+hub seam for the A2 lifecycle amendment
+([docs-ebus runtime driver lifecycle, A2](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)).
+`Previous` is a handle of the predecessor admission and `Operation` is the
+opaque correlation of the accepted lifecycle operation (an explicit RESTART or
+a START after a completed STOP). The operation needs no asset declaration and
+submits no SemReg batch; a lifecycle-only source with no assets succeeds the
+same way. The implemented rules are:
+
+1. Admission rules. The source must be hub-native: a legacy source, or a source
+   whose restored regime is legacy, is refused with `ErrAdmission` and keeps its
+   legacy successor path (`AdmitSource` with generation current+1, or
+   `BeginEpoch`). `Previous` must belong to this hub incarnation and name the
+   source's current admission identity and epoch; a handle of another
+   incarnation or of a withdrawn admission is refused with SemReg's
+   `StaleSourceEpoch`, and a handle of an already succeeded admission resolves
+   only under rule 4. The current epoch must be retired by
+   `RetireEpoch` (a fence alone is refused), and the latest control operation
+   of the source, including its reprojection, must be finished: an unfinished
+   operation returns `ControlPendingError`, a settling one `SettlePendingError`
+   after one reprojection pass, and an abandoned operation with an open asset
+   `ErrControlAbandoned`. Native close proof and the durable intent/outcome
+   protocol remain service obligations; the hub cannot observe them.
+2. Identity. The successor epoch derives from (hub incarnation, `SourceID`,
+   admission ordinal). The ordinal is per source and per incarnation, starts at
+   1 for the first succession and advances by exactly one per successful
+   succession; the source's first admission in an incarnation keeps its
+   existing (incarnation, `SourceID`) derivation. The successor starts at driver
+   generation 1, is not the first admission of the source, receives a new
+   admission identity, and every asset's cursor for the new key starts at
+   sequence 1. Old cursors, tombstones and retained history stay unchanged. A
+   derived epoch that repeats a current, retired or restored epoch is refused.
+3. One write-ahead operation. The retired predecessor (its epoch and last
+   generation, covering no asset because its asset retirements were journalled
+   by the retirement control) and the successor admission (epoch, generation 1)
+   are appended as one all-or-none journal operation. Both records carry the
+   ordinal in `EpochRecord.Ordinal`, which is zero on every other record. A
+   failed append exposes no handle, consumes no ordinal, records no claim and
+   emits no event. A successful succession emits one `epoch_admitted` event.
+4. One successor per predecessor. The successor is recorded against the
+   predecessor's admission identity together with `Operation`. A repeated or
+   concurrent claim with the same operation returns that same successor handle
+   (stale once the successor itself has moved on); a claim with another
+   operation is refused with `ErrAdmission`. No duplicate allocates another
+   ordinal, epoch or admission.
+5. Counter exhaustion. When the ordinal, the admission identity or the handle
+   counter cannot advance without wrapping, the succession fails with
+   `ErrAdmission` and `ErrCounterExhausted` and changes nothing.
+6. Afterwards. The predecessor handle and every older handle remain rejected
+   for publication, `Activate` and `AdmitSuccessor`. A manager retry inside the
+   successor epoch uses the existing `Fence`/`Activate` path and keeps the
+   epoch. `Withdraw` refuses a successor admission: the succession is
+   journalled, so a successor that fails to start is retired and succeeded
+   again under the next ordinal. `Withdraw` of a first admission and the legacy
+   `AdmitSource`, `BeginEpoch` and `Withdraw` paths are unchanged.
+7. Recovery. `ExportRecovery` carries both succession records with their
+   ordinal in the epoch history, and `Restore` reinstates them verbatim as
+   inert history; every named epoch stays reserved and the restored regime stays
+   hub-native. No restored succession, handle or ordinal is current: a
+   prior-incarnation handle cannot claim a successor, the new incarnation's
+   first admission derives its own epoch, and its ordinal starts again at 1 under
+   the new incarnation identity. `Restore` rejects ordinals on unrelated events,
+   malformed or nonadjacent retirement/admission pairs, and ordinals that do not
+   start at 1 and advance by one per source within each incarnation. Succession
+   pairs must retain a retired, previously admitted predecessor and the derived
+   successor identity at generation 1, with no assets on either paired record.
 
 For an ordinary promoted generation, the cleanup asset set is the bytewise union
 of every asset in its durable publication index and every pending/uncertain

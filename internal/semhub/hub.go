@@ -32,6 +32,10 @@ var (
 	// operation has not reached a successful semantic outcome. The caller
 	// retries after the control operation resolves.
 	ErrControlPending = errors.New("semhub: control operation pending for the asset")
+	// ErrCounterExhausted reports a succession refused because an admission
+	// ordinal, admission identity or handle counter cannot advance without
+	// wrapping. Nothing changes.
+	ErrCounterExhausted = errors.New("semhub: admission counter exhausted")
 	// ErrReprojectionPending refuses a publication on an asset whose family
 	// reprojection has not acknowledged the latest control snapshot. The
 	// caller retries after settlement.
@@ -167,6 +171,20 @@ type source struct {
 	// survives fences and generation activations, so a handle of a withdrawn
 	// admission stays revoked after an identical readmission.
 	admission uint64
+	// ordinal is the admission ordinal of the latest hub-native successor in
+	// this incarnation (0 before the first succession). It only advances, and
+	// only together with the journalled succession.
+	ordinal uint64
+	// successions maps a predecessor's admission identity to the one successor
+	// admitted for it, so a repeated claim of the same lifecycle operation
+	// resolves to that successor and no second successor can exist.
+	successions map[uint64]succession
+}
+
+// succession is one recorded hub-native successor admission.
+type succession struct {
+	operation string
+	handle    Handle
 }
 
 type priorAdmission struct {
@@ -604,6 +622,11 @@ func (h *Hub) Withdraw(handle *Handle) error {
 	if err := h.checkHandleLocked(handle); err != nil {
 		return err
 	}
+	// A journalled succession is not a pre-publication rollback: a successor
+	// that fails to start is retired and succeeded again.
+	if src.successorLocked(handle.admission) {
+		return fmt.Errorf("%w: a hub-native successor admission is retired, not withdrawn", ErrAdmission)
+	}
 	if src.last != nil && src.last.epoch == handle.epoch {
 		return fmt.Errorf("%w: a control operation targeted the admitted epoch", ErrAdmission)
 	}
@@ -627,6 +650,156 @@ func (h *Hub) Withdraw(handle *Handle) error {
 	src.token++
 	h.bus.emit(Event{Kind: EventSourceRetired, Source: src.id, Epoch: handle.epoch, Generation: handle.generation, NoPublication: true})
 	return nil
+}
+
+// Succession requests the hub-native successor admission of one retired
+// epoch. Previous is the handle of the predecessor admission; Operation is
+// the opaque correlation of the accepted lifecycle operation (an explicit
+// RESTART, or a START after a completed STOP) that owns the successor.
+type Succession struct {
+	Previous  *Handle
+	Operation string
+}
+
+// successorLocked reports whether admission identifies a hub-native successor
+// admission. h.mu must be held.
+func (src *source) successorLocked(admission uint64) bool {
+	for _, recorded := range src.successions {
+		if recorded.handle.admission == admission {
+			return true
+		}
+	}
+	return false
+}
+
+// replayLocked returns the successor already recorded for the request's
+// predecessor: the same handle for the same operation, and an admission
+// refusal for any other operation. ok is false when the predecessor has no
+// successor. h.mu must be held.
+func (src *source) replayLocked(request Succession) (*Handle, bool, error) {
+	recorded, ok := src.successions[request.Previous.admission]
+	if !ok {
+		return nil, false, nil
+	}
+	if recorded.operation != request.Operation {
+		return nil, true, fmt.Errorf("%w: the predecessor already has a successor of another lifecycle operation", ErrAdmission)
+	}
+	handle := recorded.handle
+	return &handle, true, nil
+}
+
+// successorEpoch derives the epoch of a hub-native successor from the hub
+// incarnation, the source and the admission ordinal.
+func successorEpoch(incarnation string, id semreg.SourceID, ordinal uint64) semreg.SourceEpochID {
+	return semreg.SourceEpochID("source-epoch:semhub:" + idHash("helianthus.semhub.epoch.successor.v1", incarnation, string(id), strconv.FormatUint(ordinal, 10)))
+}
+
+// AdmitSuccessor admits the hub-native successor of a retired epoch without
+// any asset declaration or publication. It is allowed only for a hub-native
+// source whose current admission is the predecessor's, whose current epoch is
+// retired, and whose latest control operation (including its reprojection) is
+// finished and not abandoned with an open asset. The successor epoch derives
+// from (incarnation, source, admission ordinal), with the ordinal advancing by
+// one per succession, and starts at driver generation 1.
+//
+// The predecessor's retirement and the successor's identity are journalled as
+// one write-ahead append before anything becomes visible: a failed append
+// leaves the source, its ordinal and every handle exactly as they were. A
+// repeated or concurrent claim of the same operation for the same predecessor
+// returns the one recorded successor handle; a claim of another operation is
+// refused. An exhausted ordinal, admission or handle counter is refused
+// without wrapping and without mutation. A legacy source keeps its legacy
+// successor path; this operation never switches identity regimes.
+func (h *Hub) AdmitSuccessor(request Succession) (*Handle, error) {
+	previous := request.Previous
+	if previous == nil || previous.hub != h {
+		return nil, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "hub incarnation"}
+	}
+	if ValidateOpaque(request.Operation) != nil {
+		return nil, ErrInvalidIdentity
+	}
+	h.mu.RLock()
+	src := h.sources[previous.source]
+	h.mu.RUnlock()
+	if src == nil {
+		return nil, ErrUnknownSource
+	}
+	src.control.Lock()
+	defer src.control.Unlock()
+	h.mu.RLock()
+	handle, replayed, err := src.replayLocked(request)
+	h.mu.RUnlock()
+	if replayed {
+		return handle, err
+	}
+	// The predecessor's control work, including its reprojection, must be
+	// settled. awaitFinished may release the source control mutex while it
+	// drains, so the remaining rules are checked at the commit point below.
+	// A finished operation stays finished, and no control operation can be
+	// installed while the source control mutex is held again (a transition
+	// cover needs a live handle, which a retired epoch no longer has), so only
+	// an abandoned operation's open assets are rechecked there.
+	if err := h.awaitFinished(src, false); err != nil {
+		return nil, err
+	}
+	h.fault("successor-commit", "")
+	h.lock()
+	defer h.unlock()
+	if h.restoring {
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrRestoreInProgress)
+	}
+	// A duplicate claim may have committed while awaitFinished released the
+	// source control mutex; it resolves to that recorded successor.
+	if handle, replayed, err := src.replayLocked(request); replayed {
+		return handle, err
+	}
+	// The successor is hub-native, so a legacy source (or a restored legacy
+	// regime) is refused here and keeps its legacy successor path.
+	if err := h.regimeLocked(src, ""); err != nil {
+		return nil, err
+	}
+	if !src.admitted || src.admission != previous.admission || src.epoch != previous.epoch {
+		return nil, &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "succession predecessor"}
+	}
+	if !src.retired[src.epoch] {
+		return nil, fmt.Errorf("%w: the predecessor epoch is not retired", ErrAdmission)
+	}
+	if src.last.abandonedOpenLocked() {
+		return nil, ErrControlAbandoned
+	}
+	const exhausted = ^uint64(0)
+	if src.ordinal == exhausted || src.admission == exhausted || src.token == exhausted || src.admissions == int(^uint(0)>>1) {
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrCounterExhausted)
+	}
+	ordinal := src.ordinal + 1
+	epoch := successorEpoch(h.incarnation, src.id, ordinal)
+	if src.epochs[epoch] || src.retired[epoch] || h.restoredEpochs[src.id][epoch] {
+		return nil, fmt.Errorf("%w: epoch repeats within this hub incarnation", ErrAdmission)
+	}
+	// Write-ahead: the retired predecessor (which this operation covers on no
+	// asset; its asset retirements were journalled by the retirement control)
+	// and the successor's identity form one all-or-none append.
+	if err := h.appendEpochLocked(
+		EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: src.epoch, Generation: src.generation, Kind: EventSourceRetired, Ordinal: ordinal},
+		EpochRecord{Incarnation: h.incarnation, Source: src.id, Epoch: epoch, Generation: 1, Kind: EventEpochAdmitted, Ordinal: ordinal},
+	); err != nil {
+		return nil, fmt.Errorf("semhub: journal epoch succession: %w", err)
+	}
+	src.ordinal = ordinal
+	src.prior = priorAdmission{}
+	src.epochs[epoch] = true
+	src.epoch, src.generation, src.first = epoch, 1, false
+	src.admissions++
+	src.admission++
+	src.token++
+	src.live, src.fenced = true, false
+	successor := Handle{hub: h, source: src.id, epoch: epoch, generation: 1, token: src.token, admission: src.admission, legacy: src.legacy}
+	if src.successions == nil {
+		src.successions = map[uint64]succession{}
+	}
+	src.successions[previous.admission] = succession{operation: request.Operation, handle: successor}
+	h.bus.emit(Event{Kind: EventEpochAdmitted, Source: src.id, Epoch: epoch, Generation: 1})
+	return &successor, nil
 }
 
 // Source returns the lifecycle view of one source.

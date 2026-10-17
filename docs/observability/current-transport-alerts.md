@@ -22,7 +22,7 @@ and on (scope)
 ```
 
 **Proven:** `BusObservabilityStore.RenderPrometheus` emits the counter families
-[`ebus_errors_total` and `ebus_frames_observed_total`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1327-L1347).
+[`ebus_errors_total` and `ebus_frames_observed_total`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go).
 Errors have `scope`, `class`, `phase`; frames have `scope`, `src`, `dst`,
 `family`, `frame_type`. Both sides retain only `scope`, select `active`, and use
 the same window. This deliberately aggregates across all scraped series in the
@@ -32,8 +32,8 @@ the population. A per-family or per-address ratio is unsupported for this
 example because errors have neither dimension.
 
 The numerator counts error events, not unique failed transactions.
-[`OnBusEvent`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L537-L561)
-also records collision retries; [`recordActiveErrorLocked`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1776-L1830)
+[`OnBusEvent`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
+also records collision retries; [`recordActiveErrorLocked`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 records errors before checking for a request, but adds a frame only with a
 request. The ratio can exceed one and is not a failure probability.
 **Hypothesis:** a value above 0.05 suggests investigating transport errors;
@@ -46,10 +46,10 @@ increase(ebus_observability_series_budget_overflow_total[5m]) > 0
 ```
 
 **Proven:** `RenderPrometheus` emits
-[`ebus_observability_series_budget_overflow_total`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1464-L1466)
+[`ebus_observability_series_budget_overflow_total`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 as a counter with no renderer labels. This expression preserves any scrape-added
 dimensions; there is no numerator/denominator pairing. The
-[`incrementFrameLocked` and `incrementErrorLocked`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L2096-L2119)
+[`incrementFrameLocked` and `incrementErrorLocked`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 symbols increment it when inserting a new frame/error series at or above the
 configured budget or corresponding hard cap. They still insert the series.
 It is not a count of dropped frames, current occupancy, or distinct affected
@@ -64,9 +64,9 @@ ebus_passive_warmup_state{state=~"unavailable|warming_up"} == 1
 
 **Proven:** the suitable current-state signal is a gauge, not a counter.
 `RenderPrometheus` emits
-[`ebus_passive_warmup_state`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1511-L1519)
+[`ebus_passive_warmup_state`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 with only `state`, using the
-[`passiveWarmupStates`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L35-L44)
+[`passiveWarmupStates`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 values `unavailable`, `warming_up`, `available`. No denominator applies, and the
 expression preserves the state distinction and scrape-added dimensions.
 `unavailable` signals passive observation unavailability; `warming_up` signals
@@ -74,15 +74,21 @@ incomplete warmup, which may be expected during startup or reconnection.
 **Hypothesis:** a sustained match merits investigation; choose any alert `for`
 duration against local warmup expectations rather than paging on every startup.
 
+**Proven:** the store starts in `unavailable` and stays there when broadcast
+listening is disabled or the active transport has no passive support. On such
+installations this expression matches permanently, so enable the alert only
+where passive observation is expected, or add a selector that excludes those
+gateways.
+
 For diagnosis, the same renderer exposes the gauge
-[`ebus_passive_capability_unavailable_reason`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1521-L1529)
+[`ebus_passive_capability_unavailable_reason`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 with only `reason`, drawn from `passiveUnavailableReasons`; its matching reason
 is one only while unavailable. All-zero reasons during warmup do not mean
 available. **Unknown:** these signals do not establish active-path failure or
 the physical root cause. A counter-only current-state interpretation is
 unsupported for this example. Do not infer readiness from a flat counter or
 from missing busy-time metrics: the
-[`ebus_bus_busy_seconds_total` / `ebus_bus_busy_ratio` block](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/issue/1111-current-transport-alert-examples/bus_observability_store.go#L1468-L1478)
+[`ebus_bus_busy_seconds_total` / `ebus_bus_busy_ratio` block](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/bus_observability_store.go)
 is conditional on available passive state and usable timing.
 
 ## Reading empty results and resets

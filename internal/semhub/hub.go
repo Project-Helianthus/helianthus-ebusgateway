@@ -78,6 +78,9 @@ type Hub struct {
 	// reuse a historical epoch (D1: a restore always moves to a new epoch).
 	restoredEpochs  map[semreg.SourceID]map[semreg.SourceEpochID]bool
 	restoredRegimes map[semreg.SourceID]LegacyFamily
+	// restoring is set while Restore installs state; declarations and
+	// admissions are refused meanwhile.
+	restoring bool
 	// queue holds accepted control assets awaiting their first reprojection,
 	// appended in HubSeq order under mu; draining marks the one drainer.
 	queue    []*reprojectionEntry
@@ -339,6 +342,10 @@ func (h *Hub) Declare(spec AssetSpec) (*Declaration, error) {
 		packs = append(packs, validator.Pack())
 	}
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, ErrRestoreInProgress
+	}
 	defer h.unlock()
 	if existing := h.assets[spec.AssetID]; existing != nil {
 		if existing.driver != spec.Driver {
@@ -466,6 +473,10 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 	// together with the journalled admission, so a failed append leaves no
 	// source and no claim behind.
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrRestoreInProgress)
+	}
 	src := h.sources[request.Source]
 	err := h.claimAvailableLocked(string(request.Source), KindSource, request.Driver)
 	if err == nil && src == nil {
@@ -513,6 +524,10 @@ func (h *Hub) AdmitSource(request Admission) (*Handle, error) {
 		epoch, generation = semreg.SourceEpochID("source-epoch:semhub:"+idHash("helianthus.semhub.epoch.v1", h.incarnation, string(request.Source))), 1
 	}
 	h.lock()
+	if h.restoring {
+		h.unlock()
+		return nil, fmt.Errorf("%w: %w", ErrAdmission, ErrRestoreInProgress)
+	}
 	register := h.sources[src.id] != src
 	if register {
 		// The record is not registered yet: another declaration or admission

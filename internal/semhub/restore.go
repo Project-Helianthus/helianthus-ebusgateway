@@ -94,6 +94,10 @@ type RecoveryRecord struct {
 // ErrRestore reports a failed restore precondition or rejected recovery asset.
 var ErrRestore = errors.New("semhub: recovery refused")
 
+// ErrRestoreInProgress refuses a declaration or admission while a restore is
+// installing state: restore and admission never interleave.
+var ErrRestoreInProgress = errors.New("semhub: restore in progress")
+
 func copyAttempt(in Attempt) Attempt {
 	in.Batch = append([]byte(nil), in.Batch...)
 	return in
@@ -240,6 +244,21 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		return fmt.Errorf("%w: record version or history", ErrRestore)
 	}
 	sort.Slice(record.Assets, func(i, j int) bool { return record.Assets[i].Asset < record.Assets[j].Asset })
+	// From the coverage scan to the end of installation, no declaration or
+	// admission may land: every interleaving would otherwise have to be
+	// rechecked individually under the install lock.
+	h.lock()
+	if h.restoring {
+		h.unlock()
+		return fmt.Errorf("%w: another restore is in progress", ErrRestore)
+	}
+	h.restoring = true
+	h.unlock()
+	defer func() {
+		h.lock()
+		h.restoring = false
+		h.unlock()
+	}()
 	h.mu.RLock()
 	targets := make([]*asset, len(record.Assets))
 	sources := map[semreg.SourceID]*source{}
@@ -652,6 +671,9 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 				admitted[epoch.Source] = map[semreg.SourceEpochID]bool{}
 			}
 			admitted[epoch.Source][epoch.Epoch] = true
+			// A withdrawn epoch may be admitted again; the later admission is
+			// the current one and supersedes the earlier retirement.
+			delete(retired[epoch.Source], epoch.Epoch)
 		case EventSourceRetired:
 			if !admitted[epoch.Source][epoch.Epoch] {
 				continue

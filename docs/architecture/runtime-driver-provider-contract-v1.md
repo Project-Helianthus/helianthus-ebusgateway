@@ -628,9 +628,13 @@ after a withdrawn first admission. Restored sources stay claimed by their
 owning driver, including sources without assets; another driver's admission
 or declaration is a collision. A source restores once per incarnation: a
 second restore of the same source, or an admission that lands before the
-restored state is installed, refuses the checkpoint. Ownership, regimes and
-historical epochs are installed in one critical section, and an admission
-that commits afterwards rechecks the restored regime. A regime requires an
+restored state is installed, refuses the checkpoint. Restore and admission never
+interleave: from the coverage scan to the end of installation, declarations and
+admissions are refused with a restore-in-progress error and retried by the
+caller afterwards. Ownership, regimes and historical epochs are installed in
+one critical section, and an admission that commits afterwards rechecks the
+restored regime. A withdrawn epoch may be admitted again; the later admission
+is the current one. A regime requires an
 admission in the history or accepted publications, and an unfixed marker
 requires an admission in the history.
 It replays accepted publication and control batches on detached kernels using

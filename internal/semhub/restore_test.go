@@ -1478,17 +1478,23 @@ func TestRecoveryAssetlessRestoreRunsOnceAndRechecksAdmission(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var racing error
 		fresh.faults = func(stage string, _ semreg.AssetID) {
 			if stage == "restore-install" {
 				fresh.faults = nil
-				admitLegacy(t, fresh, "source:assetless", "synthetic-family", "epoch:racing", 1)
+				_, racing = fresh.AdmitSource(Admission{Source: "source:assetless", Driver: "synthetic-family", Legacy: LegacyGrowattStorage, Epoch: "epoch:racing", Generation: 1})
 			}
 		}
-		if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
-			t.Fatalf("restore installed history over a concurrent admission: %v", err)
+		// Restore and admission never interleave: the admission that arrives
+		// while the restore installs is refused, and the restore completes.
+		if err := fresh.Restore(record); err != nil {
+			t.Fatalf("restore refused by a concurrent admission: %v", err)
 		}
-		if len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 {
-			t.Fatal("rejected checkpoint reserved history or regimes")
+		if !errors.Is(racing, ErrAdmission) || !errors.Is(racing, ErrRestoreInProgress) {
+			t.Fatalf("admission during a restore must be refused: %v", racing)
+		}
+		if len(fresh.restoredEpochs["source:assetless"]) == 0 {
+			t.Fatal("restore did not install the history")
 		}
 	})
 }
@@ -1628,4 +1634,63 @@ func TestRecoveryRejectsImpossibleHistoryAndGateStates(t *testing.T) {
 			t.Fatalf("unfixed source with a retirement before its admission accepted: %v", err)
 		}
 	})
+}
+
+func TestRecoveryDeclarationDuringRestoreIsRefused(t *testing.T) {
+	origin, _ := populatedRecoveryHub(t, nil)
+	record := origin.ExportRecovery()
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	var declared error
+	fresh.faults = func(stage string, _ semreg.AssetID) {
+		if stage == "restore-replay" {
+			fresh.faults = nil
+			_, declared = fresh.Declare(AssetSpec{AssetID: "asset:late", SourceID: "source:restore", Driver: "synthetic-family", Validators: []semreg.PackValidator{newTestValidator()}})
+		}
+	}
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(declared, ErrRestoreInProgress) {
+		t.Fatalf("declaration during a restore must be refused: %v", declared)
+	}
+	if fresh.Readable("asset:late") {
+		t.Fatal("a declaration refused during restore became readable")
+	}
+	if _, err := fresh.Declare(AssetSpec{AssetID: "asset:late", SourceID: "source:restore", Driver: "synthetic-family", Validators: []semreg.PackValidator{newTestValidator()}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoveryReadmittedWithdrawnEpochKeepsRegime(t *testing.T) {
+	origin, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := admitLegacy(t, origin, "source:again", "synthetic-family", "epoch:again", 1)
+	if err := origin.Withdraw(handle); err != nil {
+		t.Fatal(err)
+	}
+	admitLegacy(t, origin, "source:again", "synthetic-family", "epoch:again", 1)
+	record := origin.ExportRecovery()
+	if _, fixed := record.Regimes["source:again"]; !fixed || len(record.Unfixed) != 0 {
+		t.Fatalf("a re-admitted source must export a fixed regime: regimes=%v unfixed=%v", record.Regimes, record.Unfixed)
+	}
+	fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Restore(record); err != nil {
+		t.Fatalf("admit, withdraw, admit history rejected: %v", err)
+	}
+	// The last event leaves the epoch admitted, so the source cannot be unfixed.
+	corrupt := origin.ExportRecovery()
+	delete(corrupt.Regimes, "source:again")
+	corrupt.Unfixed = []semreg.SourceID{"source:again"}
+	again, err := New(Options{Recovery: &RecoveryHooks{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := again.Restore(corrupt); !errors.Is(err, ErrRestore) {
+		t.Fatalf("re-admitted epoch accepted as unfixed: %v", err)
+	}
 }

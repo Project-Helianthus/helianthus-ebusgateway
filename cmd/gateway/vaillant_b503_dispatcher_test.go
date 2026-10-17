@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -675,7 +676,7 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 	bus.setResp([2]byte{0x00, 0x03}, []byte{0x01, 0x00})
 	mgr := b503session.New(
 		b503session.TransportKey{AdapterInstanceID: "test", TransportEpoch: 1},
-		30*time.Second,
+		0, // Idle expiry is outside this pre-emission cancellation test.
 		nil,
 	)
 	key, err := mgr.EnableOperation(context.Background(), 0x15, func(context.Context, byte) b503session.DispatchOutcome {
@@ -689,7 +690,7 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 		t.Fatalf("setup cleanup evidence = %+v, present=%v", before, ok)
 	}
 	readMu := newB503BlockingReadLocker()
-	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, time.Second)
+	dispatcher := newRawFrameDispatcher(bus, gatewaySource, readMu, mgr, 0)
 	// Arm expiry only after the dispatcher requests readMu. A wall-clock
 	// deadline started before goroutine admission can expire before Lock and
 	// leave the test waiting forever for readMu.entered under runner load.
@@ -710,6 +711,7 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 		})
 	}
 	release := func() { releaseOnce.Do(func() { close(readMu.release) }) }
+	operationCtx := make(chan context.Context, 1)
 	done := make(chan error, 1)
 	joined := make(chan struct{})
 	t.Cleanup(func() {
@@ -717,13 +719,14 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 		release()
 		select {
 		case <-joined:
-		case <-time.After(5 * time.Second):
+		case <-issue1135HangGuard(t):
 			t.Error("Disable worker did not join after cancellation and readMu release")
 		}
 	})
 	go func() {
 		defer close(joined)
 		done <- mgr.DisableOperation(ctx, key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
+			operationCtx <- dispatchCtx
 			return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
 		})
 	}()
@@ -731,39 +734,71 @@ func TestIssue552B503DisableReadMuDeadlineBeforeEmissionPreservesOwner(t *testin
 	case <-readMu.entered:
 	case <-joined:
 		t.Fatalf("Disable returned before requesting readMu: %v", <-done)
-	case <-time.After(5 * time.Second):
+	case <-issue1135HangGuard(t):
 		t.Fatal("Disable did not request readMu")
 	}
 	if pending, ok := mgr.PendingOperation(); !ok || pending.Kind != b503session.OperationDisable || pending.Emitted {
 		t.Fatalf("blocked disable = %+v, present=%v; want pending without emission", pending, ok)
 	}
+	if calls := bus.callCount(); calls != 0 {
+		t.Fatalf("blocked disable bus.Send count = %d, want 0 before expiry", calls)
+	}
+	if got := mgr.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
+		t.Fatalf("blocked disable state = %+v, want owned Active", got)
+	}
+	dispatchCtx := <-operationCtx // Published before the readMu entry barrier.
 	expire()
+	select {
+	case <-dispatchCtx.Done():
+	default:
+		t.Fatal("derived operation cancellation was not delivered before readMu release")
+	}
+	if err := dispatchCtx.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("derived operation error = %v, want deadline exceeded", err)
+	}
 	release()
 	select {
 	case <-joined:
-	case <-time.After(5 * time.Second):
+	case <-issue1135HangGuard(t):
 		t.Fatal("expired Disable did not complete after readMu release")
 	}
 	if err := <-done; !errors.Is(err, errRawFrameUpstreamTimeout) {
-		t.Fatalf("pre-emission readMu deadline error = %v, want upstream timeout", err)
+		t.Errorf("pre-emission readMu deadline error = %v, want upstream timeout", err)
 	}
 	if calls := bus.callCount(); calls != 0 {
-		t.Fatalf("readMu-deadline bus.Send count = %d, want 0", calls)
+		t.Errorf("readMu-deadline bus.Send count = %d, want 0", calls)
 	}
 	if got := mgr.StatusSnapshot(); got.State != b503session.Active || !got.Owned {
-		t.Fatalf("pre-emission readMu deadline state = %+v, want owned Active", got)
+		t.Errorf("pre-emission readMu deadline state = %+v, want owned Active", got)
 	}
 	after, ok := mgr.CleanupObligation()
-	if !ok || after.GatewayCleanupAttemptID != before.GatewayCleanupAttemptID || after.LastAttempted || after.LastEmitted {
-		t.Fatalf("pre-emission readMu deadline recorded a nonexistent cleanup attempt: before=%+v after=%+v present=%v", before, after, ok)
+	if !ok || !reflect.DeepEqual(after, before) {
+		t.Errorf("pre-emission readMu deadline recorded a nonexistent cleanup attempt: before=%+v after=%+v present=%v", before, after, ok)
 	}
-	if err := mgr.DisableOperation(context.Background(), key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
-		return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
-	}); err != nil {
+	retryCtx, cancelRetry := context.WithCancel(context.Background())
+	t.Cleanup(cancelRetry)
+	done = make(chan error, 1)
+	joined = make(chan struct{})
+	go func() {
+		defer close(joined)
+		done <- mgr.DisableOperation(retryCtx, key, 0x15, func(dispatchCtx context.Context, target byte) b503session.DispatchOutcome {
+			return mcp.InvokeB503Operation(dispatchCtx, dispatcher, target, []byte{0x00, 0x03})
+		})
+	}()
+	select {
+	case <-joined:
+	case <-issue1135HangGuard(t):
+		t.Fatal("nonexpired retry Disable did not join")
+	}
+	if err := <-done; err != nil {
 		t.Fatalf("nonexpired retry disable: %v", err)
 	}
 	if calls := bus.callCount(); calls != 1 {
 		t.Fatalf("nonexpired retry bus.Send count = %d, want 1", calls)
+	}
+	retried, ok := mgr.CleanupObligation()
+	if !ok || !retried.LastAttempted || !retried.LastEmitted || retried.LastNative != b503session.NativeACK || retried.LastErr != nil {
+		t.Fatalf("nonexpired retry cleanup = %+v, present=%v; want emitted ACK", retried, ok)
 	}
 	if got := mgr.StatusSnapshot(); got.Owned || got.State != b503session.Idle {
 		t.Fatalf("nonexpired retry state = %+v, want ownerless Idle", got)

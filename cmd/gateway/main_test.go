@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -783,90 +784,125 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 	}
 }
 
+// issue1135HangGuard bounds a broken barrier without making elapsed time an
+// ordering oracle. Reserve half the test budget for cancellation and joining.
+func issue1135HangGuard(t *testing.T) <-chan time.Time {
+	t.Helper()
+	budget := time.Minute
+	if deadline, ok := t.Deadline(); ok {
+		budget = time.Until(deadline) / 2
+	}
+	timer := time.NewTimer(budget)
+	t.Cleanup(func() { timer.Stop() })
+	return timer.C
+}
+
 func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
-	origWireObserveFirstObserversFn := wireObserveFirstObserversFn
-	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
-	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
-	origStartHTTPServerFn := startHTTPServerFn
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	var runErr error
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			// Do not restore hooks while a worker may still be reading them.
-			t.Fatal("run() did not exit after context cancellation; hooks not restored")
-		}
-		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
-		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
-		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
-		startHTTPServerFn = origStartHTTPServerFn
-		if runErr != nil {
-			t.Errorf("run() error = %v", runErr)
-		}
-	})
+	for _, tc := range []struct {
+		name   string
+		source byte
+	}{
+		{name: "configured-upper", source: 0xF0},
+		{name: "configured-lower", source: 0x31},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origWireObserveFirstObserversFn := wireObserveFirstObserversFn
+			origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
+			origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
+			origStartHTTPServerFn := startHTTPServerFn
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			var runErr error
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-issue1135HangGuard(t):
+					// Do not restore hooks while a worker may still be reading them.
+					t.Fatal("run() did not exit after context cancellation; hooks not restored")
+				}
+				wireObserveFirstObserversFn = origWireObserveFirstObserversFn
+				startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
+				startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
+				startHTTPServerFn = origStartHTTPServerFn
+				if runErr != nil {
+					t.Errorf("run() error = %v", runErr)
+				}
+			})
 
-	type startupCapture struct {
-		source  byte
-		auto    bool
-		targets []byte
-	}
-	startupCfg := make(chan startupCapture, 1)
-	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
-		return nil, nil, nil
-	}
-	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
-		startupCfg <- startupCapture{
-			source:  cfg.ScanSource,
-			auto:    cfg.ScanSourceAuto,
-			targets: append([]byte(nil), cfg.StartupProbeTargets...),
-		}
-		return startupScanSignals{}
-	}
-	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
-		return nil
-	}
+			type startupCapture struct {
+				source  byte
+				auto    bool
+				targets []byte
+			}
+			startupCfg := make(chan startupCapture, 1)
+			httpReady := make(chan struct{})
+			wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+				return nil, nil, nil
+			}
+			startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
+				startupCfg <- startupCapture{
+					source:  cfg.ScanSource,
+					auto:    cfg.ScanSourceAuto,
+					targets: append([]byte(nil), cfg.StartupProbeTargets...),
+				}
+				return startupScanSignals{}
+			}
+			startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+				return nil
+			}
 
-	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		return nil, nil, nil
-	}
+			startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+				close(httpReady)
+				return nil, nil, nil
+			}
 
-	cfg := ebusgateway.DefaultConfig()
-	cfg.Transport = transport.NewLoopback()
-	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
-	cfg.TransportConfig.Network = "tcp"
-	cfg.TransportConfig.Address = "192.0.2.10:9999"
-	cfg.BroadcastListen = false
-	cfg.ScanOnStart = true
-	cfg.ScanSource = 0xF0
-	cfg.ScanSourceAuto = false
+			cfg := ebusgateway.DefaultConfig()
+			cfg.Transport = transport.NewLoopback()
+			cfg.TransportConfig.Protocol = ebusgateway.TransportENS
+			// Disable release discovery and isolate persisted runtime state.
+			// Transport and HTTP use in-memory fakes.
+			cfg.HTTPAddr = ""
+			cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
+			cfg.BroadcastListen = false
+			cfg.ScanOnStart = true
+			cfg.ScanSource = tc.source
+			cfg.ScanSourceAuto = false
 
-	go func() {
-		defer close(done)
-		runErr = run(ctx, cfg)
-	}()
+			go func() {
+				defer close(done)
+				runErr = run(ctx, cfg)
+			}()
 
-	select {
-	case got := <-startupCfg:
-		if got.source != 0xF0 {
-			t.Fatalf("startup source = 0x%02X; want configured source 0xF0", got.source)
-		}
-		if got.auto {
-			t.Fatal("startup source remained auto; want configured direct source")
-		}
-		// Structural fallback: configured-direct path with no observed
-		// probable targets seeds the bounded Vaillant structural set
-		// (sanitized vs source/companion) — not the boiler alone.
-		wantTargets := []byte{0x08, 0x15, 0x26}
-		if !reflect.DeepEqual(got.targets, wantTargets) {
-			t.Fatalf("startup probe targets = % X; want % X", got.targets, wantTargets)
-		}
-	case <-done:
-		t.Fatalf("run() exited before startup scan config was observed: %v", runErr)
-	case <-time.After(30 * time.Second):
-		t.Fatal("startup scan config was not observed")
+			select {
+			case <-httpReady:
+			case <-done:
+				t.Fatalf("run() exited before HTTP prerequisite was ready: %v", runErr)
+			case <-issue1135HangGuard(t):
+				t.Fatal("HTTP prerequisite was not ready")
+			}
+
+			select {
+			case got := <-startupCfg:
+				if got.source != tc.source {
+					t.Errorf("startup source = 0x%02X; want configured source 0x%02X", got.source, tc.source)
+				}
+				if got.auto {
+					t.Error("startup source remained auto; want configured direct source")
+				}
+				// Structural fallback: configured-direct path with no observed
+				// probable targets seeds the bounded Vaillant structural set
+				// (sanitized vs source/companion) — not the boiler alone.
+				wantTargets := []byte{0x08, 0x15, 0x26}
+				if !reflect.DeepEqual(got.targets, wantTargets) {
+					t.Errorf("startup probe targets = % X; want % X", got.targets, wantTargets)
+				}
+			case <-done:
+				t.Fatalf("run() exited before startup scan config was observed: %v", runErr)
+			case <-issue1135HangGuard(t):
+				t.Fatal("startup scan config was not observed")
+			}
+		})
 	}
 }
 

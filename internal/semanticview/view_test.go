@@ -547,3 +547,254 @@ func TestM08EvaluationContextIdentity(t *testing.T) {
 		})
 	}
 }
+
+// m08Selection builds a valid presentation selection for the fact at index.
+func m08Selection(in Input, index int, policy semreg.PolicyID, version semreg.SemanticVersion) semreg.Selection {
+	candidate := in.Snapshot.Facts[index].Candidates[0]
+	return semreg.Selection{
+		Contract: semreg.ContractSelectionV1, SnapshotID: in.Snapshot.SnapshotID, Revisions: in.Snapshot.Revisions,
+		EvaluationDigest: in.Evaluation.EvaluationDigest, Context: in.Evaluation.Context,
+		Key: in.Snapshot.Facts[index].Key, PolicyID: policy, PolicyVersion: version,
+		SelectedCandidate: candidate.CandidateID, CandidateRevision: candidate.Revision, PresentationOnly: true,
+	}
+}
+
+func TestM08ContextMismatchAcrossAssets(t *testing.T) {
+	first := m08Input(t)
+	second := m08Input(t)
+	second.AssetID = "asset:other"
+	s := second.Snapshot
+	s.AssetID = second.AssetID
+	for i := range s.Bindings {
+		s.Bindings[i].AssetID = s.AssetID
+	}
+	for i := range s.Facts {
+		s.Facts[i].AssetID = s.AssetID
+	}
+	for i := range s.Services {
+		s.Services[i].AssetID = s.AssetID
+	}
+	for i := range s.Capabilities {
+		s.Capabilities[i].AssetID = s.AssetID
+	}
+	m08Seal(t, s)
+	later := semreg.EvaluationContext{EvaluatedAt: s.EvaluatedAt, EvaluateMonotonic: s.EvaluateMonotonic}
+	later.EvaluatedAt.UnixNanoseconds = "2"
+	later.EvaluateMonotonic.Nanoseconds = "2"
+	e, err := semreg.EvaluateSnapshot(*s, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Evaluation = &e
+	if _, err := Build(m08Registry(t), []Input{second}); err != nil {
+		t.Fatalf("second asset alone must be valid: %v", err)
+	}
+	for _, inputs := range [][]Input{{first, second}, {second, first}} {
+		out, err := Build(m08Registry(t), inputs)
+		if err == nil || !reflect.DeepEqual(out, View{}) {
+			t.Fatalf("differing evaluation contexts accepted: %v", err)
+		}
+	}
+}
+
+func TestM08SelectionsDetached(t *testing.T) {
+	in := m08Input(t)
+	in.Selections = []semreg.Selection{m08Selection(in, 0, "policy:a", "1.0.0")}
+	view := m08Build(t, in)
+	other := m08Build(t, in)
+	baseline := m08JSON(t, view)
+	if len(view.Assets[0].Selections) != 1 {
+		t.Fatal("selection not published")
+	}
+	in.Selections[0].PolicyID = "policy:changed"
+	in.Selections[0].Key.Dimensions[0].ID = "dimension.changed"
+	*in.Selections[0].Key.Dimensions[0].Value.Text = "changed"
+	in.Selections[0].Key.Dimensions = append(in.Selections[0].Key.Dimensions[:0], semreg.Dimension{})
+	if !bytes.Equal(baseline, m08JSON(t, view)) {
+		t.Fatal("input selection mutation reached the view")
+	}
+	other.Assets[0].Selections[0].Key.Dimensions[0].Value.Text = nil
+	other.Assets[0].Selections[0].PolicyID = "policy:mutated"
+	if !bytes.Equal(baseline, m08JSON(t, view)) {
+		t.Fatal("views alias")
+	}
+}
+
+func m08SelectionInput(t *testing.T) Input {
+	in := m08Input(t)
+	in.Selections = []semreg.Selection{m08Selection(in, 0, "policy:a", "1.0.0")}
+	return in
+}
+
+func TestM08SelectionRevisionMismatchRejected(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		edit func(*semreg.Selection)
+	}{
+		{"semantic_revision", func(s *semreg.Selection) { s.Revisions.Semantic = "9" }},
+		{"facts_revision", func(s *semreg.Selection) { s.Revisions.Facts = "9" }},
+		{"candidate_revision", func(s *semreg.Selection) { s.CandidateRevision = "9" }},
+		{"snapshot_id", func(s *semreg.Selection) {
+			s.SnapshotID = semreg.SnapshotID("sha256:" + string(bytes.Repeat([]byte("0"), 64)))
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := m08SelectionInput(t)
+			tt.edit(&in.Selections[0])
+			out, err := Build(m08Registry(t), []Input{in})
+			if err == nil || !reflect.DeepEqual(out, View{}) {
+				t.Fatalf("mismatched selection accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestM08SelectionDuplicateKeyRejected(t *testing.T) {
+	in := m08SelectionInput(t)
+	in.Selections = append(in.Selections, in.Selections[0])
+	out, err := Build(m08Registry(t), []Input{in})
+	if err == nil || !reflect.DeepEqual(out, View{}) {
+		t.Fatalf("duplicate selection accepted: %v", err)
+	}
+	// Same fact key under a different policy is a distinct selection.
+	in.Selections[1].PolicyID = "policy:b"
+	if _, err := Build(m08Registry(t), []Input{in}); err != nil {
+		t.Fatalf("distinct policy rejected: %v", err)
+	}
+}
+
+func TestM08SelectionOrdering(t *testing.T) {
+	in := m08Input(t)
+	ordered := []semreg.Selection{
+		m08Selection(in, 0, "policy:a", "1.0.0"),
+		m08Selection(in, 0, "policy:a", "1.0.1"),
+		m08Selection(in, 0, "policy:b", "1.0.0"),
+		m08Selection(in, 1, "policy:a", "1.0.0"),
+		m08Selection(in, 2, "policy:a", "1.0.0"),
+	}
+	sort.Slice(ordered, func(i, j int) bool { return selectionKey(ordered[i]) < selectionKey(ordered[j]) })
+	var want [][]byte
+	for _, s := range ordered {
+		want = append(want, m08JSON(t, s))
+	}
+	// Feed in reverse of the expected order and in a rotated order.
+	reversed := make([]semreg.Selection, len(ordered))
+	for i := range ordered {
+		reversed[len(ordered)-1-i] = ordered[i]
+	}
+	rotated := append(append([]semreg.Selection{}, ordered[2:]...), ordered[:2]...)
+	for _, input := range [][]semreg.Selection{reversed, rotated} {
+		in.Selections = input
+		got := m08Build(t, in).Assets[0].Selections
+		if len(got) != len(want) {
+			t.Fatalf("selection count %d", len(got))
+		}
+		for i := range got {
+			if !bytes.Equal(m08JSON(t, got[i]), want[i]) {
+				t.Fatalf("selection %d out of order", i)
+			}
+		}
+	}
+	// The order is by key first, then policy id, then policy version.
+	for i := 1; i < len(ordered); i++ {
+		a, b := ordered[i-1], ordered[i]
+		ka, _ := semreg.CanonicalJSON(a.Key)
+		kb, _ := semreg.CanonicalJSON(b.Key)
+		if c := bytes.Compare(ka, kb); c > 0 || (c == 0 && (a.PolicyID > b.PolicyID || (a.PolicyID == b.PolicyID && a.PolicyVersion > b.PolicyVersion))) {
+			t.Fatalf("expected order violates key, policy id, version at %d", i)
+		}
+	}
+}
+
+func TestM08IdentityFieldMutations(t *testing.T) {
+	generation := semreg.Uint64("2")
+	for _, tt := range []struct {
+		name string
+		edit func(*semreg.Snapshot)
+	}{
+		{"driver_generation", func(s *semreg.Snapshot) {
+			for i := range s.Bindings {
+				s.Bindings[i].DriverGeneration = generation
+			}
+			for i := range s.Facts {
+				for j := range s.Facts[i].Candidates {
+					s.Facts[i].Candidates[j].DriverGeneration = &generation
+				}
+			}
+			for i := range s.Cursors {
+				s.Cursors[i].DriverGeneration = generation
+			}
+			for i := range s.Services {
+				s.Services[i].DriverGeneration = generation
+			}
+			for i := range s.Capabilities {
+				s.Capabilities[i].DriverGeneration = generation
+			}
+		}},
+		{"source_epoch_id", func(s *semreg.Snapshot) {
+			epoch := semreg.SourceEpochID("epoch:other")
+			for i := range s.Sources {
+				s.Sources[i].SourceEpochID = epoch
+			}
+			for i := range s.Bindings {
+				s.Bindings[i].SourceEpochID = epoch
+			}
+			for i := range s.Cursors {
+				s.Cursors[i].SourceEpochID = epoch
+			}
+			for i := range s.Services {
+				s.Services[i].SourceEpochID = epoch
+			}
+			for i := range s.Capabilities {
+				s.Capabilities[i].SourceEpochID = epoch
+			}
+			for i := range s.Facts {
+				for j := range s.Facts[i].Candidates {
+					s.Facts[i].Candidates[j].SourceEpochID = &epoch
+					s.Facts[i].Candidates[j].Origin.SourceEpochID = &epoch
+				}
+			}
+		}},
+		{"binding_id", func(s *semreg.Snapshot) {
+			binding := semreg.NativeBindingID("binding:other")
+			for i := range s.Bindings {
+				s.Bindings[i].BindingID = binding
+			}
+			for i := range s.Services {
+				s.Services[i].BindingID = binding
+			}
+			for i := range s.Capabilities {
+				s.Capabilities[i].BindingID = binding
+			}
+			for i := range s.Facts {
+				for j := range s.Facts[i].Candidates {
+					s.Facts[i].Candidates[j].BindingID = &binding
+					s.Facts[i].Candidates[j].Origin.BindingID = &binding
+				}
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			baseline := m08JSON(t, m08Build(t, m08Input(t)))
+			// Editing identity without resealing must be rejected.
+			raw := m08Input(t)
+			tt.edit(raw.Snapshot)
+			if out, err := Build(m08Registry(t), []Input{raw}); err == nil || !reflect.DeepEqual(out, View{}) {
+				t.Fatalf("unsealed identity edit accepted: %v", err)
+			}
+			// A coherent edit is a different capture and must change the view.
+			in := m08Input(t)
+			tt.edit(in.Snapshot)
+			m08Seal(t, in.Snapshot)
+			e := m08Evaluate(t, *in.Snapshot)
+			in.Evaluation = &e
+			out, err := Build(m08Registry(t), []Input{in})
+			if err != nil {
+				t.Fatalf("coherent identity edit rejected: %v", err)
+			}
+			if bytes.Equal(baseline, m08JSON(t, out)) {
+				t.Fatal("identity field did not change the view")
+			}
+		})
+	}
+}

@@ -2,6 +2,8 @@ package ebusgateway
 
 import (
 	"testing"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebus/evidence/discovery"
 	"time"
 )
 
@@ -52,9 +54,7 @@ func TestEvidenceBuffer_FloodWithDefaultSeed_BaselineSurvives(t *testing.T) {
 			}
 		}
 		if !found {
-			b.mu.Lock()
-			_, ok := b.entries[baseAddr]
-			b.mu.Unlock()
+			ok := discovery.Contains(b, baseAddr)
 			if !ok {
 				t.Errorf("baseline address 0x%02X was evicted — AD05 violation", baseAddr)
 			}
@@ -80,9 +80,7 @@ func TestEvidenceBuffer_FloodWithNonDefaultSeed_BaselineSurvives(t *testing.T) {
 		t.Errorf("buffer overflow: len=%d > 128", b.Len())
 	}
 	for _, baseAddr := range customSeed {
-		b.mu.Lock()
-		_, ok := b.entries[baseAddr]
-		b.mu.Unlock()
+		ok := discovery.Contains(b, baseAddr)
 		if !ok {
 			t.Errorf("custom-seed baseline 0x%02X was evicted — AD05 violation", baseAddr)
 		}

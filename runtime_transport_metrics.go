@@ -120,4 +120,5 @@ func writeTransportRuntimeMetrics(writer *prometheusWriter, statuses map[Transpo
 			"state", string(status.State),
 		))
 	}
+	writeBaudObservationMetrics(writer)
 }

@@ -1694,3 +1694,29 @@ func TestRecoveryReadmittedWithdrawnEpochKeepsRegime(t *testing.T) {
 		t.Fatalf("re-admitted epoch accepted as unfixed: %v", err)
 	}
 }
+
+func TestRecoveryExportDuringRestoreIsNotACheckpoint(t *testing.T) {
+	origin, _ := populatedRecoveryHub(t, nil)
+	record := origin.ExportRecovery()
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	var partial RecoveryRecord
+	fresh.faults = func(stage string, _ semreg.AssetID) {
+		if stage == "restore-replay" {
+			fresh.faults = nil
+			partial = fresh.ExportRecovery()
+		}
+	}
+	if err := fresh.Restore(record); err != nil {
+		t.Fatal(err)
+	}
+	if partial.Version != 0 || len(partial.Assets) != 0 || len(partial.Epochs) != 0 {
+		t.Fatalf("export during a restore produced a checkpoint: version=%d assets=%d epochs=%d", partial.Version, len(partial.Assets), len(partial.Epochs))
+	}
+	other := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := other.Restore(partial); !errors.Is(err, ErrRestore) {
+		t.Fatalf("the zero record must not restore: %v", err)
+	}
+	if complete := fresh.ExportRecovery(); complete.Version != 1 || len(complete.Assets) != len(record.Assets) {
+		t.Fatal("export after the restore must be complete again")
+	}
+}

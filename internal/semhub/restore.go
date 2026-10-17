@@ -156,7 +156,9 @@ func (h *Hub) exportAccepted(record AcceptedBatch) {
 func (h *Hub) ExportRecovery() RecoveryRecord {
 	h.mu.RLock()
 	record := RecoveryRecord{Version: 1, Regimes: map[semreg.SourceID]LegacyFamily{}}
-	if h.recovery == nil {
+	// A hub that is still installing a restore has no coherent checkpoint:
+	// the zero record (version 0) is returned, which no Restore accepts.
+	if h.recovery == nil || h.restoring {
 		h.mu.RUnlock()
 		return RecoveryRecord{}
 	}

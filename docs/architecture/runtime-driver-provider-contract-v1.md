@@ -572,7 +572,9 @@ be exported after `Apply` and before `Commit`; that draft is never acceptance.
 Accepted delivery is at-least-once: the service deduplicates by asset,
 publication key (source, epoch, generation), sequence and digest. A replayed
 control acceptance retains its original incarnation, HubSeq and exact result;
-a new event position does not identify a new accepted batch.
+an exact replay of an accepted publication repeats its stored acceptance with
+the original HubSeq, so an interrupted delivery is repeated; a new event
+position does not identify a new accepted batch.
 An accepted callback cannot roll back a committed batch. Callbacks run outside
 the hub, source and asset locks while the exact pending attempt remains reserved;
 they must not reenter a hub mutation. Storage failures and uncertain response windows remain

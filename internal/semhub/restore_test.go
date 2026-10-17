@@ -1240,3 +1240,83 @@ func TestRecoveryRejectsInconsistentDriverOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestRecoveryUnfixedSourceRefusesPriorDestinationAdmission(t *testing.T) {
+	for _, withdraw := range []bool{false, true} {
+		t.Run(fmt.Sprintf("withdrawn=%t", withdraw), func(t *testing.T) {
+			origin, err := New(Options{Recovery: &RecoveryHooks{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handle := admitLegacy(t, origin, "source:withdrawn", "synthetic-family", "epoch:withdrawn", 1)
+			if err := origin.Withdraw(handle); err != nil {
+				t.Fatal(err)
+			}
+			record := origin.ExportRecovery()
+			if !reflect.DeepEqual(record.Unfixed, []semreg.SourceID{"source:withdrawn"}) {
+				t.Fatalf("fixture must carry one unfixed source: %v", record.Unfixed)
+			}
+			fresh, err := New(Options{Recovery: &RecoveryHooks{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior := admitLegacy(t, fresh, "source:withdrawn", "synthetic-family", "epoch:destination", 1)
+			if withdraw {
+				if err := fresh.Withdraw(prior); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := fresh.Restore(record); !errors.Is(err, ErrRestore) {
+				t.Fatalf("restore over a prior destination admission accepted: %v", err)
+			}
+			if len(fresh.restoredEpochs) != 0 {
+				t.Fatal("rejected checkpoint reserved history")
+			}
+		})
+	}
+}
+
+func TestRecoveryReplayRedeliversInterruptedAcceptance(t *testing.T) {
+	var delivered []AcceptedBatch
+	interrupt := true
+	hooks := &RecoveryHooks{Accepted: func(record AcceptedBatch) {
+		delivered = append(delivered, record)
+		if interrupt {
+			interrupt = false
+			panic("synthetic storage interruption")
+		}
+	}}
+	hub := recoveryHub(t, hooks, nil)
+	handle := admitLegacy(t, hub, "source:restore", "synthetic-family", "epoch:restore", 1)
+	id := recoveryAssets[0]
+	tx, err := hub.Begin(handle, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := testBatch(t, tx, "synthetic", 10, 1)
+	if _, _, err := tx.Apply(batch, testMono(1)); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("fixture must interrupt the first delivery")
+			}
+		}()
+		_, _ = tx.Commit(nil)
+	}()
+	retry, err := hub.Begin(handle, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retry.Abort()
+	if _, _, err := retry.Apply(batch, testMono(1)); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := retry.Commit(nil); err != nil || outcome != Replayed {
+		t.Fatalf("exact retry = %v/%v, want a replay", outcome, err)
+	}
+	if len(delivered) != 2 || delivered[0].HubSeq == 0 || delivered[1].HubSeq != delivered[0].HubSeq || !bytes.Equal(delivered[1].Batch, delivered[0].Batch) {
+		t.Fatalf("replay must redeliver the original acceptance: %+v", delivered)
+	}
+}

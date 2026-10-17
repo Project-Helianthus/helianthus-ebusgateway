@@ -1096,6 +1096,9 @@ func (tx *Tx) Commit(onCommit func(Committed)) (outcome Outcome, err error) {
 	}
 	h.fault("commit-locked", tx.asset.id)
 	if tx.replayed {
+		// An exact replay repeats the stored acceptance with its original
+		// HubSeq, so an interrupted Accepted delivery heals at least once.
+		recovery = replayedAcceptanceLocked(tx.asset, recovery)
 		h.unlock()
 		return Replayed, nil
 	}

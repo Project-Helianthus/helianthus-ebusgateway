@@ -129,6 +129,18 @@ func (tx *Tx) Export() (AcceptedBatch, error) {
 	return record, nil
 }
 
+// replayedAcceptanceLocked returns the stored acceptance of an exact replayed
+// batch; a batch without a stored acceptance is not delivered again. h.mu must
+// be held.
+func replayedAcceptanceLocked(target *asset, draft AcceptedBatch) AcceptedBatch {
+	for i := len(target.records) - 1; i >= 0 && len(draft.Batch) > 0; i-- {
+		if bytes.Equal(target.records[i].Batch, draft.Batch) {
+			return target.records[i]
+		}
+	}
+	return AcceptedBatch{}
+}
+
 func (h *Hub) exportAccepted(record AcceptedBatch) {
 	if h.recovery != nil && h.recovery.Accepted != nil {
 		h.recovery.Accepted(copyAccepted(record))
@@ -245,6 +257,11 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 		sources[target.source] = h.sources[target.source]
 	}
 	for id := range record.Regimes {
+		if src := h.sources[id]; src != nil {
+			sources[id] = src
+		}
+	}
+	for _, id := range record.Unfixed {
 		if src := h.sources[id]; src != nil {
 			sources[id] = src
 		}

@@ -77,7 +77,10 @@ Participating fields, compared exactly, from the catalog resource `source` and
 the shared read's per-asset entry: asset ID, snapshot ID, the complete snapshot
 revision vector, driver generation, source epoch and binding ID. Excluded
 fields: the evaluation digest, `evaluated_at`, `evaluate_monotonic` and any other
-evaluation clock coordinate. Render freshness and disposition solely from the
+evaluation clock coordinate. No digest is compared: the catalog's
+`source.evaluation_digest` is a catalog-local cache key over the catalog's own
+marshaled evaluation, not an identity shared with the read (whose SemReg
+`evaluation_digest` carries a `sha256:` prefix and is a different value). Render freshness and disposition solely from the
 shared read's captured evaluation, selections and projection, never from the
 catalog's evaluation or eligibility. Validate the shared tuple's internal
 snapshot/revision and evaluation references under M07; cross-request evaluation
@@ -85,6 +88,16 @@ equality is not required. Before rendering any value,
 the client requires the participating fields to be equal. Sequential reads of
 unchanged data then converge to equal identities. A new publication or driver
 generation changes the identity, which is the intended mismatch.
+
+Every 64-bit identity member in the compared set, notably the driver generation,
+is a decimal string on both sides and is compared as a string, never as a number:
+a browser parses JSON numbers as doubles and rounds beyond 2^53, while the shared
+record keeps the SemReg decimal string. **Proven** from the current code: the
+catalog builder parses the SemReg decimal-string generation into an unsigned
+64-bit integer and the catalog contract emits it as a JSON number. That is a
+catalog payload and schema change (`driver_generation` and any similar member
+becoming a decimal string) that belongs to the implementation slice and is not
+present today.
 
 On mismatch the client refetches both requests, at most two times. While
 refetching it shows an inconsistent/refreshing state and renders no values; if
@@ -173,18 +186,37 @@ additive target `portal_read` block is host-produced transport metadata:
 This block is proposed, not emitted by the current handler. It adds no endpoint
 fields: the existing bootstrap `endpoints.portal_catalog` and `endpoints.graphql`
 members remain the authoritative catalog and shared-read URLs, so a separate
-`catalog_endpoint` or `snapshot_endpoint` is not introduced. Fetch descriptors
-through the existing fixed `PortalCatalogV1` operation on `endpoints.portal_catalog`;
-obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
+`catalog_endpoint` or `snapshot_endpoint` is not introduced. Descriptors
+are not carried by the existing `PortalCatalogV1` response, which returns only
+contribution identities and digests plus composed resource data, and whose
+schema is closed against manifest fields. **Unknown** in current code: no
+descriptor transport exists, so a newly registered contribution cannot yet be
+rendered generically. The implementation slice adds a versioned `descriptors`
+member to the `PortalCatalogV1` response on `endpoints.portal_catalog`: an array
+keyed by full contribution identity, each entry carrying `descriptor_version`,
+groups, fields, labels and views, and its own digest so the renderer caches by
+identity. A member on the catalog response is chosen over a separate
+`PortalDescribeV1` operation because the catalog is already fetched on every
+render, so descriptors and resources share one capture and cannot drift apart.
+The catalog schema (currently closed) and contract must be opened for this member
+in that slice; it is not present today, and clients are not directed to the
+existing operation for descriptors until it ships. Obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
 only once M07 exposure and applicable parity gates are accepted. Ask for the
 complete metadata needed above; recursively restore SemReg member names before
 treating GraphQL data as a kernel record. Never recompute source IDs/digests
 from a selected GraphQL response. MCP is not a browser fallback.
 
-If either provider is unwired, advertise that read capability as unavailable
-and omit its usable endpoint; do not fabricate an empty domain or use the
-legacy eBUS semantic snapshot. Existing legacy bootstrap members retain their
-meaning. The catalog endpoint does not acquire a new operation implicitly.
+Shared endpoints stay advertised whenever any operation on them is usable.
+`endpoints.graphql` also serves the existing Portal GraphQL operations and
+`endpoints.portal_catalog` has independent consumers, so an unwired snapshot or
+catalog provider never removes them. `portal_read` has no per-provider
+availability field today; the implementation slice adds an operation-level list,
+for example `portal_read.unavailable_operations` naming `semanticSnapshot` or
+`PortalCatalogV1`, which the client consults before issuing that operation. When
+an operation is unavailable, do not fabricate an empty domain or use the legacy
+eBUS semantic snapshot. Omit an endpoint only when none of its operations is
+usable. Existing legacy bootstrap members retain their meaning. The catalog
+endpoint does not acquire a new operation implicitly.
 All MCP namespaces remain pre-stable until 1.0; existing eBUS envelopes,
 classification, determinism/goldens and MCP-to-GraphQL graduation/parity rules
 remain in force. This page grants no graduation or namespace change.
@@ -236,7 +268,20 @@ bootstrap paths; production prefix support needs a separate implementation.
 The host retains its listener, proxy, TLS, origin and trust configuration.
 Prefix handling neither relaxes those controls nor introduces a new trust source.
 
-Only the enumerated read routes in the table above sit behind the embed prefix.
+The table above gives examples, not the complete allowlist. The rule is: a
+capability advertised by the embedded bootstrap implies every route it uses is
+forwarded. The shell (`portal/web/src/app.js`) fetches many relative `api/v1/`
+routes (registry, semantic, observability, timeline, provenance, projection,
+snapshots, sessions, search, ebus-standard, explorer and others), so the
+forwarded set must not be a hand-maintained short list. The implementation slice
+derives the allowlist from the shell's route table as one generated list, and
+adds a test that every relative `api/v1/` route the shell fetches is either
+forwarded or belongs to a capability the embedded bootstrap disables. Routes that
+mutate state or reach native endpoints (explorer scans and raw reads, for
+example) belong to capabilities the read-only embedded bootstrap disables and
+omits, not to the forwarded set. This is **Unknown** in current code: no such
+list or test exists today.
+
 Endpoints the entry point does not forward, for example `mcp` and `eebus_admin`,
 are omitted from the bootstrap response rather than advertised under the prefix.
 This is a route allowlist, not an authorization gate: it avoids accidental

@@ -99,8 +99,10 @@ func (r *Registry) Register(descriptors ...Descriptor) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Complete passes in the documented order; each pass covers the whole
+	// batch before the next begins, so the first refusal class does not
+	// depend on descriptor order.
 	batchDrivers := make(map[DriverID]struct{}, len(frozen))
-	batchSources := make(map[SourceID]struct{})
 	for index, candidate := range frozen {
 		id := candidate.entry.DriverID
 		if _, exists := r.entries[id]; exists {
@@ -110,15 +112,23 @@ func (r *Registry) Register(descriptors ...Descriptor) error {
 			return refusal(index, id, ErrDuplicateDriverID)
 		}
 		batchDrivers[id] = struct{}{}
+	}
+	batchSources := make(map[SourceID]struct{})
+	for index, candidate := range frozen {
 		for _, source := range candidate.entry.Sources {
 			if _, exists := r.sources[source]; exists {
-				return refusal(index, id, ErrDuplicateSourceID)
+				return refusal(index, candidate.entry.DriverID, ErrDuplicateSourceID)
 			}
 			if _, exists := batchSources[source]; exists {
-				return refusal(index, id, ErrDuplicateSourceID)
+				return refusal(index, candidate.entry.DriverID, ErrDuplicateSourceID)
 			}
 			batchSources[source] = struct{}{}
-			if r.hub != nil {
+		}
+	}
+	if r.hub != nil {
+		for index, candidate := range frozen {
+			id := candidate.entry.DriverID
+			for _, source := range candidate.entry.Sources {
 				if owner, owned := r.hub.SourceOwner(source); owned && owner != id {
 					return refusal(index, id, ErrHubSourceCollision)
 				}

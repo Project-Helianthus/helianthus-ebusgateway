@@ -2,10 +2,15 @@ package runtimecontrol
 
 import (
 	"context"
+	"errors"
 	"reflect"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 )
+
+// ErrNilRuntime reports a factory that returned no error and no usable
+// runtime, for example a disabled optional driver returning a nil pointer.
+var ErrNilRuntime = errors.New("runtimecontrol: factory returned a nil runtime")
 
 // Construction is the frozen registration material a lifecycle adapter
 // receives when a later composition step constructs its runtime.
@@ -37,6 +42,18 @@ func (adapter typedAdapter[R]) Construct(ctx context.Context, construction Const
 	runtime, err := adapter.factory(ctx, construction)
 	if err != nil {
 		return nil, err
+	}
+	// Check the generic value before the interface conversion: a typed nil
+	// pointer converted to drivermanager.Runtime is a non-nil interface.
+	if value := reflect.ValueOf(runtime); !value.IsValid() {
+		return nil, ErrNilRuntime
+	} else {
+		switch value.Kind() {
+		case reflect.Pointer, reflect.Func, reflect.Map, reflect.Slice, reflect.Interface, reflect.Chan:
+			if value.IsNil() {
+				return nil, ErrNilRuntime
+			}
+		}
 	}
 	return runtime, nil
 }

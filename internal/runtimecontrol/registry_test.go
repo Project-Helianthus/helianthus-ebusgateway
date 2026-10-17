@@ -615,3 +615,100 @@ func checkTokens(t *testing.T, where, text string) {
 		}
 	}
 }
+
+func TestNilRuntimeFromFactoryIsRefused(t *testing.T) {
+	var calls atomic.Int64
+	disabled := fixture(&calls, "optional.disabled", DirectionSouthbound, "opt-src")
+	disabled.Adapter = NewAdapter(func(context.Context, Construction) (*fakeRuntime, error) {
+		calls.Add(1)
+		return nil, nil
+	})
+	registry := NewRegistry(nil)
+	if err := registry.Register(disabled); err != nil {
+		t.Fatal(err)
+	}
+	before := registry.List()
+	binding, err := registry.Binding("optional.disabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := binding.Adapter.Construct(context.Background(), binding.Construction)
+	if !errors.Is(err, ErrNilRuntime) {
+		t.Fatalf("Construct error = %v, want ErrNilRuntime", err)
+	}
+	if runtime != nil {
+		t.Fatalf("Construct returned non-nil runtime %#v with error", runtime)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("factory calls = %d, want exactly the one refused construction", calls.Load())
+	}
+	if after := registry.List(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("registry state changed: %v -> %v", before, after)
+	}
+	// Non-pointer runtime kinds and a valid pointer still construct.
+	good := NewAdapter(func(context.Context, Construction) (*fakeRuntime, error) { return &fakeRuntime{}, nil })
+	if got, err := good.Construct(context.Background(), Construction{}); err != nil || got == nil {
+		t.Fatalf("valid runtime refused: %v %v", got, err)
+	}
+}
+
+func TestRegisterValidationClassIsOrderIndependent(t *testing.T) {
+	type batchFn func(calls *atomic.Int64) (installed Descriptor, batch []Descriptor)
+	cases := []struct {
+		name string
+		make batchFn
+		want error
+	}{
+		{"duplicate driver before hub collision", func(calls *atomic.Int64) (Descriptor, []Descriptor) {
+			installed := fixture(calls, "installed.one", DirectionSouthbound, "inst-src")
+			hubHit := fixture(calls, "hub.hit", DirectionNorthbound, "hub-src")
+			dup := fixture(calls, "installed.one", DirectionBoth, "other-src")
+			return installed, []Descriptor{hubHit, dup}
+		}, ErrDuplicateDriverID},
+		{"duplicate source before hub collision", func(calls *atomic.Int64) (Descriptor, []Descriptor) {
+			installed := fixture(calls, "installed.one", DirectionSouthbound, "inst-src")
+			hubHit := fixture(calls, "hub.hit", DirectionNorthbound, "hub-src")
+			dup := fixture(calls, "dup.source", DirectionBoth, "inst-src")
+			return installed, []Descriptor{hubHit, dup}
+		}, ErrDuplicateSourceID},
+		{"duplicate driver before duplicate source", func(calls *atomic.Int64) (Descriptor, []Descriptor) {
+			installed := fixture(calls, "installed.one", DirectionSouthbound, "inst-src")
+			srcDup := fixture(calls, "dup.source", DirectionNorthbound, "inst-src")
+			drvDup := fixture(calls, "installed.one", DirectionBoth, "free-src")
+			return installed, []Descriptor{srcDup, drvDup}
+		}, ErrDuplicateDriverID},
+	}
+	for _, tc := range cases {
+		for _, reverse := range []bool{false, true} {
+			name := tc.name
+			if reverse {
+				name += " reversed"
+			}
+			t.Run(name, func(t *testing.T) {
+				var calls atomic.Int64
+				installed, batch := tc.make(&calls)
+				if reverse {
+					batch[0], batch[1] = batch[1], batch[0]
+				}
+				registry := NewRegistry(fakeHub{"hub-src": "hub.owner"})
+				if err := registry.Register(installed); err != nil {
+					t.Fatal(err)
+				}
+				before := registry.List()
+				err := registry.Register(batch...)
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("error = %v, want %v", err, tc.want)
+				}
+				if errors.Is(err, ErrHubSourceCollision) && tc.want != ErrHubSourceCollision {
+					t.Fatalf("hub collision reported ahead of %v", tc.want)
+				}
+				if after := registry.List(); !reflect.DeepEqual(before, after) {
+					t.Fatalf("registry changed after refusal")
+				}
+				if calls.Load() != 0 {
+					t.Fatalf("factory calls = %d, want 0", calls.Load())
+				}
+			})
+		}
+	}
+}

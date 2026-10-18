@@ -1943,7 +1943,7 @@ func TestControlStopWaitsForInFlightControlTransaction(t *testing.T) {
 	// Write admission is closed after the lock is released.
 	before, writes := rcRead(t, path), hooks.writeCount()
 	_, err := m.AdvanceControlCatalog(rcCtx(t))
-	_ = rcRefusal(t, err, RefusalUnavailable, 0)
+	_ = rcRefusal(t, err, RefusalUnavailable, 3)
 	m.UpsertKnownBusMember(KnownBusMember{Addr: 0x31, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
 	if err := m.Flush(rcCtx(t)); !errors.Is(err, ErrStatePersistBlocked) {
 		t.Fatalf("flush after Stop = %v", err)
@@ -2294,5 +2294,49 @@ func TestControlWorkRejectsProgressRegression(t *testing.T) {
 	}
 	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
 		t.Fatal("refused regression changed the on-disk bytes")
+	}
+}
+
+// Admission is closed after Stop: every decision, including the same-desired
+// no-op and a stale revision, and every sibling write entry point is refused
+// UNAVAILABLE at row 3, and nothing is written.
+func TestControlDecisionsRefusedAfterStop(t *testing.T) {
+	for _, mode := range []string{"normal_stop", "canceled_stop"} {
+		t.Run(mode, func(t *testing.T) {
+			hooks := &rcHooks{}
+			m, path := rcSeeded(t, hooks)
+			drv := rcDriver(t, m, "ebus.primary")
+			if drv.DesiredState != DesiredRunning {
+				t.Fatalf("seeded desired = %v, want RUNNING", drv.DesiredState)
+			}
+			rev := drv.DesiredRevision
+			ctx := rcCtx(t)
+			if mode == "canceled_stop" {
+				c, cancel := context.WithCancel(context.Background())
+				cancel()
+				ctx = c
+			}
+			_ = m.Stop(ctx)
+			before, writes := rcRead(t, path), hooks.writeCount()
+			for name, call := range map[string]func() error{
+				"start_matching_noop": func() error { _, err := rcDecide(t, m, ControlStart, "ebus.primary", rev); return err },
+				"stop_matching":       func() error { _, err := rcDecide(t, m, ControlStop, "ebus.primary", rev); return err },
+				"restart_matching":    func() error { _, err := rcDecide(t, m, ControlRestart, "ebus.primary", rev); return err },
+				"start_stale":         func() error { _, err := rcDecide(t, m, ControlStart, "ebus.primary", rev+7); return err },
+				"commit_work": func() error {
+					return m.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil)
+				},
+				"advance_catalog": func() error { _, err := m.AdvanceControlCatalog(rcCtx(t)); return err },
+				"commit_recovery": func() error { return m.CommitControlRecovery(rcCtx(t), nil) },
+			} {
+				_ = rcRefusal(t, call(), RefusalUnavailable, 3)
+				if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+					t.Fatalf("%s changed the on-disk state", name)
+				}
+			}
+			if m.ControlAdmissionOpen() {
+				t.Fatal("admission open after Stop")
+			}
+		})
 	}
 }

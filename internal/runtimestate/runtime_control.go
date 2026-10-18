@@ -967,6 +967,20 @@ func (m *Manager) ControlAdmissionOpen() bool {
 		!m.stopped && m.persistBlocked == nil
 }
 
+// admissionClosedLocked refuses (UNAVAILABLE, row 3) every control decision
+// and work commit once the manager is stopped or persistence is blocked,
+// including requests that would otherwise take a no-op or comparison path.
+// Callers hold m.mu.
+func (m *Manager) admissionClosedLocked() *ControlRefusal {
+	if m.stopped {
+		return refuse(RefusalUnavailable, 3, "admission closed: manager stopped")
+	}
+	if m.persistBlocked != nil {
+		return refuse(RefusalUnavailable, 3, "admission closed: persistence blocked: "+m.persistBlocked.Error())
+	}
+	return nil
+}
+
 func validateControlConfigs(configs []ControlDriverConfig) ([]ControlDriverConfig, error) {
 	if len(configs) > MaxControlDriverRecords {
 		return nil, fmt.Errorf("%w: more than %d drivers", ErrControlInvalidConfig, MaxControlDriverRecords)
@@ -1456,6 +1470,9 @@ func (m *Manager) precheckControl(id string) *ControlRefusal {
 	if ns == nil {
 		return refuse(RefusalFailedPrecondition, 3, "runtime_control failed to load: "+string(m.controlStatus.Disposition))
 	}
+	if refusal := m.admissionClosedLocked(); refusal != nil {
+		return refusal
+	}
 	if _, bad := ns.failed[id]; bad {
 		return refuse(RefusalFailedPrecondition, 3, "driver record malformed")
 	}
@@ -1506,9 +1523,13 @@ func (m *Manager) CommitControlWork(ctx context.Context, id string, current, res
 	m.mu.Lock()
 	ns := m.loadedControlLocked().clone()
 	ambiguous := m.controlAmbiguous != nil
+	closed := m.admissionClosedLocked()
 	m.mu.Unlock()
 	if ns == nil {
 		return refuse(RefusalFailedPrecondition, 3, "runtime_control is not loaded")
+	}
+	if closed != nil {
+		return closed
 	}
 	if ambiguous {
 		return refuse(RefusalUnavailable, 3, "readback after ambiguous persistence still pending")
@@ -1614,9 +1635,13 @@ func (m *Manager) AdvanceControlCatalog(ctx context.Context) (uint64, error) {
 	m.mu.Lock()
 	ns := m.loadedControlLocked().clone()
 	ambiguous := m.controlAmbiguous != nil
+	closed := m.admissionClosedLocked()
 	m.mu.Unlock()
 	if ns == nil {
 		return 0, refuse(RefusalFailedPrecondition, 3, "runtime_control is not loaded")
+	}
+	if closed != nil {
+		return 0, closed
 	}
 	if ambiguous {
 		return 0, refuse(RefusalUnavailable, 3, "readback after ambiguous persistence still pending")
@@ -1652,9 +1677,13 @@ func (m *Manager) CommitControlRecovery(ctx context.Context, recovery *ControlRe
 	m.mu.Lock()
 	ns := m.loadedControlLocked().clone()
 	ambiguous := m.controlAmbiguous != nil
+	closed := m.admissionClosedLocked()
 	m.mu.Unlock()
 	if ns == nil {
 		return refuse(RefusalFailedPrecondition, 3, "runtime_control is not loaded")
+	}
+	if closed != nil {
+		return closed
 	}
 	if ambiguous {
 		return refuse(RefusalUnavailable, 3, "readback after ambiguous persistence still pending")

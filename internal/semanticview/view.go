@@ -216,31 +216,53 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		reason := semreg.DefinitionID(reasonPrefix + "value_unknown")
 		reasons := []semreg.DefinitionID{}
 		if item.Kind == projection.ItemFact {
-			hasValue, available, unsupported, found := false, false, true, false
+			// Availability and exactness are tracked per complete source key: one
+			// available sibling must not hide an unavailable or withdrawn one.
+			hasValue, unsupported, found := false, true, false
+			allKeysAvailable, allKeysExact, anyUnknown := true, true, false
 			for _, f := range s.Facts {
 				if f.Key.FactID != item.ItemID {
 					continue
 				}
 				d.SourceKeys = append(d.SourceKeys, f.Key)
+				keyAvailable, keyExact := false, false
 				for _, c := range f.Candidates {
 					found = true
 					hasValue = hasValue || c.Value != nil
 					unsupported = unsupported && c.Quality.Qualification == semreg.QualificationUnsupported
+					anyUnknown = anyUnknown || (c.Value != nil && c.Quality.Qualification == semreg.QualificationUnknown)
 					reasons = append(reasons, c.Quality.Reasons...)
 					for _, v := range e.Facts {
 						if v.CandidateID == c.CandidateID && v.CandidateRevision == c.Revision {
-							available = available || (v.EffectiveAvailability != semreg.AvailabilityUnavailable && v.EffectiveAvailability != semreg.AvailabilityWithdrawn)
+							ok := v.EffectiveAvailability != semreg.AvailabilityUnavailable && v.EffectiveAvailability != semreg.AvailabilityWithdrawn
+							keyAvailable = keyAvailable || ok
+							// Exact needs a value that is qualified, promoted, valid (good, or
+							// suspect as the kernel allows for promoted state) and available.
+							keyExact = keyExact || (ok && c.Value != nil && c.Quality.Qualification == semreg.QualificationQualified &&
+								c.Quality.Promotion == semreg.PromotionPromoted && (c.Quality.Validity == semreg.ValidityGood || c.Quality.Validity == semreg.ValiditySuspect))
 						}
 					}
 				}
+				allKeysAvailable = allKeysAvailable && keyAvailable
+				allKeysExact = allKeysExact && keyExact
 			}
-			if found && !available {
+			switch {
+			case found && !allKeysAvailable:
+				// Any unavailable key withholds the whole disposition (SourceKeys names
+				// every key); the withheld key's value is never reported as exact.
 				d.Outcome = projection.ProjectionWithheld
 				reason = reasonPrefix + "fact_unavailable"
-			} else if found && unsupported {
+			case found && unsupported:
 				d.Outcome = projection.ProjectionUnsupported
-			} else if hasValue {
+			case hasValue && allKeysExact:
 				d.Outcome = projection.ProjectionExact
+			case hasValue && anyUnknown:
+				d.Outcome = projection.ProjectionUnknown
+			case hasValue:
+				// A valued candidate that is not qualified, promoted and valid stays
+				// audit evidence only.
+				d.Outcome = projection.ProjectionWithheld
+				reason = reasonPrefix + "capability_unqualified"
 			}
 		} else {
 			reason = reasonPrefix + "capability_unknown"

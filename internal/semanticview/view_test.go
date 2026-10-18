@@ -798,3 +798,144 @@ func TestM08IdentityFieldMutations(t *testing.T) {
 		})
 	}
 }
+
+// m08FactDisposition returns the projection disposition for a fact ID.
+func m08FactDisposition(t *testing.T, v View, id semreg.DefinitionID) projection.ProjectionDisposition {
+	t.Helper()
+	for _, d := range v.Assets[0].Projection.Dispositions {
+		if d.Kind == projection.ItemFact && d.ItemID == id {
+			return d
+		}
+	}
+	t.Fatalf("no disposition for %s", id)
+	return projection.ProjectionDisposition{}
+}
+
+// TestM08CandidateStateDisposition catches the mutation that ignores
+// qualification, promotion and validity when choosing ProjectionExact: a valued
+// candidate is exact only when qualified, promoted and valid; the
+// unknown_pending_std_01 reason keeps its special unknown outcome.
+func TestM08CandidateStateDisposition(t *testing.T) {
+	std01 := semreg.DefinitionID("unknown_pending_std_01")
+	cases := []struct {
+		name    string
+		mutate  func(q *semreg.Quality)
+		outcome projection.ProjectionOutcome
+		reason  string // empty means no reason expected
+	}{
+		{"qualified_promoted_valid", func(q *semreg.Quality) {}, projection.ProjectionExact, ""},
+		{"candidate_unpromoted", func(q *semreg.Quality) {
+			q.Qualification, q.Promotion = semreg.QualificationCandidate, semreg.PromotionUnpromoted
+		}, projection.ProjectionWithheld, reasonPrefix + "capability_unqualified"},
+		{"candidate_unpromoted_owner_reason", func(q *semreg.Quality) {
+			q.Qualification, q.Promotion = semreg.QualificationCandidate, semreg.PromotionUnpromoted
+			q.Reasons = []semreg.DefinitionID{"reason.owner"}
+		}, projection.ProjectionWithheld, "reason.owner"},
+		{"promoted_suspect_is_exact", func(q *semreg.Quality) { q.Validity = semreg.ValiditySuspect }, projection.ProjectionExact, ""},
+		{"bad_validity", func(q *semreg.Quality) {
+			q.Promotion, q.Validity = semreg.PromotionUnpromoted, semreg.ValidityBad
+		}, projection.ProjectionWithheld, reasonPrefix + "capability_unqualified"},
+		{"qualified_but_unpromoted", func(q *semreg.Quality) { q.Promotion = semreg.PromotionUnpromoted }, projection.ProjectionWithheld, reasonPrefix + "capability_unqualified"},
+		{"unknown_qualification", func(q *semreg.Quality) {
+			q.Qualification, q.Promotion = semreg.QualificationUnknown, semreg.PromotionUnpromoted
+		}, projection.ProjectionUnknown, reasonPrefix + "value_unknown"},
+		{"std01_candidate", func(q *semreg.Quality) {
+			q.Qualification, q.Promotion = semreg.QualificationCandidate, semreg.PromotionUnpromoted
+			q.Reasons = []semreg.DefinitionID{std01}
+		}, projection.ProjectionUnknown, string(std01)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := m08Input(t)
+			for i := range in.Snapshot.Facts {
+				q := &in.Snapshot.Facts[i].Candidates[0].Quality
+				q.Reasons = []semreg.DefinitionID{}
+				tc.mutate(q)
+			}
+			m08Seal(t, in.Snapshot)
+			e := m08Evaluate(t, *in.Snapshot)
+			in.Evaluation = &e
+			v := m08Build(t, in)
+			for _, f := range in.Snapshot.Facts {
+				d := m08FactDisposition(t, v, f.Key.FactID)
+				if d.Outcome != tc.outcome {
+					t.Fatalf("outcome %s want %s", d.Outcome, tc.outcome)
+				}
+				switch {
+				case tc.reason == "" && d.Reason != nil:
+					t.Fatalf("unexpected reason %s", *d.Reason)
+				case tc.reason != "" && (d.Reason == nil || string(*d.Reason) != tc.reason):
+					t.Fatalf("reason %v want %s", d.Reason, tc.reason)
+				}
+			}
+		})
+	}
+}
+
+// TestM08PerSourceKeyAvailability catches the mutation that ORs availability
+// across the source keys of one fact: with two dimensioned envelopes sharing a
+// fact ID, one unavailable or withdrawn key withholds the whole disposition,
+// which still names both keys; an exact disposition never includes it.
+func TestM08PerSourceKeyAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		second       semreg.Availability
+		firstBlocked bool
+		outcome      projection.ProjectionOutcome
+	}{
+		{"both_available", semreg.AvailabilityAvailable, false, projection.ProjectionExact},
+		{"second_unavailable", semreg.AvailabilityUnavailable, false, projection.ProjectionWithheld},
+		{"second_withdrawn", semreg.AvailabilityWithdrawn, false, projection.ProjectionWithheld},
+		{"first_unavailable_second_available", semreg.AvailabilityAvailable, true, projection.ProjectionWithheld},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := m08Input(t)
+			base := in.Snapshot.Facts[0]
+			label := "synthetic-second"
+			clone := base
+			clone.Key.Dimensions = append([]semreg.Dimension{}, base.Key.Dimensions...)
+			clone.Key.Dimensions[0].Value = semreg.Value{Kind: semreg.ValueText, Text: &label}
+			clone.Candidates = append([]semreg.FactCandidate{}, base.Candidates...)
+			clone.Candidates[0].CandidateID = "candidate:second"
+			clone.Candidates[0].Key = clone.Key
+			clone.Candidates[0].Quality.Availability = tc.second
+			if tc.second != semreg.AvailabilityAvailable {
+				clone.Candidates[0].Quality.Promotion = semreg.PromotionUnpromoted
+			}
+			if tc.second == semreg.AvailabilityWithdrawn {
+				clone.Candidates[0].Value = nil // the validator forbids values on withdrawn candidates
+			}
+			if tc.firstBlocked {
+				in.Snapshot.Facts[0].Candidates = append([]semreg.FactCandidate{}, base.Candidates...)
+				in.Snapshot.Facts[0].Candidates[0].Quality.Availability = semreg.AvailabilityUnavailable
+				in.Snapshot.Facts[0].Candidates[0].Quality.Promotion = semreg.PromotionUnpromoted
+				clone.Candidates[0].Quality.Availability = semreg.AvailabilityAvailable
+				clone.Candidates[0].Quality.Promotion = semreg.PromotionPromoted
+			}
+			// Drop the fixture's owner reason so the surface-owned code is visible.
+			in.Snapshot.Facts[0].Candidates = append([]semreg.FactCandidate{}, in.Snapshot.Facts[0].Candidates...)
+			in.Snapshot.Facts[0].Candidates[0].Quality.Reasons = []semreg.DefinitionID{}
+			clone.Candidates[0].Quality.Reasons = []semreg.DefinitionID{}
+			in.Snapshot.Facts = append(in.Snapshot.Facts, clone)
+			sort.Slice(in.Snapshot.Facts, func(i, j int) bool {
+				a, _ := semreg.CanonicalJSON(in.Snapshot.Facts[i].Key)
+				b, _ := semreg.CanonicalJSON(in.Snapshot.Facts[j].Key)
+				return bytes.Compare(a, b) < 0
+			})
+			m08Seal(t, in.Snapshot)
+			e := m08Evaluate(t, *in.Snapshot)
+			in.Evaluation = &e
+			v := m08Build(t, in)
+			d := m08FactDisposition(t, v, base.Key.FactID)
+			if len(d.SourceKeys) != 2 {
+				t.Fatalf("source keys %d want 2", len(d.SourceKeys))
+			}
+			if d.Outcome != tc.outcome {
+				t.Fatalf("outcome %s want %s", d.Outcome, tc.outcome)
+			}
+			if tc.outcome == projection.ProjectionWithheld && (d.Reason == nil || *d.Reason != reasonPrefix+"fact_unavailable") {
+				t.Fatalf("reason %v", d.Reason)
+			}
+		})
+	}
+}

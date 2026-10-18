@@ -13,6 +13,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/infrastructure"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
 func m36JSON(t *testing.T, value any) []byte {
@@ -186,8 +187,10 @@ func m36Available(text string, b Binding, field semreg.DefinitionID, available i
 func TestM36Quantities(t *testing.T) {
 	tests := []struct{ field, name, unit, number, want string }{
 		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "25", "0.25"},
+		{"thermal.demand.level", "helianthus_thermal_demand_ratio", "unit.percent", "57", "0.57"},
 		{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature_celsius", "unit.celsius", "-12", "-12"},
 		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "60", "0.001"},
+		{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "unit.litre_per_minute", "7", "0.00011666666666666667"},
 		{"thermal.measurement.humidity_relative", "helianthus_thermal_relative_humidity_ratio", "unit.percent", "50", "0.5"},
 		{"thermal.measurement.power", "helianthus_thermal_power_watts", "unit.watt", "-12", "-12"},
 		{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", "unit.celsius", "42", "42"},
@@ -463,5 +466,93 @@ func TestM36FactKeyAndCandidateRevision(t *testing.T) {
 				t.Fatal(text)
 			}
 		})
+	}
+}
+
+func TestM36WithheldProjection(t *testing.T) {
+	for _, sibling := range []string{"withdrawn_dimension", "unavailable_capability"} {
+		t.Run(sibling, func(t *testing.T) {
+			s, r := m36Fixture(t, "infrastructure.ac.voltage", m36Quantity("230", "unit.volt"))
+			kind, id := projection.ItemFact, r.Bindings[0].Fields[0]
+			if sibling == "withdrawn_dimension" {
+				var second semreg.FactEnvelope
+				if err := json.Unmarshal(m36JSON(t, s.Facts[0]), &second); err != nil {
+					t.Fatal(err)
+				}
+				dimension := "second"
+				second.Key.Dimensions[0].Value.Text = &dimension
+				second.Candidates[0].Key = second.Key
+				second.Candidates[0].CandidateID = "candidate:second"
+				second.Candidates[0].Value = nil
+				second.Candidates[0].Quality.Availability = semreg.AvailabilityWithdrawn
+				second.Candidates[0].Quality.Promotion = semreg.PromotionUnpromoted
+				s.Facts = append(s.Facts, second)
+			} else {
+				second := s.Capabilities[0]
+				second.InstanceID = "capability:zz-second"
+				second.Availability = semreg.AvailabilityUnavailable
+				s.Capabilities = append(s.Capabilities, second)
+				kind, id = projection.ItemCapability, second.Definition.ID
+			}
+			v := m36View(t, s)
+			withheld := false
+			for _, d := range v.Assets[0].Projection.Dispositions {
+				if d.Kind == kind && d.ItemID == id {
+					withheld = d.Outcome == projection.ProjectionWithheld
+					if sibling == "withdrawn_dimension" && len(d.SourceKeys) != 2 {
+						t.Fatal("missing sibling source key")
+					}
+				}
+			}
+			if !withheld {
+				t.Fatal("fixture must withhold the shared projection")
+			}
+			text := m36Render(t, v, r)
+			if strings.Contains(text, "helianthus_infrastructure_ac_voltage_volts{slot=") ||
+				!m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 0) {
+				t.Fatal(text)
+			}
+		})
+	}
+}
+
+func TestM36UnknownSymbolAndEmptyView(t *testing.T) {
+	s, r := m36Fixture(t, "thermal.mode.system", semreg.Value{Kind: semreg.ValueSymbol, Symbol: &semreg.Symbol{Namespace: "native.synthetic", Token: "auto", Known: false}})
+	s.Facts[0].Candidates[0].Quality.Qualification = semreg.QualificationUnknown
+	s.Facts[0].Candidates[0].Quality.Promotion = semreg.PromotionUnpromoted
+	for _, v := range []semanticview.View{m36UnadmittedView(t, s), {}} {
+		text := m36Render(t, v, r)
+		if strings.Contains(text, "helianthus_thermal_system_mode{slot=") || !m36Available(text, r.Bindings[0], r.Bindings[0].Fields[0], 0) {
+			t.Fatal(text)
+		}
+	}
+	if text := m36Render(t, semanticview.View{}, Registry{}); strings.Contains(text, "{slot=") || strings.Contains(text, "{domain=") {
+		t.Fatal(text)
+	}
+}
+
+func TestM36BindingOrder(t *testing.T) {
+	s, r := m36Fixture(t, "infrastructure.ac.voltage", m36Quantity("230", "unit.volt"))
+	other := r.Bindings[0]
+	other.Slot = 3
+	other.Dimensions = append([]semreg.Dimension(nil), other.Dimensions...)
+	dimension := "other"
+	other.Dimensions[0].Value.Text = &dimension
+	_, thermalRegistry := m36Fixture(t, "thermal.measurement.power", m36Quantity("12", "unit.watt"))
+	thermalBinding := thermalRegistry.Bindings[0]
+	thermalBinding.Slot = 2
+	thermalBinding.AssetID = "asset:other"
+	bindings := []Binding{r.Bindings[0], other, thermalBinding}
+	v := m36View(t, s)
+	v.Assets = append(v.Assets, semanticview.Asset{AssetID: thermalBinding.AssetID, UnavailableReason: "semantic.read.reason.asset_unknown"})
+	want := m36Render(t, v, Registry{Validated: true, Bindings: bindings})
+	if !strings.Contains(want, "helianthus_infrastructure_ac_voltage_volts{slot=\"0\"} 230") {
+		t.Fatal(want)
+	}
+	for _, order := range [][]int{{2, 1, 0}, {1, 0, 2}, {0, 2, 1}} {
+		shuffled := []Binding{bindings[order[0]], bindings[order[1]], bindings[order[2]]}
+		if got := m36Render(t, v, Registry{Validated: true, Bindings: shuffled}); got != want {
+			t.Fatalf("binding order changed output:\n%s", got)
+		}
 	}
 }

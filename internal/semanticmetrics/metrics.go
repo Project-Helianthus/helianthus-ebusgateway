@@ -15,6 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/infrastructure"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
 // Binding is a configured resource/service/dimension tuple, never a label source.
@@ -46,16 +47,16 @@ type metric struct {
 	field      semreg.DefinitionID
 	name, help string
 	unit       semreg.DefinitionID
-	scale      float64
+	factor     float64 // Divisor, except kilowatt-hours use a multiplier.
 	symbols    []string
 }
 
 var metrics = []metric{
 	{"thermal.action.state", "helianthus_thermal_action_state", "thermal.action.state (enum: idle=0, heating=1, cooling=2, dhw=3, ventilating=4).", "", 1, []string{"idle", "heating", "cooling", "dhw", "ventilating"}},
-	{"thermal.demand.level", "helianthus_thermal_demand_ratio", "thermal.demand.level (ratio; percent / 100).", "unit.percent", 0.01, []string{}},
+	{"thermal.demand.level", "helianthus_thermal_demand_ratio", "thermal.demand.level (ratio; percent / 100).", "unit.percent", 100, []string{}},
 	{"thermal.measurement.air_temperature", "helianthus_thermal_air_temperature_celsius", "thermal.measurement.air_temperature (Celsius; identity).", "unit.celsius", 1, []string{}},
-	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "thermal.measurement.flow_rate (m^3/s; litre/minute / 60,000).", "unit.litre_per_minute", 1.0 / 60000, []string{}},
-	{"thermal.measurement.humidity_relative", "helianthus_thermal_relative_humidity_ratio", "thermal.measurement.humidity_relative (ratio; percent / 100).", "unit.percent", 0.01, []string{}},
+	{"thermal.measurement.flow_rate", "helianthus_thermal_flow_cubic_meters_per_second", "thermal.measurement.flow_rate (m^3/s; litre/minute / 60,000).", "unit.litre_per_minute", 60000, []string{}},
+	{"thermal.measurement.humidity_relative", "helianthus_thermal_relative_humidity_ratio", "thermal.measurement.humidity_relative (ratio; percent / 100).", "unit.percent", 100, []string{}},
 	{"thermal.measurement.power", "helianthus_thermal_power_watts", "thermal.measurement.power (watts; preserve sign).", "unit.watt", 1, []string{}},
 	{"thermal.measurement.water_temperature", "helianthus_thermal_water_temperature_celsius", "thermal.measurement.water_temperature (Celsius; identity).", "unit.celsius", 1, []string{}},
 	{"thermal.mode.system", "helianthus_thermal_system_mode", "thermal.mode.system (enum: off=0, auto=1, heat=2, cool=3).", "", 1, []string{"off", "auto", "heat", "cool"}},
@@ -182,8 +183,21 @@ func findMetric(field semreg.DefinitionID) (metric, bool) {
 	return metric{}, false
 }
 
+// projectionExact consumes the shared view's disposition rather than deriving
+// public exactness from an individual candidate or native capability instance.
+func projectionExact(a semanticview.Asset, kind projection.ItemKind, id semreg.DefinitionID) bool {
+	if a.Projection != nil {
+		for _, d := range a.Projection.Dispositions {
+			if d.Kind == kind && d.ItemID == id {
+				return d.Outcome == projection.ProjectionExact
+			}
+		}
+	}
+	return false
+}
+
 func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMetadataRegistry) (float64, bool) {
-	if a.UnavailableReason != "" || a.Snapshot == nil || a.Evaluation == nil {
+	if a.UnavailableReason != "" || a.Snapshot == nil || a.Evaluation == nil || !projectionExact(a, projection.ItemFact, m.field) {
 		return 0, false
 	}
 	s, e := a.Snapshot, a.Evaluation
@@ -209,7 +223,7 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 			continue
 		}
 		for _, cap := range s.Capabilities {
-			if cap.ServiceInstance == service.InstanceID && cap.BindingID == b.BindingID && cap.SourceEpochID == b.SourceEpochID && cap.DriverGeneration == b.DriverGeneration && cap.Qualification == semreg.QualificationQualified && cap.Availability == semreg.AvailabilityAvailable && service.Definition.Pack == pack && metadata.ServiceOwnsCapability(service.Definition, cap.Definition) && strings.HasPrefix(string(cap.Definition.ID), b.Domain+".capability.read.") {
+			if cap.ServiceInstance == service.InstanceID && cap.BindingID == b.BindingID && cap.SourceEpochID == b.SourceEpochID && cap.DriverGeneration == b.DriverGeneration && cap.Qualification == semreg.QualificationQualified && cap.Availability == semreg.AvailabilityAvailable && service.Definition.Pack == pack && metadata.ServiceOwnsCapability(service.Definition, cap.Definition) && strings.HasPrefix(string(cap.Definition.ID), b.Domain+".capability.read.") && projectionExact(a, projection.ItemCapability, cap.Definition.ID) {
 				serviceOK = true
 			}
 		}
@@ -266,7 +280,11 @@ func sample(a semanticview.Asset, b Binding, m metric, metadata *semreg.PackMeta
 			return 0, false
 		}
 		number, err := strconv.ParseFloat(q.Number.Coefficient+"e"+strconv.FormatInt(int64(q.Number.Exponent10), 10), 64)
-		number *= m.scale
+		if m.unit == "unit.kilowatt_hour" {
+			number *= m.factor
+		} else {
+			number /= m.factor
+		}
 		return number, err == nil && !math.IsNaN(number) && !math.IsInf(number, 0)
 	}
 	return 0, false

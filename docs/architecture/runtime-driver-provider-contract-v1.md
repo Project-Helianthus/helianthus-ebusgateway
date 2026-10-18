@@ -15,9 +15,9 @@ publication path over the SemReg publication kernel with the kernel's own
 replay and error identifiers; ordered, bounded event fan-out; and the
 generation fence, epoch retirement, activation and reprojection rules of the
 withdrawal sequence. The hub is runtime composition, not a public API, and
-persists nothing: epochs are journalled in memory only. The `list`, `get`,
-`start`, `stop` and `restart` service and every public lifecycle projection
-remain unimplemented. Issue
+persists nothing: epochs are journalled in memory only. Every public `list`,
+`get`, `start`, `stop` and `restart` tool and every public lifecycle
+projection remain unimplemented. Issue
 [#1157](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1157)
 adds the durable control storage seam in `internal/runtimestate` (section 5,
 S3 durable control store) without a production caller, live reconciliation or
@@ -30,7 +30,12 @@ in-memory-only recovery boundary. Issue
 adds the asset-free hub-native successor admission (`Hub.AdmitSuccessor`,
 section 7, hub-native epoch succession) that a future lifecycle service uses
 for an explicit RESTART or a START after a completed STOP. No service, eBUS or
-production caller uses it yet.
+production caller uses it yet. Issue
+[#1183](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1183)
+adds the internal desired-state service in `internal/runtimecontrol` (section
+5, S1/D3 desired-state service) over that storage seam, with an injected
+lifecycle executor and recovery adapter. It has no production registration,
+no MCP mutator, no endpoint I/O and no authentication.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -243,22 +248,22 @@ type LifecycleCorrelation struct {
 type ControlErrorCode string
 const (
     ErrorInvalidArgument      ControlErrorCode = "INVALID_ARGUMENT"
-    ErrorPermissionDenied     ControlErrorCode = "PERMISSION_DENIED"
     ErrorNotFound             ControlErrorCode = "NOT_FOUND"
-    ErrorRevisionConflict     ControlErrorCode = "REVISION_CONFLICT"
-    ErrorIdempotencyConflict  ControlErrorCode = "IDEMPOTENCY_CONFLICT"
     ErrorFailedPrecondition   ControlErrorCode = "FAILED_PRECONDITION"
     ErrorUnavailable          ControlErrorCode = "UNAVAILABLE"
     ErrorDeadlineExceeded     ControlErrorCode = "DEADLINE_EXCEEDED"
-    ErrorCloseUnconfirmed     ControlErrorCode = "CLOSE_UNCONFIRMED"
+    ErrorRevisionConflict     ControlErrorCode = "REVISION_CONFLICT"
+    ErrorTransitionBusy       ControlErrorCode = "TRANSITION_BUSY"
+    ErrorResourceExhausted    ControlErrorCode = "RESOURCE_EXHAUSTED"
+    ErrorCounterExhausted     ControlErrorCode = "COUNTER_EXHAUSTED"
 )
 
 type ControlError struct {
-    Code        ControlErrorCode
-    Message     string
-    Retriable   bool
-    Current     *DriverView
-    OperationID *LifecycleOperationID
+    Code      ControlErrorCode
+    Row       int            // refusal-table order of the lifecycle page
+    Message   string
+    Retriable bool
+    Current   *DesiredResult // REVISION_CONFLICT only
 }
 
 type DesiredState string
@@ -399,32 +404,35 @@ type GetDriverResult struct {
 type StartDriverRequest struct {
     DriverID         DriverID
     ExpectedRevision DriverRevision
-    IdempotencyKey   IdempotencyKey
 }
 type StopDriverRequest = StartDriverRequest
 type RestartDriverRequest = StartDriverRequest
 
-type LifecycleDisposition string
-const (
-    LifecycleAccepted LifecycleDisposition = "ACCEPTED"
-    LifecycleNoOp     LifecycleDisposition = "NO_OP"
-)
-
-type LifecycleReceipt struct {
-    OperationID LifecycleOperationID
-    Sequence    *LifecycleSequence
-    Disposition LifecycleDisposition
-    Desired     DesiredRecord
+// DesiredResult is the whole accepted or same-desired no-op result:
+// {desired_state, desired_revision}.
+type DesiredResult struct {
+    DesiredState    DesiredState
+    DesiredRevision DriverRevision
 }
 
 type ControlService interface {
     ListDrivers(context.Context, ListDriversRequest) (ListDriversResult, error)
     GetDriver(context.Context, GetDriverRequest) (GetDriverResult, error)
-    StartDriver(context.Context, StartDriverRequest) (LifecycleReceipt, error)
-    StopDriver(context.Context, StopDriverRequest) (LifecycleReceipt, error)
-    RestartDriver(context.Context, RestartDriverRequest) (LifecycleReceipt, error)
+    StartDriver(context.Context, StartDriverRequest) (DesiredResult, error)
+    StopDriver(context.Context, StopDriverRequest) (DesiredResult, error)
+    RestartDriver(context.Context, RestartDriverRequest) (DesiredResult, error)
 }
 ```
+
+D3 amendment to the types above: the request has no idempotency key, the
+result is `DesiredResult` only, and `IDEMPOTENCY_CONFLICT`,
+`PERMISSION_DENIED` and every receipt, disposition and operation-ID member are
+withdrawn (final D3/D4). `DesiredRecord.LastOperation`,
+`ObservedRecord.ActiveOperation` and the operation ID, request digest and
+completion members of `LifecycleOperationRecord` are superseded as well: the
+durable in-flight state is the typed work slot record of section 5, and
+completed operations leave no durable record. `CLOSE_UNCONFIRMED` remains an
+observed-state reason, not a request refusal.
 
 `ControlErrorCode` is confined to gateway lifecycle transport and persistence.
 It does not rename a semantic rejection. Semantic validation, publication,
@@ -451,12 +459,11 @@ reclassifying it. It never mints a 39th semantic error, maps zero routes to an
 invented `NO_ROUTE`, or changes a semantic error into an uppercase lifecycle
 error.
 
-An `ACCEPTED` receipt has a non-empty `OperationID` and a non-nil `Sequence`
-containing the exact per-driver sequence allocated in the same transaction as
-its operation record. A `NO_OP` receipt has an empty operation ID and nil
-sequence. The persisted idempotency receipt uses the same representation, so an
-identical replay returns the original operation ID and sequence and never
-allocates another record.
+An accepted decision and a same-desired no-op return the same closed
+`DesiredResult`; neither carries an operation ID, a lifecycle sequence, a
+disposition or a completion claim. A lost response is resolved by list/get
+readback, and a repeated changing request with an old expected revision
+conflicts.
 
 `DriverID` is stable across process restart and gateway rename. It is not a bus
 address, semantic asset ID, native binding ID, or public compatibility alias.
@@ -473,7 +480,7 @@ side effect.
 
 ### S0 registry and typed provider seam
 
-Package [`internal/runtimecontrol`](../../internal/runtimecontrol) implements
+Package [`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements
 the S0 slice of the registration companion
 [runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
 (A1): descriptor format `v1`, validation before effects, a frozen in-memory
@@ -530,7 +537,7 @@ storage seam implements.
 
 ### S3 durable control store (implemented storage seam)
 
-Package [`internal/runtimestate`](../../internal/runtimestate) owns the
+Package [`internal/runtimestate`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimestate) owns the
 independently versioned `runtime_control` namespace (format version 1) under
 the sole runtime-state writer. Top-level, meta and eBUS versions are
 unchanged; unknown namespaces keep round-tripping. The namespace holds only:
@@ -653,59 +660,197 @@ replacement, a directory fsync failure or unconfirmed readback reports
 `AMBIGUOUS` (exit 5), retains the quarantine copy and requires inspection of
 the state before retrying; it never claims that the original was preserved.
 
-For every mutation, the control service performs one atomic transaction:
+### S1/D3 desired-state service (implemented internal service)
 
-1. Validate the caller's lifecycle authority, closed request shape, driver ID,
-   non-zero expected revision, non-empty idempotency key, and caller deadline.
-2. Canonically hash contract ID, operation name, driver ID, expected revision,
-   and all request fields.
-3. Look up `(authority principal, idempotency key)` in the persistent ledger.
-   An identical hash returns the stored receipt. A different hash returns
-   `IDEMPOTENCY_CONFLICT` without state change.
-4. Compare `ExpectedRevision` with the current persistent driver revision. A
-   mismatch returns `REVISION_CONFLICT` with the current view.
-5. Resolve `ACCEPTED` or `NO_OP`. For `ACCEPTED`, allocate the next per-driver
-   lifecycle sequence and commit the desired record, typed `PENDING`
-   `LifecycleOperationRecord`, request hash, and receipt together, then wake the
-   asynchronous reconciler. The operation record stores the exact `START`,
-   `STOP`, or `RESTART` kind; a digest is never decoded to recover it. For
-   `NO_OP`, persist only the request hash and receipt against the unchanged
-   desired record; its operation ID is empty and no operation record or
-   reconciler wakeup is required.
+The receipt, idempotency-ledger and operation-record transaction that this
+section described before the D3 amendment is withdrawn. Package
+[`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements the
+S1/S2.1/S5/S6.1 slice of the lifecycle page as an internal `Service`. It has
+no production registration, no MCP mutator, no endpoint I/O and no
+authentication (D4), and it still imports only the standard library and
+`internal/drivermanager`.
 
-The idempotency ledger survives process restart and remains at least as long as
-the desired-state schema's rollback window. Expiry cannot occur while the
-associated lifecycle operation or migration rollback remains reachable.
+**Seams.** The service reaches the S3 store only through the `Store`
+interface (decide, commit work, advance catalog, commit recovery, coherent
+catalog and driver reads, admission and readback). Each driver has an
+injected `LifecycleExecutor` (`Start` and `Stop` with a
+`LifecycleCorrelation`; `Stop` reports native close and semantic cleanup as
+two independent obligations), and the service has one injected
+`RecoveryAdapter` (`Restore`, `Secure`). There is no default recovery adapter
+and no fake success path. `New` refuses a missing store, recovery adapter or
+incarnation name, a noncanonical or duplicate driver ID, a missing executor,
+more than 128 drivers and an attempt limit above 8, all before any store,
+executor or adapter call; `Start` refuses a driver set that differs from the
+store's visible drivers without writing.
 
-Operation semantics are:
+**Decisions.** `Control` decodes the closed two-member request (refusal-table
+row 1) and `Decide` checks the method and registration (rows 1 and 2)
+without the store; the store applies rows 3 to 10 under its namespace-wide
+serialization point. The service's slot planner runs under that point and
+takes only the driver's own mutex:
 
-- `start`: change desired state to `RUNNING`. If it is already `RUNNING`, return
-  `NO_OP` without resetting backoff, replacing a degraded generation, or bumping
-  revision. Recovery that replaces a live/degraded generation uses `restart`.
-- `stop`: change desired state to `STOPPED`. If already `STOPPED`, return
-  `NO_OP`. A no-op does not assert that an unconfirmed native close succeeded;
-  the observed view retains failure/quarantine.
-- `restart`: require desired state `RUNNING`, increment its revision, record a
-  new operation that makes the reconciler fence the current generation and
-  construct a replacement. A stopped driver returns `FAILED_PRECONDITION`.
+- with no typed work the request takes the current slot, except during an
+  untyped process-start attempt, where STOP or RESTART synthesizes
+  `CANCEL_ATTEMPT` as the current slot (with the attempt's epoch, generation,
+  both cleanup obligations and a deadline) and takes the reserved slot;
+- behind a current transition the request takes the empty reserved slot;
+  STOP or RESTART behind a START fences that START;
+- an executing RESTART or a full reserved slot is `TRANSITION_BUSY` (row 8);
+- quarantine or unresolved recovery refuses START and RESTART at row 7, while
+  STOP stays allowed;
+- every plan must enqueue exactly one new transition of the requested kind,
+  keep stored work unchanged and never leave a reserved slot without a
+  current one; anything else fails closed as `TRANSITION_BUSY`.
 
-For accepted changes, the driver revision and catalog revision increment once.
-An idempotent replay and a no-op do not increment either revision. The
-reconciler reads the lowest nonterminal lifecycle sequence for a driver and
-executes the stored kind and desired revision; it never infers an action from
-the final desired record or opaque digest. It does not coalesce accepted
-records, including `RESTART`, and it cannot begin the next sequence until the
-current record reaches `COMPLETED` with a terminal reason.
+An accepted decision is durable before `Decide` returns. Only then does the
+service publish the view, emit `DESIRED_ACCEPTED`, fence the superseded
+attempt (cancel its context and mark its pending result as never to be
+installed) and wake the driver's reconciler. From its planner until that
+acceptance is published, the decision holds the driver: no attempt result is
+installed, no slot is pruned and the reconciler takes no step for it, even
+when it already sees the committed slots, so reconciliation never runs ahead
+of the acceptance. A same-desired no-op writes,
+publishes, emits, fences and wakes nothing. Both return
+`{desired_state, desired_revision}` only. Cancelling the caller's context
+after acceptance retracts nothing: the work runs under the service's own
+lifetime, within the persisted per-operation budget (at most 8 attempts and a
+30-second deadline, never renewed by a wake, a no-op or recovery).
 
-The transition from `PENDING` to `ACTIVE` is durable. Successful or terminally
-failed reconciliation commits the operation's completion, terminal reason, and
-observed transition in one transaction. On process restart, any nonterminal
-record is requeued in sequence. An `ACTIVE` record belongs to the old source
-epoch and resumes as pending work under the new epoch; old callbacks and
-observations remain fenced. Replaying a `RESTART` with no surviving native
-generation starts exactly one new generation under the new epoch and completes
-that restart record; it is never lost merely because the final desired state is
-already `RUNNING`.
+**Reconciliation.** One reconciler per eligible driver derives work only from
+the committed typed slots. `PENDING` is accepted and not begun. `ACTIVE`
+carries the correlation being started or stopped with both obligations
+pending. `CLEANUP` is settling, and with both obligations cleared it is
+terminal. A START with a reserved successor is canceled: a Stop with its own
+correlation settles its obligations, and a late success is never published.
+STOP withdraws the admitted generation and publishes `STOPPED` only after both
+obligations are durably cleared. An unconfirmed native close publishes
+`FAILED/CLOSE_UNCONFIRMED` with the safety quarantine, retains the slot and
+blocks admission until process restart. RESTART withdraws the admitted
+generation, then starts one replacement under a new epoch. A START that
+exhausts its budget ends `FAILED` with desired `RUNNING` unchanged; recovery is
+a RESTART, never a START no-op.
+
+Cleanup runs within the same nonrenewable budget. Each cleanup attempt is
+charged durably in the slot before the executor's `Stop` is invoked, so
+process loss during `Stop` never grants an extra attempt. `Stop` runs under a
+context that ends at the persisted deadline; once the deadline has passed it
+receives an already-expired context, and a late process-start success is
+withdrawn under the attempt's original deadline in the same way. No new
+deadline is computed for cleanup. The attempt limit governs start attempts
+only: cleanup owns one further reserved attempt, accounted apart from the start
+budget, so a limit of one cannot let a START consume the attempt that native
+close and semantic cleanup need. A START that succeeds after its deadline still
+gets that reserved cleanup attempt under its original deadline. When the
+reserved cleanup attempt or the deadline is
+spent with semantic cleanup still pending, the driver ends `FAILED` with a
+`CLEANUP_STALLED` diagnostic, START and RESTART refuse at row 7 until process
+restart, the obligation stays durable and no further `Stop` runs. An
+unconfirmed native close quarantines as described above. A RESTART creates its
+replacement only while a start attempt and time remain in the slot's budget
+after the predecessor's cleanup; when the predecessor's cleanup used the last
+permitted attempt, the RESTART ends `FAILED` with a retry-exhausted diagnostic
+and no replacement is started. Budgets are never renewed: a new RESTART is a
+new decision with a new budget. A charge whose commit outcome was unknown and
+that readback adopted is not charged a second time.
+
+Epochs are derived from the incarnation name,
+the driver ID and a per-process ordinal, so every process start, RESTART and
+START after STOP gets a new epoch (final D1). The generation starts at 1 in
+each epoch and grows by one per retry.
+
+Before every work commit the service also checks the progression of the
+stored transition. An unassigned correlation may be assigned once. Within one
+epoch the generation only grows, and an obligation only goes from pending to
+cleared, except at the `PENDING` to `ACTIVE` step that incurs it. A new epoch
+replaces the old one only after both old obligations are cleared, and an
+established epoch is never removed.
+
+**Recovery.** `Start` restores the committed D5 material before any executor
+call or admission. A restore failure withholds the drivers it names as
+`FAILED/DEPENDENCY_UNAVAILABLE` with no reconciler, and START or RESTART for
+them refuses at row 7. Otherwise each slot resumes from its own state:
+
+- `PENDING` runs;
+- `ACTIVE` left by an earlier incarnation first settles the historical
+  correlation, then runs under a new epoch, so an unfinished RESTART performs
+  its one replacement although desired already says `RUNNING`;
+- `CLEANUP` with pending obligations only settles them;
+- a terminal slot is only pruned.
+
+A driver with no slot and desired `RUNNING` gets the untyped process-start
+attempt, which persists nothing.
+
+**Ambiguous persistence.** When a decision or work commit reports ambiguous
+persistence, the store keeps the staged state hidden and closes admission.
+The service then runs a bounded readback itself, without waiting for another
+request. The first readback runs at once, and at most the attempt limit of
+readbacks follow, spaced by the retry delay and each bounded by an equal share
+of the operation budget (about 50 seconds in all with the defaults). Admission
+reopens only when the store's readback agrees with the staged or the committed
+namespace and directory durability is re-established. The service then
+publishes the committed view and wakes every reconciler, so an adopted
+decision is shown and executed. A decision whose commit was ambiguous keeps
+holding its driver until then, and a further decision for that driver is
+refused `TRANSITION_BUSY` meanwhile. It is adopted exactly when the driver's
+committed desired revision moved off the request's expected revision. An
+adopted decision publishes its `DESIRED_ACCEPTED` with that view, exactly as a
+direct commit would and never earlier, and only then fences the START it
+supersedes. A rejected decision emits nothing and fences nothing: a STOP or
+RESTART that did not persist leaves the START it would have canceled running
+with its attempt, budget and original deadline unchanged. A disagreement fails control closed in the
+store; an unresolved series is reported, and admission stays closed. List and
+get keep serving the last committed view throughout. A driver with desired `STOPPED` and no slot
+is left alone. No completed-operation history is consulted.
+
+**Pruning.** A terminal slot is pruned only after `Secure` returns its D5
+material and that material is committed; a `Secure` failure keeps the slot
+durable and retries. While a terminal slot with an empty reserved slot is
+being pruned, a changing decision for that driver that still sees the slot is
+refused `TRANSITION_BUSY` until the prune commits, because the store accepts
+clearing both slots and a newly reserved transition must never be dropped.
+Diagnostics are an in-memory
+ring of at most 32 sanitized terminal summaries of at most 512 bytes per
+driver, built from closed codes and counters only. They are dropped with the
+process and never used for admission, deduplication or recovery.
+
+**Views and events.** List and get read an atomically published view and
+never wait for a store write, a reconciler or a decision. The view is rebuilt
+from one coherent store read plus the staged observations. Every observed
+transition durably advances the catalog revision before the view that shows it
+is exposed, and a revision's content never changes once exposed. Observed
+transitions never change desired state, its revision or the mark. Events
+(`DESIRED_ACCEPTED`, `OBSERVED_CHANGED`) are appended to a bounded ring
+(default 256, at most 4096) only after the transition is committed and visible
+at the event's catalog revision. A reader behind the window, or ahead of it,
+is told to resync from `List`, whose `EventCursor` names the newest event
+included. A view and its events are published atomically for event readers:
+the events are retained and the view stored under the event log's lock, and
+waiters are woken only afterwards. A resync at a published `EventCursor`
+therefore always finds that cursor's events. A pending `OBSERVED_CHANGED`
+event that the published view no longer shows (because a newer observation
+of the same driver is staged and has its own event) is coalesced away rather
+than stamped with the newer view's revision. When control state is read-only
+at start, every driver is withheld as `FAILED`, but the view keeps the stored
+catalog revision and each stored desired revision unchanged. An event carries the driver ID, its kind, the catalog revision,
+desired state and revision, observed state, reason, the quarantine flag and
+the lifecycle correlation (source epoch and driver generation) the observation
+refers to; an accepted decision carries the driver's correlation at
+acceptance. Views and events carry closed codes and identities only: no
+operation ID, endpoint, credential, raw error, principal or authority field.
+
+**Isolation.** The only service-wide lock guards in-memory view assembly and
+is never held across a store write, an executor call or an adapter call. A
+blocked or failing executor of one driver delays only that driver's
+reconciler. While one driver's store write is blocked, other drivers' reads
+stay immediate and their decisions wait at most the store's bounded
+serialization wait before `TRANSITION_BUSY`.
+
+**Errors.** Recovery-adapter (semantic) failures are reported as
+`SemanticError`, which keeps the original error for `errors.Is` and
+`errors.As` and is never turned into a lifecycle refusal code. Executor
+failures are `LifecycleError`, and request refusals are `Refusal` with the
+refusal-table code and row. Executable evidence is
+`internal/runtimecontrol/service_test.go` against the merged store.
 
 At process start the HTTP/API/health shell becomes available before drivers are
 reconciled. The store loads every desired record independently. Corrupt or
@@ -2241,23 +2386,24 @@ protocol ownership; they are not compatibility semantic APIs.
 ## 13. Acceptance scenarios for implementation
 
 Each scenario becomes an executable fixture or integration test in its later
-owning issue. The expected result is normative. CTL rows that mention receipts,
-idempotency keys or operation IDs are superseded by the amended CTL-01 to
-CTL-19 vectors of the docs-ebus runtime driver lifecycle page (D3).
+owning issue. The expected result is normative. CTL-01 to CTL-11 below are the
+D3 concurrency and readback rows of the docs-ebus runtime driver lifecycle page.
+They replace the former idempotency-key, authority and receipt rows; no test
+of those rows applies any more. CTL-12 to CTL-19 remain on the lifecycle page.
 
 | ID | Scenario | Expected result |
 |---|---|---|
-| CTL-01 | List with drivers in arbitrary registration order | Bytewise `DriverID` order and one catalog revision |
-| CTL-02 | Get an unknown driver | `NOT_FOUND`; no factory call or state mutation |
-| CTL-03 | Start with stale expected revision | `REVISION_CONFLICT` plus current view; no persistent/native change |
-| CTL-04 | Replay identical start key and request after process restart | Original receipt; no revision bump or second native start |
-| CTL-05 | Reuse an idempotency key with another request hash | `IDEMPOTENCY_CONFLICT`; no state change |
-| CTL-06 | Start an already desired-running driver | `NO_OP`; no backoff reset, replacement, or revision bump |
-| CTL-07 | Restart a desired-stopped driver | `FAILED_PRECONDITION`; no state change |
-| CTL-08 | Accepted start, restart, and stop calls queue before the reconciler consumes its wake | Three typed records retain exact kinds and consecutive per-driver sequences; reconciliation executes them in order without coalescing |
-| CTL-09 | Process exits after a restart record becomes `ACTIVE` but before terminal completion | The new source epoch requeues that exact nonterminal restart in order and starts one new generation; final `RUNNING` desired state does not erase it |
-| CTL-10 | Idempotent replay of an accepted queued operation | Original receipt returns with the same non-nil operation sequence; no duplicate journal record, revision bump, or native action |
-| CTL-11 | Lifecycle request resolves as `NO_OP` | Receipt has empty operation ID and nil sequence; replay preserves both and allocates no journal record |
+| CTL-01 | List and get with drivers in arbitrary registration order, while decisions and observed transitions race | Bytewise `DriverID` order; every entry carries the view's one catalog revision; a revision never shows two contents and never goes backwards for a reader |
+| CTL-02 | Get or decide an unknown or noncanonical driver | `NOT_FOUND`; no executor call, store write or view change |
+| CTL-03 | Changing or same-desired request with a stale expected revision | `REVISION_CONFLICT` with the current desired view; no durable, view, event or native change |
+| CTL-04 | Accepted START response is lost; read back and restart the process | Durable desired state and revision are read back; a same-desired START is a no-op with no key or receipt lookup; a changing START persists typed START in the current slot and recovery resumes it |
+| CTL-05 | Request with any member besides `DriverID` and `ExpectedRevision`, a duplicate member, trailing JSON or a malformed revision | `INVALID_ARGUMENT` at row 1 before any store access |
+| CTL-06 | START while desired `RUNNING` in `BACKOFF` or `FAILED` (including quarantined), STOP while desired `STOPPED` with an unconfirmed close | No-op returning desired state and revision only; retry budget, quarantine, observations, both revisions and the mark unchanged |
+| CTL-07 | RESTART in desired `STOPPED`; repeated RESTARTs in `RUNNING`; RESTART, STOP and START during `STOPPING` | `FAILED_PRECONDITION` for RESTART in `STOPPED` (also during `STOPPING`); each accepted RESTART takes a new revision and runs one stop-then-start under a new epoch; STOP during `STOPPING` is a no-op; START takes the reserved slot and a further changing request is `TRANSITION_BUSY` |
+| CTL-08 | STOP or RESTART during `STARTING` and `BACKOFF`, with a typed START and with an untyped process-start attempt | Takes the reserved slot (the untyped case synthesizes `CANCEL_ATTEMPT` as the current slot with the attempt's correlation and obligations); the old attempt is fenced, its cleanup runs with its own correlation and a late result is never published; a further changing request is `TRANSITION_BUSY`; no accepted RESTART disappears |
+| CTL-09 | Process memory is lost while an accepted RESTART is `ACTIVE` | D5 is restored first; the new incarnation settles the historical correlation and performs the retained replacement under a new epoch before dropping the slot |
+| CTL-10 | Lost RESTART response | Resolved by readback; the old-revision retry conflicts and a fresh-revision retry after settlement executes another restart |
+| CTL-11 | Concurrent same-desired requests, also while slots are occupied, and concurrent changing requests with one expected revision | Same-desired requests are no-ops with no durable record, wake, event or counter; of the changing requests exactly one is accepted and the others conflict |
 | LIFE-01 | Prepare returns behind a closed gate, then activation succeeds with a matching proof | Only the post-proof manager transition installs the generation and exposes admission, `RUNNING`, and qualified capabilities together |
 | LIFE-02 | One driver startup fails | That driver becomes `BACKOFF`/`FAILED`; API/health and unrelated drivers remain available |
 | LIFE-03 | Ordinary Stop completes its semantic withdrawal and proves native close | One durable two-obligation record fences callbacks, retires generation-owned semantic paths through the cleanup reservation, records close proof, leaves that successor inert/available, then publishes `STOPPED` |

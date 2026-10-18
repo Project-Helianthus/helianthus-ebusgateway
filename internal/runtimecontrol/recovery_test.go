@@ -2572,3 +2572,99 @@ func TestRecoveryStreamHasNoReceiptsAndStaysBounded(t *testing.T) {
 	w.mustRestore()
 	assertStates(t, "bounded stream", w.states(synthAssets...), pre)
 }
+
+// queueOneOutcome publishes on the first synthetic asset with its outcome
+// write failing, leaving one accepted outcome queued for Flush.
+func queueOneOutcome(t *testing.T, w *world) {
+	t.Helper()
+	w.store.setFail(func(p []byte) error {
+		if s, err := decodeStream(p); err == nil {
+			if e := s.entry(synthSource, 1); e != nil && e.Assets[0].Outcome != nil {
+				return errors.New("synthetic outcome write failure")
+			}
+		}
+		return nil
+	})
+	if out, err := w.publish(synthSource, synthAssets[0]); !errors.Is(err, ErrOutcomeNotDurable) || out.Accepted == nil {
+		t.Fatalf("queued publication: %+v %v", out, err)
+	}
+	w.store.setFail(nil)
+}
+
+// TestRecoveryConcurrentFlushRemovesQueuedOutcomesOnce runs two flushes while
+// the first is stalled in its durable write: the second must wait for the
+// whole first flush instead of snapshotting and removing the same queue.
+func TestRecoveryConcurrentFlushRemovesQueuedOutcomesOnce(t *testing.T) {
+	w := newWorld(t, worldOpts{})
+	w.mustRestore()
+	w.admit(synthSource)
+	queueOneOutcome(t, w)
+	entered, release := w.store.armStall(func([]byte) bool { return true })
+	errs := make(chan error, 2)
+	go func() { errs <- w.rec.Flush(context.Background()) }()
+	<-entered
+	go func() { errs <- w.rec.Flush(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("flush: %v", err)
+		}
+	}
+	durable := w.stream()
+	if e := durable.entry(synthSource, 1); e == nil || e.Assets[0].Outcome == nil || e.Assets[0].Outcome.Accepted == nil {
+		t.Fatal("the queued outcome must be durable")
+	}
+	if err := w.rec.Flush(context.Background()); err != nil {
+		t.Fatalf("flush of an empty queue: %v", err)
+	}
+}
+
+// TestRecoveryPendingOutcomeReservationsSurviveLaterIntents holds an earlier
+// pending outcome and bounds the stream so that a later intent fits only if
+// it may consume the earlier outcome's reservation: it must be refused
+// before the hub is reached.
+func TestRecoveryPendingOutcomeReservationsSurviveLaterIntents(t *testing.T) {
+	w := newWorld(t, worldOpts{compact: -1})
+	w.mustRestore()
+	w.admit(synthSource)
+	queueOneOutcome(t, w)
+	// Keep the first outcome pending in the durable stream and the queue.
+	cur := w.material().Payload
+	s := w.stream()
+	if e := s.entry(synthSource, 1); e == nil || e.Assets[0].Outcome != nil {
+		t.Fatal("the first outcome must be pending")
+	}
+	w.rec.maxBytes = len(cur) + 2*w.rec.pendingReserve(s) - 1
+	hubCalls := 0
+	w.bridge.beforePublish = func(StagedBatch) { hubCalls++ }
+	_, err := w.publish(synthSource, synthAssets[1])
+	w.bridge.beforePublish = nil
+	if refusalCode(err) != RefusalResourceExhausted || hubCalls != 0 {
+		t.Fatalf("later intent must not consume pending reservations: %v (hub calls %d)", err, hubCalls)
+	}
+}
+
+// TestRecoveryPartialControlFailsUnstagedAssetClosed resolves a control whose
+// first asset was staged (and may be submitted) while the second never was:
+// the second asset's outstanding-control gate cannot be restored, so it
+// fails closed instead of being reported as unsubmitted.
+func TestRecoveryPartialControlFailsUnstagedAssetClosed(t *testing.T) {
+	r, err := NewRecorder(RecorderOptions{Store: &faultStore{}, Hub: &hubBridge{}, Clock: &synthClock{}, Sources: []ManagedSource{
+		{Driver: synthDriver, Source: synthSource, Assets: synthAssets}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := synthAssets[0], synthAssets[1]
+	st := &StagedBatch{Asset: a, Key: "k", Sequence: 3, Digest: "d", Bytes: []byte("x")}
+	s := newStream()
+	s.Entries = []walEntry{{Kind: entryControl, Source: synthSource, WAL: 1, Point: 7,
+		Assets: []walAsset{{Asset: a, Ordinal: 1, Staged: st}, {Asset: b, Ordinal: 1}}}}
+	f := &fakeReplay{cursors: map[AssetID][2]any{a: {uint64(3), "d"}}}
+	failedSources, failedAssets := map[SourceID]bool{}, map[AssetID]bool{}
+	var rep RestoreReport
+	r.resolveEntries(s, f, failedSources, failedAssets, &rep)
+	if !failedAssets[b] || failedAssets[a] || failedSources[synthSource] || len(rep.Unsubmitted) != 0 || len(rep.ReadBack) != 1 {
+		t.Fatalf("partial control: failed %v source %v report %+v", failedAssets, failedSources, rep)
+	}
+}

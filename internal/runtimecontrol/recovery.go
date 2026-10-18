@@ -410,6 +410,9 @@ type Recorder struct {
 	// never a hub, manager, view or driver lock, and nothing acquires a
 	// gate while holding it.
 	writeMu sync.Mutex
+	// flushMu serializes Flush end to end. It is taken before writeMu and
+	// mu and never while holding either.
+	flushMu sync.Mutex
 	// mu guards the fields below and is never held across a store or hub
 	// call.
 	mu            sync.Mutex
@@ -635,10 +638,11 @@ func (r *Recorder) notePoint(assets []AssetID, point uint64) {
 }
 
 // commit stages mutate on a copy of the committed stream, refreshes the
-// history frame, checks the stream bound with reserve bytes held back and
+// history frame, checks the stream bound with the outcome reservation of
+// every pending asset held back (when guard is set) and
 // durably writes the envelope. Memory changes only after the write
 // succeeded, so a failed transaction exposes no staging later.
-func (r *Recorder) commit(ctx context.Context, reserve int, mutate func(*walStream) error) error {
+func (r *Recorder) commit(ctx context.Context, guard bool, mutate func(*walStream) error) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 	r.mu.Lock()
@@ -656,6 +660,10 @@ func (r *Recorder) commit(ctx context.Context, reserve int, mutate func(*walStre
 	payload, err := next.encode()
 	if err != nil {
 		return &Refusal{Code: RefusalUnavailable, Reason: "stream encoding failed"}
+	}
+	reserve := 0
+	if guard {
+		reserve = r.pendingReserve(next)
 	}
 	if len(payload) > r.maxBytes-reserve {
 		return &Refusal{Code: RefusalResourceExhausted, Reason: "managed recovery stream bound reached"}
@@ -685,36 +693,35 @@ func (r *Recorder) noteSizes(s walStream) {
 	}
 }
 
-// maxStagedEstimate estimates the largest staged attempt of a control over
-// assets from the largest staged bytes seen for each of them.
-func (r *Recorder) maxStagedEstimate(assets []AssetID) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, id := range assets {
-		n = max(n, r.lastStaged[id])
-	}
-	return n
-}
-
-// reserveFor is the outcome reservation of a staged operation: the accepted
-// step repeats the staged bytes in the step and in the result, and the result
-// carries the asset's canonical snapshot, estimated from the largest result
-// recorded for the asset. Every byte field is base64-encoded in the stream.
-func (r *Recorder) reserveFor(staged int, assets []AssetID) int {
+// pendingReserve is the outcome reservation of every pending asset attempt in
+// s: the accepted step repeats the staged bytes in the step and in the
+// result, and the result carries the asset's canonical snapshot, estimated
+// from the largest result recorded for the asset. A control attempt that is
+// not yet staged is estimated from the request and the largest staged bytes
+// seen for the asset. Every byte field is base64-encoded in the stream.
+func (r *Recorder) pendingReserve(s walStream) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	reserve := 0
-	for _, id := range assets {
-		reserve += 4*staged + 2*r.lastResult[id] + outcomeOverhead
+	for _, e := range s.Entries {
+		for _, a := range e.Assets {
+			if a.Outcome != nil {
+				continue
+			}
+			size := len(e.Spec) + r.lastStaged[a.Asset]
+			if a.Staged != nil {
+				size = len(a.Staged.Bytes) + len(a.Staged.Meta)
+			}
+			reserve += 4*size + 2*r.lastResult[a.Asset] + outcomeOverhead
+		}
 	}
 	return reserve
 }
 
 // intent persists the intent entry and returns its WAL sequence.
-func (r *Recorder) intent(ctx context.Context, kind string, src *managedSource, assets []AssetID, point uint64, anchor []byte, spec []byte, staged map[AssetID]*StagedBatch, reserve int) (uint64, error) {
+func (r *Recorder) intent(ctx context.Context, kind string, src *managedSource, assets []AssetID, point uint64, anchor []byte, spec []byte, staged map[AssetID]*StagedBatch) (uint64, error) {
 	var wal uint64
-	err := r.commit(ctx, reserve, func(s *walStream) error {
+	err := r.commit(ctx, true, func(s *walStream) error {
 		if s.pending() >= MaxPendingOperations {
 			return &Refusal{Code: RefusalResourceExhausted, Reason: "pending managed operation bound reached"}
 		}
@@ -821,7 +828,7 @@ func (w *Writer) Publish(ctx context.Context, asset AssetID, stage func(point ui
 	}
 	staged = cloneStaged(staged)
 	wal, err := r.intent(ctx, entryPublication, w.source, assets, point, anchor, nil,
-		map[AssetID]*StagedBatch{asset: &staged}, r.reserveFor(len(staged.Bytes)+len(staged.Meta), assets))
+		map[AssetID]*StagedBatch{asset: &staged})
 	if err != nil {
 		return AssetOutcome{}, err
 	}
@@ -864,7 +871,7 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 	if len(spec) > MaxStagedBytes {
 		return nil, &Refusal{Code: RefusalResourceExhausted, Reason: "control request exceeds the operation bound"}
 	}
-	wal, err := r.intent(ctx, entryControl, w.source, assets, point, anchor, spec, nil, r.reserveFor(len(spec)+r.maxStagedEstimate(assets), assets))
+	wal, err := r.intent(ctx, entryControl, w.source, assets, point, anchor, spec, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -893,7 +900,7 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 		stagedBytes += len(b.Bytes) + len(b.Meta)
 		stageMu.Unlock()
 		c := cloneStaged(b)
-		err := r.commit(ctx, r.reserveFor(len(c.Bytes)+len(c.Meta), []AssetID{c.Asset}), func(s *walStream) error {
+		err := r.commit(ctx, true, func(s *walStream) error {
 			e := s.entry(w.source.id, wal)
 			if e == nil {
 				return fmt.Errorf("%w: intent entry missing", ErrInvalidStaging)
@@ -982,7 +989,7 @@ func applyOutcomes(s *walStream, source SourceID, wal uint64, outs []AssetOutcom
 // recordOutcome runs the second transaction. A failed write queues the
 // outcome for Flush and leaves the intent pending.
 func (r *Recorder) recordOutcome(ctx context.Context, source SourceID, wal uint64, outs []AssetOutcome) error {
-	err := r.commit(ctx, 0, func(s *walStream) error { return applyOutcomes(s, source, wal, outs) })
+	err := r.commit(ctx, false, func(s *walStream) error { return applyOutcomes(s, source, wal, outs) })
 	if err != nil {
 		r.mu.Lock()
 		r.queued = append(r.queued, queuedOutcome{source: source, wal: wal, outs: outs})
@@ -1003,13 +1010,17 @@ func (r *Recorder) recordOutcome(ctx context.Context, source SourceID, wal uint6
 
 // Flush retries every queued outcome transaction once.
 func (r *Recorder) Flush(ctx context.Context) error {
+	// flushMu serializes the whole snapshot, commit and removal so that
+	// concurrent flushes never remove the same queued outcomes twice.
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
 	r.mu.Lock()
 	queued := append([]queuedOutcome(nil), r.queued...)
 	r.mu.Unlock()
 	if len(queued) == 0 {
 		return nil
 	}
-	err := r.commit(ctx, 0, func(s *walStream) error {
+	err := r.commit(ctx, false, func(s *walStream) error {
 		for _, q := range queued {
 			if err := applyOutcomes(s, q.source, q.wal, q.outs); err != nil {
 				return err
@@ -1380,6 +1391,10 @@ func (r *Recorder) resolveEntries(s walStream, replay Replay, failedSources map[
 		if failedSources[e.Source] {
 			continue
 		}
+		partial := false
+		for _, a := range e.Assets {
+			partial = partial || (e.Kind == entryControl && a.Staged != nil && a.Outcome == nil)
+		}
 		for _, a := range e.Assets {
 			if failedAssets[a.Asset] {
 				continue
@@ -1396,6 +1411,11 @@ func (r *Recorder) resolveEntries(s walStream, replay Replay, failedSources map[
 					ref.ErrorID = a.Outcome.ErrorID
 					report.Rejected = append(report.Rejected, ref)
 				}
+			case a.Staged == nil && partial:
+				// A sibling asset of this control was already staged and
+				// may have been submitted, so the control's outstanding gate
+				// for this asset cannot be restored: fail the asset closed.
+				failedAssets[a.Asset] = true
 			case a.Staged == nil:
 				// The attempt was never durably staged, so it was never
 				// submitted: the ordinal is consumed with no result.
@@ -1508,7 +1528,7 @@ func (r *Recorder) Compact(ctx context.Context) error {
 			return fmt.Errorf("%w: restore point does not reproduce asset %s", ErrCompaction, id)
 		}
 	}
-	if err := r.commit(ctx, 0, func(s *walStream) error {
+	if err := r.commit(ctx, false, func(s *walStream) error {
 		for _, id := range sources {
 			next := s.NextWAL[id]
 			if next == 0 {

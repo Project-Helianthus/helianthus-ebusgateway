@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 )
 
@@ -58,22 +59,27 @@ var (
 )
 
 type Options struct {
-	GraphQLPath            string
-	PortalCatalogPath      string
-	SnapshotPath           string
-	SubscriptionPath       string
-	MCPPath                string
-	EEBusAdminPath         string
-	GatewayVersion         string
-	BuildID                string
-	ListRegistry           func() []RegistryDevice
-	ListSemantic           func() SemanticSnapshot
-	GetBusObservability    func() any
-	ListProjections        func() []ProjectionDevice
-	GetProjection          func(address byte, plane string) (ProjectionGraph, bool)
-	ExplorerBus            ExplorerBus // nil disables explorer
-	ExplorerSource         byte        // static fallback for standalone/test handlers
-	ExplorerSourceProvider func() (byte, bool)
+	// SemanticSnapshotAvailable is set by the host only after mounting the
+	// accepted shared GraphQL read; a catalog capture provider alone is insufficient.
+	SemanticSnapshotAvailable bool
+	Contributions             *ContributionOptions
+	SharedSemanticView        func(context.Context) (semanticview.View, error)
+	GraphQLPath               string
+	PortalCatalogPath         string
+	SnapshotPath              string
+	SubscriptionPath          string
+	MCPPath                   string
+	EEBusAdminPath            string
+	GatewayVersion            string
+	BuildID                   string
+	ListRegistry              func() []RegistryDevice
+	ListSemantic              func() SemanticSnapshot
+	GetBusObservability       func() any
+	ListProjections           func() []ProjectionDevice
+	GetProjection             func(address byte, plane string) (ProjectionGraph, bool)
+	ExplorerBus               ExplorerBus // nil disables explorer
+	ExplorerSource            byte        // static fallback for standalone/test handlers
+	ExplorerSourceProvider    func() (byte, bool)
 	// EbusStandardServer is the in-process L7 catalog sub-server consumed
 	// by the M5_PORTAL read-only consumer UI. Nil disables the
 	// /api/v1/ebus-standard/* routes (they return 404) and hides the
@@ -573,6 +579,10 @@ type IssueDraft struct {
 }
 
 func NewHandler(opts Options) http.Handler {
+	if opts.Contributions != nil {
+		contributions := *opts.Contributions
+		opts.Contributions = &contributions
+	}
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
 	}
@@ -919,6 +929,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request url missing", http.StatusBadRequest)
 		return
 	}
+	if r.URL.Path == h.opts.PortalCatalogPath {
+		h.serveContributionCatalog(w, r)
+		return
+	}
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
@@ -1005,6 +1019,7 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			eebusAdminPath = h.opts.EEBusAdminPath
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
+			"portal_read": h.portalRead(),
 			"capabilities": map[string]bool{
 				"registry":          h.opts.ListRegistry != nil,
 				"semantic":          h.opts.ListSemantic != nil,

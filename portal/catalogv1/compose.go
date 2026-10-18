@@ -34,7 +34,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 			fence = fenced.Fence()
 		}
 		at := now().UTC()
-		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
+		out := Catalog{Contract: Contract, EvaluationInstant: at, Domains: make([]Domain, 0, len(FivePacks)), Contributions: make([]Identity, 0, len(descriptors)), Descriptors: []ReadDescriptor{}, Resources: []Resource{}, Fields: []Field{}, Actions: []Action{}, Quarantines: make([]Quarantine, 0, len(quarantined))}
 		accepted := make(map[identity]Descriptor, len(descriptors))
 		for _, descriptor := range descriptors {
 			accepted[identity{descriptor.Manifest.Contributor.DriverID, descriptor.Manifest.ManifestID, descriptor.Manifest.ManifestVersion}] = descriptor
@@ -116,6 +116,10 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		for _, d := range descriptors {
 			out.Contributions = append(out.Contributions, Identity{DriverID: d.Manifest.Contributor.DriverID, ManifestID: d.Manifest.ManifestID, ManifestVersion: d.Manifest.ManifestVersion, Digest: d.Digest})
+			out.Descriptors = append(out.Descriptors, ReadDescriptor{
+				Identity:          Identity{DriverID: d.Manifest.Contributor.DriverID, ManifestID: d.Manifest.ManifestID, ManifestVersion: d.Manifest.ManifestVersion, Digest: d.Digest},
+				DescriptorVersion: DescriptorVersion, Groups: d.Manifest.Groups, Fields: d.Manifest.Fields, Views: d.Manifest.Views, Diagnostics: d.Manifest.Diagnostics,
+			})
 			groups := make(map[string]string, len(d.Manifest.Groups))
 			invalid := false
 			for _, g := range d.Manifest.Groups {

@@ -11,5 +11,5 @@
     {"pack":{"id":"helianthus.pack.storage","version":"1.1.0"},"source_state":"ABSENT","reason":"source_unavailable"},
     {"pack":{"id":"helianthus.pack.thermal","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"}
   ],
-  "contributions": [], "resources": [], "fields": [], "actions": [], "quarantines": []
+  "contributions": [], "descriptors": [], "resources": [], "fields": [], "actions": [], "quarantines": []
 }

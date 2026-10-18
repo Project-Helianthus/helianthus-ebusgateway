@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,40 @@ func TestSchemaCorpusMatchesFeedWireValues(t *testing.T) {
 	}
 }
 
+// The feed embeds the Portal source wire type; only that embedded generation
+// uses decimal strings. Feed resource fences and operation claims stay integers.
+func TestSchemaEmbeddedPortalGeneration(t *testing.T) {
+	schema := readFeedSchema(t)
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{"zero", "0", true},
+		{"current", "7", true},
+		{"beyond-browser-integer", "9007199254740993", true},
+		{"uint64-max", "18446744073709551615", true},
+		{"numeric", float64(7), false},
+		{"empty", "", false},
+		{"negative", "-1", false},
+		{"leading-zero", "07", false},
+		{"fraction", "1.5", false},
+		{"exponent", "1e3", false},
+		{"text", "generation", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := validSnapshot(t, ResourceCurrent, true)
+			value := wireValue(t, SnapshotResponse{Contract: Contract, Cursor: Cursor{Instance: "schema", Sequence: 1}, Snapshot: snapshot}).(map[string]any)
+			source := value["snapshot"].(map[string]any)["operations"].([]any)[0].(map[string]any)["action"].(map[string]any)["source"].(map[string]any)
+			source["driver_generation"] = tc.value
+			err := validateFeedSchema(schema, value)
+			if (err == nil) != tc.valid {
+				t.Fatalf("generation %v: valid=%v, error=%v", tc.value, tc.valid, err)
+			}
+		})
+	}
+}
+
 func readFeedSchema(t *testing.T) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile("../../docs/schemas/matter-binding-feed-v1.schema.json")
@@ -194,6 +229,12 @@ enumOK:
 		}
 	}
 	if text, ok := value.(string); ok {
+		if pattern, ok := schema["pattern"].(string); ok {
+			matched, err := regexp.MatchString(pattern, text)
+			if err != nil || !matched {
+				return fmt.Errorf("%s: pattern mismatch", path)
+			}
+		}
 		if min, ok := schema["minLength"].(float64); ok && len(text) < int(min) {
 			return fmt.Errorf("%s: too short", path)
 		}

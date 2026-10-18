@@ -60,6 +60,7 @@ python3 scripts/m8_source_clock_test.py
 python3 scripts/capture_m8_source_window_test.py
 python3 scripts/tesla_evse_semreg_boundary_test.py
 python3 scripts/semreg_mapping_gate_test.py
+python3 scripts/test_reset_runtime_control.py
 
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "==> golangci-lint"

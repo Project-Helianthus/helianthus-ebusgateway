@@ -19,7 +19,7 @@ func addEnergyTotalsToDevice(deviceType *graphqlgo.Object, energyTotalsType *gra
 }
 
 func buildQueryType(builder *Builder, types graphqlSchemaTypes) *graphqlgo.Object {
-	fields := graphqlgo.Fields{}
+	fields := graphqlgo.Fields{"semanticSnapshot": semanticSnapshotField(builder)}
 	addVaillantB503Queries(fields, builder)
 	obj := graphqlgo.NewObject(graphqlgo.ObjectConfig{
 		Name: "Query",

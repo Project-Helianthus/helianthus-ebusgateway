@@ -1591,3 +1591,146 @@ func TestControlOfflineResetOutputLoadsAndFencesHeldRequests(t *testing.T) {
 	}
 	rcStop(t, m2)
 }
+
+// Registration stays private until its mark-only write is durable, including
+// while the write is blocked and after any pre-commit failure or overflow.
+func TestControlRegistrationWaitsForDurableFence(t *testing.T) {
+	for _, failure := range []string{"write", "fsync", "rename", "overflow"} {
+		t.Run(failure, func(t *testing.T) {
+			hooks := &rcHooks{}
+			m, path := rcSeeded(t, hooks)
+			defer rcStop(t, m)
+			if failure == "overflow" {
+				m.mu.Lock()
+				m.state.control.mark = math.MaxUint64
+				m.mu.Unlock()
+			}
+			before := rcRead(t, path)
+			old := rcSnapshot(t, m)
+			block, entered := make(chan struct{}), make(chan struct{})
+			hooks.set(func(h *rcHooks) {
+				h.blockNext, h.entered = block, entered
+				switch failure {
+				case "write":
+					h.failWrite = syscall.ENOSPC
+				case "fsync":
+					h.failFsync = syscall.EIO
+				case "rename":
+					h.failRename = syscall.EACCES
+				}
+			})
+			configs := append(append([]ControlDriverConfig(nil), rcDefaultConfigs...), ControlDriverConfig{DriverID: "fam.new", Enabled: true})
+			done := make(chan error, 1)
+			ctx := rcCtx(t)
+			go func() {
+				_, err := m.BootstrapControl(ctx, configs)
+				done <- err
+			}()
+			if failure != "overflow" {
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("registration write did not enter")
+				}
+				if got := rcSnapshot(t, m); !reflect.DeepEqual(got, old) {
+					t.Errorf("registration exposed before commit: %+v", got)
+				}
+				close(block)
+			}
+			if err := <-done; err == nil {
+				t.Fatal("registration unexpectedly succeeded")
+			}
+			if got := rcSnapshot(t, m); !reflect.DeepEqual(got, old) {
+				t.Fatalf("failed registration exposed: %+v", got)
+			}
+			_, err := rcDecide(t, m, ControlStart, "fam.new", old.IssuedRevisionMark)
+			_ = rcRefusal(t, err, RefusalNotFound, 2)
+			if !bytes.Equal(before, rcRead(t, path)) {
+				t.Fatal("failed registration changed durable bytes")
+			}
+			if failure != "overflow" {
+				hooks.set(func(h *rcHooks) { h.failWrite, h.failFsync, h.failRename = nil, nil, nil })
+				if _, err := m.BootstrapControl(rcCtx(t), configs); err != nil {
+					t.Fatal(err)
+				}
+				if got := rcDriver(t, m, "fam.new"); got.DesiredRevision != old.IssuedRevisionMark+1 {
+					t.Fatalf("registration retry lacks new fence: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestControlWorkRejectsObsoleteSlots(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	defer rcStop(t, m)
+	if _, err := rcDecide(t, m, ControlStop, "ebus.primary", 2); err != nil {
+		t.Fatal(err)
+	}
+	old := rcDriver(t, m, "ebus.primary").Current
+	if _, err := rcDecide(t, m, ControlStart, "ebus.primary", 3); err != nil {
+		t.Fatal(err)
+	}
+	v := rcDriver(t, m, "ebus.primary")
+	before, writes := rcRead(t, path), hooks.writeCount()
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", old, nil); !errors.Is(err, ErrControlInvalidWork) {
+		t.Fatalf("discard newer reserved slot = %v", err)
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("rejected update wrote state")
+	}
+	// Promotion and phase updates of the accepted identity remain valid.
+	promoted := cloneTransition(v.Reserved)
+	promoted.Phase = PhaseActive
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", promoted, nil); err != nil {
+		t.Fatal(err)
+	}
+	before, writes = rcRead(t, path), hooks.writeCount()
+	wrongRevision, wrongKind := cloneTransition(promoted), cloneTransition(promoted)
+	wrongRevision.DesiredRevision--
+	wrongKind.Kind = TransitionRestart
+	for _, stale := range []*ControlTransition{old, wrongRevision, wrongKind} {
+		if err := m.CommitControlWork(rcCtx(t), "ebus.primary", stale, nil); !errors.Is(err, ErrControlInvalidWork) {
+			t.Fatalf("obsolete identity accepted: %+v: %v", stale, err)
+		}
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("obsolete update changed state")
+	}
+	if got := rcDriver(t, m, "ebus.primary"); !reflect.DeepEqual(got.Current, promoted) || got.Reserved != nil {
+		t.Fatalf("obsolete update replaced accepted work: %+v", got)
+	}
+}
+
+func TestControlMissingReadbackCannotResurrectIntent(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	defer rcStop(t, m)
+	hooks.set(func(h *rcHooks) { h.failDir = syscall.EIO })
+	_, err := rcDecide(t, m, ControlStop, "ebus.primary", 2)
+	_ = rcRefusal(t, err, RefusalUnavailable, 3)
+	// Simulate readback of a valid state file whose namespace has vanished.
+	rcWriteBase(t, path)
+	before := rcRead(t, path)
+	hooks.set(func(h *rcHooks) { h.failDir = nil })
+	if err := m.ResolveControlReadback(rcCtx(t)); err == nil {
+		t.Fatal("missing namespace readback accepted")
+	}
+	if m.ControlAdmissionOpen() || m.ControlLoad().Disposition != ControlLoadCorrupt {
+		t.Fatal("missing namespace did not fail closed")
+	}
+	writes := hooks.writeCount()
+	m.UpsertKnownBusMember(KnownBusMember{Addr: 0x12, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+	if err := m.Flush(rcCtx(t)); !errors.Is(err, ErrStatePersistBlocked) {
+		t.Fatalf("flush after missing readback = %v", err)
+	}
+	if err := m.ResolveControlReadback(rcCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("cache flush resurrected old control intent")
+	}
+	_, err = rcDecide(t, m, ControlStart, "ebus.primary", 2)
+	_ = rcRefusal(t, err, RefusalFailedPrecondition, 3)
+}

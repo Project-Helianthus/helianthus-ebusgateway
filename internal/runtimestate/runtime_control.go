@@ -1009,9 +1009,9 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 	defer m.releaseWrite()
 
 	m.mu.Lock()
-	m.controlConfigs = make(map[string]ControlDriverConfig, len(sorted))
+	configured := make(map[string]ControlDriverConfig, len(sorted))
 	for _, c := range sorted {
-		m.controlConfigs[c.DriverID] = c
+		configured[c.DriverID] = c
 	}
 	status := m.controlStatus.Disposition
 	ambiguous := m.controlAmbiguous != nil
@@ -1045,7 +1045,6 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 		commitErr = m.commitControl(stage, true)
 	case status == ControlLoadLoaded && committed != nil:
 		stage := committed.clone()
-		configured := m.controlConfigsSnapshot()
 		recoveryIDs := map[string]bool{}
 		if stage.recovery != nil {
 			for _, id := range stage.recovery.DriverIDs {
@@ -1079,17 +1078,14 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 			commitErr = m.commitControl(stage, false)
 		}
 	}
-	return m.controlStartupPlan(), commitErr
-}
-
-func (m *Manager) controlConfigsSnapshot() map[string]ControlDriverConfig {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make(map[string]ControlDriverConfig, len(m.controlConfigs))
-	for id, c := range m.controlConfigs {
-		out[id] = c
+	// Publish registration only after its durable fence. Failed load
+	// dispositions still expose configured drivers as FAILED startup entries.
+	if commitErr == nil || (status != ControlLoadLoaded && !ambiguous) {
+		m.mu.Lock()
+		m.controlConfigs = configured
+		m.mu.Unlock()
 	}
-	return out
+	return m.controlStartupPlan(), commitErr
 }
 
 func sortedRecordIDs(records map[string]ControlDriverRecord) []string {
@@ -1460,7 +1456,9 @@ func (m *Manager) waitTimeoutRefusal(req ControlRequest) *ControlRefusal {
 // CommitControlWork durably replaces a driver's typed slots without changing
 // desired state, its revision or the mark (phase updates, promotion of the
 // reserved slot, removal after terminal obligations). Transitions must keep
-// already-allocated sequences and revisions.
+// the kind, sequence and revision of a currently stored slot. A reserved slot
+// may be retained or promoted; clearing both slots asserts terminal obligations
+// have settled, which remains the caller's responsibility.
 func (m *Manager) CommitControlWork(ctx context.Context, id string, current, reserved *ControlTransition) error {
 	if err := m.acquireWriteCtx(ctx); err != nil {
 		return err
@@ -1479,6 +1477,27 @@ func (m *Manager) CommitControlWork(ctx context.Context, id string, current, res
 	r, ok := ns.records[id]
 	if !ok {
 		return refuse(RefusalNotFound, 2, "driver has no record")
+	}
+	sameIdentity := func(a, b *ControlTransition) bool {
+		return a != nil && b != nil && a.Sequence == b.Sequence &&
+			a.DesiredRevision == b.DesiredRevision && a.Kind == b.Kind
+	}
+	// A worker may update only an identity that still occupies a stored slot.
+	// Bounds alone would let a completed transition replace newer work.
+	for _, t := range []*ControlTransition{current, reserved} {
+		if t == nil {
+			continue
+		}
+		if !sameIdentity(t, r.Current) && !sameIdentity(t, r.Reserved) {
+			return fmt.Errorf("%w: transition does not match a stored slot", ErrControlInvalidWork)
+		}
+	}
+	if reserved != nil && !sameIdentity(reserved, r.Reserved) {
+		return fmt.Errorf("%w: current transition cannot be demoted to reserved", ErrControlInvalidWork)
+	}
+	if current != nil && r.Reserved != nil &&
+		!sameIdentity(current, r.Reserved) && !sameIdentity(reserved, r.Reserved) {
+		return fmt.Errorf("%w: work update would discard the reserved transition", ErrControlInvalidWork)
 	}
 	r.Current, r.Reserved = cloneTransition(current), cloneTransition(reserved)
 	for _, t := range []*ControlTransition{r.Current, r.Reserved} {
@@ -1650,6 +1669,11 @@ func (m *Manager) failControl(status ControlLoadDisposition, detail string, pres
 	defer m.mu.Unlock()
 	m.controlStatus = ControlLoadStatus{Disposition: status, Detail: detail}
 	m.controlAmbiguous = nil
+	// Without readback bytes to preserve, no later cache flush may write the
+	// old committed namespace back over the failed readback.
+	if preserved == nil && block == nil {
+		block = fmt.Errorf("%w: control readback has no namespace", ErrStatePersistBlocked)
+	}
 	if block != nil {
 		m.persistBlocked = block
 	}

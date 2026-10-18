@@ -157,6 +157,9 @@ type attempt struct {
 	fenced   bool
 	sequence LifecycleSequence // typed slot sequence, 0 for an untyped attempt
 	admitted bool
+	// pendingGen marks a retry whose generation increment is not yet
+	// committed; only the driver's reconciler touches it.
+	pendingGen bool
 	// deadline and attemptsUsed carry an untyped attempt's nonrenewable
 	// budget so a synthesized cancellation inherits it; attemptsUsed is
 	// guarded by the owning driverState.mu.

@@ -736,7 +736,12 @@ process loss during `Stop` never grants an extra attempt. `Stop` runs under a
 context that ends at the persisted deadline; once the deadline has passed it
 receives an already-expired context, and a late process-start success is
 withdrawn under the attempt's original deadline in the same way. No new
-deadline is computed for cleanup. When the attempt limit or the deadline is
+deadline is computed for cleanup. The attempt limit governs start attempts
+only: cleanup owns one further reserved attempt, accounted apart from the start
+budget, so a limit of one cannot let a START consume the attempt that native
+close and semantic cleanup need. A START that succeeds after its deadline still
+gets that reserved cleanup attempt under its original deadline. When the
+reserved cleanup attempt or the deadline is
 spent with semantic cleanup still pending, the driver ends `FAILED` with a
 `CLEANUP_STALLED` diagnostic, START and RESTART refuse at row 7 until process
 restart, the obligation stays durable and no further `Stop` runs. An

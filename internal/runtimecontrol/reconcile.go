@@ -104,20 +104,31 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	return false, 0
 }
 
-// startLimit bounds the START attempts of a typed slot. The last persisted
-// attempt is reserved for the cleanup Stop, which must be charged durably
-// before it runs; a limit of one leaves no reserve and the cleanup stalls.
+// startLimit bounds the START attempts of a typed slot. MaxAttempts governs
+// start attempts only: the cleanup Stop owns one further reserved attempt
+// (cleanupLimit), so a limit of one cannot let START consume the attempt that
+// native close and semantic cleanup need. The store caps a slot's persisted
+// attempts at DefaultMaxAttempts, so a limit at that cap leaves the reserve
+// by starting one attempt fewer.
 func (s *Service) startLimit() int {
-	if s.maxAttempts > 1 {
-		return s.maxAttempts - 1
+	if s.maxAttempts >= DefaultMaxAttempts {
+		return DefaultMaxAttempts - 1
 	}
 	return s.maxAttempts
+}
+
+// cleanupLimit is the highest persisted AttemptsUsed a slot may reach: the
+// start attempts plus the single reserved cleanup attempt. Each cleanup Stop
+// is charged durably before it runs and the slot's original deadline is never
+// renewed.
+func (s *Service) cleanupLimit() int {
+	return s.startLimit() + 1
 }
 
 // cleanupSpent reports whether a slot's persisted attempt limit or deadline
 // leaves no budget for another cleanup Stop.
 func (s *Service) cleanupSpent(t Transition) bool {
-	return t.AttemptsUsed >= s.maxAttempts || (!t.DeadlineUTC.IsZero() && !s.now().Before(t.DeadlineUTC))
+	return t.AttemptsUsed >= s.cleanupLimit() || (!t.DeadlineUTC.IsZero() && !s.now().Before(t.DeadlineUTC))
 }
 
 func sameIdentity(a, b *Transition) bool {
@@ -282,7 +293,7 @@ func (s *Service) settleObligations(d *driverState, t Transition) (Transition, e
 		return next, nil
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		if t.AttemptsUsed >= s.maxAttempts {
+		if t.AttemptsUsed >= s.cleanupLimit() {
 			// No persisted attempt is left to charge: running Stop uncharged
 			// would grant an extra attempt on every recovery. The obligations
 			// stay durable and the caller reports the cleanup as stalled.
@@ -559,6 +570,21 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if s.fencedByStore(d, t) || s.isFenced(d, a) {
 			return true, 0
 		}
+		if a.pendingGen {
+			// A retry's generation increment failed to commit: commit it
+			// before any further Start so the executor never sees the
+			// previous generation twice.
+			next := t
+			next.Generation++
+			if err := s.commitCurrent(d, next); err != nil {
+				if errors.Is(err, ErrStaleSlot) {
+					return true, 0
+				}
+				return s.retryLater()
+			}
+			t = next
+			a.pendingGen = false
+		}
 		if t.AttemptsUsed >= s.startLimit() || !s.now().Before(t.DeadlineUTC) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
@@ -632,6 +658,7 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 			next := t
 			next.Generation++
 			if err := s.commitCurrent(d, next); err != nil {
+				a.pendingGen = true
 				return s.retryLater()
 			}
 			t = next
@@ -737,8 +764,18 @@ func (s *Service) runUntyped(d *driverState) {
 		return
 	}
 	attempts := 0
-	finishUntyped := func(obs observation) {
+	var withdrawLate func()
+	// finishUntyped publishes the attempt's terminal observation. A RUNNING
+	// admission is revalidated under the hold: the wait behind a decision may
+	// outlast the budget, and an expired success is never admitted. It reports
+	// false in that case, leaving the late generation to withdrawLate.
+	finishUntyped := func(obs observation) bool {
+		expired := false
 		admitted := s.settle(d, a, func() {
+			if obs.state == drivermanager.ObservedRunning && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
+				expired = true
+				return
+			}
 			obs.epoch, obs.generation = a.corr.Epoch, a.corr.Generation
 			d.corr = a.corr
 			d.untyped = nil
@@ -749,9 +786,47 @@ func (s *Service) runUntyped(d *driverState) {
 			}
 			s.stageObservation(d.id, obs)
 		})
+		if expired {
+			return false
+		}
 		if admitted {
 			s.commitObserved(d, obs)
 		}
+		return true
+	}
+	withdrawLate = func() {
+		// A success after the attempt's budget is never admitted; the
+		// started generation is withdrawn, and an unconfirmed close
+		// quarantines the driver. The withdrawal stays bounded by the
+		// attempt's original deadline: no new deadline is computed, so a
+		// withdrawal after that deadline gets one Stop with an
+		// already-expired context and no retry.
+		var out StopOutcome
+		for i := 0; i < s.maxAttempts; i++ {
+			out = s.stopBounded(d, a.corr, deadline)
+			if !out.NativeClosed || out.SemanticCleaned || !s.now().Before(deadline) {
+				break
+			}
+		}
+		if !out.NativeClosed {
+			s.settle(d, a, func() {
+				d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
+			})
+			s.quarantine(d, Transition{Kind: KindStart})
+			return
+		}
+		if !out.SemanticCleaned {
+			// No slot retains this cleanup: block admission so a later
+			// START or RESTART cannot proceed over unfinished withdrawal.
+			s.settle(d, a, func() {
+				d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
+				d.recoveryBlocked = true
+			})
+			s.appendDiagnostic(d, Transition{Kind: KindStart}, "CLEANUP_STALLED")
+			s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+			return
+		}
+		finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
 	}
 	for {
 		if s.ctx.Err() != nil || s.isFenced(d, a) {
@@ -776,42 +851,13 @@ func (s *Service) runUntyped(d *driverState) {
 			return // a cancellation slot owns this correlation now
 		}
 		if err == nil && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
-			// A success after the attempt's budget is never admitted; the
-			// started generation is withdrawn, and an unconfirmed close
-			// quarantines the driver. The withdrawal stays bounded by the
-			// attempt's original deadline: no new deadline is computed, so a
-			// withdrawal after that deadline gets one Stop with an
-			// already-expired context and no retry.
-			var out StopOutcome
-			for i := 0; i < s.maxAttempts; i++ {
-				out = s.stopBounded(d, a.corr, deadline)
-				if !out.NativeClosed || out.SemanticCleaned || !s.now().Before(deadline) {
-					break
-				}
-			}
-			if !out.NativeClosed {
-				s.settle(d, a, func() {
-					d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
-				})
-				s.quarantine(d, Transition{Kind: KindStart})
-				return
-			}
-			if !out.SemanticCleaned {
-				// No slot retains this cleanup: block admission so a later
-				// START or RESTART cannot proceed over unfinished withdrawal.
-				s.settle(d, a, func() {
-					d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
-					d.recoveryBlocked = true
-				})
-				s.appendDiagnostic(d, Transition{Kind: KindStart}, "CLEANUP_STALLED")
-				s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
-				return
-			}
-			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+			withdrawLate()
 			return
 		}
 		if err == nil {
-			finishUntyped(observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone})
+			if !finishUntyped(observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone}) {
+				withdrawLate()
+			}
 			return
 		}
 		s.report(&LifecycleError{DriverID: d.id, Kind: KindStart, Err: err})

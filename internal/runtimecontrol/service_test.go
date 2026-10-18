@@ -3053,7 +3053,7 @@ func TestServiceAmbiguousStopFencesUntypedBackoffAfterReadback(t *testing.T) {
 
 // TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt: a slot
 // whose persisted attempts are spent runs no uncharged Stop, and a START that
-// keeps failing leaves one persisted attempt for its cleanup.
+// keeps failing leaves its own reserved attempt for the cleanup.
 func TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt(t *testing.T) {
 	id := DriverID("fam.alpha")
 	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
@@ -3061,9 +3061,9 @@ func TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt(t *testing
 	f.waitSettled(id, drivermanager.ObservedRunning)
 	stops := f.execs[id].count("stop")
 	spent := Transition{Kind: KindStart, Phase: PhaseCleanup, Epoch: "e", Generation: 1,
-		NativeClosePending: true, SemanticCleanupPending: true, AttemptsUsed: 3}
+		NativeClosePending: true, SemanticCleanupPending: true, AttemptsUsed: 4}
 	next, err := f.svc.settleObligations(f.svc.drivers[id], spent)
-	if err != nil || !next.NativeClosePending || !next.SemanticCleanupPending || next.AttemptsUsed != 3 {
+	if err != nil || !next.NativeClosePending || !next.SemanticCleanupPending || next.AttemptsUsed != 4 {
 		t.Fatalf("spent slot settled = %+v, %v", next, err)
 	}
 	if n := f.execs[id].count("stop"); n != stops {
@@ -3076,8 +3076,8 @@ func TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt(t *testing
 	startsBefore := f.execs[id].count("start")
 	f.mustDecide(MethodStart, id)
 	f.waitSettled(id, drivermanager.ObservedFailed)
-	if n := f.execs[id].count("start") - startsBefore; n != 2 {
-		t.Fatalf("START attempts = %d, want 2 with one attempt reserved for cleanup", n)
+	if n := f.execs[id].count("start") - startsBefore; n != 3 {
+		t.Fatalf("START attempts = %d, want 3 (MaxAttempts counts start attempts; cleanup has its own reserved attempt)", n)
 	}
 }
 
@@ -3612,4 +3612,149 @@ func TestServiceFailedAcceptancePublicationKeepsSupersededStartRunning(t *testin
 	c.fail.Store(false)
 	f.waitSettled(id, drivermanager.ObservedStopped)
 	assertAcceptedThenCanceled(t, f, cursor, id, stops)
+}
+
+// TestServiceMaxAttemptsOneReservesCleanupAttempt: MaxAttempts counts start
+// attempts only. With a limit of one, a START that succeeds after its
+// deadline still gets the reserved cleanup attempt: it runs once under the
+// original deadline; obligations are then settled, or the cleanup stalls with
+// the diagnostic when the Stop leaves semantic cleanup unfinished.
+func TestServiceMaxAttemptsOneReservesCleanupAttempt(t *testing.T) {
+	for _, settled := range []bool{true, false} {
+		name := map[bool]string{true: "settled", false: "stalled"}[settled]
+		t.Run(name, func(t *testing.T) {
+			id := DriverID("fam.alpha")
+			f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+				opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond; o.MaxAttempts = 1 }})
+			f.waitSettled(id, drivermanager.ObservedRunning)
+			f.mustDecide(MethodStop, id)
+			f.waitSettled(id, drivermanager.ObservedStopped)
+			f.execs[id].setStart(func(ctx context.Context, _ LifecycleCorrelation) error {
+				<-ctx.Done() // succeeds only after its budget ended
+				return nil
+			})
+			f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+				return StopOutcome{NativeClosed: true, SemanticCleaned: settled}
+			})
+			stops := f.execs[id].count("stop")
+			f.mustDecide(MethodStart, id)
+			waitFor(t, "failed", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+			if settled {
+				f.waitIdle(id)
+			} else {
+				waitFor(t, "cleanup stalled diagnostic", func() bool { return hasDiagnostic(f.svc.Diagnostics(id), "CLEANUP_STALLED") })
+			}
+			time.Sleep(200 * time.Millisecond)
+			if n := f.execs[id].count("stop") - stops; n != 1 {
+				t.Fatalf("cleanup ran Stop %d times, want exactly the one reserved attempt", n)
+			}
+			cur := f.record(id).Current
+			if settled && cur != nil {
+				t.Fatalf("settled cleanup left a slot: %+v", cur)
+			}
+			if !settled && (cur == nil || !cur.SemanticCleanupPending) {
+				t.Fatalf("stalled cleanup lost its obligation: %+v", cur)
+			}
+			if hasDiagnostic(f.svc.Diagnostics(id), "CLEANUP_STALLED") == settled {
+				t.Fatalf("CLEANUP_STALLED diagnostic = %v, want %v", !settled, !settled)
+			}
+		})
+	}
+}
+
+// TestServiceUntypedSuccessExpiredWhileHeldIsWithdrawn: an untyped START whose
+// Start succeeds before its deadline but waits behind an ambiguous STOP that
+// is later rejected after the deadline is not installed as RUNNING: the
+// admission is revalidated under the hold and the late generation is
+// withdrawn.
+func TestServiceUntypedSuccessExpiredWhileHeldIsWithdrawn(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var g *readbackStore
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { g = &readbackStore{Store: s}; return g },
+		// One readback attempt spans the whole budget, so the gate can hold
+		// the decision past the attempt's deadline.
+		opts: func(o *Options) { o.OperationBudget = 600 * time.Millisecond; o.MaxAttempts = 1 },
+		setup: func(f *svcFixture) {
+			f.execs[id].setStart(func(context.Context, LifecycleCorrelation) error {
+				once.Do(func() { close(entered) })
+				<-release
+				return nil
+			})
+		}})
+	<-entered
+	time.Sleep(250 * time.Millisecond) // the readback outlives the attempt's deadline
+	cursor := f.svc.List().EventCursor
+	gate, committed := f.ambiguousStop(g, id)
+	close(release) // success before the deadline, held behind the decision
+	time.Sleep(400 * time.Millisecond)
+	f.rejectOnReadback(committed)
+	close(gate)
+	f.waitDecisionSettled(id)
+	waitFor(t, "late generation withdrawn", func() bool { return f.execs[id].count("stop") == 1 })
+	f.waitObserved(id, drivermanager.ObservedFailed)
+	started, stopped := f.execs[id].snapshot()[0].Corr, f.execs[id].snapshot()
+	if c := stopped[len(stopped)-1]; c.Op != "stop" || c.Corr.Epoch != started.Epoch || c.Corr.Generation != started.Generation {
+		t.Fatalf("withdrawal %+v does not name the late generation %+v", c, started)
+	}
+	for _, e := range driverEvents(f, cursor, id) {
+		if e.Kind == EventObservedChanged && e.ObservedState == drivermanager.ObservedRunning {
+			t.Fatalf("expired success was published as RUNNING: %+v", e)
+		}
+	}
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	live := d.live
+	d.mu.Unlock()
+	if live != nil {
+		t.Fatalf("expired success installed as live: %+v", live)
+	}
+}
+
+// TestServiceRetryGenerationIncrementIsCommittedBeforeNextStart: when
+// persisting a retry's generation increment fails, the reconciler keeps the
+// pending increment and commits it before the next Start, so the executor
+// never sees the previous generation twice.
+func TestServiceRetryGenerationIncrementIsCommittedBeforeNextStart(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var ws *workFaultStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { ws = &workFaultStore{Store: s}; return ws }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	var mu sync.Mutex
+	var gens []uint64
+	f.execs[id].setStart(func(_ context.Context, c LifecycleCorrelation) error {
+		mu.Lock()
+		defer mu.Unlock()
+		gens = append(gens, uint64(c.Generation))
+		if len(gens) == 1 {
+			ws.failFrom.Store(int32(maxCommitAttempts)) // the increment cannot commit
+			return retryErr{"warming"}
+		}
+		return nil
+	})
+	f.mustDecide(MethodStart, id)
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gens) != 2 || gens[0] != 1 || gens[1] != 2 {
+		t.Fatalf("Start generations = %v, want [1 2]", gens)
+	}
+}
+
+// workFaultStore fails the next failFrom CommitWork calls.
+type workFaultStore struct {
+	Store
+	failFrom atomic.Int32
+}
+
+func (w *workFaultStore) CommitWork(ctx context.Context, id DriverID, current, reserved *Transition) error {
+	if w.failFrom.Add(-1) >= 0 {
+		return errors.New("synthetic work commit failure")
+	}
+	return w.Store.CommitWork(ctx, id, current, reserved)
 }

@@ -2668,3 +2668,68 @@ func TestRecoveryPartialControlFailsUnstagedAssetClosed(t *testing.T) {
 		t.Fatalf("partial control: failed %v source %v report %+v", failedAssets, failedSources, rep)
 	}
 }
+
+// TestRecoveryQueuedOutcomeIsDetachedFromCaller mutates the returned outcome
+// after a failed outcome write: the queued outcome that Flush makes durable
+// must still carry the accepted evidence exactly as the hub returned it.
+func TestRecoveryQueuedOutcomeIsDetachedFromCaller(t *testing.T) {
+	w := newWorld(t, worldOpts{})
+	w.mustRestore()
+	w.admit(synthSource)
+	w.store.setFail(func(p []byte) error {
+		if s, _ := decodeStream(p); s.entry(synthSource, 1) != nil && s.entry(synthSource, 1).Assets[0].Outcome != nil {
+			return errors.New("synthetic outcome write failure")
+		}
+		return nil
+	})
+	out, err := w.publish(synthSource, synthAssets[0])
+	w.store.setFail(nil)
+	if !errors.Is(err, ErrOutcomeNotDurable) || out.Accepted == nil {
+		t.Fatalf("publication with a failed outcome write: %+v %v", out, err)
+	}
+	want := cloneStep(out.Accepted)
+	for i := range out.Accepted.Result {
+		out.Accepted.Result[i] ^= 0xff
+	}
+	for i := range out.Accepted.Batch.Bytes {
+		out.Accepted.Batch.Bytes[i] ^= 0xff
+	}
+	out.Accepted.Incarnation = "mutated"
+	out.Accepted.Point++
+	if err := w.rec.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	durable := w.stream()
+	e := durable.entry(synthSource, 1)
+	if e == nil || e.Assets[0].Outcome == nil || !reflect.DeepEqual(e.Assets[0].Outcome.Accepted, want) {
+		t.Fatalf("caller mutation altered the durable outcome: %+v want %+v", e, want)
+	}
+}
+
+// TestRecoveryReservationEstimatesSurviveCompactedRestart restarts from a
+// compacted checkpoint, which holds no entries to size the outcome
+// reservation from: the estimates must still cover the checkpoint.
+func TestRecoveryReservationEstimatesSurviveCompactedRestart(t *testing.T) {
+	w := newWorld(t, worldOpts{})
+	w.mustRestore()
+	w.admit(synthSource)
+	for _, id := range synthAssets {
+		w.mustPublish(synthSource, id)
+	}
+	if err := w.rec.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.loseProcess(time.Second)
+	w.mustRestore()
+	s := w.stream()
+	if len(s.Entries) != 0 || len(s.Base) == 0 {
+		t.Fatalf("expected a compacted stream: %d entries, %d base", len(s.Entries), len(s.Base))
+	}
+	w.rec.mu.Lock()
+	defer w.rec.mu.Unlock()
+	for _, id := range synthAssets {
+		if w.rec.lastResult[id] < len(s.Base) || w.rec.lastStaged[id] < len(s.Base) {
+			t.Fatalf("%s estimates after compacted restart: result %d staged %d base %d", id, w.rec.lastResult[id], w.rec.lastStaged[id], len(s.Base))
+		}
+	}
+}

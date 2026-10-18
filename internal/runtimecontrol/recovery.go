@@ -693,6 +693,25 @@ func (r *Recorder) noteSizes(s walStream) {
 	}
 }
 
+// noteBaseSizes raises the estimates after a restart. A compacted stream
+// keeps no entries, so the sizes its folded operations had are unknown; the
+// checkpoint bounds every asset's staged and result bytes from above. r.mu
+// must be held.
+func (r *Recorder) noteBaseSizes(s walStream) {
+	n := len(s.Base)
+	if n == 0 {
+		return
+	}
+	for id := range r.assets {
+		if r.lastStaged[id] < n {
+			r.lastStaged[id] = n
+		}
+		if r.lastResult[id] < n {
+			r.lastResult[id] = n
+		}
+	}
+}
+
 // pendingReserve is the outcome reservation of every pending asset attempt in
 // s: the accepted step repeats the staged bytes in the step and in the
 // result, and the result carries the asset's canonical snapshot, estimated
@@ -770,6 +789,18 @@ func cloneStaged(b StagedBatch) StagedBatch {
 		b.Meta = nil
 	}
 	return b
+}
+
+// cloneOutcomes deep-copies outcomes so a queued outcome never shares
+// pointers or byte slices with the caller's returned slice.
+func cloneOutcomes(in []AssetOutcome) []AssetOutcome {
+	out := make([]AssetOutcome, len(in))
+	for i, o := range in {
+		o.Accepted = cloneStep(o.Accepted)
+		o.Detail = append([]byte(nil), o.Detail...)
+		out[i] = o
+	}
+	return out
 }
 
 func cloneStep(s *AcceptedStep) *AcceptedStep {
@@ -992,7 +1023,7 @@ func (r *Recorder) recordOutcome(ctx context.Context, source SourceID, wal uint6
 	err := r.commit(ctx, false, func(s *walStream) error { return applyOutcomes(s, source, wal, outs) })
 	if err != nil {
 		r.mu.Lock()
-		r.queued = append(r.queued, queuedOutcome{source: source, wal: wal, outs: outs})
+		r.queued = append(r.queued, queuedOutcome{source: source, wal: wal, outs: cloneOutcomes(outs)})
 		r.mu.Unlock()
 		r.reportErr(err)
 		return fmt.Errorf("%w: %w", ErrOutcomeNotDurable, err)
@@ -1146,6 +1177,7 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 	r.mu.Lock()
 	r.stream = stream
 	r.noteSizes(stream)
+	r.noteBaseSizes(stream)
 	r.clocks = clocks
 	r.failedSources = failedSources
 	r.failedAssets = failedAssets

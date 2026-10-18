@@ -3050,3 +3050,128 @@ func TestServiceAmbiguousStopFencesUntypedBackoffAfterReadback(t *testing.T) {
 		t.Fatalf("attempt opened %d generations after the adopted STOP", len(started))
 	}
 }
+
+// TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt: a slot
+// whose persisted attempts are spent runs no uncharged Stop, and a START that
+// keeps failing leaves one persisted attempt for its cleanup.
+func TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.MaxAttempts = 3 }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	stops := f.execs[id].count("stop")
+	spent := Transition{Kind: KindStart, Phase: PhaseCleanup, Epoch: "e", Generation: 1,
+		NativeClosePending: true, SemanticCleanupPending: true, AttemptsUsed: 3}
+	next, err := f.svc.settleObligations(f.svc.drivers[id], spent)
+	if err != nil || !next.NativeClosePending || !next.SemanticCleanupPending || next.AttemptsUsed != 3 {
+		t.Fatalf("spent slot settled = %+v, %v", next, err)
+	}
+	if n := f.execs[id].count("stop"); n != stops {
+		t.Fatalf("uncharged Stop ran %d times", n-stops)
+	}
+
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	f.execs[id].setStart(func(context.Context, LifecycleCorrelation) error { return retryErr{"never"} })
+	startsBefore := f.execs[id].count("start")
+	f.mustDecide(MethodStart, id)
+	f.waitSettled(id, drivermanager.ObservedFailed)
+	if n := f.execs[id].count("start") - startsBefore; n != 2 {
+		t.Fatalf("START attempts = %d, want 2 with one attempt reserved for cleanup", n)
+	}
+}
+
+// TestServiceHeldReleaseKeepsAttemptWhenSupersedingDecisionNotAdopted: a
+// retained typed START alone does not prove that an ambiguous STOP behind it
+// was adopted, so its attempt is not fenced.
+func TestServiceHeldReleaseKeepsAttemptWhenSupersedingDecisionNotAdopted(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	f.execs[id].setStart(func(context.Context, LifecycleCorrelation) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	f.mustDecide(MethodStart, id)
+	<-entered
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	d.held = true
+	d.deciding++
+	d.mu.Unlock()
+	f.svc.releaseHeld(d)
+	d.mu.Lock()
+	a := d.inflight
+	fenced := a != nil && a.fenced
+	held := d.held
+	d.mu.Unlock()
+	if a == nil || fenced || held {
+		t.Fatalf("attempt fenced=%v held=%v inflight=%v after a non-adopted superseding decision", fenced, held, a != nil)
+	}
+	unblock()
+	f.waitSettled(id, drivermanager.ObservedRunning)
+}
+
+// TestServiceAdoptedAmbiguousDecisionEmitsDesiredAccepted: a decision whose
+// commit was ambiguous and later adopted by the readback is not silently
+// absent from the event stream.
+func TestServiceAdoptedAmbiguousDecisionEmitsDesiredAccepted(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	before := f.status(id)
+	cursor := f.svc.List().EventCursor
+	f.quiesce()
+	f.hooks.mu.Lock()
+	f.hooks.failDirSync = 1
+	f.hooks.mu.Unlock()
+	_, err := f.decide(MethodStop, id)
+	refusalOf(t, err, RefusalUnavailable, 3)
+	waitFor(t, "adopted decision event", func() bool {
+		for _, e := range f.svc.EventsSince(cursor).Events {
+			if e.Kind == EventDesiredAccepted && e.DriverID == id &&
+				e.DesiredState == DesiredStopped && e.DesiredRevision == before.DesiredRevision+1 {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestServiceSupersededPendingDesiredEventIsNotStampedWithLaterView: a pending
+// DESIRED_ACCEPTED that a later desired transition superseded before its view
+// published is not stamped with that view; readers are told to resync.
+func TestServiceSupersededPendingDesiredEventIsNotStampedWithLaterView(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	cur := f.status(id)
+	cursor := f.svc.List().EventCursor
+	hs.failAdvance.Store(true)
+	f.svc.deferPublication(&Event{Kind: EventDesiredAccepted, DriverID: id,
+		DesiredState: DesiredRunning, DesiredRevision: cur.DesiredRevision - 1})
+	f.svc.deferPublication(&Event{Kind: EventDesiredAccepted, DriverID: id,
+		DesiredState: DesiredStopped, DesiredRevision: cur.DesiredRevision})
+	hs.failAdvance.Store(false)
+	waitFor(t, "pending events published", func() bool { return f.svc.EventsSince(cursor).Next > cursor })
+	page := f.svc.EventsSince(cursor)
+	if !page.Resync {
+		t.Fatalf("superseded event left a silent gap: %+v", page)
+	}
+	for _, e := range page.Events {
+		if e.Kind == EventDesiredAccepted && e.DesiredRevision != cur.DesiredRevision {
+			t.Fatalf("superseded event stamped with a later view: %+v", e)
+		}
+	}
+}

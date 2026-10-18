@@ -98,6 +98,16 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	return false, 0
 }
 
+// startLimit bounds the START attempts of a typed slot. The last persisted
+// attempt is reserved for the cleanup Stop, which must be charged durably
+// before it runs; a limit of one leaves no reserve and the cleanup stalls.
+func (s *Service) startLimit() int {
+	if s.maxAttempts > 1 {
+		return s.maxAttempts - 1
+	}
+	return s.maxAttempts
+}
+
 // cleanupSpent reports whether a slot's persisted attempt limit or deadline
 // leaves no budget for another cleanup Stop.
 func (s *Service) cleanupSpent(t Transition) bool {
@@ -266,14 +276,18 @@ func (s *Service) settleObligations(d *driverState, t Transition) (Transition, e
 		return next, nil
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		if t.AttemptsUsed < s.maxAttempts {
-			charged := t
-			charged.AttemptsUsed++
-			if err := s.commitCurrent(d, charged); err != nil {
-				return t, err
-			}
-			next.AttemptsUsed = charged.AttemptsUsed
+		if t.AttemptsUsed >= s.maxAttempts {
+			// No persisted attempt is left to charge: running Stop uncharged
+			// would grant an extra attempt on every recovery. The obligations
+			// stay durable and the caller reports the cleanup as stalled.
+			return next, nil
 		}
+		charged := t
+		charged.AttemptsUsed++
+		if err := s.commitCurrent(d, charged); err != nil {
+			return t, err
+		}
+		next.AttemptsUsed = charged.AttemptsUsed
 		out := s.stopBounded(d, s.corr(d, t), t.DeadlineUTC)
 		next.NativeClosePending = t.NativeClosePending && !out.NativeClosed
 		next.SemanticCleanupPending = t.SemanticCleanupPending && !out.SemanticCleaned
@@ -539,7 +553,7 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if s.fencedByStore(d, t) || s.isFenced(d, a) {
 			return true, 0
 		}
-		if t.AttemptsUsed >= s.maxAttempts || !s.now().Before(t.DeadlineUTC) {
+		if t.AttemptsUsed >= s.startLimit() || !s.now().Before(t.DeadlineUTC) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
 		next := t
@@ -592,7 +606,7 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if errors.Is(a.ctx.Err(), context.DeadlineExceeded) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
-		if retryable(err) && t.AttemptsUsed < s.maxAttempts && s.now().Before(t.DeadlineUTC) {
+		if retryable(err) && t.AttemptsUsed < s.startLimit() && s.now().Before(t.DeadlineUTC) {
 			s.observe(d, observation{state: drivermanager.ObservedBackoff, reason: drivermanager.ReasonRetryScheduled})
 			if !sleepCtx(a.ctx, s.retryDelay(t.AttemptsUsed)) {
 				if s.isFenced(d, a) || s.ctx.Err() != nil {

@@ -178,7 +178,10 @@ type driverState struct {
 	// held marks a fencing decision whose commit was ambiguous: its
 	// deciding count stays raised, so attempts cannot progress, until the
 	// readback shows whether the cancellation was adopted.
-	held            bool
+	held bool
+	// ambiguous retains an accepted-looking decision whose commit was
+	// ambiguous until a readback shows whether it was adopted.
+	ambiguous       *ambiguousDecision
 	pruning         bool
 	untyped         *attempt
 	inflight        *attempt
@@ -669,6 +672,9 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	changed := err == nil && view.DesiredRevision != req.ExpectedRevision
 	if planned {
 		d.mu.Lock()
+		if err != nil && !s.store.AdmissionOpen() {
+			d.ambiguous = &ambiguousDecision{method: method, expected: req.ExpectedRevision}
+		}
 		if fence && err != nil && !s.store.AdmissionOpen() {
 			// Ambiguous commit of a fencing decision: keep the attempt from
 			// progressing until readbackResolved settles the question.
@@ -698,18 +704,52 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	if !changed {
 		return view, nil
 	}
+	ev := s.desiredEvent(d, view.DesiredState, view.DesiredRevision)
+	s.commitView(s.ctx, &ev, false)
+	s.wakeDriver(d)
+	return view, nil
+}
+
+// ambiguousDecision is a planned decision whose commit outcome is unknown.
+type ambiguousDecision struct {
+	method   Method
+	expected DesiredRevision
+}
+
+func (s *Service) desiredEvent(d *driverState, state DesiredState, rev DesiredRevision) Event {
 	d.mu.Lock()
 	corr := d.corr
 	d.mu.Unlock()
 	s.viewMu.Lock()
 	obs := s.observed[d.id]
 	s.viewMu.Unlock()
-	s.commitView(s.ctx, &Event{Kind: EventDesiredAccepted, DriverID: d.id,
-		DesiredState: view.DesiredState, DesiredRevision: view.DesiredRevision,
+	return Event{Kind: EventDesiredAccepted, DriverID: d.id,
+		DesiredState: state, DesiredRevision: rev,
 		ObservedState: obs.state, Reason: obs.reason, SafetyQuarantined: obs.quarantined,
-		Epoch: corr.Epoch, Generation: corr.Generation}, false)
-	s.wakeDriver(d)
-	return view, nil
+		Epoch: corr.Epoch, Generation: corr.Generation}
+}
+
+// emitAdopted emits DESIRED_ACCEPTED for an ambiguous decision that the
+// readback shows was committed. A rejected decision emits nothing.
+func (s *Service) emitAdopted(d *driverState) {
+	d.mu.Lock()
+	amb := d.ambiguous
+	d.mu.Unlock()
+	if amb == nil {
+		return
+	}
+	rec, err := s.store.Driver(d.id)
+	if err != nil {
+		return // stay pending; a later readback retries
+	}
+	d.mu.Lock()
+	d.ambiguous = nil
+	d.mu.Unlock()
+	if rec.DesiredRevision != amb.expected+1 {
+		return
+	}
+	ev := s.desiredEvent(d, rec.DesiredState, rec.DesiredRevision)
+	s.commitView(s.ctx, &ev, false)
 }
 
 // planner places a changing request in the typed slots. It runs under the
@@ -876,6 +916,7 @@ func (s *Service) readbackResolved() {
 	for _, id := range s.order {
 		d := s.drivers[id]
 		s.releaseHeld(d)
+		s.emitAdopted(d)
 		s.wakeDriver(d)
 	}
 }
@@ -897,7 +938,9 @@ func (s *Service) releaseHeld(d *driverState) {
 	d.mu.Lock()
 	if d.held {
 		d.held = false
-		if rec.Current != nil {
+		if rec.Reserved != nil || (rec.Current != nil && rec.Current.Kind != KindStart) {
+			// The superseding transition was adopted: a retained typed START
+			// alone does not prove it.
 			for _, a := range []*attempt{d.untyped, d.inflight} {
 				if a != nil {
 					a.fenced = true
@@ -1049,8 +1092,16 @@ func (s *Service) publish(event *Event) bool {
 		entries[entry.DriverID] = entry
 	}
 	emit := candidates[:0]
+	supersededGap := false
 	for _, e := range candidates {
 		e.CatalogRevision = built.Revision
+		if e.Kind == EventDesiredAccepted && entries[e.DriverID].DesiredRevision != e.DesiredRevision {
+			// A later desired transition superseded this one before its view
+			// published: the view no longer shows it, so it is not stamped
+			// with that view and the gap tells readers to resync.
+			supersededGap = true
+			continue
+		}
 		if e.Kind == EventObservedChanged {
 			entry := entries[e.DriverID]
 			if !observationShown(e, entry) {
@@ -1065,7 +1116,7 @@ func (s *Service) publish(event *Event) bool {
 		}
 		emit = append(emit, e)
 	}
-	gap := s.pendingLost
+	gap := s.pendingLost || supersededGap
 	s.pendingLost = false
 	s.events.publish(emit, gap, func(cursor uint64) {
 		built.EventCursor = cursor

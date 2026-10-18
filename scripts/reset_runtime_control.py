@@ -13,8 +13,9 @@ It is an offline maintenance action:
 * the namespace and the STOPPED value are fixed choices; there is no
   whole-file reset mode.
 
-The tool validates the whole base (top-level schema version, meta and a valid
-instance GUID) before touching anything and refuses on a corrupt or unreadable
+The tool validates the whole base (top-level schema version, meta, a valid
+instance GUID and every preserved eBUS value against the gateway loader's typed
+and range constraints) before touching anything and refuses on a corrupt or unreadable
 file until a valid GUID-preserving base is restored externally. It reads the
 bound H from the validated issued-revision mark and C from the validated
 catalog revision, cross-checks the verified D5 recovery envelope against H,
@@ -52,6 +53,7 @@ NAMESPACE = "runtime_control"
 DESIRED = "STOPPED"
 RECOVERY_FORMAT = "helianthus.runtime-control.d5-recovery/v1"
 MAX_DRIVER_RECORDS = 128
+MAX_DRIVER_ID_BYTES = 128
 QUARANTINE_INFIX = ".runtime-control-quarantine-"
 
 DRIVER_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*\Z")
@@ -161,13 +163,18 @@ def is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def canonical_driver_id(value):
+    """Mirror CanonicalControlDriverID: the registry pattern and at most 128 bytes."""
+    return isinstance(value, str) and 0 < len(value.encode("utf-8")) <= MAX_DRIVER_ID_BYTES and bool(DRIVER_ID_RE.match(value))
+
+
 def validate_driver_ids(driver_ids):
     if not driver_ids:
         raise failed("no configured driver id supplied; refusing to guess ids")
     if len(driver_ids) > MAX_DRIVER_RECORDS:
         raise failed("more than %d configured driver ids" % MAX_DRIVER_RECORDS)
     for driver_id in driver_ids:
-        if len(driver_id) > 128 or not DRIVER_ID_RE.match(driver_id):
+        if not canonical_driver_id(driver_id):
             raise failed("configured driver id %r is not canonical" % driver_id)
     if len(set(driver_ids)) != len(driver_ids):
         raise failed("configured driver ids contain duplicates")
@@ -183,7 +190,7 @@ def verify_recovery(recovery, bound):
     if recovery["format"] != RECOVERY_FORMAT:
         raise failed("D5 recovery envelope cannot be verified: unsupported format")
     ids = recovery["driver_ids"]
-    if not isinstance(ids, list) or not all(isinstance(v, str) and DRIVER_ID_RE.match(v) for v in ids):
+    if not isinstance(ids, list) or not all(canonical_driver_id(v) for v in ids):
         raise failed("D5 recovery envelope cannot be verified: driver_ids invalid")
     if ids != sorted(set(ids), key=lambda value: value.encode("ascii")):
         raise failed("D5 recovery envelope cannot be verified: driver_ids not sorted and unique")

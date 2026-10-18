@@ -414,9 +414,7 @@ func (m *Manager) quarantinePath() string {
 // overwritten by a fresh base.
 func (m *Manager) Load(ctx context.Context) (*State, error) {
 	if err := m.acquireStoreLock(unix.Flock); err != nil {
-		m.opts.Logger.Warn("runtime_state: store lock unavailable; persistence withheld", "path", m.opts.Path, "error", err)
-		m.setControlLoad(ControlLoadLocked, err.Error(), fmt.Errorf("%w: %v", ErrStatePersistBlocked, err))
-		m.replaceState(&State{SchemaVersion: SchemaVersion})
+		m.loadWithoutStoreLock(err)
 		return m.State(), nil
 	}
 	data, err := os.ReadFile(m.opts.Path)
@@ -472,6 +470,47 @@ func (m *Manager) Load(ctx context.Context) (*State, error) {
 	return m.State(), nil
 }
 
+// loadWithoutStoreLock is the load path when the store lock cannot be
+// acquired (another process holds it, or the sidecar cannot be opened or
+// locked). Control fails closed as LOCKED and persistence is blocked for the
+// rest of the process, so nothing is admitted, written or seeded. The readable
+// file is still decoded read-only: the GUID, the eBUS cache, opaque namespaces
+// and the last-known-good control namespace stay available to the shell and to
+// ControlSnapshot/ControlDriver. Without the lock the file is never renamed, so
+// a corrupt file is neither quarantined nor overwritten.
+func (m *Manager) loadWithoutStoreLock(lockErr error) {
+	detail := "store lock unavailable: " + lockErr.Error()
+	state := &State{SchemaVersion: SchemaVersion}
+	data, err := os.ReadFile(m.opts.Path)
+	switch {
+	case err == nil:
+		parsed, namespaceWarnings, perr := unmarshalState(data)
+		if perr != nil {
+			detail += "; state file corrupt (not quarantined without the lock)"
+			break
+		}
+		for _, warning := range namespaceWarnings {
+			m.opts.Logger.Warn("runtime_state: ignored unsupported namespace schema version",
+				"namespace", warning.namespace,
+				"observed_version", warning.observed,
+				"expected_version", warning.expected,
+			)
+		}
+		if parsed.control != nil && parsed.control.status != ControlLoadLoaded {
+			detail += "; runtime_control " + string(parsed.control.status) + ": " + parsed.control.detail
+		}
+		state = parsed
+	case os.IsNotExist(err):
+		detail += "; state file absent"
+	default:
+		detail += "; state file unreadable"
+	}
+	m.opts.Logger.Warn("runtime_state: store lock unavailable; control LOCKED and persistence withheld; readable state loaded read-only",
+		"path", m.opts.Path, "error", lockErr, "detail", detail)
+	m.setControlLoad(ControlLoadLocked, detail, fmt.Errorf("%w: store lock unavailable: %v", ErrStatePersistBlocked, lockErr))
+	m.replaceState(state)
+}
+
 // EagerPersistInstanceGUID writes a minimum-valid file containing
 // meta.{schema_version, instance_guid, written_at} within ~1s of the call
 // (AD08). Closes the crash-before-first-periodic-persist window.
@@ -513,7 +552,10 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 // Stop flushes any pending writes and shuts down the persister goroutines.
-// Idempotent.
+// It waits for in-flight writers before releasing the store lock and closes
+// write admission; a canceled context skips the final flush and returns the
+// context error, and the lock is then released as soon as the in-flight
+// writer finishes. Idempotent.
 func (m *Manager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	if m.stopped {
@@ -524,21 +566,62 @@ func (m *Manager) Stop(ctx context.Context) error {
 	started := m.started
 	m.mu.Unlock()
 
+	var stopErr error
 	if started {
 		close(m.stopCh)
 		select {
 		case <-m.doneCh:
 		case <-ctx.Done():
-			return ctx.Err()
+			stopErr = ctx.Err()
 		case <-time.After(5 * time.Second):
 			// Don't deadlock; ticker will exit on next iteration.
 		}
 	}
-	// Final flush of any dirty state. Durable control intent is never
-	// changed by shutdown.
-	m.flushIfDirty()
+	// Final flush of any dirty state, skipped when the caller's context has
+	// already ended. Durable control intent is never changed by shutdown.
+	if stopErr == nil {
+		m.flushIfDirty()
+	}
+	// The store lock is released on every exit path, but only after every
+	// in-flight writer (a control transaction or a ticker flush) has finished
+	// its rename and write admission is closed; otherwise a reset or another
+	// manager could take the lock before the old rename lands.
+	select {
+	case m.writeSem <- struct{}{}:
+		m.closeWritesAndReleaseStoreLock()
+		return stopErr
+	default:
+	}
+	if err := m.acquireWriteCtx(ctx); err != nil {
+		// The caller stops waiting; the release still happens as soon as
+		// the in-flight writer finishes.
+		go func() {
+			m.acquireWrite()
+			m.closeWritesAndReleaseStoreLock()
+		}()
+		if stopErr == nil {
+			stopErr = err
+		}
+		return stopErr
+	}
+	m.closeWritesAndReleaseStoreLock()
+	return stopErr
+}
+
+// errManagerStopped blocks every write after Stop has released the store lock.
+var errManagerStopped = fmt.Errorf("%w: manager stopped", ErrStatePersistBlocked)
+
+// closeWritesAndReleaseStoreLock runs with writeSem held: it blocks later
+// persistence and control transactions, releases the store lock and then
+// releases writeSem.
+func (m *Manager) closeWritesAndReleaseStoreLock() {
+	defer m.releaseWrite()
+	m.mu.Lock()
+	if m.persistBlocked == nil {
+		m.persistBlocked = errManagerStopped
+	}
+	m.mu.Unlock()
 	m.releaseStoreLock()
-	return nil
 }
 
 // State returns a defensive snapshot of the current in-memory state.

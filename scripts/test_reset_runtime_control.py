@@ -9,23 +9,27 @@ import hashlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-import reset_runtime_control as reset
+# Isolated mode (python3 -I) does not put the script directory on sys.path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import reset_runtime_control as reset  # noqa: E402
 
 GUID = "00000000-0000-4000-8000-0000000000b2"
 PAYLOAD = b"synthetic-d5\x00\x01\xfe"
 U64_MAX = str((1 << 64) - 1)
 
 
-def recovery_text(max_revision="3", payload=PAYLOAD, digest=None):
+def recovery_text(max_revision="3", payload=PAYLOAD, digest=None, driver_ids=("ebus.primary",)):
     digest = digest or hashlib.sha256(payload).hexdigest()
     return (
-        '{"format": "%s", "driver_ids": ["ebus.primary"], "max_desired_revision": "%s", '
+        '{"format": "%s", "driver_ids": %s, "max_desired_revision": "%s", '
         '"payload_sha256": "%s",   "payload": "%s"}'
-        % (reset.RECOVERY_FORMAT, max_revision, digest, base64.b64encode(payload).decode("ascii"))
+        % (reset.RECOVERY_FORMAT, json.dumps(list(driver_ids)), max_revision, digest,
+           base64.b64encode(payload).decode("ascii"))
     )
 
 
@@ -272,6 +276,25 @@ class ResetRuntimeControlTest(unittest.TestCase):
             with self.subTest(name):
                 self.write_state(text)
                 self.assert_refused(reset.EXIT_FAILED_PRECONDITION, "--apply", "--gateway-stopped")
+
+    def test_d5_driver_ids_use_the_loader_length_bound(self):
+        # CanonicalControlDriverID accepts at most 128 bytes; a longer D5 id
+        # would make the gateway fail the whole namespace closed after reset.
+        at_bound = "a" * reset.MAX_DRIVER_ID_BYTES
+        over_bound = "a" * (reset.MAX_DRIVER_ID_BYTES + 1)
+        for driver_id in (over_bound, "fam." + "b" * 125):
+            for extra in ((), ("--apply", "--gateway-stopped")):
+                with self.subTest(length=len(driver_id), extra=extra):
+                    self.write_state(state_text(control_text(recovery=recovery_text(driver_ids=(driver_id,)))))
+                    self.assert_refused(reset.EXIT_FAILED_PRECONDITION, *extra, reason="driver_ids invalid")
+        # Configured ids keep the same bound.
+        self.write_state(state_text(control_text()))
+        self.assert_refused(reset.EXIT_FAILED_PRECONDITION, "--apply", "--gateway-stopped",
+                            ids=(over_bound,), reason="not canonical")
+        self.write_state(state_text(control_text(recovery=recovery_text(driver_ids=(at_bound,)))))
+        code, _, err = self.run_main("--apply", "--gateway-stopped")
+        self.assertEqual(code, 0, err)
+        self.assertIn(at_bound, self.read_state().decode("utf-8"))
 
     def test_configuration_must_validate(self):
         self.write_state(state_text(control_text()))

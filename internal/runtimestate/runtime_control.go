@@ -269,11 +269,14 @@ type ControlStartup struct {
 	Reserved        *ControlTransition
 }
 
-// ControlDriverView is a coherent read of one visible driver.
+// ControlDriverView is a coherent read of one visible driver. ReadOnly marks
+// the last-known-good durable view loaded while control is LOCKED: it is
+// readable, but no decision, work, catalog or recovery write is admitted.
 type ControlDriverView struct {
 	DriverID        string
 	Enabled         bool
 	Failed          bool
+	ReadOnly        bool
 	HasRecord       bool
 	DesiredState    DesiredState
 	DesiredRevision uint64
@@ -282,7 +285,9 @@ type ControlDriverView struct {
 }
 
 // ControlCatalogView is one coherent read of the committed namespace.
+// ReadOnly has the ControlDriverView meaning.
 type ControlCatalogView struct {
+	ReadOnly           bool
 	IssuedRevisionMark uint64
 	CatalogRevision    uint64
 	Drivers            []ControlDriverView
@@ -1042,6 +1047,10 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 			}
 			stage.records[c.DriverID] = ControlDriverRecord{DesiredState: desired, DesiredRevision: stage.mark}
 		}
+		if refusal := checkControlBytes(stage); refusal != nil {
+			commitErr = refusal
+			break
+		}
 		commitErr = m.commitControl(stage, true)
 	case status == ControlLoadLoaded && committed != nil:
 		stage := committed.clone()
@@ -1073,6 +1082,10 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 			stage.catalog, ok2 = addCounter(stage.catalog, changes)
 			if !ok1 || !ok2 {
 				commitErr = refuse(RefusalCounterExhausted, 10, "registration mark or catalog increment would overflow")
+				break
+			}
+			if refusal := checkControlBytes(stage); refusal != nil {
+				commitErr = refusal
 				break
 			}
 			commitErr = m.commitControl(stage, false)
@@ -1152,7 +1165,7 @@ func (m *Manager) controlStartupPlan() []ControlStartup {
 func (m *Manager) ControlSnapshot() (ControlCatalogView, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ns := m.loadedControlLocked()
+	ns, readOnly := m.readableControlLocked()
 	if ns == nil {
 		return ControlCatalogView{}, refuse(RefusalFailedPrecondition, 3, "runtime_control is not loaded: "+string(m.controlStatus.Disposition))
 	}
@@ -1161,9 +1174,11 @@ func (m *Manager) ControlSnapshot() (ControlCatalogView, error) {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	view := ControlCatalogView{IssuedRevisionMark: ns.mark, CatalogRevision: ns.catalog}
+	view := ControlCatalogView{ReadOnly: readOnly, IssuedRevisionMark: ns.mark, CatalogRevision: ns.catalog}
 	for _, id := range ids {
-		view.Drivers = append(view.Drivers, driverViewLocked(ns, id, m.controlConfigs[id]))
+		d := driverViewLocked(ns, id, m.controlConfigs[id])
+		d.ReadOnly = readOnly
+		view.Drivers = append(view.Drivers, d)
 	}
 	return view, nil
 }
@@ -1176,11 +1191,13 @@ func (m *Manager) ControlDriver(id string) (ControlDriverView, error) {
 	if !CanonicalControlDriverID(id) || !ok {
 		return ControlDriverView{}, refuse(RefusalNotFound, 2, "driver not registered")
 	}
-	ns := m.loadedControlLocked()
+	ns, readOnly := m.readableControlLocked()
 	if ns == nil {
 		return ControlDriverView{DriverID: id, Enabled: cfg.Enabled, Failed: true}, nil
 	}
-	return driverViewLocked(ns, id, cfg), nil
+	v := driverViewLocked(ns, id, cfg)
+	v.ReadOnly = readOnly
+	return v, nil
 }
 
 func driverViewLocked(ns *controlNamespace, id string, cfg ControlDriverConfig) ControlDriverView {
@@ -1200,6 +1217,21 @@ func driverViewLocked(ns *controlNamespace, id string, cfg ControlDriverConfig) 
 	return v
 }
 
+// readableControlLocked returns the committed namespace for reads. While
+// control is LOCKED it returns the last-known-good namespace decoded from the
+// readable file with readOnly set; it is never used for admission or writes.
+func (m *Manager) readableControlLocked() (ns *controlNamespace, readOnly bool) {
+	if ns := m.loadedControlLocked(); ns != nil {
+		return ns, false
+	}
+	if m.controlStatus.Disposition == ControlLoadLocked && m.state != nil && m.state.control != nil && m.state.control.status == ControlLoadLoaded {
+		return m.state.control, true
+	}
+	return nil, false
+}
+
+// loadedControlLocked returns the committed namespace only when control is
+// LOADED; every admission and write path uses it.
 func (m *Manager) loadedControlLocked() *controlNamespace {
 	if m.controlStatus.Disposition != ControlLoadLoaded || m.state == nil || m.state.control == nil || m.state.control.status != ControlLoadLoaded {
 		return nil
@@ -1394,6 +1426,10 @@ func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision 
 	return out, nil
 }
 
+// checkControlBytes enforces the namespace byte limit on the staged namespace.
+// Every control commit (seed, registration, decision, work, catalog and
+// recovery) calls it before commitControl, so an oversize namespace is refused
+// RESOURCE_EXHAUSTED and never persisted.
 func checkControlBytes(ns *controlNamespace) *ControlRefusal {
 	raw, err := ns.encode()
 	if err != nil {
@@ -1541,6 +1577,9 @@ func (m *Manager) AdvanceControlCatalog(ctx context.Context) (uint64, error) {
 		return 0, refuse(RefusalCounterExhausted, 10, "catalog revision increment would overflow")
 	}
 	ns.catalog = next
+	if refusal := checkControlBytes(ns); refusal != nil {
+		return 0, refusal
+	}
 	if err := m.commitControl(ns, false); err != nil {
 		return 0, err
 	}
@@ -1585,7 +1624,7 @@ func (m *Manager) CommitControlRecovery(ctx context.Context, recovery *ControlRe
 func (m *Manager) ControlRecoveryPayload() *ControlRecovery {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ns := m.loadedControlLocked()
+	ns, _ := m.readableControlLocked()
 	if ns == nil {
 		return nil
 	}

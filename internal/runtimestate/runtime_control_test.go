@@ -7,6 +7,9 @@ package runtimestate
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1687,10 +1690,14 @@ func TestControlWorkRejectsObsoleteSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, writes = rcRead(t, path), hooks.writeCount()
-	wrongRevision, wrongKind := cloneTransition(promoted), cloneTransition(promoted)
+	// The accepted identity (kind, desired revision, sequence) is immutable:
+	// a later write may only advance or clear it.
+	wrongRevision, wrongKind, swappedKind, wrongSequence := cloneTransition(promoted), cloneTransition(promoted), cloneTransition(promoted), cloneTransition(promoted)
 	wrongRevision.DesiredRevision--
 	wrongKind.Kind = TransitionRestart
-	for _, stale := range []*ControlTransition{old, wrongRevision, wrongKind} {
+	swappedKind.Kind = TransitionStop
+	wrongSequence.Sequence++
+	for _, stale := range []*ControlTransition{old, wrongRevision, wrongKind, swappedKind, wrongSequence} {
 		if err := m.CommitControlWork(rcCtx(t), "ebus.primary", stale, nil); !errors.Is(err, ErrControlInvalidWork) {
 			t.Fatalf("obsolete identity accepted: %+v: %v", stale, err)
 		}
@@ -1733,4 +1740,420 @@ func TestControlMissingReadbackCannotResurrectIntent(t *testing.T) {
 	}
 	_, err = rcDecide(t, m, ControlStart, "ebus.primary", 2)
 	_ = rcRefusal(t, err, RefusalFailedPrecondition, 3)
+}
+
+// rcHoldStoreLock takes the store lock through an independent descriptor, as
+// another gateway process or the offline reset would.
+func rcHoldStoreLock(t *testing.T, path string) *os.File {
+	t.Helper()
+	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = lock.Close()
+		t.Fatalf("store lock not acquirable: %v", err)
+	}
+	return lock
+}
+
+// rcStoreLockFree reports whether an independent descriptor can take the lock.
+func rcStoreLockFree(t *testing.T, path string) bool {
+	t.Helper()
+	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			t.Fatalf("flock: %v", err)
+		}
+		return false
+	}
+	_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	return true
+}
+
+// A store lock that cannot be acquired fails control closed for admission and
+// writes (LOCKED, nothing accepted, no write, no seed) while the readable
+// file stays available read-only: the GUID, the eBUS cache and the
+// last-known-good control namespace are never collapsed into "missing" and
+// never overwritten later.
+func TestControlStoreLockUnavailableKeepsReadableStateReadOnly(t *testing.T) {
+	for _, cause := range []string{"held_by_another_writer", "sidecar_cannot_be_opened"} {
+		t.Run(cause, func(t *testing.T) {
+			m, path := rcSeeded(t, nil)
+			m.UpsertKnownBusMember(KnownBusMember{Addr: 0x15, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+			if err := m.Flush(rcCtx(t)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rcDecide(t, m, ControlStop, "ebus.primary", 2); err != nil {
+				t.Fatal(err)
+			}
+			rcStop(t, m)
+			switch cause {
+			case "held_by_another_writer":
+				lock := rcHoldStoreLock(t, path)
+				defer func() { _ = lock.Close() }()
+			case "sidecar_cannot_be_opened":
+				if err := os.Remove(path + ".lock"); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path+".lock", 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := rcRead(t, path)
+			hooks := &rcHooks{}
+			m2 := rcManager(t, path, hooks)
+			status := m2.ControlLoad()
+			if status.Disposition != ControlLoadLocked || !strings.Contains(status.Detail, "store lock unavailable") {
+				t.Fatalf("load = %+v, want LOCKED", status)
+			}
+			if m2.ControlAdmissionOpen() {
+				t.Fatal("admission open without the store lock")
+			}
+			// Generic namespaces keep their last-known-good in-memory values.
+			st := m2.State()
+			if st.Meta.InstanceGUID != rcGUID || st.EBus == nil || len(st.EBus.KnownBusMembers) != 1 || st.EBus.KnownBusMembers[0].Addr != 0x15 {
+				t.Fatalf("readable state collapsed: %+v", st)
+			}
+			plan, err := m2.BootstrapControl(context.Background(), rcDefaultConfigs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range plan {
+				if entry.Action != StartupFailed {
+					t.Fatalf("startup without the store lock = %+v", plan)
+				}
+			}
+			// The read path serves the last-known-good namespace read-only.
+			snap := rcSnapshot(t, m2)
+			if !snap.ReadOnly || snap.IssuedRevisionMark != 3 || snap.CatalogRevision != 4 || len(snap.Drivers) != 2 {
+				t.Fatalf("read-only snapshot = %+v", snap)
+			}
+			v := rcDriver(t, m2, "ebus.primary")
+			if !v.ReadOnly || v.Failed || !v.HasRecord || v.DesiredState != DesiredStopped || v.DesiredRevision != 3 || v.Current == nil {
+				t.Fatalf("read-only driver view = %+v", v)
+			}
+			// Every admission and write path fails closed.
+			_, err = rcDecide(t, m2, ControlStart, "ebus.primary", 3)
+			_ = rcRefusal(t, err, RefusalFailedPrecondition, 3)
+			if _, err := m2.AdvanceControlCatalog(rcCtx(t)); err == nil {
+				t.Fatal("catalog advanced without the store lock")
+			}
+			if err := m2.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil); err == nil {
+				t.Fatal("work committed without the store lock")
+			}
+			if err := m2.CommitControlRecovery(rcCtx(t), nil); err == nil {
+				t.Fatal("recovery committed without the store lock")
+			}
+			m2.UpsertKnownBusMember(KnownBusMember{Addr: 0x26, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+			if err := m2.Flush(rcCtx(t)); !errors.Is(err, ErrStatePersistBlocked) {
+				t.Fatalf("flush without the store lock = %v", err)
+			}
+			if err := m2.EagerPersistInstanceGUID(context.Background(), rcGUID, IdentitySourceRuntimeState); !errors.Is(err, ErrStatePersistBlocked) {
+				t.Fatalf("eager persist without the store lock = %v", err)
+			}
+			rcStop(t, m2)
+			if hooks.writeCount() != 0 || !bytes.Equal(rcRead(t, path), before) {
+				t.Fatal("store written without its lock")
+			}
+		})
+	}
+	t.Run("corrupt_file_is_not_quarantined", func(t *testing.T) {
+		path := rcPath(t)
+		if err := os.WriteFile(path, []byte(`{"schema_version":1,`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lock := rcHoldStoreLock(t, path)
+		defer func() { _ = lock.Close() }()
+		before := rcRead(t, path)
+		m := rcManager(t, path, nil)
+		defer rcStop(t, m)
+		if got := m.ControlLoad(); got.Disposition != ControlLoadLocked || !strings.Contains(got.Detail, "corrupt") {
+			t.Fatalf("load = %+v", got)
+		}
+		if copies, _ := filepath.Glob(path + corruptQuarantineInfix + "*"); len(copies) != 0 || !bytes.Equal(rcRead(t, path), before) {
+			t.Fatalf("corrupt file renamed without the lock: %v", copies)
+		}
+		if _, err := m.ControlSnapshot(); err == nil {
+			t.Fatal("snapshot served without a readable namespace")
+		}
+	})
+	t.Run("missing_file_is_not_seeded", func(t *testing.T) {
+		path := rcPath(t)
+		lock := rcHoldStoreLock(t, path)
+		defer func() { _ = lock.Close() }()
+		m := rcManager(t, path, nil)
+		defer rcStop(t, m)
+		if got := m.ControlLoad().Disposition; got != ControlLoadLocked {
+			t.Fatalf("got %s, want LOCKED", got)
+		}
+		if _, err := m.BootstrapControl(context.Background(), rcDefaultConfigs); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("seeded without the lock: %v", err)
+		}
+	})
+}
+
+// Stop waits for an in-flight control transaction (dirty=false, so no final
+// flush) before releasing the store lock, and closes write admission.
+func TestControlStopWaitsForInFlightControlTransaction(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	block, entered := make(chan struct{}), make(chan struct{})
+	hooks.set(func(h *rcHooks) { h.blockNext, h.entered = block, entered })
+	advanced := make(chan error, 1)
+	go func() {
+		_, err := m.AdvanceControlCatalog(context.Background())
+		advanced <- err
+	}()
+	<-entered
+	stopped := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stopped <- m.Stop(ctx)
+	}()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned during an in-flight control transaction: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if rcStoreLockFree(t, path) {
+		t.Fatal("store lock released before the in-flight rename")
+	}
+	close(block)
+	if err := <-advanced; err != nil {
+		t.Fatalf("in-flight transaction = %v", err)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if !rcStoreLockFree(t, path) {
+		t.Fatal("store lock still held after Stop")
+	}
+	if got := rcControlJSON(t, rcRead(t, path))["catalog_revision"]; got != "4" {
+		t.Fatalf("catalog after the in-flight commit = %v, want 4", got)
+	}
+	// Write admission is closed after the lock is released.
+	before, writes := rcRead(t, path), hooks.writeCount()
+	_, err := m.AdvanceControlCatalog(rcCtx(t))
+	_ = rcRefusal(t, err, RefusalUnavailable, 0)
+	m.UpsertKnownBusMember(KnownBusMember{Addr: 0x31, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+	if err := m.Flush(rcCtx(t)); !errors.Is(err, ErrStatePersistBlocked) {
+		t.Fatalf("flush after Stop = %v", err)
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("write after Stop released the lock")
+	}
+}
+
+// The store lock is released on every shutdown path, including a canceled
+// context, so a restart does not see a stale LOCKED disposition.
+func TestControlStopReleasesStoreLockOnCanceledContext(t *testing.T) {
+	t.Run("canceled_before_stop", func(t *testing.T) {
+		m, path := rcSeeded(t, nil)
+		if err := m.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = m.Stop(ctx)
+		if !rcStoreLockFree(t, path) {
+			t.Fatal("store lock held after a canceled Stop")
+		}
+		if err := m.Stop(context.Background()); err != nil {
+			t.Fatalf("second Stop = %v", err)
+		}
+		m2 := rcManager(t, path, nil)
+		defer rcStop(t, m2)
+		if got := m2.ControlLoad().Disposition; got != ControlLoadLoaded {
+			t.Fatalf("restart disposition = %s, want LOADED", got)
+		}
+	})
+	t.Run("canceled_during_in_flight_write", func(t *testing.T) {
+		hooks := &rcHooks{}
+		m, path := rcSeeded(t, hooks)
+		block, entered := make(chan struct{}), make(chan struct{})
+		hooks.set(func(h *rcHooks) { h.blockNext, h.entered = block, entered })
+		advanced := make(chan error, 1)
+		go func() {
+			_, err := m.AdvanceControlCatalog(context.Background())
+			advanced <- err
+		}()
+		<-entered
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if err := m.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Stop with an expiring context = %v", err)
+		}
+		if rcStoreLockFree(t, path) {
+			t.Fatal("store lock released before the in-flight rename")
+		}
+		close(block)
+		if err := <-advanced; err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for !rcStoreLockFree(t, path) {
+			if time.Now().After(deadline) {
+				t.Fatal("store lock never released after a canceled Stop")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		m2 := rcManager(t, path, nil)
+		defer rcStop(t, m2)
+		if got := m2.ControlLoad().Disposition; got != ControlLoadLoaded {
+			t.Fatalf("restart disposition = %s, want LOADED", got)
+		}
+		if snap := rcSnapshot(t, m2); snap.CatalogRevision != 4 {
+			t.Fatalf("restart catalog = %d, want the in-flight commit 4", snap.CatalogRevision)
+		}
+	})
+}
+
+// The namespace byte limit is enforced before catalog, registration and seed
+// commits: one byte over refuses RESOURCE_EXHAUSTED with no write, exactly at
+// the limit commits.
+func TestControlByteLimitBeforeCatalogAndBootstrapCommits(t *testing.T) {
+	saved := maxControlNamespaceBytes
+	defer func() { maxControlNamespaceBytes = saved }()
+	encodedSize := func(m *Manager) int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		raw, err := m.state.control.encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(raw)
+	}
+	t.Run("catalog", func(t *testing.T) {
+		m, path := rcCounterFixture(t, "9", "9", "9", "0")
+		defer rcStop(t, m)
+		size := encodedSize(m)
+		maxControlNamespaceBytes = size // "9" -> "10" grows the namespace by one byte
+		before := rcRead(t, path)
+		_, err := m.AdvanceControlCatalog(rcCtx(t))
+		_ = rcRefusal(t, err, RefusalResourceExhausted, 9)
+		if !bytes.Equal(rcRead(t, path), before) {
+			t.Fatal("over-limit catalog commit persisted")
+		}
+		maxControlNamespaceBytes = size + 1
+		if next, err := m.AdvanceControlCatalog(rcCtx(t)); err != nil || next != 10 {
+			t.Fatalf("catalog at the limit = %d, %v", next, err)
+		}
+		if got := encodedSize(m); got != maxControlNamespaceBytes {
+			t.Fatalf("committed size = %d, want exactly the limit %d", got, maxControlNamespaceBytes)
+		}
+	})
+	t.Run("registration", func(t *testing.T) {
+		m, path := rcCounterFixture(t, "9", "9", "9", "0")
+		defer rcStop(t, m)
+		maxControlNamespaceBytes = encodedSize(m)
+		before := rcRead(t, path)
+		_, err := m.BootstrapControl(context.Background(), []ControlDriverConfig{{DriverID: "ebus.primary", Enabled: true}, {DriverID: "fam.new", Enabled: true}})
+		_ = rcRefusal(t, err, RefusalResourceExhausted, 9)
+		if !bytes.Equal(rcRead(t, path), before) {
+			t.Fatal("over-limit registration persisted")
+		}
+	})
+	t.Run("seed", func(t *testing.T) {
+		path := rcPath(t)
+		rcWriteBase(t, path)
+		m := rcManager(t, path, nil)
+		defer rcStop(t, m)
+		maxControlNamespaceBytes = 16
+		before := rcRead(t, path)
+		_, err := m.BootstrapControl(context.Background(), rcDefaultConfigs)
+		_ = rcRefusal(t, err, RefusalResourceExhausted, 9)
+		if !bytes.Equal(rcRead(t, path), before) || m.ControlLoad().Disposition != ControlLoadMissing {
+			t.Fatal("over-limit seed persisted")
+		}
+	})
+}
+
+// Cross-implementation check: the offline reset either refuses with the
+// original bytes intact or emits a file the Go loader loads as LOADED. Each
+// refused base is one the loader itself rejects.
+func TestControlOfflineResetNeverEmitsAStateTheLoaderRejects(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "reset_runtime_control.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := func(id string) string {
+		payload := []byte("d5")
+		sum := sha256.Sum256(payload)
+		return fmt.Sprintf(`,"recovery":{"format":%q,"driver_ids":[%q],"max_desired_revision":"1","payload_sha256":%q,"payload":%q}`,
+			ControlRecoveryFormat, id, hex.EncodeToString(sum[:]), base64.StdEncoding.EncodeToString(payload))
+	}
+	base := func(ebus, rec string) string {
+		return `{"schema_version":1,"meta":{"instance_guid":"` + rcGUID + `","written_at":"2001-02-03T04:05:06Z"}` + ebus +
+			`,"runtime_control":{"schema_version":1,"issued_revision_mark":"1","catalog_revision":"1","drivers":{}` + rec + `}}`
+	}
+	member := func(addr string) string {
+		return `{"addr":` + addr + `,"last_seen_at":"","last_source":"passive_observed","confidence":"corroborated"}`
+	}
+	cases := []struct {
+		name  string
+		body  string
+		valid bool
+	}{
+		{"valid", base(`,"ebus":{"schema_version":1,"known_bus_members":[`+member("8")+`]}`, recovery("ebus.primary")), true},
+		{"d5_id_128_bytes", base("", recovery(strings.Repeat("a", 128))), true},
+		{"d5_id_129_bytes", base("", recovery(strings.Repeat("a", 129))), false},
+		{"member_addr_256", base(`,"ebus":{"schema_version":1,"known_bus_members":[`+member("256")+`]}`, ""), false},
+		{"member_addr_duplicate", base(`,"ebus":{"schema_version":1,"known_bus_members":[`+member("8")+`,`+member("8")+`]}`, ""), false},
+		{"self_source_300", base(`,"ebus":{"schema_version":1,"self":{"last_admitted_source":300,"last_admitted_at":"","selection_method":"","companion_target":null}}`, ""), false},
+		{"companion_negative", base(`,"ebus":{"schema_version":1,"known_bus_members":[{"addr":8,"companion_addr":-1}]}`, ""), false},
+		{"meta_wrong_type", strings.Replace(base("", ""), `"written_at":"2001-02-03T04:05:06Z"`, `"written_at":7`, 1), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The loader's own verdict on the original bytes (on a copy, since
+			// loading a corrupt file quarantines it).
+			probe := rcPath(t)
+			if err := os.WriteFile(probe, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pm := rcManager(t, probe, nil)
+			loaderAccepts := pm.ControlLoad().Disposition == ControlLoadLoaded
+			rcStop(t, pm)
+			if loaderAccepts != tc.valid {
+				t.Fatalf("loader verdict = %v, want %v (%+v)", loaderAccepts, tc.valid, pm.ControlLoad())
+			}
+			path := rcPath(t)
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(python, "-I", script, "--state-file", path, "--namespace", "runtime_control", "--desired", "STOPPED", "--driver-id", "ebus.primary", "--apply", "--gateway-stopped")
+			out, runErr := cmd.CombinedOutput()
+			if !tc.valid {
+				var exitErr *exec.ExitError
+				if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 3 {
+					t.Fatalf("reset = %v, want FAILED_PRECONDITION exit 3\n%s", runErr, out)
+				}
+				if !bytes.Equal(rcRead(t, path), []byte(tc.body)) {
+					t.Fatal("refused reset changed the original bytes")
+				}
+				return
+			}
+			if runErr != nil {
+				t.Fatalf("reset = %v\n%s", runErr, out)
+			}
+			m := rcManager(t, path, nil)
+			defer rcStop(t, m)
+			if got := m.ControlLoad(); got.Disposition != ControlLoadLoaded {
+				t.Fatalf("reset output load = %+v", got)
+			}
+		})
+	}
 }

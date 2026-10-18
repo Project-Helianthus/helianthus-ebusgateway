@@ -559,7 +559,18 @@ usable. A file that cannot be read, or whose corrupt quarantine rename fails,
 blocks persistence so its bytes are never overwritten; a quarantine copy is
 never replaced. The writer holds an exclusive `flock` on the `<state>.lock`
 sidecar from load until stop, which the offline reset also takes. Any sidecar
-open or lock acquisition error blocks persistence.
+open or lock acquisition error (another holder or any other failure) yields
+`LOCKED` and blocks persistence for the process: no decision, work, catalog,
+recovery, seed, registration or generic write is accepted, and a corrupt file
+is not quarantined. The readable file is still decoded read-only: the GUID, the
+eBUS cache and opaque namespaces keep their last-known-good in-memory values,
+and the last-known-good `runtime_control` namespace is served by the snapshot
+and per-driver reads with `ReadOnly` set while every configured driver starts
+`FAILED`. It is never read as missing and never overwritten later. Stop waits
+for every in-flight writer (a control transaction or a ticker flush) before it
+closes write admission and releases the lock; a canceled stop context skips the
+final flush but still releases the lock as soon as the in-flight writer
+finishes.
 
 The one-time seed runs only for `MISSING` with a valid persisted instance
 GUID: the mark starts at 0 and each configured driver, in bytewise `DriverID`
@@ -592,6 +603,13 @@ refuses `REVISION_CONFLICT` only for a conclusively stale expectation and
 `TRANSITION_BUSY` otherwise, with no durable change. Accepted and no-op results
 are `{desired_state, desired_revision}` only.
 
+Every control commit (seed, registration, decision, work, catalog and
+recovery) checks the namespace byte limit on the staged namespace first and
+refuses `RESOURCE_EXHAUSTED` without writing. A work update may only advance the
+phase, correlation and obligations of a stored transition, promote the reserved
+slot or clear slots; the accepted identity (kind, desired revision and
+sequence) never changes.
+
 A control transaction stages privately, persists the whole file through a
 same-directory temporary file, a required file fsync and a rename (no
 cross-filesystem fallback) and exposes the committed state only after a
@@ -610,11 +628,12 @@ The offline repair is `scripts/reset_runtime_control.py --state-file <file>
 --namespace runtime_control --desired STOPPED --driver-id <id>...`. It
 previews by default and replaces only with `--apply --gateway-stopped`, refuses
 while another process holds the store lock, refuses a corrupt or unreadable
-file (including invalid typed meta/eBUS fields, out-of-range addresses or
-duplicate member addresses), a missing or invalid GUID, an unsupported namespace
+file (including any preserved meta/eBUS value the gateway loader rejects:
+invalid typed fields, out-of-range addresses or duplicate member addresses), a missing or invalid GUID, an unsupported namespace
 version or unknown namespace member, an unvalidated mark or catalog revision, an
 unverifiable D5
-envelope or one recording a revision above the mark, and an unvalidated
+envelope (including a driver ID that is not canonical or exceeds 128 bytes) or
+one recording a revision above the mark, and an unvalidated
 configured ID set (`FAILED_PRECONDITION`, or `COUNTER_EXHAUSTED` when `H + N`
 or `C + 1` overflows). It writes an exclusive, fsynced quarantine copy of the
 exact original bytes, then replaces only the namespace member: one `STOPPED`

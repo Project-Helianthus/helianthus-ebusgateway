@@ -249,11 +249,41 @@ func (s *Service) settleObligations(d *driverState, t Transition) Transition {
 		return next
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		out := d.exec.Stop(s.ctx, s.corr(d, t))
+		out := s.stopBounded(d, s.corr(d, t))
 		next.NativeClosePending = t.NativeClosePending && !out.NativeClosed
 		next.SemanticCleanupPending = t.SemanticCleanupPending && !out.SemanticCleaned
 	}
 	return next
+}
+
+// stopBounded runs one executor Stop under a context limited to the
+// operation budget, so an executor that respects its context cannot block a
+// reconciler indefinitely. Stop must be idempotent for a correlation whose
+// native close is already proven: it is repeated to retry semantic cleanup.
+func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation) StopOutcome {
+	ctx, cancel := context.WithTimeout(s.ctx, s.budget)
+	defer cancel()
+	return d.exec.Stop(ctx, corr)
+}
+
+// semanticRetry bounds consecutive unfinished semantic cleanups: after the
+// attempt limit the reconciler stops retrying in this process, reports the
+// driver FAILED and leaves the obligation durable; the next wake (a decision
+// or a new incarnation) starts a fresh bounded series.
+func (s *Service) semanticRetry(d *driverState, t Transition) (bool, time.Duration) {
+	d.mu.Lock()
+	d.cleanupRetries++
+	exhausted := d.cleanupRetries >= s.maxAttempts
+	if exhausted {
+		d.cleanupRetries = 0
+	}
+	d.mu.Unlock()
+	if exhausted {
+		s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+		s.appendDiagnostic(d, t, "CLEANUP_STALLED")
+		return false, 0
+	}
+	return s.retryLater()
 }
 
 func (s *Service) releaseLive(d *driverState, t Transition) {
@@ -276,8 +306,11 @@ func (s *Service) afterCleanup(d *driverState, next Transition) (bool, time.Dura
 		s.quarantine(d, next)
 		return false, 0
 	case next.SemanticCleanupPending:
-		return s.retryLater()
+		return s.semanticRetry(d, next)
 	}
+	d.mu.Lock()
+	d.cleanupRetries = 0
+	d.mu.Unlock()
 	return true, 0
 }
 
@@ -374,19 +407,20 @@ func (s *Service) stepRestart(d *driverState, t Transition) (bool, time.Duration
 		live := d.live
 		d.mu.Unlock()
 		if live != nil {
+			// Persist the predecessor's correlation and both cleanup
+			// obligations before any Stop, so process loss during the
+			// withdrawal recovers them.
 			s.setCorr(d, live.corr)
 			s.observe(d, observation{state: drivermanager.ObservedStopping, reason: drivermanager.ReasonStopRequested})
-			out := d.exec.Stop(s.ctx, live.corr)
-			if !out.NativeClosed {
-				s.quarantine(d, t)
-				return false, 0
-			}
-			if !out.SemanticCleaned {
+			next := t
+			next.Phase = PhaseActive
+			next.Epoch, next.Generation = live.corr.Epoch, live.corr.Generation
+			next.NativeClosePending, next.SemanticCleanupPending = true, true
+			next.DeadlineUTC = s.now().Add(s.budget).UTC()
+			if err := s.commitCurrent(d, next); err != nil {
 				return s.retryLater()
 			}
-			d.mu.Lock()
-			d.live = nil
-			d.mu.Unlock()
+			t = next
 		}
 	}
 	return s.stepStart(d, t)
@@ -415,8 +449,9 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 				s.quarantine(d, settled)
 				return false, 0
 			}
+			s.releaseLive(d, settled)
 			if settled.SemanticCleanupPending {
-				return s.retryLater()
+				return s.semanticRetry(d, settled)
 			}
 			next = settled
 		}
@@ -468,6 +503,14 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		}
 		if s.fencedByStore(d, t) {
 			return true, 0
+		}
+		if err == nil && (a.ctx.Err() != nil || !s.now().Before(t.DeadlineUTC)) {
+			// A success after the attempt's budget is never admitted; its
+			// generation is withdrawn through the slot's obligations.
+			if s.isFenced(d, a) {
+				return true, 0
+			}
+			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
 		if err == nil {
 			running := observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone,
@@ -584,9 +627,26 @@ func (s *Service) runUntyped(d *driverState) {
 	corr := LifecycleCorrelation{DriverID: d.id, Epoch: s.newEpoch(d), Generation: 1}
 	a := s.newAttempt(corr, deadline, 0)
 	defer a.cancel()
+	// Install the attempt only when no decision is between its planner and
+	// its commit, then re-read the slots: a STOP or RESTART accepted before
+	// the installation owns the driver and no attempt may begin.
 	d.mu.Lock()
+	for d.deciding > 0 {
+		d.cond.Wait()
+	}
 	d.untyped = a
 	d.mu.Unlock()
+	if rec, err := s.store.Driver(d.id); err != nil || rec.Current != nil {
+		d.mu.Lock()
+		if d.untyped == a {
+			d.untyped = nil
+		}
+		d.mu.Unlock()
+		if err != nil {
+			s.report(err)
+		}
+		return
+	}
 	attempts := 0
 	finishUntyped := func(obs observation) {
 		admitted := s.settle(d, a, func() {
@@ -624,6 +684,20 @@ func (s *Service) runUntyped(d *driverState) {
 		}
 		if rec, rerr := s.store.Driver(d.id); rerr == nil && rec.Current != nil {
 			return // a cancellation slot owns this correlation now
+		}
+		if err == nil && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
+			// A success after the attempt's budget is never admitted; the
+			// started generation is withdrawn, and an unconfirmed close
+			// quarantines the driver.
+			if out := s.stopBounded(d, a.corr); !out.NativeClosed {
+				s.settle(d, a, func() {
+					d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
+				})
+				s.quarantine(d, Transition{Kind: KindStart})
+				return
+			}
+			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+			return
 		}
 		if err == nil {
 			finishUntyped(observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone})

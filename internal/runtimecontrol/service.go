@@ -30,6 +30,7 @@ const (
 	maxIncarnationBytes    = 64
 	maxPublishAttempts     = 4
 	maxCommitAttempts      = 3
+	maxPendingEvents       = 256
 )
 
 // Service errors outside the refusal table.
@@ -172,8 +173,10 @@ type driverState struct {
 	live            *attempt
 	quarantined     bool
 	recoveryBlocked bool
-	autoStartDone   bool
-	epochOrdinal    uint64
+	// cleanupRetries counts consecutive unfinished semantic cleanups.
+	cleanupRetries int
+	autoStartDone  bool
+	epochOrdinal   uint64
 	// corr is the correlation the driver's current observation refers to:
 	// the attempt being started or the generation being withdrawn.
 	corr LifecycleCorrelation
@@ -202,7 +205,12 @@ type Service struct {
 
 	viewMu   sync.Mutex
 	observed map[DriverID]observation
-	view     atomic.Pointer[Catalog]
+	// pendingEv holds committed-in-memory events whose view publication
+	// failed; they are emitted, in order, with the next published view.
+	pendingEv  []Event
+	dirty      bool
+	retryArmed bool
+	view       atomic.Pointer[Catalog]
 
 	lifeMu  sync.Mutex
 	started bool
@@ -239,7 +247,7 @@ func New(opts Options) (*Service, error) {
 	if len(opts.Drivers) == 0 || len(opts.Drivers) > MaxServiceDrivers {
 		return nil, fmt.Errorf("%w: driver count must be 1 to %d", ErrInvalidConfig, MaxServiceDrivers)
 	}
-	if opts.OperationBudget < 0 || opts.MaxAttempts < 0 || opts.MaxAttempts > DefaultMaxAttempts {
+	if opts.OperationBudget < 0 || opts.OperationBudget > DefaultOperationBudget || opts.MaxAttempts < 0 || opts.MaxAttempts > DefaultMaxAttempts {
 		return nil, fmt.Errorf("%w: invalid operation bounds", ErrInvalidConfig)
 	}
 	s := &Service{
@@ -313,24 +321,46 @@ func (s *Service) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.lifeMu.Unlock()
 
+	if err := s.start(ctx); err != nil {
+		var fatal *startFatal
+		if errors.As(err, &fatal) {
+			s.lifeMu.Lock()
+			s.started = false
+			s.cancel()
+			s.lifeMu.Unlock()
+			return fatal.err
+		}
+		return err
+	}
+	return nil
+}
+
+// startFatal marks a Start failure after which no reconciler runs and the
+// service accepts no decision; Start may be called again.
+type startFatal struct{ err error }
+
+func (e *startFatal) Error() string { return e.err.Error() }
+func (e *startFatal) Unwrap() error { return e.err }
+
+func (s *Service) start(ctx context.Context) error {
 	catalog, err := s.store.Catalog()
 	if err != nil || catalog.ReadOnly {
 		s.publishWithheld(catalog, err == nil)
 		if err == nil {
 			err = &Refusal{Code: RefusalFailedPrecondition, Row: 3, Reason: "control state is read-only"}
 		}
-		return err
+		return &startFatal{err}
 	}
 	records := make(map[DriverID]ControlRecord, len(catalog.Drivers))
 	for _, rec := range catalog.Drivers {
 		records[rec.DriverID] = rec
 	}
 	if len(records) != len(s.drivers) {
-		return fmt.Errorf("%w: service drivers differ from the store's visible drivers", ErrInvalidConfig)
+		return &startFatal{fmt.Errorf("%w: service drivers differ from the store's visible drivers", ErrInvalidConfig)}
 	}
 	for id := range s.drivers {
 		if _, ok := records[id]; !ok {
-			return fmt.Errorf("%w: driver %s is not visible in the store", ErrInvalidConfig, id)
+			return &startFatal{fmt.Errorf("%w: driver %s is not visible in the store", ErrInvalidConfig, id)}
 		}
 	}
 
@@ -778,29 +808,63 @@ func (s *Service) commitObserved(d *driverState, obs observation) {
 // commitView publishes a view whose revision is durable. With advance set it
 // first advances the catalog revision; if a concurrent publisher already
 // exposed a different view at the same revision it advances again, within a
-// small bound. It returns whether the view (and event) was published.
+// small bound. It returns whether the view (and event) was published. A
+// failed publication is never dropped: the event is retained in order and a
+// bounded-delay retry republishes the view, so a staged transition cannot
+// stay absent from List when no later action occurs.
 func (s *Service) commitView(ctx context.Context, event *Event, advance bool) bool {
 	for i := 0; i < maxPublishAttempts; i++ {
 		if advance || i > 0 {
 			if ctx.Err() != nil {
-				return false
+				break
 			}
 			if _, err := s.store.AdvanceCatalog(ctx); err != nil {
 				s.report(err)
-				return false
+				break
 			}
 		}
 		if s.publish(event) {
 			return true
 		}
 	}
+	s.deferPublication(event)
 	return false
+}
+
+// deferPublication retains an unpublished event and arms one retry timer.
+func (s *Service) deferPublication(event *Event) {
+	s.viewMu.Lock()
+	defer s.viewMu.Unlock()
+	if event != nil {
+		if len(s.pendingEv) == maxPendingEvents {
+			copy(s.pendingEv, s.pendingEv[1:])
+			s.pendingEv = s.pendingEv[:maxPendingEvents-1]
+		}
+		s.pendingEv = append(s.pendingEv, *event)
+	}
+	s.dirty = true
+	ctx := s.ctx
+	if s.retryArmed || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	s.retryArmed = true
+	time.AfterFunc(s.retryDelay(1), func() {
+		s.viewMu.Lock()
+		s.retryArmed = false
+		s.viewMu.Unlock()
+		if ctx.Err() != nil {
+			return
+		}
+		s.commitView(ctx, nil, true)
+	})
 }
 
 // publish rebuilds the view from one coherent store read plus the staged
 // observations. A view is exposed only at a strictly higher revision, or
 // re-exposed unchanged at the same revision, so content at a revision never
-// changes once exposed.
+// changes once exposed. Events are appended only after the view that makes
+// them visible is stored, so a reader woken by an event always finds a list
+// at least as new as the event's catalog revision.
 func (s *Service) publish(event *Event) bool {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
@@ -816,19 +880,26 @@ func (s *Service) publish(event *Event) bool {
 	default:
 		return false
 	}
+	emit := append([]Event(nil), s.pendingEv...)
 	if event != nil {
-		event.CatalogRevision = built.Revision
+		emit = append(emit, *event)
+	}
+	for i := range emit {
+		e := &emit[i]
+		e.CatalogRevision = built.Revision
 		for _, entry := range built.Drivers {
-			if entry.DriverID == event.DriverID && event.Kind == EventObservedChanged {
-				event.DesiredState = entry.DesiredState
-				event.DesiredRevision = entry.DesiredRevision
+			if entry.DriverID == e.DriverID && e.Kind == EventObservedChanged {
+				e.DesiredState = entry.DesiredState
+				e.DesiredRevision = entry.DesiredRevision
 			}
 		}
-		built.EventCursor = s.events.append(*event)
-	} else {
-		built.EventCursor = s.events.cursor()
 	}
+	built.EventCursor = s.events.cursor() + uint64(len(emit))
 	s.view.Store(&built)
+	for _, e := range emit {
+		s.events.append(e)
+	}
+	s.pendingEv, s.dirty = nil, false
 	return true
 }
 

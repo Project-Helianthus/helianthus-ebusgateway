@@ -647,6 +647,7 @@ func TestServiceConfigValidationRejectsWithoutEffects(t *testing.T) {
 		"typed nil executor":  func(o *Options) { o.Drivers[0].Executor = nilExec },
 		"attempts above 8":    func(o *Options) { o.MaxAttempts = DefaultMaxAttempts + 1 },
 		"negative budget":     func(o *Options) { o.OperationBudget = -time.Second },
+		"budget above 30s":    func(o *Options) { o.OperationBudget = DefaultOperationBudget + time.Nanosecond },
 		"negative max":        func(o *Options) { o.MaxAttempts = -1 },
 		"id above 128 bytes":  func(o *Options) { o.Drivers[0].DriverID = DriverID("a" + strings.Repeat("b", 128)) },
 		"control identifiers": func(o *Options) { o.Drivers[0].DriverID = "fam_alpha" },
@@ -2283,4 +2284,253 @@ func TestServiceWorkUpdateGuard(t *testing.T) {
 			t.Fatalf("%s: checkWorkUpdate error = %v, want ok=%v", tc.name, err, tc.ok)
 		}
 	}
+}
+
+// --- review round: durability of withdrawal, bounded cleanup, races ---
+
+// hookStore wraps a Store with test-controlled faults.
+type hookStore struct {
+	Store
+	failAdvance atomic.Bool
+	driverHook  atomic.Pointer[func(DriverID) ControlRecord]
+}
+
+func (h *hookStore) AdvanceCatalog(ctx context.Context) (CatalogRevision, error) {
+	if h.failAdvance.Load() {
+		return 0, errors.New("synthetic advance failure")
+	}
+	return h.Store.AdvanceCatalog(ctx)
+}
+
+func (h *hookStore) Driver(id DriverID) (ControlRecord, error) {
+	rec, err := h.Store.Driver(id)
+	if fn := h.driverHook.Swap(nil); fn != nil && err == nil {
+		(*fn)(id)
+	}
+	return rec, err
+}
+
+// TestServiceRestartPersistsPredecessorBeforeStop: while the executor is
+// withdrawing the admitted generation for a RESTART, the durable slot already
+// carries that generation's correlation and both cleanup obligations.
+func TestServiceRestartPersistsPredecessorBeforeStop(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	live := f.execs[id].snapshot()[0].Corr
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		once.Do(func() { close(entered) })
+		<-release
+		return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+	})
+	f.mustDecide(MethodRestart, id)
+	<-entered
+	cur := f.record(id).Current
+	if cur == nil || cur.Kind != KindRestart || cur.Phase != PhaseActive || cur.Epoch != live.Epoch ||
+		cur.Generation != live.Generation || !cur.NativeClosePending || !cur.SemanticCleanupPending || cur.DeadlineUTC.IsZero() {
+		t.Fatalf("slot during withdrawal = %+v, want the predecessor correlation with both obligations", cur)
+	}
+	close(release)
+	f.waitSettled(id, drivermanager.ObservedRunning)
+}
+
+// TestServiceCleanupStopIsBounded: a context-respecting executor cannot block
+// cleanup past the operation budget, and an unfinished semantic cleanup is
+// retried only a bounded number of times per series.
+func TestServiceCleanupStopIsBounded(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond; o.MaxAttempts = 3 }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	var hasDeadline atomic.Bool
+	hasDeadline.Store(true)
+	f.execs[id].setStop(func(ctx context.Context, _ LifecycleCorrelation) StopOutcome {
+		if _, ok := ctx.Deadline(); !ok {
+			hasDeadline.Store(false)
+		}
+		<-ctx.Done()
+		return StopOutcome{NativeClosed: true}
+	})
+	f.mustDecide(MethodStop, id)
+	waitFor(t, "cleanup stalled", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+	time.Sleep(300 * time.Millisecond)
+	if !hasDeadline.Load() {
+		t.Fatal("Stop ran without a deadline")
+	}
+	if n := f.execs[id].count("stop"); n != 3 {
+		t.Fatalf("semantic cleanup retried %d times, want the attempt limit 3", n)
+	}
+	if cur := f.record(id).Current; cur == nil || !cur.SemanticCleanupPending || cur.NativeClosePending {
+		t.Fatalf("unfinished cleanup not retained: %+v", cur)
+	}
+}
+
+// TestServiceStopBeforeUntypedInstallClosesGeneration: a STOP accepted after
+// the reconciler read its (empty) slots but before the process-start attempt
+// was installed must prevent that attempt from starting at all.
+func TestServiceStopBeforeUntypedInstallClosesGeneration(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	reached, release := make(chan struct{}), make(chan struct{})
+	hook := func(DriverID) ControlRecord {
+		close(reached)
+		<-release
+		return ControlRecord{}
+	}
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)), noStart: true,
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; hs.driverHook.Store(&hook); return hs }})
+	if err := f.svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-reached
+	f.mustDecide(MethodStop, id)
+	close(release)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	if n := f.execs[id].count("start"); n != 0 {
+		t.Fatalf("a start ran after the STOP was accepted (%d)", n)
+	}
+}
+
+// TestServiceLateStartSuccessIsNotAdmitted: a START that returns nil after
+// its attempt deadline is withdrawn and never published RUNNING, for the
+// typed and the process-start path.
+func TestServiceLateStartSuccessIsNotAdmitted(t *testing.T) {
+	late := func(ctx context.Context, _ LifecycleCorrelation) error {
+		<-ctx.Done()
+		return nil
+	}
+	assertNeverRunning := func(f *svcFixture, id DriverID, stopsWant int) {
+		waitFor(t, "failed", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+		if st := f.status(id); st.Reason != drivermanager.ReasonRetryExhausted {
+			t.Fatalf("status = %+v", st)
+		}
+		if n := f.execs[id].count("stop"); n < stopsWant {
+			t.Fatalf("late generation not withdrawn: %d stops", n)
+		}
+	}
+	id := DriverID("fam.alpha")
+	t.Run("untyped", func(t *testing.T) {
+		f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+			opts:  func(o *Options) { o.OperationBudget = 100 * time.Millisecond },
+			setup: func(f *svcFixture) { f.execs[id].setStart(late) }})
+		assertNeverRunning(f, id, 1)
+	})
+	t.Run("typed", func(t *testing.T) {
+		f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+			opts: func(o *Options) { o.OperationBudget = 200 * time.Millisecond }})
+		f.waitSettled(id, drivermanager.ObservedRunning)
+		f.execs[id].setStart(late)
+		f.mustDecide(MethodRestart, id)
+		assertNeverRunning(f, id, 2)
+	})
+}
+
+// TestServiceFailedObservationPublicationIsRetried: a transient catalog
+// failure neither loses the transition nor its event; both appear in order
+// once the store recovers, with no further action.
+func TestServiceFailedObservationPublicationIsRetried(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	cursor := f.svc.List().EventCursor
+	hs.failAdvance.Store(true)
+	f.mustDecide(MethodStop, id)
+	f.waitIdle(id)
+	time.Sleep(20 * time.Millisecond)
+	if st := f.status(id); st.ObservedState == drivermanager.ObservedStopped {
+		t.Fatalf("transition published despite failing catalog: %+v", st)
+	}
+	hs.failAdvance.Store(false)
+	f.waitObserved(id, drivermanager.ObservedStopped)
+	page := f.svc.EventsSince(cursor)
+	last := page.Events[len(page.Events)-1]
+	if page.Resync || last.Kind != EventObservedChanged || last.ObservedState != drivermanager.ObservedStopped {
+		t.Fatalf("events after recovery = %+v", page)
+	}
+	for i := 1; i < len(page.Events); i++ {
+		if page.Events[i].Cursor != page.Events[i-1].Cursor+1 || page.Events[i].CatalogRevision < page.Events[i-1].CatalogRevision {
+			t.Fatalf("events out of order: %+v", page.Events)
+		}
+	}
+}
+
+// TestServiceEventsFollowTheirView: a reader woken by an event always finds a
+// list at least as new as the event's catalog revision.
+func TestServiceEventsFollowTheirView(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	stop := make(chan struct{})
+	bad := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cursor := f.svc.List().EventCursor
+		for {
+			notify := f.svc.EventNotify()
+			page := f.svc.EventsSince(cursor)
+			for _, e := range page.Events {
+				if got := f.svc.List(); got.Revision < e.CatalogRevision || got.EventCursor < e.Cursor {
+					select {
+					case bad <- fmt.Sprintf("event %+v seen before list %d/%d", e, got.Revision, got.EventCursor):
+					default:
+					}
+				}
+			}
+			cursor = page.Next
+			select {
+			case <-notify:
+			case <-stop:
+				return
+			}
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		f.mustDecide(MethodRestart, id)
+		f.waitSettled(id, drivermanager.ObservedRunning)
+	}
+	close(stop)
+	<-done
+	select {
+	case msg := <-bad:
+		t.Fatal(msg)
+	default:
+	}
+}
+
+// TestServiceFatalStartLeavesServiceNotRunning: a Start refused by startup
+// validation accepts no decision afterwards.
+func TestServiceFatalStartLeavesServiceNotRunning(t *testing.T) {
+	a, b := DriverID("fam.alpha"), DriverID("fam.beta")
+	f := newFixture(t, svcOpts{drivers: enabled(string(a), string(b)), noStart: true,
+		opts: func(o *Options) { o.Drivers = o.Drivers[:1] }})
+	if err := f.svc.Start(context.Background()); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Start error = %v", err)
+	}
+	before := f.probe()
+	_, err := f.svc.Control(deadlineCtx(t), MethodStart, body(a, 1))
+	refusalOf(t, err, RefusalUnavailable, 3)
+	f.assertUnchanged("decision after fatal start", before)
+}
+
+// TestServiceInitialViewIsRetried: a transient failure while publishing the
+// first view is retried instead of leaving the constructor's empty catalog.
+func TestServiceInitialViewIsRetried(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: []runtimestate.ControlDriverConfig{{DriverID: string(id)}}, noStart: true,
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	hs.failAdvance.Store(true)
+	if err := f.svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.svc.List().Drivers); n != 0 {
+		t.Fatalf("view published despite failing catalog: %d", n)
+	}
+	hs.failAdvance.Store(false)
+	waitFor(t, "initial view", func() bool { return len(f.svc.List().Drivers) == 1 })
 }

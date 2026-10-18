@@ -2468,7 +2468,7 @@ func (f *fakeReplay) Install(map[AssetID]bool) (map[AssetID][]byte, map[AssetID]
 // fake replay: a matching sequence and digest reads back without
 // resubmission, an unchanged cursor resubmits the exact stored bytes at the
 // original point before the dependent recorded outcome, a recorded rejection
-// is never applied, an unstaged control asset is unsubmitted, and an
+// is never applied, an unstaged control asset without an outcome fails closed, and an
 // incompatible cursor or an uncertain resubmission fails the source closed
 // and skips its later entries.
 func TestRecoveryCursorResolutionRules(t *testing.T) {
@@ -2506,8 +2506,11 @@ func TestRecoveryCursorResolutionRules(t *testing.T) {
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Fatalf("resolution calls:\n got %v\nwant %v", f.calls, want)
 	}
-	if len(rep.ReadBack) != 1 || len(rep.Resubmitted) != 1 || len(rep.Rejected) != 1 || len(rep.Unsubmitted) != 1 {
+	if len(rep.ReadBack) != 1 || len(rep.Resubmitted) != 1 || len(rep.Rejected) != 1 {
 		t.Fatalf("report: %+v", rep)
+	}
+	if !failedAssets[a] {
+		t.Fatal("an unstaged control attempt without an outcome must fail its asset closed")
 	}
 	if !failedSources[secondSource] || !failedAssets[secondAsset] || failedSources[synthSource] {
 		t.Fatalf("incompatible cursor must fail only its source: %v %v", failedSources, failedAssets)
@@ -2648,7 +2651,7 @@ func TestRecoveryPendingOutcomeReservationsSurviveLaterIntents(t *testing.T) {
 // TestRecoveryPartialControlFailsUnstagedAssetClosed resolves a control whose
 // first asset was staged (and may be submitted) while the second never was:
 // the second asset's outstanding-control gate cannot be restored, so it
-// fails closed instead of being reported as unsubmitted.
+// fails closed.
 func TestRecoveryPartialControlFailsUnstagedAssetClosed(t *testing.T) {
 	r, err := NewRecorder(RecorderOptions{Store: &faultStore{}, Hub: &hubBridge{}, Clock: &synthClock{}, Sources: []ManagedSource{
 		{Driver: synthDriver, Source: synthSource, Assets: synthAssets}}})
@@ -2664,7 +2667,7 @@ func TestRecoveryPartialControlFailsUnstagedAssetClosed(t *testing.T) {
 	failedSources, failedAssets := map[SourceID]bool{}, map[AssetID]bool{}
 	var rep RestoreReport
 	r.resolveEntries(s, f, failedSources, failedAssets, &rep)
-	if !failedAssets[b] || failedAssets[a] || failedSources[synthSource] || len(rep.Unsubmitted) != 0 || len(rep.ReadBack) != 1 {
+	if !failedAssets[b] || failedAssets[a] || failedSources[synthSource] || len(rep.ReadBack) != 1 {
 		t.Fatalf("partial control: failed %v source %v report %+v", failedAssets, failedSources, rep)
 	}
 }
@@ -2731,5 +2734,46 @@ func TestRecoveryReservationEstimatesSurviveCompactedRestart(t *testing.T) {
 		if w.rec.lastResult[id] < len(s.Base) || w.rec.lastStaged[id] < len(s.Base) {
 			t.Fatalf("%s estimates after compacted restart: result %d staged %d base %d", id, w.rec.lastResult[id], w.rec.lastStaged[id], len(s.Base))
 		}
+	}
+}
+
+// TestRecoveryUnstagedControlWithLostRejectionFailsClosed resolves a control
+// whose first attempt never reached durable staging and whose rejection
+// outcome was lost: no asset may reopen reads.
+func TestRecoveryUnstagedControlWithLostRejectionFailsClosed(t *testing.T) {
+	r, err := NewRecorder(RecorderOptions{Store: &faultStore{}, Hub: &hubBridge{}, Clock: &synthClock{}, Sources: []ManagedSource{
+		{Driver: synthDriver, Source: synthSource, Assets: synthAssets}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := synthAssets[0], synthAssets[1]
+	s := newStream()
+	s.Entries = []walEntry{{Kind: entryControl, Source: synthSource, WAL: 1, Point: 7,
+		Assets: []walAsset{{Asset: a, Ordinal: 1}, {Asset: b, Ordinal: 1}}}}
+	failedSources, failedAssets := map[SourceID]bool{}, map[AssetID]bool{}
+	r.resolveEntries(s, &fakeReplay{}, failedSources, failedAssets, &RestoreReport{})
+	if !failedAssets[a] || !failedAssets[b] {
+		t.Fatalf("unstaged control must fail every asset closed: %v", failedAssets)
+	}
+}
+
+// TestRecoveryBackwardSampleWithinProcessFailsAssetClosed moves the process
+// clock backward after samples advanced: the later sample is still above the
+// restore-time sample, but it is below the last one used.
+func TestRecoveryBackwardSampleWithinProcessFailsAssetClosed(t *testing.T) {
+	w := newWorld(t, worldOpts{})
+	w.mustRestore()
+	w.admit(synthSource)
+	w.host.advance(100 * time.Second)
+	w.mustPublish(synthSource, synthAssets[0])
+	w.host.mu.Lock()
+	w.host.now -= uint64(50 * time.Second)
+	w.host.mu.Unlock()
+	if _, err := w.publish(synthSource, synthAssets[0]); refusalCode(err) != RefusalFailedPrecondition {
+		t.Fatalf("backward sample must refuse: %v", err)
+	}
+	w.host.advance(200 * time.Second)
+	if _, err := w.publish(synthSource, synthAssets[0]); refusalCode(err) != RefusalFailedPrecondition {
+		t.Fatalf("the asset must stay failed closed: %v", err)
 	}
 }

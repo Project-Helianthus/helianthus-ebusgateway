@@ -223,7 +223,6 @@ type RestoreReport struct {
 	Resubmitted  []StepRef
 	ReadBack     []StepRef
 	Rejected     []StepRef
-	Unsubmitted  []StepRef
 }
 
 // ManagedSource is one registered, service-routed managed source with its
@@ -280,6 +279,7 @@ type managedAsset struct {
 type clockMap struct {
 	origin uint64 // H + d
 	m0     uint64
+	lastM  uint64 // highest sample used in this process
 	last   uint64
 	failed bool
 }
@@ -526,7 +526,6 @@ func (r *Recorder) Report() RestoreReport {
 	rep.Resubmitted = append([]StepRef(nil), rep.Resubmitted...)
 	rep.ReadBack = append([]StepRef(nil), rep.ReadBack...)
 	rep.Rejected = append([]StepRef(nil), rep.Rejected...)
-	rep.Unsubmitted = append([]StepRef(nil), rep.Unsubmitted...)
 	return rep
 }
 
@@ -602,7 +601,7 @@ func (r *Recorder) nextPoint(assets []AssetID) (uint64, []byte, error) {
 		if cm == nil || cm.failed {
 			return 0, nil, &Refusal{Code: RefusalFailedPrecondition, Reason: "asset clock continuity unavailable"}
 		}
-		if m < cm.m0 {
+		if m < cm.m0 || m < cm.lastM {
 			cm.failed = true
 			return 0, nil, &Refusal{Code: RefusalFailedPrecondition, Reason: "backward process clock"}
 		}
@@ -616,6 +615,9 @@ func (r *Recorder) nextPoint(assets []AssetID) (uint64, []byte, error) {
 		}
 		p = max(p, floor)
 		point = max(point, p)
+	}
+	for _, id := range assets {
+		r.clocks[id].lastM = m
 	}
 	return point, anchor, nil
 }
@@ -1423,10 +1425,6 @@ func (r *Recorder) resolveEntries(s walStream, replay Replay, failedSources map[
 		if failedSources[e.Source] {
 			continue
 		}
-		partial := false
-		for _, a := range e.Assets {
-			partial = partial || (e.Kind == entryControl && a.Staged != nil && a.Outcome == nil)
-		}
 		for _, a := range e.Assets {
 			if failedAssets[a.Asset] {
 				continue
@@ -1443,15 +1441,12 @@ func (r *Recorder) resolveEntries(s walStream, replay Replay, failedSources map[
 					ref.ErrorID = a.Outcome.ErrorID
 					report.Rejected = append(report.Rejected, ref)
 				}
-			case a.Staged == nil && partial:
-				// A sibling asset of this control was already staged and
-				// may have been submitted, so the control's outstanding gate
-				// for this asset cannot be restored: fail the asset closed.
-				failedAssets[a.Asset] = true
 			case a.Staged == nil:
-				// The attempt was never durably staged, so it was never
-				// submitted: the ordinal is consumed with no result.
-				report.Unsubmitted = append(report.Unsubmitted, ref)
+				// The attempt has no durable staging and no recorded
+				// outcome. Whether the hub saw the control cannot be shown,
+				// and its outstanding gate cannot be restored: fail the
+				// asset closed.
+				failedAssets[a.Asset] = true
 			default:
 				seq, digest, err := replay.Cursor(a.Asset, a.Staged.Key)
 				switch {

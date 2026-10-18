@@ -2340,3 +2340,326 @@ func TestControlDecisionsRefusedAfterStop(t *testing.T) {
 		})
 	}
 }
+
+// rcWriteLoaded writes a LOADED namespace with the given drivers object body.
+func rcWriteLoaded(t *testing.T, path string, mark, catalog, drivers string) {
+	t.Helper()
+	body := `{"schema_version":1,"meta":{"instance_guid":"` + rcGUID + `","written_at":"2001-02-03T04:05:06Z"},` +
+		`"runtime_control":{"schema_version":1,"issued_revision_mark":"` + mark + `","catalog_revision":"` + catalog +
+		`","drivers":{` + drivers + `}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Removing a registered record-less driver (and re-adding it) is a mark-only
+// write: the issued-revision mark and catalog revision advance, the advance is
+// durable, and the snapshot stops listing the removed driver.
+func TestControlRecordlessDriverRemovalAndReAddAdvanceMark(t *testing.T) {
+	path := rcPath(t)
+	rcWriteLoaded(t, path, "0", "1", "")
+	m := rcManager(t, path, nil)
+	defer rcStop(t, m)
+	ghost := []ControlDriverConfig{{DriverID: "fam.ghost", Enabled: true}}
+	if _, err := m.BootstrapControl(context.Background(), ghost); err != nil {
+		t.Fatal(err)
+	}
+	snap := rcSnapshot(t, m)
+	if len(snap.Drivers) != 1 || snap.IssuedRevisionMark != 1 || snap.CatalogRevision != 2 {
+		t.Fatalf("after register = %+v, want 1 driver, mark 1, catalog 2", snap)
+	}
+	// Re-registering the same set in-process is not a removal or an addition.
+	if _, err := m.BootstrapControl(context.Background(), ghost); err != nil {
+		t.Fatal(err)
+	}
+	if got := rcSnapshot(t, m); got.IssuedRevisionMark != 1 || got.CatalogRevision != 2 {
+		t.Fatalf("idempotent re-register moved counters: %+v", got)
+	}
+
+	if _, err := m.BootstrapControl(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	snap = rcSnapshot(t, m)
+	if len(snap.Drivers) != 0 || snap.IssuedRevisionMark != 2 || snap.CatalogRevision != 3 {
+		t.Fatalf("after removal = %+v, want no drivers, mark 2, catalog 3", snap)
+	}
+	ns := rcControlJSON(t, rcRead(t, path))
+	if ns["issued_revision_mark"] != "2" || ns["catalog_revision"] != "3" {
+		t.Fatalf("removal not durable: mark=%v catalog=%v", ns["issued_revision_mark"], ns["catalog_revision"])
+	}
+
+	if _, err := m.BootstrapControl(context.Background(), ghost); err != nil {
+		t.Fatal(err)
+	}
+	snap = rcSnapshot(t, m)
+	if len(snap.Drivers) != 1 || snap.IssuedRevisionMark != 3 || snap.CatalogRevision != 4 {
+		t.Fatalf("after re-add = %+v, want mark 3, catalog 4", snap)
+	}
+	ns = rcControlJSON(t, rcRead(t, path))
+	if ns["issued_revision_mark"] != "3" || ns["catalog_revision"] != "4" {
+		t.Fatalf("re-add not durable: mark=%v catalog=%v", ns["issued_revision_mark"], ns["catalog_revision"])
+	}
+}
+
+// Admission is enforced at the serialization point: requests that queued on
+// the writer semaphore before Stop began are refused once Stop has started,
+// while the writer admitted before shutdown still finishes.
+func TestControlQueuedWritesRefusedAfterStopBegins(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	block, entered := make(chan struct{}), make(chan struct{})
+	hooks.set(func(h *rcHooks) { h.blockNext, h.entered = block, entered })
+	inflight := make(chan error, 1)
+	go func() {
+		_, err := m.AdvanceControlCatalog(context.Background())
+		inflight <- err
+	}()
+	<-entered
+
+	queued := map[string]func() error{
+		"decide_stop": func() error {
+			_, err := m.DecideControl(rcCtx(t), ControlStop, ControlRequest{DriverID: "ebus.primary", ExpectedRevision: 2}, nil)
+			return err
+		},
+		"advance_catalog": func() error { _, err := m.AdvanceControlCatalog(rcCtx(t)); return err },
+		"commit_work":     func() error { return m.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil) },
+		"commit_recovery": func() error {
+			return m.CommitControlRecovery(rcCtx(t), &ControlRecovery{DriverIDs: []string{"ebus.primary"}, MaxDesiredRevision: 2, Payload: []byte("d5")})
+		},
+		"bootstrap": func() error {
+			_, err := m.BootstrapControl(rcCtx(t), append([]ControlDriverConfig{{DriverID: "fam.late", Enabled: true}}, rcDefaultConfigs...))
+			return err
+		},
+		"resolve_readback": func() error { return m.ResolveControlReadback(rcCtx(t)) },
+	}
+	results := make(map[string]chan error, len(queued))
+	for name, call := range queued {
+		ch := make(chan error, 1)
+		results[name] = ch
+		go func(call func() error) { ch <- call() }(call)
+	}
+	time.Sleep(200 * time.Millisecond) // let every request queue behind the writer
+
+	stopped := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stopped <- m.Stop(ctx)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		m.mu.Lock()
+		isStopped := m.stopped
+		m.mu.Unlock()
+		if isStopped {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(block)
+	if err := <-inflight; err != nil {
+		t.Fatalf("writer admitted before shutdown = %v", err)
+	}
+	for name, ch := range results {
+		_ = rcRefusal(t, <-ch, RefusalUnavailable, 3)
+		_ = name
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	ns := rcControlJSON(t, rcRead(t, path))
+	if ns["catalog_revision"] != "4" || ns["issued_revision_mark"] != "2" || ns["recovery"] != nil {
+		t.Fatalf("queued request reached disk: %+v", ns)
+	}
+	if drivers := ns["drivers"].(map[string]any); len(drivers) != 2 {
+		t.Fatalf("queued bootstrap registered a driver: %+v", drivers)
+	}
+	if _, err := m.ControlDriver("fam.late"); err == nil {
+		t.Fatal("queued bootstrap published a registration")
+	}
+}
+
+func rcTransitionJSON(kind, rev, seq string) string {
+	return `{"kind":"` + kind + `","desired_revision":"` + rev + `","sequence":"` + seq +
+		`","phase":"PENDING","epoch":"","generation":"0","native_close_pending":false,"semantic_cleanup_pending":false,"attempts_used":0,"deadline_utc":""}`
+}
+
+// The current slot must hold the older transition: a record whose current
+// sequence is above (or equal to) the reserved sequence fails only that driver.
+func TestControlRejectsReversedAndDuplicateTransitionSequences(t *testing.T) {
+	for name, tc := range map[string]struct{ cur, res string }{
+		"reversed":  {"2", "1"},
+		"duplicate": {"2", "2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := rcPath(t)
+			bad := `{"desired_state":"RUNNING","desired_revision":"2","lifecycle_sequence":"2","current":` +
+				rcTransitionJSON("STOP", "1", tc.cur) + `,"reserved":` + rcTransitionJSON("START", "2", tc.res) + `}`
+			rcWriteLoaded(t, path, "2", "3",
+				`"ebus.primary":{"desired_state":"RUNNING","desired_revision":"1","lifecycle_sequence":"0","current":null,"reserved":null},"fam.bad":`+bad)
+			m := rcManager(t, path, nil)
+			defer rcStop(t, m)
+			if got := m.ControlLoad().Disposition; got != ControlLoadLoaded {
+				t.Fatalf("disposition = %s, want LOADED", got)
+			}
+			plan, err := m.BootstrapControl(context.Background(), []ControlDriverConfig{{DriverID: "ebus.primary", Enabled: true}, {DriverID: "fam.bad", Enabled: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan[0].Action != StartupStarting || plan[1].Action != StartupFailed {
+				t.Fatalf("plan = %+v, want only fam.bad FAILED", plan)
+			}
+			if v := rcDriver(t, m, "fam.bad"); !v.Failed || v.Current != nil || v.Reserved != nil {
+				t.Fatalf("bad driver exposed transitions: %+v", v)
+			}
+		})
+	}
+}
+
+// CommitControlWork cannot produce a layout where the current slot holds the
+// newer transition.
+func TestControlWorkCannotProduceReversedSlots(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	defer rcStop(t, m)
+	if _, err := rcDecide(t, m, ControlStop, "ebus.primary", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rcDecide(t, m, ControlStart, "ebus.primary", 3); err != nil {
+		t.Fatal(err)
+	}
+	v := rcDriver(t, m, "ebus.primary")
+	if v.Current == nil || v.Reserved == nil || v.Current.Sequence >= v.Reserved.Sequence {
+		t.Fatalf("decision layout = %+v / %+v, want current older than reserved", v.Current, v.Reserved)
+	}
+	before, writes := rcRead(t, path), hooks.writeCount()
+	for name, args := range map[string][2]*ControlTransition{
+		"swap":                                 {v.Reserved, v.Current},
+		"newer_as_current_with_older_reserved": {v.Reserved, cloneTransition(v.Current)},
+	} {
+		if err := m.CommitControlWork(rcCtx(t), "ebus.primary", args[0], args[1]); !errors.Is(err, ErrControlInvalidWork) {
+			t.Fatalf("%s accepted: %v", name, err)
+		}
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("rejected reversed layout wrote state")
+	}
+	// The direct validator also refuses it.
+	reversed := ControlDriverRecord{DesiredRevision: v.DesiredRevision, LifecycleSequence: v.Reserved.Sequence, Current: v.Reserved, Reserved: v.Current}
+	if reason := validateRecordSlots(reversed); !strings.Contains(reason, "does not precede") {
+		t.Fatalf("validateRecordSlots(reversed) = %q", reason)
+	}
+}
+
+// Every per-record invariant the loader validates fails only that driver
+// closed, preserves its bytes, and leaves the sibling record usable.
+func TestControlLoaderRejectsEachInvalidRecordInvariant(t *testing.T) {
+	tr := func(mut ...[2]string) string {
+		fields := map[string]string{
+			"kind": `"STOP"`, "desired_revision": `"1"`, "sequence": `"1"`, "phase": `"PENDING"`, "epoch": `""`,
+			"generation": `"0"`, "native_close_pending": `false`, "semantic_cleanup_pending": `false`,
+			"attempts_used": `0`, "deadline_utc": `""`,
+		}
+		for _, kv := range mut {
+			fields[kv[0]] = kv[1]
+		}
+		order := []string{"kind", "desired_revision", "sequence", "phase", "epoch", "generation", "native_close_pending", "semantic_cleanup_pending", "attempts_used", "deadline_utc"}
+		parts := make([]string, 0, len(order))
+		for _, k := range order {
+			if v, ok := fields[k]; ok && v != "" {
+				parts = append(parts, `"`+k+`":`+v)
+			}
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	rec := func(state, rev, lifecycle, cur, res string) string {
+		return `{"desired_state":` + state + `,"desired_revision":` + rev + `,"lifecycle_sequence":` + lifecycle + `,"current":` + cur + `,"reserved":` + res + `}`
+	}
+	okState, okRev, okSeq := `"RUNNING"`, `"2"`, `"3"`
+	cases := map[string]string{
+		"state_unknown":           rec(`"PAUSED"`, okRev, okSeq, "null", "null"),
+		"state_not_string":        rec(`1`, okRev, okSeq, "null", "null"),
+		"revision_zero":           rec(okState, `"0"`, okSeq, "null", "null"),
+		"revision_leading_zero":   rec(okState, `"02"`, okSeq, "null", "null"),
+		"revision_above_mark":     rec(okState, `"3"`, okSeq, "null", "null"),
+		"revision_not_string":     rec(okState, `2`, okSeq, "null", "null"),
+		"sequence_leading_zero":   rec(okState, okRev, `"03"`, "null", "null"),
+		"sequence_not_string":     rec(okState, okRev, `3`, "null", "null"),
+		"unknown_member":          `{"desired_state":"RUNNING","desired_revision":"2","lifecycle_sequence":"3","current":null,"reserved":null,"extra":1}`,
+		"missing_member":          `{"desired_state":"RUNNING","desired_revision":"2","lifecycle_sequence":"3","current":null}`,
+		"reserved_without_cur":    rec(okState, okRev, okSeq, "null", tr()),
+		"transition_kind":         rec(okState, okRev, okSeq, tr([2]string{"kind", `"PAUSE"`}), "null"),
+		"transition_phase":        rec(okState, okRev, okSeq, tr([2]string{"phase", `"DONE"`}), "null"),
+		"transition_rev_zero":     rec(okState, okRev, okSeq, tr([2]string{"desired_revision", `"0"`}), "null"),
+		"transition_seq_zero":     rec(okState, okRev, okSeq, tr([2]string{"sequence", `"0"`}), "null"),
+		"transition_gen_format":   rec(okState, okRev, okSeq, tr([2]string{"generation", `"00"`}), "null"),
+		"transition_epoch":        rec(okState, okRev, okSeq, tr([2]string{"epoch", `"bad epoch"`}), "null"),
+		"transition_epoch_long":   rec(okState, okRev, okSeq, tr([2]string{"epoch", `"` + strings.Repeat("a", 257) + `"`}), "null"),
+		"transition_bool":         rec(okState, okRev, okSeq, tr([2]string{"native_close_pending", `"false"`}), "null"),
+		"transition_attempts":     rec(okState, okRev, okSeq, tr([2]string{"attempts_used", `9`}), "null"),
+		"transition_attempts_ln":  rec(okState, okRev, okSeq, tr([2]string{"attempts_used", `-1`}), "null"),
+		"transition_deadline":     rec(okState, okRev, okSeq, tr([2]string{"deadline_utc", `"2030-01-01T00:00:00+03:00"`}), "null"),
+		"transition_deadline_fmt": rec(okState, okRev, okSeq, tr([2]string{"deadline_utc", `"tomorrow"`}), "null"),
+		"transition_extra":        rec(okState, okRev, okSeq, `{"kind":"STOP"}`, "null"),
+		"transition_rev_above":    rec(okState, okRev, okSeq, tr([2]string{"desired_revision", `"3"`}), "null"),
+		"transition_seq_above":    rec(okState, okRev, `"1"`, tr([2]string{"sequence", `"2"`}), "null"),
+		"slots_duplicate_seq":     rec(okState, okRev, okSeq, tr(), tr([2]string{"kind", `"START"`})),
+		"slots_reversed_seq":      rec(okState, okRev, okSeq, tr([2]string{"sequence", `"2"`}), tr([2]string{"kind", `"START"`})),
+	}
+	// Positive control: the builders produce a record the loader accepts.
+	t.Run("valid_ordered_slots_load", func(t *testing.T) {
+		path := rcPath(t)
+		rcWriteLoaded(t, path, "2", "3", `"fam.ok":`+rec(okState, okRev, okSeq, tr(), tr([2]string{"kind", `"START"`}, [2]string{"sequence", `"2"`})))
+		m := rcManager(t, path, nil)
+		defer rcStop(t, m)
+		m.mu.Lock()
+		_, ok := m.state.control.records["fam.ok"]
+		m.mu.Unlock()
+		if !ok {
+			t.Fatal("valid ordered slots rejected by the loader")
+		}
+	})
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := rcPath(t)
+			rcWriteLoaded(t, path, "2", "3",
+				`"ebus.primary":{"desired_state":"RUNNING","desired_revision":"1","lifecycle_sequence":"0","current":null,"reserved":null},"fam.bad":`+bad)
+			m := rcManager(t, path, nil)
+			defer rcStop(t, m)
+			if got := m.ControlLoad().Disposition; got != ControlLoadLoaded {
+				t.Fatalf("disposition = %s, want LOADED", got)
+			}
+			plan, err := m.BootstrapControl(context.Background(), []ControlDriverConfig{{DriverID: "ebus.primary", Enabled: true}, {DriverID: "fam.bad", Enabled: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan[0].Action != StartupStarting || plan[1].Action != StartupFailed {
+				t.Fatalf("plan = %+v, want only fam.bad FAILED", plan)
+			}
+			if v := rcDriver(t, m, "fam.bad"); !v.Failed {
+				t.Fatalf("bad record not failed: %+v", v)
+			}
+		})
+	}
+
+	t.Run("noncanonical_driver_id", func(t *testing.T) {
+		path := rcPath(t)
+		rcWriteLoaded(t, path, "2", "3",
+			`"ebus.primary":`+rec(`"RUNNING"`, `"1"`, `"0"`, "null", "null")+`,"Bad.ID":`+rec(`"RUNNING"`, `"1"`, `"0"`, "null", "null"))
+		m := rcManager(t, path, nil)
+		defer rcStop(t, m)
+		if got := m.ControlLoad().Disposition; got != ControlLoadLoaded {
+			t.Fatalf("disposition = %s, want LOADED", got)
+		}
+		m.mu.Lock()
+		_, failed := m.state.control.failed["Bad.ID"]
+		_, kept := m.state.control.records["ebus.primary"]
+		m.mu.Unlock()
+		if !failed || !kept {
+			t.Fatalf("noncanonical id failed=%v sibling kept=%v", failed, kept)
+		}
+	})
+}

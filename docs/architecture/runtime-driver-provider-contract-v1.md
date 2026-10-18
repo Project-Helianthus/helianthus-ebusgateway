@@ -536,7 +536,9 @@ the sole runtime-state writer. Top-level, meta and eBUS versions are
 unchanged; unknown namespaces keep round-tripping. The namespace holds only:
 one issued-revision mark, the catalog view revision, one record per decided
 driver (desired `RUNNING` or `STOPPED`, its desired revision, the internal
-lifecycle sequence and at most two typed work slots, current and reserved,
+lifecycle sequence and at most two typed work slots, current and reserved (the current slot always holds
+the older transition: its sequence precedes the reserved sequence, and a record
+violating this fails only that driver),
 with exact kind, accepted revision, sequence, phase, correlation, cleanup
 obligations, bounded attempts and deadline) and a typed D5 recovery envelope
 whose payload is opaque to the writer and verified by digest. There is no
@@ -583,7 +585,9 @@ order, is one accepted decision at mark + 1 (enabled `RUNNING`, disabled
 meta. In an existing namespace a configured driver without a record becomes
 visible through a mark-only write, and a record whose driver is no longer
 configured and holds no work slot or D5 reference is deleted with a mark-only
-write, in one durable transaction before any read. The startup plan derives
+write, in one durable transaction before any read. A driver registered earlier
+in the process that is later unconfigured also advances the mark and catalog
+(a mark-only write) even when it has no stored record. The startup plan derives
 `STARTING` only from durable desired `RUNNING` of an enabled driver; durable
 `STOPPED` and record-less drivers start `STOPPED`, disabled configuration
 yields `DISABLED` without rewriting intent, and failed control yields

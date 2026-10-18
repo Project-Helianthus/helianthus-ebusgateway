@@ -715,8 +715,16 @@ func validateRecordSlots(r ControlDriverRecord) string {
 			return "transition sequence above the lifecycle sequence"
 		}
 	}
-	if r.Current != nil && r.Reserved != nil && r.Current.Sequence == r.Reserved.Sequence {
-		return "duplicate transition sequence"
+	if r.Current != nil && r.Reserved != nil {
+		if r.Current.Sequence == r.Reserved.Sequence {
+			return "duplicate transition sequence"
+		}
+		// The reserved slot is the newer transition; startup reconciles
+		// current before reserved, so a reversed layout would replay the
+		// transitions out of order.
+		if r.Current.Sequence > r.Reserved.Sequence {
+			return "current transition sequence does not precede the reserved sequence"
+		}
 	}
 	return ""
 }
@@ -973,12 +981,16 @@ func (m *Manager) ControlAdmissionOpen() bool {
 // Callers hold m.mu.
 func (m *Manager) admissionClosedLocked() *ControlRefusal {
 	if m.stopped {
-		return refuse(RefusalUnavailable, 3, "admission closed: manager stopped")
+		return errControlStopped()
 	}
 	if m.persistBlocked != nil {
 		return refuse(RefusalUnavailable, 3, "admission closed: persistence blocked: "+m.persistBlocked.Error())
 	}
 	return nil
+}
+
+func errControlStopped() *ControlRefusal {
+	return refuse(RefusalUnavailable, 3, "admission closed: manager stopped")
 }
 
 func validateControlConfigs(configs []ControlDriverConfig) ([]ControlDriverConfig, error) {
@@ -1029,7 +1041,13 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 	}
 	defer m.releaseWrite()
 
+	// Admission is enforced at the serialization point: a registration queued
+	// behind an in-flight writer after Stop began writes and publishes nothing.
 	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return nil, errControlStopped()
+	}
 	configured := make(map[string]ControlDriverConfig, len(sorted))
 	for _, c := range sorted {
 		configured[c.DriverID] = c
@@ -1038,6 +1056,10 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 	ambiguous := m.controlAmbiguous != nil
 	var committed *controlNamespace
 	var guid string
+	priorRegistered := make([]string, 0, len(m.controlConfigs))
+	for id := range m.controlConfigs {
+		priorRegistered = append(priorRegistered, id)
+	}
 	if m.state != nil {
 		committed = m.state.control.clone()
 		guid = m.state.Meta.InstanceGUID
@@ -1077,18 +1099,33 @@ func (m *Manager) BootstrapControl(ctx context.Context, configs []ControlDriverC
 			}
 		}
 		var changes uint64
+		removed := map[string]bool{}
 		for _, id := range sortedRecordIDs(stage.records) {
 			r := stage.records[id]
 			if _, ok := configured[id]; ok || r.Current != nil || r.Reserved != nil || recoveryIDs[id] {
 				continue
 			}
 			delete(stage.records, id)
+			removed[id] = true
 			changes++
+		}
+		// A driver registered earlier in this process that is no longer
+		// configured leaves the visible catalog even when it holds no stored
+		// record (record-less) or its record is retained for in-flight work:
+		// that removal is a mark-only write as well.
+		sort.Strings(priorRegistered)
+		priorSet := make(map[string]bool, len(priorRegistered))
+		for _, id := range priorRegistered {
+			priorSet[id] = true
+			if _, ok := configured[id]; !ok && !removed[id] {
+				changes++
+			}
 		}
 		for _, c := range sorted {
 			_, hasRecord := stage.records[c.DriverID]
 			_, hasFailed := stage.failed[c.DriverID]
-			if !hasRecord && !hasFailed {
+			wasRegistered := priorSet[c.DriverID]
+			if !hasRecord && !hasFailed && !wasRegistered {
 				changes++
 			}
 		}
@@ -1436,8 +1473,8 @@ func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision 
 		}
 	}
 	out.Current, out.Reserved = slots[0], slots[1]
-	if out.Current != nil && out.Reserved != nil && out.Current.Sequence == out.Reserved.Sequence {
-		return record, fmt.Errorf("%w: duplicate transition", ErrControlInvalidWork)
+	if out.Current != nil && out.Reserved != nil && out.Current.Sequence >= out.Reserved.Sequence {
+		return record, fmt.Errorf("%w: current transition must precede the reserved transition", ErrControlInvalidWork)
 	}
 	return out, nil
 }
@@ -1721,6 +1758,10 @@ func (m *Manager) ResolveControlReadback(ctx context.Context) error {
 	}
 	defer m.releaseWrite()
 	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return errControlStopped()
+	}
 	staged := m.controlAmbiguous
 	var committed *controlNamespace
 	if m.state != nil {
@@ -1813,7 +1854,7 @@ func (m *Manager) commitControl(stage *controlNamespace, seed bool) error {
 	if m.persistBlocked != nil {
 		err := m.persistBlocked
 		m.mu.Unlock()
-		return &ControlRefusal{Code: RefusalUnavailable, Reason: "persistence blocked: " + err.Error()}
+		return &ControlRefusal{Code: RefusalUnavailable, Row: 3, Reason: "persistence blocked: " + err.Error()}
 	}
 	if m.state == nil {
 		m.state = &State{SchemaVersion: SchemaVersion}

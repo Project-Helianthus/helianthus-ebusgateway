@@ -171,16 +171,15 @@ type driverState struct {
 
 	mu   sync.Mutex
 	cond *sync.Cond
-	// deciding counts decisions whose planner ran for this driver and whose
-	// store call has not returned; attempt settlement and slot pruning wait
-	// for it to drop to zero.
+	// deciding counts decisions whose planner ran for this driver and that
+	// are not yet released: a committed decision is released only after its
+	// DESIRED_ACCEPTED is published, a decision with an unknown outcome only
+	// once the readback settled it. While it is raised no attempt settles, no
+	// slot is pruned and the reconciler takes no step for the driver.
 	deciding int
-	// held marks a fencing decision whose commit was ambiguous: its
-	// deciding count stays raised, so attempts cannot progress, until the
-	// readback shows whether the cancellation was adopted.
-	held bool
-	// ambiguous retains an accepted-looking decision whose commit was
-	// ambiguous until a readback shows whether it was adopted.
+	// ambiguous retains a planned decision whose commit outcome is unknown.
+	// Its deciding count stays raised (the hold) until resolveAmbiguous
+	// reads the committed record after admission reopened.
 	ambiguous       *ambiguousDecision
 	pruning         bool
 	untyped         *attempt
@@ -669,44 +668,37 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	}
 	var planned, fence bool
 	view, err := s.store.Decide(ctx, method, req, s.planner(d, &planned, &fence))
-	changed := err == nil && view.DesiredRevision != req.ExpectedRevision
-	if planned {
-		d.mu.Lock()
-		if err != nil && !s.store.AdmissionOpen() {
-			d.ambiguous = &ambiguousDecision{method: method, expected: req.ExpectedRevision}
-		}
-		if fence && err != nil && !s.store.AdmissionOpen() {
-			// Ambiguous commit of a fencing decision: keep the attempt from
-			// progressing until readbackResolved settles the question.
-			d.held = true
+	if err != nil {
+		if planned {
+			// The error alone does not tell whether the decision persisted:
+			// an ambiguous commit keeps it staged until a readback. The
+			// decision stays held, so a START it would supersede is neither
+			// canceled nor left to run ahead of its acceptance. With
+			// admission open the committed record already answers (a
+			// refusal, a pre-commit failure, or a readback that settled it
+			// concurrently); otherwise the readback resolver settles it.
+			d.mu.Lock()
+			d.ambiguous = &ambiguousDecision{method: method, expected: req.ExpectedRevision, fence: fence}
 			d.mu.Unlock()
-			s.armReadback()
-			return DesiredView{}, err
-		}
-		if fence && changed {
-			for _, a := range []*attempt{d.untyped, d.inflight} {
-				if a != nil {
-					a.fenced = true
-					a.cancel()
-				}
+			if s.store.AdmissionOpen() {
+				s.resolveAmbiguous([]*driverState{d})
 			}
 		}
-		d.deciding--
-		d.cond.Broadcast()
-		d.mu.Unlock()
-	}
-	if err != nil {
 		// An ambiguous commit closes admission until a readback: the
 		// service resolves it itself, without waiting for another request.
 		s.armReadback()
 		return DesiredView{}, err
 	}
-	if !changed {
-		return view, nil
+	changed := view.DesiredRevision != req.ExpectedRevision
+	if changed {
+		ev := s.desiredEvent(d, view.DesiredState, view.DesiredRevision)
+		s.commitView(s.ctx, &ev, false)
 	}
-	ev := s.desiredEvent(d, view.DesiredState, view.DesiredRevision)
-	s.commitView(s.ctx, &ev, false)
-	s.wakeDriver(d)
+	if planned {
+		// Acceptance is published before the hold ends: only now may the
+		// superseded attempt be fenced and the reconciler act on the slots.
+		s.releaseDecision(d, fence && changed)
+	}
 	return view, nil
 }
 
@@ -714,6 +706,93 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 type ambiguousDecision struct {
 	method   Method
 	expected DesiredRevision
+	fence    bool
+}
+
+// resolveAmbiguous settles the held decisions of the given drivers once the
+// committed namespace is readable with admission open. A decision was
+// adopted exactly when the driver's committed desired revision moved off the
+// request's expected revision: the store assigns a new revision only to a
+// committed decision, and the planner refuses further decisions for the
+// driver while one is held. An adopted decision publishes its
+// DESIRED_ACCEPTED with the refreshed view, as a direct commit does, and
+// only then fences the superseded attempt and ends the hold. A rejected
+// decision emits nothing and ends the hold without fencing, so a typed START
+// it would have canceled resumes with its attempt, budget and deadline
+// unchanged. It reports whether it published a view, which it does only
+// for an adopted decision or an unreadable outcome.
+func (s *Service) resolveAmbiguous(ds []*driverState) bool {
+	type settled struct {
+		d     *driverState
+		fence bool
+	}
+	var done []settled
+	var events []Event
+	lost := false
+	for _, d := range ds {
+		d.mu.Lock()
+		amb := d.ambiguous
+		d.mu.Unlock()
+		if amb == nil {
+			continue
+		}
+		rec, err := s.store.Driver(d.id)
+		d.mu.Lock()
+		if d.ambiguous != amb {
+			d.mu.Unlock()
+			continue // a concurrent resolution took it
+		}
+		d.ambiguous = nil
+		d.mu.Unlock()
+		if err != nil {
+			// The outcome cannot be read: release without fencing (the
+			// reconciler cancels from the committed slots) and tell event
+			// readers to resynchronise instead of holding the driver.
+			s.report(err)
+			lost = true
+			done = append(done, settled{d: d})
+			continue
+		}
+		adopted := rec.DesiredRevision != amb.expected
+		if adopted {
+			events = append(events, s.desiredEvent(d, rec.DesiredState, rec.DesiredRevision))
+		}
+		done = append(done, settled{d: d, fence: amb.fence && adopted})
+	}
+	published := false
+	if len(events) > 0 || lost {
+		if lost {
+			s.viewMu.Lock()
+			s.pendingLost = true
+			s.viewMu.Unlock()
+		}
+		s.commitEvents(s.ctx, events, false)
+		published = true
+	}
+	for _, x := range done {
+		s.releaseDecision(x.d, x.fence)
+	}
+	return published
+}
+
+// releaseDecision ends a decision's hold, after its acceptance (if any) was
+// published. With fence set it first fences the superseded untyped or typed
+// START attempt. It always wakes the reconciler, which skips its steps while
+// a decision is held.
+func (s *Service) releaseDecision(d *driverState, fence bool) {
+	d.mu.Lock()
+	if fence {
+		for _, a := range []*attempt{d.untyped, d.inflight} {
+			if a != nil {
+				a.fenced = true
+				a.cancel()
+			}
+		}
+	}
+	d.deciding--
+	d.cond.Broadcast()
+	d.mu.Unlock()
+	s.wakeDriver(d)
 }
 
 func (s *Service) desiredEvent(d *driverState, state DesiredState, rev DesiredRevision) Event {
@@ -727,29 +806,6 @@ func (s *Service) desiredEvent(d *driverState, state DesiredState, rev DesiredRe
 		DesiredState: state, DesiredRevision: rev,
 		ObservedState: obs.state, Reason: obs.reason, SafetyQuarantined: obs.quarantined,
 		Epoch: corr.Epoch, Generation: corr.Generation}
-}
-
-// emitAdopted emits DESIRED_ACCEPTED for an ambiguous decision that the
-// readback shows was committed. A rejected decision emits nothing.
-func (s *Service) emitAdopted(d *driverState) {
-	d.mu.Lock()
-	amb := d.ambiguous
-	d.mu.Unlock()
-	if amb == nil {
-		return
-	}
-	rec, err := s.store.Driver(d.id)
-	if err != nil {
-		return // stay pending; a later readback retries
-	}
-	d.mu.Lock()
-	d.ambiguous = nil
-	d.mu.Unlock()
-	if rec.DesiredRevision != amb.expected+1 {
-		return
-	}
-	ev := s.desiredEvent(d, rec.DesiredState, rec.DesiredRevision)
-	s.commitView(s.ctx, &ev, false)
 }
 
 // planner places a changing request in the typed slots. It runs under the
@@ -766,6 +822,11 @@ func (s *Service) planner(d *driverState, planned, fence *bool) Planner {
 		}
 		if in.Method != MethodStop && (d.quarantined || d.recoveryBlocked) {
 			return Plan{}, &Refusal{Code: RefusalFailedPrecondition, Row: 7, Reason: "quarantine or unresolved recovery blocks admission"}
+		}
+		if d.ambiguous != nil {
+			// The outcome of this driver's previous decision is still being
+			// settled; deciding on top of it would make adoption unreadable.
+			return Plan{}, &Refusal{Code: RefusalTransitionBusy, Row: 8, Reason: "previous decision outcome is being resolved"}
 		}
 		next := &Transition{Kind: TransitionKind(in.Method), Phase: PhasePending}
 		var plan Plan
@@ -910,48 +971,20 @@ func (s *Service) resolveReadback(ctx context.Context) {
 }
 
 // readbackResolved exposes the committed state after a readback adopted or
-// rejected an ambiguous commit and lets every reconciler re-read its slots.
+// rejected an ambiguous commit, settles every held decision (an adopted one
+// publishes its acceptance with the view) and lets every reconciler re-read
+// its slots.
 func (s *Service) readbackResolved() {
-	s.commitView(s.ctx, nil, false)
+	ds := make([]*driverState, 0, len(s.order))
 	for _, id := range s.order {
-		d := s.drivers[id]
-		s.releaseHeld(d)
-		s.emitAdopted(d)
+		ds = append(ds, s.drivers[id])
+	}
+	if !s.resolveAmbiguous(ds) {
+		s.commitView(s.ctx, nil, false)
+	}
+	for _, d := range ds {
 		s.wakeDriver(d)
 	}
-}
-
-// releaseHeld ends the hold of an ambiguous fencing decision. When the
-// readback shows the cancellation slot was adopted, the superseded attempt
-// is fenced before any attempt can progress; otherwise it simply resumes.
-func (s *Service) releaseHeld(d *driverState) {
-	d.mu.Lock()
-	held := d.held
-	d.mu.Unlock()
-	if !held {
-		return
-	}
-	rec, err := s.store.Driver(d.id)
-	if err != nil {
-		return // stay held; a later readback retries
-	}
-	d.mu.Lock()
-	if d.held {
-		d.held = false
-		if rec.Reserved != nil || (rec.Current != nil && rec.Current.Kind != KindStart) {
-			// The superseding transition was adopted: a retained typed START
-			// alone does not prove it.
-			for _, a := range []*attempt{d.untyped, d.inflight} {
-				if a != nil {
-					a.fenced = true
-					a.cancel()
-				}
-			}
-		}
-		d.deciding--
-		d.cond.Broadcast()
-	}
-	d.mu.Unlock()
 }
 
 func (s *Service) wakeDriver(d *driverState) {
@@ -998,6 +1031,15 @@ func (s *Service) commitObserved(d *driverState, obs observation) {
 // bounded-delay retry republishes the view, so a staged transition cannot
 // stay absent from List when no later action occurs.
 func (s *Service) commitView(ctx context.Context, event *Event, advance bool) bool {
+	if event == nil {
+		return s.commitEvents(ctx, nil, advance)
+	}
+	return s.commitEvents(ctx, []Event{*event}, advance)
+}
+
+// commitEvents is commitView for any number of events published with one
+// view.
+func (s *Service) commitEvents(ctx context.Context, events []Event, advance bool) bool {
 	for i := 0; i < maxPublishAttempts; i++ {
 		if advance || i > 0 {
 			if ctx.Err() != nil {
@@ -1009,11 +1051,16 @@ func (s *Service) commitView(ctx context.Context, event *Event, advance bool) bo
 				break
 			}
 		}
-		if s.publish(event) {
+		if s.publish(events) {
 			return true
 		}
 	}
-	s.deferPublication(event)
+	if len(events) == 0 {
+		s.deferPublication(nil)
+	}
+	for i := range events {
+		s.deferPublication(&events[i])
+	}
 	return false
 }
 
@@ -1068,7 +1115,7 @@ func (s *Service) deferPublication(event *Event) {
 // least as new as the event's catalog revision, and a resync at a published
 // EventCursor always finds that cursor's events. Pending OBSERVED_CHANGED
 // events that the view no longer shows are coalesced away.
-func (s *Service) publish(event *Event) bool {
+func (s *Service) publish(events []Event) bool {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
 	catalog, err := s.store.Catalog()
@@ -1083,10 +1130,7 @@ func (s *Service) publish(event *Event) bool {
 	default:
 		return false
 	}
-	candidates := append([]Event(nil), s.pendingEv...)
-	if event != nil {
-		candidates = append(candidates, *event)
-	}
+	candidates := append(append([]Event(nil), s.pendingEv...), events...)
 	entries := make(map[DriverID]DriverStatus, len(built.Drivers))
 	for _, entry := range built.Drivers {
 		entries[entry.DriverID] = entry

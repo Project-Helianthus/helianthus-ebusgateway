@@ -58,10 +58,16 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 		return false, 0
 	}
 	d.mu.Lock()
+	// The slots are read before the hold is checked: a decision raises its
+	// deciding count before it commits, so a committed slot seen here with
+	// no decision held already has its acceptance published. A held decision
+	// owns the driver until then (or until its ambiguous commit is settled)
+	// and wakes the reconciler when it is released.
+	held := d.deciding > 0
 	blocked := d.quarantined || d.recoveryBlocked
 	needsUntyped := !d.autoStartDone && d.live == nil && d.untyped == nil
 	d.mu.Unlock()
-	if blocked {
+	if held || blocked {
 		return false, 0
 	}
 	t := rec.Current

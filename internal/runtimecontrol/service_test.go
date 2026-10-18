@@ -3081,44 +3081,6 @@ func TestServiceSettleObligationsNeverRunsStopWithoutPersistedAttempt(t *testing
 	}
 }
 
-// TestServiceHeldReleaseKeepsAttemptWhenSupersedingDecisionNotAdopted: a
-// retained typed START alone does not prove that an ambiguous STOP behind it
-// was adopted, so its attempt is not fenced.
-func TestServiceHeldReleaseKeepsAttemptWhenSupersedingDecisionNotAdopted(t *testing.T) {
-	id := DriverID("fam.alpha")
-	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
-	f.waitSettled(id, drivermanager.ObservedRunning)
-	f.mustDecide(MethodStop, id)
-	f.waitSettled(id, drivermanager.ObservedStopped)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once, releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(unblock)
-	f.execs[id].setStart(func(context.Context, LifecycleCorrelation) error {
-		once.Do(func() { close(entered) })
-		<-release
-		return nil
-	})
-	f.mustDecide(MethodStart, id)
-	<-entered
-	d := f.svc.drivers[id]
-	d.mu.Lock()
-	d.held = true
-	d.deciding++
-	d.mu.Unlock()
-	f.svc.releaseHeld(d)
-	d.mu.Lock()
-	a := d.inflight
-	fenced := a != nil && a.fenced
-	held := d.held
-	d.mu.Unlock()
-	if a == nil || fenced || held {
-		t.Fatalf("attempt fenced=%v held=%v inflight=%v after a non-adopted superseding decision", fenced, held, a != nil)
-	}
-	unblock()
-	f.waitSettled(id, drivermanager.ObservedRunning)
-}
-
 // TestServiceAdoptedAmbiguousDecisionEmitsDesiredAccepted: a decision whose
 // commit was ambiguous and later adopted by the readback is not silently
 // absent from the event stream.
@@ -3174,4 +3136,362 @@ func TestServiceSupersededPendingDesiredEventIsNotStampedWithLaterView(t *testin
 			t.Fatalf("superseded event stamped with a later view: %+v", e)
 		}
 	}
+}
+
+// --- author round 5: one rule for superseding decisions and their readback ---
+
+// readbackStore wraps a Store: an armed readback gate holds ResolveReadback, and
+// an armed afterDecide hook runs once after a store Decide that succeeded.
+type readbackStore struct {
+	Store
+	readback    atomic.Pointer[chan struct{}]
+	afterDecide atomic.Pointer[func()]
+}
+
+func (g *readbackStore) ResolveReadback(ctx context.Context) error {
+	if gate := g.readback.Load(); gate != nil {
+		select {
+		case <-*gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return g.Store.ResolveReadback(ctx)
+}
+
+func (g *readbackStore) Decide(ctx context.Context, method Method, req Request, planner Planner) (DesiredView, error) {
+	view, err := g.Store.Decide(ctx, method, req, planner)
+	if err == nil {
+		if fn := g.afterDecide.Swap(nil); fn != nil {
+			(*fn)()
+		}
+	}
+	return view, err
+}
+
+func gatedFixture(t *testing.T, ids ...string) (*svcFixture, *readbackStore) {
+	t.Helper()
+	var g *readbackStore
+	f := newFixture(t, svcOpts{drivers: enabled(ids...),
+		wrap: func(s Store) Store { g = &readbackStore{Store: s}; return g }})
+	return f, g
+}
+
+// heldStart is a typed START whose one Start call blocks until result
+// delivers its outcome or the attempt's context ends.
+type heldStart struct {
+	entered chan struct{}
+	result  chan error
+	mu      sync.Mutex
+	ctx     context.Context
+	corr    LifecycleCorrelation
+}
+
+func (h *heldStart) attempt() (context.Context, LifecycleCorrelation) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ctx, h.corr
+}
+
+// typedStartInFlight stops the driver, accepts a typed START and returns
+// once its Start call is executing and the store is quiet.
+func (f *svcFixture) typedStartInFlight(id DriverID) *heldStart {
+	f.t.Helper()
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	h := &heldStart{entered: make(chan struct{}), result: make(chan error, 1)}
+	var once sync.Once
+	f.execs[id].setStart(func(ctx context.Context, c LifecycleCorrelation) error {
+		h.mu.Lock()
+		h.ctx, h.corr = ctx, c
+		h.mu.Unlock()
+		once.Do(func() { close(h.entered) })
+		select {
+		case err := <-h.result:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	f.mustDecide(MethodStart, id)
+	<-h.entered
+	f.quiesce()
+	return h
+}
+
+// ambiguousStop decides a STOP whose commit is ambiguous (directory fsync
+// failure after the rename) while the readback is held at the gate. It
+// returns the gate and the state file as committed before the STOP.
+func (f *svcFixture) ambiguousStop(g *readbackStore, id DriverID) (gate chan struct{}, committed []byte) {
+	f.t.Helper()
+	committed = f.fileBytes()
+	gate = make(chan struct{})
+	g.readback.Store(&gate)
+	f.hooks.mu.Lock()
+	f.hooks.failDirSync = 1
+	f.hooks.mu.Unlock()
+	_, err := f.decide(MethodStop, id)
+	refusalOf(f.t, err, RefusalUnavailable, 3)
+	return gate, committed
+}
+
+// rejectOnReadback makes the pending readback find the committed namespace:
+// the STOP did not persist.
+func (f *svcFixture) rejectOnReadback(committed []byte) {
+	f.t.Helper()
+	if err := os.WriteFile(f.path, committed, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *svcFixture) waitDecisionSettled(id DriverID) {
+	f.t.Helper()
+	d := f.svc.drivers[id]
+	waitFor(f.t, "held decision settled", func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return f.ms.AdmissionOpen() && d.ambiguous == nil && d.deciding == 0
+	})
+}
+
+func driverEvents(f *svcFixture, cursor uint64, id DriverID) []Event {
+	var out []Event
+	for _, e := range f.svc.EventsSince(cursor).Events {
+		if e.DriverID == id {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func countOutcome(f *svcFixture, id DriverID, outcome string) int {
+	n := 0
+	for _, d := range f.svc.Diagnostics(id) {
+		if strings.Contains(d.Summary, "outcome="+outcome) {
+			n++
+		}
+	}
+	return n
+}
+
+// assertAcceptedThenCanceled checks the adopted outcome: exactly one
+// DESIRED_ACCEPTED for the STOP, published before every observation the
+// cancellation produced, and exactly one cancellation.
+func assertAcceptedThenCanceled(t *testing.T, f *svcFixture, cursor uint64, id DriverID, stopsBefore int) {
+	t.Helper()
+	events := driverEvents(f, cursor, id)
+	final := f.status(id)
+	accepted, firstObserved := -1, -1
+	for i, e := range events {
+		switch {
+		case e.Kind == EventDesiredAccepted:
+			if accepted >= 0 || e.DesiredState != DesiredStopped || e.DesiredRevision != final.DesiredRevision {
+				t.Fatalf("acceptance events %+v, want exactly one for the STOP", events)
+			}
+			accepted = i
+		case e.Kind == EventObservedChanged && firstObserved < 0:
+			firstObserved = i
+		}
+		if e.Kind == EventObservedChanged && e.ObservedState == drivermanager.ObservedRunning {
+			t.Fatalf("superseded START was admitted: %+v", events)
+		}
+	}
+	if accepted < 0 || firstObserved < 0 || firstObserved < accepted {
+		t.Fatalf("events %+v: acceptance must precede the cancellation", events)
+	}
+	if n := f.execs[id].count("stop") - stopsBefore; n != 1 {
+		t.Fatalf("cancellation ran Stop %d times, want 1", n)
+	}
+	if n := countOutcome(f, id, "CANCELED"); n != 1 {
+		t.Fatalf("CANCELED diagnostics = %d, want 1", n)
+	}
+}
+
+// TestServiceRejectedSupersedingStopResumesTypedStart: a STOP behind an
+// executing typed START whose commit is ambiguous does not cancel the START
+// while unresolved. When the readback finds the committed namespace (the STOP
+// did not persist), the START resumes with its attempt, budget and deadline
+// unchanged and completes; no Stop runs and no event names the STOP.
+func TestServiceRejectedSupersedingStopResumesTypedStart(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f, g := gatedFixture(t, string(id))
+	h := f.typedStartInFlight(id)
+	starts, stops := f.execs[id].count("start"), f.execs[id].count("stop")
+	slot := *f.record(id).Current
+	before := f.status(id)
+	cursor := f.svc.List().EventCursor
+	gate, committed := f.ambiguousStop(g, id)
+	f.rejectOnReadback(committed)
+	ctx, corr := h.attempt()
+	if ctx.Err() != nil {
+		t.Fatal("START canceled while its superseding STOP was unresolved")
+	}
+	close(gate)
+	f.waitDecisionSettled(id)
+	if rec := f.record(id); rec.Reserved != nil || rec.Current == nil || *rec.Current != slot {
+		t.Fatalf("START slot after the rejected STOP = %+v, want unchanged %+v", rec.Current, slot)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("rejected STOP canceled the START")
+	}
+	h.result <- nil
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	st := f.status(id)
+	if st.DesiredState != DesiredRunning || st.DesiredRevision != before.DesiredRevision {
+		t.Fatalf("desired after rejection = %s@%d, want %s@%d", st.DesiredState, st.DesiredRevision, before.DesiredState, before.DesiredRevision)
+	}
+	if n := f.execs[id].count("start"); n != starts {
+		t.Fatalf("START made %d further attempts after the rejection", n-starts)
+	}
+	if n := f.execs[id].count("stop"); n != stops {
+		t.Fatalf("rejected STOP ran Stop %d times", n-stops)
+	}
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	live := d.live
+	d.mu.Unlock()
+	if live == nil || live.corr != corr {
+		t.Fatalf("admitted generation %+v, want the resumed attempt %+v", live, corr)
+	}
+	for _, e := range driverEvents(f, cursor, id) {
+		if e.Kind == EventDesiredAccepted {
+			t.Fatalf("rejected STOP left an event: %+v", e)
+		}
+	}
+	if n := countOutcome(f, id, "CANCELED"); n != 0 {
+		t.Fatalf("rejected STOP canceled the START (%d diagnostics)", n)
+	}
+}
+
+// TestServiceAdoptedSupersedingStopAcceptsBeforeCanceling: when the readback
+// adopts an ambiguous STOP behind an executing typed START, its
+// DESIRED_ACCEPTED is published at adoption (never earlier, never twice) and
+// only then is the START canceled, exactly once. A decision on another driver
+// moved the namespace mark past this driver's revision, so adoption is read
+// from the committed record, not from expected+1.
+func TestServiceAdoptedSupersedingStopAcceptsBeforeCanceling(t *testing.T) {
+	alpha, beta := DriverID("fam.alpha"), DriverID("fam.beta")
+	f, g := gatedFixture(t, string(alpha), string(beta))
+	f.waitSettled(alpha, drivermanager.ObservedRunning)
+	h := f.typedStartInFlight(beta)
+	f.mustDecide(MethodStop, alpha)
+	f.waitSettled(alpha, drivermanager.ObservedStopped)
+	f.quiesce()
+	before := f.status(beta)
+	stops := f.execs[beta].count("stop")
+	cursor := f.svc.List().EventCursor
+	gate, _ := f.ambiguousStop(g, beta)
+	time.Sleep(50 * time.Millisecond)
+	if ctx, _ := h.attempt(); ctx.Err() != nil {
+		t.Fatal("START canceled before the STOP was adopted")
+	}
+	if n := f.execs[beta].count("stop"); n != stops {
+		t.Fatal("cancellation ran before the STOP was adopted")
+	}
+	if events := driverEvents(f, cursor, beta); len(events) != 0 {
+		t.Fatalf("events before adoption: %+v", events)
+	}
+	close(gate)
+	f.waitSettled(beta, drivermanager.ObservedStopped)
+	if final := f.status(beta); final.DesiredRevision <= before.DesiredRevision+1 {
+		t.Fatalf("test premise: adopted revision %d should skip past %d+1", final.DesiredRevision, before.DesiredRevision)
+	}
+	assertAcceptedThenCanceled(t, f, cursor, beta, stops)
+	if ctx, _ := h.attempt(); ctx.Err() == nil {
+		t.Fatal("adopted STOP left the START attempt running")
+	}
+}
+
+// TestServiceReadbackOutcomeRacesStartExecution: the typed START's Start
+// succeeds while the superseding STOP is still unresolved. The success is not
+// admitted while the decision is held; the readback outcome then decides:
+// adopted cancels the START (acceptance first, one cancellation, never
+// RUNNING), rejected admits the same attempt.
+func TestServiceReadbackOutcomeRacesStartExecution(t *testing.T) {
+	for _, adopted := range []bool{true, false} {
+		name := map[bool]string{true: "adopted", false: "rejected"}[adopted]
+		t.Run(name, func(t *testing.T) {
+			id := DriverID("fam.alpha")
+			f, g := gatedFixture(t, string(id))
+			h := f.typedStartInFlight(id)
+			starts, stops := f.execs[id].count("start"), f.execs[id].count("stop")
+			cursor := f.svc.List().EventCursor
+			gate, committed := f.ambiguousStop(g, id)
+			h.result <- nil
+			time.Sleep(50 * time.Millisecond)
+			d := f.svc.drivers[id]
+			d.mu.Lock()
+			live := d.live
+			d.mu.Unlock()
+			if live != nil || f.status(id).ObservedState == drivermanager.ObservedRunning {
+				t.Fatal("START admitted while its superseding STOP was unresolved")
+			}
+			if !adopted {
+				f.rejectOnReadback(committed)
+			}
+			close(gate)
+			if adopted {
+				f.waitSettled(id, drivermanager.ObservedStopped)
+				assertAcceptedThenCanceled(t, f, cursor, id, stops)
+				return
+			}
+			f.waitSettled(id, drivermanager.ObservedRunning)
+			_, corr := h.attempt()
+			d.mu.Lock()
+			live = d.live
+			d.mu.Unlock()
+			if live == nil || live.corr != corr || f.execs[id].count("start") != starts || f.execs[id].count("stop") != stops {
+				t.Fatalf("rejected STOP: live=%+v corr=%+v starts+%d stops+%d", live, corr,
+					f.execs[id].count("start")-starts, f.execs[id].count("stop")-stops)
+			}
+			for _, e := range driverEvents(f, cursor, id) {
+				if e.Kind == EventDesiredAccepted {
+					t.Fatalf("rejected STOP left an event: %+v", e)
+				}
+			}
+		})
+	}
+}
+
+// TestServiceCommittedSupersedingStopHoldsCancelUntilAccepted: a STOP behind
+// an executing typed START is committed, but Decide has not yet returned from
+// the store. The START's Start returns meanwhile and the reserved slot is
+// visible; the reconciler must not cancel (no Stop, no observation) until
+// the acceptance is published.
+func TestServiceCommittedSupersedingStopHoldsCancelUntilAccepted(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f, g := gatedFixture(t, string(id))
+	h := f.typedStartInFlight(id)
+	stops := f.execs[id].count("stop")
+	cursor := f.svc.List().EventCursor
+	committedCh, release := make(chan struct{}), make(chan struct{})
+	hook := func() {
+		close(committedCh)
+		<-release
+	}
+	g.afterDecide.Store(&hook)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.decide(MethodStop, id)
+		done <- err
+	}()
+	<-committedCh
+	if rec := f.record(id); rec.Reserved == nil {
+		t.Fatal("test premise: the STOP should be committed into the reserved slot")
+	}
+	h.result <- errors.New("start failed")
+	time.Sleep(100 * time.Millisecond)
+	if n := f.execs[id].count("stop"); n != stops {
+		t.Fatal("cancellation ran before the acceptance was published")
+	}
+	if events := driverEvents(f, cursor, id); len(events) != 0 {
+		t.Fatalf("events before the acceptance: %+v", events)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("STOP: %v", err)
+	}
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	assertAcceptedThenCanceled(t, f, cursor, id, stops)
 }

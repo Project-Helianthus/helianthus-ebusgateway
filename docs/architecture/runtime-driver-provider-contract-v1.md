@@ -705,7 +705,11 @@ takes only the driver's own mutex:
 An accepted decision is durable before `Decide` returns. Only then does the
 service publish the view, emit `DESIRED_ACCEPTED`, fence the superseded
 attempt (cancel its context and mark its pending result as never to be
-installed) and wake the driver's reconciler. A same-desired no-op writes,
+installed) and wake the driver's reconciler. From its planner until that
+acceptance is published, the decision holds the driver: no attempt result is
+installed, no slot is pruned and the reconciler takes no step for it, even
+when it already sees the committed slots, so reconciliation never runs ahead
+of the acceptance. A same-desired no-op writes,
 publishes, emits, fences and wakes nothing. Both return
 `{desired_state, desired_revision}` only. Cancelling the caller's context
 after acceptance retracts nothing: the work runs under the service's own
@@ -774,7 +778,15 @@ of the operation budget (about 50 seconds in all with the defaults). Admission
 reopens only when the store's readback agrees with the staged or the committed
 namespace and directory durability is re-established. The service then
 publishes the committed view and wakes every reconciler, so an adopted
-decision is shown and executed. A disagreement fails control closed in the
+decision is shown and executed. A decision whose commit was ambiguous keeps
+holding its driver until then, and a further decision for that driver is
+refused `TRANSITION_BUSY` meanwhile. It is adopted exactly when the driver's
+committed desired revision moved off the request's expected revision. An
+adopted decision publishes its `DESIRED_ACCEPTED` with that view, exactly as a
+direct commit would and never earlier, and only then fences the START it
+supersedes. A rejected decision emits nothing and fences nothing: a STOP or
+RESTART that did not persist leaves the START it would have canceled running
+with its attempt, budget and original deadline unchanged. A disagreement fails control closed in the
 store; an unresolved series is reported, and admission stays closed. List and
 get keep serving the last committed view throughout. A driver with desired `STOPPED` and no slot
 is left alone. No completed-operation history is consulted.

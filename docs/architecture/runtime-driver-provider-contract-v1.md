@@ -952,6 +952,31 @@ call is consumed; nothing reachable is evicted. The stream holds no receipt,
 idempotency key, principal or completed-operation record: entries leave it
 only at a verified restore point.
 
+**Ambiguous recorder writes.** A recorder write after which the store keeps
+admission closed (for example a rename that succeeded and a directory sync
+that failed) is handled exactly like a service-owned write. The recorder
+implements `ReadbackBinder`: `Start` binds the service's bounded readback
+resolver before restoration, and the ambiguous write arms it at once, with no
+further request. The first readback runs immediately, the bounded retries
+follow, and admission reopens only when the readback agrees with the staged
+or the committed envelope and directory durability is re-established;
+otherwise control stays failed closed. While the readback is pending, managed
+publications, controls and `Secure` are refused `UNAVAILABLE` (retryable),
+before any gate, hub call or store write; each refusal re-arms the resolver if
+it has ended. When a readback reopens admission, the service calls
+`ReadbackResolved` and the recorder settles the write against the committed
+envelope, without calling the hub and without rebuilding or replaying
+anything. If the staged bytes persisted, memory adopts them exactly; if they
+did not, the staged transaction is discarded. An intent whose hub call never
+ran (its caller was already refused) is withdrawn rather than adopted: memory
+keeps the previous stream, and the next transaction rewrites the envelope
+without it. A restart before that transaction resolves the intent like any
+pending intent, so the hub sees it at most once. A queued outcome is written
+again by the next `Flush` or `Secure`; reapplying an adopted outcome is
+byte-identical. A committed envelope that matches neither stream fails every
+managed path closed and refuses every later recorder write. No fsync runs
+under a hub or store-manager lock.
+
 **Isolation bound.** No durable write runs under a hub lock or the store
 manager's read path. While a managed source's durable write is stalled inside
 the store's file write, another family's `Admitted` and `ReadAdmitted` reads,
@@ -962,12 +987,10 @@ control read each return within 100 ms.
 commit is not routed through a `Writer`; managed writers must not rely on
 generation transitions until a later slice records covers. The hub itself
 keeps every accepted batch in memory, so a checkpoint grows with history; the
-stream bound refuses new work rather than evicting it. An ambiguous store
-write is resolved by the store's readback; the recorder rewrites its complete
-stream on its next write. Executable evidence is
-`internal/runtimecontrol/recovery_test.go` (S3.9 cases a to f, cursor rules,
-compaction, clock, capacity and isolation) against the merged store and the
-in-process hub.
+stream bound refuses new work rather than evicting it. Executable evidence
+is `internal/runtimecontrol/recovery_test.go` (S3.9 cases a to f, cursor
+rules, compaction, clock, capacity, isolation and ambiguous recorder writes)
+against the merged store and the in-process hub.
 
 At process start the HTTP/API/health shell becomes available before drivers are
 reconciled. The store loads every desired record independently. Corrupt or

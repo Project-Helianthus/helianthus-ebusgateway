@@ -189,6 +189,17 @@ type EmptyRestorer interface {
 	RestoreEmpty(ctx context.Context) error
 }
 
+// ReadbackBinder is an optional RecoveryAdapter extension for an adapter
+// that writes its own D5 envelope through Store. Start binds the service's
+// bounded readback resolver before restoration, so an ambiguous outcome of
+// the adapter's own store write arms the same resolver as a service-owned
+// write, and the service calls ReadbackResolved whenever a readback reopened
+// admission. Neither call writes to the store or calls the hub.
+type ReadbackBinder interface {
+	BindReadback(arm func())
+	ReadbackResolved()
+}
+
 // RestoreError names the drivers, sources and assets a restoration failed
 // closed. Start withholds only the named drivers.
 type RestoreError struct {
@@ -387,6 +398,20 @@ func (s *walStream) pending() int {
 	return n
 }
 
+// ambiguousWrite is a recorder transaction whose store outcome is unknown:
+// the write failed and the store closed admission (for example after a
+// successful rename whose directory sync failed). It is settled against the
+// committed envelope once a readback reopens admission.
+type ambiguousWrite struct {
+	next    walStream
+	payload []byte
+	prev    []byte
+	// withdraw marks an intent whose hub call never ran: its caller was
+	// refused, so a persisted copy is not adopted into memory and the next
+	// transaction rewrites the envelope without it.
+	withdraw bool
+}
+
 type queuedOutcome struct {
 	source SourceID
 	wal    uint64
@@ -431,6 +456,15 @@ type Recorder struct {
 	// reservation per asset.
 	lastResult map[AssetID]int
 	lastStaged map[AssetID]int
+	// committed is the last envelope payload known to be durable (nil when
+	// none is). amb is the unsettled ambiguous write, if any. arm starts the
+	// service's bounded readback resolver.
+	committed []byte
+	amb       *ambiguousWrite
+	arm       func()
+	// diverged is set when a settled envelope matched neither known stream;
+	// every later transaction is refused so the unknown bytes stay intact.
+	diverged bool
 }
 
 // NewRecorder validates the configuration and builds a Recorder. It performs
@@ -532,6 +566,9 @@ func (r *Recorder) Report() RestoreReport {
 // admit refuses a submission before restoration or on a failed or blocked
 // path. r.mu must not be held.
 func (r *Recorder) admit(source SourceID, assets []AssetID) error {
+	if err := r.readbackPending(); err != nil {
+		return err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.restored {
@@ -644,40 +681,171 @@ func (r *Recorder) notePoint(assets []AssetID, point uint64) {
 // every pending asset held back (when guard is set) and
 // durably writes the envelope. Memory changes only after the write
 // succeeded, so a failed transaction exposes no staging later.
-func (r *Recorder) commit(ctx context.Context, guard bool, mutate func(*walStream) error) error {
+//
+// A failed write after which the store keeps admission closed is ambiguous:
+// it is retained as r.amb, the service's bounded readback resolver is armed
+// at once, and every later transaction is refused retryably (UNAVAILABLE)
+// until a readback reopens admission and the write is settled against the
+// committed envelope. The resolver is armed after writeMu is released; no
+// store write runs under a hub, manager, view or driver lock.
+func (r *Recorder) commit(ctx context.Context, guard, withdraw bool, mutate func(*walStream) error) error {
 	r.writeMu.Lock()
-	defer r.writeMu.Unlock()
+	arm, err := r.commitLocked(ctx, guard, withdraw, mutate)
+	r.writeMu.Unlock()
+	if arm {
+		r.armReadback()
+	}
+	return err
+}
+
+func (r *Recorder) commitLocked(ctx context.Context, guard, withdraw bool, mutate func(*walStream) error) (bool, error) {
+	if err := r.settleAmbiguous(); err != nil {
+		return true, err
+	}
 	r.mu.Lock()
 	next := r.stream.clone()
 	err := mutate(&next)
 	r.mu.Unlock()
 	if err != nil {
-		return err
+		return false, err
 	}
 	frame, err := r.hub.Frame()
 	if err != nil {
-		return &Refusal{Code: RefusalUnavailable, Reason: "hub history frame unavailable"}
+		return false, &Refusal{Code: RefusalUnavailable, Reason: "hub history frame unavailable"}
 	}
 	next.Frame = frame
 	payload, err := next.encode()
 	if err != nil {
-		return &Refusal{Code: RefusalUnavailable, Reason: "stream encoding failed"}
+		return false, &Refusal{Code: RefusalUnavailable, Reason: "stream encoding failed"}
 	}
 	reserve := 0
 	if guard {
 		reserve = r.pendingReserve(next)
 	}
 	if len(payload) > r.maxBytes-reserve {
-		return &Refusal{Code: RefusalResourceExhausted, Reason: "managed recovery stream bound reached"}
+		return false, &Refusal{Code: RefusalResourceExhausted, Reason: "managed recovery stream bound reached"}
 	}
 	if err := r.store.CommitRecovery(ctx, &RecoveryMaterial{DriverIDs: append([]DriverID(nil), r.drivers...), Payload: payload}); err != nil {
-		return err
+		if r.store.AdmissionOpen() {
+			// A refusal or a pre-commit failure: nothing persisted.
+			return false, err
+		}
+		r.mu.Lock()
+		r.amb = &ambiguousWrite{next: next, payload: payload, prev: r.committed, withdraw: withdraw}
+		r.mu.Unlock()
+		return true, err
 	}
 	r.mu.Lock()
 	r.stream = next
+	r.committed = payload
 	r.noteSizes(next)
 	r.mu.Unlock()
+	return false, nil
+}
+
+// errReadbackPending is the retryable refusal of a managed write while an
+// ambiguous recorder write awaits the readback.
+func errReadbackPending() error {
+	return &Refusal{Code: RefusalUnavailable, Reason: "managed recovery readback pending after ambiguous persistence"}
+}
+
+// readbackPending refuses a submission while an ambiguous write awaits a
+// readback that has not yet reopened admission, and re-arms the resolver
+// (idempotent while one runs). Once admission is open the next transaction
+// settles the write first. r.mu must not be held.
+func (r *Recorder) readbackPending() error {
+	r.mu.Lock()
+	pending := r.amb != nil
+	r.mu.Unlock()
+	if !pending || r.store.AdmissionOpen() {
+		return nil
+	}
+	r.armReadback()
+	return errReadbackPending()
+}
+
+func (r *Recorder) armReadback() {
+	r.mu.Lock()
+	arm := r.arm
+	r.mu.Unlock()
+	if arm != nil {
+		arm()
+	}
+}
+
+// settleAmbiguous reconciles memory with the committed envelope after a
+// readback reopened admission. A persisted write is adopted exactly as
+// staged (an intent whose hub call never ran is withdrawn instead: memory
+// keeps the previous stream and the next transaction rewrites the envelope
+// without it); a write that did not persist is discarded. Nothing is rebuilt
+// or replayed and the hub is not called. A committed envelope that matches
+// neither fails every managed path closed. It returns the retryable refusal
+// while the readback is still pending. writeMu must be held and r.mu not.
+func (r *Recorder) settleAmbiguous() error {
+	r.mu.Lock()
+	amb, diverged := r.amb, r.diverged
+	r.mu.Unlock()
+	if diverged {
+		return errDiverged()
+	}
+	if amb == nil {
+		return nil
+	}
+	if !r.store.AdmissionOpen() {
+		return errReadbackPending()
+	}
+	var got []byte
+	if m := r.store.Recovery(); m != nil {
+		got = m.Payload
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.amb = nil
+	switch {
+	case got != nil && bytes.Equal(got, amb.payload):
+		r.committed = amb.payload
+		if !amb.withdraw {
+			r.stream = amb.next
+			r.noteSizes(amb.next)
+			if r.resolved > len(amb.next.Entries) {
+				r.resolved = len(amb.next.Entries)
+			}
+		}
+	case bytes.Equal(got, amb.prev):
+	default:
+		r.diverged = true
+		for id, src := range r.sources {
+			r.failedSources[id] = true
+			for _, a := range src.assets {
+				r.failedAssets[a] = true
+			}
+		}
+		return errDiverged()
+	}
 	return nil
+}
+
+func errDiverged() error {
+	return &Refusal{Code: RefusalFailedPrecondition, Reason: "committed recovery envelope matches neither the ambiguous write nor the previous stream"}
+}
+
+// BindReadback implements ReadbackBinder.
+func (r *Recorder) BindReadback(arm func()) {
+	r.mu.Lock()
+	r.arm = arm
+	r.mu.Unlock()
+}
+
+// ReadbackResolved implements ReadbackBinder: it settles an ambiguous
+// recorder write against the committed envelope without waiting for another
+// request.
+func (r *Recorder) ReadbackResolved() {
+	r.writeMu.Lock()
+	err := r.settleAmbiguous()
+	r.writeMu.Unlock()
+	if err != nil {
+		r.reportErr(err)
+	}
 }
 
 // noteSizes raises the per-asset reservation estimates to the largest staged
@@ -742,7 +910,7 @@ func (r *Recorder) pendingReserve(s walStream) int {
 // intent persists the intent entry and returns its WAL sequence.
 func (r *Recorder) intent(ctx context.Context, kind string, src *managedSource, assets []AssetID, point uint64, anchor []byte, spec []byte, staged map[AssetID]*StagedBatch) (uint64, error) {
 	var wal uint64
-	err := r.commit(ctx, true, func(s *walStream) error {
+	err := r.commit(ctx, true, true, func(s *walStream) error {
 		if s.pending() >= MaxPendingOperations {
 			return &Refusal{Code: RefusalResourceExhausted, Reason: "pending managed operation bound reached"}
 		}
@@ -933,7 +1101,7 @@ func (w *Writer) Control(ctx context.Context, spec []byte) ([]AssetOutcome, erro
 		stagedBytes += len(b.Bytes) + len(b.Meta)
 		stageMu.Unlock()
 		c := cloneStaged(b)
-		err := r.commit(ctx, true, func(s *walStream) error {
+		err := r.commit(ctx, true, false, func(s *walStream) error {
 			e := s.entry(w.source.id, wal)
 			if e == nil {
 				return fmt.Errorf("%w: intent entry missing", ErrInvalidStaging)
@@ -1022,7 +1190,7 @@ func applyOutcomes(s *walStream, source SourceID, wal uint64, outs []AssetOutcom
 // recordOutcome runs the second transaction. A failed write queues the
 // outcome for Flush and leaves the intent pending.
 func (r *Recorder) recordOutcome(ctx context.Context, source SourceID, wal uint64, outs []AssetOutcome) error {
-	err := r.commit(ctx, false, func(s *walStream) error { return applyOutcomes(s, source, wal, outs) })
+	err := r.commit(ctx, false, false, func(s *walStream) error { return applyOutcomes(s, source, wal, outs) })
 	if err != nil {
 		r.mu.Lock()
 		r.queued = append(r.queued, queuedOutcome{source: source, wal: wal, outs: cloneOutcomes(outs)})
@@ -1053,7 +1221,7 @@ func (r *Recorder) Flush(ctx context.Context) error {
 	if len(queued) == 0 {
 		return nil
 	}
-	err := r.commit(ctx, false, func(s *walStream) error {
+	err := r.commit(ctx, false, false, func(s *walStream) error {
 		for _, q := range queued {
 			if err := applyOutcomes(s, q.source, q.wal, q.outs); err != nil {
 				return err
@@ -1072,7 +1240,9 @@ func (r *Recorder) Flush(ctx context.Context) error {
 
 // Secure implements RecoveryAdapter. The managed stream is written ahead by
 // the recorder itself, so the service never commits a second copy: Secure
-// makes every queued outcome durable and returns no material.
+// makes every queued outcome durable and returns no material. While an
+// ambiguous recorder write awaits its readback, Secure is refused
+// UNAVAILABLE (retryable) and the next attempt after the readback proceeds.
 func (r *Recorder) Secure(ctx context.Context, _ DriverID, _ Transition) (*RecoveryMaterial, error) {
 	if err := r.Flush(ctx); err != nil {
 		return nil, err
@@ -1178,6 +1348,10 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 	sortReport(&report)
 	r.mu.Lock()
 	r.stream = stream
+	r.committed = nil
+	if material != nil {
+		r.committed = append([]byte(nil), material.Payload...)
+	}
 	r.noteSizes(stream)
 	r.noteBaseSizes(stream)
 	r.clocks = clocks
@@ -1555,7 +1729,7 @@ func (r *Recorder) Compact(ctx context.Context) error {
 			return fmt.Errorf("%w: restore point does not reproduce asset %s", ErrCompaction, id)
 		}
 	}
-	if err := r.commit(ctx, false, func(s *walStream) error {
+	if err := r.commit(ctx, false, false, func(s *walStream) error {
 		for _, id := range sources {
 			next := s.NextWAL[id]
 			if next == 0 {

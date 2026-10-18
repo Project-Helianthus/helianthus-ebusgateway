@@ -408,6 +408,11 @@ func (s *Service) start(ctx context.Context) error {
 	// D5 first: restore before any executor call or admission. An adapter
 	// that implements EmptyRestorer also learns that no material exists, so
 	// its managed writers open only after this step.
+	// An adapter that writes its own envelope gets the same bounded readback
+	// resolver as service-owned writes, before its first store write.
+	if rb, ok := s.recovery.(ReadbackBinder); ok {
+		rb.BindReadback(s.armReadback)
+	}
 	var restoreErrs []error
 	material := s.store.Recovery()
 	var rerr error
@@ -1018,10 +1023,14 @@ func (s *Service) resolveReadback(ctx context.Context) {
 }
 
 // readbackResolved exposes the committed state after a readback adopted or
-// rejected an ambiguous commit, settles every held decision (an adopted one
-// publishes its acceptance with the view) and lets every reconciler re-read
-// its slots.
+// rejected an ambiguous commit, lets a self-writing recovery adapter settle
+// its own ambiguous write against the committed envelope, settles every held
+// decision (an adopted one publishes its acceptance with the view) and lets
+// every reconciler re-read its slots.
 func (s *Service) readbackResolved() {
+	if rb, ok := s.recovery.(ReadbackBinder); ok {
+		rb.ReadbackResolved()
+	}
 	ds := make([]*driverState, 0, len(s.order))
 	for _, id := range s.order {
 		ds = append(ds, s.drivers[id])

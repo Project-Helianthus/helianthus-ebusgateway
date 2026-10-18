@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -1012,9 +1013,53 @@ type faultStore struct {
 	stall   func(payload []byte) bool
 	entered chan struct{}
 	release chan struct{}
+	// after runs once the manager returned, before the recorder sees the
+	// result. readbackEntered and readbackRelease hold every readback.
+	after           func(err error)
+	readbacks       int
+	readbackEntered chan struct{}
+	readbackRelease chan struct{}
+}
+
+func (s *faultStore) ResolveReadback(ctx context.Context) error {
+	s.mu.Lock()
+	s.readbacks++
+	entered, release := s.readbackEntered, s.readbackRelease
+	s.readbackEntered = nil
+	s.mu.Unlock()
+	if entered != nil {
+		close(entered)
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.ResolveReadback(ctx)
+}
+
+func (s *faultStore) holdReadback() (entered, release chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readbackEntered, s.readbackRelease = make(chan struct{}), make(chan struct{})
+	return s.readbackEntered, s.readbackRelease
 }
 
 func (s *faultStore) CommitRecovery(ctx context.Context, m *RecoveryMaterial) error {
+	err := s.commitRecovery(ctx, m)
+	s.mu.Lock()
+	after := s.after
+	s.after = nil
+	s.mu.Unlock()
+	if after != nil {
+		after(err)
+	}
+	return err
+}
+
+func (s *faultStore) commitRecovery(ctx context.Context, m *RecoveryMaterial) error {
 	s.mu.Lock()
 	s.writes++
 	fail, stall := s.fail, s.stall
@@ -2776,4 +2821,203 @@ func TestRecoveryBackwardSampleWithinProcessFailsAssetClosed(t *testing.T) {
 	if _, err := w.publish(synthSource, synthAssets[0]); refusalCode(err) != RefusalFailedPrecondition {
 		t.Fatalf("the asset must stay failed closed: %v", err)
 	}
+}
+
+// TestRecoveryAmbiguousRecorderCommitArmsReadback injects the post-rename
+// directory-sync failure on a recorder transaction (the outcome write after
+// the hub accepted, and separately the intent write before the hub call),
+// with the file either keeping the staged bytes (persisted) or reverting to
+// the previous bytes (not persisted). The service's bounded readback resolver
+// runs without any further request; while it is pending, Secure and managed
+// publications are refused retryably without reaching the hub; once it
+// settles, memory matches the committed envelope (an intent whose hub call
+// never ran is withdrawn by the next transaction), the next Secure and
+// publication succeed, and no intent reaches the hub twice, including at the
+// next restoration.
+func TestRecoveryAmbiguousRecorderCommitArmsReadback(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		intent    bool
+		persisted bool
+	}{
+		{"outcome-persisted", false, true},
+		{"outcome-not-persisted", false, false},
+		{"intent-persisted", true, true},
+		{"intent-not-persisted", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, worldOpts{})
+			exec := &synthExec{w: w, src: synthSource}
+			if err := w.startService("inc1", map[DriverID]*synthExec{synthDriver: exec}); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, "RUNNING", func() bool { return w.status(synthDriver).ObservedState == drivermanager.ObservedRunning })
+			asset := synthAssets[0]
+			memory := func() []byte {
+				w.rec.mu.Lock()
+				defer w.rec.mu.Unlock()
+				raw, err := w.rec.stream.encode()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			retryable := func(what string, err error) {
+				t.Helper()
+				var rf *Refusal
+				if !errors.As(err, &rf) || rf.Code != RefusalUnavailable || !rf.Retryable() {
+					t.Fatalf("%s during the readback window must be refused retryably: %v", what, err)
+				}
+			}
+			var previous []byte
+			inject := func() {
+				info, err := os.Stat(w.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				old, err := os.ReadFile(w.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				previous = w.material().Payload
+				w.store.mu.Lock()
+				w.store.after = func(error) {
+					if !tc.persisted {
+						// The rename did not survive: the file holds the
+						// previous bytes when the readback runs.
+						if err := os.WriteFile(w.path, old, info.Mode().Perm()); err != nil {
+							t.Error(err)
+						}
+					}
+				}
+				w.store.mu.Unlock()
+				w.hooks.mu.Lock()
+				w.hooks.failDirSync = 1
+				w.hooks.mu.Unlock()
+			}
+			hubCalls := 0
+			w.bridge.beforePublish = func(StagedBatch) {
+				hubCalls++
+				if !tc.intent && hubCalls == 1 {
+					inject()
+				}
+			}
+			entered, release := w.store.holdReadback()
+			if tc.intent {
+				inject()
+			}
+			out, err := w.publish(synthSource, asset)
+			// The ambiguous write is retained exactly as staged; the store
+			// keeps exposing the previous envelope until the readback.
+			w.rec.mu.Lock()
+			amb := w.rec.amb
+			w.rec.mu.Unlock()
+			if amb == nil || amb.withdraw != tc.intent || !bytes.Equal(amb.prev, previous) || !bytes.Equal(w.material().Payload, previous) {
+				t.Fatalf("ambiguous write not retained: %+v", amb)
+			}
+			staged := amb.payload
+			switch {
+			case tc.intent && (err == nil || out.Accepted != nil || hubCalls != 0):
+				t.Fatalf("ambiguous intent must refuse before the hub: %+v %v hub %d", out, err, hubCalls)
+			case !tc.intent && (!errors.Is(err, ErrOutcomeNotDurable) || out.Accepted == nil || hubCalls != 1):
+				t.Fatalf("ambiguous outcome: %+v %v hub %d", out, err, hubCalls)
+			}
+
+			// (a) The resolver runs without any further request.
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("ambiguous recorder write did not arm the readback resolver")
+			}
+			// (c) Secure and publications are refused retryably meanwhile,
+			// with no store write and no hub call.
+			writes := w.store.count()
+			if !tc.intent {
+				_, serr := w.rec.Secure(context.Background(), synthDriver, Transition{})
+				retryable("Secure", serr)
+			}
+			_, perr := w.publish(synthSource, synthAssets[1])
+			retryable("publication", perr)
+			if hubCalls != boolInt(!tc.intent) || w.store.count() != writes {
+				t.Fatalf("window reached the hub (%d) or the store (%d writes)", hubCalls, w.store.count()-writes)
+			}
+
+			close(release)
+			waitFor(t, "readback settled", func() bool {
+				w.rec.mu.Lock()
+				defer w.rec.mu.Unlock()
+				return w.rec.amb == nil && w.store.AdmissionOpen()
+			})
+			// (b) Memory matches the committed bytes.
+			committed := w.material().Payload
+			wantCommitted := previous
+			if tc.persisted {
+				wantCommitted = staged
+			}
+			if !bytes.Equal(committed, wantCommitted) {
+				t.Fatal("readback settled on unexpected committed bytes")
+			}
+			w.rec.mu.Lock()
+			recorded := w.rec.committed
+			w.rec.mu.Unlock()
+			if !bytes.Equal(recorded, committed) {
+				t.Fatal("recorder's committed payload differs from the store")
+			}
+			switch {
+			case tc.intent && tc.persisted:
+				if bytes.Equal(memory(), committed) || !bytes.Equal(memory(), previous) {
+					t.Fatal("an adopted intent whose hub call never ran must stay out of memory")
+				}
+			default:
+				if !bytes.Equal(memory(), committed) {
+					t.Fatal("memory does not match the committed envelope")
+				}
+			}
+
+			// (c) The next Secure succeeds and makes the outcome durable.
+			if _, err := w.rec.Secure(context.Background(), synthDriver, Transition{}); err != nil {
+				t.Fatalf("Secure after the readback: %v", err)
+			}
+			if !tc.intent {
+				s := w.stream()
+				e := lastEntry(t, s)
+				if o := e.Assets[0].Outcome; o == nil || o.Accepted == nil || o.Accepted.HubSeq != out.Accepted.HubSeq {
+					t.Fatalf("outcome not durable after Secure: %+v", e)
+				}
+				if !bytes.Equal(memory(), w.material().Payload) {
+					t.Fatal("memory diverged from the committed envelope after Secure")
+				}
+			}
+			// (d) The next publication proceeds and reaches the hub once.
+			calls := hubCalls
+			w.mustPublish(synthSource, asset)
+			if hubCalls != calls+1 {
+				t.Fatalf("hub calls %d, want %d", hubCalls, calls+1)
+			}
+			s := w.stream()
+			for _, e := range s.Entries {
+				for _, a := range e.Assets {
+					if a.Outcome == nil {
+						t.Fatalf("pending intent left in the committed stream: %+v", e)
+					}
+				}
+			}
+			if !bytes.Equal(memory(), w.material().Payload) {
+				t.Fatal("memory diverged from the committed envelope")
+			}
+			w.bridge.beforePublish = nil
+			w.loseProcess(time.Second)
+			w.mustRestore()
+			if rep := w.rec.Report(); len(rep.Resubmitted) != 0 || len(rep.ReadBack) != 0 || len(rep.Failed) != 0 {
+				t.Fatalf("restoration resubmitted or failed an intent: %+v", rep)
+			}
+		})
+	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

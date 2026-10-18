@@ -745,7 +745,13 @@ reserved cleanup attempt or the deadline is
 spent with semantic cleanup still pending, the driver ends `FAILED` with a
 `CLEANUP_STALLED` diagnostic, START and RESTART refuse at row 7 until process
 restart, the obligation stays durable and no further `Stop` runs. An
-unconfirmed native close quarantines as described above.
+unconfirmed native close quarantines as described above. A RESTART creates its
+replacement only while a start attempt and time remain in the slot's budget
+after the predecessor's cleanup; when the predecessor's cleanup used the last
+permitted attempt, the RESTART ends `FAILED` with a retry-exhausted diagnostic
+and no replacement is started. Budgets are never renewed: a new RESTART is a
+new decision with a new budget. A charge whose commit outcome was unknown and
+that readback adopted is not charged a second time.
 
 Epochs are derived from the incarnation name,
 the driver ID and a per-process ordinal, so every process start, RESTART and

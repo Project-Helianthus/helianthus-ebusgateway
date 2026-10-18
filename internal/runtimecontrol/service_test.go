@@ -3758,3 +3758,241 @@ func (w *workFaultStore) CommitWork(ctx context.Context, id DriverID, current, r
 	}
 	return w.Store.CommitWork(ctx, id, current, reserved)
 }
+
+// TestServiceRestartEndsFailedWhenPredecessorCleanupSpentTheStartBudget: with
+// a start limit of one, the predecessor's cleanup uses the only permitted
+// attempt, so the RESTART ends FAILED without creating or starting a
+// replacement, and its cleanup retry state is reset.
+func TestServiceRestartEndsFailedWhenPredecessorCleanupSpentTheStartBudget(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.MaxAttempts = 1 }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	starts, stops := f.execs[id].count("start"), f.execs[id].count("stop")
+	f.mustDecide(MethodRestart, id)
+	f.waitSettled(id, drivermanager.ObservedFailed)
+	time.Sleep(100 * time.Millisecond)
+	if n := f.execs[id].count("start") - starts; n != 0 {
+		t.Fatalf("a replacement was started after the budget was spent: %d Start calls", n)
+	}
+	if n := f.execs[id].count("stop") - stops; n != 1 {
+		t.Fatalf("predecessor cleanup ran Stop %d times, want 1", n)
+	}
+	if !hasDiagnostic(f.svc.Diagnostics(id), "FAILED") {
+		t.Fatalf("no budget-exhausted diagnostic: %+v", f.svc.Diagnostics(id))
+	}
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	blocked := d.quarantined || d.recoveryBlocked
+	d.mu.Unlock()
+	if blocked {
+		t.Fatal("the spent RESTART quarantined or blocked the driver")
+	}
+}
+
+// TestServiceRestartResetsCleanupRetriesAfterPredecessorCleanup: a
+// predecessor whose semantic cleanup needed a retry leaves no retry count
+// behind for an unrelated later STOP.
+func TestServiceRestartResetsCleanupRetriesAfterPredecessorCleanup(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	var calls atomic.Int32
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		return StopOutcome{NativeClosed: true, SemanticCleaned: calls.Add(1) > 1}
+	})
+	f.mustDecide(MethodRestart, id)
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	if calls.Load() < 2 {
+		t.Fatalf("test premise: the predecessor needed a semantic retry, Stop ran %d times", calls.Load())
+	}
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	retries := d.cleanupRetries
+	d.mu.Unlock()
+	if retries != 0 {
+		t.Fatalf("cleanupRetries = %d after the predecessor's cleanup succeeded, want 0", retries)
+	}
+}
+
+// TestServiceStopDuringLastUntypedAttemptStillCleansUp: a STOP accepted
+// during the eighth untyped attempt does not inherit a count that skips the
+// reserved cleanup Stop.
+func TestServiceStopDuringLastUntypedAttemptStillCleansUp(t *testing.T) {
+	id := DriverID("fam.alpha")
+	entered := make(chan struct{})
+	var calls atomic.Int32
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)), setup: func(f *svcFixture) {
+		f.execs[id].setStart(func(ctx context.Context, _ LifecycleCorrelation) error {
+			if calls.Add(1) < DefaultMaxAttempts {
+				return retryErr{"warming"}
+			}
+			close(entered)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}})
+	<-entered
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("cancellation ran Stop %d times, want 1", n)
+	}
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	blocked := d.quarantined || d.recoveryBlocked
+	d.mu.Unlock()
+	if blocked {
+		t.Fatal("the canceled eighth attempt left the driver quarantined")
+	}
+}
+
+// applyThenFailStore persists a matching charge commit and then reports an
+// error, the shape of an ambiguous commit that readback adopts.
+type applyThenFailStore struct {
+	Store
+	failures atomic.Int32
+}
+
+func (w *applyThenFailStore) CommitWork(ctx context.Context, id DriverID, cur, res *Transition) error {
+	err := w.Store.CommitWork(ctx, id, cur, res)
+	if err == nil && cur != nil && cur.Phase == PhaseActive && cur.AttemptsUsed == 1 && w.failures.Add(-1) >= 0 {
+		return errors.New("synthetic ambiguous commit")
+	}
+	return err
+}
+
+// TestServiceAdoptedStartChargeIsNotChargedAgain: a start-attempt charge that
+// was persisted but reported as failed is adopted; the attempt runs Start
+// instead of charging again and exhausting a one-attempt budget.
+func TestServiceAdoptedStartChargeIsNotChargedAgain(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var w *applyThenFailStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.MaxAttempts = 1 },
+		wrap: func(s Store) Store { w = &applyThenFailStore{Store: s}; return w }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	starts := f.execs[id].count("start")
+	w.failures.Store(int32(maxCommitAttempts))
+	f.mustDecide(MethodStart, id)
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	if n := f.execs[id].count("start") - starts; n != 1 {
+		t.Fatalf("Start ran %d times, want 1", n)
+	}
+}
+
+// TestServiceAdoptedCleanupChargeIsNotChargedAgain: an adopted cleanup charge
+// leaves the persisted count at one while Stop runs.
+func TestServiceAdoptedCleanupChargeIsNotChargedAgain(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var w *applyThenFailStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.MaxAttempts = 1 },
+		wrap: func(s Store) Store { w = &applyThenFailStore{Store: s}; return w }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	var used atomic.Int32
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		if cur := f.record(id).Current; cur != nil {
+			used.Store(int32(cur.AttemptsUsed))
+		}
+		return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+	})
+	w.failures.Store(int32(maxCommitAttempts))
+	f.mustDecide(MethodStop, id)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	if got := used.Load(); got != 1 {
+		t.Fatalf("persisted attempts while Stop ran = %d, want 1", got)
+	}
+}
+
+// frozenReadStore serves one pinned record while armed, the view a reader
+// has before a pending decision's commit becomes visible.
+type frozenReadStore struct {
+	Store
+	frozen atomic.Pointer[ControlRecord]
+}
+
+func (w *frozenReadStore) Driver(id DriverID) (ControlRecord, error) {
+	if rec := w.frozen.Load(); rec != nil {
+		return *rec, nil
+	}
+	return w.Store.Driver(id)
+}
+
+// TestServiceStartErrorWaitsForPendingDecision: a Start error that arrives
+// while a STOP is between its planner and its durable commit is classified
+// only after that decision publishes its acceptance, for typed and untyped
+// attempts.
+func TestServiceStartErrorWaitsForPendingDecision(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		name := map[bool]string{true: "typed", false: "untyped"}[typed]
+		t.Run(name, func(t *testing.T) {
+			id := DriverID("fam.alpha")
+			result := make(chan error, 1)
+			enteredCh := make(chan struct{}, 1)
+			blocking := func(ctx context.Context, _ LifecycleCorrelation) error {
+				select {
+				case enteredCh <- struct{}{}:
+				default:
+				}
+				select {
+				case err := <-result:
+					return err
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			var f *svcFixture
+			var fr *frozenReadStore
+			var g *readbackStore
+			wrap := func(s Store) Store {
+				g = &readbackStore{Store: s}
+				fr = &frozenReadStore{Store: g}
+				return fr
+			}
+			if typed {
+				f = newFixture(t, svcOpts{drivers: enabled(string(id)), wrap: wrap})
+				f.waitSettled(id, drivermanager.ObservedRunning)
+				f.mustDecide(MethodStop, id)
+				f.waitSettled(id, drivermanager.ObservedStopped)
+				f.execs[id].setStart(blocking)
+				f.mustDecide(MethodStart, id)
+			} else {
+				f = newFixture(t, svcOpts{drivers: enabled(string(id)), wrap: wrap,
+					setup: func(f *svcFixture) { f.execs[id].setStart(blocking) }})
+			}
+			<-enteredCh
+			f.quiesce()
+			stops := f.execs[id].count("stop")
+			cursor := f.svc.List().EventCursor
+			pinned := f.record(id)
+			committed, release := make(chan struct{}), make(chan struct{})
+			hook := func() {
+				close(committed)
+				<-release
+			}
+			g.afterDecide.Store(&hook)
+			done := make(chan error, 1)
+			go func() {
+				_, err := f.decide(MethodStop, id)
+				done <- err
+			}()
+			<-committed
+			fr.frozen.Store(&pinned)
+			result <- retryErr{"warming"}
+			time.Sleep(100 * time.Millisecond)
+			if events := driverEvents(f, cursor, id); len(events) != 0 {
+				t.Fatalf("events before the acceptance: %+v", events)
+			}
+			fr.frozen.Store(nil)
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatalf("STOP: %v", err)
+			}
+			f.waitSettled(id, drivermanager.ObservedStopped)
+			assertAcceptedThenCanceled(t, f, cursor, id, stops)
+		})
+	}
+}

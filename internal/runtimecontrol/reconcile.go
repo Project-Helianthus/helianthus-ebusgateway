@@ -293,16 +293,24 @@ func (s *Service) settleObligations(d *driverState, t Transition) (Transition, e
 		return next, nil
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		if t.AttemptsUsed >= s.cleanupLimit() {
+		adopted := d.cleanupChargeTo != 0 && d.cleanupChargeSeq == t.Sequence && t.AttemptsUsed == d.cleanupChargeTo
+		d.cleanupChargeTo = 0
+		if !adopted && t.AttemptsUsed >= s.cleanupLimit() {
 			// No persisted attempt is left to charge: running Stop uncharged
 			// would grant an extra attempt on every recovery. The obligations
 			// stay durable and the caller reports the cleanup as stalled.
 			return next, nil
 		}
 		charged := t
-		charged.AttemptsUsed++
-		if err := s.commitCurrent(d, charged); err != nil {
-			return t, err
+		if !adopted {
+			// A charge whose commit outcome was unknown and that readback
+			// adopted is already stored: it is not charged again.
+			charged.AttemptsUsed++
+			d.cleanupChargeSeq, d.cleanupChargeTo = t.Sequence, charged.AttemptsUsed
+			if err := s.commitCurrent(d, charged); err != nil {
+				return t, err
+			}
+			d.cleanupChargeTo = 0
 		}
 		next.AttemptsUsed = charged.AttemptsUsed
 		out := s.stopBounded(d, s.corr(d, t), t.DeadlineUTC)
@@ -541,7 +549,16 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 			if settled.SemanticCleanupPending {
 				return s.semanticRetry(d, settled)
 			}
+			d.mu.Lock()
+			d.cleanupRetries = 0
+			d.mu.Unlock()
 			next = settled
+		}
+		if t.Epoch != "" && s.startSpent(next) {
+			// The predecessor's cleanup used the last start attempt (or the
+			// nonrenewable deadline passed): no replacement is created and
+			// budgets are never renewed.
+			return s.endSpent(d, next)
 		}
 		next.Phase = PhaseActive
 		next.Epoch = s.newEpoch(d)
@@ -560,6 +577,43 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 		d.mu.Unlock()
 	}
 	return s.runTypedAttempt(d, t, a)
+}
+
+// startSpent reports whether a slot has no start attempt or time left.
+func (s *Service) startSpent(t Transition) bool {
+	return t.AttemptsUsed >= s.startLimit() || (!t.DeadlineUTC.IsZero() && !s.now().Before(t.DeadlineUTC))
+}
+
+// endSpent terminates a slot whose obligations are cleared but whose start
+// budget is spent: it ends FAILED without a replacement generation.
+func (s *Service) endSpent(d *driverState, t Transition) (bool, time.Duration) {
+	done := t
+	done.Phase = PhaseCleanup
+	done.NativeClosePending, done.SemanticCleanupPending = false, false
+	if err := s.commitCurrent(d, done); err != nil {
+		if errors.Is(err, ErrStaleSlot) {
+			return true, 0
+		}
+		return s.retryLater()
+	}
+	s.releaseLive(d, done)
+	d.mu.Lock()
+	d.autoStartDone = true
+	d.mu.Unlock()
+	s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+	s.appendDiagnostic(d, done, "FAILED")
+	return true, 0
+}
+
+// waitDecisions blocks while a decision on the driver is between its planner
+// and its published acceptance, so a result is classified only after that
+// decision committed or was rejected.
+func (s *Service) waitDecisions(d *driverState) {
+	d.mu.Lock()
+	for d.deciding > 0 && s.ctx.Err() == nil {
+		d.cond.Wait()
+	}
+	d.mu.Unlock()
 }
 
 func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (bool, time.Duration) {
@@ -585,18 +639,23 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 			t = next
 			a.pendingGen = false
 		}
-		if t.AttemptsUsed >= s.startLimit() || !s.now().Before(t.DeadlineUTC) {
+		adopted := a.chargedTo != 0 && t.AttemptsUsed == a.chargedTo
+		if (!adopted && t.AttemptsUsed >= s.startLimit()) || !s.now().Before(t.DeadlineUTC) {
 			return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 		}
-		next := t
-		next.AttemptsUsed++
-		if err := s.commitCurrent(d, next); err != nil {
-			if errors.Is(err, ErrStaleSlot) {
-				return true, 0
+		if !adopted {
+			next := t
+			next.AttemptsUsed++
+			a.chargedTo = next.AttemptsUsed
+			if err := s.commitCurrent(d, next); err != nil {
+				if errors.Is(err, ErrStaleSlot) {
+					return true, 0
+				}
+				return s.retryLater()
 			}
-			return s.retryLater()
+			t = next
 		}
-		t = next
+		a.chargedTo = 0
 		a.corr = s.corr(d, t)
 		s.setCorr(d, a.corr)
 		s.observe(d, observation{state: drivermanager.ObservedStarting, reason: drivermanager.ReasonStartRequested})
@@ -604,6 +663,7 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if s.ctx.Err() != nil {
 			return false, 0
 		}
+		s.waitDecisions(d)
 		if s.fencedByStore(d, t) {
 			return true, 0
 		}
@@ -847,6 +907,7 @@ func (s *Service) runUntyped(d *driverState) {
 		if s.ctx.Err() != nil {
 			return
 		}
+		s.waitDecisions(d)
 		if rec, rerr := s.store.Driver(d.id); rerr == nil && rec.Current != nil {
 			return // a cancellation slot owns this correlation now
 		}

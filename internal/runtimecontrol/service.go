@@ -160,6 +160,11 @@ type attempt struct {
 	// pendingGen marks a retry whose generation increment is not yet
 	// committed; only the driver's reconciler touches it.
 	pendingGen bool
+	// chargedTo is the AttemptsUsed value this attempt's charge commit tried
+	// to persist. A commit with an unknown outcome that readback later
+	// adopts leaves the stored count at this value, and the next pass starts
+	// the attempt instead of charging again. Reconciler-only.
+	chargedTo int
 	// deadline and attemptsUsed carry an untyped attempt's nonrenewable
 	// budget so a synthesized cancellation inherits it; attemptsUsed is
 	// guarded by the owning driverState.mu.
@@ -192,8 +197,13 @@ type driverState struct {
 	recoveryBlocked bool
 	// cleanupRetries counts consecutive unfinished semantic cleanups.
 	cleanupRetries int
-	autoStartDone  bool
-	epochOrdinal   uint64
+	// cleanupChargeSeq and cleanupChargeTo identify the last cleanup charge
+	// whose commit failed, so an adopted charge is not charged twice.
+	// Reconciler-only.
+	cleanupChargeSeq LifecycleSequence
+	cleanupChargeTo  int
+	autoStartDone    bool
+	epochOrdinal     uint64
 	// corr is the correlation the driver's current observation refers to:
 	// the attempt being started or the generation being withdrawn.
 	corr LifecycleCorrelation
@@ -861,7 +871,7 @@ func (s *Service) planner(d *driverState, planned, fence *bool) Planner {
 					Current: &Transition{
 						Kind: KindCancel, Phase: PhasePending, Epoch: a.corr.Epoch, Generation: a.corr.Generation,
 						NativeClosePending: true, SemanticCleanupPending: true,
-						DeadlineUTC: a.deadline.UTC(), AttemptsUsed: a.attemptsUsed,
+						DeadlineUTC: a.deadline.UTC(), AttemptsUsed: min(a.attemptsUsed, s.startLimit()),
 					},
 					Reserved: next,
 				}

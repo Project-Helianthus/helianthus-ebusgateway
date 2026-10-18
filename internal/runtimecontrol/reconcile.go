@@ -218,7 +218,7 @@ func (s *Service) newEpoch(d *driverState) SourceEpoch {
 
 func (s *Service) newAttempt(corr LifecycleCorrelation, deadline time.Time, sequence LifecycleSequence) *attempt {
 	ctx, cancel := context.WithTimeout(s.ctx, deadline.Sub(s.now()))
-	return &attempt{corr: corr, ctx: ctx, cancel: cancel, sequence: sequence}
+	return &attempt{corr: corr, ctx: ctx, cancel: cancel, sequence: sequence, deadline: deadline}
 }
 
 // settle waits for in-flight decisions on the driver, then runs fn under the
@@ -226,7 +226,7 @@ func (s *Service) newAttempt(corr LifecycleCorrelation, deadline time.Time, sequ
 func (s *Service) settle(d *driverState, a *attempt, fn func()) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for d.deciding > 0 {
+	for d.deciding > 0 && s.ctx.Err() == nil {
 		d.cond.Wait()
 	}
 	if a.fenced {
@@ -691,7 +691,7 @@ func (s *Service) runUntyped(d *driverState) {
 	// its commit, then re-read the slots: a STOP or RESTART accepted before
 	// the installation owns the driver and no attempt may begin.
 	d.mu.Lock()
-	for d.deciding > 0 {
+	for d.deciding > 0 && s.ctx.Err() == nil {
 		d.cond.Wait()
 	}
 	d.untyped = a
@@ -734,6 +734,7 @@ func (s *Service) runUntyped(d *driverState) {
 		}
 		attempts++
 		d.mu.Lock()
+		a.attemptsUsed = attempts
 		current := a.corr
 		d.corr = current
 		d.mu.Unlock()
@@ -832,7 +833,7 @@ func (s *Service) finish(d *driverState, rec ControlRecord, t Transition) (bool,
 	}
 	if rec.Reserved == nil {
 		d.mu.Lock()
-		for d.deciding > 0 {
+		for d.deciding > 0 && s.ctx.Err() == nil {
 			d.cond.Wait()
 		}
 		d.pruning = true

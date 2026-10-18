@@ -2956,3 +2956,97 @@ func TestServicePublishCoalescesSupersededObservations(t *testing.T) {
 		t.Fatalf("events after publication = %+v", page)
 	}
 }
+
+// TestServiceSynthesizedCancelInheritsUntypedBudget: a STOP accepted during an
+// untyped BACKOFF synthesizes the cancellation with the attempt's own
+// nonrenewable deadline and attempts already used, never a fresh budget.
+func TestServiceSynthesizedCancelInheritsUntypedBudget(t *testing.T) {
+	id := DriverID("fam.alpha")
+	entered := make(chan LifecycleCorrelation, 16)
+	f := newFixture(t, svcOpts{
+		drivers: enabled(string(id)),
+		opts:    func(o *Options) { o.RetryDelay = func(int) time.Duration { return time.Hour } },
+		setup: func(f *svcFixture) {
+			f.execs[id].setStart(func(ctx context.Context, c LifecycleCorrelation) error {
+				entered <- c
+				return retryErr{"warming"}
+			})
+		},
+	})
+	<-entered
+	f.waitObserved(id, drivermanager.ObservedBackoff)
+	time.Sleep(60 * time.Millisecond)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.execs[id].setStop(func(ctx context.Context, _ LifecycleCorrelation) StopOutcome {
+		<-release
+		return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+	})
+	decided := time.Now()
+	f.mustDecide(MethodStop, id)
+	cur := f.record(id).Current
+	if cur == nil || cur.Kind != KindCancel {
+		t.Fatalf("cancellation not synthesized: %+v", cur)
+	}
+	if cur.AttemptsUsed < 1 {
+		t.Fatalf("cancellation restarted the attempt count: %+v", cur)
+	}
+	if !cur.DeadlineUTC.Before(decided.Add(f.svc.budget).Add(-30 * time.Millisecond)) {
+		t.Fatalf("cancellation got a renewed deadline %v (accepted %v)", cur.DeadlineUTC, decided)
+	}
+}
+
+// TestServiceAmbiguousStopFencesUntypedBackoffAfterReadback: a STOP whose commit
+// is ambiguous during an untyped BACKOFF is adopted by the readback; the
+// attempt must not open another generation, and the cleanup closes the
+// generation the cancellation slot names.
+func TestServiceAmbiguousStopFencesUntypedBackoffAfterReadback(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var mu sync.Mutex
+	var started []LifecycleCorrelation
+	var stopped []LifecycleCorrelation
+	entered := make(chan struct{}, 16)
+	f := newFixture(t, svcOpts{
+		drivers: enabled(string(id)),
+		opts:    func(o *Options) { o.RetryDelay = func(int) time.Duration { return 150 * time.Millisecond } },
+		setup: func(f *svcFixture) {
+			f.execs[id].setStart(func(ctx context.Context, c LifecycleCorrelation) error {
+				mu.Lock()
+				started = append(started, c)
+				mu.Unlock()
+				entered <- struct{}{}
+				return retryErr{"warming"}
+			})
+			f.execs[id].setStop(func(ctx context.Context, c LifecycleCorrelation) StopOutcome {
+				mu.Lock()
+				stopped = append(stopped, c)
+				mu.Unlock()
+				return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+			})
+		},
+	})
+	<-entered
+	f.waitObserved(id, drivermanager.ObservedBackoff)
+	f.hooks.mu.Lock()
+	f.hooks.failDirSync = 1
+	f.hooks.mu.Unlock()
+	_, err := f.decide(MethodStop, id)
+	refusalOf(t, err, RefusalUnavailable, 3)
+	waitFor(t, "adopted STOP cleaned up", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(stopped) > 0 && f.status(id).DesiredState == DesiredStopped
+	})
+	time.Sleep(400 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	last := started[len(started)-1]
+	for _, c := range stopped {
+		if c.Epoch != last.Epoch || c.Generation != last.Generation {
+			t.Fatalf("cleanup closed %+v but the last opened generation is %+v", c, last)
+		}
+	}
+	if len(started) != 1 {
+		t.Fatalf("attempt opened %d generations after the adopted STOP", len(started))
+	}
+}

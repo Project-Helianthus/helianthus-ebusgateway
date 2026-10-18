@@ -157,6 +157,11 @@ type attempt struct {
 	fenced   bool
 	sequence LifecycleSequence // typed slot sequence, 0 for an untyped attempt
 	admitted bool
+	// deadline and attemptsUsed carry an untyped attempt's nonrenewable
+	// budget so a synthesized cancellation inherits it; attemptsUsed is
+	// guarded by the owning driverState.mu.
+	deadline     time.Time
+	attemptsUsed int
 }
 
 type driverState struct {
@@ -169,7 +174,11 @@ type driverState struct {
 	// deciding counts decisions whose planner ran for this driver and whose
 	// store call has not returned; attempt settlement and slot pruning wait
 	// for it to drop to zero.
-	deciding        int
+	deciding int
+	// held marks a fencing decision whose commit was ambiguous: its
+	// deciding count stays raised, so attempts cannot progress, until the
+	// readback shows whether the cancellation was adopted.
+	held            bool
 	pruning         bool
 	untyped         *attempt
 	inflight        *attempt
@@ -431,6 +440,11 @@ func (s *Service) Close() {
 	if cancel != nil {
 		cancel()
 	}
+	for _, d := range s.drivers {
+		d.mu.Lock()
+		d.cond.Broadcast()
+		d.mu.Unlock()
+	}
 	s.wg.Wait()
 }
 
@@ -655,6 +669,14 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	changed := err == nil && view.DesiredRevision != req.ExpectedRevision
 	if planned {
 		d.mu.Lock()
+		if fence && err != nil && !s.store.AdmissionOpen() {
+			// Ambiguous commit of a fencing decision: keep the attempt from
+			// progressing until readbackResolved settles the question.
+			d.held = true
+			d.mu.Unlock()
+			s.armReadback()
+			return DesiredView{}, err
+		}
 		if fence && changed {
 			for _, a := range []*attempt{d.untyped, d.inflight} {
 				if a != nil {
@@ -718,7 +740,7 @@ func (s *Service) planner(d *driverState, planned, fence *bool) Planner {
 					Current: &Transition{
 						Kind: KindCancel, Phase: PhasePending, Epoch: a.corr.Epoch, Generation: a.corr.Generation,
 						NativeClosePending: true, SemanticCleanupPending: true,
-						DeadlineUTC: s.now().Add(s.budget).UTC(),
+						DeadlineUTC: a.deadline.UTC(), AttemptsUsed: a.attemptsUsed,
 					},
 					Reserved: next,
 				}
@@ -852,8 +874,41 @@ func (s *Service) resolveReadback(ctx context.Context) {
 func (s *Service) readbackResolved() {
 	s.commitView(s.ctx, nil, false)
 	for _, id := range s.order {
-		s.wakeDriver(s.drivers[id])
+		d := s.drivers[id]
+		s.releaseHeld(d)
+		s.wakeDriver(d)
 	}
+}
+
+// releaseHeld ends the hold of an ambiguous fencing decision. When the
+// readback shows the cancellation slot was adopted, the superseded attempt
+// is fenced before any attempt can progress; otherwise it simply resumes.
+func (s *Service) releaseHeld(d *driverState) {
+	d.mu.Lock()
+	held := d.held
+	d.mu.Unlock()
+	if !held {
+		return
+	}
+	rec, err := s.store.Driver(d.id)
+	if err != nil {
+		return // stay held; a later readback retries
+	}
+	d.mu.Lock()
+	if d.held {
+		d.held = false
+		if rec.Current != nil {
+			for _, a := range []*attempt{d.untyped, d.inflight} {
+				if a != nil {
+					a.fenced = true
+					a.cancel()
+				}
+			}
+		}
+		d.deciding--
+		d.cond.Broadcast()
+	}
+	d.mu.Unlock()
 }
 
 func (s *Service) wakeDriver(d *driverState) {

@@ -93,12 +93,18 @@ func TestSemanticSnapshotProviderEdgesCanonicalOrder(t *testing.T) {
 func TestSemanticSnapshotProviderEdgesFailures(t *testing.T) {
 	registry := m09Registry(t)
 	for _, tc := range []struct {
-		name, code string
-		inputs     []semanticview.Input
-		err        error
+		name, code      string
+		inputs          []semanticview.Input
+		err             error
+		missingMetadata bool
 	}{
 		{name: "provider_error", code: "UNAVAILABLE", inputs: []semanticview.Input{edgeUnknown("asset:a"), edgeUnknown("asset:b")}, err: errors.New("synthetic provider failure")},
 		{name: "duplicate", code: "CONFLICT", inputs: []semanticview.Input{edgeUnknown("asset:a"), edgeUnknown("asset:a")}},
+		// Missing metadata alone is UNAVAILABLE. A duplicate must instead be
+		// rejected as CONFLICT before Build, whose own duplicate check would
+		// otherwise mask removal of the resolver's selected-ID deletion.
+		{name: "missing_metadata", code: "UNAVAILABLE", inputs: []semanticview.Input{edgeUnknown("asset:a"), edgeUnknown("asset:b")}, missingMetadata: true},
+		{name: "duplicate_before_missing_metadata", code: "CONFLICT", inputs: []semanticview.Input{edgeUnknown("asset:a"), edgeUnknown("asset:a")}, missingMetadata: true},
 		{name: "substituted", code: "CONFLICT", inputs: []semanticview.Input{edgeUnknown("asset:a"), edgeUnknown("asset:c")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,7 +119,11 @@ func TestSemanticSnapshotProviderEdgesFailures(t *testing.T) {
 			calls := 0
 			broken := &edgeSnapshotProvider{capture: func(context.Context, []semreg.AssetID) (*semreg.PackMetadataRegistry, []semanticview.Input, error) {
 				calls++
-				return registry, tc.inputs, tc.err
+				metadata := registry
+				if tc.missingMetadata {
+					metadata = nil
+				}
+				return metadata, tc.inputs, tc.err
 			}}
 			edgeFailure(t, m09Request(t, edgeBuilder(broken), edgeSnapshotQuery, vars, false), tc.code)
 			if calls != 1 {

@@ -207,10 +207,13 @@ type Service struct {
 	observed map[DriverID]observation
 	// pendingEv holds committed-in-memory events whose view publication
 	// failed; they are emitted, in order, with the next published view.
-	pendingEv  []Event
-	dirty      bool
-	retryArmed bool
-	view       atomic.Pointer[Catalog]
+	pendingEv []Event
+	// pendingLost is set when a pending event was discarded; the next
+	// publication marks a gap so readers resynchronise.
+	pendingLost bool
+	dirty       bool
+	retryArmed  bool
+	view        atomic.Pointer[Catalog]
 
 	lifeMu  sync.Mutex
 	started bool
@@ -840,9 +843,22 @@ func (s *Service) deferPublication(event *Event) {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
 	if event != nil {
+		if event.Kind == EventObservedChanged {
+			// A newer observation of the driver supersedes an unpublished
+			// one: replaying both would stamp the older with a view that
+			// already shows the newer.
+			kept := s.pendingEv[:0]
+			for _, p := range s.pendingEv {
+				if p.Kind != EventObservedChanged || p.DriverID != event.DriverID {
+					kept = append(kept, p)
+				}
+			}
+			s.pendingEv = kept
+		}
 		if len(s.pendingEv) == maxPendingEvents {
 			copy(s.pendingEv, s.pendingEv[1:])
 			s.pendingEv = s.pendingEv[:maxPendingEvents-1]
+			s.pendingLost = true
 		}
 		s.pendingEv = append(s.pendingEv, *event)
 	}
@@ -897,6 +913,10 @@ func (s *Service) publish(event *Event) bool {
 				e.DesiredRevision = entry.DesiredRevision
 			}
 		}
+	}
+	if s.pendingLost {
+		s.events.markGap()
+		s.pendingLost = false
 	}
 	built.EventCursor = s.events.cursor() + uint64(len(emit))
 	s.view.Store(&built)

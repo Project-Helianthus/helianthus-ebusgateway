@@ -75,6 +75,12 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	if t.Phase == PhaseCleanup && !t.NativeClosePending && !t.SemanticCleanupPending {
 		return s.finish(d, rec, *t)
 	}
+	if t.Phase == PhaseCleanup && s.cleanupSpent(*t) {
+		// The persisted attempt limit or the nonrenewable deadline is spent:
+		// no further Stop runs, whether this is a retry or a recovery. The
+		// obligations stay durable and are reported, never renewed.
+		return s.afterCleanup(d, *t)
+	}
 	switch {
 	case t.Phase == PhaseCleanup && t.Kind == KindStop:
 		return s.stepStop(d, *t)
@@ -90,6 +96,12 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 		return s.stepStart(d, *t)
 	}
 	return false, 0
+}
+
+// cleanupSpent reports whether a CLEANUP slot's persisted attempt limit or
+// deadline leaves no budget for another Stop.
+func (s *Service) cleanupSpent(t Transition) bool {
+	return t.AttemptsUsed >= s.maxAttempts || (!t.DeadlineUTC.IsZero() && !s.now().Before(t.DeadlineUTC))
 }
 
 func sameIdentity(a, b *Transition) bool {

@@ -96,6 +96,16 @@ func (l *eventLog) append(event Event) uint64 {
 	return cursor
 }
 
+// markGap records that events were discarded before they received a cursor:
+// it consumes one cursor and empties the window, so every reader positioned
+// before the gap is told to resynchronise.
+func (l *eventLog) markGap() {
+	l.mu.Lock()
+	l.last++
+	l.start, l.count = 0, 0
+	l.mu.Unlock()
+}
+
 func (l *eventLog) cursor() uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()

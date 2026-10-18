@@ -2359,8 +2359,10 @@ func TestServiceCleanupStopIsBounded(t *testing.T) {
 	if !hasDeadline.Load() {
 		t.Fatal("Stop ran without a deadline")
 	}
-	if n := f.execs[id].count("stop"); n != 3 {
-		t.Fatalf("semantic cleanup retried %d times, want the attempt limit 3", n)
+	// The first Stop consumed the whole nonrenewable budget, so no retry
+	// follows; the attempt limit (3) bounds a series with budget left.
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("semantic cleanup ran %d times, want 1 once the deadline is spent", n)
 	}
 	if cur := f.record(id).Current; cur == nil || !cur.SemanticCleanupPending || cur.NativeClosePending {
 		t.Fatalf("unfinished cleanup not retained: %+v", cur)
@@ -2593,5 +2595,74 @@ func TestServiceCleanupAttemptsArePersisted(t *testing.T) {
 	waitFor(t, "cleanup stalled", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
 	if cur := f.record(id).Current; cur == nil || cur.AttemptsUsed != 3 {
 		t.Fatalf("persisted cleanup attempts = %+v, want 3", cur)
+	}
+}
+
+// TestServiceCleanupRetryNeverRenewsExpiredDeadline: once the persisted
+// deadline has passed, an unfinished semantic cleanup is not retried with a
+// fresh budget; the obligation stays durable.
+func TestServiceCleanupRetryNeverRenewsExpiredDeadline(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		time.Sleep(150 * time.Millisecond) // outlives the slot's deadline
+		return StopOutcome{NativeClosed: true}
+	})
+	f.mustDecide(MethodStop, id)
+	waitFor(t, "cleanup stalled", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+	time.Sleep(400 * time.Millisecond)
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("Stop ran %d times, want 1 (no fresh budget after the deadline)", n)
+	}
+	if cur := f.record(id).Current; cur == nil || !cur.SemanticCleanupPending {
+		t.Fatalf("unfinished cleanup not retained: %+v", cur)
+	}
+}
+
+// TestServiceDeferredObservationsMatchTheirView: transitions queued while
+// publication fails are coalesced per driver, so no replayed event reports an
+// observation the view at its catalog revision no longer shows.
+func TestServiceDeferredObservationsMatchTheirView(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	cursor := f.svc.List().EventCursor
+	hs.failAdvance.Store(true)
+	f.mustDecide(MethodStop, id)
+	f.waitIdle(id)
+	f.mustDecide(MethodStart, id)
+	f.waitIdle(id)
+	hs.failAdvance.Store(false)
+	f.waitObserved(id, drivermanager.ObservedRunning)
+	view := f.svc.List()
+	for _, e := range f.svc.EventsSince(cursor).Events {
+		if e.Kind == EventObservedChanged && e.CatalogRevision == view.Revision && e.ObservedState != f.status(id).ObservedState {
+			t.Fatalf("event %+v reports an observation the view at its revision does not show", e)
+		}
+	}
+}
+
+// TestServicePendingEventOverflowForcesResync: events discarded before they
+// received a cursor cannot leave a silent gap; readers positioned before it
+// are told to resynchronise.
+func TestServicePendingEventOverflowForcesResync(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	cursor := f.svc.List().EventCursor
+	hs.failAdvance.Store(true)
+	for i := 0; i < maxPendingEvents+1; i++ {
+		f.svc.deferPublication(&Event{Kind: EventDesiredAccepted, DriverID: id})
+	}
+	hs.failAdvance.Store(false)
+	waitFor(t, "pending events published", func() bool { return f.svc.EventsSince(cursor).Next > cursor })
+	if page := f.svc.EventsSince(cursor); !page.Resync {
+		t.Fatalf("overflow left a silent gap: %+v", page)
 	}
 }

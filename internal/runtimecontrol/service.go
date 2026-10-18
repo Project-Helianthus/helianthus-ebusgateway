@@ -405,22 +405,39 @@ func (s *Service) start(ctx context.Context) error {
 		}
 	}
 
-	// D5 first: restore before any executor call or admission.
+	// D5 first: restore before any executor call or admission. An adapter
+	// that implements EmptyRestorer also learns that no material exists, so
+	// its managed writers open only after this step.
 	var restoreErrs []error
-	if material := s.store.Recovery(); material != nil {
-		if rerr := s.recovery.Restore(ctx, cloneMaterial(material)); rerr != nil {
-			affected := material.DriverIDs
-			if len(affected) == 0 {
-				affected = s.order
+	material := s.store.Recovery()
+	var rerr error
+	switch empty, ok := s.recovery.(EmptyRestorer); {
+	case material != nil:
+		rerr = s.recovery.Restore(ctx, cloneMaterial(material))
+	case ok:
+		rerr = empty.RestoreEmpty(ctx)
+	}
+	if rerr != nil {
+		var affected []DriverID
+		if material != nil {
+			affected = material.DriverIDs
+		}
+		// A managed restoration names exactly the drivers it failed closed;
+		// healthy unrelated drivers keep running.
+		var scoped *RestoreError
+		if errors.As(rerr, &scoped) && len(scoped.Drivers) > 0 {
+			affected = scoped.Drivers
+		}
+		if len(affected) == 0 {
+			affected = s.order
+		}
+		for _, id := range affected {
+			if d, ok := s.drivers[id]; ok {
+				d.mu.Lock()
+				d.recoveryBlocked = true
+				d.mu.Unlock()
 			}
-			for _, id := range affected {
-				if d, ok := s.drivers[id]; ok {
-					d.mu.Lock()
-					d.recoveryBlocked = true
-					d.mu.Unlock()
-				}
-				restoreErrs = append(restoreErrs, &SemanticError{DriverID: id, Op: "restore", Err: rerr})
-			}
+			restoreErrs = append(restoreErrs, &SemanticError{DriverID: id, Op: "restore", Err: rerr})
 		}
 	}
 

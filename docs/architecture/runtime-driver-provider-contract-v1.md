@@ -35,7 +35,15 @@ production caller uses it yet. Issue
 adds the internal desired-state service in `internal/runtimecontrol` (section
 5, S1/D3 desired-state service) over that storage seam, with an injected
 lifecycle executor and recovery adapter. It has no production registration,
-no MCP mutator, no endpoint I/O and no authentication.
+no MCP mutator, no endpoint I/O and no authentication. Issue
+[#1188](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1188)
+adds the service write-ahead recorder for service-routed managed writers
+(section 5, S3.7 to S3.9 service write-ahead recovery): two durable steps
+around every managed hub call, restoration before admission with exact-byte
+gap resolution, and compaction only at a verified restore point. It is
+exercised with a synthetic two-asset publisher only; no production publisher
+is migrated, no eBUS shell is wired and direct publishers keep their
+memory-only recovery boundary.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -766,9 +774,13 @@ replaces the old one only after both old obligations are cleared, and an
 established epoch is never removed.
 
 **Recovery.** `Start` restores the committed D5 material before any executor
-call or admission. A restore failure withholds the drivers it names as
+call or admission. An adapter that implements `EmptyRestorer` is also told
+when no material is committed (`RestoreEmpty`), so its managed writers open
+only after this step. A restore failure withholds the drivers it names as
 `FAILED/DEPENDENCY_UNAVAILABLE` with no reconciler, and START or RESTART for
-them refuses at row 7. Otherwise each slot resumes from its own state:
+them refuses at row 7. A `*RestoreError` names exactly the drivers it failed
+closed; any other failure names the material's drivers, or every driver when
+the material names none. Otherwise each slot resumes from its own state:
 
 - `PENDING` runs;
 - `ACTIVE` left by an earlier incarnation first settles the historical
@@ -851,6 +863,111 @@ serialization wait before `TRANSITION_BUSY`.
 failures are `LifecycleError`, and request refusals are `Refusal` with the
 refusal-table code and row. Executable evidence is
 `internal/runtimecontrol/service_test.go` against the merged store.
+
+### S3.7 to S3.9 service write-ahead recovery (implemented internal recorder)
+
+`internal/runtimecontrol` adds a `Recorder`, the service's D5 recovery adapter
+for registered, service-routed managed sources. Each `ManagedSource` names its
+driver, its source and its complete owned asset set; an asset belongs to one
+source. The recorder still imports only the standard library and
+`internal/drivermanager`. It reaches the publication hub through the
+`ManagedHub` and `Replay` seams (opaque bytes only) and a `RecoveryClock`
+(process samples, restart-comparable elapsed-time anchors). The bridge from the
+in-process hub to these seams exists only in the package tests; a later wiring
+ticket places it in the composition layer, as for the store bridge. Direct
+publishers that do not route every mutation through a `Writer` keep their
+memory-only boundary and get no durable-replay claim.
+
+**Two durable steps.** A `Writer` publication or control takes the
+service-side source gate, then every affected asset gate in bytewise order
+(the hub and the store manager hold no lock across any of it). Under those
+gates it assigns the source's next WAL sequence, one intent ordinal per asset
+and one monotonic point, and durably persists them with the exact staged
+envelope, the advanced per-asset clock high-water mark and its elapsed-time
+anchor. Only then does it call the hub. A control's per-asset attempt bytes
+exist only inside the hub call, so each asset's exact attempt is persisted
+from the hub's pre-submission callback, outside every hub lock, before that
+asset is submitted; a failed write refuses that asset's submission. After the
+hub returns, the gates are released and a second transaction persists each
+asset's accepted step (exact bytes, original point, opaque result with
+snapshot identity, canonical bytes, revision vector and cursor, incarnation
+and `HubSeq`) or its verbatim rejection identifier. Both steps rewrite the one
+D5 envelope; memory changes only after a write succeeds, so a failed intent
+consumes no counter, never reaches the hub and leaves no staging behind. A
+failed outcome write leaves the intent pending (`ErrOutcomeNotDurable`) until
+`Flush`, `Secure` or a restore resolves it. An uncertain hub completion blocks
+the source and its assets for the rest of the process.
+
+**Clock.** Each new point is `max(H + d + (m - m0), last + 1)`, where `H` is
+the asset's durable high-water mark, `d` the verified elapsed time from its
+anchor to the process sample `m0` taken at restore, and `m` the current
+sample. Every reserved point, including pending and rejected attempts, is
+persisted with its intent; `H` is never lowered. Missing or unverifiable
+continuity, a backward clock or arithmetic overflow fails the asset closed.
+
+**Restore before admission.** `Start` calls `Restore` (or `RestoreEmpty`)
+before any executor call. The recorder validates ownership and ordering: a
+stream naming an unmanaged source or asset is refused as a whole, a WAL
+sequence gap (for example a removed intent) fails its source closed, and an
+ordinal gap or malformed asset record fails its asset closed. It replays the
+verified checkpoint on detached kernels, then walks the intents in stream
+order. That order respects both the per-source WAL order and the per-asset
+ordinal order, because every intent is persisted under its source gate and
+all its asset gates, so every lower pending entry is resolved before a
+dependent recorded outcome. A recorded accepted step is replayed at its
+original point and verified against its stored result; a recorded rejection
+is reinstated and never applied. A pending step compares the replayed cursor:
+a matching sequence and digest reads back, an unchanged cursor resubmits the
+exact stored bytes at their original point, and anything else, or an
+uncertain resubmission, fails the source closed. A control asset that was
+never durably staged was never submitted and consumes its ordinal without a
+result. The replay is then installed into the hub, which refuses any asset
+that already holds state or a source that was already admitted. Each
+installed asset is reprojected afresh; only an acknowledged reprojection
+reopens reads, so an asset behind a rejected or unattempted control stays
+closed. Failures are returned as `*RestoreError`, which withholds only the
+named drivers; healthy unrelated assets and sources are restored. Prior
+epochs, admissions and native-close claims stay historical: the new epoch's
+first batch retires the prior epoch, and an unfinished cleanup keeps its
+native-close obligation until the executor proves the close.
+
+**Verified compaction.** `Compact` (also run after a successful restore and
+when the entry count reaches the configured threshold, default 64) takes every
+source and asset gate and refuses while any intent lacks a durable or
+restore-resolved outcome, any outcome is queued, or any path is failed closed
+or blocked: that material stays reachable. It exports a hub checkpoint,
+restores it into a scratch hub and compares every managed asset's exact state
+(accepted log and results, snapshot identity, canonical bytes, revisions,
+`HubSeq`, control gate) with the live hub. Only a match replaces the stream in
+one atomic write that keeps every counter and clock mark; any refusal,
+mismatch or write failure leaves the previous stream byte-identical.
+
+**Budgets.** One operation stages at most 128 assets and 8 MiB; at most 128
+intents may lack a durable outcome; the encoded stream is bounded (default
+48 MiB of the 64 MiB namespace). Before an intent is accepted the recorder
+reserves room for its outcome (four times the staged size plus twice the
+largest recorded result per asset, plus 4 KiB per asset). A request that
+cannot fit is refused `RESOURCE_EXHAUSTED` before any counter, point or hub
+call is consumed; nothing reachable is evicted. The stream holds no receipt,
+idempotency key, principal or completed-operation record: entries leave it
+only at a verified restore point.
+
+**Isolation bound.** No durable write runs under a hub lock or the store
+manager's read path. While a managed source's durable write is stalled inside
+the store's file write, another family's `Admitted` and `ReadAdmitted` reads,
+its direct publications, a managed asset's `Inspect` and the committed
+control read each return within 100 ms.
+
+**Limits.** A transition cover that the hub installs inside a publication
+commit is not routed through a `Writer`; managed writers must not rely on
+generation transitions until a later slice records covers. The hub itself
+keeps every accepted batch in memory, so a checkpoint grows with history; the
+stream bound refuses new work rather than evicting it. An ambiguous store
+write is resolved by the store's readback; the recorder rewrites its complete
+stream on its next write. Executable evidence is
+`internal/runtimecontrol/recovery_test.go` (S3.9 cases a to f, cursor rules,
+compaction, clock, capacity and isolation) against the merged store and the
+in-process hub.
 
 At process start the HTTP/API/health shell becomes available before drivers are
 reconciled. The store loads every desired record independently. Corrupt or

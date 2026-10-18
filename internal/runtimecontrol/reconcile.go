@@ -249,7 +249,10 @@ func (s *Service) settleObligations(d *driverState, t Transition) Transition {
 		return next
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		out := s.stopBounded(d, s.corr(d, t))
+		out := s.stopBounded(d, s.corr(d, t), t.DeadlineUTC)
+		if next.AttemptsUsed < s.maxAttempts {
+			next.AttemptsUsed++ // persisted, so recovery cannot renew exhausted cleanup
+		}
 		next.NativeClosePending = t.NativeClosePending && !out.NativeClosed
 		next.SemanticCleanupPending = t.SemanticCleanupPending && !out.SemanticCleaned
 	}
@@ -260,8 +263,14 @@ func (s *Service) settleObligations(d *driverState, t Transition) Transition {
 // operation budget, so an executor that respects its context cannot block a
 // reconciler indefinitely. Stop must be idempotent for a correlation whose
 // native close is already proven: it is repeated to retry semantic cleanup.
-func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation) StopOutcome {
-	ctx, cancel := context.WithTimeout(s.ctx, s.budget)
+func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation, deadline time.Time) StopOutcome {
+	limit := s.budget
+	if !deadline.IsZero() {
+		if remaining := deadline.Sub(s.now()); remaining > 0 && remaining < limit {
+			limit = remaining
+		}
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, limit)
 	defer cancel()
 	return d.exec.Stop(ctx, corr)
 }
@@ -273,7 +282,7 @@ func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation) StopOut
 func (s *Service) semanticRetry(d *driverState, t Transition) (bool, time.Duration) {
 	d.mu.Lock()
 	d.cleanupRetries++
-	exhausted := d.cleanupRetries >= s.maxAttempts
+	exhausted := d.cleanupRetries >= s.maxAttempts || t.AttemptsUsed >= s.maxAttempts
 	if exhausted {
 		d.cleanupRetries = 0
 	}
@@ -689,11 +698,29 @@ func (s *Service) runUntyped(d *driverState) {
 			// A success after the attempt's budget is never admitted; the
 			// started generation is withdrawn, and an unconfirmed close
 			// quarantines the driver.
-			if out := s.stopBounded(d, a.corr); !out.NativeClosed {
+			var out StopOutcome
+			for i := 0; i < s.maxAttempts; i++ {
+				out = s.stopBounded(d, a.corr, time.Time{})
+				if !out.NativeClosed || out.SemanticCleaned {
+					break
+				}
+			}
+			if !out.NativeClosed {
 				s.settle(d, a, func() {
 					d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
 				})
 				s.quarantine(d, Transition{Kind: KindStart})
+				return
+			}
+			if !out.SemanticCleaned {
+				// No slot retains this cleanup: block admission so a later
+				// START or RESTART cannot proceed over unfinished withdrawal.
+				s.settle(d, a, func() {
+					d.corr, d.untyped, d.autoStartDone = a.corr, nil, true
+					d.recoveryBlocked = true
+				})
+				s.appendDiagnostic(d, Transition{Kind: KindStart}, "CLEANUP_STALLED")
+				s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
 				return
 			}
 			finishUntyped(observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})

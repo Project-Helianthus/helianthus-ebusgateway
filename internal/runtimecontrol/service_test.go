@@ -2534,3 +2534,64 @@ func TestServiceInitialViewIsRetried(t *testing.T) {
 	hs.failAdvance.Store(false)
 	waitFor(t, "initial view", func() bool { return len(f.svc.List().Drivers) == 1 })
 }
+
+// TestServiceUntypedLateSuccessKeepsUnfinishedCleanupBlocking: a process-start
+// success after its deadline whose withdrawal closes natively but leaves
+// semantic cleanup unfinished is not discarded: the driver is FAILED and a
+// later RESTART is refused at row 7.
+func TestServiceUntypedLateSuccessKeepsUnfinishedCleanupBlocking(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond; o.MaxAttempts = 3 },
+		setup: func(f *svcFixture) {
+			f.execs[id].setStart(func(ctx context.Context, _ LifecycleCorrelation) error {
+				<-ctx.Done()
+				return nil
+			})
+			f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+				return StopOutcome{NativeClosed: true}
+			})
+		}})
+	waitFor(t, "failed", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+	if n := f.execs[id].count("stop"); n != 3 {
+		t.Fatalf("semantic cleanup retried %d times, want the attempt limit 3", n)
+	}
+	_, err := f.decide(MethodRestart, id)
+	refusalOf(t, err, RefusalFailedPrecondition, 7)
+}
+
+// TestServiceAcceptedEventCarriesObservedState: DESIRED_ACCEPTED reports the
+// driver's observed state at acceptance, not an empty one.
+func TestServiceAcceptedEventCarriesObservedState(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	cursor := f.svc.events.cursor()
+	f.mustDecide(MethodStop, id)
+	for _, e := range f.svc.EventsSince(cursor).Events {
+		if e.Kind == EventDesiredAccepted {
+			if e.ObservedState == "" {
+				t.Fatalf("accepted event has no observed state: %+v", e)
+			}
+			return
+		}
+	}
+	t.Fatal("no accepted event")
+}
+
+// TestServiceCleanupAttemptsArePersisted: each cleanup Stop is counted in the
+// slot's persisted AttemptsUsed so process recovery cannot renew it.
+func TestServiceCleanupAttemptsArePersisted(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) { o.MaxAttempts = 3 }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		return StopOutcome{NativeClosed: true}
+	})
+	f.mustDecide(MethodStop, id)
+	waitFor(t, "cleanup stalled", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
+	if cur := f.record(id).Current; cur == nil || cur.AttemptsUsed != 3 {
+		t.Fatalf("persisted cleanup attempts = %+v, want 3", cur)
+	}
+}

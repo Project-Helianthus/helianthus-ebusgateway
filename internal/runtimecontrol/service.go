@@ -665,8 +665,12 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	d.mu.Lock()
 	corr := d.corr
 	d.mu.Unlock()
+	s.viewMu.Lock()
+	obs := s.observed[d.id]
+	s.viewMu.Unlock()
 	s.commitView(s.ctx, &Event{Kind: EventDesiredAccepted, DriverID: d.id,
 		DesiredState: view.DesiredState, DesiredRevision: view.DesiredRevision,
+		ObservedState: obs.state, Reason: obs.reason, SafetyQuarantined: obs.quarantined,
 		Epoch: corr.Epoch, Generation: corr.Generation}, false)
 	s.wakeDriver(d)
 	return view, nil

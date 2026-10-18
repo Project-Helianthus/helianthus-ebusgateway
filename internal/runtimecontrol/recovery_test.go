@@ -2932,10 +2932,8 @@ func TestRecoveryAmbiguousRecorderCommitArmsReadback(t *testing.T) {
 			// (c) Secure and publications are refused retryably meanwhile,
 			// with no store write and no hub call.
 			writes := w.store.count()
-			if !tc.intent {
-				_, serr := w.rec.Secure(context.Background(), synthDriver, Transition{})
-				retryable("Secure", serr)
-			}
+			_, serr := w.rec.Secure(context.Background(), synthDriver, Transition{})
+			retryable("Secure", serr)
 			_, perr := w.publish(synthSource, synthAssets[1])
 			retryable("publication", perr)
 			if hubCalls != boolInt(!tc.intent) || w.store.count() != writes {

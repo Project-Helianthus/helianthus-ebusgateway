@@ -1215,6 +1215,14 @@ func (r *Recorder) Flush(ctx context.Context) error {
 	// concurrent flushes never remove the same queued outcomes twice.
 	r.flushMu.Lock()
 	defer r.flushMu.Unlock()
+	// An ambiguous write must settle before an empty queue counts as secure.
+	r.writeMu.Lock()
+	serr := r.settleAmbiguous()
+	r.writeMu.Unlock()
+	if serr != nil {
+		r.armReadback()
+		return serr
+	}
 	r.mu.Lock()
 	queued := append([]queuedOutcome(nil), r.queued...)
 	r.mu.Unlock()

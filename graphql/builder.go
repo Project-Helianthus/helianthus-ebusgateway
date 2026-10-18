@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"reflect"
 	"sync"
 )
 
@@ -356,9 +357,19 @@ func (b *Builder) scheduleWriter() ScheduleWriter {
 }
 
 // SetSemanticSnapshotProvider supplies coherent, already public-safe SemReg captures.
+// Nil providers, including typed nils, clear the registration.
 func (b *Builder) SetSemanticSnapshotProvider(provider SemanticSnapshotProvider) {
 	if b == nil {
 		return
+	}
+	if provider != nil {
+		value := reflect.ValueOf(provider)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				provider = nil
+			}
+		}
 	}
 	b.mu.Lock()
 	b.semanticSnapshot = provider

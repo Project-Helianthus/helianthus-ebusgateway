@@ -243,6 +243,7 @@ type busObservabilitySnapshotCache struct {
 
 func newGraphQLRootObject(builder *Builder) map[string]any {
 	return map[string]any{
+		semanticSnapshotRootKey:              &semanticSnapshotCache{provider: builder.semanticSnapshotProvider()},
 		busObservabilitySnapshotCacheRootKey: newBusObservabilitySnapshotCache(builder),
 		watchSummarySnapshotCacheRootKey:     newWatchSummarySnapshotCache(builder),
 	}

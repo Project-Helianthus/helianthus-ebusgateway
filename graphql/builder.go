@@ -11,6 +11,7 @@ type Builder struct {
 	status                 StatusProvider
 	identity               GatewayIdentityProvider
 	semantic               SemanticProvider
+	semanticSnapshot       SemanticSnapshotProvider
 	bus                    BusObservabilityProvider
 	identificationEvidence IdentificationEvidenceProvider
 	watch                  WatchSummaryProvider
@@ -352,4 +353,23 @@ func (b *Builder) scheduleWriter() ScheduleWriter {
 	writer := b.schedule
 	b.mu.RUnlock()
 	return writer
+}
+
+// SetSemanticSnapshotProvider supplies coherent, already public-safe SemReg captures.
+func (b *Builder) SetSemanticSnapshotProvider(provider SemanticSnapshotProvider) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.semanticSnapshot = provider
+	b.mu.Unlock()
+}
+
+func (b *Builder) semanticSnapshotProvider() SemanticSnapshotProvider {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.semanticSnapshot
 }

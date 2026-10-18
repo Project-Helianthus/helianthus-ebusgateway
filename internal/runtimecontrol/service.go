@@ -405,22 +405,44 @@ func (s *Service) start(ctx context.Context) error {
 		}
 	}
 
-	// D5 first: restore before any executor call or admission.
+	// D5 first: restore before any executor call or admission. An adapter
+	// that implements EmptyRestorer also learns that no material exists, so
+	// its managed writers open only after this step.
+	// An adapter that writes its own envelope gets the same bounded readback
+	// resolver as service-owned writes, before its first store write.
+	if rb, ok := s.recovery.(ReadbackBinder); ok {
+		rb.BindReadback(s.armReadback)
+	}
 	var restoreErrs []error
-	if material := s.store.Recovery(); material != nil {
-		if rerr := s.recovery.Restore(ctx, cloneMaterial(material)); rerr != nil {
-			affected := material.DriverIDs
-			if len(affected) == 0 {
-				affected = s.order
+	material := s.store.Recovery()
+	var rerr error
+	switch empty, ok := s.recovery.(EmptyRestorer); {
+	case material != nil:
+		rerr = s.recovery.Restore(ctx, cloneMaterial(material))
+	case ok:
+		rerr = empty.RestoreEmpty(ctx)
+	}
+	if rerr != nil {
+		var affected []DriverID
+		if material != nil {
+			affected = material.DriverIDs
+		}
+		// A managed restoration names exactly the drivers it failed closed;
+		// healthy unrelated drivers keep running.
+		var scoped *RestoreError
+		if errors.As(rerr, &scoped) && len(scoped.Drivers) > 0 {
+			affected = scoped.Drivers
+		}
+		if len(affected) == 0 {
+			affected = s.order
+		}
+		for _, id := range affected {
+			if d, ok := s.drivers[id]; ok {
+				d.mu.Lock()
+				d.recoveryBlocked = true
+				d.mu.Unlock()
 			}
-			for _, id := range affected {
-				if d, ok := s.drivers[id]; ok {
-					d.mu.Lock()
-					d.recoveryBlocked = true
-					d.mu.Unlock()
-				}
-				restoreErrs = append(restoreErrs, &SemanticError{DriverID: id, Op: "restore", Err: rerr})
-			}
+			restoreErrs = append(restoreErrs, &SemanticError{DriverID: id, Op: "restore", Err: rerr})
 		}
 	}
 
@@ -1001,10 +1023,14 @@ func (s *Service) resolveReadback(ctx context.Context) {
 }
 
 // readbackResolved exposes the committed state after a readback adopted or
-// rejected an ambiguous commit, settles every held decision (an adopted one
-// publishes its acceptance with the view) and lets every reconciler re-read
-// its slots.
+// rejected an ambiguous commit, lets a self-writing recovery adapter settle
+// its own ambiguous write against the committed envelope, settles every held
+// decision (an adopted one publishes its acceptance with the view) and lets
+// every reconciler re-read its slots.
 func (s *Service) readbackResolved() {
+	if rb, ok := s.recovery.(ReadbackBinder); ok {
+		rb.ReadbackResolved()
+	}
 	ds := make([]*driverState, 0, len(s.order))
 	for _, id := range s.order {
 		ds = append(ds, s.drivers[id])

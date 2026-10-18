@@ -480,7 +480,7 @@ side effect.
 
 ### S0 registry and typed provider seam
 
-Package [`internal/runtimecontrol`](../../internal/runtimecontrol) implements
+Package [`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements
 the S0 slice of the registration companion
 [runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
 (A1): descriptor format `v1`, validation before effects, a frozen in-memory
@@ -537,7 +537,7 @@ storage seam implements.
 
 ### S3 durable control store (implemented storage seam)
 
-Package [`internal/runtimestate`](../../internal/runtimestate) owns the
+Package [`internal/runtimestate`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimestate) owns the
 independently versioned `runtime_control` namespace (format version 1) under
 the sole runtime-state writer. Top-level, meta and eBUS versions are
 unchanged; unknown namespaces keep round-tripping. The namespace holds only:
@@ -664,7 +664,7 @@ the state before retrying; it never claims that the original was preserved.
 
 The receipt, idempotency-ledger and operation-record transaction that this
 section described before the D3 amendment is withdrawn. Package
-[`internal/runtimecontrol`](../../internal/runtimecontrol) implements the
+[`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements the
 S1/S2.1/S5/S6.1 slice of the lifecycle page as an internal `Service`. It has
 no production registration, no MCP mutator, no endpoint I/O and no
 authentication (D4), and it still imports only the standard library and
@@ -724,7 +724,21 @@ obligations are durably cleared. An unconfirmed native close publishes
 blocks admission until process restart. RESTART withdraws the admitted
 generation, then starts one replacement under a new epoch. A START that
 exhausts its budget ends `FAILED` with desired `RUNNING` unchanged; recovery is
-a RESTART, never a START no-op. Epochs are derived from the incarnation name,
+a RESTART, never a START no-op.
+
+Cleanup runs within the same nonrenewable budget. Each cleanup attempt is
+charged durably in the slot before the executor's `Stop` is invoked, so
+process loss during `Stop` never grants an extra attempt. `Stop` runs under a
+context that ends at the persisted deadline; once the deadline has passed it
+receives an already-expired context, and a late process-start success is
+withdrawn under the attempt's original deadline in the same way. No new
+deadline is computed for cleanup. When the attempt limit or the deadline is
+spent with semantic cleanup still pending, the driver ends `FAILED` with a
+`CLEANUP_STALLED` diagnostic, START and RESTART refuse at row 7 until process
+restart, the obligation stays durable and no further `Stop` runs. An
+unconfirmed native close quarantines as described above.
+
+Epochs are derived from the incarnation name,
 the driver ID and a per-process ordinal, so every process start, RESTART and
 START after STOP gets a new epoch (final D1). The generation starts at 1 in
 each epoch and grows by one per retry.
@@ -749,7 +763,20 @@ them refuses at row 7. Otherwise each slot resumes from its own state:
 - a terminal slot is only pruned.
 
 A driver with no slot and desired `RUNNING` gets the untyped process-start
-attempt, which persists nothing. A driver with desired `STOPPED` and no slot
+attempt, which persists nothing.
+
+**Ambiguous persistence.** When a decision or work commit reports ambiguous
+persistence, the store keeps the staged state hidden and closes admission.
+The service then runs a bounded readback itself, without waiting for another
+request. The first readback runs at once, and at most the attempt limit of
+readbacks follow, spaced by the retry delay and each bounded by an equal share
+of the operation budget (about 50 seconds in all with the defaults). Admission
+reopens only when the store's readback agrees with the staged or the committed
+namespace and directory durability is re-established. The service then
+publishes the committed view and wakes every reconciler, so an adopted
+decision is shown and executed. A disagreement fails control closed in the
+store; an unresolved series is reported, and admission stays closed. List and
+get keep serving the last committed view throughout. A driver with desired `STOPPED` and no slot
 is left alone. No completed-operation history is consulted.
 
 **Pruning.** A terminal slot is pruned only after `Secure` returns its D5
@@ -773,7 +800,15 @@ transitions never change desired state, its revision or the mark. Events
 (default 256, at most 4096) only after the transition is committed and visible
 at the event's catalog revision. A reader behind the window, or ahead of it,
 is told to resync from `List`, whose `EventCursor` names the newest event
-included. An event carries the driver ID, its kind, the catalog revision,
+included. A view and its events are published atomically for event readers:
+the events are retained and the view stored under the event log's lock, and
+waiters are woken only afterwards. A resync at a published `EventCursor`
+therefore always finds that cursor's events. A pending `OBSERVED_CHANGED`
+event that the published view no longer shows (because a newer observation
+of the same driver is staged and has its own event) is coalesced away rather
+than stamped with the newer view's revision. When control state is read-only
+at start, every driver is withheld as `FAILED`, but the view keeps the stored
+catalog revision and each stored desired revision unchanged. An event carries the driver ID, its kind, the catalog revision,
 desired state and revision, observed state, reason, the quarantine flag and
 the lifecycle correlation (source epoch and driver generation) the observation
 refers to; an accepted decision carries the driver's correlation at

@@ -165,7 +165,22 @@ type blockHooks struct {
 	blockNext  chan struct{}
 	entered    chan struct{}
 	failRename error
-	writes     int
+	// failDirSync makes the next N parent-directory fsyncs fail.
+	failDirSync int
+	writes      int
+}
+
+func (h *blockHooks) FsyncDir(path string) error {
+	h.mu.Lock()
+	fail := h.failDirSync > 0
+	if fail {
+		h.failDirSync--
+	}
+	h.mu.Unlock()
+	if fail {
+		return errors.New("synthetic directory fsync failure")
+	}
+	return h.DefaultFilesystemHooks.FsyncDir(path)
 }
 
 func (h *blockHooks) WriteFile(path string, data []byte, perm uint32) error {
@@ -2403,13 +2418,14 @@ func TestServiceLateStartSuccessIsNotAdmitted(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	}
-	assertNeverRunning := func(f *svcFixture, id DriverID, stopsWant int) {
+	assertNeverRunning := func(t *testing.T, f *svcFixture, id DriverID, stopsWant int) {
 		waitFor(t, "failed", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
 		if st := f.status(id); st.Reason != drivermanager.ReasonRetryExhausted {
 			t.Fatalf("status = %+v", st)
 		}
-		if n := f.execs[id].count("stop"); n < stopsWant {
-			t.Fatalf("late generation not withdrawn: %d stops", n)
+		waitFor(t, "late generation withdrawn", func() bool { return f.execs[id].count("stop") >= stopsWant })
+		if st := f.status(id); st.ObservedState == drivermanager.ObservedRunning {
+			t.Fatalf("late success published RUNNING: %+v", st)
 		}
 	}
 	id := DriverID("fam.alpha")
@@ -2417,7 +2433,7 @@ func TestServiceLateStartSuccessIsNotAdmitted(t *testing.T) {
 		f := newFixture(t, svcOpts{drivers: enabled(string(id)),
 			opts:  func(o *Options) { o.OperationBudget = 100 * time.Millisecond },
 			setup: func(f *svcFixture) { f.execs[id].setStart(late) }})
-		assertNeverRunning(f, id, 1)
+		assertNeverRunning(t, f, id, 1)
 	})
 	t.Run("typed", func(t *testing.T) {
 		f := newFixture(t, svcOpts{drivers: enabled(string(id)),
@@ -2425,7 +2441,7 @@ func TestServiceLateStartSuccessIsNotAdmitted(t *testing.T) {
 		f.waitSettled(id, drivermanager.ObservedRunning)
 		f.execs[id].setStart(late)
 		f.mustDecide(MethodRestart, id)
-		assertNeverRunning(f, id, 2)
+		assertNeverRunning(t, f, id, 2)
 	})
 }
 
@@ -2539,10 +2555,14 @@ func TestServiceInitialViewIsRetried(t *testing.T) {
 
 // TestServiceUntypedLateSuccessKeepsUnfinishedCleanupBlocking: a process-start
 // success after its deadline whose withdrawal closes natively but leaves
-// semantic cleanup unfinished is not discarded: the driver is FAILED and a
-// later RESTART is refused at row 7.
+// semantic cleanup unfinished is not discarded: the driver is FAILED with a
+// CLEANUP_STALLED diagnostic and a later RESTART is refused at row 7. The
+// late withdrawal stays bounded by the attempt's original deadline: its one
+// Stop receives an already-expired context and is never retried with a fresh
+// budget.
 func TestServiceUntypedLateSuccessKeepsUnfinishedCleanupBlocking(t *testing.T) {
 	id := DriverID("fam.alpha")
+	var renewed atomic.Bool
 	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
 		opts: func(o *Options) { o.OperationBudget = 100 * time.Millisecond; o.MaxAttempts = 3 },
 		setup: func(f *svcFixture) {
@@ -2550,16 +2570,33 @@ func TestServiceUntypedLateSuccessKeepsUnfinishedCleanupBlocking(t *testing.T) {
 				<-ctx.Done()
 				return nil
 			})
-			f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+			f.execs[id].setStop(func(ctx context.Context, _ LifecycleCorrelation) StopOutcome {
+				if ctx.Err() == nil {
+					renewed.Store(true)
+				}
 				return StopOutcome{NativeClosed: true}
 			})
 		}})
 	waitFor(t, "failed", func() bool { return f.status(id).ObservedState == drivermanager.ObservedFailed })
-	if n := f.execs[id].count("stop"); n != 3 {
-		t.Fatalf("semantic cleanup retried %d times, want the attempt limit 3", n)
+	waitFor(t, "cleanup stalled diagnostic", func() bool { return hasDiagnostic(f.svc.Diagnostics(id), "CLEANUP_STALLED") })
+	time.Sleep(200 * time.Millisecond)
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("late withdrawal ran Stop %d times, want 1 bounded by the original deadline", n)
+	}
+	if renewed.Load() {
+		t.Fatal("late withdrawal Stop received a renewed deadline")
 	}
 	_, err := f.decide(MethodRestart, id)
 	refusalOf(t, err, RefusalFailedPrecondition, 7)
+}
+
+func hasDiagnostic(diags []Diagnostic, outcome string) bool {
+	for _, d := range diags {
+		if d.Outcome == outcome {
+			return true
+		}
+	}
+	return false
 }
 
 // TestServiceAcceptedEventCarriesObservedState: DESIRED_ACCEPTED reports the
@@ -2664,5 +2701,258 @@ func TestServicePendingEventOverflowForcesResync(t *testing.T) {
 	waitFor(t, "pending events published", func() bool { return f.svc.EventsSince(cursor).Next > cursor })
 	if page := f.svc.EventsSince(cursor); !page.Resync {
 		t.Fatalf("overflow left a silent gap: %+v", page)
+	}
+}
+
+// --- author round: readback resolver, nonrenewable cleanup, views, cursor ---
+
+// TestServiceResolvesAmbiguousCommitWithoutFurtherRequest: a decision whose
+// commit is ambiguous (directory fsync failure after the rename) closes
+// admission. The service runs the bounded readback itself: with no further
+// request, admission reopens, the adopted decision appears in List and the
+// reconciler executes it, within the documented bound.
+func TestServiceResolvesAmbiguousCommitWithoutFurtherRequest(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	before := f.status(id)
+	f.quiesce()
+	f.hooks.mu.Lock()
+	f.hooks.failDirSync = 1
+	f.hooks.mu.Unlock()
+	start := time.Now()
+	_, err := f.decide(MethodStop, id)
+	refusalOf(t, err, RefusalUnavailable, 3)
+	waitFor(t, "ambiguous decision adopted without a further request", func() bool {
+		st := f.status(id)
+		return f.ms.AdmissionOpen() && st.DesiredState == DesiredStopped && st.DesiredRevision > before.DesiredRevision &&
+			st.ObservedState == drivermanager.ObservedStopped
+	})
+	// Bound: the first readback runs at once; the series is at most
+	// MaxAttempts readbacks spaced by RetryDelay (2 ms here).
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("ambiguous commit resolved after %v, beyond the bound", elapsed)
+	}
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("adopted STOP executed %d times, want 1", n)
+	}
+	if got := f.fileDesired(id); got != string(DesiredStopped) {
+		t.Fatalf("durable desired = %q", got)
+	}
+}
+
+// TestServiceExpiredCleanupDeadlineIsNeverRenewed: an ACTIVE slot recovered
+// after its persisted deadline gets no fresh budget. Its one cleanup Stop
+// receives an already-expired context; the unfinished obligation ends FAILED
+// with CLEANUP_STALLED, blocks START and RESTART (row 7), is never retried
+// and keeps the original deadline durably.
+func TestServiceExpiredCleanupDeadlineIsNeverRenewed(t *testing.T) {
+	id := DriverID("fam.alpha")
+	past := "2001-01-01T00:00:00Z"
+	var renewed atomic.Bool
+	f := newFixture(t, svcOpts{
+		drivers: enabled(string(id)),
+		state: controlState(1, 3, map[string]string{
+			string(id): recordJSON(DesiredRunning, 1, 1, transitionJSON(KindStart, 1, 1, PhaseActive, "old.fam.alpha.1", 1, true, true, 1, past)),
+		}, ""),
+		incarnation: "inc2",
+		setup: func(f *svcFixture) {
+			f.execs[id].setStop(func(ctx context.Context, _ LifecycleCorrelation) StopOutcome {
+				if ctx.Err() == nil {
+					renewed.Store(true)
+				}
+				return StopOutcome{NativeClosed: true}
+			})
+		},
+	})
+	waitFor(t, "cleanup stalled", func() bool {
+		return f.status(id).ObservedState == drivermanager.ObservedFailed && hasDiagnostic(f.svc.Diagnostics(id), "CLEANUP_STALLED")
+	})
+	time.Sleep(200 * time.Millisecond)
+	if renewed.Load() {
+		t.Fatal("cleanup Stop received a renewed deadline")
+	}
+	if n := f.execs[id].count("stop"); n != 1 {
+		t.Fatalf("expired cleanup ran Stop %d times, want 1", n)
+	}
+	if n := f.execs[id].count("start"); n != 0 {
+		t.Fatalf("a start ran over unfinished cleanup (%d)", n)
+	}
+	cur := f.record(id).Current
+	want, _ := time.Parse(time.RFC3339, past)
+	if cur == nil || !cur.SemanticCleanupPending || cur.NativeClosePending || !cur.DeadlineUTC.Equal(want) {
+		t.Fatalf("slot after stalled cleanup = %+v, want the obligation and the original deadline", cur)
+	}
+	_, err := f.decide(MethodRestart, id)
+	refusalOf(t, err, RefusalFailedPrecondition, 7)
+}
+
+// TestServiceCleanupAttemptChargedBeforeStop: the cleanup attempt is durable
+// before the executor's Stop runs, so process loss during Stop cannot grant
+// an extra attempt on recovery.
+func TestServiceCleanupAttemptChargedBeforeStop(t *testing.T) {
+	id := DriverID("fam.alpha")
+	f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock) // runs before the fixture's Close, even after a failure
+	f.execs[id].setStop(func(context.Context, LifecycleCorrelation) StopOutcome {
+		once.Do(func() { close(entered) })
+		<-release
+		return StopOutcome{NativeClosed: true, SemanticCleaned: true}
+	})
+	f.mustDecide(MethodStop, id)
+	<-entered
+	cur := f.record(id).Current
+	if cur == nil || cur.AttemptsUsed != 1 || !cur.NativeClosePending || !cur.SemanticCleanupPending {
+		t.Fatalf("slot while Stop runs = %+v, want the attempt already charged with both obligations pending", cur)
+	}
+	unblock()
+	f.waitSettled(id, drivermanager.ObservedStopped)
+}
+
+// roStore reports the committed catalog as read-only (a LOCKED or
+// persistence-blocked restart).
+type roStore struct{ Store }
+
+func (r roStore) Catalog() (ControlCatalog, error) {
+	c, err := r.Store.Catalog()
+	c.ReadOnly = true
+	return c, err
+}
+
+// TestServiceReadOnlyViewKeepsStoredRevisions: a read-only catalog at Start
+// withholds every driver as FAILED but keeps the stored catalog revision and
+// each stored desired revision unchanged, never zero.
+func TestServiceReadOnlyViewKeepsStoredRevisions(t *testing.T) {
+	a, b := DriverID("fam.a"), DriverID("fam.b")
+	f := newFixture(t, svcOpts{
+		drivers: enabled(string(a), string(b)),
+		state: controlState(7, 11, map[string]string{
+			string(a): recordJSON(DesiredRunning, 5, 0, ""),
+			string(b): recordJSON(DesiredStopped, 7, 0, ""),
+		}, ""),
+		wrap:    func(s Store) Store { return roStore{s} },
+		noStart: true,
+	})
+	stored, err := f.ms.Catalog()
+	if err != nil || stored.CatalogRevision == 0 {
+		t.Fatalf("stored catalog = %+v, %v", stored, err)
+	}
+	err = f.svc.Start(context.Background())
+	refusalOf(t, err, RefusalFailedPrecondition, 3)
+	view := f.svc.List()
+	if view.Revision != stored.CatalogRevision {
+		t.Fatalf("read-only view revision = %d, want stored %d", view.Revision, stored.CatalogRevision)
+	}
+	want := map[DriverID]DesiredRevision{}
+	for _, rec := range stored.Drivers {
+		want[rec.DriverID] = rec.DesiredRevision
+	}
+	for _, e := range view.Drivers {
+		if e.Revision != stored.CatalogRevision || e.DesiredRevision != want[e.DriverID] || e.DesiredRevision == 0 ||
+			e.ObservedState != drivermanager.ObservedFailed {
+			t.Fatalf("read-only entry = %+v, want stored revisions %d/%d", e, stored.CatalogRevision, want[e.DriverID])
+		}
+	}
+}
+
+// TestServicePublishedCursorEventsExist: a reader that resyncs at a published
+// EventCursor always finds that cursor's events, deterministically at the
+// event log and under concurrent publications.
+func TestServicePublishedCursorEventsExist(t *testing.T) {
+	t.Run("log", func(t *testing.T) {
+		l := newEventLog(8)
+		got := make(chan EventPage, 1)
+		l.publish([]Event{{Kind: EventObservedChanged}, {Kind: EventObservedChanged}}, false, func(cursor uint64) {
+			// A reader that saw the exposed cursor reads right away; it
+			// must wait for the publication and then find both events.
+			go func() { got <- l.since(cursor - 2) }()
+		})
+		page := <-got
+		if page.Resync || len(page.Events) != 2 || page.Next != 2 {
+			t.Fatalf("resync at the exposed cursor = %+v", page)
+		}
+	})
+	t.Run("service", func(t *testing.T) {
+		id := DriverID("fam.alpha")
+		f := newFixture(t, svcOpts{drivers: enabled(string(id))})
+		f.waitSettled(id, drivermanager.ObservedRunning)
+		stop := make(chan struct{})
+		bad := make(chan string, 1)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				view := f.svc.List()
+				if view.EventCursor == 0 {
+					continue
+				}
+				page := f.svc.EventsSince(view.EventCursor - 1)
+				if page.Resync || len(page.Events) == 0 || page.Events[0].Cursor != view.EventCursor {
+					select {
+					case bad <- fmt.Sprintf("cursor %d published before its event: %+v", view.EventCursor, page):
+					default:
+					}
+					return
+				}
+			}
+		}()
+		for i := 0; i < 15; i++ {
+			f.mustDecide(MethodRestart, id)
+			f.waitSettled(id, drivermanager.ObservedRunning)
+		}
+		close(stop)
+		<-done
+		select {
+		case msg := <-bad:
+			t.Fatal(msg)
+		default:
+		}
+	})
+}
+
+// TestServicePublishCoalescesSupersededObservations: when an earlier
+// observation's publication failed and a newer observation of the same
+// driver is published successfully, the superseded event is not stamped with
+// the newer view's revision.
+func TestServicePublishCoalescesSupersededObservations(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var hs *hookStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { hs = &hookStore{Store: s}; return hs }})
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	cursor := f.svc.List().EventCursor
+	d := f.svc.drivers[id]
+	hs.failAdvance.Store(true)
+	stopping := observation{state: drivermanager.ObservedStopping, reason: drivermanager.ReasonStopRequested}
+	if f.svc.stageObservation(id, stopping) {
+		f.svc.commitObserved(d, stopping)
+	}
+	stopped := observation{state: drivermanager.ObservedStopped, reason: drivermanager.ReasonOperatorStopped}
+	f.svc.stageObservation(id, stopped)
+	hs.failAdvance.Store(false)
+	f.svc.commitObserved(d, stopped)
+	f.waitObserved(id, drivermanager.ObservedStopped)
+	page := f.svc.EventsSince(cursor)
+	sawStopped := false
+	for _, e := range page.Events {
+		if e.Kind != EventObservedChanged {
+			continue
+		}
+		if e.ObservedState == drivermanager.ObservedStopping {
+			t.Fatalf("superseded STOPPING event emitted with revision %d: %+v", e.CatalogRevision, page.Events)
+		}
+		sawStopped = sawStopped || e.ObservedState == drivermanager.ObservedStopped
+	}
+	if page.Resync || !sawStopped {
+		t.Fatalf("events after publication = %+v", page)
 	}
 }

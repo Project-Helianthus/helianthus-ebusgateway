@@ -98,8 +98,8 @@ func (s *Service) reconcileStep(d *driverState) (bool, time.Duration) {
 	return false, 0
 }
 
-// cleanupSpent reports whether a CLEANUP slot's persisted attempt limit or
-// deadline leaves no budget for another Stop.
+// cleanupSpent reports whether a slot's persisted attempt limit or deadline
+// leaves no budget for another cleanup Stop.
 func (s *Service) cleanupSpent(t Transition) bool {
 	return t.AttemptsUsed >= s.maxAttempts || (!t.DeadlineUTC.IsZero() && !s.now().Before(t.DeadlineUTC))
 }
@@ -199,6 +199,7 @@ func (s *Service) commitCurrent(d *driverState, next Transition) error {
 		}
 	}
 	s.report(lastErr)
+	s.armReadback()
 	return lastErr
 }
 
@@ -251,35 +252,47 @@ func (s *Service) quarantine(d *driverState, t Transition) {
 }
 
 // settleObligations runs one Stop for the slot's correlation and returns the
-// slot moved to CLEANUP with the obligations the stop proved cleared.
-func (s *Service) settleObligations(d *driverState, t Transition) Transition {
+// slot moved to CLEANUP with the obligations the stop proved cleared. The
+// cleanup attempt is charged durably before the executor is invoked, so
+// process loss during Stop, or a failed commit of its result, can never
+// grant an extra attempt on recovery. An error means the charge was not
+// committed and no Stop ran.
+func (s *Service) settleObligations(d *driverState, t Transition) (Transition, error) {
 	next := t
 	next.Phase = PhaseCleanup
 	if t.Epoch == "" {
 		// The slot never began: no correlation, no obligation incurred.
 		next.NativeClosePending, next.SemanticCleanupPending = false, false
-		return next
+		return next, nil
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		out := s.stopBounded(d, s.corr(d, t), t.DeadlineUTC)
-		if next.AttemptsUsed < s.maxAttempts {
-			next.AttemptsUsed++ // persisted, so recovery cannot renew exhausted cleanup
+		if t.AttemptsUsed < s.maxAttempts {
+			charged := t
+			charged.AttemptsUsed++
+			if err := s.commitCurrent(d, charged); err != nil {
+				return t, err
+			}
+			next.AttemptsUsed = charged.AttemptsUsed
 		}
+		out := s.stopBounded(d, s.corr(d, t), t.DeadlineUTC)
 		next.NativeClosePending = t.NativeClosePending && !out.NativeClosed
 		next.SemanticCleanupPending = t.SemanticCleanupPending && !out.SemanticCleaned
 	}
-	return next
+	return next, nil
 }
 
-// stopBounded runs one executor Stop under a context limited to the
-// operation budget, so an executor that respects its context cannot block a
-// reconciler indefinitely. Stop must be idempotent for a correlation whose
-// native close is already proven: it is repeated to retry semantic cleanup.
+// stopBounded runs one executor Stop under a context that ends at the
+// persisted deadline, never later than one operation budget from now. The
+// deadline is never renewed: once it has passed, Stop receives an
+// already-expired context (no time is granted, so only an immediate
+// withdrawal can be proven), and the caller treats any obligation it leaves
+// as stalled. Stop must be idempotent for a correlation whose native close is
+// already proven: it is repeated to retry semantic cleanup.
 func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation, deadline time.Time) StopOutcome {
 	limit := s.budget
 	if !deadline.IsZero() {
-		if remaining := deadline.Sub(s.now()); remaining > 0 && remaining < limit {
-			limit = remaining
+		if remaining := deadline.Sub(s.now()); remaining < limit {
+			limit = remaining // non-positive once expired: an already-expired context
 		}
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, limit)
@@ -287,24 +300,35 @@ func (s *Service) stopBounded(d *driverState, corr LifecycleCorrelation, deadlin
 	return d.exec.Stop(ctx, corr)
 }
 
-// semanticRetry bounds consecutive unfinished semantic cleanups: after the
-// attempt limit the reconciler stops retrying in this process, reports the
-// driver FAILED and leaves the obligation durable; the next wake (a decision
-// or a new incarnation) starts a fresh bounded series.
+// semanticRetry bounds unfinished semantic cleanup: it retries only while
+// the persisted attempt limit and the persisted deadline leave budget (and
+// within the in-process series bound); otherwise the cleanup has stalled.
 func (s *Service) semanticRetry(d *driverState, t Transition) (bool, time.Duration) {
+	if s.cleanupSpent(t) {
+		return s.stallCleanup(d, t)
+	}
 	d.mu.Lock()
 	d.cleanupRetries++
-	exhausted := d.cleanupRetries >= s.maxAttempts || t.AttemptsUsed >= s.maxAttempts
-	if exhausted {
-		d.cleanupRetries = 0
-	}
+	exhausted := d.cleanupRetries >= s.maxAttempts
 	d.mu.Unlock()
 	if exhausted {
-		s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
-		s.appendDiagnostic(d, t, "CLEANUP_STALLED")
-		return false, 0
+		return s.stallCleanup(d, t)
 	}
 	return s.retryLater()
+}
+
+// stallCleanup ends a cleanup whose budget is spent: the driver is reported
+// FAILED with a CLEANUP_STALLED diagnostic, admission of START and RESTART is
+// blocked (recoveryBlocked) and the reconciler takes no further step in this
+// process. The obligation stays durable; no budget or deadline is renewed.
+func (s *Service) stallCleanup(d *driverState, t Transition) (bool, time.Duration) {
+	d.mu.Lock()
+	d.recoveryBlocked = true
+	d.cleanupRetries = 0
+	d.mu.Unlock()
+	s.observe(d, observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonRetryExhausted})
+	s.appendDiagnostic(d, t, "CLEANUP_STALLED")
+	return false, 0
 }
 
 func (s *Service) releaseLive(d *driverState, t Transition) {
@@ -352,7 +376,10 @@ func (s *Service) stepCancel(d *driverState, t Transition) (bool, time.Duration)
 		s.setCorr(d, s.corr(d, t))
 	}
 	s.observe(d, observation{state: drivermanager.ObservedStopping, reason: drivermanager.ReasonStopRequested})
-	next := s.settleObligations(d, t)
+	next, err := s.settleObligations(d, t)
+	if err != nil {
+		return s.retryLater()
+	}
 	if err := s.commitCurrent(d, next); err != nil {
 		return s.retryLater()
 	}
@@ -366,7 +393,10 @@ func (s *Service) stepCancel(d *driverState, t Transition) (bool, time.Duration)
 // stepCleanup settles the remaining obligations of a slot that already
 // reached CLEANUP (a failed or canceled attempt), without a new attempt.
 func (s *Service) stepCleanup(d *driverState, t Transition) (bool, time.Duration) {
-	next := s.settleObligations(d, t)
+	next, err := s.settleObligations(d, t)
+	if err != nil {
+		return s.retryLater()
+	}
 	if err := s.commitCurrent(d, next); err != nil {
 		return s.retryLater()
 	}
@@ -402,7 +432,10 @@ func (s *Service) stepStop(d *driverState, t Transition) (bool, time.Duration) {
 		t = next
 	}
 	if t.NativeClosePending || t.SemanticCleanupPending {
-		next := s.settleObligations(d, t)
+		next, err := s.settleObligations(d, t)
+		if err != nil {
+			return s.retryLater()
+		}
 		if err := s.commitCurrent(d, next); err != nil {
 			return s.retryLater()
 		}
@@ -461,7 +494,10 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 	if a == nil || a.sequence != t.Sequence || t.Epoch == "" {
 		next := t
 		if t.Epoch != "" && (t.NativeClosePending || t.SemanticCleanupPending) {
-			settled := s.settleObligations(d, t)
+			settled, err := s.settleObligations(d, t)
+			if err != nil {
+				return s.retryLater()
+			}
 			settled.Phase = t.Phase
 			if err := s.commitCurrent(d, settled); err != nil {
 				return s.retryLater()
@@ -606,7 +642,10 @@ func (s *Service) exhaust(d *driverState, t Transition, reason drivermanager.Rea
 		return false, 0
 	}
 	s.observe(d, observation{state: drivermanager.ObservedFailed, reason: reason})
-	next := s.settleObligations(d, t)
+	next, err := s.settleObligations(d, t)
+	if err != nil {
+		return s.retryLater()
+	}
 	if err := s.commitCurrent(d, next); err != nil {
 		return s.retryLater()
 	}
@@ -709,11 +748,14 @@ func (s *Service) runUntyped(d *driverState) {
 		if err == nil && (a.ctx.Err() != nil || !s.now().Before(deadline)) {
 			// A success after the attempt's budget is never admitted; the
 			// started generation is withdrawn, and an unconfirmed close
-			// quarantines the driver.
+			// quarantines the driver. The withdrawal stays bounded by the
+			// attempt's original deadline: no new deadline is computed, so a
+			// withdrawal after that deadline gets one Stop with an
+			// already-expired context and no retry.
 			var out StopOutcome
 			for i := 0; i < s.maxAttempts; i++ {
-				out = s.stopBounded(d, a.corr, time.Time{})
-				if !out.NativeClosed || out.SemanticCleaned {
+				out = s.stopBounded(d, a.corr, deadline)
+				if !out.NativeClosed || out.SemanticCleaned || !s.now().Before(deadline) {
 					break
 				}
 			}
@@ -784,6 +826,7 @@ func (s *Service) finish(d *driverState, rec ControlRecord, t Transition) (bool,
 		}
 		if err := s.store.CommitRecovery(s.ctx, cloneMaterial(material)); err != nil {
 			s.report(err)
+			s.armReadback()
 			return s.retryLater()
 		}
 	}
@@ -810,6 +853,7 @@ func (s *Service) finish(d *driverState, rec ControlRecord, t Transition) (bool,
 	}
 	if err := s.store.CommitWork(s.ctx, d.id, cloneTransition(rec.Reserved), nil); err != nil {
 		s.report(err)
+		s.armReadback()
 		return s.retryLater()
 	}
 	if t.Kind == KindStop && rec.Reserved == nil {

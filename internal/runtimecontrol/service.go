@@ -40,6 +40,9 @@ var (
 	ErrStaleSlot       = errors.New("runtimecontrol: work slot no longer current")
 	ErrInvalidWork     = errors.New("runtimecontrol: invalid work update")
 	ErrInvalidRecovery = errors.New("runtimecontrol: invalid recovery material")
+	// ErrReadbackUnresolved reports that the bounded readback resolver ended
+	// without reopening admission; control stays closed (fail closed).
+	ErrReadbackUnresolved = errors.New("runtimecontrol: ambiguous persistence unresolved")
 )
 
 var incarnationPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -214,6 +217,9 @@ type Service struct {
 	dirty       bool
 	retryArmed  bool
 	view        atomic.Pointer[Catalog]
+
+	// readbackArmed is set while the bounded readback resolver runs.
+	readbackArmed atomic.Bool
 
 	lifeMu  sync.Mutex
 	started bool
@@ -466,7 +472,13 @@ func (s *Service) publishWithheld(catalog ControlCatalog, readable bool) {
 			records[rec.DriverID] = rec
 		}
 	}
+	// A readable catalog keeps its committed revisions: the withheld view
+	// carries the stored catalog revision and each stored desired revision
+	// unchanged, so readers never observe a rollback to zero.
 	view := &Catalog{EventCursor: s.events.cursor()}
+	if readable {
+		view.Revision = catalog.CatalogRevision
+	}
 	for _, id := range s.order {
 		rec := records[id]
 		desired := rec.DesiredState
@@ -477,6 +489,7 @@ func (s *Service) publishWithheld(catalog ControlCatalog, readable bool) {
 		view.Drivers = append(view.Drivers, DriverStatus{
 			DriverID: id, Enabled: rec.Enabled, DesiredState: desired, DesiredRevision: rec.DesiredRevision,
 			ObservedState: drivermanager.ObservedFailed, Reason: drivermanager.ReasonInternalError,
+			Revision: view.Revision,
 		})
 	}
 	s.view.Store(view)
@@ -634,12 +647,7 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 	}
 	if !s.store.AdmissionOpen() {
 		if _, hasDeadline := ctx.Deadline(); hasDeadline && s.store.ResolveReadback(ctx) == nil && s.store.AdmissionOpen() {
-			// The readback adopted or rejected an ambiguous commit: expose the
-			// committed state and let every reconciler re-read its slots.
-			s.commitView(s.ctx, nil, false)
-			for _, id := range s.order {
-				s.wakeDriver(s.drivers[id])
-			}
+			s.readbackResolved()
 		}
 	}
 	var planned, fence bool
@@ -660,6 +668,9 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 		d.mu.Unlock()
 	}
 	if err != nil {
+		// An ambiguous commit closes admission until a readback: the
+		// service resolves it itself, without waiting for another request.
+		s.armReadback()
 		return DesiredView{}, err
 	}
 	if !changed {
@@ -776,6 +787,75 @@ func terminal(t *Transition) bool {
 	return t.Phase == PhaseCleanup && !t.NativeClosePending && !t.SemanticCleanupPending
 }
 
+// armReadback starts the bounded readback resolver when the store reports
+// closed admission after a failed write (ambiguous persistence). It is
+// idempotent while a resolver runs and does nothing once the service is
+// closed. Nothing waits for a further request: List and Get keep serving the
+// committed view, and the resolver either reopens admission (then publishes
+// and wakes every reconciler) or leaves control closed and reports it.
+func (s *Service) armReadback() {
+	if s.store.AdmissionOpen() {
+		return
+	}
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+	if !s.started || s.closed || s.ctx == nil || s.ctx.Err() != nil {
+		return
+	}
+	if !s.readbackArmed.CompareAndSwap(false, true) {
+		return
+	}
+	s.wg.Add(1)
+	go s.resolveReadback(s.ctx)
+}
+
+// resolveReadback runs at most MaxAttempts readbacks: the first at once, the
+// rest after RetryDelay, each bounded by OperationBudget/MaxAttempts. The
+// store reopens admission only when the readback agrees with the staged or
+// the committed namespace and directory durability is re-established; a
+// disagreement makes the store fail control closed. With the defaults the
+// whole series ends within about 50 seconds.
+func (s *Service) resolveReadback(ctx context.Context) {
+	defer s.wg.Done()
+	defer s.readbackArmed.Store(false)
+	perTry := s.budget / time.Duration(s.maxAttempts)
+	for i := 0; i < s.maxAttempts; i++ {
+		if i > 0 && !sleepCtx(ctx, s.retryDelay(i)) {
+			return
+		}
+		if !s.store.AdmissionOpen() {
+			tryCtx, cancel := context.WithTimeout(ctx, perTry)
+			err := s.store.ResolveReadback(tryCtx)
+			cancel()
+			if err != nil {
+				s.report(err)
+			} else if !s.store.AdmissionOpen() {
+				// Nothing is staged any more, yet control stays closed: the
+				// store failed it closed (or persistence is blocked).
+				s.report(fmt.Errorf("%w: control failed closed by the store", ErrReadbackUnresolved))
+				return
+			}
+		}
+		if s.store.AdmissionOpen() {
+			s.readbackResolved()
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+	}
+	s.report(fmt.Errorf("%w after %d readbacks; admission stays closed", ErrReadbackUnresolved, s.maxAttempts))
+}
+
+// readbackResolved exposes the committed state after a readback adopted or
+// rejected an ambiguous commit and lets every reconciler re-read its slots.
+func (s *Service) readbackResolved() {
+	s.commitView(s.ctx, nil, false)
+	for _, id := range s.order {
+		s.wakeDriver(s.drivers[id])
+	}
+}
+
 func (s *Service) wakeDriver(d *driverState) {
 	select {
 	case d.wake <- struct{}{}:
@@ -827,6 +907,7 @@ func (s *Service) commitView(ctx context.Context, event *Event, advance bool) bo
 			}
 			if _, err := s.store.AdvanceCatalog(ctx); err != nil {
 				s.report(err)
+				s.armReadback()
 				break
 			}
 		}
@@ -882,9 +963,13 @@ func (s *Service) deferPublication(event *Event) {
 // publish rebuilds the view from one coherent store read plus the staged
 // observations. A view is exposed only at a strictly higher revision, or
 // re-exposed unchanged at the same revision, so content at a revision never
-// changes once exposed. Events are appended only after the view that makes
-// them visible is stored, so a reader woken by an event always finds a list
-// at least as new as the event's catalog revision.
+// changes once exposed. The view and its events are published atomically
+// with respect to event readers: the events are retained and the view (with
+// its EventCursor) stored under the event log's mutex, and waiters are woken
+// only afterwards. A reader woken by an event therefore finds a list at
+// least as new as the event's catalog revision, and a resync at a published
+// EventCursor always finds that cursor's events. Pending OBSERVED_CHANGED
+// events that the view no longer shows are coalesced away.
 func (s *Service) publish(event *Event) bool {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
@@ -900,31 +985,46 @@ func (s *Service) publish(event *Event) bool {
 	default:
 		return false
 	}
-	emit := append([]Event(nil), s.pendingEv...)
+	candidates := append([]Event(nil), s.pendingEv...)
 	if event != nil {
-		emit = append(emit, *event)
+		candidates = append(candidates, *event)
 	}
-	for i := range emit {
-		e := &emit[i]
+	entries := make(map[DriverID]DriverStatus, len(built.Drivers))
+	for _, entry := range built.Drivers {
+		entries[entry.DriverID] = entry
+	}
+	emit := candidates[:0]
+	for _, e := range candidates {
 		e.CatalogRevision = built.Revision
-		for _, entry := range built.Drivers {
-			if entry.DriverID == e.DriverID && e.Kind == EventObservedChanged {
-				e.DesiredState = entry.DesiredState
-				e.DesiredRevision = entry.DesiredRevision
+		if e.Kind == EventObservedChanged {
+			entry := entries[e.DriverID]
+			if !observationShown(e, entry) {
+				// A newer observation of the driver is already staged in
+				// this view and has its own event: the superseded one is
+				// coalesced away instead of being stamped with a view that
+				// no longer shows it.
+				continue
 			}
+			e.DesiredState = entry.DesiredState
+			e.DesiredRevision = entry.DesiredRevision
 		}
+		emit = append(emit, e)
 	}
-	if s.pendingLost {
-		s.events.markGap()
-		s.pendingLost = false
-	}
-	built.EventCursor = s.events.cursor() + uint64(len(emit))
-	s.view.Store(&built)
-	for _, e := range emit {
-		s.events.append(e)
-	}
+	gap := s.pendingLost
+	s.pendingLost = false
+	s.events.publish(emit, gap, func(cursor uint64) {
+		built.EventCursor = cursor
+		s.view.Store(&built)
+	})
 	s.pendingEv, s.dirty = nil, false
 	return true
+}
+
+// observationShown reports whether a view entry shows exactly the observed
+// transition an OBSERVED_CHANGED event reports.
+func observationShown(e Event, entry DriverStatus) bool {
+	return entry.ObservedState == e.ObservedState && entry.Reason == e.Reason &&
+		entry.SafetyQuarantined == e.SafetyQuarantined
 }
 
 func (s *Service) buildLocked(catalog ControlCatalog) Catalog {

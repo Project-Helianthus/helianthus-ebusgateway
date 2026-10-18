@@ -76,34 +76,51 @@ func newEventLog(capacity int) *eventLog {
 	return &eventLog{capacity: capacity, ring: make([]Event, capacity), notify: make(chan struct{})}
 }
 
-// append assigns the next cursor, retains the event and wakes waiters.
-func (l *eventLog) append(event Event) uint64 {
-	l.mu.Lock()
+// appendLocked assigns the next cursor and retains the event.
+func (l *eventLog) appendLocked(event Event) uint64 {
 	l.last++
 	event.Cursor = l.last
-	index := (l.start + l.count) % l.capacity
 	if l.count == l.capacity {
 		l.ring[l.start] = event
 		l.start = (l.start + 1) % l.capacity
 	} else {
-		l.ring[index] = event
+		l.ring[(l.start+l.count)%l.capacity] = event
 		l.count++
 	}
-	close(l.notify)
-	l.notify = make(chan struct{})
-	cursor := l.last
-	l.mu.Unlock()
-	return cursor
+	return l.last
 }
 
-// markGap records that events were discarded before they received a cursor:
-// it consumes one cursor and empties the window, so every reader positioned
-// before the gap is told to resynchronise.
-func (l *eventLog) markGap() {
-	l.mu.Lock()
+func (l *eventLog) wakeLocked() {
+	close(l.notify)
+	l.notify = make(chan struct{})
+}
+
+// markGapLocked records that events were discarded before they received a
+// cursor: it consumes one cursor and empties the window, so every reader
+// positioned before the gap is told to resynchronise.
+func (l *eventLog) markGapLocked() {
 	l.last++
 	l.start, l.count = 0, 0
-	l.mu.Unlock()
+}
+
+// publish appends a view's events (after a gap marker when gap is set) and
+// calls expose with the cursor of the newest event, all under the log's
+// mutex, then wakes waiters. A reader can therefore never observe a view
+// cursor whose events are not yet retrievable: EventsSince waits for the
+// mutex, and the view is exposed before any notification fires.
+func (l *eventLog) publish(events []Event, gap bool, expose func(cursor uint64)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if gap {
+		l.markGapLocked()
+	}
+	for _, e := range events {
+		l.appendLocked(e)
+	}
+	expose(l.last)
+	if gap || len(events) > 0 {
+		l.wakeLocked()
+	}
 }
 
 func (l *eventLog) cursor() uint64 {

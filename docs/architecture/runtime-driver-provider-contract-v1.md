@@ -568,9 +568,13 @@ and the last-known-good `runtime_control` namespace is served by the snapshot
 and per-driver reads with `ReadOnly` set while every configured driver starts
 `FAILED`. It is never read as missing and never overwritten later. Stop waits
 for every in-flight writer (a control transaction or a ticker flush) before it
-closes write admission and releases the lock; a canceled stop context skips the
-final flush but still releases the lock as soon as the in-flight writer
-finishes.
+closes write admission and releases the lock. The final flush takes the writer
+slot with the stop context; a context that ended before or during Stop skips
+the flush and is returned, and the lock is still released as soon as the
+in-flight writer finishes. Control admission reports closed once the manager is
+stopped or persistence is blocked. A work update of a stored identity may not
+move its phase backwards, lower its attempts used, or extend or remove an
+established deadline.
 
 The one-time seed runs only for `MISSING` with a valid persisted instance
 GUID: the mark starts at 0 and each configured driver, in bytewise `DriverID`

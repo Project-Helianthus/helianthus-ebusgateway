@@ -2157,3 +2157,142 @@ func TestControlOfflineResetNeverEmitsAStateTheLoaderRejects(t *testing.T) {
 		})
 	}
 }
+
+// Stop's final flush takes the writer slot with the stop context: with dirty
+// cache state and a blocked in-flight writer, Stop returns the context error
+// without flushing, and the store lock is released once the writer finishes.
+func TestControlStopDirtyFinalFlushHonorsContext(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	block, entered := make(chan struct{}), make(chan struct{})
+	hooks.set(func(h *rcHooks) { h.blockNext, h.entered = block, entered })
+	advanced := make(chan error, 1)
+	go func() {
+		_, err := m.AdvanceControlCatalog(context.Background())
+		advanced <- err
+	}()
+	<-entered
+	m.UpsertKnownBusMember(KnownBusMember{Addr: 0x31, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+	writes := hooks.writeCount()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- m.Stop(ctx) }()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Stop = %v, want the context error", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop blocked past its deadline in the final flush")
+	}
+	if rcStoreLockFree(t, path) {
+		t.Fatal("store lock released before the in-flight rename")
+	}
+	if m.ControlAdmissionOpen() {
+		t.Fatal("admission open after a cancelled Stop")
+	}
+	close(block)
+	if err := <-advanced; err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !rcStoreLockFree(t, path) {
+		if time.Now().After(deadline) {
+			t.Fatal("store lock never released")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if hooks.writeCount() != writes {
+		t.Fatal("cancelled Stop still flushed the dirty cache")
+	}
+}
+
+// A Stop whose context already ended skips the final flush even when the
+// ticker never started (startup-error cleanup after Load).
+func TestControlStopCanceledBeforeStartSkipsFlush(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	m.UpsertKnownBusMember(KnownBusMember{Addr: 0x31, LastSource: LastSourcePassiveObserved, Confidence: ConfidenceCorroborated})
+	writes := hooks.writeCount()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.Stop(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Stop = %v, want context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop with a cancelled context did not return promptly")
+	}
+	if !rcStoreLockFree(t, path) {
+		t.Fatal("store lock held after Stop")
+	}
+	if hooks.writeCount() != writes {
+		t.Fatal("cancelled Stop flushed the dirty cache")
+	}
+	if m.ControlAdmissionOpen() {
+		t.Fatal("admission open after Stop")
+	}
+}
+
+// ControlAdmissionOpen is false once the manager is stopped, after a normal
+// Stop and while a cancelled Stop still waits for an in-flight writer.
+func TestControlAdmissionClosedAfterStop(t *testing.T) {
+	m, _ := rcSeeded(t, nil)
+	if !m.ControlAdmissionOpen() {
+		t.Fatal("admission closed before Stop")
+	}
+	if err := m.Stop(rcCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if m.ControlAdmissionOpen() {
+		t.Fatal("admission open after Stop")
+	}
+}
+
+// A stale update of a stored identity cannot regress durable progress.
+func TestControlWorkRejectsProgressRegression(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	defer rcStop(t, m)
+	if _, err := rcDecide(t, m, ControlStop, "ebus.primary", 2); err != nil {
+		t.Fatal(err)
+	}
+	base := cloneTransition(rcDriver(t, m, "ebus.primary").Current)
+	deadline := rcFixedNow.UTC().Add(time.Hour)
+	progressed := cloneTransition(base)
+	progressed.Phase, progressed.AttemptsUsed, progressed.DeadlineUTC = PhaseCleanup, 2, deadline
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", progressed, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Forward updates stay accepted: same phase, more attempts, earlier deadline.
+	forward := cloneTransition(progressed)
+	forward.AttemptsUsed, forward.DeadlineUTC = 3, deadline.Add(-time.Minute)
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", forward, nil); err != nil {
+		t.Fatalf("forward update refused: %v", err)
+	}
+	before, writes := rcRead(t, path), hooks.writeCount()
+	mut := func(fn func(*ControlTransition)) *ControlTransition {
+		c := cloneTransition(forward)
+		fn(c)
+		return c
+	}
+	for name, stale := range map[string]*ControlTransition{
+		"phase_back":      mut(func(c *ControlTransition) { c.Phase = PhasePending }),
+		"phase_active":    mut(func(c *ControlTransition) { c.Phase = PhaseActive }),
+		"attempts_lower":  mut(func(c *ControlTransition) { c.AttemptsUsed = 1 }),
+		"deadline_extend": mut(func(c *ControlTransition) { c.DeadlineUTC = deadline.Add(time.Hour) }),
+		"deadline_remove": mut(func(c *ControlTransition) { c.DeadlineUTC = time.Time{} }),
+		"fresh_pending":   base,
+	} {
+		if err := m.CommitControlWork(rcCtx(t), "ebus.primary", stale, nil); !errors.Is(err, ErrControlInvalidWork) {
+			t.Fatalf("%s accepted: %v", name, err)
+		}
+	}
+	if hooks.writeCount() != writes || !bytes.Equal(before, rcRead(t, path)) {
+		t.Fatal("refused regression changed the on-disk bytes")
+	}
+}

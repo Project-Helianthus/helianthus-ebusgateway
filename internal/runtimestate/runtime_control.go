@@ -958,11 +958,13 @@ func (m *Manager) ControlLoad() ControlLoadStatus {
 }
 
 // ControlAdmissionOpen reports whether decisions can be admitted: control is
-// loaded and no ambiguous persistence awaits readback.
+// loaded, no ambiguous persistence awaits readback, the manager has not been
+// stopped and persistence is not blocked.
 func (m *Manager) ControlAdmissionOpen() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.controlStatus.Disposition == ControlLoadLoaded && m.controlAmbiguous == nil
+	return m.controlStatus.Disposition == ControlLoadLoaded && m.controlAmbiguous == nil &&
+		!m.stopped && m.persistBlocked == nil
 }
 
 func validateControlConfigs(configs []ControlDriverConfig) ([]ControlDriverConfig, error) {
@@ -1494,7 +1496,8 @@ func (m *Manager) waitTimeoutRefusal(req ControlRequest) *ControlRefusal {
 // reserved slot, removal after terminal obligations). Transitions must keep
 // the kind, sequence and revision of a currently stored slot. A reserved slot
 // may be retained or promoted; clearing both slots asserts terminal obligations
-// have settled, which remains the caller's responsibility.
+// have settled, which remains the caller's responsibility. An update of a
+// stored identity may not regress it (phase, attempts used, deadline).
 func (m *Manager) CommitControlWork(ctx context.Context, id string, current, reserved *ControlTransition) error {
 	if err := m.acquireWriteCtx(ctx); err != nil {
 		return err
@@ -1535,6 +1538,21 @@ func (m *Manager) CommitControlWork(ctx context.Context, id string, current, res
 		!sameIdentity(current, r.Reserved) && !sameIdentity(reserved, r.Reserved) {
 		return fmt.Errorf("%w: work update would discard the reserved transition", ErrControlInvalidWork)
 	}
+	// Durable progress is monotonic: a stale update of the same identity can
+	// neither move the phase backwards, lower the attempts used, nor extend or
+	// remove an established deadline (that would renew the bounded budget).
+	for _, t := range []*ControlTransition{current, reserved} {
+		if t == nil {
+			continue
+		}
+		stored := r.Current
+		if !sameIdentity(t, stored) {
+			stored = r.Reserved
+		}
+		if reason := controlRegression(stored, t); reason != "" {
+			return fmt.Errorf("%w: %s", ErrControlInvalidWork, reason)
+		}
+	}
 	r.Current, r.Reserved = cloneTransition(current), cloneTransition(reserved)
 	for _, t := range []*ControlTransition{r.Current, r.Reserved} {
 		if t == nil {
@@ -1552,6 +1570,37 @@ func (m *Manager) CommitControlWork(ctx context.Context, id string, current, res
 		return refusal
 	}
 	return m.commitControl(ns, false)
+}
+
+func controlPhaseRank(p TransitionPhase) int {
+	switch p {
+	case PhasePending:
+		return 0
+	case PhaseActive:
+		return 1
+	case PhaseCleanup:
+		return 2
+	}
+	return -1
+}
+
+// controlRegression reports why next would regress the stored slot of the
+// same identity, or "" when it only moves forward.
+func controlRegression(stored, next *ControlTransition) string {
+	if stored == nil || next == nil {
+		return ""
+	}
+	switch {
+	case controlPhaseRank(next.Phase) < controlPhaseRank(stored.Phase):
+		return "work update moves the phase backwards"
+	case next.AttemptsUsed < stored.AttemptsUsed:
+		return "work update lowers attempts used"
+	case !stored.DeadlineUTC.IsZero() && next.DeadlineUTC.IsZero():
+		return "work update removes an established deadline"
+	case !stored.DeadlineUTC.IsZero() && next.DeadlineUTC.After(stored.DeadlineUTC):
+		return "work update extends an established deadline"
+	}
+	return ""
 }
 
 // AdvanceControlCatalog durably advances the catalog view revision once for an

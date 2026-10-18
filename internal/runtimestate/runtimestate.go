@@ -577,10 +577,27 @@ func (m *Manager) Stop(ctx context.Context) error {
 			// Don't deadlock; ticker will exit on next iteration.
 		}
 	}
-	// Final flush of any dirty state, skipped when the caller's context has
-	// already ended. Durable control intent is never changed by shutdown.
+	// The caller's context is checked before any flush, whether or not the
+	// ticker was started (startup-error cleanup stops a loaded manager).
 	if stopErr == nil {
-		m.flushIfDirty()
+		stopErr = ctx.Err()
+	}
+	// Final flush of any dirty state. The writer slot is taken with the stop
+	// context, so a blocked writer can never hold Stop past its deadline.
+	// Durable control intent is never changed by shutdown.
+	if stopErr == nil {
+		if err := m.acquireWriteCtx(ctx); err != nil {
+			stopErr = err
+		} else {
+			m.mu.Lock()
+			dirty := m.dirty && m.state != nil
+			m.mu.Unlock()
+			if dirty {
+				_ = m.persistFlushLocked()
+			}
+			m.closeWritesAndReleaseStoreLock()
+			return nil
+		}
 	}
 	// The store lock is released on every exit path, but only after every
 	// in-flight writer (a control transaction or a ticker flush) has finished
@@ -870,7 +887,11 @@ func (m *Manager) flushIfDirty() {
 func (m *Manager) persistFlush() error {
 	m.acquireWrite()
 	defer m.releaseWrite()
+	return m.persistFlushLocked()
+}
 
+// persistFlushLocked is persistFlush for a caller already holding writeSem.
+func (m *Manager) persistFlushLocked() error {
 	m.mu.Lock()
 	if m.persistBlocked != nil {
 		err := m.persistBlocked

@@ -59,6 +59,10 @@ var (
 )
 
 type Options struct {
+	// PortalCatalogAvailable declares a catalog route mounted by the host outside
+	// this handler. A configured URL alone does not establish availability.
+	PortalCatalogAvailable bool
+	BasePath               string
 	// SemanticSnapshotAvailable is set by the host only after mounting the
 	// accepted shared GraphQL read; a catalog capture provider alone is insufficient.
 	SemanticSnapshotAvailable bool
@@ -585,6 +589,9 @@ func NewHandler(opts Options) http.Handler {
 	}
 	if opts.GraphQLPath == "" {
 		opts.GraphQLPath = "/graphql"
+	}
+	if opts.BasePath == "" {
+		opts.BasePath = "/portal/"
 	}
 	if opts.PortalCatalogPath == "" {
 		opts.PortalCatalogPath = "/graphql/portal/v1"

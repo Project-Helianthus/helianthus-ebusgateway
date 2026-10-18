@@ -197,30 +197,25 @@ func startHTTPServer(
 	}
 
 	mux := http.NewServeMux()
-	// This fixed route is intentionally separate from the legacy control-plane
-	// GraphQL endpoint: it starts with no source or action authority and never
-	// falls back to an existing GraphQL/MCP/native path.
-	mux.Handle("/graphql/portal/v1", newPortalCatalogV1Handler(portalCatalogSource))
 	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
+	var portalOptions portal.Options
 	if routePlan.portalPath != "" {
 		portalModbusProvider := portalTCPModbusProvider(modbusProvider)
-		portalPath := routePlan.portalPath
 		var getPortalBusObservability func() any
 		if busObservability != nil {
 			getPortalBusObservability = func() any {
 				return busObservability.Snapshot().Summary
 			}
 		}
-		portalHandler := portal.NewHandler(portal.Options{
-			GraphQLPath:       cfg.GraphQLPath,
-			PortalCatalogPath: "/graphql/portal/v1",
-			SnapshotPath:      cfg.SnapshotPath,
-			SubscriptionPath:  cfg.SubscriptionPath,
-			MCPPath:           cfg.MCPPath,
-			EEBusAdminPath:    "/admin/eebus/v1",
+		portalOptions = portal.Options{
+			GraphQLPath:      cfg.GraphQLPath,
+			SnapshotPath:     cfg.SnapshotPath,
+			SubscriptionPath: cfg.SubscriptionPath,
+			MCPPath:          cfg.MCPPath,
+			EEBusAdminPath:   "/admin/eebus/v1",
 			Readiness: func() portal.RuntimeReadiness {
 				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
 			},
@@ -386,14 +381,31 @@ func startHTTPServer(
 			// here would make /api/v1/ebus-standard/* routes 404 in
 			// production (handler.go nil-guard) — see PR #507.
 			EbusStandardServer: mcpServer.EbusStandardServer(),
-		})
-		mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
-		mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
-		})
+		}
 	}
+	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+// registerHTTPPortalRoutes declares catalog availability at the same boundary
+// that mounts the real route, independently of Portal's in-process adapter.
+func registerHTTPPortalRoutes(mux *http.ServeMux, portalPath string, opts portal.Options, source catalogv1.SourceCapture) {
+	const catalogPath = "/graphql/portal/v1"
+	mux.Handle(catalogPath, newPortalCatalogV1Handler(source))
+	if portalPath == "" {
+		return
+	}
+	opts.PortalCatalogPath = catalogPath
+	opts.PortalCatalogAvailable = true
+	opts.BasePath = portalPath + "/"
+	// M11 has not wired the shared semanticSnapshot provider in production.
+	// Keep it unavailable even though other GraphQL operations are mounted.
+	opts.SemanticSnapshotAvailable = false
+	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portal.NewHandler(opts)))
+	mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
+	})
 }
 
 func validatePortalCatalogRoute(cfg ebusgateway.Config) error {

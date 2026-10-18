@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
 
 func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
@@ -222,4 +226,56 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 		"go startBackgroundFullScanFn(ctx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
 	)
 	assertOrder(lifecycleText, "insertSubscribeOnce sync.Once", "insertSubscribeOnce.Do(func()")
+}
+
+func TestHTTPPortalBootstrapMatchesMountedCatalog(t *testing.T) {
+	for _, mount := range []string{"/portal", "/console/portal"} {
+		t.Run(mount, func(t *testing.T) {
+			mux := http.NewServeMux()
+			contributions, err := newGatewayPortalCatalogContributions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := newGatewayPortalCatalogSource(nil, nil, nil, contributions)
+			registerHTTPPortalRoutes(mux, mount, portal.Options{}, source)
+			res := httptest.NewRecorder()
+			mux.ServeHTTP(res, httptest.NewRequest(http.MethodGet, mount+"/api/v1/bootstrap", nil))
+			if res.Code != http.StatusOK {
+				t.Fatalf("bootstrap status %d: %s", res.Code, res.Body.String())
+			}
+			var bootstrap struct {
+				Read struct {
+					BasePath    string   `json:"base_path"`
+					Unavailable []string `json:"unavailable_operations"`
+				} `json:"portal_read"`
+				Endpoints map[string]string `json:"endpoints"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &bootstrap); err != nil {
+				t.Fatal(err)
+			}
+			if bootstrap.Read.BasePath != mount+"/" {
+				t.Fatalf("base_path = %q", bootstrap.Read.BasePath)
+			}
+			if !reflect.DeepEqual(bootstrap.Read.Unavailable, []string{"semanticSnapshot"}) {
+				t.Fatalf("unavailable_operations = %v", bootstrap.Read.Unavailable)
+			}
+			catalog := httptest.NewRecorder()
+			mux.ServeHTTP(catalog, httptest.NewRequest(http.MethodPost, bootstrap.Endpoints["portal_catalog"], strings.NewReader(`{"operationName":"PortalCatalogV1"}`)))
+			if catalog.Code != http.StatusOK {
+				t.Fatalf("catalog status %d: %s", catalog.Code, catalog.Body.String())
+			}
+			var result struct {
+				Data struct {
+					Catalog json.RawMessage `json:"portalCatalogV1"`
+				} `json:"data"`
+				Errors json.RawMessage `json:"errors"`
+			}
+			if err := json.Unmarshal(catalog.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Data.Catalog) == 0 || len(result.Errors) != 0 {
+				t.Fatalf("catalog response: %s", catalog.Body.String())
+			}
+		})
+	}
 }

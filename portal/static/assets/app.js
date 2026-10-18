@@ -72,7 +72,7 @@ function catalogResourceKey(row, resourceID) {
 function validCatalogSource(source) {
   return hasCatalogStrings(source, ["asset_id", "snapshot_id", "evaluation_digest"]) &&
     hasRequiredCatalogStrings(source, ["revision", "binding_id", "source_epoch"]) &&
-    Number.isInteger(source.driver_generation) && source.driver_generation >= 0 &&
+    typeof source.driver_generation === "string" && /^(0|[1-9][0-9]*)$/.test(source.driver_generation) &&
     isPlainRecord(source.snapshot) && isPlainRecord(source.evaluation) &&
     Array.isArray(source.selections) && isPlainRecord(source.projection);
 }

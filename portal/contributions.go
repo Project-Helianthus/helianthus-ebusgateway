@@ -97,8 +97,8 @@ type portalReadBootstrap struct {
 }
 
 func (h *handler) portalRead() portalReadBootstrap {
-	out := portalReadBootstrap{BasePath: "/portal/", SnapshotOperation: "semanticSnapshot", UnavailableOperations: []string{}}
-	if !h.contributionAvailable() {
+	out := portalReadBootstrap{BasePath: h.opts.BasePath, SnapshotOperation: "semanticSnapshot", UnavailableOperations: []string{}}
+	if !h.opts.PortalCatalogAvailable && !h.contributionAvailable() {
 		out.UnavailableOperations = append(out.UnavailableOperations, "PortalCatalogV1")
 	}
 	if h.opts.SharedSemanticView == nil || !h.opts.SemanticSnapshotAvailable {

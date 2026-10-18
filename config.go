@@ -298,6 +298,8 @@ type StartupSourceOverride struct {
 }
 
 type Config struct {
+	ebusConfigurationPresence *bool
+
 	Transport                transport.RawTransport
 	PassiveTransport         transport.RawTransport // pre-configured passive transport (adapter-direct mode)
 	ProxyListenAddr          string                 // TCP listen address for ENH proxy clients (empty disables)

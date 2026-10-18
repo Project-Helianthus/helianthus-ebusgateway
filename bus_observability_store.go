@@ -439,9 +439,25 @@ type watchEfficiencySnapshot struct {
 	directApplyCandidatesEvaluatedTotal uint64
 }
 
-func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
-	ebusConfigured := cfg.Transport != nil || cfg.PassiveTransport != nil ||
+// PreserveEBusConfigurationPresence captures operator configuration before runtime
+// wrappers or defaults are injected. Repeated calls retain the original fact.
+func (cfg *Config) PreserveEBusConfigurationPresence() {
+	if cfg.ebusConfigurationPresence == nil {
+		present := cfg.ebusConfigured()
+		cfg.ebusConfigurationPresence = &present
+	}
+}
+
+func (cfg Config) ebusConfigured() bool {
+	if cfg.ebusConfigurationPresence != nil {
+		return *cfg.ebusConfigurationPresence
+	}
+	return cfg.Transport != nil || cfg.PassiveTransport != nil ||
 		cfg.TransportConfig.Protocol != "" || cfg.TransportConfig.Address != ""
+}
+
+func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
+	ebusConfigured := cfg.ebusConfigured()
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{

@@ -73,6 +73,8 @@ ebus_baud_observation_available 0
 The store captures eBUS configuration presence at construction, before filling
 in transport defaults: an injected active or passive eBUS transport, an explicit
 transport protocol, or a non-empty transport address establishes presence.
+The production lifecycle preserves this fact before injecting stable driver
+wrappers; those wrappers do not establish configuration presence themselves.
 An empty configuration, Modbus-only configuration, or eeBUS-only configuration
 omits the entire baud family, including HELP, TYPE, and samples. Configuration
 presence is independent of readiness, traffic, transport counters, and shutdown;

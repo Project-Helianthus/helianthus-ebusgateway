@@ -15,6 +15,7 @@ func prepareGatewayRunConfig(cfg *ebusgateway.Config) (gatewayBuildInfo, error) 
 		return gatewayBuildInfo{}, fmt.Errorf("gateway build identity: %w", err)
 	}
 
+	cfg.PreserveEBusConfigurationPresence()
 	applyTransportSourcePolicy(cfg)
 	if err := cfg.ValidatePortalPV(); err != nil {
 		return gatewayBuildInfo{}, fmt.Errorf("validate Portal PV configuration: %w", err)
@@ -38,6 +39,7 @@ func prepareGatewayEBusDriver(cfg *ebusgateway.Config) (*ebusDriverController, e
 	if err != nil {
 		return nil, fmt.Errorf("construct eBUS DriverManager: %w", err)
 	}
+	cfg.PreserveEBusConfigurationPresence()
 	cfg.Transport = ebusDriver.active
 	if ebusDriver.passive != nil {
 		cfg.PassiveTransport = ebusDriver.passive

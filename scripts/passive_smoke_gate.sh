@@ -105,6 +105,19 @@ config_comment_only() {
 	return 0
 }
 
+# #1137 carries the operator's original eBUS-configured fact to the baud
+# metrics through one unexported, nil-by-default pointer field. It selects no
+# source and opens nothing. Accept exactly that one added line, nothing else.
+config_ebus_presence_only() {
+	local changes
+	changes="$({
+		git diff --unified=0 "${base_ref}...HEAD" -- config.go
+		git diff --cached --unified=0 -- config.go
+		git diff --unified=0 -- config.go
+	} | awk '/^[+-][^+-]/ { print $0 }' | sed -E 's/^([+-])[[:space:]]*/\1/; s/[[:space:]]+/ /g')"
+	[[ "${changes}" == "+ebusConfigurationPresence *bool" ]]
+}
+
 # A detached /metrics append is not a passive-capture behavior change. Keep
 # this exception deliberately narrow: it accepts only the pre-existing SemReg
 # hunk, #977's Gateway-owned two-protocol runtime snapshot hunk, or #1137's
@@ -187,6 +200,39 @@ baud_presence_init = [
  "ebusConfigured: ebusConfigured,",
 ]
 baud_presence_render = "writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)"
+# The daemon captures the operator's original eBUS configuration before the
+# managed transport wrapper is injected, then carries it to the store. These are
+# the exact lines of that follow-up, as a delta over the first #1137 commit and
+# as the combined branch diff; no other added or reordered line is accepted.
+baud_preserve_block = [
+ "// PreserveEBusConfigurationPresence captures operator configuration before runtime",
+ "// wrappers or defaults are injected. Repeated calls retain the original fact.",
+ "func (cfg *Config) PreserveEBusConfigurationPresence() {",
+ "if cfg.ebusConfigurationPresence == nil {",
+ "present := cfg.ebusConfigured()",
+ "cfg.ebusConfigurationPresence = &present",
+ "}", "}",
+ "func (cfg Config) ebusConfigured() bool {",
+ "if cfg.ebusConfigurationPresence != nil {",
+ "return *cfg.ebusConfigurationPresence",
+ "}",
+ "return cfg.Transport != nil || cfg.PassiveTransport != nil ||",
+ 'cfg.TransportConfig.Protocol != "" || cfg.TransportConfig.Address != ""',
+ "}",
+]
+baud_preserve_capture = ["ebusConfigured := cfg.ebusConfigured()"]
+baud_preserve_final_capture = baud_preserve_block + baud_preserve_capture
+baud_preserve_delta = (
+ ["func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {",
+  "ebusConfigured := cfg.Transport != nil || cfg.PassiveTransport != nil ||"]
+ + baud_preserve_block[:-2]
+ + ["}", "func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {", "ebusConfigured := cfg.ebusConfigured()"]
+)
+baud_preserve_final_expected = (
+    baud_presence_field + baud_preserve_final_capture
+    + ["cfg: cfg,", "now: time.Now,"] + baud_presence_init
+    + ["writeTransportRuntimeMetrics(writer, transportRuntimeStatus)", baud_presence_render]
+)
 baud_presence_expected = (
     baud_presence_field + baud_presence_capture
     + ["cfg: cfg,", "now: time.Now,"] + baud_presence_init
@@ -195,6 +241,12 @@ baud_presence_expected = (
 baud_runtime_combined_expected = (
     baud_presence_field + transport_runtime_combined_expected[:4]
     + baud_presence_capture + transport_runtime_combined_expected[4:6]
+    + baud_presence_init + transport_runtime_combined_expected[8:-1]
+    + [baud_presence_render]
+)
+baud_preserve_runtime_combined_expected = (
+    baud_presence_field + transport_runtime_combined_expected[:4]
+    + baud_preserve_final_capture + transport_runtime_combined_expected[4:6]
     + baud_presence_init + transport_runtime_combined_expected[8:-1]
     + [baud_presence_render]
 )
@@ -213,7 +265,11 @@ elif diffs in (transport_runtime_expected, transport_runtime_combined_expected):
     required = {"transportRuntimeStatus map[TransportRuntimeProtocol]TransportRuntimeStatus", "func (store *BusObservabilityStore) SetTransportRuntimeStatus(status TransportRuntimeStatus) {", "store.transportRuntimeStatus[status.Protocol] = status", "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)"}
 elif diffs in (baud_presence_expected, baud_runtime_combined_expected,
                transport_runtime_expected + baud_presence_expected,
-               transport_runtime_combined_expected + baud_presence_expected):
+               transport_runtime_combined_expected + baud_presence_expected,
+               baud_presence_expected + baud_preserve_delta,
+               baud_preserve_final_expected, baud_preserve_runtime_combined_expected,
+               transport_runtime_expected + baud_presence_expected + baud_preserve_delta,
+               transport_runtime_combined_expected + baud_presence_expected + baud_preserve_delta):
     required = {"ebusConfigured bool", "ebusConfigured: ebusConfigured,", baud_presence_render}
 else:
     raise SystemExit(1)
@@ -348,6 +404,9 @@ while IFS= read -r file; do
     continue
   fi
   if [[ "${file}" == "config.go" ]] && config_comment_only; then
+    continue
+  fi
+  if [[ "${file}" == "config.go" ]] && config_ebus_presence_only; then
     continue
   fi
   if [[ "${file}" == "bus_observability_store.go" ]] && bus_observability_metrics_only; then

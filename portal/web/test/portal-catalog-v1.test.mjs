@@ -28,7 +28,7 @@ class FakeNode {
 function validCatalog() {
   const source = {
     asset_id: "asset-1", snapshot_id: "snap-1", revision: "rev-1", evaluation_digest: "eval-1",
-    binding_id: "binding-1", source_epoch: "epoch-1", driver_generation: 7,
+    binding_id: "binding-1", source_epoch: "epoch-1", driver_generation: "7",
     snapshot: {
       sources: [{ source_id: "modbus-source", source_epoch_id: "epoch-1", protocol_id: "modbus", profile_id: "fronius", profile_version: "1.0.0", state: "current", revision: "7" }],
       bindings: [{ binding_id: "binding-1", asset_id: "asset-1", source_id: "modbus-source", source_epoch_id: "epoch-1", driver_generation: "7", state: "current", revision: "7" }],
@@ -635,7 +635,7 @@ test("Portal catalog truncates individual long capture and field values without 
   const body = new FakeNode();
   const catalog = validCatalog();
   catalog.resources[1].source.revision = "r".repeat(2048);
-  catalog.resources[1].source.driver_generation = 77;
+  catalog.resources[1].source.driver_generation = "77";
   catalog.fields[1].value = "v".repeat(2048);
   catalog.fields[1].unit_id = "unit-tail";
   catalog.fields[1].quality = "quality-tail";
@@ -646,6 +646,31 @@ test("Portal catalog truncates individual long capture and field values without 
   const rendered = collectEvidencePages(body);
   assert.match(rendered, /revision=r+…; driver_generation=77/);
   assert.match(rendered, /pv\.field=v+… unit-tail; quality=quality-tail; projection=projection-tail/);
+});
+
+test("Portal catalog preserves zero and full-width decimal-string driver generations", async () => {
+  for (const generation of ["0", "18446744073709551615"]) {
+    const body = new FakeNode();
+    const catalog = validCatalog();
+    catalog.resources[1].source.driver_generation = generation;
+    const { shell } = await harness(() => Promise.resolve(response({ data: { portalCatalogV1: catalog } })), new Map([["[data-role=\"portal-catalog-body\"]", body]]));
+    const token = shell.beginBootstrapLifecycle();
+    await shell.refreshPortalCatalog("/graphql/portal/v1", token, shell.bootstrapLifecycleAbort);
+    assert.ok(collectEvidencePages(body).includes(`driver_generation=${generation}`));
+    assert.doesNotMatch(text(body), /Catalog refresh failed/);
+  }
+});
+
+test("Portal catalog rejects numeric and malformed driver generations", async () => {
+  for (const generation of [7, 0, "", "07", "-1", "1.0", " 7", "7\n"]) {
+    const body = new FakeNode();
+    const catalog = validCatalog();
+    catalog.resources[1].source.driver_generation = generation;
+    const { shell } = await harness(() => Promise.resolve(response({ data: { portalCatalogV1: catalog } })), new Map([["[data-role=\"portal-catalog-body\"]", body]]));
+    const token = shell.beginBootstrapLifecycle();
+    await shell.refreshPortalCatalog("/graphql/portal/v1", token, shell.bootstrapLifecycleAbort);
+    assert.match(text(body), /Catalog refresh failed/, JSON.stringify(generation));
+  }
 });
 
 test("Portal catalog rejects oversized bounded source identity members", async () => {

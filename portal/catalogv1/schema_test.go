@@ -22,14 +22,14 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	defs := schema["$defs"].(map[string]any)
-	for _, name := range []string{"pack_ref", "domain", "contribution", "source", "resource", "field", "action", "quarantine"} {
+	for _, name := range []string{"pack_ref", "domain", "contribution", "descriptor", "source", "resource", "field", "action", "quarantine"} {
 		entry, ok := defs[name].(map[string]any)
 		if !ok || entry["additionalProperties"] != false {
 			t.Fatalf("%s is not closed", name)
 		}
 	}
 	properties := schema["properties"].(map[string]any)
-	for _, name := range []string{"domains", "contributions", "resources", "fields", "actions", "quarantines"} {
+	for _, name := range []string{"domains", "contributions", "descriptors", "resources", "fields", "actions", "quarantines"} {
 		collection := properties[name].(map[string]any)
 		if name == "domains" {
 			if prefix, ok := collection["prefixItems"].([]any); !ok || len(prefix) != len(FivePacks) {
@@ -85,8 +85,8 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	var populated map[string]any
 	encoded, _ := json.Marshal(fixture)
 	_ = json.Unmarshal(encoded, &populated)
-	source := map[string]any{"asset_id": "asset", "snapshot_id": "snapshot", "revision": "revision", "evaluation_digest": "digest", "binding_id": "binding", "source_epoch": "epoch", "driver_generation": float64(1), "snapshot": map[string]any{}, "evaluation": map[string]any{}, "selections": []any{}, "projection": map[string]any{}}
-	populated["contributions"] = []any{map[string]any{"driver_id": "driver", "manifest_id": "manifest", "manifest_version": "1", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	source := map[string]any{"asset_id": "asset", "snapshot_id": "snapshot", "revision": "revision", "evaluation_digest": "digest", "binding_id": "binding", "source_epoch": "epoch", "driver_generation": "1", "snapshot": map[string]any{}, "evaluation": map[string]any{}, "selections": []any{}, "projection": map[string]any{}}
+	populated["contributions"] = []any{map[string]any{"driver_id": "driver", "manifest_id": "manifest", "manifest_version": "1", "digest": "sha256:" + strings.Repeat("a", 64)}}
 	populated["resources"] = []any{map[string]any{"id": "asset", "domain": "helianthus.pack.pv", "service_id": "service", "capability_id": "capability", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "source": source, "state": "CURRENT"}}
 	populated["fields"] = []any{map[string]any{"id": "field", "resource_id": "asset", "definition_id": "definition", "unit_id": "unit", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "value": float64(1), "quality": "PRESENT", "projection": "projection"}}
 	populated["actions"] = []any{map[string]any{"id": "action", "resource_id": "asset", "service_id": "service", "capability_id": "capability", "operation_id": "operation", "contribution_driver_id": "driver", "contribution_manifest_id": "manifest", "contribution_manifest_version": "1", "source": source, "discoverable": true, "enabled": false}}
@@ -98,7 +98,7 @@ func TestCatalogSchemaClosesEveryPopulatedWireItem(t *testing.T) {
 	if err := validateCatalogSchema(schema, populated); err == nil {
 		t.Fatal("noncanonical contribution digest accepted")
 	}
-	populated["contributions"].([]any)[0].(map[string]any)["digest"] = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	populated["contributions"].([]any)[0].(map[string]any)["digest"] = "sha256:" + strings.Repeat("a", 64)
 	populated["resources"].([]any)[0].(map[string]any)["unknown"] = true
 	if err := validateCatalogSchema(schema, populated); err == nil {
 		t.Fatal("malformed populated resource accepted")
@@ -206,4 +206,55 @@ func validateCatalogSchema(root map[string]any, value any) error {
 		return nil
 	}
 	return validate(root, value)
+}
+
+func TestM22DescriptorSchemaIsClosedAndRequiresDiagnostics(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "schemas", "portal-catalog-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	m, index := actionManifestAndIndex()
+	composer := New(index, nil, nil, nil)
+	if err := composer.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	result, err := composer.Catalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCatalogSchema(schema, value); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := value["descriptors"].([]any)[0].(map[string]any)
+	for _, name := range []string{"descriptor_version", "driver_id", "manifest_id", "manifest_version", "digest", "groups", "fields", "views", "diagnostics"} {
+		t.Run("required-"+name, func(t *testing.T) {
+			saved := descriptor[name]
+			delete(descriptor, name)
+			if validateCatalogSchema(schema, value) == nil {
+				t.Fatal("missing descriptor member accepted")
+			}
+			descriptor[name] = saved
+		})
+	}
+	descriptor["actions"] = []any{}
+	if validateCatalogSchema(schema, value) == nil {
+		t.Fatal("action metadata accepted on read descriptor")
+	}
+	delete(descriptor, "actions")
+	descriptor["descriptor_version"] = "unknown"
+	if validateCatalogSchema(schema, value) == nil {
+		t.Fatal("unknown descriptor version accepted")
+	}
 }

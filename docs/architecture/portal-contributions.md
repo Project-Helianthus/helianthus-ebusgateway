@@ -1,9 +1,11 @@
 # Read-only Portal contributions and path-prefix embedding
 
-Status: proposed integration contract for issue [#1129](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1129).
+Status: integration contract for issue [#1129](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1129).
 This is a partial slice of [#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999)
-(Project #2 INT-10); it does not close the parent. It specifies future wiring,
-not an available universal lifecycle/configuration API or a stability promise.
+(Project #2 INT-10); it does not close the parent. The descriptor and bootstrap
+transport is implemented by [#1172](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1172).
+Shared semantic reads and prefix embedding remain future integration work.
+This is not an available universal lifecycle/configuration API or a stability promise.
 
 ## Existing seams and remaining work
 
@@ -17,7 +19,7 @@ The implementation comparison is:
 
 | Existing source | Current behavior | Integration requirement |
 | --- | --- | --- |
-| `portal/handler.go`, `Options` | Configured GraphQL, catalog, snapshot, subscription, MCP and administration endpoint paths; legacy semantic callbacks | Keep existing options compatible; do not claim a shared snapshot callback already exists. |
+| `portal/handler.go`, `Options` | Configured endpoint paths, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production shared snapshot provider wiring remains unavailable. |
 | `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; redirects the bare mount to its trailing slash; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
 | `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` | Resolve from the canonical Portal directory. |
 | `portal/handler.go`, bootstrap | Options-derived endpoints plus fixed `/portal/api/v1/...` endpoints | Replace fixed external paths with host-composed paths when implementing embedding. |
@@ -93,11 +95,11 @@ Every 64-bit identity member in the compared set, notably the driver generation,
 is a decimal string on both sides and is compared as a string, never as a number:
 a browser parses JSON numbers as doubles and rounds beyond 2^53, while the shared
 record keeps the SemReg decimal string. **Proven** from the current code: the
-catalog builder parses the SemReg decimal-string generation into an unsigned
-64-bit integer and the catalog contract emits it as a JSON number. That is a
-catalog payload and schema change (`driver_generation` and any similar member
-becoming a decimal string) that belongs to the implementation slice and is not
-present today.
+catalog contract and browser validator use a canonical unsigned decimal string
+for `driver_generation`. Numeric JSON generations, empty strings and leading
+zeros are rejected by the browser. The Matter feed's embedded Portal source
+schema uses the same string representation; its native feed generation fields
+retain their existing representation.
 
 On mismatch the client refetches both requests, at most two times. While
 refetching it shows an inconsistent/refreshing state and renders no values; if
@@ -171,40 +173,39 @@ the change; cancel its pending reads/stream listeners and ignore late replies.
 ## Bootstrap transport
 
 Keep `GET <portal-base>api/v1/bootstrap` as the bootstrap discovery entry. An
-additive target `portal_read` block is host-produced transport metadata:
+additive `portal_read` block is emitted as host-produced transport metadata:
 
 ```json
 {
   "portal_read": {
     "base_path": "/console/portal/",
     "snapshot_operation": "semanticSnapshot",
-    "stream_endpoint": null
+    "stream_endpoint": null,
+    "unavailable_operations": ["semanticSnapshot"]
   }
 }
 ```
 
-This block is proposed, not emitted by the current handler. It adds no endpoint
-fields: the existing bootstrap `endpoints.portal_catalog` and `endpoints.graphql`
-members remain the authoritative catalog and shared-read URLs, so a separate
-`catalog_endpoint` or `snapshot_endpoint` is not introduced. Descriptors
-are not carried by the existing `PortalCatalogV1` response, which returns only
-contribution identities and digests plus composed resource data, and whose
-schema is closed against manifest fields. **Unknown** in current code: no
-descriptor transport exists, so a newly registered contribution cannot yet be
-rendered generically. The implementation slice adds a versioned `descriptors`
-member to the `PortalCatalogV1` response on `endpoints.portal_catalog`: an array
-keyed by full contribution identity, each entry carrying `descriptor_version`,
-groups, fields, labels, views and diagnostics, and its own digest so the renderer
-caches by identity. Preserve every admitted diagnostic's `id`, `group`, `label`,
-`member_id`, `kind` and `order` so each view's `diagnostic_ids` resolves within
-the same descriptor entry; retain `diagnostics: []` when empty. Diagnostic
-definitions are descriptive metadata and do not expose actions or enable invocation.
-A member on the catalog response is chosen over a separate
-`PortalDescribeV1` operation because the catalog is already fetched on every
-render, so descriptors and resources share one capture and cannot drift apart.
-The catalog schema (currently closed) and contract must be opened for this member
-in that slice; it is not present today, and clients are not directed to the
-existing operation for descriptors until it ships. Obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
+The handler emits this block. `base_path` comes from the configured Portal mount;
+external prefix support remains separate work. The existing bootstrap
+`endpoints.portal_catalog` and `endpoints.graphql` members remain the authoritative
+catalog and shared-read URLs; no separate endpoint fields are introduced.
+`PortalCatalogV1` emits `descriptors`, an array keyed by full contribution
+identity. Each entry carries `descriptor_version`, groups, fields, labels,
+views, diagnostics and the admitted canonical digest so consumers can cache by
+identity. The catalog schema includes this member. Every admitted diagnostic
+preserves `id`, `group`, `label`, `member_id`, `kind` and `order`, allowing each
+view's `diagnostic_ids` to resolve within the same descriptor entry;
+`diagnostics: []` remains present when empty. Diagnostic definitions describe
+metadata and do not expose actions or enable invocation. Descriptors and resources
+share one catalog capture instead of requiring a separate describe operation.
+The in-process read adapter consumes the admitted contribution registry and a
+shared detached semantic view when supplied; production serves its catalog on
+the outer gateway mux. The host explicitly declares that mounted catalog
+available in bootstrap. Production shared `semanticSnapshot` provider wiring
+remains unavailable until M11 lands.
+
+Obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
 only once M07 exposure and applicable parity gates are accepted. Ask for the
 complete metadata needed above; recursively restore SemReg member names before
 treating GraphQL data as a kernel record. Never recompute source IDs/digests
@@ -213,11 +214,12 @@ from a selected GraphQL response. MCP is not a browser fallback.
 Shared endpoints stay advertised whenever any operation on them is usable.
 `endpoints.graphql` also serves the existing Portal GraphQL operations and
 `endpoints.portal_catalog` has independent consumers, so an unwired snapshot or
-catalog provider never removes them. `portal_read` has no per-provider
-availability field today; the implementation slice adds an operation-level list,
-for example `portal_read.unavailable_operations` naming `semanticSnapshot` or
-`PortalCatalogV1`, which the client consults before issuing that operation. When
-an operation is unavailable, do not fabricate an empty domain or use the legacy
+catalog provider never removes them.
+`portal_read.unavailable_operations` is emitted as an operation-level list
+naming unavailable `semanticSnapshot` or `PortalCatalogV1` operations, which
+consumers consult before issuing them. A configured endpoint alone does not
+establish availability; a host-mounted catalog or the in-process registry/index
+adapter establishes catalog availability. When an operation is unavailable, do not fabricate an empty domain or use the legacy
 eBUS semantic snapshot. Omit an endpoint only when none of its operations is
 usable. Existing legacy bootstrap members retain their meaning. The catalog
 endpoint does not acquire a new operation implicitly.

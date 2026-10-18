@@ -1,10 +1,12 @@
 package catalogv1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/contributionv1"
 	"math/rand"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -619,4 +621,90 @@ func TestSetClockAndInvokeDoNotRace(t *testing.T) {
 		_, _ = c.Invoke(nil, Claims{Deadline: at.Add(time.Second), IdempotencyKey: "k"})
 	}
 	<-done
+}
+
+func TestM22DescriptorDiagnosticsAndLossAreDetached(t *testing.T) {
+	m, index := actionManifestAndIndex()
+	diagnostic := contributionv1.Diagnostic{ID: "diagnostic", Group: "group", Label: contributionv1.Label{Key: "fixture.diagnostic", Default: "Synthetic diagnostic"}, MemberID: "fixture.member", Kind: "field", Order: 7}
+	index.AddNativeMember(m.Contributor.NativeContract, diagnostic.Kind, diagnostic.MemberID)
+	m.Diagnostics = append(m.Diagnostics, diagnostic)
+	m.Views = []contributionv1.View{{ID: "summary", Group: "group", Label: contributionv1.Label{Key: "fixture.summary", Default: "Summary"}, Renderer: "summary", Slot: "lens", FieldIDs: []string{"field"}, DiagnosticIDs: []string{diagnostic.ID}}}
+	resource := actionResource()
+	resource.Source.Projection = json.RawMessage(`{"dispositions":[{"outcome":"withheld","reason":"fixture.unavailable","loss":[{"kind":"omission","description":"Synthetic loss","source_items":["test.field"],"reversible":false}]}]}`)
+	resource.Source.DriverGeneration = 9007199254740993
+	source := &sourceFake{resources: []Resource{resource}}
+	composer := New(index, source, nil, nil)
+	if err := composer.Publish(m); err != nil {
+		t.Fatal(err)
+	}
+	result, err := composer.Catalog(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Descriptors) != 1 || !reflect.DeepEqual(result.Descriptors[0].Diagnostics, []contributionv1.Diagnostic{diagnostic}) || result.Descriptors[0].Views[0].DiagnosticIDs[0] != diagnostic.ID {
+		t.Fatalf("diagnostic metadata lost: %+v", result.Descriptors)
+	}
+	if !bytes.Equal(result.Resources[0].Source.Projection, resource.Source.Projection) {
+		t.Fatal("projection loss or unavailable disposition changed")
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"driver_generation":"9007199254740993"`)) {
+		t.Fatal("generation lost decimal-string identity")
+	}
+	result.Descriptors[0].Diagnostics[0].MemberID = "changed"
+	result.Resources[0].Source.Projection[0] = 'x'
+	next, err := composer.Catalog(nil)
+	if err != nil || next.Descriptors[0].Diagnostics[0].MemberID != diagnostic.MemberID || !bytes.Equal(next.Resources[0].Source.Projection, resource.Source.Projection) {
+		t.Fatal("result aliases source or descriptor")
+	}
+}
+
+func TestM22DetachedRegistryIdentityIsComplete(t *testing.T) {
+	for _, member := range []string{"driver_id", "manifest_id", "manifest_version"} {
+		t.Run(member, func(t *testing.T) {
+			m, index := actionManifestAndIndex()
+			digest, err := contributionv1.CanonicalDigest(m, index)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := contributionv1.DescriptorKey{DriverID: m.Contributor.DriverID, ManifestID: m.ManifestID, ManifestVersion: m.ManifestVersion}
+			switch member {
+			case "driver_id":
+				key.DriverID = "other.driver"
+			case "manifest_id":
+				key.ManifestID = "other.manifest"
+			case "manifest_version":
+				key.ManifestVersion = "1.0.1"
+			}
+			composer := New(index, nil, nil, nil)
+			if composer.InstallDetachedRegistrySnapshot([]contributionv1.AcceptedDescriptor{{Key: key, Manifest: m, Digest: digest}}, nil) == nil {
+				t.Fatal("mismatched descriptor key admitted")
+			}
+			result, err := composer.Catalog(nil)
+			if err != nil || len(result.Descriptors) != 0 {
+				t.Fatal("rejected installation changed catalog")
+			}
+		})
+	}
+}
+
+func TestM22InstalledRegistrySnapshotIsDetached(t *testing.T) {
+	m, index := actionManifestAndIndex()
+	registry := contributionv1.NewRegistry(index)
+	if err := registry.ReplaceGeneration(contributionv1.DriverGeneration{DriverID: m.Contributor.DriverID, Generation: 1}, []contributionv1.Manifest{m}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := registry.Snapshot()
+	composer := New(index, nil, nil, nil)
+	if err := composer.InstallDetachedRegistrySnapshot(snapshot.Accepted, snapshot.Quarantined); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Accepted[0].Manifest.Groups[0].Label.Default = "changed after install"
+	result, err := composer.Catalog(nil)
+	if err != nil || result.Descriptors[0].Groups[0].Label.Default != m.Groups[0].Label.Default {
+		t.Fatal("installed descriptor aliases caller snapshot")
+	}
 }

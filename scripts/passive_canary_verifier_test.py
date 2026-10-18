@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import datetime
 import io
 import json
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import shutil
 import sys
 import tempfile
 import textwrap
-import time
 import unittest
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -5278,15 +5279,67 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
             )
             canonical_canary_ids_literal = json.dumps(canonical_family_proof_canary_ids())
 
+            # Tools acknowledge each operation synchronously. Only fake sleep and
+            # explicit cleanup advance time; process startup never spends proof time.
+            clock_source = textwrap.dedent("""\
+                import datetime
+                import json
+                import os
+                import pathlib
+                import time
+
+                state = pathlib.Path(os.environ['FAKE_CLOCK_STATE'])
+                events = pathlib.Path(os.environ['FAKE_CLOCK_EVENTS'])
+
+                def now():
+                    return int(state.read_text())
+
+                def acknowledge(phase, advance=0):
+                    tick = now() + int(advance)
+                    state.write_text(str(tick))
+                    with events.open('a') as handle:
+                        handle.write(json.dumps({'phase': phase, 'tick': tick}) + '\\n')
+                    return tick
+
+                def startup_delay():
+                    # Deliberately real, detached from the logical verdict clock.
+                    time.sleep(float(os.environ.get('FAKE_TOOL_STARTUP_DELAY_SEC', '0')))
+
+                original_datetime = datetime.datetime
+
+                class LogicalDatetime(original_datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return cls.fromtimestamp(now(), tz)
+
+                datetime.datetime = LogicalDatetime
+            """)
+            (fake_bin / "fake_clock.py").write_text(clock_source, encoding="utf-8")
+            for tool, operation in (
+                ("date", "assert sys.argv[1:] == ['+%s']; print(acknowledge('date'))"),
+                ("sleep", "acknowledge('sleep', int(sys.argv[1]))"),
+                ("clock_ack", "acknowledge(sys.argv[1])"),
+            ):
+                tool_path = fake_bin / tool
+                tool_path.write_text(
+                    f"#!{sys.executable}\nimport sys\nfrom fake_clock import *\n"
+                    f"startup_delay()\n{operation}\n",
+                    encoding="utf-8",
+                )
+                tool_path.chmod(0o755)
+
             fake_python = fake_bin / "python3"
             fake_python.write_text(
                 "\n".join(
                     [
-                        "#!/usr/bin/python3",
+                        f"#!{sys.executable}",
                         "import json",
                         "import os",
                         "import pathlib",
                         "import sys",
+                        "import runpy",
+                        "from fake_clock import acknowledge, startup_delay",
+                        "startup_delay()",
                         "",
                         "real_python = os.environ.get('REAL_PYTHON3')",
                         "if not real_python:",
@@ -5328,9 +5381,9 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         "        i += 1",
                         "",
                         "    if phase == 'end' and int(os.environ.get('FAKE_CANARY_END_DELAY_SEC', '0')) != 0:",
-                        "        import time",
-                        "        time.sleep(int(os.environ['FAKE_CANARY_END_DELAY_SEC']))",
+                        "        acknowledge('cleanup', int(os.environ['FAKE_CANARY_END_DELAY_SEC']))",
                         "",
+                        "    acknowledge('canary:' + phase)",
                         f"    canary_ids = {canonical_canary_ids_literal}",
                         "    status = os.environ.get('FAKE_CANARY_STATUS', 'pass')",
                         "    pass_count = len(canary_ids) if status == 'pass' else 0",
@@ -5380,9 +5433,14 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                         "    if os.environ.get('FAKE_CANARY_PHASE_LOG'):",
                         "        with open(os.environ['FAKE_CANARY_PHASE_LOG'], 'a', encoding='utf-8') as handle:",
                         "            handle.write(f'replay:{proof_dir}\\n')",
-                        "    os.execv(real_python, [real_python] + sys.argv[1:])",
+                        "    acknowledge('replay')",
                         "",
-                        "os.execv(real_python, [real_python] + sys.argv[1:])",
+                        "sys.argv = args",
+                        "if script_path == '-':",
+                        "    acknowledge('python:stdin')",
+                        "    exec(compile(sys.stdin.read(), '<fake-tool-stdin>', 'exec'))",
+                        "else:",
+                        "    runpy.run_path(script_path, run_name='__main__')",
                     ]
                 )
                 + "\n",
@@ -5397,7 +5455,6 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     #!/usr/bin/env bash
                     set -euo pipefail
 
-                    real_go="${REAL_GO:?REAL_GO is required}"
                     if [[ "${1:-}" == "test" ]]; then
                       timing_out_path="${WIRE_TIMING_REFERENCE_ARTIFACT_PATH:-}"
                       if [[ -n "${timing_out_path}" ]]; then
@@ -5537,7 +5594,8 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     EOF
                       exit 0
                     fi
-                    exec "${real_go}" "$@"
+                    echo "unsupported fake go invocation" >&2
+                    exit 2
                     """
                 ),
                 encoding="utf-8",
@@ -5551,7 +5609,7 @@ class PassiveSmokeCanaryVerdictGateTests(unittest.TestCase):
                     #!/usr/bin/env bash
                     set -euo pipefail
 
-                    real_python="${REAL_PYTHON3:?REAL_PYTHON3 is required}"
+                    real_python="$(command -v python3)"
                     verifier_script="${FAKE_CANARY_VERIFIER_SCRIPT:?FAKE_CANARY_VERIFIER_SCRIPT is required}"
                     artifact_path="${ROLLBACK_EXECUTION_ARTIFACT_PATH:-}"
                     run_id="${ROLLBACK_EXECUTION_RUN_ID:-}"
@@ -5586,6 +5644,7 @@ print(datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
 PY
 )"
                     completed_at="${started_at}"
+                    clock_ack rollback:timestamp
                     case "${mode}" in
                       pass)
                         printf '%s\n' 'proof log' > "${proof_gateway_log_path}"
@@ -5723,6 +5782,7 @@ PY
                         metrics_count="$(cat "${state_file}")"
                       fi
                       metrics_count=$((metrics_count + 1))
+                      clock_ack "metrics:${metrics_count}"
                       printf '%s\\n' "${metrics_count}" > "${state_file}"
                       completed_total=$((metrics_count * 1200))
                       candidates_total=$((metrics_count * 120))
@@ -5839,6 +5899,7 @@ EOF
                         fi
                       fi
                       maybe_apply_rollback_post_warmup phase summary_last_updated_at status_last_updated_at startup_last_updated_at summary_last_updated_at live_epoch
+                      clock_ack "bus:${phase}"
                       publisher_cadence_mode="${FAKE_PUBLISHER_CADENCE_MODE:-present}"
                       publisher_cadence_sec="${FAKE_PUBLISHER_CADENCE_SEC:-3600}"
                       publisher_cadence_source="${FAKE_PUBLISHER_CADENCE_SOURCE:-config.semantic_state_interval}"
@@ -6076,9 +6137,6 @@ EOF
             fake_curl.chmod(0o755)
 
             env = os.environ.copy()
-            real_go = shutil.which("go")
-            if not real_go:
-                self.fail("go binary not found on PATH")
             env.update(
                 {
                     "MATRIX_CASE_ID": "P03",
@@ -6097,9 +6155,10 @@ EOF
                     "MATRIX_GRAPHQL_URL": "http://fake-gateway:18083/graphql",
                     "MATRIX_METRICS_URL": "http://fake-gateway:18083/metrics",
                     "REAL_PYTHON3": sys.executable,
-                    "REAL_GO": real_go,
                     "FAKE_CANARY_VERIFIER_SCRIPT": str(SCRIPT_DIR / "passive_canary_verifier.py"),
                     "FAKE_CANARY_STATUS": canary_status,
+                    "FAKE_CLOCK_STATE": str(temp_path / "clock"),
+                    "FAKE_CLOCK_EVENTS": str(temp_path / "clock-events.jsonl"),
                     "FAKE_CANARY_PHASE_LOG": str(temp_path / "fake_canary_phase_log.txt"),
                     "FAKE_METRICS_STATE_FILE": str(temp_path / "fake_metrics_count.txt"),
                     "FAKE_ROLLBACK_SWITCH_FILE": str(temp_path / "fake_rollback_switch.txt"),
@@ -6112,17 +6171,32 @@ EOF
             if extra_env:
                 env.update(extra_env)
             script_path = SCRIPT_DIR / "passive_smoke_check.sh"
-            started = time.monotonic()
-            result = subprocess.run(
+            pathlib.Path(env["FAKE_CLOCK_STATE"]).write_text("0", encoding="utf-8")
+            pathlib.Path(env["FAKE_CLOCK_EVENTS"]).write_text("", encoding="utf-8")
+            process = subprocess.Popen(
                 ["bash", str(script_path)],
                 cwd=SCRIPT_DIR.parent,
                 env=env,
                 text=True,
-                capture_output=True,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
             )
-            elapsed = time.monotonic() - started
-            artifacts = {"elapsed_sec": elapsed}
+            try:
+                # Real time bounds hangs only; success is decided below by logic.
+                stdout, stderr = process.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+                self.fail("fake-tool smoke exceeded the real hang watchdog")
+            result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+            artifacts = {
+                "logical_elapsed_sec": int(pathlib.Path(env["FAKE_CLOCK_STATE"]).read_text()),
+                "clock_events": [
+                    json.loads(line)
+                    for line in pathlib.Path(env["FAKE_CLOCK_EVENTS"]).read_text().splitlines()
+                ],
+            }
             if collect_artifacts:
                 proof_dir = log_dir / "proof_artifacts"
                 summary_path = proof_dir / "canary_summary.json"
@@ -6184,6 +6258,10 @@ EOF
                         for line in phase_log_path.read_text(encoding="utf-8").splitlines()
                         if line.strip()
                     ]
+                artifacts["feature_flag_snapshots"] = [
+                    json.loads(path.read_text())
+                    for path in sorted(proof_dir.glob("*_feature_flags.json"))
+                ]
                 artifacts["sample_phase_files"] = sorted(
                     path.name for path in proof_dir.glob("canary_phase_sample_*.json")
                 )
@@ -6458,6 +6536,37 @@ EOF
         self.assertNotIn("family_eligibility", artifacts)
         self.assertNotIn("promotion_eligibility", artifacts)
 
+    def assert_logical_phases(self, artifacts: dict, expected: list[tuple[str, int]]) -> None:
+        events = artifacts["clock_events"]
+        phases = [
+            (event["phase"], event["tick"])
+            for event in events
+            if event["phase"].startswith("canary:") or event["phase"] == "cleanup"
+        ]
+        self.assertEqual(phases, expected)
+        ticks = [event["tick"] for event in events]
+        self.assertEqual(ticks, sorted(ticks))
+        self.assertEqual(artifacts["logical_elapsed_sec"], expected[-1][1])
+        rollback_tick = next(
+            event["tick"] for event in events if event["phase"] == "rollback:timestamp"
+        )
+        execution = artifacts["rollback_execution"]
+        for field in ("started_at", "completed_at"):
+            self.assertEqual(
+                datetime.datetime.fromisoformat(
+                    execution["evidence"][field].replace("Z", "+00:00")
+                ).timestamp(),
+                rollback_tick,
+            )
+        self.assertTrue(artifacts["feature_flag_snapshots"])
+        for snapshot in artifacts["feature_flag_snapshots"]:
+            self.assertIn(datetime.datetime.fromisoformat(snapshot["captured_at"]).timestamp(), ticks)
+        start = next(i for i, event in enumerate(events) if event["phase"] == "canary:start")
+        self.assertIn("bus:LIVE_READY", [event["phase"] for event in events[:start]])
+        order = [event["phase"] for event in events]
+        self.assertLess(order.index("canary:end"), order.index("replay"))
+        self.assertLess(order.index("replay"), order.index("rollback:timestamp"))
+
     def test_smoke_holds_until_proof_window_end_and_requires_interval_phase(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
             "pass",
@@ -6468,7 +6577,10 @@ EOF
             },
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertGreaterEqual(artifacts["elapsed_sec"], 3.0, msg=result.stderr)
+        self.assertEqual(artifacts["logical_elapsed_sec"], 5, msg=result.stderr)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 1), ("canary:sample_0001", 2), ("canary:end", 5),
+        ])
         summary = artifacts.get("summary")
         self.assertIsInstance(summary, dict)
         self.assertTrue(summary["interval_phase_required"])
@@ -6493,6 +6605,9 @@ EOF
         self.assertGreaterEqual(len(phase_log), 1)
         self.assertEqual(phase_log[0].split(":", 1)[0], "start")
         self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 2), ("canary:sample_0001", 3), ("canary:end", 6),
+        ])
 
     def test_smoke_fails_when_read_avoidance_metrics_are_missing(self) -> None:
         result = self.run_smoke_with_fake_tools(
@@ -6540,6 +6655,9 @@ EOF
         self.assertGreaterEqual(len(phase_log), 1)
         self.assertEqual(phase_log[0].split(":", 1)[0], "start")
         self.assertGreaterEqual(int(phase_log[0].split(":", 1)[1]), 3)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 2), ("canary:sample_0001", 3), ("canary:end", 6),
+        ])
 
     def test_smoke_hold_zero_still_waits_for_deferred_start_canary(self) -> None:
         result, artifacts = self.run_smoke_with_fake_tools_detailed(
@@ -6555,6 +6673,9 @@ EOF
             },
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 2), ("canary:end", 2),
+        ])
         phase_log = artifacts.get("phase_log")
         self.assertIsInstance(phase_log, list)
         self.assertGreaterEqual(len(phase_log), 2)
@@ -6581,6 +6702,9 @@ EOF
             },
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 2), ("canary:sample_0001", 3), ("canary:end", 3),
+        ])
         phase_log = artifacts.get("phase_log")
         self.assertIsInstance(phase_log, list)
         self.assertGreaterEqual(len(phase_log), 3)
@@ -6605,7 +6729,12 @@ EOF
         )
         self.assertNotEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("timed out waiting", result.stderr)
-        self.assertGreaterEqual(artifacts["elapsed_sec"], 4.0, msg=result.stderr)
+        self.assertEqual(artifacts["logical_elapsed_sec"], 9, msg=result.stderr)
+        self.assert_logical_phases(artifacts, [
+            ("canary:start", 1), ("canary:sample_0001", 2),
+            ("canary:sample_0002", 3), ("canary:sample_0003", 4),
+            ("cleanup", 9), ("canary:end", 9),
+        ])
         summary = artifacts.get("summary")
         self.assertIsInstance(summary, dict)
         self.assertGreaterEqual(summary["interval_phase_count"], 1)

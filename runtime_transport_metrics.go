@@ -101,7 +101,7 @@ func validTransportRuntimeReason(reason string) bool {
 	}
 }
 
-func writeTransportRuntimeMetrics(writer *prometheusWriter, statuses map[TransportRuntimeProtocol]TransportRuntimeStatus) {
+func writeTransportRuntimeMetrics(writer *prometheusWriter, statuses map[TransportRuntimeProtocol]TransportRuntimeStatus, ebusConfigured bool) {
 	writer.writeHelp("helianthus_transport_runtime_status", "Gateway-owned, detached transport runtime lifecycle status.")
 	writer.writeType("helianthus_transport_runtime_status", "gauge")
 	for _, protocol := range []TransportRuntimeProtocol{TransportRuntimeProtocolModbusTCP, TransportRuntimeProtocolEEBus} {
@@ -120,5 +120,5 @@ func writeTransportRuntimeMetrics(writer *prometheusWriter, statuses map[Transpo
 			"state", string(status.State),
 		))
 	}
-	writeBaudObservationMetrics(writer)
+	writeBaudObservationMetrics(writer, ebusConfigured)
 }

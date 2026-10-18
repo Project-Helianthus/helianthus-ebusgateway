@@ -54,6 +54,9 @@ var (
 type BusObservabilityStore struct {
 	cfg Config
 
+	// Captured before defaults; independent of readiness and transport counters.
+	ebusConfigured bool
+
 	now func() time.Time
 
 	ctx    context.Context
@@ -436,12 +439,31 @@ type watchEfficiencySnapshot struct {
 	directApplyCandidatesEvaluatedTotal uint64
 }
 
+// PreserveEBusConfigurationPresence captures operator configuration before runtime
+// wrappers or defaults are injected. Repeated calls retain the original fact.
+func (cfg *Config) PreserveEBusConfigurationPresence() {
+	if cfg.ebusConfigurationPresence == nil {
+		present := cfg.ebusConfigured()
+		cfg.ebusConfigurationPresence = &present
+	}
+}
+
+func (cfg Config) ebusConfigured() bool {
+	if cfg.ebusConfigurationPresence != nil {
+		return *cfg.ebusConfigurationPresence
+	}
+	return cfg.Transport != nil || cfg.PassiveTransport != nil ||
+		cfg.TransportConfig.Protocol != "" || cfg.TransportConfig.Address != ""
+}
+
 func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
+	ebusConfigured := cfg.ebusConfigured()
 	cfg = applyDefaults(cfg)
 	now := time.Now()
 	store := &BusObservabilityStore{
-		cfg: cfg,
-		now: time.Now,
+		cfg:            cfg,
+		now:            time.Now,
+		ebusConfigured: ebusConfigured,
 		transportRuntimeStatus: map[TransportRuntimeProtocol]TransportRuntimeStatus{
 			TransportRuntimeProtocolModbusTCP: defaultTransportRuntimeStatus(TransportRuntimeProtocolModbusTCP),
 			TransportRuntimeProtocolEEBus:     defaultTransportRuntimeStatus(TransportRuntimeProtocolEEBus),
@@ -1276,7 +1298,7 @@ func (store *BusObservabilityStore) RenderPrometheus() string {
 	if haveSemanticMetricsProvider {
 		writeSemanticMetrics(writer, semanticDomains, now)
 	}
-	writeTransportRuntimeMetrics(writer, transportRuntimeStatus)
+	writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)
 
 	writer.writeHelp("ebus_observability_transport_info", "Observe-first transport metadata.")
 	writer.writeType("ebus_observability_transport_info", "gauge")

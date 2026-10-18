@@ -366,6 +366,71 @@ func (store *BusObservabilityStore) RenderPrometheus() {
             self.assertNotEqual(result.returncode, 0, hostile)
             self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
+    def test_baud_presence_is_only_metrics_exception(self) -> None:
+        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        # Reconstruct the source immediately before the configured-presence
+        # addition; the older runtime-snapshot fixture remains immutable.
+        base = allowed
+        for addition, previous in (
+            ("\t// Captured before defaults; independent of readiness and transport counters.\n\tebusConfigured bool\n\n", ""),
+            ("// PreserveEBusConfigurationPresence captures operator configuration before runtime\n// wrappers or defaults are injected. Repeated calls retain the original fact.\nfunc (cfg *Config) PreserveEBusConfigurationPresence() {\n\tif cfg.ebusConfigurationPresence == nil {\n\t\tpresent := cfg.ebusConfigured()\n\t\tcfg.ebusConfigurationPresence = &present\n\t}\n}\n\nfunc (cfg Config) ebusConfigured() bool {\n\tif cfg.ebusConfigurationPresence != nil {\n\t\treturn *cfg.ebusConfigurationPresence\n\t}\n\treturn cfg.Transport != nil || cfg.PassiveTransport != nil ||\n\t\tcfg.TransportConfig.Protocol != \"\" || cfg.TransportConfig.Address != \"\"\n}\n\nfunc NewBusObservabilityStore(cfg Config) *BusObservabilityStore {\n\tebusConfigured := cfg.ebusConfigured()\n",
+             "func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {\n"),
+            ("\t\tcfg:            cfg,\n\t\tnow:            time.Now,\n\t\tebusConfigured: ebusConfigured,", "\t\tcfg: cfg,\n\t\tnow: time.Now,"),
+            ("writeTransportRuntimeMetrics(writer, transportRuntimeStatus, store.ebusConfigured)", "writeTransportRuntimeMetrics(writer, transportRuntimeStatus)"),
+        ):
+            self.assertEqual(base.count(addition), 1)
+            base = base.replace(addition, previous)
+        repo_path, _ = self._create_temp_repo(
+            "bus_observability_store.go", base_text=base, modified_text=allowed
+        )
+        tracked = repo_path / "bus_observability_store.go"
+
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                tracked.write_text(allowed, encoding="utf-8")
+                if staged:
+                    subprocess.run(["git", "add", "bus_observability_store.go"], cwd=repo_path, check=True, capture_output=True, text=True)
+                result = subprocess.run(
+                    ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                    env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                self.assertIn("not triggered", result.stdout)
+                for hostile in (
+                    allowed.replace('cfg.TransportConfig.Address != ""', 'cfg.TransportConfig.Address == ""'),
+                    allowed.replace("return *cfg.ebusConfigurationPresence", "return true"),
+                    allowed.replace("\tif cfg.ebusConfigurationPresence == nil {", "\tstorePassiveMutation()\n\tif cfg.ebusConfigurationPresence == nil {"),
+                    allowed.replace("\tcfg = applyDefaults(cfg)", "\tstorePassiveMutation()\n\tcfg = applyDefaults(cfg)"),
+                    allowed.replace("\tebusConfigured :=", "\tstore.mu.Lock()\n\tebusConfigured :="),
+                    allowed.replace("store.ebusConfigured)", "true)"),
+                ):
+                    self.assertNotEqual(hostile, allowed)
+                    tracked.write_text(hostile, encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+                        env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+                        text=True, capture_output=True, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
+    def test_config_ebus_presence_field_exemption_is_exact(self) -> None:
+        base = "type Config struct {\n\tTransport int\n}\n"
+        allowed = "type Config struct {\n\tebusConfigurationPresence *bool\n\n\tTransport int\n}\n"
+        repo_path, _ = self._create_temp_repo("config.go", base_text=base, modified_text=allowed)
+        env = self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD")
+        result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=env, text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        for hostile in (
+            allowed.replace("*bool", "*bool\n\tPassiveForce bool"),
+            allowed.replace("ebusConfigurationPresence *bool", "ebusConfigurationPresence bool"),
+        ):
+            (repo_path / "config.go").write_text(hostile, encoding="utf-8")
+            result = subprocess.run(["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path, env=env, text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
+
     def test_transport_snapshot_fixture_falls_back_without_local_history(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

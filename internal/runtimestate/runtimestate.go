@@ -22,7 +22,7 @@ import (
 )
 
 // ErrStatePersistBlocked reports that persistence is withheld so that bytes
-// which could not be read or quarantined are never overwritten.
+// which could not be read, quarantined or exclusively locked are never overwritten.
 var ErrStatePersistBlocked = errors.New("runtime_state: persistence blocked")
 
 // SchemaVersion is the file-format version this package targets.
@@ -331,34 +331,28 @@ func (m *Manager) acquireWriteBounded(ctx context.Context, deadline time.Time) (
 }
 
 // acquireStoreLock takes the exclusive cross-process store lock on the
-// "<path>.lock" sidecar, shared with the offline runtime-control reset. It
-// reports false only when another process holds the lock. Failure to open the
-// sidecar (for example a missing directory) leaves the store unlocked, as no
-// other writer can own a file in a directory that does not exist.
-func (m *Manager) acquireStoreLock() bool {
+// "<path>.lock" sidecar, shared with the offline runtime-control reset.
+// Every acquisition failure blocks persistence. flock is supplied by the
+// caller so tests can exercise non-contention failures deterministically.
+func (m *Manager) acquireStoreLock(flock func(int, int) error) error {
 	m.mu.Lock()
 	held := m.lockFile != nil
 	m.mu.Unlock()
 	if held {
-		return true
+		return nil
 	}
 	f, err := os.OpenFile(m.opts.Path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		m.opts.Logger.Warn("runtime_state: store lock unavailable; continuing unlocked", "error", err)
-		return true
+		return fmt.Errorf("open store lock: %w", err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return false
-		}
-		m.opts.Logger.Warn("runtime_state: store lock failed; continuing unlocked", "error", err)
-		return true
+		return fmt.Errorf("acquire store lock: %w", err)
 	}
 	m.mu.Lock()
 	m.lockFile = f
 	m.mu.Unlock()
-	return true
+	return nil
 }
 
 func (m *Manager) releaseStoreLock() {
@@ -419,9 +413,9 @@ func (m *Manager) quarantinePath() string {
 // corrupt quarantine rename fails, blocks persistence so its bytes are never
 // overwritten by a fresh base.
 func (m *Manager) Load(ctx context.Context) (*State, error) {
-	if !m.acquireStoreLock() {
-		m.opts.Logger.Warn("runtime_state: store lock held by another writer; persistence withheld", "path", m.opts.Path)
-		m.setControlLoad(ControlLoadLocked, "store lock held by another writer", fmt.Errorf("%w: store lock held by another writer", ErrStatePersistBlocked))
+	if err := m.acquireStoreLock(unix.Flock); err != nil {
+		m.opts.Logger.Warn("runtime_state: store lock unavailable; persistence withheld", "path", m.opts.Path, "error", err)
+		m.setControlLoad(ControlLoadLocked, err.Error(), fmt.Errorf("%w: %v", ErrStatePersistBlocked, err))
 		m.replaceState(&State{SchemaVersion: SchemaVersion})
 		return m.State(), nil
 	}

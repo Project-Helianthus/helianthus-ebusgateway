@@ -202,6 +202,50 @@ class ResetRuntimeControlTest(unittest.TestCase):
                 self.write_state(text)
                 self.assert_refused(reset.EXIT_FAILED_PRECONDITION, "--apply", "--gateway-stopped")
 
+    def test_typed_base_faults_refuse_in_preview_and_apply(self):
+        base = json.loads(state_text(control_text()))
+        cases = [
+            ("ebus", []), ("ebus", {"schema_version": "1"}),
+            ("ebus", {"schema_version": 2, "self": []}),
+            ("ebus", {"schema_version": 1, "self": {"last_admitted_source": 256}}),
+            ("ebus", {"schema_version": 1, "self": {"companion_target": -1}}),
+            ("ebus", {"schema_version": 1, "self": {"last_admitted_at": 7}}),
+            ("ebus", {"schema_version": 1, "known_bus_members": {}}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [7]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"addr": True}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"addr": 1.0}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"addr": 1 << 64}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"addr": 256}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"companion_addr": -1}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"identity": []}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"identity": {"device_id": 1}}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [{"addr": 8}, {"addr": 8}]}),
+            ("ebus", {"schema_version": 1, "known_bus_members": [None, {}]}),
+            ("meta", dict(base["meta"], gateway_build=[])),
+            ("meta", dict(base["meta"], addon_version=7)),
+            ("EBUS", []), ("SCHEMA_VERSION", 2), ("ſchema_verſion", 2),
+        ]
+        for key, value in cases:
+            for extra in ((), ("--apply", "--gateway-stopped")):
+                with self.subTest(key=key, value=value, extra=extra):
+                    doc = dict(base, **{key: value})
+                    self.write_state(json.dumps(doc))
+                    self.assert_refused(reset.EXIT_FAILED_PRECONDITION, *extra)
+
+    def test_loader_compatible_base_values_are_preserved(self):
+        for ebus in (None, {"schema_version": 2, "self": {"last_admitted_source": 256}},
+                     {"schema_version": 1, "self": None, "known_bus_members": [None]},
+                     {"schema_version": 1, "known_bus_members": None, "future": []}):
+            with self.subTest(ebus=ebus):
+                doc = json.loads(state_text(control_text()))
+                doc["ebus"] = ebus
+                # Time strings are parsed best-effort by the gateway.
+                doc["meta"]["written_at"] = "invalid-time"
+                self.write_state(json.dumps(doc))
+                code, _, err = self.run_main("--apply", "--gateway-stopped")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(self.read_state())["ebus"], ebus)
+
     def test_missing_or_unreadable_file_refuses(self):
         self.assert_refused(reset.EXIT_FAILED_PRECONDITION, "--apply", "--gateway-stopped", reason="unreadable")
         os.mkdir(self.state)
@@ -296,6 +340,53 @@ class ResetRuntimeControlTest(unittest.TestCase):
         for path in copies:
             with open(path, "rb") as handle:
                 self.assertEqual(handle.read(), original)
+
+    def test_post_replace_directory_fsync_failure_is_ambiguous(self):
+        original = self.write_state(state_text(control_text()))
+        # Quarantine directory sync succeeds; replacement directory sync fails.
+        with mock.patch.object(reset, "fsync_dir", side_effect=[None, OSError("sync failed")]):
+            code, out, err = self.run_main("--apply", "--gateway-stopped")
+        self.assertEqual(code, reset.EXIT_AMBIGUOUS)
+        self.assertEqual(out, "")
+        self.assertTrue(err.startswith("AMBIGUOUS: "), err)
+        self.assertIn("state file replaced", err)
+        self.assertIn("durability is unknown", err)
+        self.assertIn("before retrying", err)
+        self.assertNotIn("original preserved", err)
+        self.assertNotIn("REFUSED", err)
+        self.assertNotEqual(self.read_state(), original)
+        self.assertEqual(json.loads(self.read_state())["runtime_control"]["issued_revision_mark"], "5")
+        copies = self.quarantine_copies()
+        self.assertEqual(len(copies), 1)
+        with open(copies[0], "rb") as handle:
+            self.assertEqual(handle.read(), original)
+        self.assertFalse(os.path.exists(self.state + ".reset.tmp"))
+
+    def test_post_replace_readback_failure_is_ambiguous(self):
+        for fault in (OSError("read failed"), b"different bytes"):
+            with self.subTest(fault=fault):
+                original = self.write_state(state_text(control_text()))
+                real_open = open
+                reads = 0
+
+                def readback_open(path, mode="r", *args, **kwargs):
+                    nonlocal reads
+                    if path == self.state and mode == "rb":
+                        reads += 1
+                        if reads == 2:
+                            if isinstance(fault, OSError):
+                                raise fault
+                            return io.BytesIO(fault)
+                    return real_open(path, mode, *args, **kwargs)
+
+                with mock.patch("builtins.open", side_effect=readback_open):
+                    code, out, err = self.run_main("--apply", "--gateway-stopped")
+                self.assertEqual(code, reset.EXIT_AMBIGUOUS)
+                self.assertEqual(out, "")
+                self.assertTrue(err.startswith("AMBIGUOUS: "), err)
+                self.assertIn("readback after replacement", err)
+                self.assertIn("before retrying", err)
+                self.assertNotEqual(self.read_state(), original)
 
     def test_stale_temp_from_a_crash_is_overwritten(self):
         self.write_state(state_text(control_text()))

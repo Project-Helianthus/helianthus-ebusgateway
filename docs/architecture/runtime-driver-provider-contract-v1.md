@@ -550,7 +550,7 @@ material), `LOADED`, `MISSING_WITH_MATERIAL` (no namespace while a quarantine
 copy exists), `CORRUPT` (whole-file corruption, or a namespace whose
 structure, mark, catalog revision or recovery envelope cannot be validated),
 `UNREADABLE`, `UNSUPPORTED` (a schema version other than 1) and `LOCKED`
-(another writer holds the store lock). Every disposition except `MISSING` and
+(the store lock cannot be acquired). Every disposition except `MISSING` and
 `LOADED` fails control closed for the namespace only: the shell keeps
 starting, every configured driver is withheld as `FAILED`, nothing is seeded
 and the namespace bytes are preserved verbatim on every later write. A
@@ -558,7 +558,8 @@ malformed driver record fails only that driver while independent records stay
 usable. A file that cannot be read, or whose corrupt quarantine rename fails,
 blocks persistence so its bytes are never overwritten; a quarantine copy is
 never replaced. The writer holds an exclusive `flock` on the `<state>.lock`
-sidecar from load until stop, which the offline reset also takes.
+sidecar from load until stop, which the offline reset also takes. Any sidecar
+open or lock acquisition error blocks persistence.
 
 The one-time seed runs only for `MISSING` with a valid persisted instance
 GUID: the mark starts at 0 and each configured driver, in bytewise `DriverID`
@@ -609,16 +610,21 @@ The offline repair is `scripts/reset_runtime_control.py --state-file <file>
 --namespace runtime_control --desired STOPPED --driver-id <id>...`. It
 previews by default and replaces only with `--apply --gateway-stopped`, refuses
 while another process holds the store lock, refuses a corrupt or unreadable
-file, a missing or invalid GUID, an unsupported namespace version or unknown
-namespace member, an unvalidated mark or catalog revision, an unverifiable D5
+file (including invalid typed meta/eBUS fields, out-of-range addresses or
+duplicate member addresses), a missing or invalid GUID, an unsupported namespace
+version or unknown namespace member, an unvalidated mark or catalog revision, an
+unverifiable D5
 envelope or one recording a revision above the mark, and an unvalidated
 configured ID set (`FAILED_PRECONDITION`, or `COUNTER_EXHAUSTED` when `H + N`
 or `C + 1` overflows). It writes an exclusive, fsynced quarantine copy of the
 exact original bytes, then replaces only the namespace member: one `STOPPED`
 record per configured ID at `H + 1` through `H + N` in bytewise order with no
 work slot, the mark `H + N` and catalog revision `C + 1`, copying every other
-member and the D5 envelope byte-for-byte. An interrupted run leaves the
-original file intact; a rerun overwrites its stale temporary file.
+member and the D5 envelope byte-for-byte. Failures before replacement leave
+the original file intact; a rerun overwrites its stale temporary file. After
+replacement, a directory fsync failure or unconfirmed readback reports
+`AMBIGUOUS` (exit 5), retains the quarantine copy and requires inspection of
+the state before retrying; it never claims that the original was preserved.
 
 For every mutation, the control service performs one atomic transaction:
 

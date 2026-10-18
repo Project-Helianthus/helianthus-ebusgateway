@@ -677,6 +677,59 @@ func TestControlLoadDispositionsNeverCollapse(t *testing.T) {
 	})
 }
 
+// A failed sidecar open must never allow generic or control persistence.
+func TestControlStoreLockOpenFailureBlocksPersistence(t *testing.T) {
+	path := rcPath(t)
+	rcWriteBase(t, path)
+	before := rcRead(t, path)
+	if err := os.Mkdir(path+".lock", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := rcManager(t, path, nil)
+	defer rcStop(t, m)
+	if got := m.ControlLoad().Disposition; got != ControlLoadLocked {
+		t.Fatalf("got %s, want LOCKED", got)
+	}
+	if err := m.EagerPersistInstanceGUID(context.Background(), rcGUID, IdentitySourceRuntimeState); !errors.Is(err, ErrStatePersistBlocked) {
+		t.Fatalf("persist without a lock = %v, want blocked", err)
+	}
+	plan, err := m.BootstrapControl(context.Background(), rcDefaultConfigs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range plan {
+		if entry.Action != StartupFailed {
+			t.Fatalf("bootstrap without a lock = %+v", plan)
+		}
+	}
+	if !bytes.Equal(rcRead(t, path), before) {
+		t.Fatal("store changed without owning its lock")
+	}
+}
+
+func TestControlStoreLockNonContentionFailure(t *testing.T) {
+	path := rcPath(t)
+	m := New(Options{Path: path})
+	var fd int
+	err := m.acquireStoreLock(func(openFD, flags int) error {
+		fd = openFD
+		if flags != unix.LOCK_EX|unix.LOCK_NB {
+			t.Fatalf("flock flags = %d", flags)
+		}
+		return unix.EIO
+	})
+	if !errors.Is(err, unix.EIO) || m.lockFile != nil {
+		t.Fatalf("failed flock = %v, lock file = %v", err, m.lockFile)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("failed flock descriptor was not closed: %v", err)
+	}
+	if err := m.acquireStoreLock(unix.Flock); err != nil {
+		t.Fatalf("reacquire after failed flock: %v", err)
+	}
+	m.releaseStoreLock()
+}
+
 func rcJSONEqual(t *testing.T, a, b []byte) bool {
 	t.Helper()
 	var ca, cb bytes.Buffer

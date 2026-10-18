@@ -27,7 +27,8 @@ copied byte-for-byte from the original text. It never invents a GUID and never
 decodes an unknown schema as empty.
 
 Exit status: 0 success, 2 usage error, 3 FAILED_PRECONDITION refusal,
-4 COUNTER_EXHAUSTED refusal. Every refusal replaces nothing.
+4 COUNTER_EXHAUSTED refusal, 5 AMBIGUOUS after replacement when durability or
+readback cannot be confirmed. Every refusal replaces nothing.
 """
 
 import argparse
@@ -44,6 +45,7 @@ import sys
 EXIT_OK = 0
 EXIT_FAILED_PRECONDITION = 3
 EXIT_COUNTER_EXHAUSTED = 4
+EXIT_AMBIGUOUS = 5
 
 U64_MAX = (1 << 64) - 1
 NAMESPACE = "runtime_control"
@@ -67,6 +69,10 @@ class Refusal(Exception):
         super().__init__(reason)
         self.code = code
         self.reason = reason
+
+
+class Ambiguous(Exception):
+    """Replacement occurred, but durability or readback is unconfirmed."""
 
 
 def failed(reason):
@@ -202,6 +208,58 @@ def verify_recovery(recovery, bound):
     return ids
 
 
+# Mirror the typed base DTOs in internal/runtimestate/codec.go. Unknown
+# fields remain opaque; null has Go encoding/json's zero-value semantics.
+_IDENTITY = dict.fromkeys(("manufacturer", "device_id", "sn"), str)
+_SELF = {"last_admitted_source": int, "last_admitted_at": str,
+         "selection_method": str, "companion_target": int}
+_MEMBER = {"addr": int, "companion_addr": int, "identity": _IDENTITY,
+           "last_seen_at": str, "last_source": str, "confidence": str}
+_EBUS = {"schema_version": int, "self": _SELF, "known_bus_members": [_MEMBER]}
+_META = dict.fromkeys(("instance_guid", "written_at", "gateway_build", "addon_version"), str)
+
+
+def validate_base_value(value, shape, path):
+    if value is None:
+        return
+    if isinstance(shape, dict):
+        if not isinstance(value, dict):
+            raise failed("state file %s is not an object; restore a valid base first" % path)
+        for key, child in value.items():
+            canonical = key.casefold()
+            if canonical in shape:
+                if key != canonical:
+                    raise failed("state file %s.%s is not canonical; restore a valid base first" % (path, key))
+                validate_base_value(child, shape[key], path + "." + key)
+    elif isinstance(shape, list):
+        if not isinstance(value, list):
+            raise failed("state file %s is not an array; restore a valid base first" % path)
+        for index, child in enumerate(value):
+            validate_base_value(child, shape[0], "%s[%d]" % (path, index))
+    elif ((shape is int and (not is_int(value) or not -(1 << 31) <= value < (1 << 31)))
+          or (shape is str and not isinstance(value, str))):
+        # The gateway also supports 32-bit targets; require a portable Go int.
+        raise failed("state file %s has an invalid type or range; restore a valid base first" % path)
+
+
+def validate_base(top):
+    validate_base_value(top, {"schema_version": int, "meta": _META, "ebus": _EBUS}, "base")
+    ebus = top.get("ebus")
+    if not ebus or ebus.get("schema_version") != 1:
+        return  # The loader drops other eBUS versions after typed decoding.
+    records = [(ebus.get("self"), ("last_admitted_source", "companion_target"))]
+    members = ebus.get("known_bus_members") or []
+    records.extend((member, ("addr", "companion_addr")) for member in members)
+    for record, fields in records:
+        for field in fields:
+            value = (record or {}).get(field) or 0
+            if not 0 <= value <= 255:
+                raise failed("state file ebus.%s is outside the byte range; restore a valid base first" % field)
+    addresses = [(member or {}).get("addr") or 0 for member in members]
+    if len(addresses) != len(set(addresses)):
+        raise failed("state file ebus.known_bus_members has duplicate addresses; restore a valid base first")
+
+
 def plan_reset(data, driver_ids):
     """Validate the original bytes and build the replacement.
 
@@ -216,6 +274,7 @@ def plan_reset(data, driver_ids):
     raw_of = {key: raw for key, raw, _ in members}
     if not is_int(top.get("schema_version")) or top["schema_version"] != 1:
         raise failed("state file top-level schema_version is not 1; restore a valid base first")
+    validate_base(top)
     meta = top.get("meta")
     if not isinstance(meta, dict):
         raise failed("state file meta is missing or invalid; restore a valid base first")
@@ -355,7 +414,10 @@ def replace_atomically(state_file, data, mode):
     finally:
         os.close(fd)
     os.replace(temp, state_file)
-    fsync_dir(directory)
+    try:
+        fsync_dir(directory)
+    except OSError as exc:
+        raise Ambiguous("state file replaced but directory fsync failed (%s); durability is unknown" % exc) from exc
 
 
 def acquire_store_lock(state_file):
@@ -398,11 +460,16 @@ def run(args):
             raise failed("quarantine copy could not be preserved (%s); nothing replaced" % exc)
         try:
             replace_atomically(args.state_file, replacement, mode or 0o600)
+        except Ambiguous as exc:
+            raise Ambiguous("%s; quarantine copy %s kept; inspect the state before retrying" % (exc, quarantine)) from exc
         except OSError as exc:
             raise failed("replacement failed (%s); original preserved, quarantine copy %s kept" % (exc, quarantine))
-        with open(args.state_file, "rb") as handle:
-            if handle.read() != replacement:
-                raise failed("readback after replacement disagrees; inspect %s" % quarantine)
+        try:
+            with open(args.state_file, "rb") as handle:
+                if handle.read() != replacement:
+                    raise Ambiguous("readback after replacement disagrees; inspect %s before retrying" % quarantine)
+        except OSError as exc:
+            raise Ambiguous("readback after replacement failed (%s); inspect %s before retrying" % (exc, quarantine)) from exc
         plan["mode"] = "apply"
         plan["quarantine_copy"] = quarantine
         return plan
@@ -434,6 +501,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         plan = run(args)
+    except Ambiguous as exc:
+        sys.stderr.write("AMBIGUOUS: %s\n" % exc)
+        return EXIT_AMBIGUOUS
     except Refusal as refusal:
         sys.stderr.write("REFUSED %s: %s\n" % (refusal.code, refusal.reason))
         if refusal.code == "COUNTER_EXHAUSTED":

@@ -16,8 +16,12 @@ replay and error identifiers; ordered, bounded event fan-out; and the
 generation fence, epoch retirement, activation and reprojection rules of the
 withdrawal sequence. The hub is runtime composition, not a public API, and
 persists nothing: epochs are journalled in memory only. The `list`, `get`,
-`start`, `stop` and `restart` service, desired-state persistence and every
-public lifecycle projection remain unimplemented. Issue
+`start`, `stop` and `restart` service and every public lifecycle projection
+remain unimplemented. Issue
+[#1157](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1157)
+adds the durable control storage seam in `internal/runtimestate` (section 5,
+S3 durable control store) without a production caller, live reconciliation or
+endpoint I/O. Issue
 [#1112](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1112)
 adds unused, opt-in export/restore hooks for a future service-owned recovery
 path. Existing production publishers do not enable them and retain their
@@ -513,6 +517,141 @@ transition barrier completes.
 
 Lifecycle calls acknowledge a persistent control decision. They do not claim
 that native startup, shutdown, or replacement has completed.
+
+D3 amendment: the docs-ebus
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+sections "S1/D3: minimal durable control decisions" and "S3/D2: bootstrap,
+load failures and explicit repair" supersede the receipt, idempotency-key,
+principal-scoped ledger, request-hash and completed-operation rules of this
+section, of the receipt paragraphs in section 4 and of the receipt-specific
+CTL rows in section 13. Where this document still describes those
+mechanisms, the lifecycle page wins. The subsection below records what the
+storage seam implements.
+
+### S3 durable control store (implemented storage seam)
+
+Package [`internal/runtimestate`](../../internal/runtimestate) owns the
+independently versioned `runtime_control` namespace (format version 1) under
+the sole runtime-state writer. Top-level, meta and eBUS versions are
+unchanged; unknown namespaces keep round-tripping. The namespace holds only:
+one issued-revision mark, the catalog view revision, one record per decided
+driver (desired `RUNNING` or `STOPPED`, its desired revision, the internal
+lifecycle sequence and at most two typed work slots, current and reserved (the current slot always holds
+the older transition: its sequence precedes the reserved sequence, and a record
+violating this fails only that driver),
+with exact kind, accepted revision, sequence, phase, correlation, cleanup
+obligations, bounded attempts and deadline) and a typed D5 recovery envelope
+whose payload is opaque to the writer and verified by digest. There is no
+receipt, idempotency key, principal, request digest or completed-operation
+store. Revisions are encoded as canonical decimal strings and held as
+unsigned 64-bit values; every increment that would overflow refuses with
+`COUNTER_EXHAUSTED` before mutation.
+
+Load dispositions are distinct: `MISSING` (readable state with no control
+material), `LOADED`, `MISSING_WITH_MATERIAL` (no namespace while a quarantine
+copy exists), `CORRUPT` (whole-file corruption, or a namespace whose
+structure, mark, catalog revision or recovery envelope cannot be validated),
+`UNREADABLE`, `UNSUPPORTED` (a schema version other than 1) and `LOCKED`
+(the store lock cannot be acquired). Every disposition except `MISSING` and
+`LOADED` fails control closed for the namespace only: the shell keeps
+starting, every configured driver is withheld as `FAILED`, nothing is seeded
+and the namespace bytes are preserved verbatim on every later write. A
+malformed driver record fails only that driver while independent records stay
+usable. A file that cannot be read, or whose corrupt quarantine rename fails,
+blocks persistence so its bytes are never overwritten; a quarantine copy is
+never replaced. The writer holds an exclusive `flock` on the `<state>.lock`
+sidecar from load until stop, which the offline reset also takes. Any sidecar
+open or lock acquisition error (another holder or any other failure) yields
+`LOCKED` and blocks persistence for the process: no decision, work, catalog,
+recovery, seed, registration or generic write is accepted, and a corrupt file
+is not quarantined. The readable file is still decoded read-only: the GUID, the
+eBUS cache and opaque namespaces keep their last-known-good in-memory values,
+and the last-known-good `runtime_control` namespace is served by the snapshot
+and per-driver reads with `ReadOnly` set while every configured driver starts
+`FAILED`. It is never read as missing and never overwritten later. Stop waits
+for every in-flight writer (a control transaction or a ticker flush) before it
+closes write admission and releases the lock. The final flush takes the writer
+slot with the stop context; a context that ended before or during Stop skips
+the flush and is returned, and the lock is still released as soon as the
+in-flight writer finishes. Control admission reports closed once the manager is
+stopped or persistence is blocked. A work update of a stored identity may not
+move its phase backwards, lower its attempts used, or extend or remove an
+established deadline.
+
+The one-time seed runs only for `MISSING` with a valid persisted instance
+GUID: the mark starts at 0 and each configured driver, in bytewise `DriverID`
+order, is one accepted decision at mark + 1 (enabled `RUNNING`, disabled
+`STOPPED`). The store never generates or replaces the GUID and never touches
+meta. In an existing namespace a configured driver without a record becomes
+visible through a mark-only write, and a record whose driver is no longer
+configured and holds no work slot or D5 reference is deleted with a mark-only
+write, in one durable transaction before any read. A driver registered earlier
+in the process that is later unconfigured also advances the mark and catalog
+(a mark-only write) even when it has no stored record. The startup plan derives
+`STARTING` only from durable desired `RUNNING` of an enabled driver; durable
+`STOPPED` and record-less drivers start `STOPPED`, disabled configuration
+yields `DISABLED` without rewriting intent, and failed control yields
+`FAILED`. Process shutdown never changes durable intent.
+
+`DecideControl` applies the lifecycle refusal table in order: closed request
+shape (`DriverID`, `ExpectedRevision` as a nonzero canonical decimal string),
+registration, control state (a failed load or record is `FAILED_PRECONDITION`,
+pending readback is `UNAVAILABLE`), configured eligibility and a finite
+unexpired deadline, all before the serialization point. The namespace-wide
+serialization point is the runtime-state sole-writer lock shared with cache,
+meta and ticker writes; the wait is bounded and never outlasts the deadline.
+After acquiring it the request reconfirms admission, rechecks the deadline,
+reads the mark, compares the expected revision with the driver's current
+desired revision (the mark for a driver without a record), answers a
+same-desired START or STOP as a no-op without writing, refuses RESTART in
+desired `STOPPED`, consults the slot planner (rows 7 and 8), checks the record
+and byte limits and the counters, rechecks the deadline and durably writes the
+decision with the advanced mark and catalog revision. A bounded-wait timeout
+refuses `REVISION_CONFLICT` only for a conclusively stale expectation and
+`TRANSITION_BUSY` otherwise, with no durable change. Accepted and no-op results
+are `{desired_state, desired_revision}` only.
+
+Every control commit (seed, registration, decision, work, catalog and
+recovery) checks the namespace byte limit on the staged namespace first and
+refuses `RESOURCE_EXHAUSTED` without writing. A work update may only advance the
+phase, correlation and obligations of a stored transition, promote the reserved
+slot or clear slots; the accepted identity (kind, desired revision and
+sequence) never changes.
+
+A control transaction stages privately, persists the whole file through a
+same-directory temporary file, a required file fsync and a rename (no
+cross-filesystem fallback) and exposes the committed state only after a
+successful parent-directory fsync. Any failure before the rename discards the
+staging and refuses `UNAVAILABLE`; no later cache, meta or ticker write can
+publish it, because generic writes re-emit only the committed namespace. A
+directory fsync failure after a successful rename, including an error the
+generic namespaces tolerate, is ambiguous persistence: nothing is
+acknowledged or exposed, admission is closed for every driver and generic
+writes are deferred until the readback finds the stored namespace equal to
+the staged or the committed one and a directory fsync succeeds; readback
+agreement alone never reopens admission. The generic namespaces keep the
+best-effort directory fsync.
+
+The offline repair is `scripts/reset_runtime_control.py --state-file <file>
+--namespace runtime_control --desired STOPPED --driver-id <id>...`. It
+previews by default and replaces only with `--apply --gateway-stopped`, refuses
+while another process holds the store lock, refuses a corrupt or unreadable
+file (including any preserved meta/eBUS value the gateway loader rejects:
+invalid typed fields, out-of-range addresses or duplicate member addresses), a missing or invalid GUID, an unsupported namespace
+version or unknown namespace member, an unvalidated mark or catalog revision, an
+unverifiable D5
+envelope (including a driver ID that is not canonical or exceeds 128 bytes) or
+one recording a revision above the mark, and an unvalidated
+configured ID set (`FAILED_PRECONDITION`, or `COUNTER_EXHAUSTED` when `H + N`
+or `C + 1` overflows). It writes an exclusive, fsynced quarantine copy of the
+exact original bytes, then replaces only the namespace member: one `STOPPED`
+record per configured ID at `H + 1` through `H + N` in bytewise order with no
+work slot, the mark `H + N` and catalog revision `C + 1`, copying every other
+member and the D5 envelope byte-for-byte. Failures before replacement leave
+the original file intact; a rerun overwrites its stale temporary file. After
+replacement, a directory fsync failure or unconfirmed readback reports
+`AMBIGUOUS` (exit 5), retains the quarantine copy and requires inspection of
+the state before retrying; it never claims that the original was preserved.
 
 For every mutation, the control service performs one atomic transaction:
 
@@ -2102,7 +2241,9 @@ protocol ownership; they are not compatibility semantic APIs.
 ## 13. Acceptance scenarios for implementation
 
 Each scenario becomes an executable fixture or integration test in its later
-owning issue. The expected result is normative.
+owning issue. The expected result is normative. CTL rows that mention receipts,
+idempotency keys or operation IDs are superseded by the amended CTL-01 to
+CTL-19 vectors of the docs-ebus runtime driver lifecycle page (D3).
 
 | ID | Scenario | Expected result |
 |---|---|---|

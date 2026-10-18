@@ -3495,3 +3495,121 @@ func TestServiceCommittedSupersedingStopHoldsCancelUntilAccepted(t *testing.T) {
 	f.waitSettled(id, drivermanager.ObservedStopped)
 	assertAcceptedThenCanceled(t, f, cursor, id, stops)
 }
+
+// recoveryGateStore blocks the startup recovery read until released.
+type recoveryGateStore struct {
+	Store
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *recoveryGateStore) Recovery() *RecoveryMaterial {
+	g.once.Do(func() { close(g.entered) })
+	<-g.release
+	return g.Store.Recovery()
+}
+
+// TestServiceAdmissionStaysClosedUntilStartupCompletes: a decision arriving
+// while startup (catalog validation and D5 restore) is still running is
+// refused, and is accepted once Start has returned.
+func TestServiceAdmissionStaysClosedUntilStartupCompletes(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var g *recoveryGateStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)), noStart: true,
+		wrap: func(s Store) Store {
+			g = &recoveryGateStore{Store: s, entered: make(chan struct{}), release: make(chan struct{})}
+			return g
+		}})
+	done := make(chan error, 1)
+	go func() { done <- f.svc.Start(context.Background()) }()
+	<-g.entered
+	_, err := f.svc.Decide(deadlineCtx(t), MethodRestart, Request{DriverID: id, ExpectedRevision: 1})
+	refusalOf(t, err, RefusalUnavailable, 3)
+	close(g.release)
+	if err := <-done; err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	f.waitSettled(id, drivermanager.ObservedRunning)
+	if _, err := f.decide(MethodRestart, id); err != nil {
+		t.Fatalf("decision after startup: %v", err)
+	}
+}
+
+// TestServiceStartSuccessAfterBudgetExpiredDuringHoldIsWithdrawn: a typed
+// START succeeds inside its budget but waits behind an unresolved superseding
+// STOP; when the readback rejects that STOP after the budget ran out, the
+// success is withdrawn and never published as RUNNING.
+func TestServiceStartSuccessAfterBudgetExpiredDuringHoldIsWithdrawn(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var g *readbackStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		opts: func(o *Options) {
+			o.OperationBudget = time.Second
+			// A slow readback series outlasts the START's budget.
+			o.RetryDelay = func(int) time.Duration { return 300 * time.Millisecond }
+		},
+		wrap: func(s Store) Store { g = &readbackStore{Store: s}; return g }})
+	h := f.typedStartInFlight(id)
+	gate, committed := f.ambiguousStop(g, id)
+	h.result <- nil
+	time.Sleep(1300 * time.Millisecond)
+	f.rejectOnReadback(committed)
+	close(gate)
+	f.waitDecisionSettled(id)
+	f.waitObserved(id, drivermanager.ObservedFailed)
+	d := f.svc.drivers[id]
+	d.mu.Lock()
+	live := d.live
+	d.mu.Unlock()
+	if live != nil && live.corr == func() LifecycleCorrelation { _, c := h.attempt(); return c }() {
+		t.Fatal("expired START success was admitted")
+	}
+	if st := f.status(id); st.ObservedState == drivermanager.ObservedRunning {
+		t.Fatalf("expired START published %s", st.ObservedState)
+	}
+}
+
+// catalogFailStore fails the service-side catalog read on demand, so a view
+// publication fails while the store still accepts decisions.
+type catalogFailStore struct {
+	Store
+	fail atomic.Bool
+}
+
+func (c *catalogFailStore) Catalog() (ControlCatalog, error) {
+	if c.fail.Load() {
+		return ControlCatalog{}, errors.New("catalog unreadable")
+	}
+	return c.Store.Catalog()
+}
+
+// TestServiceFailedAcceptancePublicationKeepsSupersededStartRunning: when the
+// acceptance cannot be published, the superseded START is neither canceled nor
+// is any Stop run until a later publication carries the acceptance.
+func TestServiceFailedAcceptancePublicationKeepsSupersededStartRunning(t *testing.T) {
+	id := DriverID("fam.alpha")
+	var c *catalogFailStore
+	f := newFixture(t, svcOpts{drivers: enabled(string(id)),
+		wrap: func(s Store) Store { c = &catalogFailStore{Store: s}; return c }})
+	h := f.typedStartInFlight(id)
+	stops := f.execs[id].count("stop")
+	cursor := f.svc.List().EventCursor
+	c.fail.Store(true)
+	if _, err := f.decide(MethodStop, id); err != nil {
+		t.Fatalf("STOP: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if ctx, _ := h.attempt(); ctx.Err() != nil {
+		t.Fatal("START canceled before the acceptance was published")
+	}
+	if n := f.execs[id].count("stop"); n != stops {
+		t.Fatal("cancellation ran before the acceptance was published")
+	}
+	if events := driverEvents(f, cursor, id); len(events) != 0 {
+		t.Fatalf("events before publication: %+v", events)
+	}
+	c.fail.Store(false)
+	f.waitSettled(id, drivermanager.ObservedStopped)
+	assertAcceptedThenCanceled(t, f, cursor, id, stops)
+}

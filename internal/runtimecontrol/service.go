@@ -226,18 +226,24 @@ type Service struct {
 	// publication marks a gap so readers resynchronise.
 	pendingLost bool
 	dirty       bool
-	retryArmed  bool
-	view        atomic.Pointer[Catalog]
+	// releases end decision holds whose acceptance is not yet published;
+	// they run once a publication succeeds.
+	releases   []func()
+	retryArmed bool
+	view       atomic.Pointer[Catalog]
 
 	// readbackArmed is set while the bounded readback resolver runs.
 	readbackArmed atomic.Bool
 
 	lifeMu  sync.Mutex
 	started bool
-	closed  bool
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	// admitting opens only after startup (catalog validation and D5
+	// restore) completed, so no decision commits ahead of recovery.
+	admitting bool
+	closed    bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func isNil(value any) bool {
@@ -345,13 +351,15 @@ func (s *Service) Start(ctx context.Context) error {
 		var fatal *startFatal
 		if errors.As(err, &fatal) {
 			s.lifeMu.Lock()
-			s.started = false
+			s.started, s.admitting = false, false
 			s.cancel()
 			s.lifeMu.Unlock()
 			return fatal.err
 		}
+		s.openAdmission()
 		return err
 	}
+	s.openAdmission()
 	return nil
 }
 
@@ -450,10 +458,16 @@ func (s *Service) Close() {
 	s.wg.Wait()
 }
 
+func (s *Service) openAdmission() {
+	s.lifeMu.Lock()
+	s.admitting = true
+	s.lifeMu.Unlock()
+}
+
 func (s *Service) running() bool {
 	s.lifeMu.Lock()
 	defer s.lifeMu.Unlock()
-	return s.started && !s.closed
+	return s.started && s.admitting && !s.closed
 }
 
 func initialObservation(rec ControlRecord, blocked bool) observation {
@@ -690,14 +704,15 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 		return DesiredView{}, err
 	}
 	changed := view.DesiredRevision != req.ExpectedRevision
+	published := true
 	if changed {
 		ev := s.desiredEvent(d, view.DesiredState, view.DesiredRevision)
-		s.commitView(s.ctx, &ev, false)
+		published = s.commitView(s.ctx, &ev, false)
 	}
 	if planned {
 		// Acceptance is published before the hold ends: only now may the
 		// superseded attempt be fenced and the reconciler act on the slots.
-		s.releaseDecision(d, fence && changed)
+		s.afterPublish(published, func() { s.releaseDecision(d, fence && changed) })
 	}
 	return view, nil
 }
@@ -760,17 +775,19 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 		done = append(done, settled{d: d, fence: amb.fence && adopted})
 	}
 	published := false
+	committed := true
 	if len(events) > 0 || lost {
 		if lost {
 			s.viewMu.Lock()
 			s.pendingLost = true
 			s.viewMu.Unlock()
 		}
-		s.commitEvents(s.ctx, events, false)
+		committed = s.commitEvents(s.ctx, events, false)
 		published = true
 	}
 	for _, x := range done {
-		s.releaseDecision(x.d, x.fence)
+		x := x
+		s.afterPublish(committed, func() { s.releaseDecision(x.d, x.fence) })
 	}
 	return published
 }
@@ -1052,6 +1069,7 @@ func (s *Service) commitEvents(ctx context.Context, events []Event, advance bool
 			}
 		}
 		if s.publish(events) {
+			s.runReleases()
 			return true
 		}
 	}
@@ -1062,6 +1080,32 @@ func (s *Service) commitEvents(ctx context.Context, events []Event, advance bool
 		s.deferPublication(&events[i])
 	}
 	return false
+}
+
+// runReleases ends the decision holds that waited for a publication.
+func (s *Service) runReleases() {
+	s.viewMu.Lock()
+	rel := s.releases
+	s.releases = nil
+	s.viewMu.Unlock()
+	for _, fn := range rel {
+		fn()
+	}
+}
+
+// afterPublish runs fn now when the acceptance was published, otherwise once
+// a later publication carries it: the hold must outlast a failed publication.
+func (s *Service) afterPublish(published bool, fn func()) {
+	if !published {
+		s.viewMu.Lock()
+		if s.dirty {
+			s.releases = append(s.releases, fn)
+			s.viewMu.Unlock()
+			return
+		}
+		s.viewMu.Unlock()
+	}
+	fn()
 }
 
 // deferPublication retains an unpublished event and arms one retry timer.

@@ -592,7 +592,13 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 		if err == nil {
 			running := observation{state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone,
 				epoch: a.corr.Epoch, generation: a.corr.Generation}
+			expired := false
 			admitted := s.settle(d, a, func() {
+				// The hold may outlast the budget: revalidate it here.
+				if a.ctx.Err() != nil || !s.now().Before(t.DeadlineUTC) {
+					expired = true
+					return
+				}
 				a.admitted = true
 				d.live = a
 				d.autoStartDone = true
@@ -601,6 +607,9 @@ func (s *Service) runTypedAttempt(d *driverState, t Transition, a *attempt) (boo
 			})
 			if !admitted {
 				return true, 0
+			}
+			if expired {
+				return s.exhaust(d, t, drivermanager.ReasonRetryExhausted)
 			}
 			s.commitObserved(d, running)
 			return s.completeStart(d, t, a)

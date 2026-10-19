@@ -1467,3 +1467,46 @@ func TestEBusControlServiceProcessRestartClaimsFreshInertEpoch(t *testing.T) {
 		t.Fatalf("succession records = %#v", records)
 	}
 }
+
+// A STOP can finish while the predecessor's hold is still blocked in hub
+// work. The accepted successor must wait for that attempt to retire rather
+// than fail permanently on the manager's unavailable answer.
+func TestEBusControlSuccessorWaitsForPredecessorHoldRetirement(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	plant.hub.setHook("Source", func() error {
+		first := false
+		once.Do(func() { first = true })
+		if first {
+			close(entered)
+			<-release
+		}
+		return nil
+	})
+	first := ctlCorr("inc.e1", 1, 1)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- plant.bridge.Start(ctlCtx(t), first) }()
+	<-entered
+	if out := plant.bridge.Stop(ctlCtx(t), first); !out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("Stop = %#v", out)
+	}
+	successorDone := make(chan error, 1)
+	go func() { successorDone <- plant.bridge.Start(ctlCtx(t), ctlCorr("inc.e2", 1, 2)) }()
+	select {
+	case err := <-successorDone:
+		t.Fatalf("successor returned while the predecessor hold was blocked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-successorDone; err != nil {
+		t.Fatalf("successor Start = %v, want success after predecessor retirement", err)
+	}
+	if err := <-firstDone; err == nil {
+		t.Fatal("superseded Start reported success")
+	}
+	if plant.overlapped() {
+		t.Fatal("overlapping native owners")
+	}
+}

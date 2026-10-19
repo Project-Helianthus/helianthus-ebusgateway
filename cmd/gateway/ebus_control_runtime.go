@@ -398,7 +398,7 @@ func (bridge *ebusControlRuntime) fenceLocked(epoch *ebusControlEpoch) {
 // operation and waits for its terminal result. Retries, backoff and drain
 // stay inside DriverManager.
 func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusControlEpoch) error {
-	if err := bridge.manager.StartAsync(context.Background(), string(bridge.id)); err != nil {
+	if err := bridge.startManager(ctx, epoch); err != nil {
 		reason := drivermanager.ReasonProviderUnavailable
 		if errors.Is(err, drivermanager.ErrSafetyQuarantined) {
 			reason = drivermanager.ReasonInternalError
@@ -447,6 +447,33 @@ func (bridge *ebusControlRuntime) runStart(ctx context.Context, epoch *ebusContr
 		case <-epoch.fenceCh:
 		case <-ctx.Done():
 			return bridge.failStart(epoch, ebusControlFailure(drivermanager.ReasonInternalError, ctx.Err()))
+		}
+	}
+}
+
+// startManager requests the native start. A predecessor's construction may
+// still own its attempt (for example a hold blocked in hub work after STOP
+// already published STOPPED); DriverManager reports ErrUnavailable until
+// that attempt retires. The successor waits for the retirement, bounded by
+// the cleanup deadline, instead of failing the accepted operation.
+func (bridge *ebusControlRuntime) startManager(ctx context.Context, epoch *ebusControlEpoch) error {
+	deadline := time.NewTimer(bridge.cleanupTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(2 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		err := bridge.manager.StartAsync(context.Background(), string(bridge.id))
+		if !errors.Is(err, drivermanager.ErrUnavailable) {
+			return err
+		}
+		select {
+		case <-tick.C:
+		case <-epoch.fenceCh:
+			return err
+		case <-deadline.C:
+			return err
+		case <-ctx.Done():
+			return err
 		}
 	}
 }

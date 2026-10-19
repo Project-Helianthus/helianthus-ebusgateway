@@ -40,11 +40,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 	needsPassive := cfg.BroadcastListen && (protocol == ebusgateway.TransportAdapterDirect || shouldStartPassiveObserveFirst(cfg))
 	running := make(chan drivermanager.Correlation, 1)
 	v8Counter := &ebusV8CumulativeCounter{}
-	runtimeSeam := transport.NewDriverRuntime(
-		newEBusDriverFactory(cfg, protocol, needsPassive, v8Counter),
-		transport.DriverRuntimeConfig{DrainTimeout: defaultEBusDriverDrainTimeout},
-	)
-	runtime := &ebusDriverRuntime{runtime: runtimeSeam, running: running}
+	runtime := newEBusDriverRuntime(cfg, protocol, needsPassive, v8Counter, running)
 	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
 		ID:      primaryEBusDriverID,
 		Enabled: true,
@@ -92,6 +88,17 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 		}
 	}
 	return controller, nil
+}
+
+// newEBusDriverRuntime builds the DriverManager runtime of ebus.primary. It
+// constructs no endpoint: the native factory runs only when DriverManager
+// starts a generation.
+func newEBusDriverRuntime(cfg ebusgateway.Config, protocol ebusgateway.TransportProtocol, needsPassive bool, v8Counter *ebusV8CumulativeCounter, running chan<- drivermanager.Correlation) *ebusDriverRuntime {
+	runtimeSeam := transport.NewDriverRuntime(
+		newEBusDriverFactory(cfg, protocol, needsPassive, v8Counter),
+		transport.DriverRuntimeConfig{DrainTimeout: defaultEBusDriverDrainTimeout},
+	)
+	return &ebusDriverRuntime{runtime: runtimeSeam, running: running}
 }
 
 func configuredEBusDriverProtocol(cfg ebusgateway.Config) ebusgateway.TransportProtocol {

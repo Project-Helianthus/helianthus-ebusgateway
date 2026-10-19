@@ -44,7 +44,8 @@ The application composition passes the driver's resolved `ConfigBound` in
    to regulator-priority selection.
 2. `LiveSemanticProvider.SetSystem` (or `SetSystemFromCache`) receives that
    snapshot. Its config retains `MinC`, `MaxC`, `Source`, `Reason`, `Profile`
-   and `NarrowedOnly`, plus the internal `ControllerAddress` for compatibility
+   and `NarrowedOnly`, plus the internal `ControllerAddress` and
+   `ControllerRegistryIdentity` for compatibility
    mutation routing; cloning preserves the optional bound by value.
 3. `Builder.SetSemanticProvider` installs the provider. The `system` query
    consumes `SemanticProvider.System()`. Bound field resolvers only project
@@ -74,8 +75,16 @@ unsupported source metadata. Profile bounds require a named profile and
 The driver captures the controller address with its identity and retains it in
 the bound as internal metadata, without adding a public projection field. The
 compatibility path verifies this address against the same registry entry used
-to obtain the routed plane. A missing or mismatched address refuses the write;
-it never falls back to another regulator. This is a
+to obtain the routed plane. The bound also carries the raw registry identity
+and observation generation from a coherent snapshot spanning driver resolution.
+Before native invocation, the
+compatibility path compares this provenance with a current atomic snapshot.
+Missing provenance, an identity change at the same address, or any registry
+re-observation withdraws the bound and refuses the write until republication.
+This deliberately also refuses after unrelated inventory observations. No
+identity or qualification refresh is performed on demand, and this metadata is
+excluded from public projections. A missing or mismatched address refuses the
+write; it never falls back to another regulator. This is a
 requirement for completing the seam, not a claim about today's fallback.
 
 ## Sole regulator-address owner

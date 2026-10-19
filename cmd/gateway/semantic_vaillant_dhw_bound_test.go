@@ -116,7 +116,7 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	want := graphql.ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
+	want := graphql.ConfigBound{ControllerRegistryIdentity: systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15), ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
 	if bound == nil || *bound != want {
 		t.Fatalf("published bound = %+v; want %+v", bound, want)
 	}
@@ -371,5 +371,21 @@ func TestControllerConfigBoundRetainsDiscoveredAddress(t *testing.T) {
 	}
 	if bus.requests != 0 {
 		t.Fatalf("bound resolution issued %d requests", bus.requests)
+	}
+}
+
+func TestControllerConfigBoundRegistryProvenanceRetiresOnObservation(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+	poller, _ := newDHWBoundPoller(t, "BASV2", "", "", bus)
+	bound := poller.controllerConfigBound()
+	if !bound.ControllerRegistryIdentity.Valid || bound.ControllerRegistryIdentity != systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15) {
+		t.Fatal("bound did not retain current registry identity")
+	}
+	poller.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	if bound.ControllerRegistryIdentity == systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15) {
+		t.Fatal("re-observation did not retire published qualification")
+	}
+	if bus.requests != 0 {
+		t.Fatalf("issued %d bus requests", bus.requests)
 	}
 }

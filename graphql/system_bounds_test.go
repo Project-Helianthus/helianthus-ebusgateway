@@ -141,7 +141,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 
 	invoker := &mutationTestInvoker{}
-	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
+	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs, &ConfigBound{ControllerRegistryIdentity: systemconfig.CaptureBoundRegistryIdentity(reg, 0x15), ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
 	if len(invoker.calls) == 0 {
 		t.Fatal("in-bound value 50 never reached the invoker")
 	}

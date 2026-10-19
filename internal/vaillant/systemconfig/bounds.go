@@ -55,10 +55,11 @@ const (
 type ConfigBound struct {
 	// ControllerAddress binds injected write validation to its native target.
 	// Zero means no target was supplied; it cannot authorize compatibility writes.
-	ControllerAddress byte `json:"-"`
-	MinC              float64
-	MaxC              float64
-	Source            string
+	ControllerAddress          byte                  `json:"-"`
+	ControllerRegistryIdentity BoundRegistryIdentity `json:"-"`
+	MinC                       float64
+	MaxC                       float64
+	Source                     string
 	// Reason is empty for a controller-profile bound; for the unmatched policy
 	// it names why no profile bound applies.
 	Reason string
@@ -199,4 +200,38 @@ func EncodeSystemConfigValueForController(fieldName, rawValue string, identity v
 		return nil, ConfigFieldSpec{}, nil, err
 	}
 	return payload, spec, bound, nil
+}
+
+// BoundRegistryIdentity retains internal registry provenance, including the
+// observation generation that fences qualification changes between publications.
+// It is never projected onto public surfaces.
+type BoundRegistryIdentity struct {
+	Valid                                                    bool
+	Address                                                  byte
+	Generation                                               uint64
+	Manufacturer, DeviceID, SoftwareVersion, HardwareVersion string
+	SerialNumber, MacAddress                                 string
+}
+
+// CaptureBoundRegistryIdentity requires a coherent atomic registry snapshot.
+func CaptureBoundRegistryIdentity(reg any, address byte) BoundRegistryIdentity {
+	snapshots, ok := reg.(interface {
+		LookupEntrySnapshot(byte) (registry.DeviceEntrySnapshot, bool)
+		WithObservationGeneration(func(uint64)) bool
+	})
+	if !ok {
+		return BoundRegistryIdentity{}
+	}
+	var before, after uint64
+	if !snapshots.WithObservationGeneration(func(g uint64) { before = g }) {
+		return BoundRegistryIdentity{}
+	}
+	snap, found := snapshots.LookupEntrySnapshot(address)
+	if !snapshots.WithObservationGeneration(func(g uint64) { after = g }) || !found || before != after {
+		return BoundRegistryIdentity{}
+	}
+	return BoundRegistryIdentity{Valid: true, Address: address, Generation: after,
+		Manufacturer: snap.Manufacturer, DeviceID: snap.DeviceID,
+		SoftwareVersion: snap.SoftwareVersion, HardwareVersion: snap.HardwareVersion,
+		SerialNumber: snap.SerialNumber, MacAddress: snap.MacAddress}
 }

@@ -684,7 +684,7 @@ func setDhwTimeProgramResolve(params graphqlgo.ResolveParams, scheduleWriter Sch
 	return result
 }
 
-func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, spec configFieldSpec, instance byte, rawValue string, expectedController ...byte) ConfigMutationResult {
+func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker Invoker, source byte, sourceAdmitted bool, spec configFieldSpec, instance byte, rawValue string, bound ...*ConfigBound) ConfigMutationResult {
 	if registry == nil || invoker == nil {
 		return configMutationError(fmt.Errorf("config mutation missing dependencies: %w", ebuserrors.ErrInvalidPayload))
 	}
@@ -697,7 +697,7 @@ func applyConfigMutation(ctx context.Context, registry InvokeRegistry, invoker I
 		return configMutationError(err)
 	}
 
-	plane, err := resolveControllerSystemPlane(registry, expectedController...)
+	plane, err := resolveControllerSystemPlane(registry, bound...)
 	if err != nil {
 		return configMutationError(err)
 	}
@@ -871,7 +871,7 @@ func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invo
 	if err != nil {
 		return configMutationError(err)
 	}
-	var expectedController []byte
+	var expectedBound []*ConfigBound
 	if fieldName == SystemConfigFieldDHWBivalencePoint {
 		if len(bounds) == 0 || bounds[0] == nil {
 			return configMutationError(fmt.Errorf("%s: missing resolved driver bound: %w", fieldName, ebuserrors.ErrInvalidPayload))
@@ -891,13 +891,13 @@ func applySystemFieldMutation(ctx context.Context, registry InvokeRegistry, invo
 		if bound.ControllerAddress == 0 {
 			return configMutationError(fmt.Errorf("%s: missing bound controller address: %w", fieldName, ebuserrors.ErrInvalidPayload))
 		}
-		expectedController = []byte{bound.ControllerAddress}
+		expectedBound = []*ConfigBound{&bound}
 		spec.min, spec.max = math.Max(spec.min, bound.MinC), math.Min(spec.max, bound.MaxC)
 		if _, encodeErr := encodeConfigValue(spec, rawValue); encodeErr != nil {
 			return configMutationError(fmt.Errorf("%s: %s: %w", fieldName, bound.Describe(), encodeErr))
 		}
 	}
-	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, systemconfig.Instance, rawValue, expectedController...)
+	return applyConfigMutation(ctx, registry, invoker, source, sourceAdmitted, spec, systemconfig.Instance, rawValue, expectedBound...)
 }
 
 // SystemConfigFieldSpecs returns a copy of the system config field specs map.
@@ -984,7 +984,11 @@ func encodeConfigValue(spec configFieldSpec, raw string) ([]byte, error) {
 	return systemconfig.EncodeValue(native, raw)
 }
 
-func resolveControllerSystemPlane(reg InvokeRegistry, expectedController ...byte) (router.Plane, error) {
+func resolveControllerSystemPlane(reg InvokeRegistry, bounds ...*ConfigBound) (router.Plane, error) {
+	var expectedController []byte
+	if len(bounds) != 0 && bounds[0] != nil {
+		expectedController = []byte{bounds[0].ControllerAddress}
+	}
 	entry, err := findControllerEntry(reg, expectedController...)
 	if err != nil {
 		return nil, err
@@ -1006,6 +1010,14 @@ func resolveControllerSystemPlane(reg InvokeRegistry, expectedController ...byte
 	if !ok {
 		return nil, fmt.Errorf("controller system plane not routable: %w", ebuserrors.ErrInvalidPayload)
 	}
+	if len(bounds) != 0 && bounds[0] != nil {
+		bound := bounds[0]
+		current := systemconfig.CaptureBoundRegistryIdentity(reg, bound.ControllerAddress)
+		if !bound.ControllerRegistryIdentity.Valid || !current.Valid || current != bound.ControllerRegistryIdentity {
+			return nil, fmt.Errorf("bound controller registry identity or qualification changed: %w", ebuserrors.ErrInvalidPayload)
+		}
+	}
+
 	return routerPlane, nil
 }
 

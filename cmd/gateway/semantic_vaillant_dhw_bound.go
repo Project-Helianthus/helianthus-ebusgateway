@@ -29,9 +29,20 @@ func (p *vaillantSemanticPoller) controllerB524IdentityAndAddress() (vaillantsys
 }
 
 func (p *vaillantSemanticPoller) controllerConfigBound() graphql.ConfigBound {
+	// Fence the complete resolution, including retained interface qualifiers.
+	var before systemconfig.BoundRegistryIdentity
+	if p != nil {
+		p.mu.Lock()
+		address := p.controller
+		p.mu.Unlock()
+		before = systemconfig.CaptureBoundRegistryIdentity(p.reg, address)
+	}
 	identity, address := p.controllerB524IdentityAndAddress()
 	bound := systemconfig.ResolveDHWBivalenceBound(identity)
 	bound.ControllerAddress = address
+	if p != nil && before.Valid && before == systemconfig.CaptureBoundRegistryIdentity(p.reg, address) {
+		bound.ControllerRegistryIdentity = before
+	}
 	return bound
 }
 

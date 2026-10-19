@@ -149,8 +149,10 @@ func mapThermalCircuitPump(inputs []thermalCircuitPumpInput, evaluation semreg.E
 			member.Freshness = thermalCircuitPumpFreshness(*member.Current, evaluation)
 		}
 		out.Members = append(out.Members, member)
-		description := "no Thermal pump status definition; native codebook and active meaning remain Unknown"
+		description := "unsupported native register; no Thermal pump mapping"
 		switch input.Identity.Selector.Register {
+		case 0x001b:
+			description = "no Thermal pump status definition; native codebook and active meaning remain Unknown"
 		case 0x0024:
 			description = "no Thermal pump operating-hours definition; native total retained without delta or rate"
 		case 0x0025:
@@ -200,7 +202,7 @@ func thermalCircuitPumpFreshness(o thermalCircuitPumpObservation, e semreg.Evalu
 	if re != nil || ne != nil || fe != nil || o.ReceiptMonotonic.ClockEpochID == "" || o.ReceiptMonotonic.ClockEpochID != e.EvaluateMonotonic.ClockEpochID || n < r {
 		return semreg.FreshnessUnknown
 	}
-	if n-r > f {
+	if n-r >= f {
 		return semreg.FreshnessStale
 	}
 	return semreg.FreshnessFresh

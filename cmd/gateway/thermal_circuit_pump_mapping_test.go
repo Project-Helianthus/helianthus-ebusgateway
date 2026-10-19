@@ -107,6 +107,56 @@ func TestThermalCircuitPumpMappingStatusAndCounters(t *testing.T) {
 	}
 }
 
+func TestThermalCircuitPumpMappingFreshnessDeadline(t *testing.T) {
+	for _, register := range []uint16{0x001b, 0x0024, 0x0025} {
+		for _, tc := range []struct {
+			name, receipt string
+			freshFor      semreg.Uint64
+			want          semreg.Freshness
+		}{
+			{"before_deadline", "16", "5", semreg.FreshnessFresh},
+			{"at_deadline", "15", "5", semreg.FreshnessStale},
+			{"after_deadline", "14", "5", semreg.FreshnessStale},
+			{"zero_window", "20", "0", semreg.FreshnessStale},
+		} {
+			t.Run(fmt.Sprintf("%x/%s", register, tc.name), func(t *testing.T) {
+				o := thermalCircuitPumpTestObservation(register, 1, tc.receipt)
+				o.FreshForNS = tc.freshFor
+				got := mapThermalCircuitPump([]thermalCircuitPumpInput{{Identity: o.Identity, Attempts: []thermalCircuitPumpObservation{o}}}, thermalCircuitPumpTestEvaluation())
+				thermalCircuitPumpTestWithheld(t, got, 1)
+				if m := got.Members[0]; m.Current == nil || m.Freshness != tc.want || m.Current.ReceiptMonotonic != o.ReceiptMonotonic {
+					t.Fatalf("freshness deadline or receipt changed: %+v, want %s", m, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestThermalCircuitPumpMappingSourceLossDescription(t *testing.T) {
+	for _, tc := range []struct {
+		register uint16
+		want     string
+	}{
+		{0x001b, "no Thermal pump status definition; native codebook and active meaning remain Unknown"},
+		{0x0024, "no Thermal pump operating-hours definition; native total retained without delta or rate"},
+		{0x0025, "no Thermal pump starts definition; native total retained without delta or rate"},
+		{0x001e, "unsupported native register; no Thermal pump mapping"},
+		{0x0026, "unsupported native register; no Thermal pump mapping"},
+	} {
+		t.Run(fmt.Sprintf("%x", tc.register), func(t *testing.T) {
+			o := thermalCircuitPumpTestObservation(tc.register, 1, "19")
+			got := mapThermalCircuitPump([]thermalCircuitPumpInput{{Identity: o.Identity, Attempts: []thermalCircuitPumpObservation{o}}}, thermalCircuitPumpTestEvaluation())
+			thermalCircuitPumpTestWithheld(t, got, 1)
+			if description := got.SourceLoss[0].Detail.Description; description != tc.want {
+				t.Fatalf("source loss description = %q, want %q", description, tc.want)
+			}
+			if (tc.register == 0x001e || tc.register == 0x0026) && (got.Members[0].Current != nil || got.Members[0].Reason != "unsupported_identity") {
+				t.Fatal("unsupported register admitted")
+			}
+		})
+	}
+}
+
 func TestThermalCircuitPumpMappingIndependentAgesAndFailedSibling(t *testing.T) {
 	status := thermalCircuitPumpTestObservation(0x001b, 0, "10")
 	hours := thermalCircuitPumpTestObservation(0x0024, 0, "11")

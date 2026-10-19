@@ -850,6 +850,13 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		surfaceMu.Lock()
 		ready, pollerStarted, poller := surfaceReady, surfacePollerStarted, semanticPoller
 		surfaceMu.Unlock()
+		// Every admitted generation rebinds the retained poller to its own
+		// initiator and companion.
+		bindPollerSource := func(poller *vaillantSemanticPoller) {
+			resolved := resolveStartupScanSourceConfig(genCfg)
+			poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
+		}
+		bindPollerSource(poller)
 		if ready {
 			return nil
 		}
@@ -862,6 +869,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			surfaceMu.Lock()
 			semanticPoller, surfacePollerStarted = poller, true
 			surfaceMu.Unlock()
+			bindPollerSource(poller)
 		}
 		if !pollerStarted && poller != nil {
 			gatedGraphQLWriter := admittedGraphQLSemanticWriter{
@@ -872,6 +880,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			}
 			lateGraphQLWriter.Bind(gatedGraphQLWriter)
 			lateGraphQLWatchProvider.Bind(newGraphQLWatchSummaryProvider(poller.shadow))
+		}
+		// Bound before any fallible step so a retried generation cannot
+		// leave the deduplicator as its own observer.
+		if !pollerStarted && poller != nil && poller.shadow != nil && deduplicator != nil {
+			// Use the semantic shadow directly here. The broader runtime
+			// observer can fall back to the deduplicator itself, which would
+			// re-enter dedup locks while passive fingerprints are being built.
+			deduplicator.SetWatchObserver(poller.shadow)
 		}
 		if poller != nil && eebusAdapter != nil && !surfaceCaptureDone {
 			captureSource := newLeafPromotionLiveSource(
@@ -888,12 +904,6 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 				eebusAdapter.SetLeafPromotionCapture(captureRuntime)
 			}
 			surfaceCaptureDone = true
-		}
-		if !pollerStarted && poller != nil && poller.shadow != nil && deduplicator != nil {
-			// Use the semantic shadow directly here. The broader runtime
-			// observer can fall back to the deduplicator itself, which would
-			// re-enter dedup locks while passive fingerprints are being built.
-			deduplicator.SetWatchObserver(poller.shadow)
 		}
 		passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
 			observeFirstFlags.PassiveConfigDirectApply() ||
@@ -1212,8 +1222,14 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		// completion signal: it runs on the generation context, and the
 		// generation is not joined before the loop returned.
 		if loopDone := startupScanSignals.done; loopDone != nil {
-			if !scope.GoJoin(func(context.Context) { <-loopDone }) {
+			joinLoop := func() {
 				<-loopDone
+				// The loop has returned, so no further delayed identity
+				// enrichment can be scheduled; wait for the ones it started.
+				postStartupIdentityRetryWG.Wait()
+			}
+			if !scope.GoJoin(func(context.Context) { joinLoop() }) {
+				joinLoop()
 			}
 		}
 		startupStateMu.Lock()

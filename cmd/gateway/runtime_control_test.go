@@ -38,6 +38,8 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
+	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -1152,5 +1154,93 @@ func TestRuntimeControlSurfaceRetriedAfterFailedSetup(t *testing.T) {
 	env.waitFor("next generation scan", func() bool { return env.discovery.Load() == 2 })
 	if got := attaches.Load(); got != 2 {
 		t.Fatalf("attach attempts = %d; want no repeat after success", got)
+	}
+}
+
+// The retained semantic poller is rebound to every admitted generation's
+// initiator and companion instead of keeping the first generation's.
+func TestRuntimeControlRetainedPollerRebindsSourcePerGeneration(t *testing.T) {
+	const sentinel = 0xEE
+	env := newRCtlEnv(t)
+	env.seed(false, nil)
+	poller := &vaillantSemanticPoller{source: sentinel, companion: sentinel}
+	var started ebusgateway.Config
+	process := env.start(rctlProcessOptions{config: func(cfg *ebusgateway.Config) {
+		startVaillantSemanticPollingFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.LiveSemanticProvider, _ *graphql.BroadcastHub, _ <-chan struct{}) *vaillantSemanticPoller {
+			started = cfg
+			return poller
+		}
+	}})
+	process.waitObserved(drivermanager.ObservedRunning)
+	env.waitFor("poller rebound to the admitted generation", func() bool {
+		source, _ := poller.sourceAndCompanion()
+		return source != sentinel
+	})
+	if source, companion := poller.sourceAndCompanion(); source != started.ScanSource || companion != started.StartupCompanionTarget {
+		t.Fatalf("poller source/companion = %#02x/%#02x; want %#02x/%#02x", source, companion, started.ScanSource, started.StartupCompanionTarget)
+	}
+	poller.setSourceAndCompanion(sentinel, sentinel)
+	process.decide(runtimecontrol.MethodRestart)
+	env.waitFor("successor generation rebinds the poller", func() bool {
+		source, _ := poller.sourceAndCompanion()
+		return source != sentinel
+	})
+}
+
+// The deduplicator observer is bound in the pass that creates the poller,
+// before the fallible capture step, so a retried generation cannot leave the
+// deduplicator as its own observer.
+func TestRuntimeControlWatchObserverBoundBeforeCaptureStep(t *testing.T) {
+	raw, err := os.ReadFile("gateway_run_lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	observer := strings.Index(text, "deduplicator.SetWatchObserver(poller.shadow)")
+	capture := strings.Index(text, "newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot")
+	if observer < 0 || capture < 0 || observer > capture {
+		t.Fatalf("watch observer binding at %d must precede capture construction at %d", observer, capture)
+	}
+}
+
+// Delayed identity enrichment launched by the startup scan is joinable, so a
+// generation can wait for it before a successor starts.
+func TestRuntimeControlDelayedIdentityEnrichmentIsJoinable(t *testing.T) {
+	gateway, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gateway.Close() })
+	gateway.Registry.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+
+	originalEnrich, originalDelay := enrichVaillantIdentityFn, postStartupIdentityRetryDelay
+	t.Cleanup(func() {
+		enrichVaillantIdentityFn, postStartupIdentityRetryDelay = originalEnrich, originalDelay
+	})
+	postStartupIdentityRetryDelay = time.Millisecond
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enterOnce sync.Once
+	enrichVaillantIdentityFn = func(context.Context, *ebusgateway.Gateway, ebusgateway.Config) {
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
+	schedulePostStartupIdentityRetry(context.Background(), gateway, nil, ebusgateway.DefaultConfig(), nil)
+	select {
+	case <-entered:
+	case <-time.After(rctlBound):
+		t.Fatal("delayed enrichment did not start")
+	}
+	joined := make(chan struct{})
+	go func() { postStartupIdentityRetryWG.Wait(); close(joined) }()
+	select {
+	case <-joined:
+		t.Fatal("join returned while delayed enrichment was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-joined:
+	case <-time.After(rctlBound):
+		t.Fatal("join did not return after delayed enrichment finished")
 	}
 }

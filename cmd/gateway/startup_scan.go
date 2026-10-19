@@ -952,6 +952,10 @@ func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgate
 	return true
 }
 
+// postStartupIdentityRetryWG tracks delayed identity enrichment goroutines so
+// the generation that launched them can join them before a successor starts.
+var postStartupIdentityRetryWG sync.WaitGroup
+
 func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
 	if gateway == nil || gateway.Registry == nil {
 		return
@@ -969,7 +973,9 @@ func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.
 		attempts = 1
 	}
 
+	postStartupIdentityRetryWG.Add(1)
 	go func() {
+		defer postStartupIdentityRetryWG.Done()
 		wait := time.NewTimer(delay)
 		defer wait.Stop()
 

@@ -295,6 +295,26 @@ func startVaillantSemanticPolling(ctx context.Context, cfg ebusgateway.Config, g
 	return poller
 }
 
+// sourceAndCompanion returns the initiator and companion currently selected
+// for the poller under its state lock.
+func (p *vaillantSemanticPoller) sourceAndCompanion() (byte, byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.source, p.companion
+}
+
+// setSourceAndCompanion rebinds the poller to the initiator and companion
+// admitted by the current generation, so a successor that selects different
+// addresses is not served with the first generation's cached ones.
+func (p *vaillantSemanticPoller) setSourceAndCompanion(source, companion byte) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.source, p.companion = source, companion
+	p.mu.Unlock()
+}
+
 type vaillantSemanticPoller struct {
 	scheduler *ebusgateway.SemanticReadScheduler
 	tasks     *semanticTaskScheduler
@@ -7169,10 +7189,11 @@ func (p *vaillantSemanticPoller) discoverB524RootWithOptions(ctx context.Context
 	// matching the admitted source or companion is dropped regardless
 	// of how it entered the candidate set.
 	skipReservedSourceCompanion := func(addr byte) bool {
-		if addr == p.source {
+		reservedSource, reservedCompanion := p.sourceAndCompanion()
+		if addr == reservedSource {
 			return true
 		}
-		if p.companion != 0 && addr == p.companion {
+		if reservedCompanion != 0 && addr == reservedCompanion {
 			return true
 		}
 		return false
@@ -7316,10 +7337,11 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	// these (skipReservedSourceCompanion); this probe path must
 	// honor the same protection so we don't emit identity traffic
 	// to our own admitted address (or its companion).
-	if addr == p.source {
+	probeSource, probeCompanion := p.sourceAndCompanion()
+	if addr == probeSource {
 		return
 	}
-	if p.companion != 0 && addr == p.companion {
+	if probeCompanion != 0 && addr == probeCompanion {
 		return
 	}
 	// P5 round-6 (Codex P2 follow-up 2026-05-08): resolve the input
@@ -7370,7 +7392,8 @@ func (p *vaillantSemanticPoller) EnqueueAddressIdentityProbe(addr byte) {
 	probeFn := func(ctx context.Context) {
 		probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, p.source, []byte{probeAddr})
+		scanSource, _ := p.sourceAndCompanion()
+		_, err := registryScanDirectedFn(probeCtx, p.bus, p.reg, scanSource, []byte{probeAddr})
 		if err != nil {
 			log.Printf("semantic_address_identity_probe address=0x%02X status=fail err=%v", probeAddr, err)
 			return

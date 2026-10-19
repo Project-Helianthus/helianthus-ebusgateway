@@ -306,7 +306,7 @@ func (runner *ebusGenerationTaskRunner) Fence(key ebusGenerationKey) bool {
 	if run == nil || run.key != key {
 		return false
 	}
-	run.fence()
+	run.fence(context.Background())
 	return true
 }
 
@@ -323,7 +323,7 @@ func (runner *ebusGenerationTaskRunner) Withdraw(ctx context.Context, key ebusGe
 		// joined before its successor was admitted.
 		return ebusGenerationJoin{Key: key, Joined: true}
 	}
-	run.fence()
+	run.fence(ctx)
 	return run.join(ctx)
 }
 
@@ -340,7 +340,7 @@ func (runner *ebusGenerationTaskRunner) Sync(ctx context.Context, key ebusGenera
 	// A snapshot taken before this call may be stale: only withdraw a run
 	// whose own key the lifecycle owner no longer admits right now.
 	if run != nil && (!admitted || run.key != key) && !runner.admitted(run.key) {
-		run.fence()
+		run.fence(ctx)
 		if join = run.join(ctx); !join.Joined {
 			return join, errGenerationTasksNotJoined
 		}
@@ -364,7 +364,7 @@ func (runner *ebusGenerationTaskRunner) Close(ctx context.Context) error {
 	if run == nil {
 		return nil
 	}
-	run.fence()
+	run.fence(ctx)
 	if join := run.join(ctx); !join.Joined {
 		return fmt.Errorf("%w: %v", errGenerationTasksNotJoined, join.Pending)
 	}
@@ -405,12 +405,32 @@ func (run *ebusGenerationRun) liveLocked() bool {
 	return !run.fenced.Load() && run.ctx.Err() == nil && run.runner.admitted(run.key)
 }
 
-func (run *ebusGenerationRun) fence() {
+// fence withdraws the generation's authority. The fenced flag is raised
+// before the gate is taken, so no new effect of the generation lands while
+// the exclusive acquisition waits for in-flight effects. A hook or effect
+// that blocks while holding the shared gate cannot stall the caller past the
+// join bound or ctx: the generation then stays unjoined (DRAINING) and the
+// blocked unit is reported as pending.
+func (run *ebusGenerationRun) fence(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	run.fenced.Store(true)
 	run.cancel()
 	runner := run.runner
-	runner.gate.Lock()
-	run.fenced.Store(true)
-	runner.gate.Unlock()
+	locked := make(chan struct{})
+	go func() {
+		runner.gate.Lock()
+		defer runner.gate.Unlock()
+		close(locked)
+	}()
+	timer := time.NewTimer(runner.joinTimeout)
+	defer timer.Stop()
+	select {
+	case <-locked:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
 	runner.mu.Lock()
 	run.settleLocked()
 	runner.mu.Unlock()

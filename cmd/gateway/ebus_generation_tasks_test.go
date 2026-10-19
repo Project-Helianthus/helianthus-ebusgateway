@@ -1060,13 +1060,14 @@ func TestGenerationTasksDelayedHelperDoesNotRunAfterWithdrawal(t *testing.T) {
 	}
 }
 
-func TestGenerationTasksFenceExcludesInFlightFailureReport(t *testing.T) {
+func TestGenerationTasksBlockedFailureHookDoesNotStallWithdrawal(t *testing.T) {
 	adm := &genAdmission{}
 	inFailure := make(chan struct{})
 	release := make(chan struct{})
 	var reports atomic.Int64
 	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted,
-		Failure: func(ebusGenerationKey, string, error) { reports.Add(1); close(inFailure); <-release },
+		JoinTimeout: 50 * time.Millisecond,
+		Failure:     func(ebusGenerationKey, string, error) { reports.Add(1); close(inFailure); <-release },
 		Tasks: []ebusGenerationTask{
 			{Name: "scan", Run: func(context.Context, *ebusGenerationScope) error { return errors.New("boom") }},
 		}})
@@ -1076,19 +1077,41 @@ func TestGenerationTasksFenceExcludesInFlightFailureReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	genWatch(t, "failure report", inFailure)
-	fenced := make(chan struct{})
-	go func() { runner.Fence(key); close(fenced) }()
+
+	type result struct {
+		join ebusGenerationJoin
+		sync error
+		clos error
+	}
+	done := make(chan result, 1)
+	go func() {
+		var r result
+		r.join = runner.Withdraw(context.Background(), key)
+		adm.withdraw()
+		_, r.sync = runner.Sync(context.Background(), key, false)
+		r.clos = runner.Close(context.Background())
+		done <- r
+	}()
+	var r result
 	select {
-	case <-fenced:
-		t.Fatal("Fence returned while a failure report was in flight")
-	case <-time.After(50 * time.Millisecond):
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog: withdrawal stalled behind a blocked failure hook")
+	}
+	if r.join.Joined || len(r.join.Pending) == 0 {
+		t.Fatalf("blocked hook reported as joined: %+v", r.join)
+	}
+	if !errors.Is(r.sync, errGenerationTasksNotJoined) || !errors.Is(r.clos, errGenerationTasksNotJoined) {
+		t.Fatalf("sync=%v close=%v, want not-joined", r.sync, r.clos)
+	}
+	if st := runner.Status(); st.Phase != ebusGenerationDraining {
+		t.Fatalf("phase = %v, want draining", st.Phase)
 	}
 	close(release)
-	genWatch(t, "fence", fenced)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if join := runner.Withdraw(ctx, key); !join.Joined {
-		t.Fatalf("not joined: %+v", join)
+		t.Fatalf("late return not joined: %+v", join)
 	}
 	if got := reports.Load(); got != 1 {
 		t.Fatalf("reports = %d, want 1", got)

@@ -38,6 +38,8 @@ type dhwMeasuredCodec struct {
 	Evidence         semreg.EvidenceRef
 }
 
+// Value extraction and Correlated are trusted native-owner assertions; this
+// seam requires raw evidence but does not verify framing or byte consistency.
 type dhwMeasuredObservation struct {
 	Identity                    dhwMeasuredIdentity
 	RawRequest, RawReply, Value []byte
@@ -125,6 +127,9 @@ func dhwMeasuredValue(key dhwMeasuredIdentity, codec dhwMeasuredCodec, o *dhwMea
 	}
 	if !o.Correlated || o.Outcome != "ok" {
 		return 0, "uncorrelated or unsuccessful reply"
+	}
+	if len(o.RawRequest) == 0 || len(o.RawReply) == 0 {
+		return 0, "missing raw request or reply"
 	}
 	switch o.EvidenceStatus {
 	case "Proven", "Hypothesis", "Unknown":

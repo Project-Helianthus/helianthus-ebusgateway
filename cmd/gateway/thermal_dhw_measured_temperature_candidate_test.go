@@ -140,6 +140,65 @@ func TestI32EveryIdentityLeaf(t *testing.T) {
 	})
 }
 
+func TestI32RawEvidenceAndStatusAdmission(t *testing.T) {
+	for _, slot := range []string{"measurement", "presence"} {
+		for _, mode := range []string{"attempt", "history", "retain"} {
+			for _, tc := range []struct {
+				name string
+				loss string
+				edit func(*dhwMeasuredObservation)
+			}{
+				{"request_nil", "missing raw request or reply", func(o *dhwMeasuredObservation) { o.RawRequest = nil }},
+				{"request_empty", "missing raw request or reply", func(o *dhwMeasuredObservation) { o.RawRequest = []byte{} }},
+				{"reply_nil", "missing raw request or reply", func(o *dhwMeasuredObservation) { o.RawReply = nil }},
+				{"reply_empty", "missing raw request or reply", func(o *dhwMeasuredObservation) { o.RawReply = []byte{} }},
+				{"status_invalid", "unknown evidence status", func(o *dhwMeasuredObservation) { o.EvidenceStatus = "invalid" }},
+			} {
+				t.Run(slot+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					in := i32Input()
+					component := &in.Measurement
+					if slot == "presence" {
+						component = &in.Presence
+					}
+					o := component.Attempt
+					if mode != "attempt" {
+						component.Previous = dhwMeasuredClone(o)
+						if mode == "history" {
+							o = component.Previous
+							component.Attempt = nil
+						} else {
+							component.Attempt.Receipt.Nanoseconds = "11"
+						}
+					}
+					tc.edit(o)
+					out := mapDHWMeasuredTemperature(in)
+					i32AssertWithheld(t, out)
+					c := out.Measurement
+					if slot == "presence" {
+						c = out.Presence
+					}
+					if out.Celsius != nil {
+						t.Fatal("invalid observation admitted")
+					}
+					if mode == "retain" {
+						if !reflect.DeepEqual(c.Selected, component.Previous) || c.LastGoodValue == nil {
+							t.Fatal("invalid attempt replaced valid history")
+						}
+					} else if c.Selected != nil || c.LastGoodValue != nil {
+						t.Fatal("invalid observation selected as last good")
+					}
+					if mode != "history" && c.AttemptLoss != tc.loss {
+						t.Fatalf("loss %q want %q", c.AttemptLoss, tc.loss)
+					}
+					if !reflect.DeepEqual(c.Attempt, dhwMeasuredClone(component.Attempt)) || !reflect.DeepEqual(c.History, dhwMeasuredClone(component.Previous)) {
+						t.Fatal("rejected evidence lost from diagnostics")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestI32EveryEvidenceLeaf(t *testing.T) {
 	base := i32Input()
 	for i := 0; i < reflect.TypeOf(base.Measurement.Attempt.Evidence).NumField(); i++ {

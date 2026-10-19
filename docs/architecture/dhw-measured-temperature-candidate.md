@@ -13,8 +13,13 @@ nonzero means present under its supplied qualification, zero means absent;
 missing, malformed, foreign, stale, or unqualified context stays unavailable.
 The mapper supports explicitly supplied little-endian f32 and UIN codecs only.
 It does not inspect framing itself: the native owner must supply extracted
-value bytes, original request/reply evidence, and exact correlation. Raw and
-normalized identities must already agree; plus-one reply normalization is
+value bytes, original request/reply evidence, and exact correlation. Both raw
+fields must be non-empty for measurement and presence, including selected history.
+`Value` extraction and `Correlated` are trusted caller input: this seam does not
+verify that `Value` matches `RawReply`, or that `RawRequest` encodes the selector.
+The native owner must verify these relationships before invoking the mapper;
+non-empty raw evidence alone does not establish byte consistency or correlation.
+Raw and normalized identities must already agree; plus-one reply normalization is
 unsupported here. OP06, other instances, cylinder readings, targets, and
 charging-state inference cannot substitute for the measurement.
 
@@ -88,7 +93,8 @@ record or inventing an output binding.
 ## Acceptance boundary
 
 Focused `TestI32` vectors cover exact zero, widths, finite/profile/pack bounds,
-independently varied identity and evidence leaves, supplied presence, typed time,
+independently varied identity and evidence leaves, missing raw request/reply,
+invalid evidence status, supplied presence, typed time,
 stale boundaries, receipt ordering, recovery, permutation, and detached history.
 Manual documentation review checks sources, claims, transitions, losses, examples,
 and public main-branch links. No token/readability test establishes this contract.

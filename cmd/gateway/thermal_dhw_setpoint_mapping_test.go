@@ -26,7 +26,7 @@ func thermalDhwTestQuantity(integer int) *semreg.Quantity {
 
 func thermalDhwTestFixture(service string, integer int) (thermalDhwObservation, thermalDhwBinding, semreg.EvaluationContext) {
 	digest := sha256.Sum256([]byte("synthetic DHW qualification control " + service))
-	evidence := []semreg.EvidenceRef{{Owner: "test.dhw", Kind: "test.synthetic", Digest: semreg.Digest(hex.EncodeToString(digest[:])),
+	evidence := []semreg.EvidenceRef{{Owner: "test.dhw", Kind: "test.synthetic", Digest: semreg.Digest("sha256:" + hex.EncodeToString(digest[:])),
 		Contract: "test.synthetic/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}}
 	id := thermalDhwIdentity{Asset: "asset:synthetic", Service: semreg.ServiceInstanceID("dhw:" + service),
 		Source: semreg.SourceID("source:" + service), SourceEpoch: semreg.SourceEpochID("epoch:" + service), DriverGeneration: "2",
@@ -187,7 +187,8 @@ func TestThermalDhwSetpointMappingIndependentAxes(t *testing.T) {
 		{"serviceDefinition", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Service.Definition.ID = "thermal.service.zone" }, "service does not match source ownership"},
 		{"missingMinimum", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Domain.Minimum = nil }, "value outside or missing qualified native domain"},
 		{"missingMaximum", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Domain.Maximum = nil }, "value outside or missing qualified native domain"},
-		{"wrongBoundUnit", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Domain.Maximum.Unit = "unit.watt" }, "value outside or missing qualified native domain"},
+		{"wrongMinimumUnit", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Domain.Minimum.Unit = "unit.watt" }, "value outside or missing qualified native domain"},
+		{"wrongMaximumUnit", func(_ *thermalDhwObservation, b *thermalDhwBinding) { b.Domain.Maximum.Unit = "unit.watt" }, "value outside or missing qualified native domain"},
 		{"missingTargetMax65", func(o *thermalDhwObservation, b *thermalDhwBinding) {
 			o.Value = nil
 			b.Domain.Maximum = thermalDhwTestQuantity(65)
@@ -294,6 +295,10 @@ func TestThermalDhwSetpointMappingExactDecimal(t *testing.T) {
 func TestThermalDhwSetpointMappingStaleMirrorAndEvaluation(t *testing.T) {
 	controller, binding, evaluation := thermalDhwTestFixture("alpha", 50)
 	mirror, _, _ := thermalDhwTestFixture("alpha", 55)
+	controller.Times.SourceAt = &semreg.TimePoint{UnixNanoseconds: "90", ClockID: "clock.synthetic", UncertaintyNS: "1"}
+	controller.Times.PhenomenonAt = &semreg.TimePoint{UnixNanoseconds: "80", ClockID: "clock.synthetic", UncertaintyNS: "2"}
+	mirror.Times.SourceAt = &semreg.TimePoint{UnixNanoseconds: "85", ClockID: "clock.synthetic", UncertaintyNS: "3"}
+	mirror.Times.PhenomenonAt = &semreg.TimePoint{UnixNanoseconds: "75", ClockID: "clock.synthetic", UncertaintyNS: "4"}
 	mirror.Presentation, mirror.Quality.Freshness = "controller_mirror", semreg.FreshnessStale
 	later := evaluation
 	later.EvaluatedAt.UnixNanoseconds, later.EvaluateMonotonic.Nanoseconds = "300", "300"
@@ -303,6 +308,13 @@ func TestThermalDhwSetpointMappingStaleMirrorAndEvaluation(t *testing.T) {
 			t.Fatal("mirror evidence lost")
 		}
 		for _, source := range result.Sources {
+			original := controller
+			if source.Observation.Presentation == "controller_mirror" {
+				original = mirror
+			}
+			if !reflect.DeepEqual(source.Observation.Times.SourceAt, original.Times.SourceAt) || !reflect.DeepEqual(source.Observation.Times.PhenomenonAt, original.Times.PhenomenonAt) {
+				t.Fatal("retained source or phenomenon timestamp refreshed")
+			}
 			if source.Eligible != (source.Observation.Presentation == "controller") || source.Observation.Times.ReceivedAt.UnixNanoseconds != "100" || source.Observation.Times.ReceiptMonotonic.Nanoseconds != "100" || source.Observation.Times.EvaluatedAt != context.EvaluatedAt || source.Observation.Times.EvaluateMonotonic != context.EvaluateMonotonic {
 				t.Fatal("mirror renewed receipt or bypassed freshness")
 			}
@@ -312,10 +324,33 @@ func TestThermalDhwSetpointMappingStaleMirrorAndEvaluation(t *testing.T) {
 
 func TestThermalDhwSetpointMappingAmbiguityAndAbsence(t *testing.T) {
 	observation, binding, evaluation := thermalDhwTestFixture("alpha", 50)
-	ambiguous := mapThermalDhwSetpoints([]thermalDhwObservation{observation}, []thermalDhwBinding{binding, binding}, evaluation)
+	_, other, _ := thermalDhwTestFixture("alpha", 50)
+	other.Evidence = []semreg.EvidenceRef{other.Evidence[0]}
+	other.Domain.Minimum = thermalDhwTestQuantity(40)
+	other.Domain.Maximum = thermalDhwTestQuantity(65)
+	other.Evidence[0].Kind = "test.other.binding"
+	other.Domain.Evidence[0].Kind = "test.other.domain"
+	ambiguous := mapThermalDhwSetpoints([]thermalDhwObservation{observation}, []thermalDhwBinding{binding, other}, evaluation)
 	source := thermalDhwTestSource(t, ambiguous, observation.Identity)
 	if source.Eligible || !thermalDhwTestLoss(source, "missing or ambiguous independently qualified binding") {
 		t.Fatal("ambiguous binding admitted")
+	}
+	if len(ambiguous.Sources) != 3 || source.Binding != nil || ambiguous.Disposition.Outcome != projection.ProjectionWithheld {
+		t.Fatal("ambiguous records collapsed or admitted")
+	}
+	for _, expected := range []thermalDhwBinding{binding, other} {
+		count := 0
+		for _, retained := range ambiguous.Sources {
+			if reflect.DeepEqual(retained.Binding, &expected) {
+				count++
+				if retained.Observation != nil || retained.Eligible || retained.Identity != expected.Identity {
+					t.Fatal("ambiguous binding synthesized an observation or admission")
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("ambiguous binding context retained %d times, want once: %+v", count, expected)
+		}
 	}
 	binding.Domain.Maximum = thermalDhwTestQuantity(65)
 	absent := mapThermalDhwSetpoints(nil, []thermalDhwBinding{binding}, evaluation)
@@ -371,5 +406,162 @@ func TestThermalDhwSetpointMappingPackIdentityBlocker(t *testing.T) {
 	key.Dimensions = append(key.Dimensions, semreg.Dimension{ID: "thermal.dimension.dhw", Value: semreg.Value{Kind: semreg.ValueText, Text: &service}})
 	if thermal.New().ValidateFact(key, value) == nil {
 		t.Fatal("pack changed; source-bound cutover requires review")
+	}
+}
+
+func TestI40EvidenceReferences(t *testing.T) {
+	for _, location := range []string{"binding", "domain", "observation"} {
+		for _, field := range []string{"zero", "owner", "kind", "digest", "contract", "access", "redaction"} {
+			for _, position := range []string{"first", "last"} {
+				t.Run(location+"/"+field+"/"+position, func(t *testing.T) {
+					o, b, evaluation := thermalDhwTestFixture("alpha", 50)
+					if o.Evidence[0].Validate() != nil {
+						t.Fatal("valid reference control rejected")
+					}
+					invalid := o.Evidence[0]
+					switch field {
+					case "zero":
+						invalid = semreg.EvidenceRef{}
+					case "owner":
+						invalid.Owner = "\n"
+					case "kind":
+						invalid.Kind = "\n"
+					case "digest":
+						invalid.Digest = "invalid"
+					case "contract":
+						invalid.Contract = "invalid"
+					case "access":
+						invalid.Access = "invalid"
+					case "redaction":
+						invalid.Redaction = "invalid"
+					}
+					if invalid.Validate() == nil {
+						t.Fatal("invalid evidence control unexpectedly valid")
+					}
+					refs := []semreg.EvidenceRef{invalid, o.Evidence[0]}
+					if position == "last" {
+						refs[0], refs[1] = refs[1], refs[0]
+					}
+					switch location {
+					case "binding":
+						b.Evidence = refs
+					case "domain":
+						b.Domain.Evidence = refs
+					case "observation":
+						o.Evidence = refs
+					}
+					source := thermalDhwTestSource(t, mapThermalDhwSetpoints([]thermalDhwObservation{o}, []thermalDhwBinding{b}, evaluation), o.Identity)
+					if source.Eligible || !reflect.DeepEqual(source.Binding, &b) || !reflect.DeepEqual(source.Observation.Evidence, o.Evidence) {
+						t.Fatal("invalid reference admitted or evidence discarded")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestI40ObservedAssertion(t *testing.T) {
+	for _, assertion := range []semreg.AssertionKind{semreg.AssertionObserved, semreg.AssertionInferred, semreg.AssertionKind("unknown"), semreg.AssertionKind("")} {
+		t.Run(string(assertion), func(t *testing.T) {
+			o, b, evaluation := thermalDhwTestFixture("alpha", 50)
+			o.Quality.Assertion = assertion
+			source := thermalDhwTestSource(t, mapThermalDhwSetpoints([]thermalDhwObservation{o}, []thermalDhwBinding{b}, evaluation), o.Identity)
+			if source.Eligible != (assertion == semreg.AssertionObserved) || source.Observation.Quality.Assertion != assertion {
+				t.Fatal("non-observed assertion admitted or relabelled")
+			}
+		})
+	}
+}
+
+func TestI40IdenticalMalformedIdentity(t *testing.T) {
+	for _, field := range []string{"Asset", "Service", "Source", "SourceEpoch", "DriverGeneration", "Binding", "BindingRevision", "AssociationRevision"} {
+		for _, malformed := range []string{"", "\n", "abc\n"} {
+			t.Run(field+"/"+strconv.Quote(malformed), func(t *testing.T) {
+				o, b, evaluation := thermalDhwTestFixture("alpha", 50)
+				if !thermalDhwValidIdentity(o.Identity) {
+					t.Fatal("valid identity control rejected")
+				}
+				reflect.ValueOf(&o.Identity).Elem().FieldByName(field).SetString(malformed)
+				b.Identity = o.Identity
+				b.Service.AssetID, b.Service.InstanceID = o.Identity.Asset, o.Identity.Service
+				b.Service.SourceEpochID, b.Service.BindingID = o.Identity.SourceEpoch, o.Identity.Binding
+				b.Service.DriverGeneration = o.Identity.DriverGeneration
+				// Exercise each typed guard independently of overlapping service validation.
+				if thermalDhwValidIdentity(o.Identity) {
+					t.Fatal("malformed identity accepted by typed guard")
+				}
+				source := thermalDhwTestSource(t, mapThermalDhwSetpoints([]thermalDhwObservation{o}, []thermalDhwBinding{b}, evaluation), o.Identity)
+				if source.Eligible || source.Binding == nil || !thermalDhwTestLoss(source, "service does not match source ownership") {
+					t.Fatal("identical malformed ownership admitted or lost")
+				}
+			})
+		}
+	}
+	for _, field := range []string{"DriverGeneration", "BindingRevision", "AssociationRevision"} {
+		t.Run(field+"/nonnumeric", func(t *testing.T) {
+			o, b, evaluation := thermalDhwTestFixture("alpha", 50)
+			reflect.ValueOf(&o.Identity).Elem().FieldByName(field).SetString("abc")
+			b.Identity = o.Identity
+			b.Service.DriverGeneration = o.Identity.DriverGeneration
+			if thermalDhwValidIdentity(o.Identity) || thermalDhwTestSource(t, mapThermalDhwSetpoints([]thermalDhwObservation{o}, []thermalDhwBinding{b}, evaluation), o.Identity).Eligible {
+				t.Fatal("identical nonnumeric revision admitted")
+			}
+		})
+	}
+}
+
+func TestI40FullyPopulatedDetach(t *testing.T) {
+	flag, text := false, "synthetic text"
+	symbol := semreg.Symbol{Namespace: "test.symbol", Token: "synthetic", Known: true}
+	point := semreg.TimePoint{UnixNanoseconds: "80", ClockID: "clock.synthetic", UncertaintyNS: "1"}
+	values := []semreg.Value{
+		{Kind: semreg.ValueQuantity, Quantity: thermalDhwTestQuantity(50)},
+		{Kind: semreg.ValueBoolean, Boolean: &flag},
+		{Kind: semreg.ValueText, Text: &text},
+		{Kind: semreg.ValueSymbol, Symbol: &symbol},
+		{Kind: semreg.ValueSymbols, Symbols: []semreg.Symbol{symbol}},
+		{Kind: semreg.ValueTime, Time: &point},
+	}
+	for _, value := range values {
+		t.Run(string(value.Kind), func(t *testing.T) {
+			o, b, evaluation := thermalDhwTestFixture("alpha", 50)
+			o.Value = &value
+			o.Quality.Promotion = semreg.PromotionPromoted
+			o.Quality.Reasons = []semreg.DefinitionID{"test.reason"}
+			o.Times.PhenomenonAt = &semreg.TimePoint{UnixNanoseconds: "70", ClockID: "clock.synthetic", UncertaintyNS: "2"}
+			o.Times.SourceAt = &point
+			o.Times.EvaluatedAt, o.Times.EvaluateMonotonic = evaluation.EvaluatedAt, evaluation.EvaluateMonotonic
+			source := thermalDhwSourceResult{Identity: o.Identity, Observation: &o, Binding: &b, Eligible: true,
+				Loss: []projection.LossDetail{{Kind: projection.LossIdentity, SourceItems: []semreg.DefinitionID{thermalDhwTarget}, Description: "synthetic diagnostic", Reversible: true}}}
+			detached := thermalDhwDetached(source)
+			if !reflect.DeepEqual(detached, source) {
+				t.Fatalf("fully populated source lost fields: got %+v, want %+v", detached, source)
+			}
+			thermalDhwTestNoAliases(t, reflect.ValueOf(source), reflect.ValueOf(detached), "source")
+		})
+	}
+}
+
+func thermalDhwTestNoAliases(t *testing.T, input, output reflect.Value, path string) {
+	t.Helper()
+	switch input.Kind() {
+	case reflect.Pointer, reflect.Slice:
+		if input.IsNil() {
+			return
+		}
+		if input.Pointer() == output.Pointer() && (input.Kind() == reflect.Pointer || input.Len() > 0) {
+			t.Fatalf("detached nested storage aliases input at %s", path)
+		}
+		if input.Kind() == reflect.Pointer {
+			thermalDhwTestNoAliases(t, input.Elem(), output.Elem(), path+"*")
+		} else {
+			for i := 0; i < input.Len(); i++ {
+				thermalDhwTestNoAliases(t, input.Index(i), output.Index(i), path+"["+strconv.Itoa(i)+"]")
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < input.NumField(); i++ {
+			thermalDhwTestNoAliases(t, input.Field(i), output.Field(i), path+"."+input.Type().Field(i).Name)
+		}
 	}
 }

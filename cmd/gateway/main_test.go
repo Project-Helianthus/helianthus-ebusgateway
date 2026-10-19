@@ -721,67 +721,121 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 	origStartDiscoveryScanLoopFn := startDiscoveryScanLoopFn
 	origStartVaillantSemanticPollingFn := startVaillantSemanticPollingFn
 	origStartHTTPServerFn := startHTTPServerFn
-	t.Cleanup(func() {
+	ctx, cancelRun := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	observed := make(chan struct{})
+	httpReady := make(chan struct{})
+	var runErr error
+
+	cancel := func() {
+		select {
+		case <-observed:
+		default:
+			t.Error("event order: cancellation before startup config was observed")
+		}
+		select {
+		case <-httpReady:
+		default:
+			t.Error("event order: cancellation before HTTP readiness")
+		}
+		cancelRun()
+	}
+	restoreHooks := func() {
+		select {
+		case <-done:
+		default:
+			t.Error("event order: hook restoration before run completed; hooks not restored")
+			return
+		}
 		wireObserveFirstObserversFn = origWireObserveFirstObserversFn
 		startDiscoveryScanLoopFn = origStartDiscoveryScanLoopFn
 		startVaillantSemanticPollingFn = origStartVaillantSemanticPollingFn
 		startHTTPServerFn = origStartHTTPServerFn
+	}
+	t.Cleanup(func() {
+		// Assertion failures also cancel and join before restoring shared hooks.
+		cancelRun()
+		select {
+		case <-done:
+		case <-issue1135HangGuard(t):
+			t.Fatal("run() did not exit after context cancellation; hooks not restored")
+		}
+		restoreHooks()
+		if runErr != nil {
+			t.Errorf("run() error = %v", runErr)
+		}
 	})
 
-	startupTargets := make(chan []byte, 1)
+	type startupCapture struct {
+		source  byte
+		auto    bool
+		targets []byte
+	}
+	startupCfg := make(chan startupCapture, 1)
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
 	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
-		startupTargets <- append([]byte(nil), cfg.StartupProbeTargets...)
+		startupCfg <- startupCapture{
+			source:  cfg.ScanSource,
+			auto:    cfg.ScanSourceAuto,
+			targets: append([]byte(nil), cfg.StartupProbeTargets...),
+		}
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
 		return nil
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
+		close(httpReady)
 		return nil, nil, nil
 	}
 
 	cfg := ebusgateway.DefaultConfig()
 	cfg.Transport = transport.NewLoopback()
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
-	cfg.TransportConfig.Network = "tcp"
-	cfg.TransportConfig.Address = "192.0.2.10:9999"
+	// Disable release discovery; transport and HTTP remain in memory.
+	cfg.HTTPAddr = ""
+	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
 	cfg.BroadcastListen = false
 	cfg.ScanOnStart = true
 	cfg.ScanSource = 0x00
 	cfg.ScanSourceAuto = true
 
-	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg)
+		defer close(done)
+		runErr = run(ctx, cfg)
 	}()
 
 	select {
-	case got := <-startupTargets:
-		// Structural fallback: passive warmup on the direct adapter
-		// observed no probable targets in the test harness, so the
-		// startup probe seeds the bounded Vaillant structural set.
-		want := []byte{0x08, 0x15, 0x26}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("startup probe targets = % X; want % X", got, want)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("startup scan config was not observed")
+	case <-httpReady:
+	case <-done:
+		t.Fatalf("run() exited before HTTP prerequisite was ready: %v", runErr)
+	case <-issue1135HangGuard(t):
+		t.Fatal("HTTP prerequisite was not ready")
 	}
 
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("run() error = %v", err)
+	case got := <-startupCfg:
+		close(observed)
+		if got.source != 0x7F {
+			t.Errorf("startup source = 0x%02X; want default-selected source 0x7F", got.source)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("run() did not exit after context cancellation")
+		if got.auto {
+			t.Error("startup source remained auto; want explicit default-selected source")
+		}
+		// No probable targets were observed: retain the exact structural fallback.
+		wantTargets := []byte{0x08, 0x15, 0x26}
+		if !reflect.DeepEqual(got.targets, wantTargets) {
+			t.Errorf("startup probe targets = % X; want % X", got.targets, wantTargets)
+		}
+	case <-done:
+		t.Fatalf("run() exited before startup scan config was observed: %v", runErr)
+	case <-issue1135HangGuard(t):
+		t.Fatal("startup scan config was not observed")
 	}
+
+	cancel()
 }
 
 // issue1135HangGuard bounds a broken barrier without making elapsed time an

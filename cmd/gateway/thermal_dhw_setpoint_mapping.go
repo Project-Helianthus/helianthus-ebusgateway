@@ -95,7 +95,6 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 		for i := range bindings {
 			if observation.Identity == bindings[i].Identity {
 				index, matches = i, matches+1
-				seen[i] = true
 			}
 		}
 		if matches != 1 {
@@ -103,10 +102,11 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 			result.Sources = append(result.Sources, source)
 			continue
 		}
+		seen[index] = true
 		binding := bindings[index]
 		source.Binding = &binding
 		id, service, selector := binding.Identity, binding.Service, observation.Identity.Selector
-		if id.Asset == "" || id.Service == "" || id.Source == "" || id.SourceEpoch == "" || id.DriverGeneration == "" || id.Binding == "" || id.BindingRevision == "" || id.AssociationRevision == "" ||
+		if !thermalDhwValidIdentity(id) ||
 			service.AssetID != id.Asset || service.InstanceID != id.Service || service.BindingID != id.Binding || service.SourceEpochID != id.SourceEpoch || service.DriverGeneration != id.DriverGeneration ||
 			service.Definition.ID != "thermal.service.dhw" || validator.ValidateService(service) != nil {
 			thermalDhwLoss(&source, projection.LossIdentity, "service does not match source ownership")
@@ -117,11 +117,11 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 			thermalDhwLoss(&source, projection.LossProvenance, "not the controller requested-target source; preserve as native context")
 		}
 		if binding.Qualification != semreg.QualificationQualified || service.Qualification != semreg.QualificationQualified ||
-			binding.Domain.Qualification != semreg.QualificationQualified || len(binding.Evidence) == 0 || len(binding.Domain.Evidence) == 0 ||
+			binding.Domain.Qualification != semreg.QualificationQualified || !thermalDhwValidEvidence(binding.Evidence) || !thermalDhwValidEvidence(binding.Domain.Evidence) ||
 			observation.Quality.Qualification != semreg.QualificationQualified || service.Availability != semreg.AvailabilityAvailable {
 			thermalDhwLoss(&source, projection.LossPolicy, "source, service and native domain require independent qualification")
 		}
-		if observation.Quality.Validity != semreg.ValidityGood || observation.Quality.Availability != semreg.AvailabilityAvailable || len(observation.RawReply) == 0 || len(observation.Evidence) == 0 {
+		if observation.Quality.Assertion != semreg.AssertionObserved || observation.Quality.Validity != semreg.ValidityGood || observation.Quality.Availability != semreg.AvailabilityAvailable || len(observation.RawReply) == 0 || !thermalDhwValidEvidence(observation.Evidence) {
 			thermalDhwLoss(&source, projection.LossProvenance, "missing or invalid native observation")
 		}
 		if _, err := observation.Times.ElapsedMonotonicNS(); err != nil || observation.Quality.Freshness != semreg.FreshnessFresh {
@@ -152,7 +152,7 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 	for i, binding := range bindings {
 		if !seen[i] {
 			source := thermalDhwSourceResult{Identity: binding.Identity, Binding: &binding, Loss: []projection.LossDetail{}}
-			thermalDhwLoss(&source, projection.LossProvenance, "target absent; retain prior same-owner history separately without renewing receipt")
+			thermalDhwLoss(&source, projection.LossProvenance, "target absent or ambiguously bound; retain prior same-owner history separately without renewing receipt")
 			result.Sources = append(result.Sources, source)
 		}
 	}
@@ -163,6 +163,25 @@ func mapThermalDhwSetpoints(observations []thermalDhwObservation, bindings []the
 	})
 	// Repeated observations and mirrors must not alias each other either.
 	return thermalDhwDetached(result)
+}
+
+func thermalDhwValidIdentity(id thermalDhwIdentity) bool {
+	return id.Asset.Validate() == nil && id.Service.Validate() == nil &&
+		id.Source.Validate() == nil && id.SourceEpoch.Validate() == nil &&
+		id.DriverGeneration.Validate() == nil && id.Binding.Validate() == nil &&
+		id.BindingRevision.Validate() == nil && id.AssociationRevision.Validate() == nil
+}
+
+func thermalDhwValidEvidence(evidence []semreg.EvidenceRef) bool {
+	if len(evidence) == 0 {
+		return false
+	}
+	for _, reference := range evidence {
+		if reference.Validate() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func thermalDhwLoss(source *thermalDhwSourceResult, kind projection.LossKind, description string) {

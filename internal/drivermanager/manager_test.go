@@ -1097,3 +1097,473 @@ func requireObservedState(t *testing.T, manager *Manager, id string, want Observ
 	t.Fatalf("driver %s state = %s, want %s; snapshot=%#v", id, snapshot.ObservedState, want, snapshot)
 	return Snapshot{}
 }
+
+// --- S4 lifecycle hooks: admission hold and classified close ---
+
+type hookRuntime struct {
+	mu          sync.Mutex
+	generation  uint64
+	revision    uint64
+	open        bool
+	startErrs   []error
+	stopErrs    []error
+	quarantined bool
+	starts      int
+	replaces    int
+	stops       int
+}
+
+func (runtime *hookRuntime) construct() (uint64, error) {
+	if len(runtime.startErrs) > 0 {
+		err := runtime.startErrs[0]
+		runtime.startErrs = runtime.startErrs[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
+	runtime.generation++
+	runtime.revision++
+	runtime.open = true
+	return runtime.generation, nil
+}
+
+func (runtime *hookRuntime) Start(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.starts++
+	return runtime.construct()
+}
+
+func (runtime *hookRuntime) Replace(context.Context) (uint64, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.replaces++
+	runtime.open = false
+	return runtime.construct()
+}
+
+func (runtime *hookRuntime) Stop(context.Context) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.stops++
+	var err error
+	if len(runtime.stopErrs) > 0 {
+		err = runtime.stopErrs[0]
+		runtime.stopErrs = runtime.stopErrs[1:]
+	}
+	if errors.Is(err, ErrSafetyQuarantined) {
+		runtime.quarantined = true
+		return err
+	}
+	runtime.open = false
+	runtime.revision++
+	return err
+}
+
+func (runtime *hookRuntime) Generation() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.generation
+}
+
+func (runtime *hookRuntime) Revision() uint64 {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.revision
+}
+
+func (runtime *hookRuntime) SafetyQuarantined() bool {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.quarantined
+}
+
+func (runtime *hookRuntime) Admit(context.Context) (*Admission, error) {
+	runtime.mu.Lock()
+	generation := runtime.generation
+	runtime.mu.Unlock()
+	return &Admission{Correlation: Correlation{Generation: generation}, Invoke: func(fn func(any) error) error { return fn(runtime) }, Release: func() error { return nil }}, nil
+}
+
+func (runtime *hookRuntime) counts() (starts, replaces, stops int) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.starts, runtime.replaces, runtime.stops
+}
+
+type closeLog struct {
+	mu      sync.Mutex
+	reports []CloseReport
+}
+
+func (log *closeLog) add(report CloseReport) {
+	log.mu.Lock()
+	log.reports = append(log.reports, report)
+	log.mu.Unlock()
+}
+
+func (log *closeLog) list() []CloseReport {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return append([]CloseReport(nil), log.reports...)
+}
+
+func newHookManager(t *testing.T, runtime Runtime, budget int, hooks LifecycleHooks) *Manager {
+	t.Helper()
+	manager, err := New(Config{Drivers: []DriverConfig{{
+		ID: "ebus.primary", Enabled: true, Runtime: runtime,
+		Capabilities: []Capability{CapabilityRead, CapabilityWrite},
+		ClassifyError: func(error) Failure {
+			return Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: RetryPolicy{Budget: budget, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, JitterRatio: -1},
+		Hooks: hooks,
+	}}, LateRetireTimeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Shutdown(context.Background()) })
+	return manager
+}
+
+// The hold keeps admission closed while the hook runs with no manager lock:
+// STARTING, no effective capability and Invoke refused; snapshot and watch
+// reads stay responsive. RUNNING and the capabilities then publish in one
+// transition.
+func TestLifecycleHookHoldAdmissionPublishesRunningAndCapabilitiesTogether(t *testing.T) {
+	runtime := &hookRuntime{}
+	entered := make(chan AdmissionHold, 1)
+	release := make(chan struct{})
+	manager := newHookManager(t, runtime, 1, LifecycleHooks{HoldAdmission: func(ctx context.Context, hold AdmissionHold) error {
+		entered <- hold
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	}})
+	if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	var hold AdmissionHold
+	select {
+	case hold = <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("admission hold did not run")
+	}
+	if hold.DriverID != "ebus.primary" || hold.Correlation.Generation != 1 || hold.Correlation.Operation == 0 || hold.Previous != 0 || hold.Replacement || hold.Retry {
+		t.Fatalf("hold = %#v", hold)
+	}
+	readDone := make(chan Snapshot, 1)
+	go func() {
+		snapshot, _, _ := manager.Watch("ebus.primary")
+		readDone <- snapshot
+	}()
+	var held Snapshot
+	select {
+	case held = <-readDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Watch blocked while the admission hold ran: a manager lock is held")
+	}
+	if held.ObservedState != ObservedStarting || len(held.EffectiveCapabilities) != 0 || held.Generation != 0 {
+		t.Fatalf("snapshot during hold = %#v, want STARTING without capability or generation", held)
+	}
+	if _, err := manager.Invoke(context.Background(), "ebus.primary", CapabilityRead, func(any) error { return nil }); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Invoke during hold error = %v, want ErrUnavailable", err)
+	}
+	close(release)
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if running.Revision != held.Revision+1 || running.Generation != 1 || !reflect.DeepEqual(running.EffectiveCapabilities, []Capability{CapabilityRead, CapabilityWrite}) {
+		t.Fatalf("RUNNING = %#v, want generation and capabilities in the single transition after %d", running, held.Revision)
+	}
+	if _, err := manager.Invoke(context.Background(), "ebus.primary", CapabilityRead, func(any) error { return nil }); err != nil {
+		t.Fatalf("Invoke after hold error = %v", err)
+	}
+}
+
+// A failed hold retires the never-published generation on the independent
+// deadline; a proven close fails the attempt through the manager's own
+// retry policy, which constructs afresh and holds again.
+func TestLifecycleHookHoldFailureRetiresGenerationAndKeepsManagerRetry(t *testing.T) {
+	runtime := &hookRuntime{}
+	closes := &closeLog{}
+	var holds []AdmissionHold
+	var mu sync.Mutex
+	manager := newHookManager(t, runtime, 1, LifecycleHooks{
+		HoldAdmission: func(_ context.Context, hold AdmissionHold) error {
+			mu.Lock()
+			defer mu.Unlock()
+			holds = append(holds, hold)
+			if len(holds) == 1 {
+				return errors.New("hub obligation not met")
+			}
+			return nil
+		},
+		Closed: closes.add,
+	})
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if running.Generation != 2 {
+		t.Fatalf("admitted generation = %d, want the retry's generation 2", running.Generation)
+	}
+	starts, replaces, stops := runtime.counts()
+	if starts != 2 || replaces != 0 || stops != 1 {
+		t.Fatalf("runtime calls start=%d replace=%d stop=%d, want 2/0/1", starts, replaces, stops)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(holds) != 2 || holds[0].Correlation.Generation != 1 || holds[1].Correlation.Generation != 2 || holds[0].Retry || !holds[1].Retry {
+		t.Fatalf("holds = %#v", holds)
+	}
+	if holds[0].Correlation.Operation != holds[1].Correlation.Operation {
+		t.Fatalf("manager retry changed the operation: %#v", holds)
+	}
+	reports := closes.list()
+	if len(reports) != 1 || reports[0].Class != CloseProven || reports[0].Generation != 1 {
+		t.Fatalf("close reports = %#v, want one PROVEN retirement of generation 1", reports)
+	}
+}
+
+func TestLifecycleHookHoldFailureWithUnprovenCloseQuarantines(t *testing.T) {
+	runtime := &hookRuntime{stopErrs: []error{errors.New("close not confirmed")}}
+	closes := &closeLog{}
+	manager := newHookManager(t, runtime, 3, LifecycleHooks{
+		HoldAdmission: func(context.Context, AdmissionHold) error { return errors.New("hold failed") },
+		Closed:        closes.add,
+	})
+	_ = manager.Start(context.Background(), "ebus.primary")
+	failed := requireObservedState(t, manager, "ebus.primary", ObservedFailed, time.Second)
+	if failed.Reason.Code != ReasonCloseUnconfirmed || !failed.SafetyQuarantined || len(failed.EffectiveCapabilities) != 0 {
+		t.Fatalf("snapshot = %#v, want FAILED/CLOSE_UNCONFIRMED quarantined", failed)
+	}
+	reports := closes.list()
+	if len(reports) != 1 || reports[0].Class != CloseInternalError || reports[0].Class.Proven() {
+		t.Fatalf("close reports = %#v, want one unproven INTERNAL_ERROR", reports)
+	}
+	if starts, _, _ := runtime.counts(); starts != 1 {
+		t.Fatalf("starts = %d, want no retry after an unproven close", starts)
+	}
+}
+
+// A Stop during the hold supersedes the operation: the held generation is
+// never published and is retired on the independent deadline.
+func TestLifecycleHookStopDuringHoldNeverPublishes(t *testing.T) {
+	runtime := &hookRuntime{}
+	entered := make(chan struct{})
+	holdCtxDone := make(chan struct{})
+	manager := newHookManager(t, runtime, 1, LifecycleHooks{HoldAdmission: func(ctx context.Context, _ AdmissionHold) error {
+		close(entered)
+		<-ctx.Done()
+		close(holdCtxDone)
+		return nil
+	}})
+	if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	report, err := manager.StopWithReport(context.Background(), "ebus.primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-holdCtxDone:
+	case <-time.After(time.Second):
+		t.Fatal("hold context was not canceled by Stop")
+	}
+	if report.Class != CloseProven {
+		t.Fatalf("stop report = %#v", report)
+	}
+	waitForCondition(t, func() bool {
+		_, _, stops := runtime.counts()
+		return stops == 2
+	})
+	snapshot, _ := manager.Snapshot("ebus.primary")
+	if snapshot.ObservedState != ObservedStopped || snapshot.Generation != 0 || len(snapshot.EffectiveCapabilities) != 0 {
+		t.Fatalf("snapshot = %#v, want STOPPED with the held generation never published", snapshot)
+	}
+}
+
+func TestLifecycleHookManagerRetryHoldIsMarkedRetryAndReplacement(t *testing.T) {
+	runtime := &hookRuntime{}
+	holds := make(chan AdmissionHold, 4)
+	manager := newHookManager(t, runtime, 2, LifecycleHooks{HoldAdmission: func(_ context.Context, hold AdmissionHold) error {
+		holds <- hold
+		return nil
+	}})
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	first := <-holds
+	running := requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if !manager.ReportFailure("ebus.primary", Correlation{Generation: running.Generation}, Failure{Reason: Reason{Code: ReasonDependencyUnavailable, Retryable: true}}) {
+		t.Fatal("failure report rejected")
+	}
+	var second AdmissionHold
+	select {
+	case second = <-holds:
+	case <-time.After(time.Second):
+		t.Fatal("manager retry did not hold admission")
+	}
+	if first.Retry || first.Replacement || !second.Retry || !second.Replacement || second.Previous != first.Correlation.Generation || second.Correlation.Generation != first.Correlation.Generation+1 {
+		t.Fatalf("holds first=%#v second=%#v", first, second)
+	}
+	requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+}
+
+func TestDriverStopWithReportCloseClasses(t *testing.T) {
+	cases := []struct {
+		name          string
+		stopErr       error
+		quarantineNil bool
+		wantClass     CloseClass
+		wantObserved  ObservedState
+		wantReason    ReasonCode
+	}{
+		{name: "nil", wantClass: CloseProven, wantObserved: ObservedStopped, wantReason: ReasonOperatorStopped},
+		{name: "drain timeout with confirmed close", stopErr: ErrStopTimeout, wantClass: CloseProvenAfterDrainTimeout, wantObserved: ObservedStopped, wantReason: ReasonStopTimeout},
+		{name: "quarantine", stopErr: ErrSafetyQuarantined, wantClass: CloseUnconfirmed, wantObserved: ObservedFailed, wantReason: ReasonCloseUnconfirmed},
+		{name: "internal error", stopErr: errors.New("boom"), wantClass: CloseInternalError, wantObserved: ObservedFailed, wantReason: ReasonInternalError},
+		// The observed transition keeps its characterized precedence; the
+		// class never trusts the nil result over runtime quarantine.
+		{name: "nil with runtime quarantine", quarantineNil: true, wantClass: CloseUnconfirmed, wantObserved: ObservedStopped, wantReason: ReasonOperatorStopped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := &hookRuntime{stopErrs: []error{tc.stopErr}}
+			closes := &closeLog{}
+			manager := newHookManager(t, runtime, 0, LifecycleHooks{Closed: closes.add})
+			if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+				t.Fatal(err)
+			}
+			requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+			if tc.quarantineNil {
+				runtime.mu.Lock()
+				runtime.quarantined = true
+				runtime.mu.Unlock()
+			}
+			report, err := manager.StopWithReport(context.Background(), "ebus.primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Class != tc.wantClass || report.Observed != tc.wantObserved || report.Reason.Code != tc.wantReason || report.Generation != 1 || report.Operation == 0 {
+				t.Fatalf("report = %#v", report)
+			}
+			if report.Class.Proven() != (tc.wantClass == CloseProven || tc.wantClass == CloseProvenAfterDrainTimeout) {
+				t.Fatalf("Proven() = %v for %s", report.Class.Proven(), report.Class)
+			}
+			if got := closes.list(); len(got) != 1 || got[0] != report {
+				t.Fatalf("Closed hook reports = %#v, want the returned report", got)
+			}
+		})
+	}
+	t.Run("already stopped", func(t *testing.T) {
+		manager := newHookManager(t, &hookRuntime{}, 0, LifecycleHooks{})
+		report, _ := manager.StopWithReport(context.Background(), "ebus.primary")
+		if report.Class != CloseNotRequired || !report.Class.Proven() {
+			t.Fatalf("report = %#v", report)
+		}
+	})
+	t.Run("quarantined manager", func(t *testing.T) {
+		runtime := &hookRuntime{stopErrs: []error{ErrSafetyQuarantined}}
+		manager := newHookManager(t, runtime, 0, LifecycleHooks{})
+		_ = manager.Start(context.Background(), "ebus.primary")
+		_, _ = manager.StopWithReport(context.Background(), "ebus.primary")
+		report, _ := manager.StopWithReport(context.Background(), "ebus.primary")
+		if report.Class != CloseUnconfirmed {
+			t.Fatalf("repeated stop on quarantine = %#v", report)
+		}
+	})
+	t.Run("internal error is retried by a later stop", func(t *testing.T) {
+		runtime := &hookRuntime{stopErrs: []error{errors.New("boom"), nil}}
+		manager := newHookManager(t, runtime, 0, LifecycleHooks{})
+		_ = manager.Start(context.Background(), "ebus.primary")
+		first, _ := manager.StopWithReport(context.Background(), "ebus.primary")
+		second, _ := manager.StopWithReport(context.Background(), "ebus.primary")
+		if first.Class != CloseInternalError || second.Class != CloseProven {
+			t.Fatalf("first=%#v second=%#v", first, second)
+		}
+	})
+	t.Run("stopped with construction in flight", func(t *testing.T) {
+		manager := newHookManager(t, &hookRuntime{}, 0, LifecycleHooks{})
+		// A canceled construction that ignored its context still owns the
+		// attempt slot while the driver already reads STOPPED.
+		driver := manager.drivers["ebus.primary"]
+		driver.mu.Lock()
+		driver.activeAttempt = &attemptControl{cancel: func() {}}
+		driver.mu.Unlock()
+		report, _ := manager.StopWithReport(context.Background(), "ebus.primary")
+		if report.Class != CloseInternalError || report.Class.Proven() {
+			t.Fatalf("report = %#v, want no proof while a construction is in flight", report)
+		}
+	})
+}
+
+func TestDriverClassifyCloseTable(t *testing.T) {
+	for _, tc := range []struct {
+		err         error
+		quarantined bool
+		want        CloseClass
+	}{
+		{nil, false, CloseProven},
+		{ErrStopTimeout, false, CloseProvenAfterDrainTimeout},
+		{errors.Join(ErrStopTimeout, errors.New("native")), false, CloseProvenAfterDrainTimeout},
+		{ErrSafetyQuarantined, false, CloseUnconfirmed},
+		{nil, true, CloseUnconfirmed},
+		{ErrStopTimeout, true, CloseUnconfirmed},
+		{errors.New("other"), false, CloseInternalError},
+	} {
+		if got := ClassifyClose(tc.err, tc.quarantined); got != tc.want {
+			t.Fatalf("ClassifyClose(%v, %v) = %s, want %s", tc.err, tc.quarantined, got, tc.want)
+		}
+	}
+	if CloseInternalError.Proven() || CloseUnconfirmed.Proven() || !CloseNotRequired.Proven() {
+		t.Fatal("Proven() classification is wrong")
+	}
+}
+
+func TestDriverBindHooksOnceAndWatch(t *testing.T) {
+	manager := newHookManager(t, &hookRuntime{}, 0, LifecycleHooks{})
+	if err := manager.BindHooks("missing", LifecycleHooks{}); !errors.Is(err, ErrDriverNotFound) {
+		t.Fatalf("BindHooks(missing) = %v", err)
+	}
+	if err := manager.BindHooks("ebus.primary", LifecycleHooks{Closed: func(CloseReport) {}}); err != nil {
+		t.Fatalf("BindHooks() = %v", err)
+	}
+	if err := manager.BindHooks("ebus.primary", LifecycleHooks{}); !errors.Is(err, ErrHooksBound) {
+		t.Fatalf("second BindHooks() = %v, want ErrHooksBound", err)
+	}
+	snapshot, changed, ok := manager.Watch("ebus.primary")
+	if !ok || snapshot.ObservedState != ObservedStopped {
+		t.Fatalf("Watch() = %#v %v", snapshot, ok)
+	}
+	select {
+	case <-changed:
+		t.Fatal("watch channel closed without a transition")
+	default:
+	}
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("watch channel not closed by a transition")
+	}
+	if _, _, ok := manager.Watch("missing"); ok {
+		t.Fatal("Watch(missing) reported a driver")
+	}
+}
+
+func waitForCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

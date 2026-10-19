@@ -43,7 +43,13 @@ around every managed hub call, restoration before admission with exact-byte
 gap resolution, and compaction only at a verified restore point. It is
 exercised with a synthetic two-asset publisher only; no production publisher
 is migrated, no eBUS shell is wired and direct publishers keep their
-memory-only recovery boundary.
+memory-only recovery boundary. Issue
+[#1190](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1190)
+adds the S4 DriverManager hooks (admission hold, classified close) and the
+lifecycle-only `ebus.primary` bridge in `cmd/gateway` (section 7, S4
+manager-to-hub bridge). The bridge is callable composition only: there is no
+production registration, no shell wiring and no authorization, and A5 stays
+proposed until the composition implementation lands.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -1985,6 +1991,118 @@ unconfirmed close quarantines the driver for the source epoch. Before
 reservation at its unchanged cursor; an uncertain abort retains the claim and
 quarantine. After the durable `CONSUMED` transition, supersession always uses a
 new cleanup reservation and never releases the consumed generation for reuse.
+
+### S4 manager-to-hub bridge (implemented callable composition)
+
+This subsection records the implemented S4/A3/A4 bridge of the
+[docs-ebus runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+for the lifecycle-only `ebus.primary` driver. It is not installed into
+process startup: nothing registers it with the control service, wires a
+shell or adds authorization.
+
+DriverManager hooks (`internal/drivermanager`):
+
+1. `LifecycleHooks.HoldAdmission` runs after a provider generation was
+   constructed and before `RUNNING` publishes. Observed state stays
+   `STARTING` with no effective capability, so `Invoke` refuses the
+   generation. The hook runs with every manager lock released and may do hub
+   work. On a nil result the manager rechecks that its operation is still
+   current, runs the bounded pre-admission activation (the existing B503
+   observer activation) and publishes `RUNNING` with the effective
+   capabilities in one state transition. A superseded operation is retired as
+   a late admission. A hook error retires the never-published generation on
+   the independent late-retirement deadline. An unproven close quarantines
+   the driver (`FAILED/CLOSE_UNCONFIRMED`). A proven close fails the attempt
+   through the driver's ordinary classification, so any retry stays
+   manager-owned and constructs afresh. `AdmissionHold` names the native
+   generation, the manager operation, the previous admitted generation and
+   whether the attempt is a manager-owned retry or a replacement.
+2. `StopWithReport` performs the same transition as `Stop` and returns a
+   `CloseReport` with a `CloseClass`. `PROVEN` (nil) and
+   `PROVEN_AFTER_DRAIN_TIMEOUT` (drain expired, close confirmed) are close
+   proof, and so is `NOT_REQUIRED` (nothing was open). `UNCONFIRMED`
+   (quarantine) and `INTERNAL_ERROR` are not. Runtime quarantine dominates the
+   class even when `Stop` returned nil. The observed transition keeps its
+   characterized precedence, in which a nil result reads `STOPPED`; changing
+   that observed precedence is left to the owner of the drivermanager
+   characterization. A stopped driver with a construction still in flight
+   reports `INTERNAL_ERROR`, because a late admission may still follow.
+   `LifecycleHooks.Closed` receives the report of every explicit stop, every
+   superseded late admission and every failed hold after the manager locks
+   are released.
+3. `BindHooks` binds the hooks of one driver once. A lifecycle bridge can
+   therefore attach to a manager that was composed elsewhere. `Watch` returns
+   a snapshot and a channel that closes at the next observed transition.
+
+The `ebus.primary` bridge (`cmd/gateway`, `ebusControlRuntime`) implements the
+service's `LifecycleExecutor`:
+
+1. `Prepare` admits the configured source's inert first hub epoch at
+   generation 1 before any endpoint is constructed, including when desired
+   state is `STOPPED`. It declares no asset, so the epoch barrier is empty and
+   complete. The source identity and the native contract reference are
+   supplied by the caller and are required. No placeholder is installed and
+   no identity is derived from an endpoint.
+2. Correlation. Each service correlation becomes a full key: `DriverID`,
+   `SourceID`, source epoch, driver generation and the operation's lifecycle
+   sequence. The service correlation carries no `SourceID` yet, so the bridge
+   binds the one configured source. A different driver or source is refused.
+   The first START of the incarnation claims the inert epoch. A new epoch
+   after a fenced predecessor requires proven native close and the
+   predecessor's hub retirement, and then admits exactly one hub-native
+   successor through `AdmitSuccessor`. The successor carries an opaque
+   operation identity derived from the key, so repeated or concurrent calls
+   for one operation resolve to that one successor. A repeated `Start` of the
+   same key joins the start in flight or returns its recorded result. It
+   never calls DriverManager again, so no native budget is renewed. A late or
+   stale key (another epoch, generation or sequence) and a key whose STOP
+   arrived before it bound are refused before any hub or native work.
+3. Admission. The bridge calls `StartAsync` once per accepted operation and
+   reports success only when DriverManager published `RUNNING` for a native
+   generation that the hold mapped to this epoch. On the first admission of
+   an epoch, the hold checks that the claimed hub generation is live; a
+   mismatch fails closed (LIFE-10). On a manager-driven retry or failure
+   replacement, the hold keeps the epoch, fences the old driver generation
+   and activates the next one through `Fence` and `Activate`, outside manager
+   locks and with admission still held. The explicit
+   `{key, native generation}` mapping is recorded before admission. Driver
+   generation restarts at 1 in every epoch, while native generation is
+   process monotonic. Mappings are process-local and historical after process
+   loss. Executor errors are closed and non-retryable (`ReasonCode` only), so
+   the service never adds a second native retry loop. A failed start fences
+   the epoch and requests the manager-owned close on the bridge's independent
+   cleanup deadline before it returns, so nothing stays open.
+4. Stop. `Stop` fences the epoch at once, which immediately rejects late
+   construction, health and publication. It then runs two independent
+   obligations. The native one is one manager-owned `StopWithReport`, which
+   repeated calls join and which revokes leases, B503 issuance and proxy
+   readiness at the manager's existing withdrawal boundary. The semantic one
+   is hub `RetireEpoch` of the asset-free epoch, run once the withdrawal
+   fence is visible. Neither obligation waits for the other's success.
+   `NativeClosed` reports only a proven close class. `UNCONFIRMED`
+   quarantines the bridge and blocks every successor whatever the epoch.
+   `INTERNAL_ERROR` is retried by the next `Stop`. A retirement failure keeps
+   the epoch unretired, which blocks succession, and the next `Stop` or
+   succession retries it.
+5. Views and gates. `View`, `Admitted`, `PublicationHandle` and
+   `ReportFailure` read one manager snapshot, so admission and observed
+   `RUNNING` are visible together. Semantic capabilities are always empty.
+   Native capabilities are the manager's effective invocation gates, reported
+   only while the exact key is admitted. The lifecycle-only source publishes
+   nothing. The publication gate exists so that a stale key never obtains a
+   live handle. The hub seam has no declaration, transaction or withdrawal
+   method.
+
+LIFE applicability for this asset-free adapter: LIFE-01–LIFE-10 and the A2
+rows LIFE-05, LIFE-25, LIFE-26, LIFE-31 and LIFE-32 have named fake-endpoint
+tests. The bridge tests and the J10 service tests together cover LIFE-02.
+The rows that need semantic assets, staged activation batches, per-asset
+cursors or shared assets (LIFE-14–LIFE-24 and LIFE-27–LIFE-30, LIFE-22
+included) do not apply to an asset-free source. They stay with the first
+family migration that declares assets. The service has no seam yet for
+executor-originated observations, so a manager-driven `BACKOFF` or
+generation advance after `RUNNING` is visible in the bridge view and not in
+the service view.
 
 ## 8. Upward flow
 

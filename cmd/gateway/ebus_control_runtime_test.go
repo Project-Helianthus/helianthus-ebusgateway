@@ -663,6 +663,35 @@ func TestEBusControlStopBeforeBindTombstonesLateStart(t *testing.T) {
 	}
 }
 
+// A START that paused after binding must not dispatch once STOP fenced its
+// epoch: it would otherwise cancel a successor's retry and renew its budget.
+func TestEBusControlFencedStartNeverDispatchesToManager(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	paused := make(chan struct{})
+	resume := make(chan struct{})
+	var once sync.Once
+	plant.bridge.beforeDispatch = func() {
+		once.Do(func() {
+			close(paused)
+			<-resume
+		})
+	}
+	corr := ctlCorr("inc.e1", 1, 1)
+	startDone := make(chan error, 1)
+	go func() { startDone <- plant.bridge.Start(ctlCtx(t), corr) }()
+	<-paused
+	if out := plant.bridge.Stop(ctlCtx(t), corr); !out.NativeClosed || !out.SemanticCleaned {
+		t.Fatalf("Stop = %#v", out)
+	}
+	close(resume)
+	if err := <-startDone; err == nil {
+		t.Fatal("fenced Start reported success")
+	}
+	if plant.constructed() != 0 || plant.snapshot().DesiredState == drivermanager.DesiredRunning {
+		t.Fatalf("fenced Start reached the manager: constructed=%d snapshot=%#v", plant.constructed(), plant.snapshot())
+	}
+}
+
 // LIFE-07/LIFE-09: a construction that completes after its operation was
 // stopped is never admitted and is retired on its own deadline.
 func TestEBusControlLateConstructionAfterStopIsNeverAdmitted(t *testing.T) {

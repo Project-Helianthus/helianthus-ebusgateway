@@ -179,6 +179,13 @@ type ebusControlRuntime struct {
 	// it, so fencing stays immediate.
 	opMu sync.Mutex
 
+	// dispatchMu serializes the current-epoch check with the native start
+	// dispatch, and Stop waits on it after fencing, so a fenced operation can
+	// never dispatch into a successor's retry or reset its native budget.
+	dispatchMu sync.Mutex
+	// beforeDispatch is a test seam run before a start dispatch.
+	beforeDispatch func()
+
 	mu          sync.Mutex
 	prepared    bool
 	initial     *semhub.Handle
@@ -462,7 +469,7 @@ func (bridge *ebusControlRuntime) startManager(ctx context.Context, epoch *ebusC
 	tick := time.NewTicker(2 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		err := bridge.manager.StartAsync(context.Background(), string(bridge.id))
+		err := bridge.dispatchStart(epoch)
 		if !errors.Is(err, drivermanager.ErrUnavailable) {
 			return err
 		}
@@ -476,6 +483,29 @@ func (bridge *ebusControlRuntime) startManager(ctx context.Context, epoch *ebusC
 			return err
 		}
 	}
+}
+
+// dispatchStart calls StartAsync only while the epoch is still current and
+// unfenced, holding dispatchMu so Stop's fence cannot interleave with it.
+func (bridge *ebusControlRuntime) dispatchStart(epoch *ebusControlEpoch) error {
+	if bridge.beforeDispatch != nil {
+		bridge.beforeDispatch()
+	}
+	bridge.dispatchMu.Lock()
+	defer bridge.dispatchMu.Unlock()
+	bridge.mu.Lock()
+	stale := epoch.fenced || bridge.current != epoch
+	bridge.mu.Unlock()
+	if stale {
+		return errEBusControlStale
+	}
+	return bridge.manager.StartAsync(context.Background(), string(bridge.id))
+}
+
+// awaitDispatchIdle returns once no start dispatch is in flight.
+func (bridge *ebusControlRuntime) awaitDispatchIdle() {
+	bridge.dispatchMu.Lock()
+	defer bridge.dispatchMu.Unlock()
 }
 
 // awaitStart joins the start of an operation already in flight, or returns
@@ -547,6 +577,10 @@ func (bridge *ebusControlRuntime) Stop(ctx context.Context, corr runtimecontrol.
 	}
 	bridge.fenceLocked(epoch)
 	bridge.mu.Unlock()
+
+	// A dispatch that passed its epoch check finishes before the native stop
+	// is requested, so the stop also cancels what that dispatch started.
+	bridge.awaitDispatchIdle()
 
 	nativeDone := bridge.ensureNativeStop(epoch)
 	retireDone := make(chan struct{})

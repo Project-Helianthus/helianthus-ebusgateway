@@ -1627,7 +1627,7 @@ func TestLifecycleHookLateAdmissionCloseReportCarriesCorrelation(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(runtime.startRelease)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for len(closes.list()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}

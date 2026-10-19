@@ -14,6 +14,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
@@ -334,8 +335,8 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 
 func TestMCPConfigBoundPreservesNarrowedOnly(t *testing.T) {
 	for _, bound := range []graphql.ConfigBound{
-		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803", APIVersion: "1", Revision: "1"}),
-		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{}),
+		systemconfig.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803", APIVersion: "1", Revision: "1"}),
+		systemconfig.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{}),
 	} {
 		got := mcpConfigBound(&bound)
 		if got.NarrowedOnly != bound.NarrowedOnly || got.Source != bound.Source || got.Profile != bound.Profile {

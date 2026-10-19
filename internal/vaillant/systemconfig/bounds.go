@@ -17,6 +17,10 @@ type ControllerIdentity = vaillantsystem.B524ControllerIdentity
 
 var canonicalRegulatorTargetAddresses = [...]byte{0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6}
 
+func CanonicalRegulatorTargetAddresses() [6]byte {
+	return canonicalRegulatorTargetAddresses
+}
+
 // Sources of an active config bound.
 const (
 	// ConfigBoundSourceControllerProfile: the bound comes from a controller

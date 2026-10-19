@@ -128,7 +128,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 	for _, value := range []string{"51", "50.5", "-21"} {
 		invoker := &mutationTestInvoker{}
-		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, value, systemConfigFieldSpecs, &ConfigBound{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile})
+		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, value, systemConfigFieldSpecs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile})
 		if result.Success {
 			t.Errorf("value %s: success = true; want rejection", value)
 		}
@@ -141,7 +141,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 
 	invoker := &mutationTestInvoker{}
-	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs, &ConfigBound{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
+	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
 	if len(invoker.calls) == 0 {
 		t.Fatal("in-bound value 50 never reached the invoker")
 	}
@@ -242,7 +242,7 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 					invoker := &mutationTestInvoker{}
 					var result ConfigMutationResult
 					if scope.name == "system" {
-						result = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, field, value, scope.specs, &ConfigBound{MinC: -20, MaxC: 50})
+						result = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, field, value, scope.specs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
 					} else {
 						result = applyConfigMutation(context.Background(), reg, invoker, 0x7F, true, spec, 0x00, value)
 					}
@@ -257,7 +257,9 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 					query := fmt.Sprintf(`mutation { %s(%sfield: %q, value: %q) { success error } }`, scope.mutation, index, field, value)
 					schema := buildMutationSchema(t, reg, invoker, nil, nil)
 					if scope.name == "system" {
-						schema = buildMutationSchemaForM13(t, reg, invoker, func() *ConfigBound { return &ConfigBound{MinC: -20, MaxC: 50} })
+						schema = buildMutationSchemaForM13(t, reg, invoker, func() *ConfigBound {
+							return &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy}
+						})
 					}
 					data := executeMutation(t, schema, query)
 					payload, ok := data[scope.mutation].(map[string]any)
@@ -301,6 +303,7 @@ func TestDHWBivalenceBoundRegistrySnapshotConcurrentRegister(t *testing.T) {
 		if bound != (ConfigBound{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile}) {
 			t.Fatalf("bound = %+v; want conservative unmatched policy", bound)
 		}
+		bound.ControllerAddress = 0x15
 		invoker := &mutationTestInvoker{}
 		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "51", systemConfigFieldSpecs, &bound)
 		if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 50]") || len(invoker.calls) != 0 {

@@ -53,9 +53,12 @@ const (
 
 // ConfigBound is the active write bound of one config field.
 type ConfigBound struct {
-	MinC   float64
-	MaxC   float64
-	Source string
+	// ControllerAddress binds injected write validation to its native target.
+	// Zero means no target was supplied; it cannot authorize compatibility writes.
+	ControllerAddress byte `json:"-"`
+	MinC              float64
+	MaxC              float64
+	Source            string
 	// Reason is empty for a controller-profile bound; for the unmatched policy
 	// it names why no profile bound applies.
 	Reason string

@@ -2,6 +2,7 @@ package graphql
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestM13InjectedSystemConfigBound(t *testing.T) {
 
 func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 	reg := mutationTestRegistry{entries: map[byte]registry.DeviceEntry{0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod)}, order: []byte{0x15}}
-	for _, bound := range []*ConfigBound{nil, {MinC: -2, MaxC: 4, Source: "synthetic"}, {MinC: 5, MaxC: -5}} {
+	for _, bound := range []*ConfigBound{nil, {MinC: -2, MaxC: 4, Source: ConfigBoundSourceControllerProfile, Profile: "family", NarrowedOnly: true, ControllerAddress: 0x15}, {MinC: 5, MaxC: -5}} {
 		invoker := &mutationTestInvoker{}
 		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "5", systemConfigFieldSpecs, bound)
 		if result.Success || len(invoker.calls) != 0 {
@@ -70,7 +71,7 @@ func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 		}
 	}
 	provider := NewLiveSemanticProvider()
-	provider.SetSystem(&SystemStatus{Config: SystemConfig{DhwBivalenceBound: &ConfigBound{MinC: -2, MaxC: 4, Source: "synthetic"}}})
+	provider.SetSystem(&SystemStatus{Config: SystemConfig{DhwBivalenceBound: &ConfigBound{MinC: -2, MaxC: 4, Source: ConfigBoundSourceControllerProfile, Profile: "family", NarrowedOnly: true, ControllerAddress: 0x15}}})
 	builder := NewBuilder(nil, nil)
 	builder.SetSemanticProvider(provider)
 	invoker := &mutationTestInvoker{}
@@ -89,7 +90,7 @@ func TestM13SystemConfigBoundMutationAdmission(t *testing.T) {
 	if missing["success"] != false || !strings.Contains(missing["error"].(string), "missing resolved driver bound") || len(invoker.calls) != 0 {
 		t.Fatalf("missing bound: %v calls=%d", missing, len(invoker.calls))
 	}
-	provider.SetSystem(&SystemStatus{Config: SystemConfig{DhwBivalenceBound: &ConfigBound{MinC: -2, MaxC: 4, Source: "synthetic"}}})
+	provider.SetSystem(&SystemStatus{Config: SystemConfig{DhwBivalenceBound: &ConfigBound{MinC: -2, MaxC: 4, Source: ConfigBoundSourceControllerProfile, Profile: "family", NarrowedOnly: true, ControllerAddress: 0x15}}})
 	invoker = &mutationTestInvoker{}
 	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "4", systemConfigFieldSpecs, builder.systemConfigBound())
 	if len(invoker.calls) == 0 {
@@ -154,5 +155,58 @@ func TestM13ValueTypeMapping(t *testing.T) {
 		if len(invoker.calls) != 0 {
 			t.Fatal("unknown type invoked")
 		}
+	}
+}
+
+func TestInjectedBoundRefusesUnqualifiedOrWidenedAuthority(t *testing.T) {
+	reg := mutationTestRegistry{entries: map[byte]registry.DeviceEntry{0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod)}}
+	valid := ConfigBound{ControllerAddress: 0x15, MinC: -2, MaxC: 4, Source: ConfigBoundSourceControllerProfile, Profile: "family", NarrowedOnly: true}
+	for _, tc := range []struct {
+		name   string
+		change func(*ConfigBound)
+		value  string
+	}{
+		{"non-finite minimum", func(b *ConfigBound) { b.MinC = math.NaN() }, "0"},
+		{"non-finite maximum", func(b *ConfigBound) { b.MaxC = math.Inf(1) }, "0"},
+		{"upper endpoint", func(b *ConfigBound) { b.MaxC = 100 }, "75"},
+		{"lower endpoint", func(b *ConfigBound) { b.MinC = -30 }, "-25"},
+		{"wide bound with in-policy value", func(b *ConfigBound) { b.MaxC = 100 }, "0"},
+		{"unknown source", func(b *ConfigBound) { b.Source = "synthetic" }, "0"},
+		{"unqualified profile", func(b *ConfigBound) { b.NarrowedOnly = false }, "0"},
+		{"missing profile", func(b *ConfigBound) { b.Profile = "" }, "0"},
+		{"missing target", func(b *ConfigBound) { b.ControllerAddress = 0 }, "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bound := valid
+			tc.change(&bound)
+			invoker := &mutationTestInvoker{}
+			result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, tc.value, systemConfigFieldSpecs, &bound)
+			if result.Success || len(invoker.calls) != 0 {
+				t.Fatalf("result=%+v calls=%d", result, len(invoker.calls))
+			}
+		})
+	}
+}
+
+func TestInjectedBoundRefusesDifferentRoutedController(t *testing.T) {
+	reg := mutationTestRegistry{entries: map[byte]registry.DeviceEntry{
+		0x15: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+		0x35: testControllerEntryWithMethods(mutationSetExtRegisterMethod, mutationGetExtRegisterMethod),
+	}}
+	provider := NewLiveSemanticProvider()
+	provider.SetSystem(&SystemStatus{Config: SystemConfig{DhwBivalenceBound: &ConfigBound{
+		ControllerAddress: 0x35, MinC: -20, MaxC: 50, Source: ConfigBoundSourceControllerProfile, Profile: "other-family", NarrowedOnly: true,
+	}}})
+	builder := NewBuilder(nil, nil)
+	builder.SetSemanticProvider(provider)
+	builder.SetAdmittedMutationSource(0x7F)
+	invoker := &mutationTestInvoker{}
+	schema, err := NewSchema(builder, reg, invoker, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeMutation(t, schema, `mutation { setSystemConfig(field: "dhwBivalencePointC", value: "40") { success error } }`)["setSystemConfig"].(map[string]interface{})
+	if result["success"] != false || !strings.Contains(result["error"].(string), "does not match routed controller") || len(invoker.calls) != 0 {
+		t.Fatalf("result=%v calls=%d", result, len(invoker.calls))
 	}
 }

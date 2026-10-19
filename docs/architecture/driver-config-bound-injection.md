@@ -44,7 +44,8 @@ The application composition passes the driver's resolved `ConfigBound` in
    to regulator-priority selection.
 2. `LiveSemanticProvider.SetSystem` (or `SetSystemFromCache`) receives that
    snapshot. Its config retains `MinC`, `MaxC`, `Source`, `Reason`, `Profile`
-   and `NarrowedOnly`; cloning preserves the optional bound by value.
+   and `NarrowedOnly`, plus the internal `ControllerAddress` for compatibility
+   mutation routing; cloning preserves the optional bound by value.
 3. `Builder.SetSemanticProvider` installs the provider. The `system` query
    consumes `SemanticProvider.System()`. Bound field resolvers only project
    the supplied value; they do not call a native resolver or inspect registry
@@ -66,7 +67,15 @@ value. The writer resolves against its current retained identity and validates
 before native I/O; a previously displayed bound is not write authorization.
 Any retained registry/invoker compatibility path must receive a driver-resolved
 bound for bound validation, rather than resolving native identity in GraphQL.
-If that input is unavailable, the path must fail before invocation. This is a
+If that input is unavailable, the path must fail before invocation. The
+compatibility path rejects non-finite, reversed or out-of-policy endpoints and
+unsupported source metadata. Profile bounds require a named profile and
+`NarrowedOnly`; unmatched policy bounds must equal the conservative window.
+The driver captures the controller address with its identity and retains it in
+the bound as internal metadata, without adding a public projection field. The
+compatibility path verifies this address against the same registry entry used
+to obtain the routed plane. A missing or mismatched address refuses the write;
+it never falls back to another regulator. This is a
 requirement for completing the seam, not a claim about today's fallback.
 
 ## Sole regulator-address owner

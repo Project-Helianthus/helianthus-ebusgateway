@@ -116,7 +116,7 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	want := graphql.ConfigBound{MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
+	want := graphql.ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
 	if bound == nil || *bound != want {
 		t.Fatalf("published bound = %+v; want %+v", bound, want)
 	}
@@ -353,5 +353,23 @@ func TestMCPConfigBoundPreservesNarrowedOnly(t *testing.T) {
 		if decoded["narrowed_only"] != bound.NarrowedOnly {
 			t.Fatalf("MCP narrowed_only = %v; want %v", decoded["narrowed_only"], bound.NarrowedOnly)
 		}
+	}
+}
+
+func TestControllerConfigBoundRetainsDiscoveredAddress(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+	poller, _ := newDHWBoundPoller(t, "BASV0", "", "", bus)
+	poller.reg.Register(registry.DeviceInfo{Address: 0x35, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	poller.controller = 0x35
+	identity, address := poller.controllerB524IdentityAndAddress()
+	if identity.EID != "BASV2" || address != 0x35 {
+		t.Fatalf("identity=%+v address=%x; want discovered controller", identity, address)
+	}
+	bound := poller.controllerConfigBound()
+	if bound.ControllerAddress != 0x35 {
+		t.Fatalf("bound target=%x; want discovered controller", bound.ControllerAddress)
+	}
+	if bus.requests != 0 {
+		t.Fatalf("bound resolution issued %d requests", bus.requests)
 	}
 }

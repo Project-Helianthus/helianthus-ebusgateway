@@ -583,3 +583,193 @@ func TestThermalCircuitCapabilityMappingOtherFamilyInstanceNine(t *testing.T) {
 	in.Candidates[0].Role.FamilyApplicable = false
 	thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:a", false, "unqualified_role")
 }
+
+func TestI42TypedFreshnessProvenance(t *testing.T) {
+	cases := []struct {
+		name, loss string
+		change     func(*thermalCircuitMappingInput)
+	}{
+		{"receipt_noncanonical", "stale", func(i *thermalCircuitMappingInput) { i.Observations[0].Receipt.Nanoseconds = "010" }},
+		{"role_noncanonical", "stale_role", func(i *thermalCircuitMappingInput) { i.Candidates[0].Role.Receipt.Nanoseconds = "010" }},
+		{"evaluation_noncanonical", "stale_role", func(i *thermalCircuitMappingInput) { i.EvaluateMonotonic.Nanoseconds = "020" }},
+		{"shared_invalid_epoch", "stale_role", func(i *thermalCircuitMappingInput) {
+			i.EvaluateMonotonic.ClockEpochID = "invalid epoch"
+			i.Candidates[0].Role.Receipt.ClockEpochID = "invalid epoch"
+			for j := range i.Observations {
+				i.Observations[j].Receipt.ClockEpochID = "invalid epoch"
+			}
+		}},
+		{"fresh_for_noncanonical", "stale_role", func(i *thermalCircuitMappingInput) { i.FreshForNS = "020" }},
+		{"fresh_for_invalid", "stale_role", func(i *thermalCircuitMappingInput) { i.FreshForNS = "invalid" }},
+		{"fresh_for_zero", "stale_role", func(i *thermalCircuitMappingInput) { i.FreshForNS = "0" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := thermalCircuitTestInput()
+			c.change(&in)
+			out := mapThermalCircuitCapabilities(in)
+			thermalCircuitTestOutcome(t, out, "service:a", false, c.loss)
+			if len(out.Native) != 2 {
+				t.Fatal("withholding lost native records")
+			}
+			for _, before := range in.Observations {
+				found := false
+				for _, after := range out.Native {
+					found = found || reflect.DeepEqual(before, after)
+				}
+				if !found {
+					t.Fatal("withholding changed native evidence")
+				}
+			}
+		})
+	}
+	for _, evaluation := range []semreg.Uint64{"10", "20"} {
+		t.Run("valid_boundary_"+string(evaluation), func(t *testing.T) {
+			in := thermalCircuitTestInput()
+			in.EvaluateMonotonic.Nanoseconds, in.FreshForNS = evaluation, "10"
+			thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:a", true, "")
+		})
+	}
+}
+
+func TestI42EvidenceIdentity(t *testing.T) {
+	axes := []struct {
+		name   string
+		change func(*semreg.EvidenceRef)
+	}{
+		{"owner", func(e *semreg.EvidenceRef) { e.Owner = "test.other" }},
+		{"kind", func(e *semreg.EvidenceRef) { e.Kind = "test.other" }},
+		{"contract", func(e *semreg.EvidenceRef) { e.Contract = "test.other/v1" }},
+		{"digest", func(e *semreg.EvidenceRef) {
+			digest := sha256.Sum256([]byte("independent synthetic evidence"))
+			e.Digest = semreg.Digest(fmt.Sprintf("sha256:%x", digest))
+		}},
+		{"access", func(e *semreg.EvidenceRef) { e.Access = semreg.EvidenceAccessAuthorized }},
+		{"redaction", func(e *semreg.EvidenceRef) { e.Redaction = semreg.RedactionRedacted }},
+		{"exact_duplicate", func(e *semreg.EvidenceRef) {}},
+	}
+	for _, axis := range axes {
+		t.Run(axis.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("reverse_%t", reverse), func(t *testing.T) {
+					in := thermalCircuitTestInput()
+					a := in.Observations[0].Evidence
+					b := a
+					axis.change(&b)
+					if err := b.Validate(); err != nil {
+						t.Fatal(err)
+					}
+					in.Candidates[0].Role.QualificationEvidence = a
+					in.Candidates[0].Role.RoleEvidence = b
+					if reverse {
+						in.Observations[0].Evidence = b
+						in.Candidates[0].Role.RoleEvidence = a
+					}
+					out := mapThermalCircuitCapabilities(in)
+					if len(out.Sources) != 1 || out.Sources[0].Capability == nil || out.Sources[0].Loss != "" {
+						t.Fatal("valid evidence withheld")
+					}
+					got := out.Sources[0].Capability.ActivationEvidence
+					want := []semreg.EvidenceRef{a}
+					if a != b {
+						want = append(want, b)
+						// Full struct formatting is an independent ordering oracle here:
+						// each variant changes exactly one field, all others are equal.
+						if fmt.Sprintf("%#v", a) > fmt.Sprintf("%#v", b) {
+							want[0], want[1] = want[1], want[0]
+						}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("activation evidence: got %+v, want %+v", got, want)
+					}
+					// The pinned owner's set validator excludes policy fields from its key.
+					// Retention here is not a claim that policy-distinct sets publish today.
+					if axis.name != "access" && axis.name != "redaction" {
+						if err := out.Sources[0].Capability.Validate(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					got[0].Owner = "test.changed"
+					if in.Observations[0].Evidence.Owner == "test.changed" || in.Candidates[0].Role.RoleEvidence.Owner == "test.changed" {
+						t.Fatal("activation evidence aliases input")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestI42VirtualWaterMissingType(t *testing.T) {
+	in := thermalCircuitTestInput()
+	in.Candidates[0].Role.Role = "virtual_water"
+	in.Requested[0].ItemID = "thermal.capability.read.dhw"
+	in.Observations[0].Present = false
+	out := mapThermalCircuitCapabilities(in)
+	s := thermalCircuitTestOutcome(t, out, "service:a", false, "missing")
+	if s.TypeLoss != "missing" || s.CoolingLoss != "native_only" || len(out.Native) != 2 || out.Dispositions[0].Outcome != projection.ProjectionWithheld {
+		t.Fatal("missing type inferred a qualified virtual service or erased cooling")
+	}
+	in.Observations[0].Present = true
+	in.Observations[0].Decoded, in.Observations[0].Raw = 0, []byte{0, 0}
+	s = thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:a", true, "")
+	if s.Service.Definition.ID != "thermal.service.dhw" {
+		t.Fatal("qualified virtual role did not retain DHW definition")
+	}
+}
+
+func TestI42SemanticAssociationConflicts(t *testing.T) {
+	for _, role := range []string{"ordinary", "virtual_water"} {
+		t.Run(role, func(t *testing.T) {
+			in := thermalCircuitTestInput()
+			in.Candidates[0].Role.Role = role
+			if role == "virtual_water" {
+				in.Requested[0].ItemID = "thermal.capability.read.dhw"
+			}
+			thermalCircuitTestSibling(&in)
+			// Distinct instance IDs cannot hide two owners of the same association.
+			in.Candidates[1].Identity.Asset = "asset:a"
+			in.Candidates[1].Identity.Source = "source:b"
+			in.Candidates[1].Role.Identity = in.Candidates[1].Identity
+			for j := 2; j < 4; j++ {
+				in.Observations[j].Identity = in.Candidates[1].Identity
+			}
+			out := mapThermalCircuitCapabilities(in)
+			thermalCircuitTestOutcome(t, out, "service:a", false, "conflict")
+			thermalCircuitTestOutcome(t, out, "service:b", false, "conflict")
+			if len(out.Sources) != 2 || len(out.Native) != 4 || out.Dispositions[0].Outcome != projection.ProjectionWithheld {
+				t.Fatal("conflict lost records or projected")
+			}
+			in.Candidates[0], in.Candidates[1] = in.Candidates[1], in.Candidates[0]
+			for i, j := 0, len(in.Observations)-1; i < j; i, j = i+1, j-1 {
+				in.Observations[i], in.Observations[j] = in.Observations[j], in.Observations[i]
+			}
+			if !reflect.DeepEqual(out, mapThermalCircuitCapabilities(in)) {
+				t.Fatal("association conflict depends on order")
+			}
+			// Asset and definition independently distinguish associations.
+			in.Candidates[0].Identity.Asset = "asset:b"
+			in.Candidates[0].Role.Identity = in.Candidates[0].Identity
+			for j := range in.Observations {
+				if in.Observations[j].Identity.Service == "service:b" {
+					in.Observations[j].Identity = in.Candidates[0].Identity
+				}
+			}
+			thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:b", true, "")
+			in.Candidates[0].Identity.Asset = "asset:a"
+			if role == "ordinary" {
+				in.Candidates[0].Role.Role = "virtual_water"
+			} else {
+				in.Candidates[0].Role.Role = "ordinary"
+			}
+			in.Candidates[0].Role.Identity = in.Candidates[0].Identity
+			for j := range in.Observations {
+				if in.Observations[j].Identity.Service == "service:b" {
+					in.Observations[j].Identity = in.Candidates[0].Identity
+				}
+			}
+			out = mapThermalCircuitCapabilities(in)
+			thermalCircuitTestOutcome(t, out, "service:a", true, "")
+			thermalCircuitTestOutcome(t, out, "service:b", true, "")
+		})
+	}
+}

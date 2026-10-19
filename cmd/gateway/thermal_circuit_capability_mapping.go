@@ -108,6 +108,9 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 		return v.Validate() == nil && err == nil && n > 0
 	}
 	fresh := func(receipt semreg.MonotonicPoint) bool {
+		if receipt.Validate() != nil || in.EvaluateMonotonic.Validate() != nil || in.FreshForNS.Validate() != nil {
+			return false
+		}
 		r, er := strconv.ParseUint(string(receipt.Nanoseconds), 10, 64)
 		e, ee := strconv.ParseUint(string(in.EvaluateMonotonic.Nanoseconds), 10, 64)
 		limit, el := strconv.ParseUint(string(in.FreshForNS), 10, 64)
@@ -231,7 +234,7 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 				s.Service = &semreg.ServiceInstance{InstanceID: id.Service, AssetID: id.Asset, Definition: serviceRef, BindingID: id.Binding, SourceEpochID: id.Epoch, DriverGeneration: id.Generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: id.BindingRevision}
 				evidence := []semreg.EvidenceRef{t.Evidence, role.QualificationEvidence, role.RoleEvidence}
 				evidenceKey := func(e semreg.EvidenceRef) string {
-					return strings.Join([]string{string(e.Owner), string(e.Kind), string(e.Contract), string(e.Digest)}, "\x00")
+					return strings.Join([]string{string(e.Owner), string(e.Kind), string(e.Contract), string(e.Digest), string(e.Access), string(e.Redaction)}, "\x00")
 				}
 				sort.Slice(evidence, func(i, j int) bool { return evidenceKey(evidence[i]) < evidenceKey(evidence[j]) })
 				activation := make([]semreg.EvidenceRef, 0, len(evidence))
@@ -245,12 +248,15 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 		}
 		out.Sources = append(out.Sources, s)
 	}
-	// Competing admitted owners of any service or capability ID are unresolved. A
-	// merely absent source is not a competing owner and cannot erase a sibling.
+	// Competing admitted owners of an instance ID or the same asset/service
+	// definition are unresolved, regardless of caller-supplied Unambiguous. The
+	// service definition supplies its dimension association; no dimension is invented.
+	// A merely absent source cannot erase an independently admitted sibling.
 	conflicts := make([]bool, len(out.Sources))
 	for i, a := range out.Sources {
 		for j, b := range out.Sources {
-			if i != j && a.Service != nil && b.Service != nil && (a.Service.InstanceID == b.Service.InstanceID || a.Capability.InstanceID == b.Capability.InstanceID) {
+			if i != j && a.Service != nil && b.Service != nil && (a.Service.InstanceID == b.Service.InstanceID || a.Capability.InstanceID == b.Capability.InstanceID ||
+				(a.Service.AssetID == b.Service.AssetID && a.Service.Definition == b.Service.Definition)) {
 				conflicts[i] = true
 			}
 		}

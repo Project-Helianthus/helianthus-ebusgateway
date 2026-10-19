@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
@@ -55,6 +56,7 @@ type thermalCircuitRole struct {
 	Qualification                                        semreg.Qualification
 	Presence, ReadBinding, FamilyApplicable, Unambiguous bool
 	QualificationRef, RoleEvidenceRef                    string
+	QualificationEvidence, RoleEvidence                  semreg.EvidenceRef
 	ReceivedAt                                           semreg.TimePoint
 	Receipt                                              semreg.MonotonicPoint
 }
@@ -94,7 +96,13 @@ type thermalCircuitMappingResult struct {
 // Native field loss is deliberately separate from requested-item accounting.
 func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuitMappingResult {
 	out := thermalCircuitMappingResult{EvaluatedAt: in.EvaluatedAt}
-	key := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	key := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			panic("thermal circuit sort key: " + err.Error())
+		}
+		return string(b)
+	}
 	positive := func(v semreg.Uint64) bool {
 		n, err := strconv.ParseUint(string(v), 10, 64)
 		return v.Validate() == nil && err == nil && n > 0
@@ -144,6 +152,12 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 			if o.Qualification != semreg.QualificationQualified {
 				return nil, "unqualified"
 			}
+			if o.Evidence.Validate() != nil {
+				return nil, "invalid_evidence"
+			}
+			if o.EvidenceStatus != "Proven" && o.EvidenceStatus != "Hypothesis" && o.EvidenceStatus != "Unknown" {
+				return nil, "invalid_evidence_status"
+			}
 			if !fresh(o.Receipt) {
 				return nil, "stale"
 			}
@@ -182,11 +196,13 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 			s.Loss = "role_provenance"
 		case role.Qualification != semreg.QualificationQualified || !role.Presence || !role.ReadBinding || !role.FamilyApplicable || !role.Unambiguous || role.QualificationRef == "" || role.RoleEvidenceRef == "":
 			s.Loss = "unqualified_role"
+		case role.QualificationEvidence.Validate() != nil || role.RoleEvidence.Validate() != nil:
+			s.Loss = "invalid_role_evidence"
 		case !fresh(role.Receipt):
 			s.Loss = "stale_role"
 		case role.Role != "ordinary" && role.Role != "virtual_water":
 			s.Loss = "unknown_role"
-		case role.Role == "ordinary" && sel.Instance == 9:
+		case role.Role == "ordinary" && id.Family == "VRC720-family" && sel.Instance == 9:
 			s.Loss = "virtual_not_physical"
 		case t == nil:
 			s.Loss = typeLoss
@@ -213,7 +229,18 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 				s.Loss = "unsupported_definition"
 			} else {
 				s.Service = &semreg.ServiceInstance{InstanceID: id.Service, AssetID: id.Asset, Definition: serviceRef, BindingID: id.Binding, SourceEpochID: id.Epoch, DriverGeneration: id.Generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: id.BindingRevision}
-				s.Capability = &semreg.CapabilityInstance{InstanceID: id.Capability, AssetID: id.Asset, ServiceInstance: id.Service, Definition: capRef, BindingID: id.Binding, SourceEpochID: id.Epoch, DriverGeneration: id.Generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: id.BindingRevision}
+				evidence := []semreg.EvidenceRef{t.Evidence, role.QualificationEvidence, role.RoleEvidence}
+				evidenceKey := func(e semreg.EvidenceRef) string {
+					return strings.Join([]string{string(e.Owner), string(e.Kind), string(e.Contract), string(e.Digest)}, "\x00")
+				}
+				sort.Slice(evidence, func(i, j int) bool { return evidenceKey(evidence[i]) < evidenceKey(evidence[j]) })
+				activation := make([]semreg.EvidenceRef, 0, len(evidence))
+				for _, e := range evidence {
+					if len(activation) == 0 || evidenceKey(e) != evidenceKey(activation[len(activation)-1]) {
+						activation = append(activation, e)
+					}
+				}
+				s.Capability = &semreg.CapabilityInstance{Constraints: []semreg.TypedField{}, ActivationEvidence: activation, InstanceID: id.Capability, AssetID: id.Asset, ServiceInstance: id.Service, Definition: capRef, BindingID: id.Binding, SourceEpochID: id.Epoch, DriverGeneration: id.Generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: id.BindingRevision}
 			}
 		}
 		out.Sources = append(out.Sources, s)
@@ -245,13 +272,43 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 		if i > 0 && r == requested[i-1] {
 			continue
 		}
-		d := projection.ProjectionDisposition{Kind: r.Kind, ItemID: r.ItemID, Outcome: projection.ProjectionUnsupported}
+		reason := semreg.DefinitionID("gateway.thermal_circuit.unsupported")
+		d := projection.ProjectionDisposition{Kind: r.Kind, ItemID: r.ItemID, Outcome: projection.ProjectionUnsupported, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}, Reason: &reason}
 		if r.Kind == projection.ItemCapability && (r.ItemID == "thermal.capability.read.circuit" || r.ItemID == "thermal.capability.read.dhw") {
 			d.Outcome = projection.ProjectionWithheld
+			reason = "gateway.thermal_circuit.withheld"
 			for _, s := range out.Sources {
+				sourceDefinition := semreg.DefinitionID("thermal.capability.read.circuit")
+				if s.Candidate.Role.Role == "virtual_water" {
+					sourceDefinition = "thermal.capability.read.dhw"
+				}
+				if sourceDefinition != r.ItemID {
+					continue
+				}
+				if s.Loss != "" {
+					// The source identity is adapter-local, not a fabricated semantic fact key.
+					description := "withheld source " + key(s.Candidate.Identity) + ": " + s.Loss
+					d.Loss = append(d.Loss, projection.LossDetail{Kind: projection.LossCapability, SourceItems: []semreg.DefinitionID{r.ItemID}, Description: description})
+				}
 				if s.Capability != nil && s.Capability.Definition.ID == r.ItemID {
 					d.Outcome = projection.ProjectionExact
 				}
+			}
+		}
+		sort.Slice(d.Loss, func(i, j int) bool { return d.Loss[i].Description < d.Loss[j].Description })
+		losses := d.Loss[:0]
+		for _, loss := range d.Loss {
+			if len(losses) == 0 || losses[len(losses)-1].Description != loss.Description {
+				losses = append(losses, loss)
+			}
+		}
+		d.Loss = losses
+		if d.Outcome == projection.ProjectionExact {
+			d.Reason = nil
+			if len(d.Loss) > 0 {
+				d.Outcome = projection.ProjectionTransformed
+				reason = "gateway.thermal_circuit.partial"
+				d.Reason = &reason
 			}
 		}
 		out.Dispositions = append(out.Dispositions, d)

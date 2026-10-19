@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -18,7 +19,11 @@ func thermalCircuitTestInput() thermalCircuitMappingInput {
 	receipt := semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "10"}
 	role := thermalCircuitRole{Identity: id, Selector: sel, Role: "ordinary", Qualification: semreg.QualificationQualified, Presence: true, ReadBinding: true, FamilyApplicable: true, Unambiguous: true, QualificationRef: "synthetic:qualification", RoleEvidenceRef: "synthetic:role", ReceivedAt: semreg.TimePoint{UnixNanoseconds: "10"}, Receipt: receipt}
 	evidenceDigest := sha256.Sum256([]byte("synthetic circuit evidence"))
-	o := thermalCircuitObservation{Identity: id, Selector: sel, Raw: []byte{1, 0}, Decoded: 1, Validity: semreg.ValidityGood, Qualification: semreg.QualificationQualified, EvidenceStatus: "Unknown", Evidence: semreg.EvidenceRef{Digest: semreg.Digest(fmt.Sprintf("%x", evidenceDigest))}, ReceivedAt: semreg.TimePoint{UnixNanoseconds: "10"}, Receipt: receipt, Present: true}
+	o := thermalCircuitObservation{Identity: id, Selector: sel, Raw: []byte{1, 0}, Decoded: 1, Validity: semreg.ValidityGood, Qualification: semreg.QualificationQualified, EvidenceStatus: "Unknown", Evidence: semreg.EvidenceRef{Owner: "test.thermal", Kind: "test.observation", Digest: semreg.Digest(fmt.Sprintf("sha256:%x", evidenceDigest)), Contract: "test.evidence/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}, ReceivedAt: semreg.TimePoint{UnixNanoseconds: "10"}, Receipt: receipt, Present: true}
+	role.QualificationEvidence = o.Evidence
+	role.QualificationEvidence.Kind = "test.qualification"
+	role.RoleEvidence = o.Evidence
+	role.RoleEvidence.Kind = "test.role"
 	cool := o
 	cool.Selector.Register, cool.Raw = 6, []byte{1}
 	return thermalCircuitMappingInput{Candidates: []thermalCircuitCandidate{{Identity: id, TypeSelector: sel, Role: role}}, Observations: []thermalCircuitObservation{o, cool}, Requested: []projection.RequestedItem{{Kind: projection.ItemCapability, ItemID: "thermal.capability.read.circuit"}}, EvaluatedAt: semreg.TimePoint{UnixNanoseconds: "20"}, EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "20"}, FreshForNS: "20"}
@@ -38,12 +43,37 @@ func thermalCircuitTestSibling(in *thermalCircuitMappingInput) {
 
 func thermalCircuitTestOutcome(t *testing.T, out thermalCircuitMappingResult, service semreg.ServiceInstanceID, admitted bool, loss string) thermalCircuitSourceOutcome {
 	t.Helper()
+	for _, d := range out.Dispositions {
+		if err := d.Validate(); err != nil {
+			t.Fatalf("invalid disposition %+v: %v", d, err)
+		}
+	}
 	for _, s := range out.Sources {
 		if s.Candidate.Identity.Service == service {
 			if (s.Service != nil) != admitted || (s.Capability != nil) != admitted || s.Loss != loss {
 				t.Fatalf("service %s: %+v", service, s)
 			}
 			if admitted {
+				if err := s.Capability.Validate(); err != nil {
+					t.Fatalf("invalid admitted capability: %v", err)
+				}
+				want := []semreg.EvidenceRef{s.Candidate.Role.QualificationEvidence, s.Candidate.Role.RoleEvidence}
+				for _, o := range out.Native {
+					if o.Identity == s.Candidate.Identity && o.Selector == s.Candidate.TypeSelector {
+						want = append(want, o.Evidence)
+					}
+				}
+				for _, e := range want {
+					found := false
+					for _, got := range s.Capability.ActivationEvidence {
+						if got == e {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("missing activation evidence: %+v", e)
+					}
+				}
 				if err := s.Service.Validate(); err != nil {
 					t.Fatalf("admitted service %s is invalid: %v", service, err)
 				}
@@ -62,7 +92,7 @@ func TestThermalCircuitCapabilityMappingNativeOnly(t *testing.T) {
 				in := thermalCircuitTestInput()
 				in.Observations[0].Decoded, in.Observations[0].Raw = code, []byte{byte(code), byte(code >> 8)}
 				in.Observations[1].Decoded, in.Observations[1].Raw = flag, []byte{byte(flag)}
-				in.Requested = append(in.Requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "native:type"}, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "native:cooling"})
+				in.Requested = append(in.Requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "native.type"}, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "native.cooling"})
 				out := mapThermalCircuitCapabilities(in)
 				loss := ""
 				if code == 0 {
@@ -161,7 +191,7 @@ func TestThermalCircuitCapabilityMappingIdentityFences(t *testing.T) {
 					}
 				}
 				thermalCircuitTestOutcome(t, out, "service:b", true, "")
-				if out.Dispositions[0].Outcome != projection.ProjectionExact || len(out.Native) != 4 {
+				if out.Dispositions[0].Outcome != projection.ProjectionTransformed || len(out.Native) != 4 {
 					t.Fatal("source loss erased sibling or history")
 				}
 			})
@@ -207,6 +237,11 @@ func TestThermalCircuitCapabilityMappingIndependentAdmission(t *testing.T) {
 		name, loss string
 		change     func(*thermalCircuitMappingInput)
 	}{
+		{"missing_evidence", "invalid_evidence", func(i *thermalCircuitMappingInput) { i.Observations[0].Evidence = semreg.EvidenceRef{} }},
+		{"invalid_evidence", "invalid_evidence", func(i *thermalCircuitMappingInput) { i.Observations[0].Evidence.Digest = "invalid" }},
+		{"evidence_status", "invalid_evidence_status", func(i *thermalCircuitMappingInput) { i.Observations[0].EvidenceStatus = "arbitrary" }},
+		{"qualification_evidence", "invalid_role_evidence", func(i *thermalCircuitMappingInput) { i.Candidates[0].Role.QualificationEvidence = semreg.EvidenceRef{} }},
+		{"role_evidence", "invalid_role_evidence", func(i *thermalCircuitMappingInput) { i.Candidates[0].Role.RoleEvidence.Digest = "invalid" }},
 		{"invalid", "invalid", func(i *thermalCircuitMappingInput) { i.Observations[0].Validity = semreg.ValidityBad }},
 		{"unqualified", "unqualified", func(i *thermalCircuitMappingInput) { i.Observations[0].Qualification = semreg.QualificationCandidate }},
 		{"stale", "stale", func(i *thermalCircuitMappingInput) { i.EvaluateMonotonic.Nanoseconds = "31" }},
@@ -427,7 +462,7 @@ func TestThermalCircuitCapabilityMappingInvalidIdentities(t *testing.T) {
 				out := mapThermalCircuitCapabilities(in)
 				thermalCircuitTestOutcome(t, out, id.Service, false, "identity")
 				thermalCircuitTestOutcome(t, out, "service:b", true, "")
-				if out.Dispositions[0].Outcome != projection.ProjectionExact || len(out.Native) != 4 {
+				if out.Dispositions[0].Outcome != projection.ProjectionTransformed || len(out.Native) != 4 {
 					t.Fatal("identity loss erased sibling or native evidence")
 				}
 			})
@@ -476,7 +511,7 @@ func TestThermalCircuitCapabilityMappingGlobalInstanceConflicts(t *testing.T) {
 				t.Fatalf("got %d conflicts, want 2", conflicts)
 			}
 			thermalCircuitTestOutcome(t, out, "service:c", true, "")
-			if out.Dispositions[0].Outcome != projection.ProjectionExact {
+			if out.Dispositions[0].Outcome != projection.ProjectionTransformed {
 				t.Fatal("conflict erased unrelated sibling")
 			}
 			for i, j := 0, len(in.Candidates)-1; i < j; i, j = i+1, j-1 {
@@ -490,4 +525,61 @@ func TestThermalCircuitCapabilityMappingGlobalInstanceConflicts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThermalCircuitCapabilityMappingEvidenceAndDispositionContracts(t *testing.T) {
+	for _, status := range []string{"Proven", "Hypothesis", "Unknown"} {
+		in := thermalCircuitTestInput()
+		in.Observations[0].EvidenceStatus = status
+		out := mapThermalCircuitCapabilities(in)
+		s := thermalCircuitTestOutcome(t, out, "service:a", true, "")
+		if len(s.Capability.ActivationEvidence) != 3 || s.Capability.Constraints == nil {
+			t.Fatal("incomplete activation contract")
+		}
+		if out.Dispositions[0].Outcome != projection.ProjectionExact || len(out.Dispositions[0].Loss) != 0 {
+			t.Fatal("lossless admission is not exact")
+		}
+	}
+	in := thermalCircuitTestInput()
+	thermalCircuitTestSibling(&in)
+	in.Observations[0].Present = false
+	out := mapThermalCircuitCapabilities(in)
+	thermalCircuitTestOutcome(t, out, "service:a", false, "missing")
+	thermalCircuitTestOutcome(t, out, "service:b", true, "")
+	d := out.Dispositions[0]
+	if d.Outcome != projection.ProjectionTransformed || d.Reason == nil || len(d.Loss) != 1 {
+		t.Fatalf("partial source loss missing: %+v", d)
+	}
+	if !strings.Contains(d.Loss[0].Description, `"Source":"source:a"`) || !strings.HasSuffix(d.Loss[0].Description, ": missing") || d.Loss[0].SourceItems[0] != d.ItemID {
+		t.Fatal("loss does not identify source and requested capability")
+	}
+	in.Candidates = in.Candidates[:1]
+	out = mapThermalCircuitCapabilities(in)
+	thermalCircuitTestOutcome(t, out, "service:a", false, "missing")
+	if out.Dispositions[0].Outcome != projection.ProjectionWithheld || len(out.Dispositions[0].Loss) != 1 {
+		t.Fatal("withheld source loss missing")
+	}
+	in.Candidates = nil
+	out = mapThermalCircuitCapabilities(in)
+	if err := out.Dispositions[0].Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if out.Dispositions[0].Outcome != projection.ProjectionWithheld || out.Dispositions[0].Reason == nil {
+		t.Fatal("absent source reported as admitted")
+	}
+}
+
+func TestThermalCircuitCapabilityMappingOtherFamilyInstanceNine(t *testing.T) {
+	in := thermalCircuitTestInput()
+	in.Candidates[0].Identity.Family = "other-family"
+	in.Candidates[0].TypeSelector.Instance = 9
+	in.Candidates[0].Role.Identity = in.Candidates[0].Identity
+	in.Candidates[0].Role.Selector = in.Candidates[0].TypeSelector
+	for i := range in.Observations {
+		in.Observations[i].Identity = in.Candidates[0].Identity
+		in.Observations[i].Selector.Instance = 9
+	}
+	thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:a", true, "")
+	in.Candidates[0].Role.FamilyApplicable = false
+	thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:a", false, "unqualified_role")
 }

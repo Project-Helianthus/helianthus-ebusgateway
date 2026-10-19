@@ -32,7 +32,7 @@ type thermalMaintenanceObservation struct {
 	Validity                                           semreg.Validity
 	Freshness                                          semreg.Freshness
 	Qualification                                      semreg.Qualification
-	EvidenceStatus                                     string // Proven, Hypothesis, or Unknown; separate from qualification.
+	EvidenceStatus                                     string // Retained native provenance text; never admission proof.
 	Evidence                                           []semreg.EvidenceRef
 	EvidenceRevision, DecoderRevision, MappingRevision string
 	ReceivedAt                                         semreg.TimePoint
@@ -49,10 +49,11 @@ type thermalMaintenanceInput struct {
 }
 
 type thermalMaintenanceNative struct {
-	Observation    thermalMaintenanceObservation
-	CurrentBinding bool
-	Conflict       bool
-	Loss           string
+	Observation            thermalMaintenanceObservation
+	CurrentBinding         bool
+	Conflict               bool
+	Loss                   string
+	EvidenceInterpretation string
 }
 
 type thermalMaintenanceResult struct {
@@ -83,7 +84,11 @@ func mapThermalMaintenance(input thermalMaintenanceInput) (thermalMaintenanceRes
 		EvaluatedAt: in.EvaluatedAt, EvaluateMonotonic: in.EvaluateMonotonic,
 	}
 	for _, observation := range in.Observations {
-		native := thermalMaintenanceNative{Observation: observation, Loss: "unresolved_native_meaning"}
+		native := thermalMaintenanceNative{Observation: observation, Loss: "unresolved_native_meaning", EvidenceInterpretation: "Unknown"}
+		switch observation.EvidenceStatus {
+		case "Proven", "Hypothesis", "Unknown":
+			native.EvidenceInterpretation = observation.EvidenceStatus
+		}
 		for _, binding := range in.Bindings {
 			if binding == observation.Identity {
 				native.CurrentBinding = true
@@ -115,6 +120,20 @@ func mapThermalMaintenance(input thermalMaintenanceInput) (thermalMaintenanceRes
 		}
 		out.Native = append(out.Native, native)
 	}
+	// No FactKey is justified by these observations. Retain source-specific loss
+	// by native identity instead of inventing canonical source definitions.
+	type sourceLoss struct {
+		Identity thermalMaintenanceIdentity
+		Loss     string
+	}
+	losses := make([]sourceLoss, 0, len(out.Native))
+	for _, native := range out.Native {
+		losses = append(losses, sourceLoss{native.Observation.Identity, native.Loss})
+	}
+	lossJSON, err := json.Marshal(losses)
+	if err != nil {
+		return thermalMaintenanceResult{}, err
+	}
 	known := map[semreg.DefinitionID]bool{}
 	for _, field := range thermal.Metadata().Fields {
 		known[field.Ref.ID] = true
@@ -125,7 +144,14 @@ func mapThermalMaintenance(input thermalMaintenanceInput) (thermalMaintenanceRes
 			continue
 		}
 		seen[request] = true
-		d := projection.ProjectionDisposition{Kind: request.Kind, ItemID: request.ItemID, Outcome: projection.ProjectionUnsupported}
+		// Existing gateway read-projection reason, owned by internal/semanticview
+		// (project): no canonical value is known from these native candidates.
+		reason := semreg.DefinitionID("semantic.read.reason.value_unknown")
+		d := projection.ProjectionDisposition{Kind: request.Kind, ItemID: request.ItemID, Outcome: projection.ProjectionUnsupported,
+			Reason: &reason, SourceKeys: []semreg.FactKey{},
+			Loss: []projection.LossDetail{{Kind: projection.LossProvenance, SourceItems: []semreg.DefinitionID{},
+				Description: "No canonical equivalence; retained native source losses: " + string(lossJSON)}},
+		}
 		if request.Kind == projection.ItemFact && known[request.ItemID] {
 			d.Outcome = projection.ProjectionWithheld
 		}
@@ -136,6 +162,9 @@ func mapThermalMaintenance(input thermalMaintenanceInput) (thermalMaintenanceRes
 				d = independent
 				break
 			}
+		}
+		if err := d.Validate(); err != nil {
+			return thermalMaintenanceResult{}, err
 		}
 		out.Dispositions = append(out.Dispositions, d)
 	}

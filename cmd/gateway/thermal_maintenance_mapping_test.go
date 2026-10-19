@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -44,6 +46,11 @@ func thermalMaintenanceMap(t *testing.T, in thermalMaintenanceInput) thermalMain
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, d := range out.Dispositions {
+		if err := d.Validate(); err != nil {
+			t.Fatalf("invalid disposition: %v: %+v", err, d)
+		}
+	}
 	if len(out.Facts) != 0 {
 		t.Fatal("Boolean evidence emitted canonical facts", out.Facts)
 	}
@@ -77,27 +84,7 @@ func TestThermalMaintenanceMappingWithholding(t *testing.T) {
 }
 
 func TestThermalMaintenanceMappingIdentity(t *testing.T) {
-	mutations := []struct {
-		name   string
-		mutate func(*thermalMaintenanceIdentity)
-	}{
-		{"asset", func(i *thermalMaintenanceIdentity) { i.Asset = "asset:other" }},
-		{"service", func(i *thermalMaintenanceIdentity) { i.Service = "service:other" }},
-		{"source", func(i *thermalMaintenanceIdentity) { i.Path.SourceID = "source:other" }},
-		{"epoch", func(i *thermalMaintenanceIdentity) { i.Path.SourceEpochID = "epoch:other" }},
-		{"generation", func(i *thermalMaintenanceIdentity) { i.Path.DriverGeneration = "2" }},
-		{"binding", func(i *thermalMaintenanceIdentity) { i.Path.BindingID = "binding:other" }},
-		{"binding_revision", func(i *thermalMaintenanceIdentity) { i.BindingRevision = "2" }},
-		{"association_revision", func(i *thermalMaintenanceIdentity) { i.AssociationRevision = "2" }},
-		{"pb", func(i *thermalMaintenanceIdentity) { i.Selector.PB++ }},
-		{"sb", func(i *thermalMaintenanceIdentity) { i.Selector.SB++ }},
-		{"opcode", func(i *thermalMaintenanceIdentity) { i.Selector.Opcode = 6 }},
-		{"operation_type", func(i *thermalMaintenanceIdentity) { i.Selector.OperationType++ }},
-		{"group", func(i *thermalMaintenanceIdentity) { i.Selector.Group++ }},
-		{"instance", func(i *thermalMaintenanceIdentity) { i.Selector.Instance++ }},
-		{"register", func(i *thermalMaintenanceIdentity) { i.Selector.Register = 0x0096 }},
-		{"direction", func(i *thermalMaintenanceIdentity) { i.Selector.Direction = "initiator_to_target" }},
-	}
+	mutations := thermalMaintenanceIdentityMutations()
 	for _, mutation := range mutations {
 		t.Run(mutation.name, func(t *testing.T) {
 			in := thermalMaintenanceFixture(7, false)
@@ -170,8 +157,8 @@ func TestThermalMaintenanceMappingAccountingAndIsolation(t *testing.T) {
 				in.Observations[0].Freshness = semreg.FreshnessStale
 			}
 			in.Requested = append(in.Requested, in.Requested[0], projection.RequestedItem{Kind: projection.ItemFact, ItemID: "unsupported.request"})
-			in.Independent = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.status.fault", Outcome: projection.ProjectionExact,
-				SourceKeys: []semreg.FactKey{{FactID: "thermal.status.fault", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.system", Value: semreg.Value{Kind: semreg.ValueText, Text: thermalMaintenanceText("synthetic:system")}}}}},
+			in.Independent = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.status.fault", Outcome: projection.ProjectionTransformed,
+				SourceKeys: []semreg.FactKey{{PackID: "helianthus.pack.thermal", PackVersion: "1.0.0", FactID: "thermal.status.fault", Dimensions: []semreg.Dimension{{ID: "thermal.dimension.system", Value: semreg.Value{Kind: semreg.ValueText, Text: thermalMaintenanceText("synthetic:system")}}}}},
 				Loss:       []projection.LossDetail{{Kind: projection.LossProvenance, SourceItems: []semreg.DefinitionID{"thermal.status.fault"}, Description: "synthetic independent source"}}}}
 			out := thermalMaintenanceMap(t, in)
 			if len(out.Dispositions) != 5 {
@@ -244,5 +231,154 @@ func TestThermalMaintenanceMappingUnknownAndAbsent(t *testing.T) {
 	out = thermalMaintenanceMap(t, in)
 	if out.Native[0].Loss != "unsupported_selector" {
 		t.Fatal(out)
+	}
+}
+
+func thermalMaintenanceIdentityMutations() []struct {
+	name   string
+	mutate func(*thermalMaintenanceIdentity)
+} {
+	return []struct {
+		name   string
+		mutate func(*thermalMaintenanceIdentity)
+	}{
+		{"asset", func(i *thermalMaintenanceIdentity) { i.Asset = "asset:other" }},
+		{"service", func(i *thermalMaintenanceIdentity) { i.Service = "service:other" }},
+		{"source", func(i *thermalMaintenanceIdentity) { i.Path.SourceID = "source:other" }},
+		{"epoch", func(i *thermalMaintenanceIdentity) { i.Path.SourceEpochID = "epoch:other" }},
+		{"generation", func(i *thermalMaintenanceIdentity) { i.Path.DriverGeneration = "2" }},
+		{"binding", func(i *thermalMaintenanceIdentity) { i.Path.BindingID = "binding:other" }},
+		{"binding_revision", func(i *thermalMaintenanceIdentity) { i.BindingRevision = "2" }},
+		{"association_revision", func(i *thermalMaintenanceIdentity) { i.AssociationRevision = "2" }},
+		{"pb", func(i *thermalMaintenanceIdentity) { i.Selector.PB++ }},
+		{"sb", func(i *thermalMaintenanceIdentity) { i.Selector.SB++ }},
+		{"opcode", func(i *thermalMaintenanceIdentity) { i.Selector.Opcode = 6 }},
+		{"operation_type", func(i *thermalMaintenanceIdentity) { i.Selector.OperationType++ }},
+		{"group", func(i *thermalMaintenanceIdentity) { i.Selector.Group++ }},
+		{"instance", func(i *thermalMaintenanceIdentity) { i.Selector.Instance++ }},
+		{"register", func(i *thermalMaintenanceIdentity) { i.Selector.Register = 0x0096 }},
+		{"direction", func(i *thermalMaintenanceIdentity) { i.Selector.Direction = "initiator_to_target" }},
+	}
+}
+
+func TestI39DispositionEnvelope(t *testing.T) {
+	in := thermalMaintenanceFixture(7, false)
+	second := thermalMaintenanceFixture(0x0096, true).Observations[0]
+	second.Freshness = semreg.FreshnessStale
+	in.Bindings = append(in.Bindings, second.Identity)
+	in.Observations = append(in.Observations, second)
+	in.Requested = append(in.Requested, projection.RequestedItem{Kind: projection.ItemFact, ItemID: "unsupported.request"})
+	out := thermalMaintenanceMap(t, in)
+	for _, d := range out.Dispositions {
+		// Origin: internal/semanticview.project's existing default non-exact reason.
+		if d.Reason == nil || *d.Reason != "semantic.read.reason.value_unknown" {
+			t.Fatal("reason owner changed", d)
+		}
+		if len(d.SourceKeys) != 0 || len(d.Loss) != 1 || d.Loss[0].Kind != projection.LossProvenance || len(d.Loss[0].SourceItems) != 0 || d.Loss[0].Reversible {
+			t.Fatal(d)
+		}
+		var losses []struct {
+			Identity thermalMaintenanceIdentity
+			Loss     string
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(d.Loss[0].Description, "No canonical equivalence; retained native source losses: ")), &losses); err != nil {
+			t.Fatal(err)
+		}
+		if len(losses) != 2 || losses[0].Identity != in.Observations[0].Identity || losses[0].Loss != "unresolved_native_meaning" || losses[1].Identity != second.Identity || losses[1].Loss != "freshness_withheld" {
+			t.Fatal(losses)
+		}
+		for _, member := range []string{"kind", "item_id", "outcome", "source_keys", "loss", "reason"} {
+			t.Run(string(d.ItemID)+"/"+member, func(t *testing.T) {
+				broken := d
+				switch member {
+				case "kind":
+					broken.Kind = ""
+				case "item_id":
+					broken.ItemID = ""
+				case "outcome":
+					broken.Outcome = ""
+				case "source_keys":
+					broken.SourceKeys = nil
+				case "loss":
+					broken.Loss = nil
+				case "reason":
+					broken.Reason = nil
+				}
+				if broken.Validate() == nil {
+					t.Fatal("required member accepted", member)
+				}
+			})
+		}
+	}
+	// Invalid incoming accounting fails closed instead of returning invalid rows.
+	in.Independent = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.status.fault", Outcome: projection.ProjectionWithheld}}
+	if _, err := mapThermalMaintenance(in); err == nil {
+		t.Fatal("invalid independent row accepted")
+	}
+}
+
+func TestI39EvidenceStatusAndStaleConflict(t *testing.T) {
+	in := thermalMaintenanceFixture(7, false)
+	in.Observations[0].EvidenceStatus = "Provne"
+	in.Observations[0].Freshness = semreg.FreshnessStale
+	in.Observations[0].Qualification = semreg.QualificationCandidate
+	in.Observations = append(in.Observations, thermalMaintenanceFixture(7, true).Observations[0])
+	out := thermalMaintenanceMap(t, in)
+	if len(out.Native) != 2 || !out.Native[0].Conflict || !out.Native[1].Conflict || out.Native[0].EvidenceInterpretation != "Unknown" || out.Native[1].EvidenceInterpretation != "Unknown" {
+		t.Fatal(out.Native)
+	}
+	for i := range in.Observations {
+		if !reflect.DeepEqual(out.Native[i].Observation, in.Observations[i]) {
+			t.Fatal("candidate changed", out.Native[i])
+		}
+	}
+	if out.Native[0].Loss != "freshness_withheld" || out.Native[1].Loss != "unresolved_native_meaning" {
+		t.Fatal(out.Native)
+	}
+	for _, status := range []string{"Proven", "Hypothesis", "Unknown", ""} {
+		in.Observations[0].EvidenceStatus = status
+		got := thermalMaintenanceMap(t, in)
+		want := status
+		if want == "" {
+			want = "Unknown"
+		}
+		if got.Native[0].EvidenceInterpretation != want || got.Native[0].Observation.EvidenceStatus != status {
+			t.Fatal(got.Native[0])
+		}
+	}
+}
+
+func TestI39ConflictIdentityIsolation(t *testing.T) {
+	for _, mutation := range thermalMaintenanceIdentityMutations() {
+		t.Run(mutation.name, func(t *testing.T) {
+			in := thermalMaintenanceFixture(7, false)
+			other := thermalMaintenanceFixture(7, true).Observations[0]
+			mutation.mutate(&other.Identity)
+			in.Bindings = append(in.Bindings, other.Identity)
+			in.Observations = append(in.Observations, other)
+			out := thermalMaintenanceMap(t, in)
+			if len(out.Native) != 2 {
+				t.Fatal(out.Native)
+			}
+			for i, native := range out.Native {
+				if native.Conflict || !native.CurrentBinding || !reflect.DeepEqual(native.Observation, in.Observations[i]) {
+					t.Fatal("distinct identity conflated", native)
+				}
+			}
+		})
+	}
+}
+
+func TestI39IndependentExactPreserved(t *testing.T) {
+	in := thermalMaintenanceFixture(0x0096, false)
+	in.Independent = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.status.fault", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}}}
+	out := thermalMaintenanceMap(t, in)
+	for _, d := range out.Dispositions {
+		if d.ItemID == "thermal.status.fault" && !reflect.DeepEqual(d, in.Independent[0]) {
+			t.Fatal("independent exact projection changed", d)
+		}
+	}
+	if len(out.Native) != 1 || out.Native[0].Loss != "unresolved_native_meaning" {
+		t.Fatal("native loss erased", out.Native)
 	}
 }

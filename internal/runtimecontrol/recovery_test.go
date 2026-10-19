@@ -35,17 +35,16 @@ import (
 )
 
 const (
-	synthFamily                = "synthetic"
-	synthDriver       DriverID = "fam.synthetic"
-	synthSource       SourceID = "source:synthetic"
-	secondDriver      DriverID = "fam.second"
-	secondSource      SourceID = "source:second"
-	otherDriver                = "fam.other"
-	otherSource                = "source:other"
-	otherAsset                 = "asset:other"
-	synthClockID               = "clock:managed-durable"
-	admittedReadBound          = 100 * time.Millisecond
-	controlExportRef           = "semhub.control_export_refused"
+	synthFamily               = "synthetic"
+	synthDriver      DriverID = "fam.synthetic"
+	synthSource      SourceID = "source:synthetic"
+	secondDriver     DriverID = "fam.second"
+	secondSource     SourceID = "source:second"
+	otherDriver               = "fam.other"
+	otherSource               = "source:other"
+	otherAsset                = "asset:other"
+	synthClockID              = "clock:managed-durable"
+	controlExportRef          = "semhub.control_export_refused"
 )
 
 var (
@@ -1360,15 +1359,6 @@ func assertStates(t *testing.T, what string, got, want map[AssetID]assetState) {
 	}
 }
 
-func withinBound(t *testing.T, what string, fn func()) {
-	t.Helper()
-	start := time.Now()
-	fn()
-	if elapsed := time.Since(start); elapsed > admittedReadBound {
-		t.Fatalf("%s took %v, above the %v bound", what, elapsed, admittedReadBound)
-	}
-}
-
 // --- synthetic lifecycle executor over the managed writer ---
 
 type synthExec struct {
@@ -1597,8 +1587,8 @@ func TestRecoveryIntentBeforeHubOutcomeAfter(t *testing.T) {
 // path) and, separately, inside a control attempt's write-ahead step. In both
 // cases another family's Admitted and ReadAdmitted reads, a managed asset's
 // Inspect, another family's direct publication and the store's committed
-// control read each return within admittedReadBound (100 ms): no durable
-// write runs under a hub lock or the store manager's read path.
+// control read complete before the test releases either stalled write.
+// The watchdog only diagnoses hangs; it does not measure read latency.
 func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) {
 	w := newWorld(t, worldOpts{other: true})
 	w.mustRestore()
@@ -1628,43 +1618,85 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 		}
 	}
 	direct(uint64(time.Second))
-	checks := func(phase string, at uint64) {
-		for i := 0; i < 20; i++ {
-			withinBound(t, phase+": other family Admitted", func() {
-				if !hub.Admitted(otherAsset) || !hub.ReadAdmitted(otherAsset) {
-					t.Fatal("other family read closed")
-				}
-			})
-			withinBound(t, phase+": managed Inspect", func() {
-				if view, err := hub.Inspect(semreg.AssetID(synthAssets[1])); err != nil || !view.Present {
-					t.Fatal("managed inspect failed")
-				}
-			})
-			withinBound(t, phase+": committed control read", func() {
-				if _, err := w.m.ControlSnapshot(); err != nil {
-					t.Fatal(err)
-				}
-			})
+	checks := func(at uint64, release <-chan struct{}) {
+		assertStalled := func() {
+			t.Helper()
+			select {
+			case <-release:
+				t.Fatal("write released before read checks completed")
+			default:
+			}
 		}
-		withinBound(t, phase+": other family direct publication", func() { direct(at) })
+		assertStalled()
+		for i := 0; i < 20; i++ {
+			if !hub.Admitted(otherAsset) || !hub.ReadAdmitted(otherAsset) {
+				t.Fatal("other family read closed")
+			}
+			assertStalled()
+			if view, err := hub.Inspect(semreg.AssetID(synthAssets[1])); err != nil || !view.Present {
+				t.Fatal("managed inspect failed")
+			}
+			assertStalled()
+			if _, err := w.m.ControlSnapshot(); err != nil {
+				t.Fatal(err)
+			}
+			assertStalled()
+		}
+		direct(at)
+		assertStalled()
+	}
+	runStalled := func(phase string, at uint64, entered, release chan struct{}, write func() error) {
+		t.Helper()
+		var releaseOnce sync.Once
+		unblock := func() { releaseOnce.Do(func() { close(release) }) }
+		wait := func(done <-chan struct{}, what string) bool {
+			t.Helper()
+			select {
+			case <-done:
+				return true
+			case <-time.After(5 * time.Second):
+				t.Errorf("%s: timed out waiting for %s", phase, what)
+				return false
+			}
+		}
+		writeDone := make(chan struct{})
+		var writeErr error
+		go func() {
+			defer close(writeDone)
+			writeErr = write()
+		}()
+		var readsDone chan struct{}
+		defer func() {
+			// Release first on every failure path so blocked readers and the
+			// writer can finish before the fixture's cleanup runs.
+			unblock()
+			if wait(writeDone, "writer to join") && writeErr != nil {
+				t.Errorf("%s: durable write: %v", phase, writeErr)
+			}
+			if readsDone != nil {
+				wait(readsDone, "read checks to join")
+			}
+		}()
+		if !wait(entered, "write to reach store") {
+			t.FailNow()
+		}
+		readsDone = make(chan struct{})
+		go func() {
+			defer close(readsDone)
+			checks(at, release)
+		}()
+		if !wait(readsDone, "read checks while write remains stalled") {
+			t.FailNow()
+		}
+		// Both the operations and their ordering sentinels have completed.
+		unblock()
 	}
 
 	entered, release := w.hooks.arm()
-	done := make(chan error, 1)
-	go func() {
+	runStalled("stalled intent write", uint64(2*time.Second), entered, release, func() error {
 		_, err := w.publish(synthSource, synthAssets[0])
-		done <- err
-	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("managed write did not reach the store")
-	}
-	checks("stalled intent write", uint64(2*time.Second))
-	close(release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+		return err
+	})
 
 	controlEntered, controlRelease := w.store.armStall(func(p []byte) bool {
 		s, err := decodeStream(p)
@@ -1674,20 +1706,10 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 		e := s.Entries[len(s.Entries)-1]
 		return e.Kind == entryControl && len(e.Assets) == 2 && e.Assets[1].Staged != nil && e.Assets[1].Outcome == nil
 	})
-	go func() {
+	runStalled("stalled control write-ahead", uint64(3*time.Second), controlEntered, controlRelease, func() error {
 		_, err := w.control(synthSource, semhub.ControlFence)
-		done <- err
-	}()
-	select {
-	case <-controlEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("control write-ahead did not reach the store")
-	}
-	checks("stalled control write-ahead", uint64(3*time.Second))
-	close(controlRelease)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+		return err
+	})
 }
 
 // TestRecoveryS39AcceptedPublicationsAndFence covers S3.9 "accepted

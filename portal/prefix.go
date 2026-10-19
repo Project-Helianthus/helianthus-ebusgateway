@@ -28,14 +28,21 @@ func validPortalPath(value string) bool {
 
 func validatePortalPaths(opts Options) error {
 	if opts.ExternalPrefix != "" && (!validPortalPath(opts.ExternalPrefix) || strings.HasSuffix(opts.ExternalPrefix, "/")) {
-		return errors.New("invalid external prefix")
+		return errors.New("invalid portal path field: ExternalPrefix")
 	}
 	if !validPortalPath(opts.BasePath) || !strings.HasSuffix(opts.BasePath, "/") {
-		return errors.New("invalid portal directory mount")
+		return errors.New("invalid portal path field: BasePath")
 	}
-	for _, endpoint := range []string{opts.GraphQLPath, opts.PortalCatalogPath, opts.SnapshotPath, opts.SubscriptionPath, opts.MCPPath, opts.EEBusAdminPath} {
-		if endpoint != "" && (!validPortalPath(endpoint) || strings.HasSuffix(endpoint, "/")) {
-			return errors.New("invalid gateway endpoint")
+	for _, endpoint := range []struct{ name, value string }{
+		{"GraphQLPath", opts.GraphQLPath},
+		{"PortalCatalogPath", opts.PortalCatalogPath},
+		{"SnapshotPath", opts.SnapshotPath},
+		{"SubscriptionPath", opts.SubscriptionPath},
+		{"MCPPath", opts.MCPPath},
+		{"EEBusAdminPath", opts.EEBusAdminPath},
+	} {
+		if endpoint.value != "" && (!validPortalPath(endpoint.value) || strings.HasSuffix(endpoint.value, "/")) {
+			return errors.New("invalid portal path field: " + endpoint.name)
 		}
 	}
 	return nil

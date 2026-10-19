@@ -121,12 +121,14 @@ func TestThermalZoneValveMappingIdentity(t *testing.T) {
 		for _, mutation := range mutations {
 			t.Run(roleName+"/"+mutation.name, func(t *testing.T) {
 				input := thermalZoneValveFixture()
+				thermalZoneValveSetValue(input.Observations[thermalZoneValveCircuitType], 2)
 				baseline := mapThermalZoneValve(input)
 				if !baseline.LegacyInputsCurrent {
 					t.Fatal("synthetic positive control failed")
 				}
 				mutation.mutate(&input.Observations[role].Identity)
 				result := mapThermalZoneValve(input)
+				thermalZoneValveAssertRejectedOutputs(t, result, role)
 				if result.Components[role].Current || result.Components[role].Reason != "identity_mismatch" || result.LegacyInputsCurrent {
 					t.Fatal("mismatched identity reused")
 				}
@@ -150,6 +152,9 @@ func TestThermalZoneValveMappingIndependentAxes(t *testing.T) {
 		{"qualification", "unqualified", func(o *thermalZoneValveObservation) { o.Qualification = semreg.QualificationCandidate }},
 		{"width", "invalid", func(o *thermalZoneValveObservation) { o.Raw = append(o.Raw, 0) }},
 		{"wire_type", "invalid", func(o *thermalZoneValveObservation) { o.WireType = "u8" }},
+		{"decode_mismatch", "invalid", func(o *thermalZoneValveObservation) { value := uint16(0); o.Value = &value }},
+		{"raw_low_byte_mismatch", "invalid", func(o *thermalZoneValveObservation) { o.Raw[0] ^= 1 }},
+		{"raw_high_byte_mismatch", "invalid", func(o *thermalZoneValveObservation) { o.Raw[1] ^= 1 }},
 		{"missing_decode", "invalid", func(o *thermalZoneValveObservation) { o.Value = nil }},
 		{"elapsed_age", "age_unknown_or_stale", func(o *thermalZoneValveObservation) { o.ReceiptMonotonic.Nanoseconds = "1" }},
 		{"future_receipt", "age_unknown_or_stale", func(o *thermalZoneValveObservation) { o.ReceiptMonotonic.Nanoseconds = "21" }},
@@ -160,11 +165,13 @@ func TestThermalZoneValveMappingIndependentAxes(t *testing.T) {
 		for _, mutation := range mutations {
 			t.Run(roleName+"/"+mutation.name, func(t *testing.T) {
 				input := thermalZoneValveFixture()
+				thermalZoneValveSetValue(input.Observations[thermalZoneValveCircuitType], 2)
 				baseline := mapThermalZoneValve(input)
 				before := *input.Observations[role]
 				mutation.mutate(input.Observations[role])
 				result := mapThermalZoneValve(input)
 				component := result.Components[role]
+				thermalZoneValveAssertRejectedOutputs(t, result, role)
 				if component.Current || component.Reason != mutation.reason || result.LegacyInputsCurrent {
 					t.Fatalf("axis did not fail closed: %+v", component)
 				}
@@ -202,9 +209,12 @@ func TestThermalZoneValveMappingLossAndHistory(t *testing.T) {
 	// member: absent zone evidence cannot produce a replacement system disposition.
 	input.Context.AssociationQualified = false
 	input.Observations = thermalZoneValveFixture().Observations
-	if mapThermalZoneValve(input).LegacyInputsCurrent {
+	thermalZoneValveSetValue(input.Observations[thermalZoneValveCircuitType], 2)
+	unqualified := mapThermalZoneValve(input)
+	if unqualified.LegacyInputsCurrent {
 		t.Fatal("association qualification ignored")
 	}
+	thermalZoneValveAssertRejectedOutputs(t, unqualified, thermalZoneValveAssociation)
 }
 
 func TestThermalZoneValveMappingDetached(t *testing.T) {
@@ -219,7 +229,11 @@ func TestThermalZoneValveMappingDetached(t *testing.T) {
 	}
 	result.Components[0].Observation.Raw[0], *result.Components[0].Observation.Value = 3, 3
 	result.Components[0].Retained.Raw[0], *result.Components[0].Retained.Value = 4, 4
-	*result.LegacyPercentage = 50
+	if result.LegacyPercentage != nil {
+		t.Fatal("stale valve produced a percentage")
+	}
+	percentageResult := mapThermalZoneValve(thermalZoneValveFixture())
+	*percentageResult.LegacyPercentage = 50
 	result.Losses[2].Definition.ID = "changed"
 	if input.Observations[0].Raw[0] != 7 || *input.Observations[0].Value != 7 || input.Previous[0].Raw[0] != 9 || *input.Previous[0].Value != 9 {
 		t.Fatal("output aliases input")
@@ -251,6 +265,7 @@ func TestThermalZoneValveMappingContext(t *testing.T) {
 			input := thermalZoneValveFixture()
 			test.mutate(&input)
 			result := mapThermalZoneValve(input)
+			thermalZoneValveAssertRejectedOutputs(t, result, thermalZoneValveStatus)
 			if result.Components[0].Current || result.LegacyInputsCurrent {
 				t.Fatal("unsupported context accepted")
 			}
@@ -282,5 +297,20 @@ func TestThermalZoneValveMappingContext(t *testing.T) {
 		if component.Current || component.Reason != "missing" || component.Observation != nil {
 			t.Fatal("absence became a measurement")
 		}
+	}
+}
+
+// A rejected valve supplies no derived outputs. Rejected association/circuit
+// context preserves the admitted valve's documented open-without-context fallback.
+func thermalZoneValveAssertRejectedOutputs(t *testing.T, result thermalZoneValveResult, role int) {
+	t.Helper()
+	if role == thermalZoneValveStatus {
+		if result.NativeStatus != "unknown" || result.LegacyAction != "" || result.LegacyPercentage != nil || result.CircuitTypeConflict {
+			t.Fatalf("rejected valve supplied derived outputs: %+v", result)
+		}
+		return
+	}
+	if result.NativeStatus != "open" || result.LegacyAction != "heating" || result.LegacyPercentage == nil || *result.LegacyPercentage != 0.0015259021896696422 || result.CircuitTypeConflict {
+		t.Fatalf("rejected context supplied cooling/conflict or erased admitted valve: %+v", result)
 	}
 }

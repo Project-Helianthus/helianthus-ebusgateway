@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"strconv"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -45,6 +46,8 @@ type thermalZoneValveObservation struct {
 	Freshness                                                        semreg.Freshness
 }
 
+// The caller qualifies the association and supplies mutually consistent expected
+// identities across roles; this mapper checks each observation against its role.
 type thermalZoneValveContext struct {
 	Expected             [thermalZoneValveComponentCount]thermalZoneValveIdentity
 	EvaluatedAt          semreg.TimePoint
@@ -80,7 +83,9 @@ type thermalZoneValveResult struct {
 	EvaluateMonotonic semreg.MonotonicPoint
 	NativeStatus      string
 	// Legacy outputs reproduce presentation/helper behavior only, including the
-	// open-without-context fallback. They are never measured travel or delivery.
+	// open-without-context fallback. Only admitted components supply these outputs;
+	// cooling additionally requires admitted, qualified association context.
+	// They are never measured travel or delivery.
 	LegacyPercentage *float64
 	LegacyAction     string
 	// This reports component currency, not permission to admit a zone action.
@@ -120,8 +125,13 @@ func mapThermalZoneValve(input thermalZoneValveInput) thermalZoneValveResult {
 			component.Retained = thermalZoneValveClone(input.Previous[role])
 		}
 	}
-	valve := thermalZoneValveDecoded(result.Components[thermalZoneValveStatus].Observation)
-	circuit := thermalZoneValveDecoded(result.Components[thermalZoneValveCircuitType].Observation)
+	var valve, circuit *uint16
+	if result.Components[thermalZoneValveStatus].Current {
+		valve = result.Components[thermalZoneValveStatus].Observation.Value
+	}
+	if input.Context.AssociationQualified && result.Components[thermalZoneValveAssociation].Current && result.Components[thermalZoneValveCircuitType].Current {
+		circuit = result.Components[thermalZoneValveCircuitType].Observation.Value
+	}
 	if valve != nil {
 		percentage := float64(*valve) / 655.35
 		result.LegacyPercentage = &percentage
@@ -157,7 +167,10 @@ func thermalZoneValveClone(observation *thermalZoneValveObservation) *thermalZon
 }
 
 func thermalZoneValveDecoded(observation *thermalZoneValveObservation) *uint16 {
-	if observation == nil || observation.Validity != semreg.ValidityGood || observation.WireType != "u16_le" || len(observation.Raw) != 2 {
+	if observation == nil || observation.Validity != semreg.ValidityGood || observation.WireType != "u16_le" || len(observation.Raw) != 2 || observation.Value == nil {
+		return nil
+	}
+	if *observation.Value != binary.LittleEndian.Uint16(observation.Raw) {
 		return nil
 	}
 	return observation.Value

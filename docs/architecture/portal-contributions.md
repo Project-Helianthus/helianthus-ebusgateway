@@ -4,7 +4,8 @@ Status: integration contract for issue [#1129](https://github.com/Project-Helian
 This is a partial slice of [#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999)
 (Project #2 INT-10); it does not close the parent. The descriptor and bootstrap
 transport is implemented by [#1172](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1172).
-Shared semantic reads and prefix embedding remain future integration work.
+Handler prefix support is implemented; production/Ingress forwarding and shared
+semantic read provider wiring remain separate integration work.
 This is not an available universal lifecycle/configuration API or a stability promise.
 
 ## Existing seams and remaining work
@@ -19,10 +20,10 @@ The implementation comparison is:
 
 | Existing source | Current behavior | Integration requirement |
 | --- | --- | --- |
-| `portal/handler.go`, `Options` | Configured endpoint paths, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production shared snapshot provider wiring remains unavailable. |
+| `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production shared snapshot provider wiring remains unavailable. |
 | `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; redirects the bare mount to its trailing slash; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
 | `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` | Resolve from the canonical Portal directory. |
-| `portal/handler.go`, bootstrap | Options-derived endpoints plus fixed `/portal/api/v1/...` endpoints | Replace fixed external paths with host-composed paths when implementing embedding. |
+| `portal/handler.go`, bootstrap | Host-composed endpoints using the external prefix and Portal base path | Preserve handler composition; production/Ingress forwarding must cover advertised routes. |
 | `portal/web/src/app.js` | Relative health/bootstrap fetches and SSE URL, bootstrap catalog endpoint, capability-based legacy sections | Contribution cards use one generic renderer; advertised endpoints become authoritative without root-path fallbacks. |
 | `cmd/gateway/portal_catalog_contributions.go` | Generation-fenced descriptor publication and withdrawal | Reuse the registry; no per-family handler/bootstrap switch. |
 
@@ -186,8 +187,11 @@ additive `portal_read` block is emitted as host-produced transport metadata:
 }
 ```
 
-The handler emits this block. `base_path` comes from the configured Portal mount;
-external prefix support remains separate work. The existing bootstrap
+The handler emits this block. `base_path` combines the trusted configured
+external prefix and Portal directory mount. Handler tests cover prefixed shell,
+assets, bootstrap and endpoint construction; this does not establish
+production/Ingress forwarding or shared semantic read provider availability.
+The existing bootstrap
 `endpoints.portal_catalog` and `endpoints.graphql` members remain the authoritative
 catalog and shared-read URLs; no separate endpoint fields are introduced.
 `PortalCatalogV1` emits `descriptors`, an array keyed by full contribution
@@ -230,12 +234,19 @@ remain in force. This page grants no graduation or namespace change.
 ## Exact external URL construction
 
 Let `P` be a trusted, configured external prefix: empty or an absolute path
-with no trailing slash. Let `M` be the configured Portal mount with exactly one
-leading slash and no trailing slash (normally `/portal`). The public Portal
+with no trailing slash. Let `M` be the internal Portal mount with exactly one
+leading slash and no trailing slash (normally `/portal`); `Options.BasePath`
+represents that directory with its trailing slash (normally `/portal/`).
+The root mount uses `M = ""` and `Options.BasePath = "/"`. The public Portal
 directory is `B = P + M + "/"`. Configuration rejects schemes, authorities,
 queries, fragments, backslashes, repeated slashes, dot segments and percent
 escapes in `P`/`M`; do not repair ambiguous input. Neither request headers nor
-contribution data choose these paths.
+contribution data choose these paths. Validation errors identify only the invalid
+`Options` field from the closed list `ExternalPrefix`, `BasePath`, `GraphQLPath`,
+`PortalCatalogPath`, `SnapshotPath`, `SubscriptionPath`, `MCPPath` and
+`EEBusAdminPath`; they never include the supplied path value. Invalid
+configuration is rejected rather than normalized. The HTTP failure response
+remains generic; these field diagnostics belong to path validation.
 
 For fixed relative Portal suffix `s` (no leading slash), construct `B + s`.
 For a configured gateway endpoint `E` (an absolute internal path, validated by
@@ -269,8 +280,9 @@ back to `/graphql`, `/portal`, or a native endpoint.
 An embedding proxy strips `P` once before forwarding, preserves the Portal
 mount for the gateway's existing `StripPrefix(M, ...)`, and routes sibling
 GraphQL endpoints under the same external prefix. It must also preserve the
-external redirect target. Configuring `M` alone does not fix today's fixed
-bootstrap paths; production prefix support needs a separate implementation.
+external redirect target. The handler already composes prefixed bootstrap paths;
+configuring it alone does not establish production/Ingress forwarding. That
+integration still requires its own implementation and acceptance.
 The host retains its listener, proxy, TLS, origin and trust configuration.
 Prefix handling neither relaxes those controls nor introduces a new trust source.
 
@@ -288,10 +300,12 @@ example) belong to capabilities the read-only embedded bootstrap disables and
 omits, not to the forwarded set. This is **Unknown** in current code: no such
 list or test exists today.
 
-Endpoints the entry point does not forward, for example `mcp` and `eebus_admin`,
-are omitted from the bootstrap response rather than advertised under the prefix.
-This is a route allowlist, not an authorization gate: it avoids accidental
-administrative-route exposure ([#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999))
+Production/Ingress integration must omit endpoints the entry point does not
+forward, for example `mcp` and `eebus_admin`, rather than advertise them under the
+prefix. This omission remains separate entry-point work; the current handler
+prefixes configured non-empty endpoints and does not establish forwarding.
+This route allowlist requirement adds no authorization gate. It avoids
+accidental administrative-route exposure ([#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999))
 and keeps native protocol endpoints off Ingress
 ([ha-addon #239](https://github.com/Project-Helianthus/helianthus-ha-addon/issues/239)).
 

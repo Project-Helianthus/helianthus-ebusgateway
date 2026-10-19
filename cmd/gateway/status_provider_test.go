@@ -624,3 +624,64 @@ func TestRuntimeStatusProviderKeepsUnknownWithoutAdapterIdentity(t *testing.T) {
 		t.Fatalf("adapter firmwareVersion = %q; want empty", adapter.FirmwareVersion)
 	}
 }
+
+// TestRuntimeStatusProviderGatesAdapterStatusOnNativeAdmission pins the S6
+// status projection of the production composition: adapter status follows
+// current native admission, so retained firmware cannot make a STOPPED,
+// STARTING or FAILED adapter appear running; the firmware version itself
+// stays visible unchanged; daemon status keeps describing the process; MCP
+// and GraphQL agree in every state. A nil controller keeps the historical
+// projection.
+func TestRuntimeStatusProviderGatesAdapterStatusOnNativeAdmission(t *testing.T) {
+	semantic := graphql.NewLiveSemanticProvider()
+	semantic.SetAdapterHardwareInfo(&graphql.AdapterHardwareInfo{FirmwareVersion: "fw-retained-1"})
+	admitted := func() (byte, bool) { return 0x31, true }
+
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	gated := func() (graphql.ServiceStatus, mcp.ServiceStatus, graphql.ServiceStatus) {
+		lifecycle := ebusAdapterLifecycleStatus(plant.ctrl)
+		gql := newRuntimeStatusProviderForControl(semantic, admitted, gatewayBuildInfo{ReleaseVersion: "0.0.0-test"}, nil, lifecycle)
+		m := newMCPRuntimeStatusProviderForControl(semantic, admitted, gatewayBuildInfo{ReleaseVersion: "0.0.0-test"}, nil, lifecycle, ebusAdapterConditionFor(plant.ctrl))
+		return gql.AdapterStatus(), m.AdapterStatus(), gql.DaemonStatus()
+	}
+	check := func(label, want string) {
+		t.Helper()
+		gqlAdapter, mcpAdapter, daemon := gated()
+		if gqlAdapter.Status != want || mcpAdapter.Status != want {
+			t.Fatalf("%s: adapter status graphql=%q mcp=%q; want %q", label, gqlAdapter.Status, mcpAdapter.Status, want)
+		}
+		if gqlAdapter.FirmwareVersion != "fw-retained-1" || mcpAdapter.FirmwareVersion != "fw-retained-1" {
+			t.Fatalf("%s: retained firmware changed: graphql=%q mcp=%q", label, gqlAdapter.FirmwareVersion, mcpAdapter.FirmwareVersion)
+		}
+		if daemon.Status != "running" {
+			t.Fatalf("%s: daemon status = %q; want running", label, daemon.Status)
+		}
+	}
+
+	check("registered, never started", adapterStatusStopped)
+	corr := ctlCorr("inc.status.e1", 1, 1)
+	if err := plant.bridge.Start(ctlCtx(t), corr); err != nil {
+		t.Fatal(err)
+	}
+	check("admitted generation", "running")
+	plant.bridge.Stop(ctlCtx(t), corr)
+	check("stopped after admission", adapterStatusStopped)
+
+	failing := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	failing.script(func(context.Context) error { return errors.New("synthetic endpoint offline") })
+	if err := failing.manager.StartAsync(context.Background(), primaryEBusDriverID); err != nil {
+		t.Fatal(err)
+	}
+	ctlWait(t, "failing construction leaves the admitted states", func() bool {
+		state := failing.snapshot().ObservedState
+		return state != drivermanager.ObservedStopped && state != drivermanager.ObservedRunning
+	})
+	if got := ebusAdapterLifecycleStatus(failing.ctrl)(); got != adapterStatusUnavailable {
+		t.Fatalf("adapter lifecycle while %s = %q; want %q", failing.snapshot().ObservedState, got, adapterStatusUnavailable)
+	}
+
+	legacy := newRuntimeStatusProviderForControl(semantic, admitted, gatewayBuildInfo{}, nil, ebusAdapterLifecycleStatus(nil))
+	if got := legacy.AdapterStatus().Status; got != "running" {
+		t.Fatalf("nil controller adapter status = %q; want the historical firmware projection", got)
+	}
+}

@@ -1539,3 +1539,83 @@ func TestEBusControlSuccessorWaitsForPredecessorHoldRetirement(t *testing.T) {
 		t.Fatal("overlapping native owners")
 	}
 }
+
+// TestEBusControlReplacementWaitsForTaskDrain: a manager-driven same-epoch
+// replacement is not natively admitted while the predecessor generation's
+// tasks are DRAINING; DriverManager keeps owning the retry and admits the
+// replacement once the drain joined, and the runner then starts the
+// replacement's tasks.
+func TestEBusControlReplacementWaitsForTaskDrain(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 50, initialDelay: 20 * time.Millisecond})
+	stuck := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(stuck) }) }
+	t.Cleanup(release)
+	var runCount int32
+	var runMu sync.Mutex
+	running := make(chan struct{})
+	runner, err := newEBusGenerationTaskRunner(ebusGenerationTaskConfig{
+		Tasks: []ebusGenerationTask{{Name: "stuck", Run: func(ctx context.Context, _ *ebusGenerationScope) error {
+			runMu.Lock()
+			runCount++
+			first := runCount == 1
+			runMu.Unlock()
+			if first {
+				close(running)
+				<-ctx.Done()
+				<-stuck
+			}
+			return nil
+		}}},
+		Admitted:    ebusControlGenerationAdmitted(plant.bridge),
+		JoinTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &ebusControlExecutor{bridge: plant.bridge}
+	executor.bind(runner, nil)
+	plant.bridge.SetAdmitGate(executor.admitGate)
+	corr := ctlCorr("inc.gate.e1", 1, 1)
+	if err := executor.Start(ctlCtx(t), corr); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := ebusControlGeneration(plant.bridge)
+	if !ok || runner.Status().Phase != ebusGenerationRunning {
+		t.Fatalf("first generation not admitted with tasks: %+v %+v", first, runner.Status())
+	}
+	select {
+	case <-running:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first generation task never ran")
+	}
+	if !plant.bridge.ReportFailure(first.Control, drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}) {
+		t.Fatal("failure report refused")
+	}
+	ctlWait(t, "refused replacement attempts", func() bool { return plant.constructed() >= 3 })
+	if snapshot := plant.snapshot(); snapshot.ObservedState == drivermanager.ObservedRunning {
+		t.Fatalf("replacement admitted while the predecessor's tasks drain: %+v", snapshot)
+	}
+	if phase := runner.Status().Phase; phase != ebusGenerationDraining {
+		t.Fatalf("runner phase = %s; want DRAINING", phase)
+	}
+	release()
+	ctlWait(t, "replacement admitted after the drain joined", func() bool {
+		executor.sync(context.Background())
+		key, ok := ebusControlGeneration(plant.bridge)
+		return ok && key.Native > first.Native && runner.Status().Phase == ebusGenerationRunning
+	})
+	if second, _ := ebusControlGeneration(plant.bridge); second.Control.Epoch != first.Control.Epoch || second.Control.Generation != first.Control.Generation+1 {
+		t.Fatalf("replacement %+v; want the same epoch at the next driver generation after %+v", second, first)
+	}
+	count := func() int32 {
+		runMu.Lock()
+		defer runMu.Unlock()
+		return runCount
+	}
+	ctlWait(t, "the replacement generation's task", func() bool { return count() == 2 })
+	executor.sync(context.Background())
+	if got := count(); got != 2 {
+		t.Fatalf("tasks ran %d times; want once per admitted generation (2)", got)
+	}
+}

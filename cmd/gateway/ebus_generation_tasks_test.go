@@ -215,9 +215,10 @@ func TestGenerationTasksNoWorkBeforeReadinessOrForIncompleteKeys(t *testing.T) {
 		"SourceID":   func(k *ebusGenerationKey) { k.Control.SourceID = "" },
 		"Epoch":      func(k *ebusGenerationKey) { k.Control.Epoch = "" },
 		"Generation": func(k *ebusGenerationKey) { k.Control.Generation = 0 },
-		"Sequence":   func(k *ebusGenerationKey) { k.Control.Sequence = 0 },
 		"Native":     func(k *ebusGenerationKey) { k.Native = 0 },
 	}
+	// Sequence 0 is legitimate: it names the untyped process-start attempt
+	// of durable desired RUNNING, which has no typed work slot.
 	for field, clear := range incomplete {
 		variant := key
 		clear(&variant)

@@ -47,9 +47,17 @@ memory-only recovery boundary. Issue
 [#1190](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1190)
 adds the S4 DriverManager hooks (admission hold, classified close) and the
 lifecycle-only `ebus.primary` bridge in `cmd/gateway` (section 7, S4
-manager-to-hub bridge). The bridge is callable composition only: there is no
-production registration, no shell wiring and no authorization, and A5 stays
-proposed until the composition implementation lands.
+manager-to-hub bridge). Issue
+[#1193](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1193)
+adds the generation-owned post-start task runner. Issue
+[#1222](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1222)
+installs them into process startup (section 7, S4/S6/S7 shell integration):
+`ebus.primary` is the only production registration, the durable control
+service is the single owner of eBUS startup, post-start eBUS work runs as
+generation-owned tasks and adapter status follows native admission. A5 is
+therefore implemented as an internal service for `ebus.primary` only; it is
+not a universal provider SPI. There is still no MCP lifecycle mutator and no
+authorization.
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -1996,9 +2004,8 @@ new cleanup reservation and never releases the consumed generation for reuse.
 
 This subsection records the implemented S4/A3/A4 bridge of the
 [docs-ebus runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
-for the lifecycle-only `ebus.primary` driver. It is not installed into
-process startup: nothing registers it with the control service, wires a
-shell or adds authorization.
+for the lifecycle-only `ebus.primary` driver. The next subsection records
+how process startup installs it.
 
 DriverManager hooks (`internal/drivermanager`):
 
@@ -2103,6 +2110,145 @@ family migration that declares assets. The service has no seam yet for
 executor-originated observations, so a manager-driven `BACKOFF` or
 generation advance after `RUNNING` is visible in the bridge view and not in
 the service view.
+
+### S4/S6/S7 shell integration (implemented production composition)
+
+This subsection records how `runGatewayLifecycle` installs the bridge, the
+desired-state service and the generation task runner. It implements the
+"Shell and preparation order", "STOP and generation task ownership", S6 and
+S7 sections of the docs-ebus runtime driver lifecycle for `ebus.primary`.
+
+Composition order (before any eBUS endpoint, before the HTTP shell):
+
+1. The configured source of `ebus.primary` is derived from its `DriverID`
+   and the configured owner identity, the persisted instance GUID, as a
+   hub-native source identifier. It never uses an endpoint, address,
+   connection handle or discovery result. The native contract reference
+   names the public eBUS transport module, its `transport.DriverRuntime`
+   contract and the exact module version linked into the binary. When the
+   build records no exact version (a workspace build reports a devel
+   version, or a Replace directive substitutes the module), the reference
+   names the module path with the `devel` marker, registration is admitted
+   and status presents the reference verbatim. A process without an instance
+   GUID has no source identity: `ebus.primary` is withheld and presented
+   `FAILED`, and no placeholder is installed.
+2. The bridge binds its DriverManager hooks to the existing manager before
+   anything can start it. Then the descriptor is validated, frozen and
+   registered as the only production registration (southbound, enabled,
+   lifecycle-only, one source, no hooks).
+3. The configured drivers are registered in the durable store: the one-time
+   seed when no control state exists and an instance GUID is persisted, a
+   mark-only registration otherwise. A failed load disposition (corrupt,
+   unreadable, unsupported or locked control state, or a missing GUID for
+   the seed) writes nothing and presents `FAILED`. A disabled configured
+   disposition wins over durable desired state and never rewrites it.
+4. The service starts. Its recovery step first restores committed D5
+   material: through a managed recovery adapter when the composition has
+   one; with no managed owner, committed material fails the drivers it names
+   closed and stays committed unchanged. Only then is each driver that
+   restoration did not withhold prepared: for `ebus.primary`, the inert hub
+   admission with an empty, complete epoch barrier, also when desired state
+   is `STOPPED`. Then the reconcilers start. When durable intent is
+   `RUNNING`, startup waits, within a short bound, until the reconciler's
+   first native start reached DriverManager, never for `RUNNING`.
+
+The production composition has no managed semantic asset, so it uses the
+lifecycle-only recovery adapter. The bridge from the store to the service's
+`Store` seam lives in `cmd/gateway`, because `internal/runtimecontrol` may not
+import the store or the hub.
+
+Single startup owner. The historical unconditional DriverManager start and
+the one-shot wait for the first `RUNNING` generation are removed. Only the
+service's reconciliation, through the bridge, starts, stops or replaces the
+eBUS generation; DriverManager stays the only native retry owner. No
+composition failure is a process error: HTTP, health, MCP, GraphQL and status
+start when eBUS is stopped, starting, failing, withheld or failed to load.
+
+Executor. The service's executor for `ebus.primary` is the bridge plus the
+task runner:
+
+1. `Start` consults the runner first. While a predecessor generation's tasks
+   are `DRAINING` (fenced, not joined), one bounded join is attempted. A drain
+   that outlives it refuses the start with `DEPENDENCY_UNAVAILABLE`, so no
+   successor is started; the start can be requested again once the drain
+   joined.
+2. `Stop` fences the runner's generation before the bridge's own STOP fence,
+   outside every bridge and manager lock, so no effect of the stopped
+   generation lands after the bridge fences. The admitted mutation source is
+   withdrawn at the same point. The bridge then runs the two independent
+   obligations, and the tasks get one bounded drain. A generation that does
+   not join stays `DRAINING` with its pending names.
+3. Task synchronization runs after every start and stop and on every
+   DriverManager change, so a manager-driven same-epoch replacement, a loss
+   of admission or a late admission is reconciled without a lifecycle
+   decision. A generation that is not yet admitted is simply retried on the
+   next change.
+
+Generation tasks. A task set is owned by the full admitted generation key:
+`DriverID`, `SourceID`, epoch and driver generation must be set, plus the
+native-generation mapping. The lifecycle sequence may be 0: it names the
+untyped process-start attempt of durable desired `RUNNING`, which has no
+typed work slot, and the epoch plus the process-monotonic native generation
+keep the key unique. The post-start eBUS steps run as four ordered,
+start-critical tasks (source admission, semantic surface, startup scan,
+passive observe-first) once per admitted generation: current-session source validation and admission (default
+policy, configured source, passive advisory warmup, or static and override
+admission), the startup discovery scan, the M5 revalidation loop, background
+full scanning and the passive promotion loop. A later START from `STOPPED`
+and a manager-driven replacement rerun them. The task reuses the existing
+native selection, scan, revalidation, background scan and promotion
+functions. Every effect it installs, such as the admitted mutation source,
+goes through the generation scope, and the goroutines it starts are joined
+with the generation. Process-scoped consumers are created once, by the first
+admitted generation, and survive stopped periods: the semantic poller and
+its writers, the passive reconstructor and listener, the address-table
+inserter subscription and the promoter. Their I/O through the stable
+transport reports unavailability while no generation is admitted. A task
+failure is logged with its native generation and never starts, restarts or
+replaces a generation. A failed start-critical task (for example the passive
+reconstructor start, the passive shadow attach or the leaf-promotion capture
+runtime) keeps the shell and the native generation up, skips its dependent
+tasks and is presented on the adapter status as `degraded`; MCP names the
+task in the adapter status `condition`. Best-effort work (revalidation,
+background scanning, passive promotion) runs as joined helpers that log and
+continue. The startup discovery scan loop reports its completion through the
+scan signals, and the generation is not joined before that loop returned.
+
+Status (S6). Daemon status keeps describing the process. Adapter status
+follows current native admission from the cached DriverManager snapshot, with
+no endpoint I/O. While a generation is admitted (`RUNNING` or `DEGRADED`) the
+historical projection applies. While `STOPPED` or `DISABLED` the adapter
+reports `stopped`, and while starting, backing off, stopping or failed it
+reports `unavailable`; an admitted generation with a failed start-critical
+task reports `degraded`. The retained firmware version stays visible unchanged
+as identity evidence. MCP and GraphQL use the same projection. The admitted
+initiator address and proxy readiness keep deriving from live DriverManager
+admission (proxy `DISABLED`/`DEGRADED`/`READY`).
+
+Retained evidence (S7). Bus observability, identification evidence and the
+active/passive deduplicator stay process-scoped. STOP, START and RESTART
+neither move, clear nor reset them. Capture pauses while no generation is
+admitted, and existing records keep their identity, provenance and age.
+
+Process exit closes mutation admission first: the service accepts no further
+decision and its reconcilers stop without writing. Durable desired `RUNNING`
+or `STOPPED` and in-flight work stay exactly as committed, and no STOP
+operation is synthesized. The generation tasks are then fenced and joined
+(bounded) before the shell and the process consumers are torn down, and
+DriverManager shuts the native generation down through its existing owner.
+Cached list and get views stay readable until teardown.
+
+A manager-driven same-epoch replacement is admitted by the bridge's
+admission hold only after the predecessor generation's tasks joined: the
+hold withdraws them (fence, one bounded join) and refuses while they drain,
+as a retryable dependency failure that DriverManager retries within its own
+budget.
+
+Limits of this composition: the service has no seam for executor-originated
+observations and its correlation carries no `SourceID`. Manager-driven
+`BACKOFF` or replacement after `RUNNING` stays visible only in the bridge
+view, and the driver-to-native generation mapping stays process-local. A
+dedicated follow-up issue owns these seams.
 
 ## 8. Upward flow
 

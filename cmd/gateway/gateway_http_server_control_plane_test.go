@@ -100,9 +100,9 @@ func TestMainStartsControlPlaneBeforeWarmupAndRetiresItInLIFOOrder(t *testing.T)
 	text := string(source)
 
 	start := strings.Index(text, "server, advertiser, err := startHTTPServerFn(")
-	warmup := strings.Index(text, "ebusDriver.WaitRunning(ctx)")
-	if start < 0 || warmup < 0 || start > warmup {
-		t.Fatalf("control-plane start must precede WaitRunning warmup: start=%d warmup=%d", start, warmup)
+	warmup := strings.Index(text, "control.BindTasks(ctx, generationTasks")
+	if start < 0 || warmup < 0 || start > warmup || strings.Contains(text, "WaitRunning(") {
+		t.Fatalf("control-plane start must precede the generation-owned post-start tasks, with no WaitRunning gate: start=%d tasks=%d", start, warmup)
 	}
 
 	last := -1
@@ -156,9 +156,9 @@ func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing
 
 	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg)")
 	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
-	start := strings.Index(text, "ebusDriver.Start(ctx)")
-	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start {
-		t.Fatalf("driver preparation, LIFO shutdown defer, and start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
+	start := strings.Index(text, "startGatewayRuntimeControl(ctx")
+	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start || strings.Contains(text, "ebusDriver.Start(") {
+		t.Fatalf("driver preparation, LIFO shutdown defer, and single-owner control start order changed: prepare=%d shutdown=%d start=%d", prepare, shutdown, start)
 	}
 }
 
@@ -217,13 +217,13 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	assertOrder(lifecycleText,
 		"prepareGatewayRunConfig(&cfg)",
 		"prepareGatewayEBusDriver(&cfg)",
-		"ebusDriver.Start(ctx)",
+		"startGatewayRuntimeControl(ctx",
 		"ResolveAdmissionPath(cfg.TransportConfig.Protocol)",
 	)
 	assertOrder(lifecycleText,
 		"semanticBarrier = make(chan struct{})",
-		"startDiscoveryScanLoopFn(ctx, startupCfg, gateway, builder, adapterClassifier)",
-		"go startBackgroundFullScanFn(ctx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
+		"startDiscoveryScanLoopFn(genCtx, startupCfg, gateway, builder, adapterClassifier)",
+		"startBackgroundFullScanFn(runCtx, startupCfg, gateway, builder, startupScanSignals.semanticBootstrapReady)",
 	)
 	assertOrder(lifecycleText, "insertSubscribeOnce sync.Once", "insertSubscribeOnce.Do(func()")
 }

@@ -480,6 +480,7 @@ func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing
 	cfg.ObserveFirstEnabled = true
 	cfg.PassiveStateDirectApply = true
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		runErr = run(ctx, cfg)
 		close(done)
@@ -663,6 +664,7 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		defer close(done)
 		runErr = run(ctx, cfg)
@@ -732,17 +734,17 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
 		return nil, nil, nil
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	startDiscoveryScanLoopFn = func(_ context.Context, cfg ebusgateway.Config, _ *ebusgateway.Gateway, _ *graphql.Builder, _ activeTxnClassifier) startupScanSignals {
 		startupTargets <- append([]byte(nil), cfg.StartupProbeTargets...)
+		cancel()
 		return startupScanSignals{}
 	}
 	startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	startHTTPServerFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.Builder, *graphql.BroadcastHub, graphql.SemanticProvider, mcp.ScheduleWriter, mcp.ConfigWriter, *ebusgateway.BusObservabilityStore, *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
-		cancel()
 		return nil, nil, nil
 	}
 
@@ -757,6 +759,7 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 	cfg.ScanSourceAuto = true
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()
@@ -869,6 +872,7 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 			cfg.ScanSource = tc.source
 			cfg.ScanSourceAuto = false
 
+			withRuntimeControlTestState(t, &cfg)
 			go func() {
 				defer close(done)
 				runErr = run(ctx, cfg)
@@ -975,6 +979,7 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 	cfg.ScanOnStart = true
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()
@@ -1081,6 +1086,7 @@ func TestRun_OverrideClosesSemanticBarrierOnAdmissionFailure(t *testing.T) {
 	cfg.StartupSource.Source = &overrideSource
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()
@@ -1184,6 +1190,7 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	cfg.ScanOnStart = true
 	cfg.BroadcastListen = false
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		defer close(done)
 		runErr = run(ctx, cfg)
@@ -1252,6 +1259,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 	cfg.ScanOnStart = true
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()

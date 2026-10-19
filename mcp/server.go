@@ -68,6 +68,10 @@ type ServiceStatus struct {
 	FirmwareVersion  string `json:"firmware_version"`
 	UpdatesAvailable bool   `json:"updates_available"`
 	InitiatorAddress string `json:"initiator_address,omitempty"`
+	// Condition names a degraded or failed condition of the service, for
+	// example the failed generation-owned startup task of an admitted eBUS
+	// generation. Empty when there is none.
+	Condition string `json:"condition,omitempty"`
 }
 
 type StatusProvider interface {

@@ -215,6 +215,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		d := projection.ProjectionDisposition{Kind: item.Kind, ItemID: item.ItemID, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}, Outcome: projection.ProjectionUnknown}
 		reason := semreg.DefinitionID(reasonPrefix + "value_unknown")
 		reasons := []semreg.DefinitionID{}
+		candidates := []semreg.FactCandidate{}
 		if item.Kind == projection.ItemFact {
 			// Availability and exactness are tracked per complete source key: one
 			// available sibling must not hide an unavailable or withdrawn one.
@@ -232,6 +233,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 					unsupported = unsupported && c.Quality.Qualification == semreg.QualificationUnsupported
 					anyUnknown = anyUnknown || (c.Value != nil && c.Quality.Qualification == semreg.QualificationUnknown)
 					reasons = append(reasons, c.Quality.Reasons...)
+					candidates = append(candidates, c)
 					for _, v := range e.Facts {
 						if v.CandidateID == c.CandidateID && v.CandidateRevision == c.Revision {
 							ok := v.EffectiveAvailability != semreg.AvailabilityUnavailable && v.EffectiveAvailability != semreg.AvailabilityWithdrawn
@@ -295,6 +297,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 					d.SourceKeys = append(d.SourceKeys, f.Key)
 					for _, candidate := range f.Candidates {
 						reasons = append(reasons, candidate.Quality.Reasons...)
+						candidates = append(candidates, candidate)
 					}
 				}
 			}
@@ -322,6 +325,9 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 			}
 		}
 		if d.Outcome != projection.ProjectionExact {
+			if reason != "unknown_pending_std_01" {
+				reasons = outcomeReasons(reason, item.Kind, candidates, reasons)
+			}
 			if len(reasons) > 0 && reason != "unknown_pending_std_01" {
 				sort.Slice(reasons, func(i, j int) bool { return reasons[i] < reasons[j] })
 				reason = reasons[0]
@@ -331,6 +337,45 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		dispositions = append(dispositions, d)
 	}
 	return projection.Project(s, manifest, requested, dispositions, nil)
+}
+
+// outcomeReasons narrows native detail to reasons shared by every supporting
+// candidate whose quality explains the selected withholding outcome. Evaluation
+// expiry and instance qualification alone do not establish native causality.
+func outcomeReasons(reason semreg.DefinitionID, kind projection.ItemKind, candidates []semreg.FactCandidate, reasons []semreg.DefinitionID) []semreg.DefinitionID {
+	switch reason {
+	case reasonPrefix + "fact_unavailable", reasonPrefix + "capability_unavailable", reasonPrefix + "capability_unqualified":
+	default:
+		return reasons
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	shared := append([]semreg.DefinitionID(nil), candidates[0].Quality.Reasons...)
+	for _, candidate := range candidates {
+		q := candidate.Quality
+		explains := q.Availability == semreg.AvailabilityUnavailable || q.Availability == semreg.AvailabilityWithdrawn
+		if reason == reasonPrefix+"capability_unqualified" {
+			explains = q.Qualification == semreg.QualificationCandidate || q.Qualification == semreg.QualificationRejected
+			if kind == projection.ItemFact {
+				explains = explains || q.Promotion != semreg.PromotionPromoted || (q.Validity != semreg.ValidityGood && q.Validity != semreg.ValiditySuspect)
+			}
+		}
+		if !explains {
+			return nil
+		}
+		kept := shared[:0]
+		for _, r := range shared {
+			for _, native := range q.Reasons {
+				if r == native {
+					kept = append(kept, r)
+					break
+				}
+			}
+		}
+		shared = kept
+	}
+	return shared
 }
 
 func versionLess(a, b semreg.SemanticVersion) bool {

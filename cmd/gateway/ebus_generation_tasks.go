@@ -658,6 +658,18 @@ func (scope *ebusGenerationScope) Callback(fn func()) func() bool {
 // It refuses (false) once the generation is fenced or unadmitted. fn
 // receives the generation context.
 func (scope *ebusGenerationScope) Go(fn func(context.Context)) bool {
+	return scope.launch(fn, false)
+}
+
+// GoJoin registers a join obligation: like Go, but fn runs even when the
+// generation is fenced between acceptance and execution, so the obligation
+// it awaits is never reported complete without being awaited. fn receives
+// the generation context, which is cancelled once the generation is fenced.
+func (scope *ebusGenerationScope) GoJoin(fn func(context.Context)) bool {
+	return scope.launch(fn, true)
+}
+
+func (scope *ebusGenerationScope) launch(fn func(context.Context), unconditional bool) bool {
 	run := scope.run
 	runner := run.runner
 	unit := scope.task + "/go"
@@ -680,7 +692,7 @@ func (scope *ebusGenerationScope) Go(fn func(context.Context)) bool {
 		runner.gate.RLock()
 		live := run.liveLocked()
 		runner.gate.RUnlock()
-		if live {
+		if live || unconditional {
 			fn(run.ctx)
 		}
 	}()

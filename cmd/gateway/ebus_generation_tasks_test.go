@@ -1348,3 +1348,53 @@ func TestGenerationTasksWithdrawUsesOneBoundAcrossFenceAndJoin(t *testing.T) {
 		t.Fatalf("withdraw took %v, want one bound of %v", elapsed, bound)
 	}
 }
+
+// A join obligation registered through GoJoin must run even when the
+// generation is fenced between acceptance and execution, so the join
+// awaits what the obligation awaits.
+func TestGenerationTasksJoinObligationRunsWhenFencedBeforeStart(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		ok    bool
+		cur   ebusGenerationKey
+		armed bool
+		calls int
+	)
+	admitted := func(key ebusGenerationKey) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if armed {
+			if calls++; calls == 2 { // the helper's own start check
+				ok = false
+			}
+		}
+		return ok && cur == key
+	}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: admitted, Tasks: []ebusGenerationTask{
+		{Name: "poll", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	key := genKey("inc.e1", 1, 1, 1)
+	mu.Lock()
+	cur, ok = key, true
+	mu.Unlock()
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	var ran atomic.Bool
+	mu.Lock()
+	armed = true
+	mu.Unlock()
+	if !scope.GoJoin(func(context.Context) { ran.Store(true) }) {
+		t.Fatal("GoJoin refused while admitted")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if join := runner.Withdraw(ctx, key); !join.Joined {
+		t.Fatalf("not joined: %+v", join)
+	}
+	if !ran.Load() {
+		t.Fatal("join obligation was skipped after the fence; the join would not await it")
+	}
+}

@@ -714,6 +714,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// survive stopped periods with truthful unavailability.
 	var (
 		surfaceReady         bool
+		surfacePollerStarted bool
+		surfaceCaptureDone   bool
+		surfaceShadowDone    bool
 		semanticPoller       *vaillantSemanticPoller
 		promoter             *ebusgateway.PassiveDiscoveryPromoter
 		probeReady           atomic.Bool
@@ -845,17 +848,22 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// the process context, so a stopped interval never tears them down.
 	ensureProcessSurface := func(genCfg ebusgateway.Config) error {
 		surfaceMu.Lock()
-		ready := surfaceReady
+		ready, pollerStarted, poller := surfaceReady, surfacePollerStarted, semanticPoller
 		surfaceMu.Unlock()
 		if ready {
 			return nil
 		}
-		semanticCfg := resolveStartupScanSourceConfig(genCfg)
-		poller := startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
-		surfaceMu.Lock()
-		semanticPoller, surfaceReady = poller, true
-		surfaceMu.Unlock()
-		if poller != nil {
+		// Readiness is recorded only after every fallible step succeeded; a
+		// failed step is retried by the next generation, and the stages that
+		// already completed are not repeated.
+		if !pollerStarted {
+			semanticCfg := resolveStartupScanSourceConfig(genCfg)
+			poller = startVaillantSemanticPollingFn(ctx, semanticCfg, gateway, semanticRuntime.Provider(), hub, semanticBarrier)
+			surfaceMu.Lock()
+			semanticPoller, surfacePollerStarted = poller, true
+			surfaceMu.Unlock()
+		}
+		if !pollerStarted && poller != nil {
 			gatedGraphQLWriter := admittedGraphQLSemanticWriter{
 				boiler:   poller,
 				system:   poller,
@@ -865,7 +873,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			lateGraphQLWriter.Bind(gatedGraphQLWriter)
 			lateGraphQLWatchProvider.Bind(newGraphQLWatchSummaryProvider(poller.shadow))
 		}
-		if poller != nil && eebusAdapter != nil {
+		if poller != nil && eebusAdapter != nil && !surfaceCaptureDone {
 			captureSource := newLeafPromotionLiveSource(
 				poller,
 				eebusAdapter,
@@ -879,8 +887,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			if captureRuntime != nil {
 				eebusAdapter.SetLeafPromotionCapture(captureRuntime)
 			}
+			surfaceCaptureDone = true
 		}
-		if poller != nil && poller.shadow != nil && deduplicator != nil {
+		if !pollerStarted && poller != nil && poller.shadow != nil && deduplicator != nil {
 			// Use the semantic shadow directly here. The broader runtime
 			// observer can fall back to the deduplicator itself, which would
 			// re-enter dedup locks while passive fingerprints are being built.
@@ -889,10 +898,11 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
 			observeFirstFlags.PassiveConfigDirectApply() ||
 			observeFirstFlags.ExternalWritePolicy() != ebusgateway.ObserveFirstExternalWritePolicyRecordOnly
-		if poller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled {
+		if poller != nil && deduplicator != nil && observeFirstFlags.ObserveFirstEnabled() && passiveShadowLaneEnabled && !surfaceShadowDone {
 			if err := attachPassiveShadowProducerFn(poller, ctx, deduplicator); err != nil {
 				return err
 			}
+			surfaceShadowDone = true
 		}
 		// Runtime passive-promotion pipeline: late-arriving devices (e.g.
 		// the regulator boots after the gateway) accumulate passive evidence
@@ -970,6 +980,9 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		if cfg.BroadcastListen && !shouldStartPassiveObserveFirst(cfg) {
 			log.Printf("passive observe-first unavailable on transport=%s; continuing degraded", cfg.TransportConfig.Protocol)
 		}
+		surfaceMu.Lock()
+		surfaceReady = true
+		surfaceMu.Unlock()
 		return nil
 	}
 
@@ -1199,7 +1212,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		// completion signal: it runs on the generation context, and the
 		// generation is not joined before the loop returned.
 		if loopDone := startupScanSignals.done; loopDone != nil {
-			if !scope.Go(func(context.Context) { <-loopDone }) {
+			if !scope.GoJoin(func(context.Context) { <-loopDone }) {
 				<-loopDone
 			}
 		}

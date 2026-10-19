@@ -1106,3 +1106,51 @@ func TestRuntimeControlFailedStartupTaskDegradesAdapterStatus(t *testing.T) {
 		t.Fatalf("MCP adapter status after STOP = %+v; want stopped with no condition", got)
 	}
 }
+
+// A failed process-surface step (passive shadow attach) must not mark the
+// process surface ready: the next admitted generation retries the missing
+// step and the degraded condition clears only after it succeeded.
+func TestRuntimeControlSurfaceRetriedAfterFailedSetup(t *testing.T) {
+	env := newRCtlEnv(t)
+	env.seed(false, nil)
+	dedup, err := ebusgateway.NewActivePassiveDeduplicator(ebusgateway.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalAttach := attachPassiveShadowProducerFn
+	t.Cleanup(func() { attachPassiveShadowProducerFn = originalAttach })
+	var attaches, pollers atomic.Int32
+	attachPassiveShadowProducerFn = func(*vaillantSemanticPoller, context.Context, *ebusgateway.ActivePassiveDeduplicator) error {
+		if attaches.Add(1) == 1 {
+			return errors.New("rctl: synthetic passive shadow attach failure")
+		}
+		return nil
+	}
+	process := env.start(rctlProcessOptions{config: func(cfg *ebusgateway.Config) {
+		cfg.ObserveFirstEnabled = true
+		cfg.PassiveStateDirectApply = true
+		wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
+			return nil, dedup, nil
+		}
+		startVaillantSemanticPollingFn = func(context.Context, ebusgateway.Config, *ebusgateway.Gateway, *graphql.LiveSemanticProvider, *graphql.BroadcastHub, <-chan struct{}) *vaillantSemanticPoller {
+			pollers.Add(1)
+			return &vaillantSemanticPoller{}
+		}
+	}})
+	process.waitObserved(drivermanager.ObservedRunning)
+	env.waitFor("first attach attempt", func() bool { return attaches.Load() == 1 })
+	env.waitFor("degraded condition", func() bool { return process.control.StartupCondition() != "" })
+
+	process.decide(runtimecontrol.MethodRestart)
+	env.waitFor("retried attach", func() bool { return attaches.Load() == 2 })
+	env.waitFor("condition cleared", func() bool { return process.control.StartupCondition() == "" })
+	if got := pollers.Load(); got != 1 {
+		t.Fatalf("semantic poller started %d times; want once", got)
+	}
+	env.waitFor("retried generation scan", func() bool { return env.discovery.Load() == 1 && env.background.Load() == 1 })
+	process.decide(runtimecontrol.MethodRestart)
+	env.waitFor("next generation scan", func() bool { return env.discovery.Load() == 2 })
+	if got := attaches.Load(); got != 2 {
+		t.Fatalf("attach attempts = %d; want no repeat after success", got)
+	}
+}

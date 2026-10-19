@@ -89,6 +89,10 @@ type thermalZoneSetpointHistory struct {
 	Reason      string
 }
 
+// History is a diagnostic window, not an append-only event log. Keep at most
+// this many prior records, in addition to every record evaluated on this call.
+const thermalZoneSetpointRetainedHistoryLimit = 64
+
 type thermalZoneSetpointSelection struct {
 	Observation      thermalZoneSetpointObservation
 	Key              semreg.FactKey
@@ -126,6 +130,11 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 		return thermalZoneSetpointResult{}, err
 	}
 	out := thermalZoneSetpointResult{Evaluation: in.Evaluation}
+	// Prefer the immediately preceding selections over older diagnostic records.
+	sort.SliceStable(in.Previous, func(i, j int) bool {
+		return in.Previous[i].Current && !in.Previous[j].Current
+	})
+	retained := map[string]bool{}
 	for _, previous := range in.Previous {
 		if previous.Current {
 			replaced := false
@@ -142,7 +151,16 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 		if previous.Reason == "" {
 			previous.Reason = "retained_non_current"
 		}
-		out.History = append(out.History, previous)
+		// Current records are re-evaluated above even when the diagnostic window
+		// is full; truncation must never discard a still-fresh selection.
+		record, err := json.Marshal(previous)
+		if err != nil {
+			return thermalZoneSetpointResult{}, err
+		}
+		if !retained[string(record)] && len(out.History) < thermalZoneSetpointRetainedHistoryLimit {
+			out.History = append(out.History, previous)
+			retained[string(record)] = true
+		}
 	}
 	matched := make([]bool, len(in.Mappings))
 	for _, observation := range in.Observations {
@@ -203,7 +221,11 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			continue
 		}
 		seen[requested] = true
-		d := projection.ProjectionDisposition{Kind: requested.Kind, ItemID: requested.ItemID, Outcome: projection.ProjectionWithheld}
+		reason := semreg.DefinitionID("reason.ebus_zone_setpoint_not_selected")
+		d := projection.ProjectionDisposition{
+			Kind: requested.Kind, ItemID: requested.ItemID, Outcome: projection.ProjectionWithheld,
+			SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}, Reason: &reason,
+		}
 		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
 			d.Loss = []projection.LossDetail{{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true}}
 		}
@@ -216,20 +238,38 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
 			for _, selection := range out.Selected {
 				if d.Outcome == projection.ProjectionWithheld {
-					d.Loss = nil
+					d.Loss = []projection.LossDetail{}
+					d.Reason = nil
+					d.Outcome = projection.ProjectionExact
 				}
 				d.SourceKeys = append(d.SourceKeys, selection.Key)
-				d.Outcome = projection.ProjectionExact
 			}
+		}
+		keys := map[string]semreg.FactKey{}
+		for _, key := range d.SourceKeys {
+			canonical, err := semreg.CanonicalJSON(key)
+			if err != nil {
+				return thermalZoneSetpointResult{}, err
+			}
+			keys[string(canonical)] = key
+		}
+		ordered := make([]string, 0, len(keys))
+		for key := range keys {
+			ordered = append(ordered, key)
+		}
+		sort.Strings(ordered)
+		d.SourceKeys = make([]semreg.FactKey, 0, len(keys))
+		for _, key := range ordered {
+			d.SourceKeys = append(d.SourceKeys, keys[key])
+		}
+		if err := d.Validate(); err != nil {
+			return thermalZoneSetpointResult{}, err
 		}
 		out.Dispositions = append(out.Dispositions, d)
 	}
 	thermalZoneSetpointSort(out.Selected)
 	thermalZoneSetpointSort(out.History)
 	thermalZoneSetpointSort(out.Dispositions)
-	for i := range out.Dispositions {
-		thermalZoneSetpointSort(out.Dispositions[i].SourceKeys)
-	}
 	// Also detach the separate output collections from one another.
 	return thermalZoneSetpointCopy(out)
 }

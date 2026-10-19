@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -69,6 +70,11 @@ func thermalZoneSetpointRun(t *testing.T, in thermalZoneSetpointInput) thermalZo
 	out, err := mapThermalZoneSetpoints(in)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, d := range out.Dispositions {
+		if err := d.Validate(); err != nil {
+			t.Fatalf("invalid disposition for %s: %v", d.ItemID, err)
+		}
 	}
 	return out
 }
@@ -409,10 +415,104 @@ func TestThermalZoneSetpointMappingAccountingAndDetachment(t *testing.T) {
 	if !reflect.DeepEqual(inputBefore, inputAfter) {
 		t.Fatal("output aliases input")
 	}
-	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}}
+	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
 	in.OtherDispositions, in.Observations, in.Mappings = []projection.ProjectionDisposition{other}, nil, nil
 	out = thermalZoneSetpointRun(t, in)
 	if len(out.Dispositions) != 1 || !reflect.DeepEqual(out.Dispositions[0], other) {
 		t.Fatal("source loss overwrote another source disposition")
+	}
+}
+
+func TestThermalZoneSetpointMappingMergedDispositions(t *testing.T) {
+	for _, outcome := range []projection.ProjectionOutcome{projection.ProjectionExact, projection.ProjectionTransformed} {
+		t.Run(string(outcome), func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			// Different pack and dimension values make canonical JSON order differ
+			// from ordinary struct JSON order. The second key overlaps a selection.
+			key, err := thermalZoneSetpointCopy(in.Mappings[0].Key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key.PackID = "test.other.pack"
+			*key.Dimensions[0].Value.Text = "synthetic:zone-0"
+			other := projection.ProjectionDisposition{
+				Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: outcome,
+				SourceKeys: []semreg.FactKey{key, in.Mappings[0].Key}, Loss: []projection.LossDetail{},
+			}
+			if outcome == projection.ProjectionTransformed {
+				other.Loss = []projection.LossDetail{{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Synthetic precision loss."}}
+			}
+			if err := other.Validate(); err != nil {
+				t.Fatalf("invalid other-source fixture: %v", err)
+			}
+			in.OtherDispositions = []projection.ProjectionDisposition{other}
+			out := thermalZoneSetpointRun(t, in)
+			d := out.Dispositions[0]
+			if d.Outcome != outcome || !reflect.DeepEqual(d.Loss, other.Loss) || len(d.SourceKeys) != 7 {
+				t.Fatalf("merge overwrote outcome/loss or duplicated a key: %+v", d)
+			}
+			for _, want := range append([]semreg.FactKey{key}, in.Mappings[0].Key, in.Mappings[1].Key, in.Mappings[2].Key, in.Mappings[3].Key, in.Mappings[4].Key, in.Mappings[5].Key) {
+				found := false
+				for _, got := range d.SourceKeys {
+					found = found || reflect.DeepEqual(got, want)
+				}
+				if !found {
+					t.Fatalf("merge lost source key: %+v", want)
+				}
+			}
+			baseline, _ := json.Marshal(out)
+			in.OtherDispositions[0].SourceKeys[0], in.OtherDispositions[0].SourceKeys[1] = in.OtherDispositions[0].SourceKeys[1], in.OtherDispositions[0].SourceKeys[0]
+			permuted, _ := json.Marshal(thermalZoneSetpointRun(t, in))
+			if string(baseline) != string(permuted) {
+				t.Fatal("merge depends on source key input order")
+			}
+		})
+	}
+}
+
+func TestThermalZoneSetpointMappingRepeatedFeedback(t *testing.T) {
+	for _, scenario := range []string{"unchanged", "partial", "missing", "changing_identity"} {
+		t.Run(scenario, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			first := thermalZoneSetpointRun(t, in)
+			in.Previous = first.History
+			switch scenario {
+			case "partial":
+				in.Observations = in.Observations[:1]
+			case "missing":
+				in.Observations = nil
+				in.Previous = nil
+			}
+			for cycle := 0; cycle < 200; cycle++ {
+				if scenario == "changing_identity" {
+					epoch := semreg.SourceEpochID(fmt.Sprintf("epoch:synthetic-%d", cycle))
+					for i := range in.Mappings {
+						in.Mappings[i].Identity.Epoch, in.Observations[i].Identity.Epoch = epoch, epoch
+					}
+				}
+				out := thermalZoneSetpointRun(t, in)
+				wantSelected := 6
+				if scenario == "missing" {
+					wantSelected = 0
+				}
+				if len(out.Selected) != wantSelected {
+					t.Fatalf("cycle %d lost selections: %d", cycle, len(out.Selected))
+				}
+				// Identity replacement also re-evaluates the preceding six current
+				// observations; the other scenarios evaluate six records per call.
+				if len(out.History) > thermalZoneSetpointRetainedHistoryLimit+12 {
+					t.Fatalf("cycle %d exceeded history window: %d", cycle, len(out.History))
+				}
+				if scenario == "unchanged" && len(out.History) != 12 {
+					t.Fatalf("cycle %d duplicated unchanged history: %d", cycle, len(out.History))
+				}
+				for _, selected := range out.Selected {
+					if selected.Observation.Receipt.Nanoseconds != "100" {
+						t.Fatal("feedback refreshed receipt")
+					}
+				}
+				in.Previous = out.History
+			}
+		})
 	}
 }

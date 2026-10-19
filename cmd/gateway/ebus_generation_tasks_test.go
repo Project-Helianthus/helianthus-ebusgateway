@@ -976,3 +976,86 @@ func TestGenerationTasksBridgePredicateOwnsEveryKeyField(t *testing.T) {
 		t.Fatal("stopped bridge reports an admitted generation")
 	}
 }
+
+// A stale reconciliation snapshot must not fence a generation that the
+// lifecycle owner still admits.
+func TestGenerationTasksStaleSyncDoesNotFenceAdmittedGeneration(t *testing.T) {
+	adm := &genAdmission{}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, Tasks: []ebusGenerationTask{
+		{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	older, current := genKey("inc.e1", 1, 1, 1), genKey("inc.e1", 1, 2, 2)
+	adm.set(current)
+	if err := runner.Admit(current); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// A delayed snapshot taken while stopped, then one carrying an older key.
+	_, _ = runner.Sync(ctx, ebusGenerationKey{}, false)
+	_, _ = runner.Sync(ctx, older, true)
+	if !scope.Live() || !scope.Commit(func() {}) {
+		t.Fatal("stale snapshot fenced a still-admitted generation")
+	}
+	if _, err := runner.Sync(ctx, current, true); err != nil {
+		t.Fatalf("current wake after stale snapshots: %v", err)
+	}
+	if st := runner.Status(); st.Phase != ebusGenerationRunning && st.Phase != ebusGenerationIdle {
+		t.Fatalf("phase = %v", st.Phase)
+	}
+	adm.withdraw()
+	if join, err := runner.Sync(ctx, ebusGenerationKey{}, false); err != nil || !join.Joined {
+		t.Fatalf("withdrawn generation not joined: %+v %v", join, err)
+	}
+}
+
+// A helper queued by Go must re-check admission when it starts executing:
+// the lifecycle owner withdraws admission between launch and start.
+func TestGenerationTasksDelayedHelperDoesNotRunAfterWithdrawal(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		ok    bool
+		cur   ebusGenerationKey
+		armed bool
+		calls int
+	)
+	admitted := func(key ebusGenerationKey) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if armed {
+			if calls++; calls == 2 { // the helper's own start check
+				ok = false
+			}
+		}
+		return ok && cur == key
+	}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: admitted, Tasks: []ebusGenerationTask{
+		{Name: "poll", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	key := genKey("inc.e1", 1, 1, 1)
+	mu.Lock()
+	cur, ok = key, true
+	mu.Unlock()
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	var ran atomic.Bool
+	mu.Lock()
+	armed = true
+	mu.Unlock()
+	if !scope.Go(func(context.Context) { ran.Store(true) }) {
+		t.Fatal("Go refused while admitted")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if join := runner.Withdraw(ctx, key); !join.Joined {
+		t.Fatalf("not joined: %+v", join)
+	}
+	if ran.Load() {
+		t.Fatal("helper ran after admission was withdrawn")
+	}
+}

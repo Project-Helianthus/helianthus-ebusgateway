@@ -330,7 +330,9 @@ func (runner *ebusGenerationTaskRunner) Sync(ctx context.Context, key ebusGenera
 	run := runner.current
 	runner.mu.Unlock()
 	var join ebusGenerationJoin
-	if run != nil && (!admitted || run.key != key) {
+	// A snapshot taken before this call may be stale: only withdraw a run
+	// whose own key the lifecycle owner no longer admits right now.
+	if run != nil && (!admitted || run.key != key) && !runner.admitted(run.key) {
 		run.fence()
 		if join = run.join(ctx); !join.Joined {
 			return join, errGenerationTasksNotJoined
@@ -338,6 +340,9 @@ func (runner *ebusGenerationTaskRunner) Sync(ctx context.Context, key ebusGenera
 	}
 	if !admitted {
 		return join, nil
+	}
+	if run != nil && run.key != key && runner.admitted(run.key) {
+		return join, errGenerationTasksBusy
 	}
 	return join, runner.Admit(key)
 }
@@ -587,7 +592,13 @@ func (scope *ebusGenerationScope) Go(fn func(context.Context)) bool {
 			run.exitLocked(unit)
 			runner.mu.Unlock()
 		}()
-		fn(run.ctx)
+		// The generation may have been fenced between the launch and now.
+		runner.gate.RLock()
+		live := run.liveLocked()
+		runner.gate.RUnlock()
+		if live {
+			fn(run.ctx)
+		}
 	}()
 	return true
 }

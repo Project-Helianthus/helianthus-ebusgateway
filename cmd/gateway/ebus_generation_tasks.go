@@ -194,6 +194,12 @@ type ebusGenerationRun struct {
 	// serialized is set once the exclusive gate was acquired after the
 	// fence, i.e. no effect admitted before the fence is still inside it.
 	serialized bool
+
+	// fenceOnce starts the single exclusive-gate acquisition of this run;
+	// locked closes once it completed. Repeated fences share it, so a stuck
+	// effect cannot accumulate waiters.
+	fenceOnce sync.Once
+	locked    chan struct{}
 }
 
 // ebusGenerationScope is the handle a task receives. Every method is fenced
@@ -285,7 +291,7 @@ func (runner *ebusGenerationTaskRunner) Admit(key ebusGenerationKey) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &ebusGenerationRun{runner: runner, key: key, ctx: ctx, cancel: cancel,
-		states: make([]ebusGenerationTaskState, len(runner.tasks)), units: map[string]int{}, drained: make(chan struct{})}
+		states: make([]ebusGenerationTaskState, len(runner.tasks)), units: map[string]int{}, drained: make(chan struct{}), locked: make(chan struct{})}
 	for i := range run.states {
 		run.states[i] = ebusGenerationTaskPending
 	}
@@ -301,7 +307,10 @@ func (runner *ebusGenerationTaskRunner) Admit(key ebusGenerationKey) error {
 // Fence immediately withdraws the authority of key's generation: its
 // context is cancelled and, once Fence returns, no Commit, callback, helper
 // or task start of that generation succeeds. It does not wait for tasks to
-// return; Withdraw also joins them. It reports whether key owned tasks.
+// return; Withdraw also joins them. It reports true only once the exclusive
+// gate was acquired, i.e. serialization completed; when an in-flight effect
+// outlasts the join bound it returns false and the generation stays
+// DRAINING, so callers must treat false as replacement blocked.
 func (runner *ebusGenerationTaskRunner) Fence(key ebusGenerationKey) bool {
 	runner.mu.Lock()
 	run := runner.current
@@ -311,8 +320,7 @@ func (runner *ebusGenerationTaskRunner) Fence(key ebusGenerationKey) bool {
 	}
 	ctx, cancel := runner.bound(context.Background())
 	defer cancel()
-	run.fence(ctx)
-	return true
+	return run.fence(ctx)
 }
 
 // Withdraw fences key's generation and joins all of its work within the
@@ -431,26 +439,34 @@ func (run *ebusGenerationRun) liveLocked() bool {
 // that blocks while holding the shared gate cannot stall the caller past the
 // join bound or ctx: the generation then stays unjoined (DRAINING) and the
 // blocked unit is reported as pending.
-func (run *ebusGenerationRun) fence(ctx context.Context) {
+func (run *ebusGenerationRun) fence(ctx context.Context) bool {
 	run.fenced.Store(true)
 	run.cancel()
 	runner := run.runner
-	locked := make(chan struct{})
-	go func() {
-		// Once the exclusive gate is held, every effect admitted before the
-		// fence has finished: the generation may be declared joined, also
-		// when this happens after the caller gave up waiting.
-		runner.gate.Lock()
-		runner.mu.Lock()
-		run.serialized = true
-		run.settleLocked()
-		runner.mu.Unlock()
-		runner.gate.Unlock()
-		close(locked)
-	}()
+	run.fenceOnce.Do(func() {
+		go func() {
+			// Once the exclusive gate is held, every effect admitted before
+			// the fence has finished: the generation may be declared joined,
+			// also when this happens after the caller gave up waiting.
+			runner.gate.Lock()
+			runner.mu.Lock()
+			run.serialized = true
+			run.settleLocked()
+			runner.mu.Unlock()
+			runner.gate.Unlock()
+			close(run.locked)
+		}()
+	})
 	select {
-	case <-locked:
+	case <-run.locked:
+		return true
 	case <-ctx.Done():
+		select {
+		case <-run.locked:
+			return true
+		default:
+			return false
+		}
 	}
 }
 

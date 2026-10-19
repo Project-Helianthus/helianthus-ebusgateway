@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -580,6 +581,79 @@ func TestGenerationTasksFenceExcludesInFlightCommit(t *testing.T) {
 	if scope.Commit(func() { t.Error("commit after Fence") }) {
 		t.Fatal("commit accepted after Fence returned")
 	}
+}
+
+func TestGenerationTasksFenceReportsFalseWhenGateTimesOut(t *testing.T) {
+	adm := &genAdmission{}
+	effects := &genEffects{}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, JoinTimeout: 50 * time.Millisecond, Tasks: []ebusGenerationTask{
+		{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	inCommit := make(chan struct{})
+	release := make(chan struct{})
+	var installed atomic.Bool
+	go scope.Commit(func() { close(inCommit); <-release; installed.Store(true) })
+	genWatch(t, "commit entry", inCommit)
+	if runner.Fence(key) {
+		t.Fatal("Fence reported success before serialization completed")
+	}
+	if runner.Fence(key) {
+		t.Fatal("repeated Fence reported success before serialization completed")
+	}
+	if status := runner.Status(); status.Phase != ebusGenerationDraining {
+		t.Fatalf("phase = %s, want DRAINING", status.Phase)
+	}
+	before := effects.snapshot()
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for !runner.Fence(key) {
+		if time.Now().After(deadline) {
+			t.Fatal("Fence never completed after the in-flight effect returned")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !installed.Load() {
+		t.Fatal("in-flight install did not complete")
+	}
+	if effects.mutateAll(scope) != 0 || !reflect.DeepEqual(effects.snapshot(), before) {
+		t.Fatal("an effect of the fenced generation landed")
+	}
+}
+
+func TestGenerationTasksRepeatedSyncSharesOneFenceWaiter(t *testing.T) {
+	adm := &genAdmission{}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, JoinTimeout: 5 * time.Millisecond, Tasks: []ebusGenerationTask{
+		{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	inCommit := make(chan struct{})
+	release := make(chan struct{})
+	go scope.Commit(func() { close(inCommit); <-release })
+	genWatch(t, "commit entry", inCommit)
+	adm.withdraw()
+	base := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		if _, err := runner.Sync(context.Background(), ebusGenerationKey{}, false); err == nil {
+			t.Fatal("Sync joined a generation with a stuck effect")
+		}
+	}
+	if grown := runtime.NumGoroutine() - base; grown > 3 {
+		t.Fatalf("goroutines grew by %d across repeated Sync calls", grown)
+	}
+	close(release)
 }
 
 // --- acceptance 3: failure never spawns a generation or a retry owner ---

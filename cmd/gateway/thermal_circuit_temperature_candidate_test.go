@@ -95,10 +95,24 @@ func TestI33CodecAndBounds(t *testing.T) {
 			}
 		})
 	}
-	in, e := i33Fixture()
-	in.Attempts[0].Codec.ByteOrder = "big"
-	if i33Map(t, in, e).LastGood != nil {
-		t.Fatal("codec metadata mismatch accepted")
+	for _, field := range []string{"ByteOrder", "Minimum", "Maximum", "BoundsKnown", "Qualified", "ActiveCircuit"} {
+		t.Run("mismatch-"+field, func(t *testing.T) {
+			in, e := i33Fixture()
+			// Vary only the request so qualification checks on the observation
+			// cannot mask removal of the metadata equality comparison.
+			v := reflect.ValueOf(&in.Codec).Elem().FieldByName(field)
+			switch v.Kind() {
+			case reflect.Bool:
+				v.SetBool(!v.Bool())
+			case reflect.Float64:
+				v.SetFloat(v.Float() + 1)
+			default:
+				v.SetString("big")
+			}
+			if c := i33Map(t, in, e); c.LastGood != nil || c.Loss != "codec or circuit qualification unknown" {
+				t.Fatal("codec metadata mismatch accepted", c)
+			}
+		})
 	}
 }
 
@@ -204,6 +218,8 @@ func TestI33Freshness(t *testing.T) {
 		want     semreg.Freshness
 		retained bool
 	}{
+		{"missing-wall-evaluation", func(i *circuitTemperatureInput, e *semreg.EvaluationContext) { e.EvaluatedAt = semreg.TimePoint{} }, semreg.FreshnessUnknown, true},
+		{"malformed-wall-evaluation", func(i *circuitTemperatureInput, e *semreg.EvaluationContext) { e.EvaluatedAt.UnixNanoseconds = "+0" }, semreg.FreshnessUnknown, true},
 		{"boundary", func(i *circuitTemperatureInput, e *semreg.EvaluationContext) { e.EvaluateMonotonic.Nanoseconds = "20" }, semreg.FreshnessFresh, true},
 		{"stale", func(i *circuitTemperatureInput, e *semreg.EvaluationContext) { e.EvaluateMonotonic.Nanoseconds = "21" }, semreg.FreshnessStale, true},
 		{"future", func(i *circuitTemperatureInput, e *semreg.EvaluationContext) { e.EvaluateMonotonic.Nanoseconds = "9" }, semreg.FreshnessUnknown, true},
@@ -299,6 +315,9 @@ func TestI33RolesAndInstanceIsolation(t *testing.T) {
 	if len(out.Facts) != 0 || len(out.Candidates) != 4 || *out.Candidates[0].NativeValue != 40 || *out.Candidates[1].NativeValue != 250 || out.Candidates[1].Role != "requested_flow" || out.Candidates[2].NativeValue != nil || *out.Candidates[3].NativeValue != 45 {
 		t.Fatal(out)
 	}
+	if c := i33Map(t, raw, e); c.Loss != "RR0020 layout conflicts with native contract" || c.LastGood != nil {
+		t.Fatal("four-byte RR0020 layout accepted", c)
+	}
 	raw.Attempts[0].ValueBytes = []byte{0}
 	c := i33Map(t, raw, e)
 	if c.NativeValue != nil || c.Loss != "RR0020 raw evidence only" || len(c.Attempts[0].ValueBytes) != 1 {
@@ -389,5 +408,81 @@ func TestI33ConflictingAttemptsRetainPrior(t *testing.T) {
 	c = i33Map(t, in, e)
 	if c.LastGood == nil || c.LastGood.Receipt.Nanoseconds != "10" || *c.NativeValue != 40 {
 		t.Fatal("clock conflict erased prior", c)
+	}
+}
+
+func TestI33RequestedSelectorSupport(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*circuitTemperatureSelector)
+	}{
+		{"PB", func(s *circuitTemperatureSelector) { s.PB = 0xb6 }},
+		{"SB", func(s *circuitTemperatureSelector) { s.SB = 0x25 }},
+		{"Opcode", func(s *circuitTemperatureSelector) { s.Opcode = 3 }},
+		{"Operation", func(s *circuitTemperatureSelector) { s.Operation = 1 }},
+		{"Group", func(s *circuitTemperatureSelector) { s.Group = 3 }},
+		{"Direction", func(s *circuitTemperatureSelector) { s.Direction = "initiator_to_target" }},
+		{"Association", func(s *circuitTemperatureSelector) { s.Association = "" }},
+		{"Instance", func(s *circuitTemperatureSelector) { s.Instance = 9 }},
+		{"Register", func(s *circuitTemperatureSelector) { s.Register = 9 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, records := range []string{"attempt", "previous", "missing"} {
+				in, e := i33Fixture()
+				tc.change(&in.Identity.Selector)
+				in.Attempts[0].Identity = in.Identity
+				switch records {
+				case "previous":
+					in.Previous, in.Attempts = in.Attempts, nil
+				case "missing":
+					in.Attempts = nil
+				}
+				c := i33Map(t, in, e)
+				if c.Role != "unsupported" || c.Loss != "unsupported native selector" || c.LastGood != nil || c.NativeValue != nil {
+					t.Fatalf("%s: unsupported selector assigned a role: %+v", records, c)
+				}
+			}
+		})
+	}
+}
+
+func TestI33IdentityCompleteness(t *testing.T) {
+	typ := reflect.TypeOf(circuitTemperatureIdentity{})
+	for index := 0; index < typ.NumField(); index++ {
+		if typ.Field(index).Type.Kind() != reflect.String {
+			continue
+		}
+		t.Run(typ.Field(index).Name, func(t *testing.T) {
+			for _, previous := range []bool{false, true} {
+				in, e := i33Fixture()
+				reflect.ValueOf(&in.Identity).Elem().Field(index).SetString("")
+				in.Attempts[0].Identity = in.Identity
+				if previous {
+					in.Previous, in.Attempts = in.Attempts, nil
+				}
+				if c := i33Map(t, in, e); c.LastGood != nil || c.Loss != "incomplete identity" {
+					t.Fatal("incomplete identity retained", c)
+				}
+			}
+		})
+	}
+}
+
+func TestI33EvidenceStatus(t *testing.T) {
+	for _, status := range []string{"Proven", "Hypothesis", "Unknown", "", "invalid"} {
+		t.Run(status, func(t *testing.T) {
+			in, e := i33Fixture()
+			in.Attempts[0].EvidenceStatus = status
+			c := i33Map(t, in, e)
+			valid := status == "Proven" || status == "Hypothesis" || status == "Unknown"
+			if valid {
+				if c.LastGood == nil || c.LastGood.EvidenceStatus != status {
+					t.Fatal("evidence status lost", c)
+				}
+			} else if c.LastGood != nil || c.Loss != "invalid evidence status" {
+				t.Fatal("invalid evidence status retained", c)
+			}
+		})
 	}
 }

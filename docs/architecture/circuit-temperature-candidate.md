@@ -4,7 +4,7 @@ This partial implementation advances [#1233](https://github.com/Project-Helianth
 and [#952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952).
 It implements the native-only seam of the public
 [circuit temperature cutover contract](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/circuit-temperature-cutover.md).
-The parent remains open. Nothing here is stable before Helianthus 1.0.
+The parent remains open. This candidate seam is pre-stable.
 
 The native authority is the [B524 circuit register catalog](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/protocols/vaillant/ebus-vaillant-B524-register-map.md#gg0x02--heating-circuits-multi-instance),
 including its profile-dependent float byte order and RR0020 correction.
@@ -23,7 +23,8 @@ common production Provider interface or live gateway integration.
 For PB=B5, SB=24, OP=02, operation=00, group=02, the supported ordinary circuit
 candidate interval is instance 00..08. That interval never proves presence.
 The caller must independently qualify the family/profile and active physical
-circuit; virtual native-water instance 09 and instance 0A are excluded.
+circuit; virtual native-water instance 09 and instance 0A are excluded. Unsupported
+selectors receive the unsupported role and loss even when no observations exist.
 
 | Register | Native disposition | Semantic loss / withholding |
 | --- | --- | --- |
@@ -38,8 +39,9 @@ rejects the RR0020 temperature interpretation within its stated family scope.
 decimal rounding policy and broader family applicability. These evidence labels
 remain independent of qualification, freshness, runtime admission and physical
 acceptance. The mapper preserves the supplied evidence status without upgrading
-it. All results contain explicit local loss/withholding text and an empty facts
-collection. No definition, reason DefinitionID, TTL, capability or dimension
+it. Only Proven, Hypothesis and Unknown are accepted as evidence status; other
+values remain diagnostic and cannot become last-good. All results contain explicit
+local loss/withholding text and an empty facts collection. No definition, reason DefinitionID, TTL, capability or dimension
 value is invented.
 
 ## Identity, retention and recovery
@@ -48,8 +50,8 @@ Every observation must match the requested full identity: asset, service,
 source, source epoch, driver generation, binding and binding/association/profile/
 decoder/semantic revisions, family, profile, available firmware context, and
 selector PB/SB/opcode/operation/group/instance/register, initiator/responder,
-direction and request/reply association. Firmware may explicitly remain Unknown;
-its value still participates in isolation. A caller-supplied correlation decision
+direction and request/reply association. Empty firmware context is incomplete.
+Firmware may explicitly remain Unknown; its value still participates in isolation. A caller-supplied correlation decision
 is required; this seam does not parse or authenticate frames. Codec metadata
 must match the requested metadata exactly and be explicitly qualified for an
 active circuit. No address, name, temperature or pack match establishes that.
@@ -66,7 +68,10 @@ The newest valid same-clock native observation becomes last-good. Older
 observations cannot replace it. Equal-receipt records must agree in their entire
 record, including evidence, otherwise no new winner is selected and an independently valid prior last-good
 record survives. Different monotonic
-clock epochs are incomparable and also withhold selection. Canonical diagnostic
+clock epochs are incomparable and withhold a new selection. An independently
+valid prior history survives; while old-epoch history is retained, a new-epoch
+attempt cannot replace it. The caller must supply a separate history after a
+clock-epoch transition. Canonical diagnostic
 ordering makes attempt/history permutation independent. A failed attempt cannot
 replace a retained value with zero, refresh its receipt or alter its evidence.
 A new valid receipt recovers only that selector; requested and raw sibling
@@ -77,8 +82,9 @@ Malformed typed points or budgets, missing/zero budget, future receipt or epoch
 mismatch give Unknown. Age equal to the budget is fresh; age greater than the
 budget is stale. The comparison uses an inclusive caller-supplied budget; the mapper supplies
 no duration. A stale last-good number remains historical native evidence and
-is unavailable as a current projection. Unknown freshness also supplies no
-current projection. Even fresh native candidates emit no fact in this slice.
+is still returned in NativeValue with Freshness=Stale. Unknown freshness also
+retains the native number. Neither supplies a current projection. Even fresh
+native candidates emit no fact in this slice.
 
 For example, measured 40 at monotonic receipt 10 survives an invalid attempt
 at 12 with receipt 10 intact. A valid measured 45 at 12 then replaces only that

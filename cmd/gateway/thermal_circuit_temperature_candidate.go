@@ -72,12 +72,14 @@ func mapCircuitTemperature(inputs []circuitTemperatureInput, evaluation semreg.E
 	out := circuitTemperatureResult{Facts: []semreg.FactCandidate{}}
 	for _, in := range inputs {
 		c := circuitTemperatureCandidate{Identity: in.Identity, Freshness: semreg.FreshnessUnknown, Loss: "missing", Withheld: "circuit binding and decimal policy unresolved"}
-		switch in.Identity.Selector.Register {
-		case 8:
+		switch {
+		case !circuitTemperatureSelectorSupported(in.Identity.Selector):
+			c.Role, c.Withheld = "unsupported", "unsupported native selector"
+		case in.Identity.Selector.Register == 8:
 			c.Role = "measured_flow"
-		case 7:
+		case in.Identity.Selector.Register == 7:
 			c.Role, c.Withheld = "requested_flow", "requested flow is not measured flow or a write capability"
-		case 0x20:
+		case in.Identity.Selector.Register == 0x20:
 			c.Role, c.Withheld = "unknown_raw", "RR0020 is not a temperature; status meaning Unknown"
 		default:
 			c.Role, c.Withheld = "unsupported", "unsupported native selector"
@@ -90,6 +92,11 @@ func mapCircuitTemperature(inputs []circuitTemperatureInput, evaluation semreg.E
 			return circuitTemperatureKey(c.Attempts[i]) < circuitTemperatureKey(c.Attempts[j])
 		})
 		sort.Slice(c.History, func(i, j int) bool { return circuitTemperatureKey(c.History[i]) < circuitTemperatureKey(c.History[j]) })
+		if c.Role == "unsupported" {
+			c.Loss = "unsupported native selector"
+			out.Candidates = append(out.Candidates, c)
+			continue
+		}
 		all := append(circuitTemperatureCloneAll(c.History), c.Attempts...)
 		best, value, conflict, loss := circuitTemperatureSelect(all, in)
 		c.Loss = loss
@@ -143,16 +150,20 @@ func circuitTemperatureSelect(records []circuitTemperatureObservation, in circui
 	return best, value, conflict || clockConflict, loss
 }
 
+func circuitTemperatureSelectorSupported(s circuitTemperatureSelector) bool {
+	return s.PB == 0xb5 && s.SB == 0x24 && s.Opcode == 2 && s.Operation == 0 && s.Group == 2 && s.Instance <= 8 && s.Direction == "target_to_initiator" && s.Association != ""
+}
+
 func circuitTemperatureDecode(o circuitTemperatureObservation, in circuitTemperatureInput) (*float64, string) {
 	if o.Identity != in.Identity {
 		return nil, "identity mismatch"
 	}
 	s := in.Identity.Selector
-	if s.PB != 0xb5 || s.SB != 0x24 || s.Opcode != 2 || s.Operation != 0 || s.Group != 2 || s.Instance > 8 || s.Direction != "target_to_initiator" || s.Association == "" {
+	if !circuitTemperatureSelectorSupported(s) {
 		return nil, "unsupported native selector"
 	}
 	id := in.Identity
-	for _, field := range []string{id.Asset, id.Service, id.Source, id.Epoch, id.Generation, id.Binding, id.BindingRevision, id.AssociationRevision, id.ProfileRevision, id.DecoderRevision, id.SemanticRevision, id.Family, id.Profile} {
+	for _, field := range []string{id.Asset, id.Service, id.Source, id.Epoch, id.Generation, id.Binding, id.BindingRevision, id.AssociationRevision, id.ProfileRevision, id.DecoderRevision, id.SemanticRevision, id.Family, id.Profile, id.Firmware} {
 		if field == "" {
 			return nil, "incomplete identity"
 		}
@@ -165,6 +176,11 @@ func circuitTemperatureDecode(o circuitTemperatureObservation, in circuitTempera
 	}
 	if o.ReceivedAt.Validate() != nil || o.Receipt.Validate() != nil {
 		return nil, "malformed receipt"
+	}
+	switch o.EvidenceStatus {
+	case "Proven", "Hypothesis", "Unknown":
+	default:
+		return nil, "invalid evidence status"
 	}
 	if len(o.Evidence) == 0 {
 		return nil, "missing evidence"

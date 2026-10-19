@@ -1197,3 +1197,79 @@ func TestGenerationTasksAdmitValidatesUnderRunnerLock(t *testing.T) {
 		t.Fatalf("stale admission left the runner %s", phase)
 	}
 }
+
+func TestGenerationTasksCallbackOutlivingTaskIsJoinedBeforeSuccessor(t *testing.T) {
+	adm := &genAdmission{}
+	callbacks := make(chan func() bool, 1)
+	inCallback := make(chan struct{})
+	release := make(chan struct{})
+	var landed atomic.Bool
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted,
+		JoinTimeout: 50 * time.Millisecond,
+		Tasks: []ebusGenerationTask{
+			{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error {
+				callbacks <- scope.Callback(func() { close(inCallback); <-release; landed.Store(true) })
+				return nil
+			}},
+		}})
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	cb := <-callbacks
+	// The registering task has returned; the callback now runs on its own.
+	go cb()
+	genWatch(t, "callback entry", inCallback)
+
+	join := runner.Withdraw(context.Background(), key)
+	if join.Joined || len(join.Pending) == 0 {
+		t.Fatalf("in-flight callback not awaited: %+v", join)
+	}
+	adm.withdraw()
+	next := genKey("inc.e2", 2, 2, 2)
+	adm.set(next)
+	if err := runner.Admit(next); !errors.Is(err, errGenerationTasksNotJoined) {
+		t.Fatalf("successor admitted over a running callback: %v", err)
+	}
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if join := runner.Withdraw(ctx, key); !join.Joined {
+		t.Fatalf("late callback not joined: %+v", join)
+	}
+	if !landed.Load() {
+		t.Fatal("joined before the callback finished")
+	}
+}
+
+func TestGenerationTasksWithdrawUsesOneBoundAcrossFenceAndJoin(t *testing.T) {
+	adm := &genAdmission{}
+	scopes := make(chan *ebusGenerationScope, 1)
+	const bound = 300 * time.Millisecond
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, JoinTimeout: bound,
+		Tasks: []ebusGenerationTask{
+			{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+		}})
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	inCommit := make(chan struct{})
+	release := make(chan struct{})
+	go scope.Commit(func() { close(inCommit); <-release })
+	genWatch(t, "commit entry", inCommit)
+	defer close(release)
+
+	start := time.Now()
+	join := runner.Withdraw(context.Background(), key)
+	elapsed := time.Since(start)
+	if join.Joined {
+		t.Fatalf("joined while a commit holds the gate: %+v", join)
+	}
+	if elapsed >= bound+bound/2 {
+		t.Fatalf("withdraw took %v, want one bound of %v", elapsed, bound)
+	}
+}

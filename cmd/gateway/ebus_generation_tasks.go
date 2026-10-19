@@ -191,6 +191,9 @@ type ebusGenerationRun struct {
 	units   map[string]int
 	drained chan struct{}
 	joined  bool
+	// serialized is set once the exclusive gate was acquired after the
+	// fence, i.e. no effect admitted before the fence is still inside it.
+	serialized bool
 }
 
 // ebusGenerationScope is the handle a task receives. Every method is fenced
@@ -306,7 +309,9 @@ func (runner *ebusGenerationTaskRunner) Fence(key ebusGenerationKey) bool {
 	if run == nil || run.key != key {
 		return false
 	}
-	run.fence(context.Background())
+	ctx, cancel := runner.bound(context.Background())
+	defer cancel()
+	run.fence(ctx)
 	return true
 }
 
@@ -323,8 +328,19 @@ func (runner *ebusGenerationTaskRunner) Withdraw(ctx context.Context, key ebusGe
 		// joined before its successor was admitted.
 		return ebusGenerationJoin{Key: key, Joined: true}
 	}
+	ctx, cancel := runner.bound(ctx)
+	defer cancel()
 	run.fence(ctx)
 	return run.join(ctx)
+}
+
+// bound derives the single deadline shared by the fence and join phases of
+// one operation: the join timeout or ctx, whichever ends first.
+func (runner *ebusGenerationTaskRunner) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, runner.joinTimeout)
 }
 
 // Sync reconciles the runner with the lifecycle owner's current view: key
@@ -340,8 +356,10 @@ func (runner *ebusGenerationTaskRunner) Sync(ctx context.Context, key ebusGenera
 	// A snapshot taken before this call may be stale: only withdraw a run
 	// whose own key the lifecycle owner no longer admits right now.
 	if run != nil && (!admitted || run.key != key) && !runner.admitted(run.key) {
-		run.fence(ctx)
-		if join = run.join(ctx); !join.Joined {
+		bctx, cancel := runner.bound(ctx)
+		defer cancel()
+		run.fence(bctx)
+		if join = run.join(bctx); !join.Joined {
 			return join, errGenerationTasksNotJoined
 		}
 	}
@@ -364,8 +382,10 @@ func (runner *ebusGenerationTaskRunner) Close(ctx context.Context) error {
 	if run == nil {
 		return nil
 	}
-	run.fence(ctx)
-	if join := run.join(ctx); !join.Joined {
+	bctx, cancel := runner.bound(ctx)
+	defer cancel()
+	run.fence(bctx)
+	if join := run.join(bctx); !join.Joined {
 		return fmt.Errorf("%w: %v", errGenerationTasksNotJoined, join.Pending)
 	}
 	return nil
@@ -412,39 +432,31 @@ func (run *ebusGenerationRun) liveLocked() bool {
 // join bound or ctx: the generation then stays unjoined (DRAINING) and the
 // blocked unit is reported as pending.
 func (run *ebusGenerationRun) fence(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	run.fenced.Store(true)
 	run.cancel()
 	runner := run.runner
 	locked := make(chan struct{})
 	go func() {
+		// Once the exclusive gate is held, every effect admitted before the
+		// fence has finished: the generation may be declared joined, also
+		// when this happens after the caller gave up waiting.
 		runner.gate.Lock()
-		defer runner.gate.Unlock()
+		runner.mu.Lock()
+		run.serialized = true
+		run.settleLocked()
+		runner.mu.Unlock()
+		runner.gate.Unlock()
 		close(locked)
 	}()
-	timer := time.NewTimer(runner.joinTimeout)
-	defer timer.Stop()
 	select {
 	case <-locked:
-	case <-timer.C:
 	case <-ctx.Done():
 	}
-	runner.mu.Lock()
-	run.settleLocked()
-	runner.mu.Unlock()
 }
 
 func (run *ebusGenerationRun) join(ctx context.Context) ebusGenerationJoin {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	timer := time.NewTimer(run.runner.joinTimeout)
-	defer timer.Stop()
 	select {
 	case <-run.drained:
-	case <-timer.C:
 	case <-ctx.Done():
 	}
 	runner := run.runner
@@ -453,9 +465,10 @@ func (run *ebusGenerationRun) join(ctx context.Context) ebusGenerationJoin {
 	return ebusGenerationJoin{Key: run.key, Joined: run.joined, Pending: run.pendingLocked()}
 }
 
-// settleLocked marks the run joined once it is fenced and nothing runs.
+// settleLocked marks the run joined once it is fenced, the exclusive gate
+// was acquired after the fence and nothing runs.
 func (run *ebusGenerationRun) settleLocked() {
-	if run.fenced.Load() && run.active == 0 && !run.joined {
+	if run.fenced.Load() && run.serialized && run.active == 0 && !run.joined {
 		run.joined = true
 		close(run.drained)
 	}
@@ -600,7 +613,27 @@ func (scope *ebusGenerationScope) Commit(fn func()) bool {
 // callback seam. Each invocation runs through Commit, so invocations after
 // the generation is fenced are dropped and report false.
 func (scope *ebusGenerationScope) Callback(fn func()) func() bool {
-	return func() bool { return scope.Commit(fn) }
+	run := scope.run
+	runner := run.runner
+	unit := scope.task + "/callback"
+	return func() bool {
+		runner.gate.RLock()
+		defer runner.gate.RUnlock()
+		if !run.liveLocked() {
+			return false
+		}
+		// An invocation outliving its registering task is joined work.
+		runner.mu.Lock()
+		run.enterLocked(unit)
+		runner.mu.Unlock()
+		defer func() {
+			runner.mu.Lock()
+			run.exitLocked(unit)
+			runner.mu.Unlock()
+		}()
+		fn()
+		return true
+	}
 }
 
 // Go runs fn as additional work of the generation, joined with its tasks.

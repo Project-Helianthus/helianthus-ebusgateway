@@ -1059,3 +1059,118 @@ func TestGenerationTasksDelayedHelperDoesNotRunAfterWithdrawal(t *testing.T) {
 		t.Fatal("helper ran after admission was withdrawn")
 	}
 }
+
+func TestGenerationTasksFenceExcludesInFlightFailureReport(t *testing.T) {
+	adm := &genAdmission{}
+	inFailure := make(chan struct{})
+	release := make(chan struct{})
+	var reports atomic.Int64
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted,
+		Failure: func(ebusGenerationKey, string, error) { reports.Add(1); close(inFailure); <-release },
+		Tasks: []ebusGenerationTask{
+			{Name: "scan", Run: func(context.Context, *ebusGenerationScope) error { return errors.New("boom") }},
+		}})
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	genWatch(t, "failure report", inFailure)
+	fenced := make(chan struct{})
+	go func() { runner.Fence(key); close(fenced) }()
+	select {
+	case <-fenced:
+		t.Fatal("Fence returned while a failure report was in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	genWatch(t, "fence", fenced)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if join := runner.Withdraw(ctx, key); !join.Joined {
+		t.Fatalf("not joined: %+v", join)
+	}
+	if got := reports.Load(); got != 1 {
+		t.Fatalf("reports = %d, want 1", got)
+	}
+}
+
+func TestGenerationTasksTaskInvokedAfterFenceHasNoAuthority(t *testing.T) {
+	adm := &genAdmission{}
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	type seen struct {
+		cancelled bool
+		landed    bool
+	}
+	got := make(chan seen, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, Tasks: []ebusGenerationTask{
+		{Name: "scan", Run: func(ctx context.Context, scope *ebusGenerationScope) error {
+			got <- seen{cancelled: ctx.Err() != nil, landed: scope.Commit(func() {}) || scope.Go(func(context.Context) {})}
+			return nil
+		}},
+	}})
+	runner.beforeRun = func() { close(paused); <-release }
+	key := genKey("inc.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	genWatch(t, "startup pause", paused)
+	if !runner.Fence(key) {
+		t.Fatal("Fence did not own the key")
+	}
+	close(release)
+	select {
+	case s := <-got:
+		if !s.cancelled || s.landed {
+			t.Fatalf("task after Fence: %+v, want cancelled context and no effect", s)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchdog: task never returned")
+	}
+}
+
+func TestGenerationTasksAdmitValidatesUnderRunnerLock(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		ok  = true
+		cur = genKey("inc.e1", 1, 1, 1)
+	)
+	inPredicate := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	admitted := func(key ebusGenerationKey) bool {
+		mu.Lock()
+		stale := ok && cur == key
+		mu.Unlock()
+		once.Do(func() { close(inPredicate); <-release })
+		return stale
+	}
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: admitted, Tasks: []ebusGenerationTask{
+		{Name: "scan", Run: genNop},
+	}})
+	done := make(chan error, 1)
+	go func() { done <- runner.Admit(cur) }()
+	genWatch(t, "predicate", inPredicate)
+	mu.Lock()
+	ok = false
+	mu.Unlock()
+	synced := make(chan struct{})
+	go func() {
+		_, _ = runner.Sync(context.Background(), ebusGenerationKey{}, false)
+		close(synced)
+	}()
+	select {
+	case <-synced:
+		t.Fatal("Sync reconciled while an admission was mid-validation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	genWatch(t, "sync", synced)
+	<-done
+	// Whatever Admit decided, Sync ran after it: no stale run may remain.
+	if phase := runner.Status().Phase; phase == ebusGenerationRunning {
+		t.Fatalf("stale admission left the runner %s", phase)
+	}
+}

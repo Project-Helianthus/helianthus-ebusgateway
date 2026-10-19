@@ -161,6 +161,10 @@ type ebusGenerationTaskRunner struct {
 	failure     func(ebusGenerationKey, string, error)
 	joinTimeout time.Duration
 
+	// beforeRun, when set by a test before the first Admit, runs between a
+	// task's startup liveness check and its invocation.
+	beforeRun func()
+
 	// gate is the effect serialization point. Commit, Go and task startup
 	// hold it shared; Fence holds it exclusively. Lock order: gate, then mu.
 	gate sync.RWMutex
@@ -248,11 +252,14 @@ func (runner *ebusGenerationTaskRunner) Admit(key ebusGenerationKey) error {
 	if !key.complete() {
 		return errGenerationTasksKey
 	}
+	// Admission is validated under the runner lock, so a concurrent Sync
+	// either sees the installed run or runs after the predicate observed
+	// the withdrawal. The predicate must not call back into the runner.
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
 	if !runner.admitted(key) {
 		return errGenerationTasksNotReady
 	}
-	runner.mu.Lock()
-	defer runner.mu.Unlock()
 	if runner.closed {
 		return errGenerationTasksClosed
 	}
@@ -395,7 +402,7 @@ func (runner *ebusGenerationTaskRunner) Status() ebusGenerationStatus {
 
 // live reports, under the gate, whether the run may still take effect.
 func (run *ebusGenerationRun) liveLocked() bool {
-	return !run.fenced.Load() && run.runner.admitted(run.key)
+	return !run.fenced.Load() && run.ctx.Err() == nil && run.runner.admitted(run.key)
 }
 
 func (run *ebusGenerationRun) fence() {
@@ -474,6 +481,12 @@ func (run *ebusGenerationRun) execute(i int) {
 	runner.gate.RUnlock()
 	var err error
 	if live {
+		// A fence can land between the check and the invocation. The task
+		// then starts with a cancelled context and every scope effect
+		// refuses, so nothing of a fenced generation lands.
+		if runner.beforeRun != nil {
+			runner.beforeRun()
+		}
 		err = spec.run(run.ctx, scope)
 	}
 
@@ -487,15 +500,15 @@ func (run *ebusGenerationRun) execute(i int) {
 		state = ebusGenerationTaskFailed
 	}
 	if state == ebusGenerationTaskFailed && runner.failure != nil {
-		// The report is gated by liveness and still counted as this task's
-		// work, so a joined generation never reports again. The lifecycle
-		// owner re-checks the key at its own serialization point.
+		// The report is delivered under the shared gate, so Fence cannot
+		// complete between the liveness check and the hook. The hook must
+		// not call back into the runner. The lifecycle owner re-checks the
+		// key at its own serialization point.
 		runner.gate.RLock()
-		live = run.liveLocked()
-		runner.gate.RUnlock()
-		if live {
+		if run.liveLocked() {
 			runner.failure(run.key, spec.name, err)
 		}
+		runner.gate.RUnlock()
 	}
 
 	runner.mu.Lock()

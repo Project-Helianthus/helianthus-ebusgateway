@@ -43,6 +43,11 @@ func thermalCircuitTestOutcome(t *testing.T, out thermalCircuitMappingResult, se
 			if (s.Service != nil) != admitted || (s.Capability != nil) != admitted || s.Loss != loss {
 				t.Fatalf("service %s: %+v", service, s)
 			}
+			if admitted {
+				if err := s.Service.Validate(); err != nil {
+					t.Fatalf("admitted service %s is invalid: %v", service, err)
+				}
+			}
 			return s
 		}
 	}
@@ -383,6 +388,105 @@ func TestThermalCircuitCapabilityMappingCoolingLossAndReceipt(t *testing.T) {
 			thermalCircuitTestOutcome(t, later, "service:a", false, "stale_role")
 			if !reflect.DeepEqual(out.Native, later.Native) {
 				t.Fatal("evaluation renewed observation")
+			}
+		})
+	}
+}
+
+func TestThermalCircuitCapabilityMappingInvalidIdentities(t *testing.T) {
+	axes := []struct {
+		name   string
+		set    func(*thermalCircuitIdentity, string)
+		values []string
+	}{
+		{"asset", func(i *thermalCircuitIdentity, v string) { i.Asset = semreg.AssetID(v) }, []string{"", "bad id"}},
+		{"service", func(i *thermalCircuitIdentity, v string) { i.Service = semreg.ServiceInstanceID(v) }, []string{"", "bad id"}},
+		{"capability", func(i *thermalCircuitIdentity, v string) { i.Capability = semreg.CapabilityInstanceID(v) }, []string{"", "bad id"}},
+		{"source", func(i *thermalCircuitIdentity, v string) { i.Source = semreg.SourceID(v) }, []string{"", "bad id"}},
+		{"epoch", func(i *thermalCircuitIdentity, v string) { i.Epoch = semreg.SourceEpochID(v) }, []string{"", "bad id"}},
+		{"binding", func(i *thermalCircuitIdentity, v string) { i.Binding = semreg.NativeBindingID(v) }, []string{"", "bad id"}},
+		{"generation", func(i *thermalCircuitIdentity, v string) { i.Generation = semreg.Uint64(v) }, nil},
+		{"binding_revision", func(i *thermalCircuitIdentity, v string) { i.BindingRevision = semreg.Uint64(v) }, nil},
+		{"association_revision", func(i *thermalCircuitIdentity, v string) { i.AssociationRevision = semreg.Uint64(v) }, nil},
+	}
+	for _, axis := range axes {
+		values := axis.values
+		if values == nil {
+			values = []string{"", "not-a-number", "0", "-1", "18446744073709551616", "01"}
+		}
+		for _, value := range values {
+			t.Run(axis.name+"/"+value, func(t *testing.T) {
+				in := thermalCircuitTestInput()
+				thermalCircuitTestSibling(&in)
+				axis.set(&in.Candidates[0].Identity, value)
+				id := in.Candidates[0].Identity
+				in.Candidates[0].Role.Identity = id
+				for i := 0; i < 2; i++ {
+					in.Observations[i].Identity = id
+				}
+				out := mapThermalCircuitCapabilities(in)
+				thermalCircuitTestOutcome(t, out, id.Service, false, "identity")
+				thermalCircuitTestOutcome(t, out, "service:b", true, "")
+				if out.Dispositions[0].Outcome != projection.ProjectionExact || len(out.Native) != 4 {
+					t.Fatal("identity loss erased sibling or native evidence")
+				}
+			})
+		}
+	}
+}
+
+func TestThermalCircuitCapabilityMappingGlobalInstanceConflicts(t *testing.T) {
+	for _, kind := range []string{"service_across_assets", "capability_across_assets", "capability_same_asset"} {
+		t.Run(kind, func(t *testing.T) {
+			in := thermalCircuitTestInput()
+			thermalCircuitTestSibling(&in)
+			c := in.Candidates[0]
+			c.Identity.Asset, c.Identity.Service, c.Identity.Capability = "asset:c", "service:c", "capability:c"
+			c.Role.Identity = c.Identity
+			in.Candidates = append(in.Candidates, c)
+			for _, o := range in.Observations[:2] {
+				o.Identity = c.Identity
+				in.Observations = append(in.Observations, o)
+			}
+			id := &in.Candidates[1].Identity
+			if kind == "service_across_assets" {
+				id.Service = in.Candidates[0].Identity.Service
+			} else {
+				id.Capability = in.Candidates[0].Identity.Capability
+				if kind == "capability_same_asset" {
+					id.Asset = in.Candidates[0].Identity.Asset
+				}
+			}
+			in.Candidates[1].Role.Identity = *id
+			for i := 2; i < 4; i++ {
+				in.Observations[i].Identity = *id
+			}
+			out := mapThermalCircuitCapabilities(in)
+			conflicts := 0
+			for _, s := range out.Sources {
+				if s.Candidate.Identity.Service == "service:c" {
+					continue
+				}
+				if s.Loss != "conflict" || s.Service != nil || s.Capability != nil {
+					t.Fatalf("colliding candidate admitted: %+v", s)
+				}
+				conflicts++
+			}
+			if conflicts != 2 {
+				t.Fatalf("got %d conflicts, want 2", conflicts)
+			}
+			thermalCircuitTestOutcome(t, out, "service:c", true, "")
+			if out.Dispositions[0].Outcome != projection.ProjectionExact {
+				t.Fatal("conflict erased unrelated sibling")
+			}
+			for i, j := 0, len(in.Candidates)-1; i < j; i, j = i+1, j-1 {
+				in.Candidates[i], in.Candidates[j] = in.Candidates[j], in.Candidates[i]
+			}
+			for i, j := 0, len(in.Observations)-1; i < j; i, j = i+1, j-1 {
+				in.Observations[i], in.Observations[j] = in.Observations[j], in.Observations[i]
+			}
+			if !reflect.DeepEqual(out, mapThermalCircuitCapabilities(in)) {
+				t.Fatal("arrival order changed conflicts")
 			}
 		})
 	}

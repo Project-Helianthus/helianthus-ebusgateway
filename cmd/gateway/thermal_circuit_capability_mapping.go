@@ -95,6 +95,10 @@ type thermalCircuitMappingResult struct {
 func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuitMappingResult {
 	out := thermalCircuitMappingResult{EvaluatedAt: in.EvaluatedAt}
 	key := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	positive := func(v semreg.Uint64) bool {
+		n, err := strconv.ParseUint(string(v), 10, 64)
+		return v.Validate() == nil && err == nil && n > 0
+	}
 	fresh := func(receipt semreg.MonotonicPoint) bool {
 		r, er := strconv.ParseUint(string(receipt.Nanoseconds), 10, 64)
 		e, ee := strconv.ParseUint(string(in.EvaluateMonotonic.Nanoseconds), 10, 64)
@@ -167,7 +171,10 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 		s.TypeLoss, s.CoolingLoss = typeLoss, coolingLoss
 		id, sel, role := c.Identity, c.TypeSelector, c.Role
 		switch {
-		case id.Asset == "" || id.Service == "" || id.Capability == "" || id.Source == "" || id.Epoch == "" || id.Generation == "" || id.Binding == "" || id.BindingRevision == "" || id.AssociationRevision == "" || id.ControllerContext == "" || id.Family == "":
+		case id.Asset.Validate() != nil || id.Service.Validate() != nil || id.Capability.Validate() != nil ||
+			id.Source.Validate() != nil || id.Epoch.Validate() != nil || id.Binding.Validate() != nil ||
+			!positive(id.Generation) || !positive(id.BindingRevision) || !positive(id.AssociationRevision) ||
+			id.ControllerContext == "" || id.Family == "":
 			s.Loss = "identity"
 		case sel.PB != 0xb5 || sel.SB != 0x24 || sel.Opcode != 2 || sel.OperationType != 0 || sel.Group != 2 || sel.Register != 2 || sel.RequestDirection != "initiator_to_target" || sel.ValueDirection != "target_to_initiator":
 			s.Loss = "selector"
@@ -211,12 +218,12 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 		}
 		out.Sources = append(out.Sources, s)
 	}
-	// Competing admitted owners of the same opaque service are unresolved. A
+	// Competing admitted owners of any service or capability ID are unresolved. A
 	// merely absent source is not a competing owner and cannot erase a sibling.
 	conflicts := make([]bool, len(out.Sources))
 	for i, a := range out.Sources {
 		for j, b := range out.Sources {
-			if i != j && a.Service != nil && b.Service != nil && a.Service.AssetID == b.Service.AssetID && a.Service.InstanceID == b.Service.InstanceID {
+			if i != j && a.Service != nil && b.Service != nil && (a.Service.InstanceID == b.Service.InstanceID || a.Capability.InstanceID == b.Capability.InstanceID) {
 				conflicts[i] = true
 			}
 		}

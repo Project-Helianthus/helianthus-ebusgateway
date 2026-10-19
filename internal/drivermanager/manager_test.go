@@ -1567,3 +1567,76 @@ func waitForCondition(t *testing.T, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestLifecycleHookRepeatedStopUnderRuntimeQuarantineStaysUnconfirmed(t *testing.T) {
+	runtime := &hookRuntime{}
+	manager := newHookManager(t, runtime, 0, LifecycleHooks{})
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	runtime.mu.Lock()
+	runtime.quarantined = true
+	runtime.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		report, err := manager.StopWithReport(context.Background(), "ebus.primary")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Class != CloseUnconfirmed || report.Class.Proven() {
+			t.Fatalf("stop %d report = %#v, want UNCONFIRMED while runtime quarantine remains", i, report)
+		}
+	}
+}
+
+func TestLifecycleHookShutdownDeliversClosedReport(t *testing.T) {
+	runtime := &hookRuntime{}
+	closes := &closeLog{}
+	manager := newHookManager(t, runtime, 0, LifecycleHooks{Closed: closes.add})
+	if err := manager.Start(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	requireObservedState(t, manager, "ebus.primary", ObservedRunning, time.Second)
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reports := closes.list()
+	if len(reports) != 1 || reports[0].Class != CloseProven || reports[0].Generation != 1 {
+		t.Fatalf("shutdown close reports = %#v, want one PROVEN report for generation 1", reports)
+	}
+}
+
+func TestLifecycleHookLateAdmissionCloseReportCarriesCorrelation(t *testing.T) {
+	runtime := &lateCleanupRuntime{startEntered: make(chan struct{}), startRelease: make(chan struct{})}
+	closes := &closeLog{}
+	manager, err := New(Config{
+		LateRetireTimeout: time.Second,
+		Drivers: []DriverConfig{{
+			ID: "ebus.primary", Enabled: true, Runtime: runtime, Capabilities: []Capability{CapabilityRead},
+			Hooks: LifecycleHooks{Closed: closes.add},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	<-runtime.startEntered
+	if err := manager.Stop(context.Background(), "ebus.primary"); err != nil {
+		t.Fatal(err)
+	}
+	close(runtime.startRelease)
+	deadline := time.Now().Add(time.Second)
+	for len(closes.list()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	reports := closes.list()
+	if len(reports) != 2 {
+		t.Fatalf("close reports = %#v, want the stop and the late retirement", reports)
+	}
+	late := reports[1]
+	if late.Generation != 1 || late.Operation == 0 {
+		t.Fatalf("late retirement report = %#v, want the late generation and its originating operation", late)
+	}
+}

@@ -645,7 +645,9 @@ func (manager *Manager) stopLocked(ctx context.Context, driver *managedDriver) C
 		// Nothing is admitted. A construction that is still in flight may yet
 		// admit late; until it retires (or quarantines) nothing is proven.
 		class := CloseNotRequired
-		if attempt != nil {
+		if driver.runtimeQuarantined() {
+			class = CloseUnconfirmed
+		} else if attempt != nil {
 			class = CloseInternalError
 		}
 		report = finish(class)
@@ -738,7 +740,7 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 		// A runtime that ignored cancellation may have admitted after STOPPED
 		// intent was published. Retire that stale completion immediately; it is
 		// never published as an effective manager generation.
-		manager.retireSupersededAdmission(driver)
+		manager.retireSupersededAdmission(driver, generation, operation)
 		return
 	}
 	if err == nil && !superseded {
@@ -757,7 +759,7 @@ func (manager *Manager) startAttempt(ctx context.Context, driver *managedDriver,
 			superseded = manager.closed.Load() || driver.activeOperation != operation || driver.desired != DesiredRunning
 			driver.mu.RUnlock()
 			if superseded {
-				manager.retireSupersededAdmission(driver)
+				manager.retireSupersededAdmission(driver, generation, operation)
 				return
 			}
 			if holdErr != nil {
@@ -815,12 +817,12 @@ func (manager *Manager) fenceWithdrawalLocked(driver *managedDriver) {
 // admission after its manager operation was canceled. The cleanup deadline is
 // independent of the canceled caller and every unproven close is promoted to
 // process-epoch quarantine; a stale provider is never silently abandoned.
-func (manager *Manager) retireSupersededAdmission(driver *managedDriver) {
+func (manager *Manager) retireSupersededAdmission(driver *managedDriver, generation, operation uint64) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), manager.lateRetireTimeout)
 	err := driver.cfg.Runtime.Stop(cleanupCtx)
 	cancel()
 	quarantined := driver.runtimeQuarantined()
-	report := CloseReport{DriverID: driver.cfg.ID, Class: CloseProven}
+	report := CloseReport{DriverID: driver.cfg.ID, Class: CloseProven, Generation: generation, Operation: operation}
 	if err != nil || quarantined {
 		// Every unproven close of a stale provider, a drain timeout included,
 		// is promoted to quarantine here: nothing else observes it later.
@@ -832,7 +834,7 @@ func (manager *Manager) retireSupersededAdmission(driver *managedDriver) {
 		driver.mu.Unlock()
 	}
 	driver.mu.RLock()
-	report.Generation, report.Observed, report.Reason = driver.generation, driver.observed, driver.reason
+	report.Observed, report.Reason = driver.observed, driver.reason
 	driver.mu.RUnlock()
 	if closed := driver.currentHooks().Closed; closed != nil {
 		closed(report)
@@ -1105,8 +1107,11 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 		manager.cancelRetry(driver)
 		manager.cancelAttempt(driver)
 		driver.opMu.Lock()
-		_ = manager.stopLocked(ctx, driver)
+		report := manager.stopLocked(ctx, driver)
 		driver.opMu.Unlock()
+		if closed := driver.currentHooks().Closed; closed != nil {
+			closed(report)
+		}
 	}
 	done := make(chan struct{})
 	go func() {

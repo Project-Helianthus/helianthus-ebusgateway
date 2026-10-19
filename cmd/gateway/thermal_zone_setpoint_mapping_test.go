@@ -20,6 +20,10 @@ func thermalZoneSetpointFixture() thermalZoneSetpointInput {
 	evidence := semreg.EvidenceRef{Owner: "test.zone", Kind: "test.synthetic", Digest: semreg.Digest("sha256:" + hex.EncodeToString(digest[:])), Contract: "test.synthetic/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}
 	in := thermalZoneSetpointInput{
 		SemanticRevision: "7",
+		WithheldReason: &thermalZoneSetpointReasonContext{
+			Definition:        semreg.DefinitionRef{Pack: pack, ID: "test.reason.no_admissible_zone_setpoint", Version: pack.Version},
+			RegistryValidated: true, // Synthetic caller-owned reason catalog assertion.
+		},
 		Evaluation: semreg.EvaluationContext{
 			EvaluatedAt:       semreg.TimePoint{UnixNanoseconds: "200", ClockID: "clock.synthetic", UncertaintyNS: "0"},
 			EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: "clock:synthetic", Nanoseconds: "200"},
@@ -333,8 +337,8 @@ func TestThermalZoneSetpointMappingRetention(t *testing.T) {
 	in.Observations = in.Observations[:1]
 	in.Observations[0].Freshness = semreg.FreshnessStale
 	out := thermalZoneSetpointRun(t, in)
-	if len(out.Selected) != 5 || thermalZoneSetpointHasRole(out, thermalZoneSetpointHeatingManual) {
-		t.Fatal("stale update erased unaffected siblings or stayed selected")
+	if len(out.Selected) != 6 || !thermalZoneSetpointHasRole(out, thermalZoneSetpointHeatingManual) {
+		t.Fatal("stale update erased a still-fresh selection")
 	}
 	thermalZoneSetpointReason(t, out, thermalZoneSetpointHeatingManual, "retained_non_current")
 	thermalZoneSetpointReason(t, out, thermalZoneSetpointHeatingManual, "not_fresh")
@@ -514,5 +518,363 @@ func TestThermalZoneSetpointMappingRepeatedFeedback(t *testing.T) {
 				in.Previous = out.History
 			}
 		})
+	}
+}
+
+// Each variant catches omission of the named member from same-key comparison
+// (retention) or from the full-record tie-break before the history cap (ordering).
+func i41ObservationAxes() []struct {
+	name   string
+	mutate func(*thermalZoneSetpointObservation)
+} {
+	return []struct {
+		name   string
+		mutate func(*thermalZoneSetpointObservation)
+	}{
+		{"asset", func(o *thermalZoneSetpointObservation) { o.Identity.Asset = "asset:zsynthetic" }},
+		{"service", func(o *thermalZoneSetpointObservation) { o.Identity.Service = "service:zsynthetic" }},
+		{"source", func(o *thermalZoneSetpointObservation) { o.Identity.Source = "source:zsynthetic" }},
+		{"epoch", func(o *thermalZoneSetpointObservation) { o.Identity.Epoch = "epoch:zsynthetic" }},
+		{"generation", func(o *thermalZoneSetpointObservation) { o.Identity.Generation = "9" }},
+		{"binding", func(o *thermalZoneSetpointObservation) { o.Identity.Binding = "binding:zsynthetic" }},
+		{"binding_revision", func(o *thermalZoneSetpointObservation) { o.Identity.BindingRevision = "9" }},
+		{"association_revision", func(o *thermalZoneSetpointObservation) { o.Identity.AssociationRevision = "9" }},
+		{"pb", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.PB++ }},
+		{"sb", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.SB++ }},
+		{"opcode", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.Opcode++ }},
+		{"operation_type", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.OperationType++ }},
+		{"group", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.Group++ }},
+		{"instance", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.Instance++ }},
+		{"register", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.Register++ }},
+		{"direction", func(o *thermalZoneSetpointObservation) { o.Identity.Selector.Direction = "zsynthetic" }},
+		{"role", func(o *thermalZoneSetpointObservation) { o.Role = thermalZoneSetpointVeto }},
+		{"receipt_epoch", func(o *thermalZoneSetpointObservation) { o.Receipt.ClockEpochID = "clock:zsynthetic" }},
+		{"receipt_nanoseconds", func(o *thermalZoneSetpointObservation) { o.Receipt.Nanoseconds = "101" }},
+		{"received_unix_nanoseconds", func(o *thermalZoneSetpointObservation) { o.ReceivedAt.UnixNanoseconds = "101" }},
+		{"received_clock", func(o *thermalZoneSetpointObservation) { o.ReceivedAt.ClockID = "clock.zsynthetic" }},
+		{"received_uncertainty", func(o *thermalZoneSetpointObservation) { o.ReceivedAt.UncertaintyNS = "1" }},
+	}
+}
+
+func TestI41Retention(t *testing.T) {
+	for _, scenario := range []string{"missing", "invalid", "stale", "admitted"} {
+		t.Run(scenario, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			in.Mappings, in.Observations = in.Mappings[:1], in.Observations[:1]
+			first := thermalZoneSetpointRun(t, in)
+			in.Previous = first.History
+			prior := first.Selected[0].Observation
+			in.Observations[0].Receipt.Nanoseconds = "150"
+			in.Observations[0].Value.Number = semreg.Decimal{Coefficient: "21"}
+			reason := ""
+			switch scenario {
+			case "missing":
+				in.Observations[0].Present = false
+				reason = "missing"
+			case "invalid":
+				in.Observations[0].Validity = semreg.ValidityBad
+				reason = "invalid"
+			case "stale":
+				in.Observations[0].Freshness = semreg.FreshnessStale
+				reason = "not_fresh"
+			}
+			want := prior
+			if scenario == "admitted" {
+				want = in.Observations[0]
+			}
+			out := thermalZoneSetpointRun(t, in)
+			if len(out.Selected) != 1 || !reflect.DeepEqual(out.Selected[0].Observation, want) {
+				t.Fatalf("wrong retained value: %+v", out.Selected)
+			}
+			if reason != "" {
+				thermalZoneSetpointReason(t, out, prior.Role, reason)
+			}
+			// At the prior receipt's own expiry a failed update must not extend it.
+			if reason != "" {
+				in.Evaluation.EvaluateMonotonic.Nanoseconds = "300"
+				if len(thermalZoneSetpointRun(t, in).Selected) != 0 {
+					t.Fatal("failure refreshed prior expiry")
+				}
+			}
+		})
+	}
+	for _, axis := range i41ObservationAxes()[:17] {
+		t.Run(axis.name, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			in.Mappings, in.Observations = in.Mappings[:1], in.Observations[:1]
+			in.Previous = thermalZoneSetpointRun(t, in).History
+			want := in.Observations[0]
+			axis.mutate(&in.Observations[0])
+			out := thermalZoneSetpointRun(t, in)
+			if len(out.Selected) != 1 || !reflect.DeepEqual(out.Selected[0].Observation, want) {
+				t.Fatal("different identity/role replaced prior")
+			}
+		})
+	}
+}
+
+func TestI41HistoryCanonicalBeforeCap(t *testing.T) {
+	for _, axis := range i41ObservationAxes() {
+		t.Run(axis.name, func(t *testing.T) {
+			fixture := thermalZoneSetpointFixture()
+			base := thermalZoneSetpointHistory{Observation: fixture.Observations[0], Reason: "diagnostic"}
+			base.Observation.Identity.Asset = "asset:zbase"
+			changed, err := thermalZoneSetpointCopy(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			axis.mutate(&changed.Observation)
+			in := fixture
+			in.Mappings, in.Observations, in.Requested = nil, nil, nil
+			for i := 0; i < 63; i++ {
+				h := base
+				h.Observation.Identity.Asset = semreg.AssetID(fmt.Sprintf("asset:a%02d", i))
+				in.Previous = append(in.Previous, h)
+			}
+			in.Previous = append(in.Previous, base, changed)
+			before, err := thermalZoneSetpointCopy(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := thermalZoneSetpointRun(t, in)
+			if len(out.History) != 64 {
+				t.Fatalf("history length %d", len(out.History))
+			}
+			for _, h := range out.History {
+				if reflect.DeepEqual(h, changed) {
+					t.Fatal("cap retained larger tie-break record")
+				}
+			}
+			if !reflect.DeepEqual(in, before) {
+				t.Fatal("mapper mutated prior input")
+			}
+			for i, j := 0, len(in.Previous)-1; i < j; i, j = i+1, j-1 {
+				in.Previous[i], in.Previous[j] = in.Previous[j], in.Previous[i]
+			}
+			if !reflect.DeepEqual(out, thermalZoneSetpointRun(t, in)) {
+				t.Fatal("cap depends on Previous order")
+			}
+		})
+	}
+}
+
+func TestI41AggregateSources(t *testing.T) {
+	in := thermalZoneSetpointFixture()
+	lossA := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{"test.source.a"}, Description: "Synthetic precision loss.", Reversible: true}
+	lossB := projection.LossDetail{Kind: projection.LossTime, SourceItems: []semreg.DefinitionID{"test.source.b"}, Description: "Synthetic time loss."}
+	a := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
+	b := projection.ProjectionDisposition{Kind: a.Kind, ItemID: a.ItemID, Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[1].Key}, Loss: []projection.LossDetail{lossA, lossB}}
+	for _, local := range []bool{false, true} {
+		for _, reversed := range []bool{false, true} {
+			x, err := thermalZoneSetpointCopy(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !local {
+				x.Mappings, x.Observations = nil, nil
+			}
+			x.OtherDispositions = []projection.ProjectionDisposition{a, b}
+			if reversed {
+				x.OtherDispositions = []projection.ProjectionDisposition{b, a}
+			}
+			got := thermalZoneSetpointRun(t, x).Dispositions[0]
+			wantKeys := []semreg.FactKey{in.Mappings[1].Key, in.Mappings[0].Key}
+			if local {
+				wantKeys = []semreg.FactKey{in.Mappings[3].Key, in.Mappings[2].Key, in.Mappings[1].Key, in.Mappings[0].Key, in.Mappings[5].Key, in.Mappings[4].Key}
+			}
+			if got.Outcome != projection.ProjectionTransformed || !reflect.DeepEqual(got.Loss, []projection.LossDetail{lossA, lossB}) || !reflect.DeepEqual(got.SourceKeys, wantKeys) || got.Reason != nil {
+				t.Fatalf("source aggregation lost evidence: %+v", got)
+			}
+		}
+	}
+	// Reversibility is not loss identity: false wins in either input order.
+	c := b
+	c.Loss = []projection.LossDetail{lossA}
+	c.Loss[0].Reversible = false
+	in.Mappings, in.Observations = nil, nil
+	in.OtherDispositions = []projection.ProjectionDisposition{b, c}
+	first := thermalZoneSetpointRun(t, in)
+	if len(first.Dispositions[0].Loss) != 2 || first.Dispositions[0].Loss[0].Reversible {
+		t.Fatal("lost irreversible loss")
+	}
+	in.OtherDispositions = []projection.ProjectionDisposition{c, b}
+	if !reflect.DeepEqual(first, thermalZoneSetpointRun(t, in)) {
+		t.Fatal("loss merge depends on order")
+	}
+}
+
+func TestI41ReasonAndCopyBoundary(t *testing.T) {
+	in := thermalZoneSetpointFixture()
+	in.Previous = thermalZoneSetpointRun(t, in).History
+	in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}}
+	// Populate every optional SemReg Value payload for the copy-only check;
+	// this deliberately overpopulated value is not an admission fixture.
+	populated, err := thermalZoneSetpointCopy(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boolean := false
+	symbol := semreg.Symbol{Namespace: "test.symbol", Token: "synthetic", Known: false}
+	populated.Mappings[0].Key.Dimensions[0].Value.Boolean = &boolean
+	populated.Mappings[0].Key.Dimensions[0].Value.Quantity = &populated.Observations[0].Value
+	populated.Mappings[0].Key.Dimensions[0].Value.Symbol = &symbol
+	populated.Mappings[0].Key.Dimensions[0].Value.Symbols = []semreg.Symbol{symbol}
+	populated.Mappings[0].Key.Dimensions[0].Value.Time = &populated.Observations[0].ReceivedAt
+	copied, err := thermalZoneSetpointCopy(populated)
+	if err != nil || !reflect.DeepEqual(copied, populated) {
+		t.Fatalf("supported-type round trip: %v", err)
+	}
+	for _, scenario := range []string{"missing_context", "unresolved_membership", "invalid_reference", "supplied"} {
+		t.Run(scenario, func(t *testing.T) {
+			x, err := thermalZoneSetpointCopy(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			x.Mappings, x.Observations, x.OtherDispositions = nil, nil, nil
+			switch scenario {
+			case "missing_context":
+				x.WithheldReason = nil
+			case "unresolved_membership":
+				x.WithheldReason.RegistryValidated = false
+			case "invalid_reference":
+				x.WithheldReason.Definition.ID = "!"
+			}
+			before, err := thermalZoneSetpointCopy(x)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := mapThermalZoneSetpoints(x)
+			if scenario == "supplied" {
+				if err != nil || out.Dispositions[0].Reason == nil || *out.Dispositions[0].Reason != "test.reason.no_admissible_zone_setpoint" {
+					t.Fatalf("caller reason lost: %v", err)
+				}
+			} else if err == nil || !reflect.DeepEqual(out, thermalZoneSetpointResult{}) {
+				t.Fatal("unresolved reason did not fail closed")
+			}
+			if !reflect.DeepEqual(x, before) {
+				t.Fatal("all-or-error return mutated caller prior")
+			}
+		})
+	}
+	// The concrete mapper graph has no injectable marshal failure. This checks
+	// supported values; it does not claim a forced copy-failure path was exercised.
+}
+
+func TestI41AggregateMatchingItem(t *testing.T) {
+	for _, axis := range []string{"kind", "item_id"} {
+		t.Run(axis, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			unrelated := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Unrelated synthetic loss."}}}
+			if axis == "kind" {
+				unrelated.Kind = projection.ItemCapability
+			} else {
+				unrelated.ItemID = "test.other.item"
+			}
+			in.OtherDispositions = []projection.ProjectionDisposition{unrelated}
+			got := thermalZoneSetpointRun(t, in).Dispositions[0]
+			if got.Outcome != projection.ProjectionExact || len(got.Loss) != 0 {
+				t.Fatal("unrelated disposition contaminated item")
+			}
+		})
+	}
+}
+
+func TestI41AggregateSourceKeyIdentity(t *testing.T) {
+	variants := []struct {
+		name   string
+		mutate func(*semreg.FactKey)
+	}{
+		{"pack_id", func(k *semreg.FactKey) { k.PackID = "test.other.pack" }},
+		{"pack_version", func(k *semreg.FactKey) { k.PackVersion = "2.0.0" }},
+		{"fact_id", func(k *semreg.FactKey) { k.FactID = "test.other.fact" }},
+		{"dimension_id", func(k *semreg.FactKey) { k.Dimensions[0].ID = "test.other.dimension" }},
+		{"dimension_text", func(k *semreg.FactKey) { *k.Dimensions[0].Value.Text = "synthetic:other" }},
+	}
+	for _, variant := range variants {
+		t.Run(variant.name, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			base := in.Mappings[0].Key
+			other, err := thermalZoneSetpointCopy(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			variant.mutate(&other)
+			in.Mappings, in.Observations = nil, nil
+			in.OtherDispositions = []projection.ProjectionDisposition{{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionExact, SourceKeys: []semreg.FactKey{base, other, base}, Loss: []projection.LossDetail{}}}
+			got := thermalZoneSetpointRun(t, in).Dispositions[0]
+			if len(got.SourceKeys) != 2 {
+				t.Fatal("full source-key identity collapsed or duplicate survived")
+			}
+			foundBase, foundOther := false, false
+			for _, key := range got.SourceKeys {
+				foundBase = foundBase || reflect.DeepEqual(key, base)
+				foundOther = foundOther || reflect.DeepEqual(key, other)
+			}
+			if !foundBase || !foundOther {
+				t.Fatal("source key field lost")
+			}
+			in.OtherDispositions[0].SourceKeys = []semreg.FactKey{other, base}
+			if !reflect.DeepEqual(got, thermalZoneSetpointRun(t, in).Dispositions[0]) {
+				t.Fatal("source key order changed aggregate")
+			}
+		})
+	}
+}
+
+func TestI41ReceiptRetention(t *testing.T) {
+	for _, axis := range i41ObservationAxes()[17:] {
+		t.Run(axis.name, func(t *testing.T) {
+			in := thermalZoneSetpointFixture()
+			in.Mappings, in.Observations = in.Mappings[:1], in.Observations[:1]
+			in.Previous = thermalZoneSetpointRun(t, in).History
+			prior := in.Observations[0]
+			axis.mutate(&in.Observations[0])
+			want := in.Observations[0]
+			if axis.name == "receipt_epoch" {
+				want = prior
+			}
+			got := thermalZoneSetpointRun(t, in)
+			if len(got.Selected) != 1 || !reflect.DeepEqual(got.Selected[0].Observation, want) {
+				t.Fatal("receipt changed admission or was rewritten")
+			}
+			if axis.name == "receipt_epoch" {
+				thermalZoneSetpointReason(t, got, prior.Role, "not_fresh")
+			}
+		})
+	}
+}
+
+func TestI41CurrentBeyondDiagnosticCap(t *testing.T) {
+	in := thermalZoneSetpointFixture()
+	in.Mappings, in.Observations = in.Mappings[:1], in.Observations[:1]
+	base := thermalZoneSetpointRun(t, in).History[0]
+	in.Observations = nil
+	for i := 0; i < 64; i++ {
+		h := base
+		h.Observation.Identity.Asset = semreg.AssetID(fmt.Sprintf("asset:a%02d", i))
+		in.Previous = append(in.Previous, h)
+	}
+	in.Previous = append(in.Previous, base)
+	out := thermalZoneSetpointRun(t, in)
+	if len(out.Selected) != 1 || !reflect.DeepEqual(out.Selected[0].Observation, base.Observation) {
+		t.Fatal("diagnostic cap discarded current selection")
+	}
+}
+
+func TestI41NonprojectedSourceLoss(t *testing.T) {
+	in := thermalZoneSetpointFixture()
+	reason := semreg.DefinitionID("test.reason.other_source")
+	loss := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{"test.source.other"}, Description: "Synthetic rejected-source precision loss."}
+	other := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{loss}, Reason: &reason}
+	in.OtherDispositions = []projection.ProjectionDisposition{other}
+	got := thermalZoneSetpointRun(t, in).Dispositions[0]
+	if got.Outcome != projection.ProjectionTransformed || !reflect.DeepEqual(got.Loss, []projection.LossDetail{loss}) || len(got.SourceKeys) != 6 {
+		t.Fatal("nonprojected source loss was discarded")
+	}
+	// Transformed without loss must fail closed rather than silently become Exact.
+	in.OtherDispositions[0].Outcome = projection.ProjectionTransformed
+	in.OtherDispositions[0].Loss = []projection.LossDetail{}
+	if _, err := mapThermalZoneSetpoints(in); err == nil {
+		t.Fatal("invalid transformed source upgraded to exact")
 	}
 }

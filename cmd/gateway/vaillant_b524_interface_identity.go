@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
@@ -83,7 +83,7 @@ func b524RegistryIdentity(reg *registry.DeviceRegistry, address byte) (vaillants
 	if !found || !slotFound || !slot.DeviceAttached || slot.LastObservedAt.IsZero() || before != after || !strings.EqualFold(snap.Manufacturer, "Vaillant") {
 		return vaillantsystem.B524ControllerIdentity{}, revision, false
 	}
-	return graphql.ControllerIdentityFromSnapshot(snap), revision, true
+	return systemconfig.ControllerIdentityFromSnapshot(snap), revision, true
 }
 
 func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegistry, bus registry.ScanBus, source, companion byte) {
@@ -92,7 +92,7 @@ func enrichB524InterfaceIdentity(ctx context.Context, reg *registry.DeviceRegist
 	}
 	store := b524InterfaceIdentities(reg)
 	// Keep the same target priority as systemconfig.ControllerIdentityFromRegistry.
-	for _, address := range [...]byte{0x15, 0x35, 0x75, 0xF5, 0x76, 0xF6} {
+	for _, address := range systemconfig.CanonicalRegulatorTargetAddresses() {
 		if ctx.Err() != nil {
 			return
 		}

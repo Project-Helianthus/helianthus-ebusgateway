@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"errors"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	ebuserrors "github.com/Project-Helianthus/helianthus-ebusgo/errors"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	vaillantsystem "github.com/Project-Helianthus/helianthus-ebusreg/vaillant/system"
@@ -43,7 +44,7 @@ func TestEncodeSystemConfigValueForControllerDHWBivalence(t *testing.T) {
 		{"unknown identity accepts 0", vaillantsystem.B524ControllerIdentity{}, "0", false, ""},
 	}
 	for _, tc := range cases {
-		payload, spec, bound, err := EncodeSystemConfigValueForController(SystemConfigFieldDHWBivalencePoint, tc.value, tc.id)
+		payload, spec, bound, err := systemconfig.EncodeSystemConfigValueForController(SystemConfigFieldDHWBivalencePoint, tc.value, tc.id)
 		if bound == nil {
 			t.Fatalf("%s: bound = nil; want the active bound for dhwBivalencePointC", tc.name)
 		}
@@ -91,12 +92,12 @@ func TestEncodeSystemConfigValueForControllerKeepsOtherSystemNumbers(t *testing.
 	for _, id := range identities {
 		for _, tc := range cases {
 			for _, value := range tc.ok {
-				if _, _, bound, err := EncodeSystemConfigValueForController(tc.field, value, id); err != nil || bound != nil {
+				if _, _, bound, err := systemconfig.EncodeSystemConfigValueForController(tc.field, value, id); err != nil || bound != nil {
 					t.Errorf("%s=%s id=%s: err=%v bound=%v; want accepted without a bound", tc.field, value, id.EID, err, bound)
 				}
 			}
 			for _, value := range tc.bad {
-				if _, _, bound, err := EncodeSystemConfigValueForController(tc.field, value, id); err == nil || bound != nil {
+				if _, _, bound, err := systemconfig.EncodeSystemConfigValueForController(tc.field, value, id); err == nil || bound != nil {
 					t.Errorf("%s=%s id=%s: err=%v bound=%v; want rejected without a bound", tc.field, value, id.EID, err, bound)
 				}
 			}
@@ -127,7 +128,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 	for _, value := range []string{"51", "50.5", "-21"} {
 		invoker := &mutationTestInvoker{}
-		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, value, systemConfigFieldSpecs)
+		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, value, systemConfigFieldSpecs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile})
 		if result.Success {
 			t.Errorf("value %s: success = true; want rejection", value)
 		}
@@ -140,7 +141,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 	}
 
 	invoker := &mutationTestInvoker{}
-	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs)
+	_ = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "50", systemConfigFieldSpecs, &ConfigBound{ControllerRegistryIdentity: systemconfig.CaptureBoundRegistryIdentity(reg, 0x15), ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
 	if len(invoker.calls) == 0 {
 		t.Fatal("in-bound value 50 never reached the invoker")
 	}
@@ -149,7 +150,7 @@ func TestApplyConfigMutationDHWBivalenceRejectsOutOfBoundBeforeInvoke(t *testing
 func TestSystemQueryExposesDHWBivalenceBound(t *testing.T) {
 	for _, active := range []ConfigBound{
 		{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile},
-		ResolveDHWBivalenceBound(boundTestBASV0),
+		systemconfig.ResolveDHWBivalenceBound(boundTestBASV0),
 	} {
 		t.Run(active.Source, func(t *testing.T) {
 			provider := NewLiveSemanticProvider()
@@ -241,7 +242,7 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 					invoker := &mutationTestInvoker{}
 					var result ConfigMutationResult
 					if scope.name == "system" {
-						result = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, field, value, scope.specs)
+						result = ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, field, value, scope.specs, &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy})
 					} else {
 						result = applyConfigMutation(context.Background(), reg, invoker, 0x7F, true, spec, 0x00, value)
 					}
@@ -254,7 +255,13 @@ func TestNumericConfigNonFiniteRejectedBeforeInvoke(t *testing.T) {
 						index = "index: 0, "
 					}
 					query := fmt.Sprintf(`mutation { %s(%sfield: %q, value: %q) { success error } }`, scope.mutation, index, field, value)
-					data := executeMutation(t, buildMutationSchema(t, reg, invoker, nil, nil), query)
+					schema := buildMutationSchema(t, reg, invoker, nil, nil)
+					if scope.name == "system" {
+						schema = buildMutationSchemaForM13(t, reg, invoker, func() *ConfigBound {
+							return &ConfigBound{ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy}
+						})
+					}
+					data := executeMutation(t, schema, query)
 					payload, ok := data[scope.mutation].(map[string]any)
 					if !ok || payload["success"] != false || !strings.Contains(fmt.Sprint(payload["error"]), "must be finite") || len(invoker.calls) != 0 {
 						t.Fatalf("GraphQL result=%v invokes=%d; want non-finite rejection and zero invokes/writes", data, len(invoker.calls))
@@ -286,18 +293,19 @@ func TestDHWBivalenceBoundRegistrySnapshotConcurrentRegister(t *testing.T) {
 	defer func() { <-done }()
 	close(start)
 	for i := 0; i < 3000; i++ {
-		identity := controllerIdentityFromRegistry(reg)
+		identity := systemconfig.ControllerIdentityFromRegistry(reg)
 		a, b := boundTestBASV0, boundTestBASV2
 		a.APIVersion, a.Revision, b.APIVersion, b.Revision = "", "", "", ""
 		if identity != a && identity != b {
 			t.Fatalf("incoherent controller snapshot: %+v", identity)
 		}
-		bound := ResolveDHWBivalenceBound(identity)
+		bound := systemconfig.ResolveDHWBivalenceBound(identity)
 		if bound != (ConfigBound{MinC: -20, MaxC: 50, Source: ConfigBoundSourceUnmatchedPolicy, Reason: ConfigBoundReasonUnknownProfile}) {
 			t.Fatalf("bound = %+v; want conservative unmatched policy", bound)
 		}
+		bound.ControllerAddress = 0x15
 		invoker := &mutationTestInvoker{}
-		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "51", systemConfigFieldSpecs)
+		result := ApplyConfigMutation(context.Background(), reg, invoker, 0x7F, true, SystemConfigFieldDHWBivalencePoint, "51", systemConfigFieldSpecs, &bound)
 		if result.Success || !strings.Contains(result.Error, "conservative policy bound [-20, 50]") || len(invoker.calls) != 0 {
 			t.Fatalf("fallback bound validation: result=%+v calls=%d", result, len(invoker.calls))
 		}
@@ -314,7 +322,7 @@ func TestDHWBivalenceBoundRegistrySnapshotCanonicalPriority(t *testing.T) {
 		reg.Register(info)
 	}
 	want := vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803"}
-	if got := controllerIdentityFromRegistry(reg); got != want {
+	if got := systemconfig.ControllerIdentityFromRegistry(reg); got != want {
 		t.Fatalf("controller identity = %+v; want %+v", got, want)
 	}
 }

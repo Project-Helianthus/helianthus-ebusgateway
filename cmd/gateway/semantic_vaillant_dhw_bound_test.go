@@ -14,6 +14,7 @@ import (
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/vaillant/systemconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	"github.com/Project-Helianthus/helianthus-ebusreg/router"
@@ -115,7 +116,7 @@ func TestSetSystemConfigDHWBivalenceBASV0WithoutAPIUsesPolicy(t *testing.T) {
 	}
 
 	bound := provider.System().Config.DhwBivalenceBound
-	want := graphql.ConfigBound{MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
+	want := graphql.ConfigBound{ControllerRegistryIdentity: systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15), ControllerAddress: 0x15, MinC: -20, MaxC: 50, Source: graphql.ConfigBoundSourceUnmatchedPolicy, Reason: graphql.ConfigBoundReasonUnknownProfile}
 	if bound == nil || *bound != want {
 		t.Fatalf("published bound = %+v; want %+v", bound, want)
 	}
@@ -334,8 +335,8 @@ func TestSystemConfigNonFiniteRejectedBeforeBusIO(t *testing.T) {
 
 func TestMCPConfigBoundPreservesNarrowedOnly(t *testing.T) {
 	for _, bound := range []graphql.ConfigBound{
-		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803", APIVersion: "1", Revision: "1"}),
-		graphql.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{}),
+		systemconfig.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{EID: "BASV0", SoftwareRaw: "0217", HardwareRaw: "8803", APIVersion: "1", Revision: "1"}),
+		systemconfig.ResolveDHWBivalenceBound(vaillantsystem.B524ControllerIdentity{}),
 	} {
 		got := mcpConfigBound(&bound)
 		if got.NarrowedOnly != bound.NarrowedOnly || got.Source != bound.Source || got.Profile != bound.Profile {
@@ -352,5 +353,39 @@ func TestMCPConfigBoundPreservesNarrowedOnly(t *testing.T) {
 		if decoded["narrowed_only"] != bound.NarrowedOnly {
 			t.Fatalf("MCP narrowed_only = %v; want %v", decoded["narrowed_only"], bound.NarrowedOnly)
 		}
+	}
+}
+
+func TestControllerConfigBoundRetainsDiscoveredAddress(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+	poller, _ := newDHWBoundPoller(t, "BASV0", "", "", bus)
+	poller.reg.Register(registry.DeviceInfo{Address: 0x35, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	poller.controller = 0x35
+	identity, address := poller.controllerB524IdentityAndAddress()
+	if identity.EID != "BASV2" || address != 0x35 {
+		t.Fatalf("identity=%+v address=%x; want discovered controller", identity, address)
+	}
+	bound := poller.controllerConfigBound()
+	if bound.ControllerAddress != 0x35 {
+		t.Fatalf("bound target=%x; want discovered controller", bound.ControllerAddress)
+	}
+	if bus.requests != 0 {
+		t.Fatalf("bound resolution issued %d requests", bus.requests)
+	}
+}
+
+func TestControllerConfigBoundRegistryProvenanceRetiresOnObservation(t *testing.T) {
+	bus := &dhwBoundFakeBus{store: map[uint16][]byte{}}
+	poller, _ := newDHWBoundPoller(t, "BASV2", "", "", bus)
+	bound := poller.controllerConfigBound()
+	if !bound.ControllerRegistryIdentity.Valid || bound.ControllerRegistryIdentity != systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15) {
+		t.Fatal("bound did not retain current registry identity")
+	}
+	poller.reg.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "BASV2"})
+	if bound.ControllerRegistryIdentity == systemconfig.CaptureBoundRegistryIdentity(poller.reg, 0x15) {
+		t.Fatal("re-observation did not retire published qualification")
+	}
+	if bus.requests != 0 {
+		t.Fatalf("issued %d bus requests", bus.requests)
 	}
 }

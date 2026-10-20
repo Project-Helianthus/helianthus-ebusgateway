@@ -114,7 +114,7 @@ installation. No callback may reopen admission by itself.
 Keep D2 fail-closed bootstrap/load/repair behavior and its sole durable writer.
 D3 keeps desired RUNNING/STOPPED, the eight observed states, optimistic revision
 checks, finite in-flight work and list/get readback; no lifecycle receipts,
-client idempotency ledger or completion claim is added. D4 keeps ordinary MCP
+client idempotency store or completion claim is added. D4 keeps ordinary MCP
 lifecycle access without a new principal/kernel-operator authorization gate.
 No new authorization gate is introduced before 0.9. Native-write and existing
 eeBUS safeguards remain. D5 restores exact accepted/pending recovery material
@@ -163,7 +163,7 @@ owns the other's semantics. Evaluate conflicts before forwarding or exposure:
 | Bidirectional output returns as an acquisition observation | Preserve genuine native evidence and ancestry; do not relabel the output as independent qualified evidence or automatically derive another command. |
 | Incoming causal path re-enters the receiver | `echo_suppressed`, no I/O and unchanged incoming context. This check precedes hop-capacity rejection when both apply. |
 | New receiver would exceed causal budget, or context expires | No derived intent; preserve truthful observations with their quality. Keep the owning causal validation result. |
-| Same correlation/operation already admitted in the echo window | `echo_suppressed`, no duplicate output. Retain tombstones through the existing deadline/window plus clock-uncertainty rule. |
+| Same correlation/operation already admitted, throughout its tombstone lifetime | `echo_suppressed`, no duplicate output, including after the echo window ends and before the operation deadline. Only ancestry echo suppression is window-bounded. |
 | Same value in a separate admitted intent with new identity/correlation | Value equality alone is no rejection; existing authority, preconditions, route and deadline still apply. |
 
 Use the provider contract's SemReg `CausalContext`: preserve Origin, correlation,
@@ -174,6 +174,10 @@ receiver and increment atomically before processing. Rejection changes neither
 path nor correlation. The maximum is eight hops; operation echo windows must be
 positive and at most 300 seconds. Retain correlation tombstones through the later
 of operation deadline or dispatch plus echo window, with clock uncertainty.
+An already-admitted correlation/operation remains rejected as `echo_suppressed`
+with no I/O throughout that tombstone lifetime, including after the echo window
+ends. Only the ancestry clause for the output binding and operation definition
+is bounded by the echo window; duplicate suppression is not.
 Unknown/missing ancestry cannot be reset into a new origin to enable forwarding;
 withhold derived output until the existing causal contract can validate it.
 
@@ -236,7 +240,7 @@ report rather than successful fabricated values.
 | BR-13 | Publication changes after read capture; separately splice one revision | Captured output remains detached; spliced snapshot/evaluation/projection is rejected, not repaired by native acquisition. |
 | BR-14 | Partial source update, unavailable sibling and retained old observation | Keep unaffected fields with original age; unavailable/lost items are explicit. No unknown-to-zero conversion or historical admission. |
 | BR-15 | A to B to C to A, with receiver re-entry and full budget together | Path evolves only on ingress; A rejects `echo_suppressed` first with no I/O or mutation. |
-| BR-16 | Expired/over-budget context; missing ancestry; duplicate correlation | No derived command. Keep truthful observation; duplicate returns owning echo rejection. A separate same-valued newly admitted intent is not rejected merely by value. |
+| BR-16 | Expired/over-budget context; missing ancestry; separately redeliver an already-admitted correlation/operation after the echo window ends but before its later operation deadline, and again through tombstone expiry including clock uncertainty | No derived command for invalid context or missing ancestry. Keep truthful observation; each duplicate during the full tombstone lifetime returns `echo_suppressed` with no I/O or redispatch. Only ancestry echo suppression is window-bounded. A separate same-valued newly admitted intent is not rejected merely by value. |
 | BR-17 | Discover/select while target evidence is Unknown, then refresh/restart | Withheld reason remains visible; zero endpoint allocation/publication/commissioning. Selection does not supply evidence. |
 | BR-18 | Future admitted target deselects/reselects; identity restore is corrupt | Withdraw active reporting, retain permitted inactive identity and sibling state; corrupt restore withholds rather than reallocates or commissions. |
 

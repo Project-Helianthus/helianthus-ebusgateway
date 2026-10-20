@@ -259,7 +259,8 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			if other.Kind != requested.Kind || other.ItemID != requested.ItemID {
 				continue
 			}
-			if err := other.Outcome.Validate(); err != nil {
+			other, err = thermalZoneSetpointDisposition(other)
+			if err != nil {
 				return thermalZoneSetpointResult{}, err
 			}
 			if other.Outcome == projection.ProjectionExact || other.Outcome == projection.ProjectionTransformed {
@@ -291,53 +292,8 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 		} else if transformed || len(d.Loss) > 0 {
 			d.Outcome = projection.ProjectionTransformed
 		}
-		// Loss identity excludes Reversible. Conflicting declarations of the
-		// same loss conservatively retain the irreversible interpretation.
-		losses := map[string]projection.LossDetail{}
-		for _, loss := range d.Loss {
-			sourceItems := map[semreg.DefinitionID]bool{}
-			for _, item := range loss.SourceItems {
-				sourceItems[item] = true
-			}
-			loss.SourceItems = make([]semreg.DefinitionID, 0, len(sourceItems))
-			for item := range sourceItems {
-				loss.SourceItems = append(loss.SourceItems, item)
-			}
-			sort.Slice(loss.SourceItems, func(i, j int) bool { return loss.SourceItems[i] < loss.SourceItems[j] })
-			sources, _ := json.Marshal(loss.SourceItems)
-			key := string(loss.Kind) + "\x00" + string(sources) + "\x00" + loss.Description
-			if prior, ok := losses[key]; ok {
-				loss.Reversible = prior.Reversible && loss.Reversible
-			}
-			losses[key] = loss
-		}
-		lossKeys := make([]string, 0, len(losses))
-		for key := range losses {
-			lossKeys = append(lossKeys, key)
-		}
-		sort.Strings(lossKeys)
-		d.Loss = make([]projection.LossDetail, 0, len(losses))
-		for _, key := range lossKeys {
-			d.Loss = append(d.Loss, losses[key])
-		}
-		keys := map[string]semreg.FactKey{}
-		for _, key := range d.SourceKeys {
-			canonical, err := semreg.CanonicalJSON(key)
-			if err != nil {
-				return thermalZoneSetpointResult{}, err
-			}
-			keys[string(canonical)] = key
-		}
-		ordered := make([]string, 0, len(keys))
-		for key := range keys {
-			ordered = append(ordered, key)
-		}
-		sort.Strings(ordered)
-		d.SourceKeys = make([]semreg.FactKey, 0, len(keys))
-		for _, key := range ordered {
-			d.SourceKeys = append(d.SourceKeys, keys[key])
-		}
-		if err := d.Validate(); err != nil {
+		d, err = thermalZoneSetpointDisposition(d)
+		if err != nil {
 			return thermalZoneSetpointResult{}, err
 		}
 		out.Dispositions = append(out.Dispositions, d)
@@ -477,4 +433,59 @@ func thermalZoneSetpointSort[T any](values []T) {
 		b, _ := json.Marshal(values[j])
 		return string(a) < string(b)
 	})
+}
+
+// Normalize each source independently before validation so aggregation cannot
+// repair a malformed outcome with another source's evidence.
+func thermalZoneSetpointDisposition(d projection.ProjectionDisposition) (projection.ProjectionDisposition, error) {
+	// Loss identity excludes Reversible. Conflicting declarations of the
+	// same loss conservatively retain the irreversible interpretation.
+	losses := map[string]projection.LossDetail{}
+	for _, loss := range d.Loss {
+		sourceItems := map[semreg.DefinitionID]bool{}
+		for _, item := range loss.SourceItems {
+			sourceItems[item] = true
+		}
+		loss.SourceItems = make([]semreg.DefinitionID, 0, len(sourceItems))
+		for item := range sourceItems {
+			loss.SourceItems = append(loss.SourceItems, item)
+		}
+		sort.Slice(loss.SourceItems, func(i, j int) bool { return loss.SourceItems[i] < loss.SourceItems[j] })
+		sources, _ := json.Marshal(loss.SourceItems)
+		key := string(loss.Kind) + "\x00" + string(sources) + "\x00" + loss.Description
+		if prior, ok := losses[key]; ok {
+			loss.Reversible = prior.Reversible && loss.Reversible
+		}
+		losses[key] = loss
+	}
+	lossKeys := make([]string, 0, len(losses))
+	for key := range losses {
+		lossKeys = append(lossKeys, key)
+	}
+	sort.Strings(lossKeys)
+	d.Loss = make([]projection.LossDetail, 0, len(losses))
+	for _, key := range lossKeys {
+		d.Loss = append(d.Loss, losses[key])
+	}
+	keys := map[string]semreg.FactKey{}
+	for _, key := range d.SourceKeys {
+		canonical, err := semreg.CanonicalJSON(key)
+		if err != nil {
+			return projection.ProjectionDisposition{}, err
+		}
+		keys[string(canonical)] = key
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	d.SourceKeys = make([]semreg.FactKey, 0, len(keys))
+	for _, key := range ordered {
+		d.SourceKeys = append(d.SourceKeys, keys[key])
+	}
+	if err := d.Validate(); err != nil {
+		return projection.ProjectionDisposition{}, err
+	}
+	return d, nil
 }

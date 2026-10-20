@@ -871,10 +871,51 @@ func TestI41NonprojectedSourceLoss(t *testing.T) {
 	if got.Outcome != projection.ProjectionTransformed || !reflect.DeepEqual(got.Loss, []projection.LossDetail{loss}) || len(got.SourceKeys) != 6 {
 		t.Fatal("nonprojected source loss was discarded")
 	}
+	// With no local selection, retained source keys still do not establish projection.
+	withoutLocal := in
+	withoutLocal.Mappings, withoutLocal.Observations = nil, nil
+	got = thermalZoneSetpointRun(t, withoutLocal).Dispositions[0]
+	wantLoss := []projection.LossDetail{
+		{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true},
+		loss,
+	}
+	if got.Outcome != projection.ProjectionWithheld || !reflect.DeepEqual(got.SourceKeys, other.SourceKeys) || !reflect.DeepEqual(got.Loss, wantLoss) {
+		t.Fatal("withheld aggregate lost source evidence or established projection")
+	}
 	// Transformed without loss must fail closed rather than silently become Exact.
 	in.OtherDispositions[0].Outcome = projection.ProjectionTransformed
 	in.OtherDispositions[0].Loss = []projection.LossDetail{}
 	if _, err := mapThermalZoneSetpoints(in); err == nil {
 		t.Fatal("invalid transformed source upgraded to exact")
+	}
+}
+
+func TestI41MalformedSourceDispositions(t *testing.T) {
+	in := thermalZoneSetpointFixture()
+	reason := semreg.DefinitionID("test.reason.other_source")
+	loss := projection.LossDetail{Kind: projection.LossPrecision, SourceItems: []semreg.DefinitionID{}, Description: "Synthetic precision loss."}
+	withheld := projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: "thermal.setpoint.temperature", Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{loss}, Reason: &reason}
+	if err := withheld.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	transformed := projection.ProjectionDisposition{Kind: withheld.Kind, ItemID: withheld.ItemID, Outcome: projection.ProjectionTransformed, SourceKeys: []semreg.FactKey{in.Mappings[0].Key}, Loss: []projection.LossDetail{}}
+	exact := transformed
+	exact.Outcome, exact.Loss = projection.ProjectionExact, []projection.LossDetail{loss}
+	for _, tc := range []struct {
+		name    string
+		sources []projection.ProjectionDisposition
+	}{
+		{"transformed_first", []projection.ProjectionDisposition{transformed, withheld}},
+		{"transformed_last", []projection.ProjectionDisposition{withheld, transformed}},
+		{"exact_with_loss", []projection.ProjectionDisposition{exact}},
+		{"exact_with_loss_first", []projection.ProjectionDisposition{exact, withheld}},
+		{"exact_with_loss_last", []projection.ProjectionDisposition{withheld, exact}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in.OtherDispositions = tc.sources
+			if _, err := mapThermalZoneSetpoints(in); err == nil {
+				t.Fatal("malformed source disposition was accepted")
+			}
+		})
 	}
 }

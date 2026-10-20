@@ -47,7 +47,10 @@ bounded diagnostic window is not a chronological event log or durable storage.
 ## One disposition per requested item
 
 All matching `OtherDispositions` contribute their source keys and losses;
-matching uses both item kind and definition ID. Successful Exact or Transformed
+matching uses both item kind and definition ID. Each source is independently
+normalized and validated before contributing to the aggregate. An Exact source
+with loss or a Transformed source without loss returns an error, even when
+another source supplies valid loss. Successful Exact or Transformed
 sources and local selections establish projection. Source keys are deduplicated
 and ordered by SemReg canonical JSON. Loss source items are deduplicated and
 sorted; losses use the SemReg identity of kind, source items and description.
@@ -61,8 +64,11 @@ an error rather than dropping keys or losses to fit collection bounds.
 For example, an Exact source contributing key A and a Transformed source
 contributing key B with precision loss produce one Transformed disposition
 containing A, B and that loss in either source order. Adding a local selection
-does not erase the loss. Matching nonprojected source losses also survive;
-source-specific native admission failures remain in `History`, outside shared
+does not erase the loss. Matching nonprojected source keys and losses also
+survive, including in a Withheld aggregate. Those keys identify contributing
+source evidence; their presence does not establish projection. Only an Exact or
+Transformed source or a local selection establishes projection. Source-specific
+native admission failures remain in `History`, outside shared
 requested-item accounting. Unrequested items are not manufactured.
 
 The mapper no longer invents a reason definition. If the aggregate is withheld,

@@ -1231,7 +1231,7 @@ func (s *Service) publish(events []Event) bool {
 		}
 		if e.Kind == EventObservedChanged {
 			entry := entries[e.DriverID]
-			if !observationShown(e, entry) {
+			if !observationShown(e, entry, s.observed[e.DriverID]) {
 				// A newer observation of the driver is already staged in
 				// this view and has its own event: the superseded one is
 				// coalesced away instead of being stamped with a view that
@@ -1254,10 +1254,12 @@ func (s *Service) publish(events []Event) bool {
 }
 
 // observationShown reports whether a view entry shows exactly the observed
-// transition an OBSERVED_CHANGED event reports.
-func observationShown(e Event, entry DriverStatus) bool {
+// transition an OBSERVED_CHANGED event reports, including its staged lifecycle
+// correlation. The caller holds viewMu so the entry and observation are coherent.
+func observationShown(e Event, entry DriverStatus, obs observation) bool {
 	return entry.ObservedState == e.ObservedState && entry.Reason == e.Reason &&
-		entry.SafetyQuarantined == e.SafetyQuarantined
+		entry.SafetyQuarantined == e.SafetyQuarantined &&
+		obs.epoch == e.Epoch && obs.generation == e.Generation
 }
 
 func (s *Service) buildLocked(catalog ControlCatalog) Catalog {

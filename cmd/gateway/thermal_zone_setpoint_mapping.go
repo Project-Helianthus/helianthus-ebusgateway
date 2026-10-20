@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"sort"
 	"strconv"
@@ -101,6 +102,13 @@ type thermalZoneSetpointSelection struct {
 	MappingEvidence  []semreg.EvidenceRef
 }
 
+// The caller resolves this reference against its reason registry and checks that
+// its meaning applies to this withheld projection. Syntax alone is insufficient.
+type thermalZoneSetpointReasonContext struct {
+	Definition        semreg.DefinitionRef
+	RegistryValidated bool
+}
+
 type thermalZoneSetpointInput struct {
 	// Mappings describe only the caller's current bindings. Observations are a
 	// partial update: omitted roles may retain a still-fresh prior selection;
@@ -113,6 +121,7 @@ type thermalZoneSetpointInput struct {
 	Requested        []projection.RequestedItem
 	// Already projected items from other sources must survive this source's loss.
 	OtherDispositions []projection.ProjectionDisposition
+	WithheldReason    *thermalZoneSetpointReasonContext
 }
 
 type thermalZoneSetpointResult struct {
@@ -124,6 +133,7 @@ type thermalZoneSetpointResult struct {
 
 // mapThermalZoneSetpoints is a detached read-only mapping, not publication or
 // completed cutover. Native losses live in History, outside requested accounting.
+// Copy failure returns an error; the caller still owns its unchanged prior state.
 func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpointResult, error) {
 	in, err := thermalZoneSetpointCopy(input)
 	if err != nil {
@@ -132,7 +142,15 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 	out := thermalZoneSetpointResult{Evaluation: in.Evaluation}
 	// Prefer the immediately preceding selections over older diagnostic records.
 	sort.SliceStable(in.Previous, func(i, j int) bool {
-		return in.Previous[i].Current && !in.Previous[j].Current
+		a, b := in.Previous[i], in.Previous[j]
+		if a.Current != b.Current {
+			return a.Current
+		}
+		// Full records include every identity, role and receipt axis, then all
+		// remaining evidence as a deterministic tie-break before truncation.
+		left, _ := json.Marshal(a)
+		right, _ := json.Marshal(b)
+		return string(left) < string(right)
 	})
 	retained := map[string]bool{}
 	for _, previous := range in.Previous {
@@ -140,7 +158,17 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			replaced := false
 			for _, observation := range in.Observations {
 				if observation.Identity == previous.Observation.Identity && observation.Role == previous.Observation.Role {
-					replaced = true
+					count := 0
+					var mapping thermalZoneSetpointMapping
+					for _, candidate := range in.Mappings {
+						if candidate.Identity == observation.Identity && candidate.Role == observation.Role {
+							count++
+							mapping = candidate
+						}
+					}
+					if count == 1 && thermalZoneSetpointAdmission(in, mapping, observation) == "" {
+						replaced = true
+					}
 				}
 			}
 			if !replaced {
@@ -221,48 +249,51 @@ func mapThermalZoneSetpoints(input thermalZoneSetpointInput) (thermalZoneSetpoin
 			continue
 		}
 		seen[requested] = true
-		reason := semreg.DefinitionID("reason.ebus_zone_setpoint_not_selected")
 		d := projection.ProjectionDisposition{
 			Kind: requested.Kind, ItemID: requested.ItemID, Outcome: projection.ProjectionWithheld,
-			SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}, Reason: &reason,
+			SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{},
 		}
-		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
-			d.Loss = []projection.LossDetail{{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true}}
-		}
+
+		transformed := false
 		for _, other := range in.OtherDispositions {
-			if other.Kind == requested.Kind && other.ItemID == requested.ItemID && (other.Outcome == projection.ProjectionExact || other.Outcome == projection.ProjectionTransformed) {
-				d = other
-				break
+			if other.Kind != requested.Kind || other.ItemID != requested.ItemID {
+				continue
 			}
+			other, err = thermalZoneSetpointDisposition(other)
+			if err != nil {
+				return thermalZoneSetpointResult{}, err
+			}
+			if other.Outcome == projection.ProjectionExact || other.Outcome == projection.ProjectionTransformed {
+				d.Outcome = projection.ProjectionExact
+				transformed = transformed || other.Outcome == projection.ProjectionTransformed
+			}
+			d.SourceKeys = append(d.SourceKeys, other.SourceKeys...)
+			d.Loss = append(d.Loss, other.Loss...)
 		}
 		if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
 			for _, selection := range out.Selected {
 				if d.Outcome == projection.ProjectionWithheld {
-					d.Loss = []projection.LossDetail{}
 					d.Reason = nil
 					d.Outcome = projection.ProjectionExact
 				}
 				d.SourceKeys = append(d.SourceKeys, selection.Key)
 			}
 		}
-		keys := map[string]semreg.FactKey{}
-		for _, key := range d.SourceKeys {
-			canonical, err := semreg.CanonicalJSON(key)
-			if err != nil {
-				return thermalZoneSetpointResult{}, err
+		if d.Outcome == projection.ProjectionWithheld {
+			context := in.WithheldReason
+			if context == nil || !context.RegistryValidated || context.Definition.Validate() != nil {
+				return thermalZoneSetpointResult{}, fmt.Errorf("zone setpoint withholding requires a registry-validated reason context")
 			}
-			keys[string(canonical)] = key
+			reason := context.Definition.ID
+			d.Reason = &reason
+			if requested.Kind == projection.ItemFact && requested.ItemID == "thermal.setpoint.temperature" {
+				d.Loss = append(d.Loss, projection.LossDetail{Kind: projection.LossPolicy, SourceItems: []semreg.DefinitionID{}, Description: "No current independently qualified role-preserving zone setpoint is selected; native role losses remain separate.", Reversible: true})
+			}
+		} else if transformed || len(d.Loss) > 0 {
+			d.Outcome = projection.ProjectionTransformed
 		}
-		ordered := make([]string, 0, len(keys))
-		for key := range keys {
-			ordered = append(ordered, key)
-		}
-		sort.Strings(ordered)
-		d.SourceKeys = make([]semreg.FactKey, 0, len(keys))
-		for _, key := range ordered {
-			d.SourceKeys = append(d.SourceKeys, keys[key])
-		}
-		if err := d.Validate(); err != nil {
+		d, err = thermalZoneSetpointDisposition(d)
+		if err != nil {
 			return thermalZoneSetpointResult{}, err
 		}
 		out.Dispositions = append(out.Dispositions, d)
@@ -402,4 +433,59 @@ func thermalZoneSetpointSort[T any](values []T) {
 		b, _ := json.Marshal(values[j])
 		return string(a) < string(b)
 	})
+}
+
+// Normalize each source independently before validation so aggregation cannot
+// repair a malformed outcome with another source's evidence.
+func thermalZoneSetpointDisposition(d projection.ProjectionDisposition) (projection.ProjectionDisposition, error) {
+	// Loss identity excludes Reversible. Conflicting declarations of the
+	// same loss conservatively retain the irreversible interpretation.
+	losses := map[string]projection.LossDetail{}
+	for _, loss := range d.Loss {
+		sourceItems := map[semreg.DefinitionID]bool{}
+		for _, item := range loss.SourceItems {
+			sourceItems[item] = true
+		}
+		loss.SourceItems = make([]semreg.DefinitionID, 0, len(sourceItems))
+		for item := range sourceItems {
+			loss.SourceItems = append(loss.SourceItems, item)
+		}
+		sort.Slice(loss.SourceItems, func(i, j int) bool { return loss.SourceItems[i] < loss.SourceItems[j] })
+		sources, _ := json.Marshal(loss.SourceItems)
+		key := string(loss.Kind) + "\x00" + string(sources) + "\x00" + loss.Description
+		if prior, ok := losses[key]; ok {
+			loss.Reversible = prior.Reversible && loss.Reversible
+		}
+		losses[key] = loss
+	}
+	lossKeys := make([]string, 0, len(losses))
+	for key := range losses {
+		lossKeys = append(lossKeys, key)
+	}
+	sort.Strings(lossKeys)
+	d.Loss = make([]projection.LossDetail, 0, len(losses))
+	for _, key := range lossKeys {
+		d.Loss = append(d.Loss, losses[key])
+	}
+	keys := map[string]semreg.FactKey{}
+	for _, key := range d.SourceKeys {
+		canonical, err := semreg.CanonicalJSON(key)
+		if err != nil {
+			return projection.ProjectionDisposition{}, err
+		}
+		keys[string(canonical)] = key
+	}
+	ordered := make([]string, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Strings(ordered)
+	d.SourceKeys = make([]semreg.FactKey, 0, len(keys))
+	for _, key := range ordered {
+		d.SourceKeys = append(d.SourceKeys, keys[key])
+	}
+	if err := d.Validate(); err != nil {
+		return projection.ProjectionDisposition{}, err
+	}
+	return d, nil
 }

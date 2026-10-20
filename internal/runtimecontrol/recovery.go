@@ -1305,33 +1305,29 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 	clocks := r.restoreClocks(stream, m0, failedAssets)
 	report := RestoreReport{}
 	installed := map[AssetID]bool{}
-	if material != nil {
-		replay, rerr := r.hub.Replay(stream.Base, stream.Frame, false)
-		if rerr != nil {
-			return r.failAll(fmt.Errorf("replay: %w", rerr))
-		}
-		for id := range replay.Failed() {
-			if _, ok := r.assets[id]; ok {
-				failedAssets[id] = true
-			}
-		}
-		r.resolveEntries(stream, replay, failedSources, failedAssets, &report)
-		for src := range failedSources {
-			for _, id := range r.sources[src].assets {
-				failedAssets[id] = true
-			}
-		}
-		_, refused := replay.Install(failedAssets)
-		for id := range refused {
+	// Even without durable material, installation must verify that the live
+	// managed assets are empty before the recorder can admit their writers.
+	replay, rerr := r.hub.Replay(stream.Base, stream.Frame, false)
+	if rerr != nil {
+		return r.failAll(fmt.Errorf("replay: %w", rerr))
+	}
+	for id := range replay.Failed() {
+		if _, ok := r.assets[id]; ok {
 			failedAssets[id] = true
 		}
-		for id := range r.assets {
-			if !failedAssets[id] {
-				installed[id] = true
-			}
+	}
+	r.resolveEntries(stream, replay, failedSources, failedAssets, &report)
+	for src := range failedSources {
+		for _, id := range r.sources[src].assets {
+			failedAssets[id] = true
 		}
-	} else {
-		for id := range r.assets {
+	}
+	_, refused := replay.Install(failedAssets)
+	for id := range refused {
+		failedAssets[id] = true
+	}
+	for id := range r.assets {
+		if !failedAssets[id] {
 			installed[id] = true
 		}
 	}
@@ -1340,11 +1336,10 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 			continue
 		}
 		report.Restored = append(report.Restored, id)
-		if material == nil {
-			continue
-		}
 		if rerr := r.hub.Reproject(id); rerr == nil {
 			report.Reopened = append(report.Reopened, id)
+		} else {
+			failedAssets[id] = true
 		}
 	}
 	for id := range failedAssets {
@@ -1564,16 +1559,24 @@ func wellFormedAsset(e walEntry, a walAsset) bool {
 
 // restoreClocks rebuilds each asset's clock mapping from the durable mark and
 // the verified elapsed time. An asset with recorded points but no verifiable
-// continuity fails closed.
+// continuity, or a mark below any retained intent point, fails closed.
 func (r *Recorder) restoreClocks(s walStream, m0 uint64, failedAssets map[AssetID]bool) map[AssetID]*clockMap {
 	clocks := map[AssetID]*clockMap{}
+	retainedHigh := map[AssetID]uint64{}
+	for _, entry := range s.Entries {
+		for _, asset := range entry.Assets {
+			if entry.Point > retainedHigh[asset.Asset] {
+				retainedHigh[asset.Asset] = entry.Point
+			}
+		}
+	}
 	for id := range r.assets {
 		mark, ok := s.Clocks[id]
-		used := s.NextOrdinal[id] > s.BaseOrdinal[id]+1 || s.BaseOrdinal[id] > 0
+		used := s.NextOrdinal[id] > s.BaseOrdinal[id]+1 || s.BaseOrdinal[id] > 0 || retainedHigh[id] > 0
 		cm := &clockMap{m0: m0}
 		switch {
 		case !ok && !used:
-		case !ok || mark.Unit != clockUnit || len(mark.Anchor) == 0:
+		case !ok || mark.Unit != clockUnit || len(mark.Anchor) == 0 || mark.High < retainedHigh[id]:
 			cm.failed = true
 		default:
 			d, err := r.clock.Elapsed(mark.Anchor, m0)

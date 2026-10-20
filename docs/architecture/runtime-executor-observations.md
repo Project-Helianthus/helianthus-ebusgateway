@@ -4,9 +4,13 @@ The post-RUNNING executor-observation method requested by [issue #1239](https://
 is **not implemented**. Its publication seam needs a coordinated service change
 before an internal caller can safely submit observations. No new public API,
 MCP tool, status schema, lifecycle authority or qualification is established.
-Nothing here establishes stability before Helianthus 1.0.
+Nothing here establishes a stability promise.
 
 ## Publication boundary
+
+The service change is limited to rejecting an observation whose correlation names
+a fenced or superseded generation; no executor-observation method is added by
+this change.
 
 `stageObservation` changes the shared pending observation under `viewMu`.
 `commitObserved` then advances the durable catalog and publishes, without

@@ -666,10 +666,10 @@ func TestI42EvidenceIdentity(t *testing.T) {
 						in.Candidates[0].Role.RoleEvidence = a
 					}
 					out := mapThermalCircuitCapabilities(in)
-					if len(out.Sources) != 1 || out.Sources[0].Capability == nil || out.Sources[0].Loss != "" {
-						t.Fatal("valid evidence withheld")
+					if len(out.Sources) != 1 {
+						t.Fatal("missing source diagnostics")
 					}
-					got := out.Sources[0].Capability.ActivationEvidence
+					got := out.Sources[0].ActivationEvidence
 					want := []semreg.EvidenceRef{a}
 					if a != b {
 						want = append(want, b)
@@ -682,12 +682,24 @@ func TestI42EvidenceIdentity(t *testing.T) {
 					if !reflect.DeepEqual(got, want) {
 						t.Fatalf("activation evidence: got %+v, want %+v", got, want)
 					}
-					// The pinned owner's set validator excludes policy fields from its key.
-					// Retention here is not a claim that policy-distinct sets publish today.
-					if axis.name != "access" && axis.name != "redaction" {
-						if err := out.Sources[0].Capability.Validate(); err != nil {
-							t.Fatal(err)
+					policyPair := axis.name == "access" || axis.name == "redaction"
+					loss := ""
+					if policyPair {
+						loss = "invalid_result"
+					}
+					source := thermalCircuitTestOutcome(t, out, "service:a", !policyPair, loss)
+					if policyPair {
+						if out.Dispositions[0].Outcome != projection.ProjectionWithheld || len(out.Dispositions[0].Loss) != 1 {
+							t.Fatal("rejected policy pair was not explicitly withheld")
 						}
+						if !reflect.DeepEqual(source.Candidate, in.Candidates[0]) || !reflect.DeepEqual(out.Native, in.Observations) {
+							t.Fatal("withholding changed diagnostic evidence")
+						}
+					} else if out.Dispositions[0].Outcome != projection.ProjectionExact {
+						t.Fatal("valid evidence was not exact")
+					}
+					if source.Capability != nil && !reflect.DeepEqual(source.Capability.ActivationEvidence, want) {
+						t.Fatal("admitted evidence differs from diagnostics")
 					}
 					got[0].Owner = "test.changed"
 					if in.Observations[0].Evidence.Owner == "test.changed" || in.Candidates[0].Role.RoleEvidence.Owner == "test.changed" {
@@ -726,6 +738,11 @@ func TestI42SemanticAssociationConflicts(t *testing.T) {
 				in.Requested[0].ItemID = "thermal.capability.read.dhw"
 			}
 			thermalCircuitTestSibling(&in)
+			in.Candidates[1].TypeSelector.Instance = 1
+			in.Candidates[1].Role.Selector = in.Candidates[1].TypeSelector
+			for j := 2; j < 4; j++ {
+				in.Observations[j].Selector.Instance = 1
+			}
 			// Distinct instance IDs cannot hide two owners of the same association.
 			in.Candidates[1].Identity.Asset = "asset:a"
 			in.Candidates[1].Identity.Source = "source:b"
@@ -754,7 +771,9 @@ func TestI42SemanticAssociationConflicts(t *testing.T) {
 					in.Observations[j].Identity = in.Candidates[0].Identity
 				}
 			}
-			thermalCircuitTestOutcome(t, mapThermalCircuitCapabilities(in), "service:b", true, "")
+			separate := mapThermalCircuitCapabilities(in)
+			thermalCircuitTestOutcome(t, separate, "service:a", true, "")
+			thermalCircuitTestOutcome(t, separate, "service:b", true, "")
 			in.Candidates[0].Identity.Asset = "asset:a"
 			if role == "ordinary" {
 				in.Candidates[0].Role.Role = "virtual_water"
@@ -770,6 +789,31 @@ func TestI42SemanticAssociationConflicts(t *testing.T) {
 			out = mapThermalCircuitCapabilities(in)
 			thermalCircuitTestOutcome(t, out, "service:a", true, "")
 			thermalCircuitTestOutcome(t, out, "service:b", true, "")
+		})
+	}
+}
+
+func TestP18RejectedPolicyPreservesSibling(t *testing.T) {
+	for _, policy := range []string{"access", "redaction"} {
+		t.Run(policy, func(t *testing.T) {
+			in := thermalCircuitTestInput()
+			thermalCircuitTestSibling(&in)
+			a := in.Observations[0].Evidence
+			b := a
+			if policy == "access" {
+				b.Access = semreg.EvidenceAccessAuthorized
+			} else {
+				b.Redaction = semreg.RedactionRedacted
+			}
+			in.Candidates[0].Role.QualificationEvidence = a
+			in.Candidates[0].Role.RoleEvidence = b
+			out := mapThermalCircuitCapabilities(in)
+			s := thermalCircuitTestOutcome(t, out, "service:a", false, "invalid_result")
+			thermalCircuitTestOutcome(t, out, "service:b", true, "")
+			if len(s.ActivationEvidence) != 2 || !reflect.DeepEqual(out.Native, in.Observations) ||
+				out.Dispositions[0].Outcome != projection.ProjectionTransformed || len(out.Dispositions[0].Loss) != 1 {
+				t.Fatal("rejected policy lost evidence, sibling, or partial-loss disposition")
+			}
 		})
 	}
 }

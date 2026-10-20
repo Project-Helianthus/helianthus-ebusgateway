@@ -78,6 +78,7 @@ type thermalCircuitMappingInput struct {
 
 type thermalCircuitSourceOutcome struct {
 	Candidate             thermalCircuitCandidate
+	ActivationEvidence    []semreg.EvidenceRef
 	Service               *semreg.ServiceInstance
 	Capability            *semreg.CapabilityInstance
 	Loss                  string
@@ -243,7 +244,11 @@ func mapThermalCircuitCapabilities(in thermalCircuitMappingInput) thermalCircuit
 						activation = append(activation, e)
 					}
 				}
+				s.ActivationEvidence = append([]semreg.EvidenceRef(nil), activation...)
 				s.Capability = &semreg.CapabilityInstance{Constraints: []semreg.TypedField{}, ActivationEvidence: activation, InstanceID: id.Capability, AssetID: id.Asset, ServiceInstance: id.Service, Definition: capRef, BindingID: id.Binding, SourceEpochID: id.Epoch, DriverGeneration: id.Generation, Qualification: semreg.QualificationQualified, Availability: semreg.AvailabilityAvailable, Revision: id.BindingRevision}
+				if s.Service.Validate() != nil || s.Capability.Validate() != nil {
+					s.Service, s.Capability, s.Loss = nil, nil, "invalid_result"
+				}
 			}
 		}
 		out.Sources = append(out.Sources, s)

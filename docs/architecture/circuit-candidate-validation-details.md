@@ -1,7 +1,7 @@
 # Circuit candidate validation details
 
 This detached, offline mapper implements a bounded hardening slice of
-[issue #1224](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1224),
+[issue #1249](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1249),
 advancing [parent #952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952).
 It acquires no observations and supplies no installation qualification. Nothing
 here is stable before Helianthus 1.0.
@@ -62,14 +62,21 @@ activation evidence and native raw bytes are detached from caller storage.
 
 The currently pinned SemReg evidence-set validator compares only owner, kind,
 contract and digest. It therefore rejects a retained policy-distinct pair as a
-duplicate. Retaining both here does not establish publication acceptance. Resolving
-that owner contract is outside this slice; no dependency pin changes or runtime
+duplicate. The mapper validates each constructed service and capability before
+admission. If either fails, both are withheld with `invalid_result`; the requested
+capability disposition is withheld unless an independent sibling is admitted.
+The merged `ActivationEvidence` remains on the source outcome for diagnostics,
+alongside the unchanged candidate and native observations, including access and
+redaction policy. Every emitted service and capability must validate. Resolving
+the owner contract is outside this slice; no dependency pin changes or runtime
 publication integration are included.
 
 Two otherwise admitted candidates conflict when they reuse a service or
 capability instance ID, or share an asset and service definition even with
 different instance IDs. The existing service definition supplies its dimension
-association; this mapper invents no dimension value. For example, two qualified
+association; this mapper invents no dimension value. Callers must supply a distinct
+asset per circuit; distinct circuit instance IDs do not distinguish this association.
+For example, two qualified
 ordinary read candidates for the same asset and circuit definition are both
 withheld, even when their service IDs, capability IDs and sources differ and both
 callers set `Unambiguous=true`. Preserve both source records and all native

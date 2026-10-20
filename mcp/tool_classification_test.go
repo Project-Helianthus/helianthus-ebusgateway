@@ -81,6 +81,14 @@ func toolClassificationPolicy() map[string]toolClass {
 		toolVaillantB503LiveMonitorName:       toolClassCoreStable,
 		toolVaillantB503LiveSessionGetName:    toolClassCoreStable,
 		GrowattProtocolIIV1IdentityGetTool:    toolClassCoreStable,
+		// G5 runtime lifecycle host tools (#1227, D4): ordinary MCP, no
+		// experimental namespace. Classification is per-tool maturity and
+		// implies no GraphQL face; D4 adds no lifecycle GraphQL surface.
+		RuntimeControlListTool:    toolClassCoreStable,
+		RuntimeControlGetTool:     toolClassCoreStable,
+		RuntimeControlStartTool:   toolClassCoreStable,
+		RuntimeControlStopTool:    toolClassCoreStable,
+		RuntimeControlRestartTool: toolClassCoreStable,
 	}
 }
 
@@ -124,6 +132,9 @@ func TestToolClassificationPolicy(t *testing.T) {
 	registerGrowattProtocolIIV1Tool(server, &growattProtocolIIV1FixtureProvider{modbusV1FixtureProvider: &modbusV1FixtureProvider{}})
 	if err := server.RegisterEEBusV1CommandRouter(&issue749TypedRouter{}); err != nil {
 		t.Fatalf("RegisterEEBusV1CommandRouter error = %v", err)
+	}
+	if err := RegisterRuntimeControlTools(server, &rcFake{}); err != nil {
+		t.Fatalf("RegisterRuntimeControlTools error = %v", err)
 	}
 
 	res := doRPC(t, issue743OperatorHandler(t, server), rpcRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list", Params: nil})
@@ -182,6 +193,7 @@ func TestToolClassificationPolicy(t *testing.T) {
 	}
 
 	experimentalCount := 0
+	runtimeControlCount := 0
 	for _, raw := range tools {
 		toolMap, ok := raw.(map[string]any)
 		if !ok {
@@ -204,6 +216,16 @@ func TestToolClassificationPolicy(t *testing.T) {
 			}
 			experimentalCount++
 		}
+		if strings.HasPrefix(name, "helianthus.") {
+			if !strings.HasPrefix(name, "helianthus.runtime.") || class != toolClassCoreStable {
+				t.Fatalf("host tool %q classified %q; want a core stable helianthus.runtime tool", name, class)
+			}
+			runtimeControlCount++
+		}
+	}
+
+	if runtimeControlCount != len(runtimeControlToolNames) {
+		t.Fatalf("helianthus.runtime tool count = %d; want %d", runtimeControlCount, len(runtimeControlToolNames))
 	}
 
 	if experimentalCount != 0 {

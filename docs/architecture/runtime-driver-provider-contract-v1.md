@@ -15,9 +15,8 @@ publication path over the SemReg publication kernel with the kernel's own
 replay and error identifiers; ordered, bounded event fan-out; and the
 generation fence, epoch retirement, activation and reprojection rules of the
 withdrawal sequence. The hub is runtime composition, not a public API, and
-persists nothing: epochs are journalled in memory only. Every public `list`,
-`get`, `start`, `stop` and `restart` tool and every public lifecycle
-projection remain unimplemented. Issue
+persists nothing: epochs are journalled in memory only. The hub itself
+serves no public tool or lifecycle projection. Issue
 [#1157](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1157)
 adds the durable control storage seam in `internal/runtimestate` (section 5,
 S3 durable control store) without a production caller, live reconciliation or
@@ -34,8 +33,10 @@ production caller uses it yet. Issue
 [#1183](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1183)
 adds the internal desired-state service in `internal/runtimecontrol` (section
 5, S1/D3 desired-state service) over that storage seam, with an injected
-lifecycle executor and recovery adapter. It has no production registration,
-no MCP mutator, no endpoint I/O and no authentication. Issue
+lifecycle executor and recovery adapter. As added there it had no production
+registration, no MCP surface and no endpoint I/O; issues #1222 and #1227 below
+supply the registration and the MCP surface, and no authentication applies
+(D4). Issue
 [#1188](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1188)
 adds the service write-ahead recorder for service-routed managed writers
 (section 5, S3.7 to S3.9 service write-ahead recovery): two durable steps
@@ -56,8 +57,12 @@ installs them into process startup (section 7, S4/S6/S7 shell integration):
 service is the single owner of eBUS startup, post-start eBUS work runs as
 generation-owned tasks and adapter status follows native admission. A5 is
 therefore implemented as an internal service for `ebus.primary` only; it is
-not a universal provider SPI. There is still no MCP lifecycle mutator and no
-authorization.
+not a universal provider SPI. Issue
+[#1227](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1227)
+exposes that service through five ordinary MCP tools,
+`helianthus.runtime.list`, `get`, `start`, `stop` and `restart` (section 5,
+S2/D4 ordinary MCP lifecycle tools), as thin delegates with no authorization
+before 0.9 (D4).
 
 A fence or retirement batch uses the caller's `ObservedAt` and monotonic point
 as its publication instant. The requesting family supplies them on the same
@@ -113,7 +118,8 @@ The contract covers:
 - deterministic `list` and `get` views;
 - `start`, `stop`, and `restart` without restarting the gateway process;
 - persistent desired state separate from observed runtime state;
-- optimistic revision checks and persistent idempotency records;
+- optimistic revision checks against durable desired revisions, with no
+  lifecycle idempotency record (final D3);
 - source-epoch and driver-generation fencing;
 - capability activation, admission, withdrawal, drain, and close proof;
 - native observation to qualified semantic publication and projection;
@@ -161,7 +167,8 @@ The dependency must preserve these distinct identities:
 - native transport connection generation;
 - driver generation;
 - semantic snapshot and object revisions;
-- lifecycle operation ID;
+- internal lifecycle sequence and correlation (never a client operation
+  handle, final D3);
 - intent ID and idempotency key; and
 - causal correlation ID.
 
@@ -182,7 +189,7 @@ ownership for every service, capability, operation, and effect definition.
 
 | Owner | Required responsibility |
 |---|---|
-| Gateway runtime control | Driver catalog, desired-state persistence, lifecycle serialization, revision/idempotency decisions, per-driver isolation, admission coordination, composition, and public lifecycle projection |
+| Gateway runtime control | Driver catalog, desired-state persistence, lifecycle serialization, optimistic revision decisions, per-driver isolation, admission coordination, composition, and public lifecycle projection |
 | Native driver/adapter | Native endpoint identity, connection and protocol lifecycle, discovery, qualification, decode, raw evidence, request construction, native retry/reconnect, native authorization, ACK/readback interpretation, and resource close proof |
 | Semantic kernel and packs | Protocol-neutral identities, facts, services, capabilities, operation intents/outcomes, provenance, validation, conflict, and projection-loss types |
 | Native-to-semantic binding | Exact profile/version and unique `PackRef`/`DefinitionIndex` mapping from qualified native evidence to semantic facts/capabilities and from a semantic operation and typed `ExpectedEffect` to one typed native operation and pack-evaluated readback predicate |
@@ -209,7 +216,6 @@ type CatalogRevision uint64   // revision-consistent list view
 type DriverGeneration uint64  // starts at 1 inside one SourceEpochID
 type LifecycleOperationID string
 type LifecycleSequence uint64  // monotonic per DriverID, starts at 1
-type IdempotencyKey string
 
 type LifecycleOperationKind string
 const (
@@ -454,7 +460,12 @@ withdrawn (final D3/D4). `DesiredRecord.LastOperation`,
 completion members of `LifecycleOperationRecord` are superseded as well: the
 durable in-flight state is the typed work slot record of section 5, and
 completed operations leave no durable record. `CLOSE_UNCONFIRMED` remains an
-observed-state reason, not a request refusal.
+observed-state reason, not a request refusal. The lifecycle request carries no
+idempotency key at all; the intent idempotency of sections 8 to 10 is a
+separate semantic mechanism. `DriverView`, `ListDriversResult` and
+`GetDriverResult` above describe internal content, not the wire: the public
+projection is the closed eight-member driver object of section 5 (S2/D4
+ordinary MCP lifecycle tools).
 
 `ControlErrorCode` is confined to gateway lifecycle transport and persistence.
 It does not rename a semantic rejection. Semantic validation, publication,
@@ -507,10 +518,11 @@ the S0 slice of the registration companion
 [runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
 (A1): descriptor format `v1`, validation before effects, a frozen in-memory
 registry with coherent list/get reads, and the typed lifecycle-adapter seam
-(`NewAdapter` over a factory returning a `drivermanager.Runtime`). It has no
-production registration, construction, desired-state persistence, lifecycle
-control or runtime composition, and it imports only the standard library and
-`internal/drivermanager`.
+(`NewAdapter` over a factory returning a `drivermanager.Runtime`). By itself
+it performs no construction, desired-state persistence, lifecycle control or
+runtime composition (the production registration of `ebus.primary` is
+section 7, S4/S6/S7 shell integration), and it imports only the standard
+library and `internal/drivermanager`.
 
 `Register` validates a whole batch, disabled entries included, and installs it
 in one step or not at all. Per descriptor, in order: format, `DriverID`,
@@ -687,9 +699,11 @@ the state before retrying; it never claims that the original was preserved.
 The receipt, idempotency-ledger and operation-record transaction that this
 section described before the D3 amendment is withdrawn. Package
 [`internal/runtimecontrol`](https://github.com/Project-Helianthus/helianthus-ebusgateway/tree/main/internal/runtimecontrol) implements the
-S1/S2.1/S5/S6.1 slice of the lifecycle page as an internal `Service`. It has
-no production registration, no MCP mutator, no endpoint I/O and no
-authentication (D4), and it still imports only the standard library and
+S1/S2.1/S5/S6.1 slice of the lifecycle page as an internal `Service`. It
+performs no endpoint I/O of its own and has no authentication (D4). Its
+production registration is section 7 (S4/S6/S7 shell integration), its only
+external surface is the ordinary MCP adapter below (S2/D4 ordinary MCP
+lifecycle tools), and it still imports only the standard library and
 `internal/drivermanager`.
 
 **Seams.** The service reaches the S3 store only through the `Store`
@@ -877,6 +891,146 @@ serialization wait before `TRANSITION_BUSY`.
 failures are `LifecycleError`, and request refusals are `Refusal` with the
 refusal-table code and row. Executable evidence is
 `internal/runtimecontrol/service_test.go` against the merged store.
+
+### S2/D4 ordinary MCP lifecycle tools (implemented MCP adapter)
+
+Issue
+[#1227](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1227)
+implements the first external control surface of the lifecycle contract: the
+D4 amendment to the docs-ebus
+[MCP page](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/api/mcp.md)
+and the
+[runtime driver lifecycle](https://github.com/Project-Helianthus/helianthus-docs-ebus/blob/main/architecture/runtime-driver-lifecycle.md)
+section "S2/D4: ordinary MCP external control", proposed in
+[docs-ebus #718](https://github.com/Project-Helianthus/helianthus-docs-ebus/pull/718).
+It replaces revision 9's kernel operator boundary and experimental tools.
+Where that amendment and the merged S1/D3 rules differ, the merged rules and
+the service behaviour above apply.
+
+**Registration.** Package `mcp` registers `helianthus.runtime.list`,
+`helianthus.runtime.get`, `helianthus.runtime.start`,
+`helianthus.runtime.stop` and `helianthus.runtime.restart`, in that order, on
+the ordinary tool inventory (`RegisterRuntimeControlTools`). The production
+HTTP shell registers them unconditionally while it composes the ordinary MCP
+server, before the MCP route is mounted, so they stay listed for the shell's
+lifetime whatever eBUS does (STOPPED, FAILED, withheld or disabled) and with
+eeBUS disabled or absent. A disabled driver stays visible; tool disappearance
+never signals unavailability. A control path whose service could not be built
+still lists the tools and answers `UNAVAILABLE`. The tools are host tools,
+not driver contributions: driver hooks stay unimplemented.
+
+**Transports.** The tools use the ordinary registration and dispatch path, so
+they are served by every ordinary MCP transport the gateway offers. Today
+that is the HTTP JSON-RPC endpoint. The gateway has no stdio MCP transport
+and this slice adds none; the amendment's "HTTP and stdio" is read as every
+ordinary MCP transport the gateway offers. An endpoint that serves the
+ordinary inventory (the owner-only eeBUS operator endpoint does) lists them
+too; the read-only evidence scope does not expose them.
+
+**Delegation.** The adapter is a thin delegate of one `ControlService` and
+never calls DriverManager, constructs a provider, opens an endpoint,
+reconciles or polls:
+
+| Tool | Complete arguments | Service call |
+|---|---|---|
+| `helianthus.runtime.list` | `{}` | `List()`: one coherent cached view |
+| `helianthus.runtime.get` | `{"DriverID": ...}` | `Get(DriverID)`: one cached entry |
+| `helianthus.runtime.start` | `{"DriverID": ..., "ExpectedRevision": ...}` | `Control(ctx, START, body)`: the service's closed decoding, then `Decide` |
+| `helianthus.runtime.stop` | same two members | `Control(ctx, STOP, body)` |
+| `helianthus.runtime.restart` | same two members | `Control(ctx, RESTART, body)` |
+
+**Closed inputs.** Arguments are closed, case-sensitive objects: list takes
+no member, get exactly `DriverID`, each mutation exactly `DriverID` and
+`ExpectedRevision`, every value a JSON string. Missing, additional or
+duplicate members, non-string values, non-object arguments (an explicit
+`null` included) and trailing data are refused as `INVALID_ARGUMENT` (refusal
+row 1) before any service read or decision; an omitted `arguments` member
+reads as the empty object. Duplicates are detected anywhere in the call
+parameters on the token stream, before any decoding could discard one, and
+answer the same tool-level refusal. Mutation bodies reach the service
+unchanged, so the MCP refusals are the service's own. Inside a well-formed
+JSON-RPC request the arguments value cannot carry trailing data; a request
+body with trailing data is refused by the JSON-RPC layer before dispatch.
+`DriverID` follows the canonical pattern of section 4 and at most 128 bytes;
+a noncanonical or unregistered ID is `NOT_FOUND` from the cached read.
+`ExpectedRevision` echoes the read-back `desired_revision` as a canonical
+nonzero unsigned 64-bit decimal string. No idempotency key, digest, receipt,
+principal, authority, operation handle or deadline member is accepted or
+returned.
+
+**Deadlines.** Every mutation reaches the service with a finite deadline.
+When the transport supplies none (an HTTP request has none), the adapter
+bounds the call to 10 seconds, longer than the store's bounded namespace-wide
+serialization wait, so contention answers `TRANSITION_BUSY`; an earlier
+caller deadline is kept. The service's refusal for a call without a finite
+deadline (refusal row 5, `INVALID_ARGUMENT`) is therefore unreachable through
+MCP by construction: the tools always supply the 10 second default and keep
+an earlier caller deadline. The reads take no deadline: they never wait for a
+store write, a reconciler or a decision.
+
+**Data.** List `data` is exactly `{catalog_revision, drivers}` and get `data`
+exactly `{catalog_revision, driver}`. A driver object has exactly
+`driver_id`, `enabled`, `desired_state`, `desired_revision`,
+`observed_state`, `reason`, `safety_quarantined` and `revision`, in that
+order, projected from the cached `DriverStatus`. List entries come from one
+coherent view in bytewise `driver_id` order, each carrying the view's catalog
+revision, with `drivers: []` for an empty catalog; get uses its entry's
+revision as `catalog_revision`. Revisions are canonical decimal strings and
+read `"0"` only for a withheld or unissued view. Accepted and same-desired
+no-op mutations answer exactly `{desired_state, desired_revision}` after the
+decision is durable: completion is observed through list or get, and readback
+never attributes a completion to a call. START while desired `RUNNING` and
+STOP while desired `STOPPED` are no-ops after the revision comparison. Every
+accepted RESTART takes a new revision and executes one replacement; after a
+lost RESTART response an old-revision retry conflicts, and a fresh-revision
+retry after settlement restarts again.
+
+**Envelope and errors.** All five tools use the ordinary envelope:
+`meta.contract` `helianthus-ebus-mcp` 1.0, `meta.consistency` `LIVE` with no
+snapshot argument, `meta.data_timestamp` and `meta.data_hash` (SHA-256 of
+the serialized `data` alone). Success has `error: null`. A refusal sets MCP
+`isError` and the error object `code`, `message`, `retriable` and
+`source_layer` (`gateway`), keeping the lifecycle code and the refusal
+table's retryable column:
+
+| Code | Retriable | Data |
+|---|---|---|
+| `INVALID_ARGUMENT` | no | null |
+| `NOT_FOUND` | no | null |
+| `FAILED_PRECONDITION` | no | null |
+| `UNAVAILABLE` | yes | null |
+| `DEADLINE_EXCEEDED` | yes | null |
+| `REVISION_CONFLICT` | yes | the cached `{desired_state, desired_revision}` |
+| `TRANSITION_BUSY` | yes | null |
+| `RESOURCE_EXHAUSTED` | yes | null |
+| `COUNTER_EXHAUSTED` | no | null |
+| `INTERNAL` | no | null |
+
+Messages are fixed categorical texts per code and refusal row; refusal
+reasons and raw errors, which can name storage paths, never reach the wire.
+A service error outside the refusal table (an unresolved readback or a
+closed service), and a refusal code the table does not list, answers
+`INTERNAL`, not retriable, after the service's own readback; the caller reads
+the durable state through list or get before deciding again. `UNAVAILABLE` is
+reserved for the table's transient rows.
+
+**Boundaries.** There is no lifecycle principal, authority adapter or
+authorization check before 0.9, no separate listener or socket and no
+operator-boundary-only registration. The tools never route through
+`ebus.v1.rpc.invoke` and grant no native pairing or device-write authority;
+the eeBUS operator tools and every native-write safeguard are unchanged. The
+tools are classified `core_stable`, which implies no GraphQL face: no
+lifecycle GraphQL field, resolver, mutation or subscription exists, and the
+eBUS MCP/GraphQL status parity is unchanged. Every namespace stays pre-stable
+until 1.0.
+
+Executable evidence: `mcp/runtime_control_test.go` (schema and output
+goldens `mcp/testdata/runtime_control_tools.json` and
+`mcp/testdata/runtime_control_outputs.json`, strict decoding, deadlines,
+MCP-to-service equivalence for every refusal code) and the fake-endpoint
+`runGatewayLifecycle` integration through the production HTTP shell in
+`cmd/gateway/runtime_control_test.go`. These are offline software tests; they
+claim no transport execution on hardware, smoke result or qualification.
 
 ### S3.7 to S3.9 service write-ahead recovery (implemented internal recorder)
 
@@ -2794,6 +2948,10 @@ owning issue. The expected result is normative. CTL-01 to CTL-11 below are the
 D3 concurrency and readback rows of the docs-ebus runtime driver lifecycle page.
 They replace the former idempotency-key, authority and receipt rows; no test
 of those rows applies any more. CTL-12 to CTL-19 remain on the lifecycle page.
+The service tests prove the rows against the durable store; the ordinary MCP
+adapter (section 5, S2/D4) is proven equivalent to the service for every
+refusal code and for the no-op, conflict and lost-RESTART rows, without
+adding any receipt, key or authority row.
 
 | ID | Scenario | Expected result |
 |---|---|---|

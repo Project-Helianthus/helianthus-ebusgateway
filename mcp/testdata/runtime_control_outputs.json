@@ -1,0 +1,1475 @@
+{
+  "get_driver": {
+    "arguments": {
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "driver": {
+          "driver_id": "ebus.primary",
+          "enabled": true,
+          "desired_state": "RUNNING",
+          "desired_revision": "7",
+          "observed_state": "BACKOFF",
+          "reason": "RETRY_SCHEDULED",
+          "safety_quarantined": false,
+          "revision": "29"
+        }
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "one cached entry; its revision is the catalog revision",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_noncanonical": {
+    "arguments": {
+      "DriverID": "Ebus.Primary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "driver is not registered",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "NOT_FOUND row 2",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_rejects_additional": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_rejects_case": {
+    "arguments": {
+      "driverid": "ebus.primary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_rejects_duplicate": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_rejects_missing": {
+    "arguments": {},
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_rejects_non_string": {
+    "arguments": {
+      "DriverID": 7
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.get"
+  },
+  "get_unregistered": {
+    "arguments": {
+      "DriverID": "ebus.secondary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "driver is not registered",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "NOT_FOUND row 2",
+    "tool": "helianthus.runtime.get"
+  },
+  "list_disabled_driver_visible": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "BACKOFF",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.second",
+            "enabled": false,
+            "desired_state": "RUNNING",
+            "desired_revision": "5",
+            "observed_state": "DISABLED",
+            "reason": "CONFIG_DISABLED",
+            "safety_quarantined": false,
+            "revision": "29"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "a disabled driver stays listed",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_empty_catalog": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "0",
+        "drivers": []
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "no registered driver: drivers is [] and the unissued revision is 0",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_omitted_arguments": {
+    "arguments": null,
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "BACKOFF",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.second",
+            "enabled": true,
+            "desired_state": "STOPPED",
+            "desired_revision": "5",
+            "observed_state": "STOPPED",
+            "reason": "NONE",
+            "safety_quarantined": false,
+            "revision": "29"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "same view; an omitted arguments member reads as {}",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_quarantined_driver": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "FAILED",
+            "reason": "CLOSE_UNCONFIRMED",
+            "safety_quarantined": true,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.second",
+            "enabled": true,
+            "desired_state": "STOPPED",
+            "desired_revision": "5",
+            "observed_state": "STOPPED",
+            "reason": "NONE",
+            "safety_quarantined": false,
+            "revision": "29"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "unconfirmed close: FAILED/CLOSE_UNCONFIRMED with the safety quarantine",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_rejects_array": {
+    "arguments": [],
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_rejects_duplicate_arguments": {
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "params": {
+      "name": "helianthus.runtime.list",
+      "arguments": {},
+      "arguments": {}
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_rejects_member": {
+    "arguments": {
+      "consistency": "LIVE"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_rejects_null": {
+    "arguments": null,
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "never consulted",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_service_unavailable": {
+    "arguments": {},
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "UNAVAILABLE",
+        "message": "control admission is closed; read back before retrying",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "no control service composed",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_two_drivers": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "29",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": true,
+            "desired_state": "RUNNING",
+            "desired_revision": "7",
+            "observed_state": "BACKOFF",
+            "reason": "RETRY_SCHEDULED",
+            "safety_quarantined": false,
+            "revision": "29"
+          },
+          {
+            "driver_id": "fixture.second",
+            "enabled": true,
+            "desired_state": "STOPPED",
+            "desired_revision": "5",
+            "observed_state": "STOPPED",
+            "reason": "NONE",
+            "safety_quarantined": false,
+            "revision": "29"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "coherent view at catalog revision 29, drivers in bytewise order",
+    "tool": "helianthus.runtime.list"
+  },
+  "list_withheld_view": {
+    "arguments": {},
+    "envelope": {
+      "data": {
+        "catalog_revision": "0",
+        "drivers": [
+          {
+            "driver_id": "ebus.primary",
+            "enabled": false,
+            "desired_state": "STOPPED",
+            "desired_revision": "0",
+            "observed_state": "FAILED",
+            "reason": "INTERNAL_ERROR",
+            "safety_quarantined": false,
+            "revision": "0"
+          }
+        ]
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "control state unreadable: every driver withheld FAILED at revision 0",
+    "tool": "helianthus.runtime.list"
+  },
+  "mutation_control_state_unusable": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "FAILED_PRECONDITION",
+        "message": "driver control state is unusable until offline repair",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "FAILED_PRECONDITION row 3",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_counter_exhausted": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "COUNTER_EXHAUSTED",
+        "message": "a required revision counter cannot advance",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "COUNTER_EXHAUSTED row 10",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_deadline_error": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "DEADLINE_EXCEEDED",
+        "message": "deadline expired before a decision; read back if delivery was uncertain",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "context deadline outside the refusal type",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_deadline_exceeded": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "DEADLINE_EXCEEDED",
+        "message": "deadline expired before a decision; read back if delivery was uncertain",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "DEADLINE_EXCEEDED row 5",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_disabled": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "FAILED_PRECONDITION",
+        "message": "driver is disabled by configuration",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "FAILED_PRECONDITION row 4",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_not_found": {
+    "arguments": {
+      "DriverID": "ebus.secondary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "driver is not registered",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "NOT_FOUND row 2",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_precommit_write_failure": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "UNAVAILABLE",
+        "message": "persistence failed before commit; nothing was accepted",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "UNAVAILABLE outside the ordered rows: nothing accepted",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_quarantine": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "FAILED_PRECONDITION",
+        "message": "quarantine or unresolved recovery blocks admission",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "FAILED_PRECONDITION row 7",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_readback_pending": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "UNAVAILABLE",
+        "message": "control admission is closed; read back before retrying",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "UNAVAILABLE row 3",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_rejects_duplicate": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "duplicate member detected before decoding; never consulted",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_rejects_idempotency_key": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7",
+      "idempotency_key": "k"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_rejects_leading_zero": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "07"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_rejects_missing_revision": {
+    "arguments": {
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_rejects_non_object": {
+    "arguments": "ebus.primary",
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_rejects_number_revision": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": 7
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.restart"
+  },
+  "mutation_rejects_overflow": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "18446744073709551616"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.restart"
+  },
+  "mutation_rejects_zero_revision": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "0"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 by the service decoder; no decision",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_resource_exhausted": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "RESOURCE_EXHAUSTED",
+        "message": "control storage capacity is exhausted",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "RESOURCE_EXHAUSTED row 9",
+    "tool": "helianthus.runtime.start"
+  },
+  "mutation_revision_conflict": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "RUNNING",
+        "desired_revision": "9"
+      },
+      "error": {
+        "code": "REVISION_CONFLICT",
+        "message": "expected revision is not the desired revision; read back before deciding again",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "REVISION_CONFLICT row 6 with the cached desired view",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_service_unavailable": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "UNAVAILABLE",
+        "message": "control admission is closed; read back before retrying",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "no control service composed",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_service_unavailable_invalid": {
+    "arguments": {
+      "DriverID": "ebus.primary"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INVALID_ARGUMENT",
+        "message": "arguments are not the closed object this tool accepts",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "row 1 precedes the unavailable service",
+    "tool": "helianthus.runtime.stop"
+  },
+  "mutation_transition_busy": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "TRANSITION_BUSY",
+        "message": "decision path is busy; retry later",
+        "retriable": true,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "TRANSITION_BUSY row 8",
+    "tool": "helianthus.runtime.restart"
+  },
+  "mutation_unknown_outcome": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "INTERNAL",
+        "message": "control decision outcome is unknown; read back before deciding again",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "error outside the refusal table: outcome unknown",
+    "tool": "helianthus.runtime.start"
+  },
+  "restart_accepted": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "RUNNING",
+        "desired_revision": "8"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "durably accepted: RUNNING kept, new revision 8",
+    "tool": "helianthus.runtime.restart"
+  },
+  "restart_while_stopped": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": null,
+      "error": {
+        "code": "FAILED_PRECONDITION",
+        "message": "RESTART requires desired RUNNING",
+        "retriable": false,
+        "source_layer": "gateway"
+      },
+      "is_error": true,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "FAILED_PRECONDITION row 6",
+    "tool": "helianthus.runtime.restart"
+  },
+  "start_accepted": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "RUNNING",
+        "desired_revision": "8"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "durably accepted at desired revision 8",
+    "tool": "helianthus.runtime.start"
+  },
+  "start_same_desired_noop": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "RUNNING",
+        "desired_revision": "7"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "desired RUNNING already: no-op at revision 7",
+    "tool": "helianthus.runtime.start"
+  },
+  "stop_accepted": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "STOPPED",
+        "desired_revision": "8"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "durably accepted at desired revision 8",
+    "tool": "helianthus.runtime.stop"
+  },
+  "stop_same_desired_noop": {
+    "arguments": {
+      "DriverID": "ebus.primary",
+      "ExpectedRevision": "7"
+    },
+    "envelope": {
+      "data": {
+        "desired_state": "STOPPED",
+        "desired_revision": "7"
+      },
+      "error": null,
+      "meta": {
+        "consistency": {
+          "mode": "LIVE"
+        },
+        "contract": {
+          "major": 1,
+          "minor": 0,
+          "name": "helianthus-ebus-mcp"
+        },
+        "data_hash": "<sha256(data) verified>",
+        "data_timestamp": "<data_timestamp>"
+      }
+    },
+    "service": "desired STOPPED already: no-op at revision 7",
+    "tool": "helianthus.runtime.stop"
+  }
+}

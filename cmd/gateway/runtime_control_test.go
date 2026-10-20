@@ -10,22 +10,32 @@ package main
 // existing lifecycle tests already replace are stubbed (observe-first
 // wiring, HTTP listener, semantic poller, discovery and background scans);
 // the eBUS endpoint is an in-process net.Pipe behind the configured dialer.
-// No device, socket bind or network is used, and every wait is bounded.
+// No device or network is used, the only socket bind is the loopback
+// ephemeral listener of the ordinary MCP tests (G5 PR 2, below), and every
+// wait is bounded.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -40,6 +50,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgo/transport"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	"github.com/Project-Helianthus/helianthus-ebusreg/router"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
@@ -177,11 +188,18 @@ type rctlProcess struct {
 	control *gatewayRuntimeControl
 	builder *graphql.Builder
 	shellAt time.Duration
+	// mcpURL is the ordinary MCP endpoint of the production HTTP shell when
+	// the process runs with rctlProcessOptions.mcp.
+	mcpURL string
 }
 
 type rctlProcessOptions struct {
 	mutate func(*gatewayRuntimeControlOptions)
 	config func(*ebusgateway.Config)
+	// mcp runs the production startHTTPServer (with eeBUS absent) on a
+	// loopback listener instead of the stub shell, so the ordinary MCP
+	// surface of the composed process is reachable over HTTP.
+	mcp bool
 }
 
 // start runs one process and returns once its HTTP shell started. The
@@ -210,6 +228,9 @@ func (env *rctlEnv) start(opts rctlProcessOptions) *rctlProcess {
 
 	process := &rctlProcess{env: env, done: make(chan error, 1)}
 	controlReady := make(chan *gatewayRuntimeControl, 1)
+	// composed is written and read on the run goroutine only: the started
+	// hook runs before the HTTP shell starts.
+	var composed *gatewayRuntimeControl
 	shell := make(chan *graphql.Builder, 1)
 	startGatewayReleaseChecker = func(*releasecheck.Checker, context.Context) {}
 	wireObserveFirstObserversFn = func(*ebusgateway.Config) (*ebusgateway.BusObservabilityStore, *ebusgateway.ActivePassiveDeduplicator, error) {
@@ -246,10 +267,22 @@ func (env *rctlEnv) start(opts rctlProcessOptions) *rctlProcess {
 		env.event("background_end")
 		env.background.Add(-1)
 	}
-	startHTTPServerFn = func(_ context.Context, _ ebusgateway.Config, _ *ebusgateway.Gateway, builder *graphql.Builder, _ *graphql.BroadcastHub, _ graphql.SemanticProvider, _ mcp.ScheduleWriter, _ mcp.ConfigWriter, _ *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
+	startHTTPServerFn = func(ctx context.Context, cfg ebusgateway.Config, gateway *ebusgateway.Gateway, builder *graphql.Builder, hub *graphql.BroadcastHub, semanticProvider graphql.SemanticProvider, scheduleWriter mcp.ScheduleWriter, configWriter mcp.ConfigWriter, busObservability *ebusgateway.BusObservabilityStore, _ *ebusgateway.ShadowCache) (*http.Server, mdns.Advertiser, error) {
 		env.event("http_shell")
+		if !opts.mcp {
+			shell <- builder
+			return nil, nil, nil
+		}
+		cfg.HTTPAddr = "127.0.0.1:0"
+		cfg.MDNSAdvertise = false
+		server, advertiser, err := startHTTPServer(ctx, cfg, gateway, builder, hub, semanticProvider, nil, nil, nil, nil,
+			scheduleWriter, configWriter, busObservability, nil, http.NotFoundHandler(), nil, nil, nil,
+			gatewayBuildInfo{ReleaseVersion: "0.0.0-rctl", BuildID: "rctl"}, func() bool { return false }, composed.driver, composed)
+		if err == nil {
+			process.mcpURL = "http://" + server.Addr + cfg.MCPPath
+		}
 		shell <- builder
-		return nil, nil, nil
+		return server, advertiser, err
 	}
 	gatewayRuntimeControlOptionsFor = func(o gatewayRuntimeControlOptions) gatewayRuntimeControlOptions {
 		o.CleanupTimeout = 2 * time.Second
@@ -258,7 +291,10 @@ func (env *rctlEnv) start(opts rctlProcessOptions) *rctlProcess {
 		}
 		return o
 	}
-	gatewayRuntimeControlStarted = func(control *gatewayRuntimeControl) { controlReady <- control }
+	gatewayRuntimeControlStarted = func(control *gatewayRuntimeControl) {
+		composed = control
+		controlReady <- control
+	}
 
 	cfg := env.config()
 	if opts.config != nil {
@@ -1357,5 +1393,991 @@ func TestRuntimeControlStopDefersBridgeFenceWhileEffectInFlight(t *testing.T) {
 	})
 	if !final.SemanticCleaned {
 		t.Fatalf("final STOP outcome = %+v; want cleaned", final)
+	}
+}
+
+// --- G5 PR 2 (issue #1227): the composed control service through ordinary MCP ---
+//
+// The tests below rerun the fake-endpoint runGatewayLifecycle integration
+// through the five helianthus.runtime tools of the production HTTP shell
+// (eeBUS absent, loopback listener), and compare the MCP outcomes with the
+// same requests made directly against the durable service.
+
+var rctlMCPToolNames = []string{
+	mcp.RuntimeControlListTool,
+	mcp.RuntimeControlGetTool,
+	mcp.RuntimeControlStartTool,
+	mcp.RuntimeControlStopTool,
+	mcp.RuntimeControlRestartTool,
+}
+
+// rctlWireDriver is the D4 wire projection of one driver.
+type rctlWireDriver struct {
+	DriverID          string `json:"driver_id"`
+	Enabled           bool   `json:"enabled"`
+	DesiredState      string `json:"desired_state"`
+	DesiredRevision   string `json:"desired_revision"`
+	ObservedState     string `json:"observed_state"`
+	Reason            string `json:"reason"`
+	SafetyQuarantined bool   `json:"safety_quarantined"`
+	Revision          string `json:"revision"`
+}
+
+type rctlWireList struct {
+	CatalogRevision string           `json:"catalog_revision"`
+	Drivers         []rctlWireDriver `json:"drivers"`
+}
+
+// rctlToolResult is one decoded tools/call envelope; the data hash was
+// verified against the exact serialized data bytes.
+type rctlToolResult struct {
+	isError   bool
+	data      json.RawMessage
+	code      string
+	message   string
+	retriable bool
+	layer     string
+	meta      map[string]any
+}
+
+type rctlRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+var rctlHTTPClient = &http.Client{Timeout: rctlBound}
+
+func rctlRPCBody(method, params string) string {
+	body := `{"jsonrpc":"2.0","id":1,"method":"` + method + `"`
+	if params != "" {
+		body += `,"params":` + params
+	}
+	return body + `}`
+}
+
+func rctlDecodeRPC(t *testing.T, raw []byte) (json.RawMessage, *rctlRPCError) {
+	t.Helper()
+	var response struct {
+		Result json.RawMessage `json:"result"`
+		Error  *rctlRPCError   `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("JSON-RPC response %q: %v", raw, err)
+	}
+	return response.Result, response.Error
+}
+
+func rctlDecodeTool(t *testing.T, result json.RawMessage) rctlToolResult {
+	t.Helper()
+	var call struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(result, &call); err != nil || len(call.Content) != 1 {
+		t.Fatalf("tools/call result %s: %v", result, err)
+	}
+	var envelope struct {
+		Meta  map[string]any  `json:"meta"`
+		Data  json.RawMessage `json:"data"`
+		Error *struct {
+			Code        string `json:"code"`
+			Message     string `json:"message"`
+			Retriable   bool   `json:"retriable"`
+			SourceLayer string `json:"source_layer"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(call.Content[0].Text), &envelope); err != nil {
+		t.Fatalf("envelope %q: %v", call.Content[0].Text, err)
+	}
+	sum := sha256.Sum256(envelope.Data)
+	if envelope.Meta["data_hash"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("data_hash is not SHA-256 of the serialized data: %s", call.Content[0].Text)
+	}
+	out := rctlToolResult{isError: call.IsError, data: envelope.Data, meta: envelope.Meta}
+	if envelope.Error != nil {
+		out.code, out.message, out.retriable, out.layer = envelope.Error.Code, envelope.Error.Message, envelope.Error.Retriable, envelope.Error.SourceLayer
+	}
+	if out.isError != (envelope.Error != nil) {
+		t.Fatalf("isError %v disagrees with error %v", out.isError, envelope.Error)
+	}
+	return out
+}
+
+// rctlPost sends one JSON-RPC request to the ordinary MCP HTTP endpoint.
+func rctlPost(t *testing.T, url, method, params string) (json.RawMessage, *rctlRPCError) {
+	t.Helper()
+	response, err := rctlHTTPClient.Post(url, "application/json", strings.NewReader(rctlRPCBody(method, params)))
+	if err != nil {
+		t.Fatalf("POST %s: %v", method, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rctlDecodeRPC(t, raw)
+}
+
+func rctlCallParams(name, args string) string {
+	return `{"name":"` + name + `","arguments":` + args + `}`
+}
+
+func rctlMutationArgs(id runtimecontrol.DriverID, expected string) string {
+	return fmt.Sprintf(`{"DriverID":%q,"ExpectedRevision":%q}`, id, expected)
+}
+
+func (process *rctlProcess) tool(name, args string) rctlToolResult {
+	t := process.env.t
+	t.Helper()
+	if process.mcpURL == "" {
+		t.Fatal("process has no ordinary MCP endpoint (start it with mcp: true)")
+	}
+	result, rpcErr := rctlPost(t, process.mcpURL, "tools/call", rctlCallParams(name, args))
+	if rpcErr != nil {
+		t.Fatalf("%s %s: JSON-RPC error %+v", name, args, rpcErr)
+	}
+	return rctlDecodeTool(t, result)
+}
+
+func (process *rctlProcess) mcpToolNames() map[string]bool {
+	t := process.env.t
+	t.Helper()
+	result, rpcErr := rctlPost(t, process.mcpURL, "tools/list", "")
+	if rpcErr != nil {
+		t.Fatalf("tools/list: %+v", rpcErr)
+	}
+	var listed struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &listed); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range listed.Tools {
+		names[tool.Name] = true
+	}
+	return names
+}
+
+func (process *rctlProcess) requireMCPTools() {
+	t := process.env.t
+	t.Helper()
+	names := process.mcpToolNames()
+	for _, name := range rctlMCPToolNames {
+		if !names[name] {
+			t.Fatalf("ordinary tools/list lacks %s", name)
+		}
+	}
+}
+
+// mcpList reads helianthus.runtime.list within the read bound.
+func (process *rctlProcess) mcpList() rctlWireList {
+	t := process.env.t
+	t.Helper()
+	begin := time.Now()
+	result := process.tool(mcp.RuntimeControlListTool, `{}`)
+	if elapsed := time.Since(begin); elapsed > rctlReadBound {
+		t.Fatalf("list took %s; want within %s", elapsed, rctlReadBound)
+	}
+	if result.isError {
+		t.Fatalf("list = %s %s", result.code, result.message)
+	}
+	var list rctlWireList
+	if err := json.Unmarshal(result.data, &list); err != nil {
+		t.Fatal(err)
+	}
+	for i, driver := range list.Drivers {
+		if driver.Revision != list.CatalogRevision {
+			t.Fatalf("list entry %s revision %s differs from catalog revision %s", driver.DriverID, driver.Revision, list.CatalogRevision)
+		}
+		if i > 0 && list.Drivers[i-1].DriverID >= driver.DriverID {
+			t.Fatalf("list not in bytewise driver_id order: %+v", list.Drivers)
+		}
+	}
+	return list
+}
+
+// mcpGet reads helianthus.runtime.get for ebus.primary within the read bound.
+func (process *rctlProcess) mcpGet() rctlWireDriver {
+	t := process.env.t
+	t.Helper()
+	begin := time.Now()
+	result := process.tool(mcp.RuntimeControlGetTool, `{"DriverID":"`+primaryEBusDriverID+`"}`)
+	if elapsed := time.Since(begin); elapsed > rctlReadBound {
+		t.Fatalf("get took %s; want within %s", elapsed, rctlReadBound)
+	}
+	if result.isError {
+		t.Fatalf("get = %s %s", result.code, result.message)
+	}
+	var data struct {
+		CatalogRevision string         `json:"catalog_revision"`
+		Driver          rctlWireDriver `json:"driver"`
+	}
+	if err := json.Unmarshal(result.data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Driver.Revision != data.CatalogRevision {
+		t.Fatalf("get revision %s differs from its catalog revision %s", data.Driver.Revision, data.CatalogRevision)
+	}
+	return data.Driver
+}
+
+func (process *rctlProcess) mcpWaitObserved(want drivermanager.ObservedState) rctlWireDriver {
+	t := process.env.t
+	t.Helper()
+	deadline := time.Now().Add(rctlBound)
+	for {
+		driver := process.mcpGet()
+		if driver.ObservedState == string(want) {
+			return driver
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("MCP get observed %s/%s; want %s (trace %v)", driver.ObservedState, driver.Reason, want, process.env.events())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// mcpDecide submits one mutation for ebus.primary, retrying only
+// TRANSITION_BUSY (the documented pruning window) with the same revision.
+func (process *rctlProcess) mcpDecide(tool, expected string) rctlToolResult {
+	process.env.t.Helper()
+	deadline := time.Now().Add(rctlBound)
+	for {
+		result := process.tool(tool, rctlMutationArgs(primaryEBusDriverID, expected))
+		if result.code != string(runtimecontrol.RefusalTransitionBusy) || time.Now().After(deadline) {
+			return result
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// rctlWantDesired requires an accepted or no-op answer whose data is exactly
+// {desired_state, desired_revision}.
+func rctlWantDesired(t *testing.T, what string, result rctlToolResult, state runtimecontrol.DesiredState, revision uint64) {
+	t.Helper()
+	want := fmt.Sprintf(`{"desired_state":%q,"desired_revision":"%d"}`, state, revision)
+	if result.isError || string(result.data) != want {
+		t.Fatalf("%s = data %s error %s %q; want %s", what, result.data, result.code, result.message, want)
+	}
+}
+
+func rctlRevision(t *testing.T, text string) uint64 {
+	t.Helper()
+	value, err := strconv.ParseUint(text, 10, 64)
+	if err != nil || strconv.FormatUint(value, 10) != text {
+		t.Fatalf("revision %q is not a canonical decimal string", text)
+	}
+	return value
+}
+
+// rctlSameOutcome compares one MCP result with the outcome of the same
+// request made directly against the service.
+func rctlSameOutcome(t *testing.T, what string, got rctlToolResult, view runtimecontrol.DesiredView, err error) {
+	t.Helper()
+	if err == nil {
+		want, _ := json.Marshal(view)
+		if got.isError || string(got.data) != string(want) {
+			t.Fatalf("%s: MCP %s %s, service accepted %s", what, got.code, got.data, want)
+		}
+		return
+	}
+	var refusal *runtimecontrol.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("%s: service error %v is not a refusal", what, err)
+	}
+	wantData := "null"
+	if refusal.Code == runtimecontrol.RefusalRevisionConflict && refusal.View != nil {
+		raw, _ := json.Marshal(*refusal.View)
+		wantData = string(raw)
+	}
+	if !got.isError || got.code != string(refusal.Code) || got.retriable != refusal.Retryable() || got.layer != "gateway" || string(got.data) != wantData {
+		t.Fatalf("%s: MCP %s retriable=%v data=%s layer=%s; service %s retriable=%v data=%s", what, got.code, got.retriable, got.data, got.layer, refusal.Code, refusal.Retryable(), wantData)
+	}
+	if strings.Contains(got.message, "/") || strings.Contains(got.message, "runtimecontrol:") {
+		t.Fatalf("%s: message %q is not sanitized", what, got.message)
+	}
+}
+
+func (process *rctlProcess) mcpAdapterStatus() string {
+	t := process.env.t
+	t.Helper()
+	result := process.tool("ebus.v1.runtime.status.get", `{}`)
+	var data struct {
+		Adapter struct {
+			Status string `json:"status"`
+		} `json:"adapter_status"`
+	}
+	if result.isError || json.Unmarshal(result.data, &data) != nil {
+		t.Fatalf("ebus.v1.runtime.status.get = %s %s", result.code, result.data)
+	}
+	return data.Adapter.Status
+}
+
+// requireStatusParity keeps the existing eBUS MCP/GraphQL adapter status
+// parity on the production HTTP shell.
+func (process *rctlProcess) requireStatusParity(want string) {
+	t := process.env.t
+	t.Helper()
+	mcpStatus, graphqlStatus := process.mcpAdapterStatus(), process.adapterStatus()
+	if mcpStatus != graphqlStatus || (want != "" && mcpStatus != want) {
+		t.Fatalf("adapter status MCP %q GraphQL %q; want both %q", mcpStatus, graphqlStatus, want)
+	}
+}
+
+// requireNoLifecycleGraphQL proves that no lifecycle field, mutation or
+// subscription was added to GraphQL.
+func (process *rctlProcess) requireNoLifecycleGraphQL() {
+	t := process.env.t
+	t.Helper()
+	handler, err := graphql.NewHandler(process.builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(`{"query":"{ __schema { queryType { fields { name } } mutationType { fields { name } } subscriptionType { fields { name } } } }"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	type fields struct {
+		Fields []struct {
+			Name string `json:"name"`
+		} `json:"fields"`
+	}
+	var payload struct {
+		Data struct {
+			Schema struct {
+				Query        *fields `json:"queryType"`
+				Mutation     *fields `json:"mutationType"`
+				Subscription *fields `json:"subscriptionType"`
+			} `json:"__schema"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Data.Schema.Query == nil {
+		t.Fatalf("GraphQL introspection = %s: %v", response.Body.String(), err)
+	}
+	for _, root := range []*fields{payload.Data.Schema.Query, payload.Data.Schema.Mutation, payload.Data.Schema.Subscription} {
+		if root == nil {
+			continue
+		}
+		for _, field := range root.Fields {
+			name := strings.ToLower(field.Name)
+			for _, forbidden := range []string{"lifecycle", "runtimecontrol", "desiredstate", "desiredrevision", "startdriver", "stopdriver", "restartdriver", "driverstatus"} {
+				if strings.Contains(name, forbidden) {
+					t.Fatalf("GraphQL exposes lifecycle field %q", field.Name)
+				}
+			}
+			if name == "driver" || name == "drivers" {
+				t.Fatalf("GraphQL exposes lifecycle field %q", field.Name)
+			}
+		}
+	}
+}
+
+// TestRuntimeControlMCPLifecycleThroughOrdinaryHTTP reruns the durable
+// STOPPED boot through the ordinary MCP tools of the production HTTP shell
+// with eeBUS absent: discovery and reads while eBUS is STOPPED with zero
+// endpoint opens; START, STOP and RESTART answer after durable acceptance
+// with desired state and revision only, and completion is observed through
+// get; same-desired START and STOP are no-ops without a key record; every
+// accepted RESTART executes one replacement, and a lost RESTART response is
+// resolved by readback (old revision conflicts, a fresh revision restarts
+// again). Status parity with GraphQL holds and GraphQL gains no lifecycle
+// shape.
+func TestRuntimeControlMCPLifecycleThroughOrdinaryHTTP(t *testing.T) {
+	env := newRCtlEnv(t)
+	env.seed(true, nil)
+	process := env.start(rctlProcessOptions{mcp: true})
+	process.requireMCPTools()
+	service := process.control.Service()
+	store := process.control.store
+
+	stopped := process.mcpWaitObserved(drivermanager.ObservedStopped)
+	if stopped.DesiredState != string(runtimecontrol.DesiredStopped) || !stopped.Enabled || stopped.DriverID != primaryEBusDriverID {
+		t.Fatalf("durable STOPPED boot reads %+v", stopped)
+	}
+	list := process.mcpList()
+	cached := service.List()
+	if len(list.Drivers) != 1 || list.CatalogRevision != strconv.FormatUint(uint64(cached.Revision), 10) ||
+		list.Drivers[0].DesiredRevision != strconv.FormatUint(uint64(cached.Drivers[0].DesiredRevision), 10) {
+		t.Fatalf("MCP list %+v differs from the service's cached view %+v", list, cached)
+	}
+	for i := 0; i < 5; i++ {
+		process.mcpList()
+		process.mcpGet()
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := env.dials.Load(); got != 0 {
+		t.Fatalf("endpoint opens after MCP reads while STOPPED = %d; want 0", got)
+	}
+	process.requireStatusParity(adapterStatusStopped)
+	process.requireNoLifecycleGraphQL()
+
+	rev := rctlRevision(t, stopped.DesiredRevision)
+
+	// START: answered after durable acceptance; completion from get.
+	start := process.mcpDecide(mcp.RuntimeControlStartTool, strconv.FormatUint(rev, 10))
+	rctlWantDesired(t, "START", start, runtimecontrol.DesiredRunning, rev+1)
+	if record, err := store.ControlDriver(primaryEBusDriverID); err != nil || record.DesiredState != runtimestate.DesiredRunning || record.DesiredRevision != rev+1 {
+		t.Fatalf("committed record when START answered = %+v (%v); want RUNNING/%d", record, err, rev+1)
+	}
+	rev++
+	process.mcpWaitObserved(drivermanager.ObservedRunning)
+	if got := env.dials.Load(); got != 1 {
+		t.Fatalf("endpoint opens after START = %d; want 1", got)
+	}
+	process.requireStatusParity("")
+
+	// Same-desired START: a no-op at the same revision, nothing opened,
+	// nothing written.
+	noop := process.mcpDecide(mcp.RuntimeControlStartTool, strconv.FormatUint(rev, 10))
+	rctlWantDesired(t, "same-desired START", noop, runtimecontrol.DesiredRunning, rev)
+	time.Sleep(50 * time.Millisecond)
+	if record, _ := store.ControlDriver(primaryEBusDriverID); record.DesiredRevision != rev || env.dials.Load() != 1 {
+		t.Fatalf("same-desired START changed revision %d or opened %d endpoints", record.DesiredRevision, env.dials.Load())
+	}
+
+	// A stale expected revision conflicts with the cached desired view,
+	// exactly as the service answers the same request.
+	stale := process.tool(mcp.RuntimeControlStopTool, rctlMutationArgs(primaryEBusDriverID, strconv.FormatUint(rev-1, 10)))
+	ctx, cancel := context.WithTimeout(context.Background(), rctlBound)
+	view, err := service.Control(ctx, runtimecontrol.MethodStop, []byte(rctlMutationArgs(primaryEBusDriverID, strconv.FormatUint(rev-1, 10))))
+	cancel()
+	rctlSameOutcome(t, "stale STOP", stale, view, err)
+	if stale.code != string(runtimecontrol.RefusalRevisionConflict) {
+		t.Fatalf("stale STOP = %s; want REVISION_CONFLICT", stale.code)
+	}
+
+	// STOP, then a same-desired STOP, then RESTART while STOPPED.
+	rctlWantDesired(t, "STOP", process.mcpDecide(mcp.RuntimeControlStopTool, strconv.FormatUint(rev, 10)), runtimecontrol.DesiredStopped, rev+1)
+	rev++
+	process.mcpWaitObserved(drivermanager.ObservedStopped)
+	if !env.closed[1].Load() {
+		t.Fatal("endpoint still open after STOPPED was observed")
+	}
+	process.requireStatusParity(adapterStatusStopped)
+	rctlWantDesired(t, "same-desired STOP", process.mcpDecide(mcp.RuntimeControlStopTool, strconv.FormatUint(rev, 10)), runtimecontrol.DesiredStopped, rev)
+	restartStopped := process.mcpDecide(mcp.RuntimeControlRestartTool, strconv.FormatUint(rev, 10))
+	if restartStopped.code != string(runtimecontrol.RefusalFailedPrecondition) || restartStopped.retriable || string(restartStopped.data) != "null" {
+		t.Fatalf("RESTART while desired STOPPED = %s retriable=%v data=%s; want FAILED_PRECONDITION", restartStopped.code, restartStopped.retriable, restartStopped.data)
+	}
+
+	// START, then two accepted RESTARTs: each takes a new revision and runs
+	// exactly one replacement.
+	rctlWantDesired(t, "second START", process.mcpDecide(mcp.RuntimeControlStartTool, strconv.FormatUint(rev, 10)), runtimecontrol.DesiredRunning, rev+1)
+	rev++
+	process.mcpWaitObserved(drivermanager.ObservedRunning)
+	for dials := int32(3); dials <= 4; dials++ {
+		rctlWantDesired(t, "RESTART", process.mcpDecide(mcp.RuntimeControlRestartTool, strconv.FormatUint(rev, 10)), runtimecontrol.DesiredRunning, rev+1)
+		rev++
+		env.waitFor("restart replacement dial", func() bool { return env.dials.Load() == dials })
+		process.mcpWaitObserved(drivermanager.ObservedRunning)
+	}
+
+	// Lost RESTART response: the accepted call's answer is dropped; the
+	// retry with the old revision conflicts; readback shows the new
+	// revision; after settlement a fresh-revision RESTART restarts again.
+	lost := process.mcpDecide(mcp.RuntimeControlRestartTool, strconv.FormatUint(rev, 10))
+	if lost.isError {
+		t.Fatalf("RESTART = %s", lost.code)
+	}
+	retry := process.tool(mcp.RuntimeControlRestartTool, rctlMutationArgs(primaryEBusDriverID, strconv.FormatUint(rev, 10)))
+	wantView := fmt.Sprintf(`{"desired_state":"RUNNING","desired_revision":"%d"}`, rev+1)
+	if retry.code != string(runtimecontrol.RefusalRevisionConflict) || string(retry.data) != wantView {
+		t.Fatalf("old-revision RESTART retry = %s %s; want REVISION_CONFLICT with %s", retry.code, retry.data, wantView)
+	}
+	rev++
+	if readback := process.mcpGet(); readback.DesiredRevision != strconv.FormatUint(rev, 10) || readback.DesiredState != "RUNNING" {
+		t.Fatalf("readback after a lost RESTART = %+v; want RUNNING/%d", readback, rev)
+	}
+	env.waitFor("lost RESTART replacement dial", func() bool { return env.dials.Load() == 5 })
+	process.mcpWaitObserved(drivermanager.ObservedRunning)
+	rctlWantDesired(t, "fresh-revision RESTART", process.mcpDecide(mcp.RuntimeControlRestartTool, strconv.FormatUint(rev, 10)), runtimecontrol.DesiredRunning, rev+1)
+	rev++
+	env.waitFor("another restart", func() bool { return env.dials.Load() == 6 })
+	process.mcpWaitObserved(drivermanager.ObservedRunning)
+	process.requireStatusParity("")
+	if closeAt, dialAt := env.index("close 5"), env.index("dial 6"); closeAt < 0 || dialAt < 0 || closeAt > dialAt {
+		t.Fatalf("RESTART through MCP did not close the predecessor before the successor dialled: trace %v", env.events())
+	}
+
+	// Shutdown keeps the last accepted intent; no synthetic STOP.
+	process.stop()
+	stored := env.storedRecord()
+	if stored.DesiredState != runtimestate.DesiredRunning || stored.DesiredRevision != rev {
+		t.Fatalf("stored intent after shutdown = %s/%d; want RUNNING/%d", stored.DesiredState, stored.DesiredRevision, rev)
+	}
+}
+
+// TestRuntimeControlMCPToolsWhileEBusFailed: with corrupt control state or
+// no instance GUID, eBUS is FAILED, yet the five tools stay listed and the
+// reads answer; a mutation is refused exactly as the service refuses it.
+func TestRuntimeControlMCPToolsWhileEBusFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*rctlEnv)
+	}{
+		{name: "corrupt_control_state", prepare: func(env *rctlEnv) {
+			if err := os.WriteFile(env.statePath, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "no_instance_guid", prepare: func(env *rctlEnv) { env.guid = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newRCtlEnv(t)
+			tc.prepare(env)
+			process := env.start(rctlProcessOptions{mcp: true})
+			process.requireMCPTools()
+			failed := process.mcpWaitObserved(drivermanager.ObservedFailed)
+			t.Logf("FAILED view: enabled=%v desired=%s/%s reason=%s revision=%s", failed.Enabled, failed.DesiredState, failed.DesiredRevision, failed.Reason, failed.Revision)
+			if list := process.mcpList(); len(list.Drivers) != 1 || list.Drivers[0].ObservedState != string(drivermanager.ObservedFailed) {
+				t.Fatalf("list while FAILED = %+v", list)
+			}
+			expected := failed.DesiredRevision
+			if expected == "0" {
+				expected = "1"
+			}
+			args := rctlMutationArgs(primaryEBusDriverID, expected)
+			for _, method := range []runtimecontrol.Method{runtimecontrol.MethodStart, runtimecontrol.MethodRestart} {
+				name := mcp.RuntimeControlStartTool
+				if method == runtimecontrol.MethodRestart {
+					name = mcp.RuntimeControlRestartTool
+				}
+				got := process.tool(name, args)
+				ctx, cancel := context.WithTimeout(context.Background(), rctlBound)
+				view, err := process.control.Service().Control(ctx, method, []byte(args))
+				cancel()
+				if err == nil {
+					t.Fatalf("%s accepted while eBUS FAILED: %+v", method, view)
+				}
+				rctlSameOutcome(t, string(method), got, view, err)
+				t.Logf("%s while eBUS FAILED: %s retriable=%v %q", method, got.code, got.retriable, got.message)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if env.dials.Load() != 0 {
+				t.Fatalf("endpoint opens while FAILED = %d; want 0", env.dials.Load())
+			}
+		})
+	}
+}
+
+// TestRuntimeControlMCPDisabledDriverStaysVisible: a disabled driver stays
+// listed through MCP; START, STOP and RESTART are FAILED_PRECONDITION at
+// refusal row 4 as the service answers them, and durable intent is kept.
+func TestRuntimeControlMCPDisabledDriverStaysVisible(t *testing.T) {
+	env := newRCtlEnv(t)
+	env.seed(false, nil)
+	before := env.storedRecord()
+	process := env.start(rctlProcessOptions{mcp: true, mutate: func(o *gatewayRuntimeControlOptions) { o.Disabled = true }})
+	process.requireMCPTools()
+	disabled := process.mcpWaitObserved(drivermanager.ObservedDisabled)
+	if disabled.Enabled {
+		t.Fatalf("disabled driver reads %+v", disabled)
+	}
+	if list := process.mcpList(); len(list.Drivers) != 1 || list.Drivers[0].Enabled {
+		t.Fatalf("list = %+v; want the disabled driver visible", list)
+	}
+	args := rctlMutationArgs(primaryEBusDriverID, disabled.DesiredRevision)
+	for method, name := range map[runtimecontrol.Method]string{
+		runtimecontrol.MethodStart:   mcp.RuntimeControlStartTool,
+		runtimecontrol.MethodStop:    mcp.RuntimeControlStopTool,
+		runtimecontrol.MethodRestart: mcp.RuntimeControlRestartTool,
+	} {
+		got := process.tool(name, args)
+		if got.code != string(runtimecontrol.RefusalFailedPrecondition) || got.retriable {
+			t.Fatalf("%s on a disabled driver = %s retriable=%v", method, got.code, got.retriable)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), rctlBound)
+		view, err := process.control.Service().Control(ctx, method, []byte(args))
+		cancel()
+		rctlSameOutcome(t, string(method), got, view, err)
+	}
+	process.stop()
+	after := env.storedRecord()
+	if after.DesiredState != before.DesiredState || after.DesiredRevision != before.DesiredRevision || env.dials.Load() != 0 {
+		t.Fatalf("disabled driver: intent %s/%d then %s/%d, %d endpoint opens", before.DesiredState, before.DesiredRevision, after.DesiredState, after.DesiredRevision, env.dials.Load())
+	}
+}
+
+// rctlFaultHooks injects persistence faults into the durable store: a
+// failing temporary-file write (a pre-commit failure) and a write held at a
+// gate (the namespace-wide serialization point stays held).
+type rctlFaultHooks struct {
+	runtimestate.DefaultFilesystemHooks
+	failWrite atomic.Bool
+	mu        sync.Mutex
+	gate      chan struct{}
+	entered   chan struct{}
+}
+
+func (hooks *rctlFaultHooks) WriteFile(path string, data []byte, perm uint32) error {
+	if hooks.failWrite.Load() {
+		return &os.PathError{Op: "open", Path: path, Err: syscall.ENOSPC}
+	}
+	hooks.mu.Lock()
+	gate, entered := hooks.gate, hooks.entered
+	hooks.mu.Unlock()
+	if gate != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	return hooks.DefaultFilesystemHooks.WriteFile(path, data, perm)
+}
+
+func (hooks *rctlFaultHooks) hold() (<-chan struct{}, func()) {
+	hooks.mu.Lock()
+	defer hooks.mu.Unlock()
+	gate, entered := make(chan struct{}), make(chan struct{}, 1)
+	hooks.gate, hooks.entered = gate, entered
+	var once sync.Once
+	return entered, func() {
+		once.Do(func() {
+			hooks.mu.Lock()
+			hooks.gate, hooks.entered = nil, nil
+			hooks.mu.Unlock()
+			close(gate)
+		})
+	}
+}
+
+type rctlCountingExecutor struct{ starts, stops atomic.Int32 }
+
+func (executor *rctlCountingExecutor) Start(context.Context, runtimecontrol.LifecycleCorrelation) error {
+	executor.starts.Add(1)
+	return nil
+}
+
+func (executor *rctlCountingExecutor) Stop(context.Context, runtimecontrol.LifecycleCorrelation) runtimecontrol.StopOutcome {
+	executor.stops.Add(1)
+	return runtimecontrol.StopOutcome{NativeClosed: true, SemanticCleaned: true}
+}
+
+type rctlNoRecovery struct{}
+
+func (rctlNoRecovery) Restore(context.Context, *runtimecontrol.RecoveryMaterial) error { return nil }
+func (rctlNoRecovery) Secure(context.Context, runtimecontrol.DriverID, runtimecontrol.Transition) (*runtimecontrol.RecoveryMaterial, error) {
+	return nil, nil
+}
+
+type rctlCountingInvoker struct{ calls atomic.Int32 }
+
+func (invoker *rctlCountingInvoker) Invoke(context.Context, router.Plane, string, map[string]any) (any, error) {
+	invoker.calls.Add(1)
+	return nil, errors.New("rctl: native invoke is not a lifecycle path")
+}
+
+// TestRuntimeControlMCPDurableServiceEquivalence drives the production registration
+// helper over the durable service with its real store (fault-injected file
+// hooks, two-driver namespace plus a disabled driver) through the ordinary
+// MCP HTTP handler, and compares every outcome with the same request made
+// directly against the service: success, same-desired no-op, invalid,
+// unregistered, disabled, stale revision, busy namespace, expired deadline
+// and pre-commit persistence failure. Reads stay immediate while a decision
+// holds the serialization point, and never start an executor.
+func TestRuntimeControlMCPDurableServiceEquivalence(t *testing.T) {
+	const (
+		second   = runtimecontrol.DriverID("fixture.second")
+		disabled = runtimecontrol.DriverID("fixture.disabled")
+	)
+	ctx := context.Background()
+	hooks := &rctlFaultHooks{}
+	store := runtimestate.New(runtimestate.Options{Path: filepath.Join(t.TempDir(), "runtime_state.json"), FsHooks: hooks, ControlWaitBound: 150 * time.Millisecond})
+	if _, err := store.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Stop(context.Background()) })
+	if err := store.EagerPersistInstanceGUID(ctx, rctlGUID, runtimestate.IdentitySourceRuntimeState); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BootstrapControl(ctx, []runtimestate.ControlDriverConfig{
+		{DriverID: primaryEBusDriverID, Enabled: true}, {DriverID: string(second), Enabled: true}, {DriverID: string(disabled), Enabled: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	executors := map[runtimecontrol.DriverID]*rctlCountingExecutor{primaryEBusDriverID: {}, second: {}, disabled: {}}
+	var drivers []runtimecontrol.DriverConfig
+	for id, executor := range executors {
+		drivers = append(drivers, runtimecontrol.DriverConfig{DriverID: id, Executor: executor})
+	}
+	service, err := runtimecontrol.New(runtimecontrol.Options{Store: &runtimeControlStore{m: store}, Recovery: rctlNoRecovery{}, Drivers: drivers, Incarnation: "rctl-mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+
+	invoker := &rctlCountingInvoker{}
+	server, err := mcp.NewServer(registry.NewDeviceRegistry(nil), invoker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registerRuntimeControlMCPTools(server, &gatewayRuntimeControl{service: service}); err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	call := func(callCtx context.Context, name, args string) rctlToolResult {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(rctlRPCBody("tools/call", rctlCallParams(name, args)))).WithContext(callCtx)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		result, rpcErr := rctlDecodeRPC(t, recorder.Body.Bytes())
+		if rpcErr != nil {
+			t.Fatalf("%s %s: JSON-RPC error %+v", name, args, rpcErr)
+		}
+		return rctlDecodeTool(t, result)
+	}
+	direct := func(callCtx context.Context, method runtimecontrol.Method, args string) (runtimecontrol.DesiredView, error) {
+		bounded, cancel := context.WithTimeout(callCtx, rctlBound)
+		defer cancel()
+		return service.Control(bounded, method, []byte(args))
+	}
+	status := func(id runtimecontrol.DriverID) runtimecontrol.DriverStatus {
+		t.Helper()
+		got, err := service.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	revision := func(id runtimecontrol.DriverID) string {
+		return strconv.FormatUint(uint64(status(id).DesiredRevision), 10)
+	}
+	waitObserved := func(id runtimecontrol.DriverID, want drivermanager.ObservedState) {
+		t.Helper()
+		ctlWait(t, string(id)+" "+string(want), func() bool { return status(id).ObservedState == want })
+	}
+	decideMCP := func(name string, id runtimecontrol.DriverID, expected string) rctlToolResult {
+		t.Helper()
+		deadline := time.Now().Add(rctlBound)
+		for {
+			got := call(ctx, name, rctlMutationArgs(id, expected))
+			if got.code != string(runtimecontrol.RefusalTransitionBusy) || time.Now().After(deadline) {
+				return got
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitObserved(primaryEBusDriverID, drivermanager.ObservedRunning)
+	waitObserved(second, drivermanager.ObservedRunning)
+	waitObserved(disabled, drivermanager.ObservedDisabled)
+
+	// Reads: one coherent cached view, no executor call.
+	starts := executors[primaryEBusDriverID].starts.Load() + executors[second].starts.Load()
+	listed := call(ctx, mcp.RuntimeControlListTool, `{}`)
+	var list rctlWireList
+	if err := json.Unmarshal(listed.data, &list); err != nil || len(list.Drivers) != 3 {
+		t.Fatalf("list = %s (%v)", listed.data, err)
+	}
+	if list.Drivers[0].DriverID != primaryEBusDriverID || list.Drivers[1].DriverID != string(disabled) || list.Drivers[2].DriverID != string(second) {
+		t.Fatalf("list order = %+v; want bytewise driver_id order", list.Drivers)
+	}
+	if list.Drivers[1].Enabled || list.Drivers[1].ObservedState != string(drivermanager.ObservedDisabled) {
+		t.Fatalf("disabled driver reads %+v", list.Drivers[1])
+	}
+	for i := 0; i < 5; i++ {
+		call(ctx, mcp.RuntimeControlGetTool, `{"DriverID":"fixture.second"}`)
+	}
+	if got := executors[primaryEBusDriverID].starts.Load() + executors[second].starts.Load(); got != starts {
+		t.Fatalf("reads started %d executors", got-starts)
+	}
+
+	// Success, then a same-desired no-op that writes nothing.
+	rev := revision(primaryEBusDriverID)
+	accepted := decideMCP(mcp.RuntimeControlStopTool, primaryEBusDriverID, rev)
+	if accepted.isError {
+		t.Fatalf("STOP = %s %s", accepted.code, accepted.message)
+	}
+	committed, _ := store.ControlDriver(primaryEBusDriverID)
+	wantAccepted, _ := json.Marshal(runtimecontrol.DesiredView{DesiredState: runtimecontrol.DesiredStopped, DesiredRevision: runtimecontrol.DesiredRevision(committed.DesiredRevision)})
+	if string(accepted.data) != string(wantAccepted) || committed.DesiredState != runtimestate.DesiredStopped || strconv.FormatUint(committed.DesiredRevision, 10) == rev {
+		t.Fatalf("STOP answered %s; committed record %+v", accepted.data, committed)
+	}
+	waitObserved(primaryEBusDriverID, drivermanager.ObservedStopped)
+	catalogBefore := service.List().Revision
+	noop := call(ctx, mcp.RuntimeControlStopTool, rctlMutationArgs(primaryEBusDriverID, revision(primaryEBusDriverID)))
+	view, err := direct(ctx, runtimecontrol.MethodStop, rctlMutationArgs(primaryEBusDriverID, revision(primaryEBusDriverID)))
+	rctlSameOutcome(t, "same-desired STOP", noop, view, err)
+	if service.List().Revision != catalogBefore {
+		t.Fatal("a same-desired no-op advanced the catalog revision")
+	}
+
+	// Refusals that change nothing: identical through MCP and directly.
+	for _, tc := range []struct {
+		name   string
+		tool   string
+		method runtimecontrol.Method
+		args   string
+		code   runtimecontrol.RefusalCode
+	}{
+		{"invalid", mcp.RuntimeControlStartTool, runtimecontrol.MethodStart, `{"DriverID":"ebus.primary"}`, runtimecontrol.RefusalInvalidArgument},
+		{"unknown_member", mcp.RuntimeControlStartTool, runtimecontrol.MethodStart, `{"DriverID":"ebus.primary","ExpectedRevision":"1","receipt":"r"}`, runtimecontrol.RefusalInvalidArgument},
+		{"unregistered", mcp.RuntimeControlStartTool, runtimecontrol.MethodStart, rctlMutationArgs("fixture.unknown", "1"), runtimecontrol.RefusalNotFound},
+		{"disabled", mcp.RuntimeControlStartTool, runtimecontrol.MethodStart, rctlMutationArgs(disabled, revision(disabled)), runtimecontrol.RefusalFailedPrecondition},
+		{"stale", mcp.RuntimeControlStartTool, runtimecontrol.MethodStart, rctlMutationArgs(primaryEBusDriverID, rev), runtimecontrol.RefusalRevisionConflict},
+		{"restart_while_stopped", mcp.RuntimeControlRestartTool, runtimecontrol.MethodRestart, rctlMutationArgs(primaryEBusDriverID, revision(primaryEBusDriverID)), runtimecontrol.RefusalFailedPrecondition},
+	} {
+		got := call(ctx, tc.tool, tc.args)
+		view, err := direct(ctx, tc.method, tc.args)
+		rctlSameOutcome(t, tc.name, got, view, err)
+		if got.code != string(tc.code) {
+			t.Fatalf("%s = %s; want %s", tc.name, got.code, tc.code)
+		}
+	}
+
+	// Expired caller deadline: the adapter keeps the earlier deadline.
+	expired, cancelExpired := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancelExpired()
+	late := call(expired, mcp.RuntimeControlStartTool, rctlMutationArgs(primaryEBusDriverID, revision(primaryEBusDriverID)))
+	view, err = service.Control(expired, runtimecontrol.MethodStart, []byte(rctlMutationArgs(primaryEBusDriverID, revision(primaryEBusDriverID))))
+	rctlSameOutcome(t, "expired deadline", late, view, err)
+	if late.code != string(runtimecontrol.RefusalDeadlineExceeded) || !late.retriable {
+		t.Fatalf("expired deadline = %s retriable=%v; want retriable DEADLINE_EXCEEDED", late.code, late.retriable)
+	}
+
+	// Busy namespace: a decision whose durable write is held keeps the
+	// serialization point; reads stay immediate, a current-revision
+	// decision for another driver is TRANSITION_BUSY and a stale one is
+	// REVISION_CONFLICT, through MCP exactly as directly.
+	entered, release := hooks.hold()
+	defer release()
+	held := make(chan rctlToolResult, 1)
+	startRev := revision(primaryEBusDriverID)
+	go func() {
+		held <- call(ctx, mcp.RuntimeControlStartTool, rctlMutationArgs(primaryEBusDriverID, startRev))
+	}()
+	select {
+	case <-entered:
+	case <-time.After(rctlBound):
+		t.Fatal("held decision never reached its durable write")
+	}
+	begin := time.Now()
+	call(ctx, mcp.RuntimeControlListTool, `{}`)
+	call(ctx, mcp.RuntimeControlGetTool, `{"DriverID":"fixture.second"}`)
+	if elapsed := time.Since(begin); elapsed > rctlReadBound {
+		t.Fatalf("reads took %s while a decision held the serialization point", elapsed)
+	}
+	secondRev := status(second).DesiredRevision
+	current := rctlMutationArgs(second, strconv.FormatUint(uint64(secondRev), 10))
+	busy := call(ctx, mcp.RuntimeControlStopTool, current)
+	view, err = direct(ctx, runtimecontrol.MethodStop, current)
+	rctlSameOutcome(t, "busy", busy, view, err)
+	if busy.code != string(runtimecontrol.RefusalTransitionBusy) || !busy.retriable {
+		t.Fatalf("busy namespace = %s; want retriable TRANSITION_BUSY", busy.code)
+	}
+	staleSecond := rctlMutationArgs(second, strconv.FormatUint(uint64(secondRev)-1, 10))
+	conflict := call(ctx, mcp.RuntimeControlStopTool, staleSecond)
+	view, err = direct(ctx, runtimecontrol.MethodStop, staleSecond)
+	rctlSameOutcome(t, "stale while busy", conflict, view, err)
+	if conflict.code != string(runtimecontrol.RefusalRevisionConflict) {
+		t.Fatalf("stale decision while busy = %s; want REVISION_CONFLICT", conflict.code)
+	}
+	release()
+	if got := <-held; got.isError {
+		t.Fatalf("held START = %s %s", got.code, got.message)
+	}
+	waitObserved(primaryEBusDriverID, drivermanager.ObservedRunning)
+
+	// Pre-commit persistence failure: refused UNAVAILABLE (retryable),
+	// nothing accepted, no path in the message; then the same request
+	// succeeds once storage recovers.
+	hooks.failWrite.Store(true)
+	beforeFailure, _ := store.ControlDriver(string(second))
+	failure := call(ctx, mcp.RuntimeControlStopTool, current)
+	view, err = direct(ctx, runtimecontrol.MethodStop, current)
+	rctlSameOutcome(t, "pre-commit failure", failure, view, err)
+	if failure.code != string(runtimecontrol.RefusalUnavailable) || !failure.retriable {
+		t.Fatalf("pre-commit failure = %s retriable=%v; want retriable UNAVAILABLE", failure.code, failure.retriable)
+	}
+	if afterFailure, _ := store.ControlDriver(string(second)); afterFailure.DesiredRevision != beforeFailure.DesiredRevision || afterFailure.DesiredState != beforeFailure.DesiredState {
+		t.Fatalf("pre-commit failure changed the record: %+v then %+v", beforeFailure, afterFailure)
+	}
+	hooks.failWrite.Store(false)
+	if recovered := decideMCP(mcp.RuntimeControlStopTool, second, strconv.FormatUint(uint64(secondRev), 10)); recovered.isError {
+		t.Fatalf("STOP after storage recovered = %s %s", recovered.code, recovered.message)
+	}
+	waitObserved(second, drivermanager.ObservedStopped)
+	if got := invoker.calls.Load(); got != 0 {
+		t.Fatalf("lifecycle tools invoked native RPC %d times", got)
+	}
+}
+
+// TestRuntimeControlMCPProductionWiring pins the production composition the
+// harness cannot reach behaviourally: startHTTPServer registers the
+// lifecycle tools unconditionally (not behind an eeBUS or driver condition)
+// before the MCP handler is mounted, and the lifecycle closure hands the
+// composed control path to startHTTPServer.
+func TestRuntimeControlMCPProductionWiring(t *testing.T) {
+	fset := token.NewFileSet()
+	serverFile, err := parser.ParseFile(fset, "gateway_http_server.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registerAt, mountAt token.Pos
+	guarded := false
+	for _, declaration := range serverFile.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "startHTTPServer" {
+			continue
+		}
+		last := function.Type.Params.List[len(function.Type.Params.List)-1]
+		if star, ok := last.Type.(*ast.StarExpr); !ok || fmt.Sprint(star.X) != "gatewayRuntimeControl" {
+			t.Fatalf("startHTTPServer's last parameter is not *gatewayRuntimeControl")
+		}
+		for _, statement := range function.Body.List {
+			ast.Inspect(statement, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if ident, ok := call.Fun.(*ast.Ident); ok {
+					switch ident.Name {
+					case "registerRuntimeControlMCPTools":
+						registerAt = call.Pos()
+						// Only the error check of the call itself may wrap it.
+						if ifStatement, isIf := statement.(*ast.IfStmt); isIf {
+							guarded = ifStatement.Init == nil || call.Pos() < ifStatement.Init.Pos() || call.End() > ifStatement.Init.End()
+						} else if _, isExpr := statement.(*ast.ExprStmt); !isExpr {
+							guarded = true
+						}
+					case "registerHTTPControlPlaneCoreRoutes":
+						mountAt = call.Pos()
+					}
+				}
+				return true
+			})
+		}
+	}
+	if !registerAt.IsValid() || !mountAt.IsValid() || registerAt > mountAt || guarded {
+		t.Fatalf("startHTTPServer must register the lifecycle tools unconditionally before mounting MCP: register=%v mount=%v guarded=%v", registerAt, mountAt, guarded)
+	}
+
+	lifecycleFile, err := parser.ParseFile(fset, "gateway_run_lifecycle.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passed := 0
+	ast.Inspect(lifecycleFile, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "startHTTPServer" {
+			if last, ok := call.Args[len(call.Args)-1].(*ast.Ident); ok && last.Name == "control" {
+				passed++
+			}
+		}
+		return true
+	})
+	if passed != 1 {
+		t.Fatalf("gateway_run_lifecycle.go hands the composed control to startHTTPServer %d times; want 1", passed)
 	}
 }

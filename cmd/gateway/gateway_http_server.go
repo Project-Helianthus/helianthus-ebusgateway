@@ -40,6 +40,7 @@ func startHTTPServer(
 	buildInfo gatewayBuildInfo,
 	daemonUpdatesAvailable func() bool,
 	ebusDriver *ebusDriverController,
+	runtimeControl *gatewayRuntimeControl,
 ) (*http.Server, mdns.Advertiser, error) {
 	if cfg.HTTPAddr == "" {
 		return nil, nil, nil
@@ -88,6 +89,9 @@ func startHTTPServer(
 	}
 	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
 		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
+	}
+	if err := registerRuntimeControlMCPTools(mcpServer, runtimeControl); err != nil {
+		return nil, nil, fmt.Errorf("register runtime control MCP tools: %w", err)
 	}
 	if eebusProvider != nil {
 		if err := mcpServer.RegisterEEBusV1Provider(eebusProvider); err != nil {
@@ -386,6 +390,19 @@ func startHTTPServer(
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+// registerRuntimeControlMCPTools registers the helianthus.runtime tools on the
+// ordinary MCP server as thin delegates of the composed control service. They
+// stay registered for the shell's lifetime whatever eBUS or eeBUS do (G5 D4:
+// tool disappearance is not an unavailable-state signal); a control path
+// without a service still lists them and answers UNAVAILABLE.
+func registerRuntimeControlMCPTools(server *mcp.Server, control *gatewayRuntimeControl) error {
+	var service mcp.RuntimeControlService
+	if composed := control.Service(); composed != nil {
+		service = composed
+	}
+	return mcp.RegisterRuntimeControlTools(server, service)
 }
 
 // registerHTTPPortalRoutes declares catalog availability at the same boundary

@@ -989,6 +989,10 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		s.writeRPCError(w, req.ID, rpcErrorInvalidRequest("invalid json"))
 		return
 	}
+	if err := validateRPCEnvelopeMembers(body); err != nil {
+		s.writeRPCError(w, nil, rpcErrorInvalidRequest("duplicate jsonrpc request member"))
+		return
+	}
 	if req.JSONRPC != "2.0" || req.Method == "" {
 		s.writeRPCError(w, req.ID, rpcErrorInvalidRequest("invalid jsonrpc request"))
 		return
@@ -1004,6 +1008,40 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeRPCResult(w, req.ID, result)
+}
+
+// validateRPCEnvelopeMembers checks only the envelope; params retain their own validation.
+// The caller has already validated the JSON syntax with json.Unmarshal.
+func validateRPCEnvelopeMembers(body []byte) error {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('{') {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return errors.New("invalid jsonrpc request member")
+		}
+		if _, exists := seen[key]; exists {
+			return errors.New("duplicate jsonrpc request member")
+		}
+		seen[key] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
 }
 
 func (s *Server) dispatch(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {

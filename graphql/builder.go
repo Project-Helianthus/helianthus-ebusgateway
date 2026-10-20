@@ -384,3 +384,12 @@ func (b *Builder) semanticSnapshotProvider() SemanticSnapshotProvider {
 	defer b.mu.RUnlock()
 	return b.semanticSnapshot
 }
+
+func (b *Builder) systemConfigBound() *ConfigBound {
+	system := b.semanticProvider().System()
+	if system == nil || system.Config.DhwBivalenceBound == nil {
+		return nil
+	}
+	bound := *system.Config.DhwBivalenceBound
+	return &bound
+}

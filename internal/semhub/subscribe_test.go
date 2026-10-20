@@ -146,8 +146,13 @@ func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
 	controlPublishers := startPublishers(t, control, 3, 1)
 	blocked := hub.Subscribe()
 
-	// Each worker owns its counts until its done barrier. No subscriber
-	// consumer runs until completion has been proven independently of it.
+	// The consumer cannot call Next until all commits and their observable
+	// effects have been proven. Time is only a diagnostic for a hung test.
+	const watchdog = 5 * time.Minute
+	watchdogCtx, stopWatchdog := context.WithTimeout(context.Background(), watchdog)
+	defer stopWatchdog()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	type commits struct {
 		blocked int
 		control int
@@ -155,14 +160,40 @@ func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
 	results := make([]commits, len(publishers))
 	commitsProven := make(chan struct{})
 	subscriberReleased := make(chan struct{})
+	cleanupRequested := make(chan struct{})
+	var releaseOnce sync.Once
 	releaseSubscriber := func() {
 		select {
 		case <-commitsProven:
 		default:
 			t.Error("subscriber released before commit completion was proven")
 		}
-		close(subscriberReleased)
+		releaseOnce.Do(func() { close(subscriberReleased) })
 	}
+	consumerDone := make(chan struct{})
+	events := make(chan Event, queueLimit+1)
+	go func() {
+		defer close(consumerDone)
+		<-subscriberReleased
+		select {
+		case <-commitsProven:
+		case <-cleanupRequested:
+		default:
+			t.Error("consumer admitted before commit completion was proven")
+		}
+		for {
+			event, err := blocked.Next(ctx)
+			if err != nil {
+				return
+			}
+			// Retain the overflow and surviving queue for assertions; keep
+			// draining during failure cleanup to unblock regressed producers.
+			select {
+			case events <- event:
+			default:
+			}
+		}
+	}()
 	ready := make(chan struct{}, len(publishers))
 	start := make(chan struct{})
 	stop := make(chan struct{})
@@ -215,64 +246,62 @@ func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
 			}
 		}()
 	}
-	for range publishers {
-		<-ready
-	}
-	// This finite watchdog diagnoses hangs; elapsed time is not an assertion
-	// about commit latency or producer/consumer ordering.
-	const watchdog = 30 * time.Second
-	timer := time.NewTimer(watchdog)
-	defer timer.Stop()
-	close(start)
 	completed := 0
+	defer func() {
+		close(stop)
+		close(cleanupRequested)
+		releaseOnce.Do(func() { close(subscriberReleased) })
+		// A queue-space regression may hold the bus lock, so drain before
+		// Close, and join producers before canceling the consumer.
+		cleanup := time.NewTimer(30 * time.Second)
+		defer cleanup.Stop()
+	joinProducers:
+		for completed < len(publishers) {
+			select {
+			case <-done:
+				completed++
+			case <-cleanup.C:
+				t.Error("cleanup watchdog expired; producers did not join after subscriber release")
+				break joinProducers
+			}
+		}
+		cleanup.Stop()
+		cancel()
+		consumerCleanup := time.NewTimer(30 * time.Second)
+		defer consumerCleanup.Stop()
+		select {
+		case <-consumerDone:
+			if completed == len(publishers) {
+				blocked.Close()
+			}
+		case <-consumerCleanup.C:
+			t.Error("cleanup watchdog expired; consumer did not join after cancellation")
+		}
+	}()
+	// Always open the producer barrier, including an early readiness failure.
+	defer func() {
+		select {
+		case <-start:
+		default:
+			close(start)
+		}
+	}()
+	for range publishers {
+		select {
+		case <-ready:
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for producer readiness")
+		}
+	}
+	close(start)
 	for completed < len(publishers) {
 		select {
 		case <-done:
 			completed++
-		case <-timer.C:
-			// A fan-out regression may hold the bus lock while waiting for
-			// queue space, so Close alone could deadlock. Release by draining
-			// first, stop further work, then join both producers and consumer.
-			close(stop)
-			releaseSubscriber()
-			ctx, cancel := context.WithCancel(context.Background())
-			drained := make(chan struct{})
-			go func() {
-				defer close(drained)
-				for {
-					if _, err := blocked.Next(ctx); err != nil {
-						return
-					}
-				}
-			}()
-			cleanup := time.NewTimer(watchdog)
-			for completed < len(publishers) {
-				select {
-				case <-done:
-					completed++
-				case <-cleanup.C:
-					cancel()
-					// Cancellation cannot interrupt Next waiting on blocked.mu.
-					select {
-					case <-drained:
-					case <-time.After(watchdog):
-						t.Fatal("commit watchdog expired; publishers and subscriber consumer did not join after cancellation")
-					}
-					t.Fatal("commit watchdog expired; publishers did not join after subscriber release")
-				}
-			}
-			cleanup.Stop()
-			cancel()
-			select {
-			case <-drained:
-			case <-time.After(watchdog):
-				t.Fatal("commit watchdog expired; subscriber consumer did not join after cancellation")
-			}
-			blocked.Close()
-			t.Fatalf("commits did not complete within %s while subscriber was undrained; released and joined all workers", watchdog)
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for commits with subscriber held")
 		}
 	}
-	defer blocked.Close()
 
 	select {
 	case <-subscriberReleased:
@@ -311,16 +340,24 @@ func TestCommitLatencyIsBoundedWithAPermanentlyBlockedSubscriber(t *testing.T) {
 	close(commitsProven)
 	releaseSubscriber()
 	latest := hub.Cursor().Seq
-	ctx, cancel := context.WithTimeout(context.Background(), watchdog)
-	defer cancel()
-	overflow, err := blocked.Next(ctx)
-	if err != nil || overflow.Kind != EventOverflow || overflow.Dropped != 284 || overflow.ResumeSeq != latest-15 {
-		t.Fatalf("overflow=%+v err=%v", overflow, err)
+	nextEvent := func() Event {
+		t.Helper()
+		select {
+		case event := <-events:
+			return event
+		case <-watchdogCtx.Done():
+			t.Fatal("hang watchdog expired waiting for released subscriber")
+			return Event{}
+		}
+	}
+	overflow := nextEvent()
+	if overflow.Kind != EventOverflow || overflow.Dropped != 284 || overflow.ResumeSeq != latest-15 {
+		t.Fatalf("overflow=%+v", overflow)
 	}
 	for want := latest - 15; want <= latest; want++ {
-		event, err := blocked.Next(ctx)
-		if err != nil || event.Kind != EventPublished || event.HubSeq != want {
-			t.Fatalf("event=%+v err=%v, want published HubSeq %d", event, err, want)
+		event := nextEvent()
+		if event.Kind != EventPublished || event.HubSeq != want {
+			t.Fatalf("event=%+v, want published HubSeq %d", event, want)
 		}
 	}
 }

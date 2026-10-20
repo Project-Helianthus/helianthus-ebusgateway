@@ -1278,3 +1278,84 @@ func TestRuntimeControlReplacementAdmissionWithdrawsPredecessorSource(t *testing
 		t.Fatalf("withdrawals = %v; want one forced withdrawal before the replacement is admitted", withdrawals)
 	}
 }
+
+// A generation fenced before its semantic-surface install creates no
+// process-scoped consumer; an unfenced one installs and reports the error.
+func TestRuntimeControlSurfaceInstallRefusedAfterFence(t *testing.T) {
+	adm := &genAdmission{}
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, JoinTimeout: 50 * time.Millisecond, Tasks: []ebusGenerationTask{
+		{Name: "surface", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	key := genKey("inc.surface.e1", 1, 1, 1)
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	scope := <-scopes
+	want := errors.New("rctl: install failure")
+	if err := installProcessSurface(scope, func() error { return want }); !errors.Is(err, want) {
+		t.Fatalf("live install = %v; want the install error", err)
+	}
+	if !runner.Fence(key) {
+		t.Fatal("Fence reported false")
+	}
+	installs := 0
+	if err := installProcessSurface(scope, func() error { installs++; return want }); err != nil || installs != 0 {
+		t.Fatalf("fenced install = %v after %d installs; want none", err, installs)
+	}
+}
+
+// A STOP whose generation fence times out behind an in-flight effect defers
+// the bridge STOP fence: the native endpoint stays open and nothing is
+// reported cleaned, until a later STOP finds the generation serialized.
+func TestRuntimeControlStopDefersBridgeFenceWhileEffectInFlight(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner, err := newEBusGenerationTaskRunner(ebusGenerationTaskConfig{
+		Tasks: []ebusGenerationTask{{Name: "idle", Run: func(_ context.Context, scope *ebusGenerationScope) error {
+			scopes <- scope
+			return nil
+		}}},
+		Admitted:    ebusControlGenerationAdmitted(plant.bridge),
+		JoinTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &ebusControlExecutor{bridge: plant.bridge}
+	executor.bind(runner, func(bool) {})
+	corr := ctlCorr("inc.defer.e1", 1, 1)
+	if err := executor.Start(ctlCtx(t), corr); err != nil {
+		t.Fatal(err)
+	}
+	var scope *ebusGenerationScope
+	select {
+	case scope = <-scopes:
+	case <-time.After(rctlBound):
+		t.Fatal("task did not start")
+	}
+	inCommit, release := make(chan struct{}), make(chan struct{})
+	go scope.Commit(func() { close(inCommit); <-release })
+	select {
+	case <-inCommit:
+	case <-time.After(rctlBound):
+		t.Fatal("commit did not start")
+	}
+	out := executor.Stop(ctlCtx(t), corr)
+	if out.NativeClosed || out.SemanticCleaned {
+		t.Fatalf("STOP outcome = %+v; want nothing cleaned while the effect is in flight", out)
+	}
+	if view := plant.bridge.View(); !view.Admitted {
+		t.Fatalf("bridge view = %+v; want the generation still admitted (bridge fence deferred)", view)
+	}
+	close(release)
+	var final runtimecontrol.StopOutcome
+	ctlWait(t, "deferred STOP completes", func() bool {
+		final = executor.Stop(ctlCtx(t), corr)
+		return final.NativeClosed
+	})
+	if !final.SemanticCleaned {
+		t.Fatalf("final STOP outcome = %+v; want cleaned", final)
+	}
+}

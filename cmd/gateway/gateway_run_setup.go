@@ -534,9 +534,18 @@ func (executor *ebusControlExecutor) Stop(ctx context.Context, corr runtimecontr
 			// The runner fence is the serialization point for the stopped
 			// generation's effects; it runs before the bridge fences and
 			// outside every bridge and manager lock.
-			runner.Fence(status.Key)
 			key := status.Key
 			fenced = &key
+			if !runner.Fence(key) {
+				// An in-flight effect of the generation outlasted the fence
+				// bound: serialization has not completed, so the bridge STOP
+				// fence is deferred. The generation stays DRAINING, the
+				// source stays withdrawn and the cleanup stays pending.
+				if withdrawn != nil {
+					withdrawn(true)
+				}
+				return runtimecontrol.StopOutcome{}
+			}
 		}
 	}
 	if withdrawn != nil {
@@ -607,4 +616,13 @@ func (executor *ebusControlExecutor) close(ctx context.Context) error {
 		return nil
 	}
 	return runner.Close(ctx)
+}
+
+// installProcessSurface runs install through the generation fence, so a
+// generation withdrawn before the call creates no process-scoped consumer
+// and its task ends without error.
+func installProcessSurface(scope *ebusGenerationScope, install func() error) error {
+	var err error
+	scope.Commit(func() { err = install() })
+	return err
 }

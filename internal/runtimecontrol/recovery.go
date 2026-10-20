@@ -1564,16 +1564,24 @@ func wellFormedAsset(e walEntry, a walAsset) bool {
 
 // restoreClocks rebuilds each asset's clock mapping from the durable mark and
 // the verified elapsed time. An asset with recorded points but no verifiable
-// continuity fails closed.
+// continuity, or a mark below any retained intent point, fails closed.
 func (r *Recorder) restoreClocks(s walStream, m0 uint64, failedAssets map[AssetID]bool) map[AssetID]*clockMap {
 	clocks := map[AssetID]*clockMap{}
+	retainedHigh := map[AssetID]uint64{}
+	for _, entry := range s.Entries {
+		for _, asset := range entry.Assets {
+			if entry.Point > retainedHigh[asset.Asset] {
+				retainedHigh[asset.Asset] = entry.Point
+			}
+		}
+	}
 	for id := range r.assets {
 		mark, ok := s.Clocks[id]
-		used := s.NextOrdinal[id] > s.BaseOrdinal[id]+1 || s.BaseOrdinal[id] > 0
+		used := s.NextOrdinal[id] > s.BaseOrdinal[id]+1 || s.BaseOrdinal[id] > 0 || retainedHigh[id] > 0
 		cm := &clockMap{m0: m0}
 		switch {
 		case !ok && !used:
-		case !ok || mark.Unit != clockUnit || len(mark.Anchor) == 0:
+		case !ok || mark.Unit != clockUnit || len(mark.Anchor) == 0 || mark.High < retainedHigh[id]:
 			cm.failed = true
 		default:
 			d, err := r.clock.Elapsed(mark.Anchor, m0)

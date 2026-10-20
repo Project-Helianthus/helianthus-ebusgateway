@@ -617,12 +617,22 @@ func (scope *ebusGenerationScope) Live() bool {
 // excludes Fence while fn runs. fn must be a short, non-blocking install of
 // an already computed result and must not call back into the runner.
 func (scope *ebusGenerationScope) Commit(fn func()) bool {
-	runner := scope.run.runner
+	run := scope.run
+	runner := run.runner
+	unit := scope.task + "/commit"
 	runner.gate.RLock()
 	defer runner.gate.RUnlock()
-	if !scope.run.liveLocked() {
+	if !run.liveLocked() {
 		return false
 	}
+	runner.mu.Lock()
+	run.enterLocked(unit)
+	runner.mu.Unlock()
+	defer func() {
+		runner.mu.Lock()
+		run.exitLocked(unit)
+		runner.mu.Unlock()
+	}()
 	fn()
 	return true
 }

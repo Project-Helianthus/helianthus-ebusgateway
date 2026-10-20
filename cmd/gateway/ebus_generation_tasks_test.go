@@ -1398,3 +1398,236 @@ func TestGenerationTasksJoinObligationRunsWhenFencedBeforeStart(t *testing.T) {
 		t.Fatal("join obligation was skipped after the fence; the join would not await it")
 	}
 }
+
+// p13ReturnedScope observes task completion under the runner lock; receiving
+// the scope alone would not establish that its registering task has returned.
+func p13ReturnedScope(t *testing.T, adm *genAdmission, key ebusGenerationKey) (*ebusGenerationTaskRunner, *ebusGenerationScope) {
+	t.Helper()
+	scopes := make(chan *ebusGenerationScope, 1)
+	runner := genRunner(t, ebusGenerationTaskConfig{Admitted: adm.admitted, Tasks: []ebusGenerationTask{
+		{Name: "promote", Run: func(_ context.Context, scope *ebusGenerationScope) error { scopes <- scope; return nil }},
+	}})
+	adm.set(key)
+	if err := runner.Admit(key); err != nil {
+		t.Fatal(err)
+	}
+	var scope *ebusGenerationScope
+	watchdog := time.NewTimer(5 * time.Second)
+	defer watchdog.Stop()
+	for {
+		select {
+		case scope = <-scopes:
+		case <-watchdog.C:
+			t.Fatal("watchdog: registering task did not return")
+		default:
+		}
+		runner.mu.Lock()
+		returned := runner.current.states[0] == ebusGenerationTaskSucceeded
+		runner.mu.Unlock()
+		if scope != nil && returned {
+			return runner, scope
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestP13ExpiredWithdrawalTracksInvocationsAfterTaskReturn(t *testing.T) {
+	for _, kind := range []string{"commit", "callback"} {
+		t.Run(kind, func(t *testing.T) {
+			adm := &genAdmission{}
+			key := genKey("inc.e1", 1, 1, 1)
+			runner, scope := p13ReturnedScope(t, adm, key)
+			expected := []string{"promote/" + kind}
+			invoke := scope.Commit
+			if kind == "callback" {
+				invoke = func(fn func()) bool { return scope.Callback(fn)() }
+			}
+			var releases [2]func()
+			var finished [2]chan struct{}
+			for i := range releases {
+				release, done := make(chan struct{}), make(chan struct{})
+				finished[i] = done
+				var once sync.Once
+				releases[i] = func() { once.Do(func() { close(release) }) }
+				unblock := releases[i]
+				t.Cleanup(func() {
+					unblock()
+					genWatch(t, "invocation cleanup", done)
+				})
+				entered := make(chan struct{})
+				go func() {
+					defer close(done)
+					if !invoke(func() { close(entered); <-release }) {
+						t.Error("admitted invocation refused")
+					}
+				}()
+				genWatch(t, "invocation entry", entered)
+			}
+			// Both invocations own the same diagnostic unit independently.
+			runner.mu.Lock()
+			active, units := scope.run.active, scope.run.units[expected[0]]
+			runner.mu.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			join := runner.Withdraw(ctx, key)
+			if join.Joined || join.Key != key || !reflect.DeepEqual(join.Pending, expected) {
+				t.Fatalf("expired withdrawal = %+v, want unjoined with %v", join, expected)
+			}
+			if active != 2 || units != 2 {
+				t.Fatalf("active=%d units=%d, want two retained invocations", active, units)
+			}
+			next := genKey("inc.e2", 2, 2, 2)
+			adm.set(next)
+			if err := runner.Admit(next); !errors.Is(err, errGenerationTasksNotJoined) {
+				t.Fatalf("successor overlapped predecessor: %v", err)
+			}
+			for i := range releases {
+				releases[i]()
+				genWatch(t, "invocation return", finished[i])
+				if i == 0 {
+					if got := runner.Status().Pending; !reflect.DeepEqual(got, expected) {
+						t.Fatalf("remaining invocation lost: %v", got)
+					}
+				}
+			}
+			if join := runner.Withdraw(ctlCtx(t), key); !join.Joined || len(join.Pending) != 0 {
+				t.Fatalf("completed invocations not joined: %+v", join)
+			}
+			if err := runner.Admit(next); err != nil {
+				t.Fatalf("successor refused after join: %v", err)
+			}
+		})
+	}
+}
+
+func TestP13InvocationPanicAndRefusalDoNotLeakWork(t *testing.T) {
+	for _, kind := range []string{"commit", "callback"} {
+		t.Run(kind, func(t *testing.T) {
+			adm := &genAdmission{}
+			key := genKey("inc.e1", 1, 1, 1)
+			runner, scope := p13ReturnedScope(t, adm, key)
+			invoke := scope.Commit
+			if kind == "callback" {
+				invoke = func(fn func()) bool { return scope.Callback(fn)() }
+			}
+			func() {
+				defer func() {
+					if got := recover(); got != "synthetic panic" {
+						t.Errorf("panic = %v", got)
+					}
+				}()
+				invoke(func() { panic("synthetic panic") })
+			}()
+			variants := map[string]func(*ebusGenerationKey){
+				"DriverID":   func(k *ebusGenerationKey) { k.Control.DriverID = "ebus.secondary" },
+				"SourceID":   func(k *ebusGenerationKey) { k.Control.SourceID = "source.other" },
+				"Epoch":      func(k *ebusGenerationKey) { k.Control.Epoch = "inc.e2" },
+				"Generation": func(k *ebusGenerationKey) { k.Control.Generation = 2 },
+				"Sequence":   func(k *ebusGenerationKey) { k.Control.Sequence = 2 },
+				"Native":     func(k *ebusGenerationKey) { k.Native = 2 },
+			}
+			for field, change := range variants {
+				other := key
+				change(&other)
+				adm.set(other)
+				if invoke(func() { t.Errorf("effect admitted with mismatched %s", field) }) {
+					t.Errorf("invocation admitted with mismatched %s", field)
+				}
+				adm.set(key)
+				if !invoke(func() {}) {
+					t.Errorf("positive control refused after %s", field)
+				}
+			}
+			if join := runner.Withdraw(ctlCtx(t), key); !join.Joined || len(join.Pending) != 0 {
+				t.Fatalf("panic/refusal leaked work: %+v", join)
+			}
+			if invoke(func() { t.Error("fenced invocation ran") }) {
+				t.Error("fenced invocation accepted")
+			}
+			runner.mu.Lock()
+			active, units := scope.run.active, len(scope.run.units)
+			runner.mu.Unlock()
+			if active != 0 || units != 0 {
+				t.Fatalf("cleanup active=%d units=%d", active, units)
+			}
+		})
+	}
+}
+
+// These direct-helper oracles distinguish both necessary join guards even
+// though an executing invocation normally holds the gate as well as a unit.
+func TestP13SettleRequiresActiveDrainAndExclusiveGate(t *testing.T) {
+	for _, barrier := range []string{"active", "exclusive-gate"} {
+		t.Run(barrier, func(t *testing.T) {
+			key := genKey("inc.e1", 1, 1, 1)
+			next := genKey("inc.e2", 2, 2, 2)
+			run := &ebusGenerationRun{key: key, drained: make(chan struct{}), units: map[string]int{}}
+			run.fenced.Store(true)
+			if barrier == "active" {
+				run.serialized = true
+				run.enterLocked("promote/callback")
+			}
+			runner := &ebusGenerationTaskRunner{current: run, admitted: func(ebusGenerationKey) bool { return true }}
+			run.settleLocked()
+			if err := runner.Admit(next); !errors.Is(err, errGenerationTasksNotJoined) {
+				t.Fatalf("successor bypassed %s: %v", barrier, err)
+			}
+			if run.joined {
+				t.Fatal("joined before required barrier")
+			}
+			if barrier == "active" {
+				run.exitLocked("promote/callback")
+			} else {
+				run.serialized = true
+				run.settleLocked()
+			}
+			if !run.joined {
+				t.Fatal("completed barrier did not join")
+			}
+			genWatch(t, "drained barrier", run.drained)
+		})
+	}
+}
+
+// A real in-flight invocation also holds the shared gate. Supplying the
+// serialized condition directly isolates active accounting from that redundant
+// guard, so removing callback accounting cannot hide behind gate exclusion.
+func TestP13ActiveInvocationRequiresJoinAfterParentReturn(t *testing.T) {
+	for _, kind := range []string{"commit", "callback"} {
+		t.Run(kind, func(t *testing.T) {
+			adm := &genAdmission{}
+			key := genKey("inc.e1", 1, 1, 1)
+			runner, scope := p13ReturnedScope(t, adm, key)
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(func() { unblock(); genWatch(t, "invocation cleanup", done) })
+			invoke := scope.Commit
+			if kind == "callback" {
+				invoke = func(fn func()) bool { return scope.Callback(fn)() }
+			}
+			go func() {
+				defer close(done)
+				if !invoke(func() { close(entered); <-release }) {
+					t.Error("admitted invocation refused")
+				}
+			}()
+			genWatch(t, "invocation entry", entered)
+			runner.mu.Lock()
+			scope.run.fenced.Store(true)
+			scope.run.serialized = true
+			scope.run.settleLocked()
+			joined := scope.run.joined
+			scope.run.serialized = false
+			runner.mu.Unlock()
+			if joined {
+				t.Fatal("active invocation reported Joined after its parent returned")
+			}
+			unblock()
+			genWatch(t, "invocation return", done)
+			if join := runner.Withdraw(ctlCtx(t), key); !join.Joined {
+				t.Fatalf("finished invocation not joined: %+v", join)
+			}
+		})
+	}
+}

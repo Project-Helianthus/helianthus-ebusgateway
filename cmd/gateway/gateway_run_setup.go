@@ -578,13 +578,19 @@ func (executor *ebusControlExecutor) sync(ctx context.Context) {
 // while they have not joined. The replacement stays unadmitted, DriverManager
 // keeps owning its retry, and status stays truthful (runner DRAINING).
 func (executor *ebusControlExecutor) admitGate(ctx context.Context) error {
-	runner, _ := executor.tasks()
+	runner, withdrawn := executor.tasks()
 	if runner == nil {
 		return nil
 	}
 	status := runner.Status()
 	if status.Phase != ebusGenerationRunning && status.Phase != ebusGenerationDraining {
 		return nil
+	}
+	if withdrawn != nil {
+		// The predecessor's admitted source must not authorize anything
+		// for the replacement; the successor installs its own after its
+		// own source admission.
+		withdrawn(true)
 	}
 	if join := runner.Withdraw(ctx, status.Key); !join.Joined {
 		return fmt.Errorf("%w: pending %v", errEBusGenerationTasksDraining, join.Pending)

@@ -1244,3 +1244,37 @@ func TestRuntimeControlDelayedIdentityEnrichmentIsJoinable(t *testing.T) {
 		t.Fatal("join did not return after delayed enrichment finished")
 	}
 }
+
+// TestRuntimeControlReplacementAdmissionWithdrawsPredecessorSource: the
+// bridge's replacement admission gate clears the predecessor's admitted
+// source before the replacement can be admitted, also while the drain has
+// not joined.
+func TestRuntimeControlReplacementAdmissionWithdrawsPredecessorSource(t *testing.T) {
+	plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+	runner, err := newEBusGenerationTaskRunner(ebusGenerationTaskConfig{
+		Tasks: []ebusGenerationTask{{Name: "idle", Run: func(ctx context.Context, _ *ebusGenerationScope) error {
+			<-ctx.Done()
+			return nil
+		}}},
+		Admitted: ebusControlGenerationAdmitted(plant.bridge),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withdrawals []bool
+	executor := &ebusControlExecutor{bridge: plant.bridge}
+	executor.bind(runner, func(force bool) { withdrawals = append(withdrawals, force) })
+	if err := executor.Start(ctlCtx(t), ctlCorr("inc.withdraw.e1", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Status().Phase != ebusGenerationRunning {
+		t.Fatalf("runner phase = %s; want RUNNING", runner.Status().Phase)
+	}
+	withdrawals = nil
+	if err := executor.admitGate(ctlCtx(t)); err != nil {
+		t.Fatal(err)
+	}
+	if len(withdrawals) != 1 || !withdrawals[0] {
+		t.Fatalf("withdrawals = %v; want one forced withdrawal before the replacement is admitted", withdrawals)
+	}
+}

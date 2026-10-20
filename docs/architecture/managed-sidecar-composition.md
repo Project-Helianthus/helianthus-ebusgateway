@@ -61,12 +61,42 @@ The following are required application bindings, not new exported Go APIs.
 
 | Boundary | Concrete input | Required output and owner |
 | --- | --- | --- |
-| Composition root | Validated family configuration, configured driver/source identities, exact public native contract reference, injected native factory/open/dial functions, hub, durable store and recovery adapter | Frozen descriptor plus one `runtimecontrol.DriverConfig{DriverID, Executor}` in the same service. Configuration and factory dependencies are captured by the family adapter, not encoded in public IDs. Missing identity/dependency withholds that driver. |
+| Composition root | Validated family configuration, configured driver/source identities, exact public native contract reference, injected native factory/open/dial functions, hub, durable store and recovery adapter | Frozen descriptor, constructed wrapper installed as `drivermanager.DriverConfig.Runtime`, and one `runtimecontrol.DriverConfig{DriverID, Executor}` in the same service, in the order below. Configuration and factory dependencies are captured by the family adapter, not encoded in public IDs. Missing identity/dependency withholds that driver. |
 | Typed construction | `context.Context`, frozen `Construction` | Family wrapper implementing existing `drivermanager.Runtime`: `Start(ctx) (uint64, error)`, `Replace(ctx) (uint64, error)`, `Stop(ctx) error`, `Generation()`, `Revision()`, `SafetyQuarantined()`. Construction returns an inert wrapper; native opening belongs to its managed start. Clean up partial factory results on failure. |
 | Lifecycle execution | `Start(ctx, LifecycleCorrelation)`; correlation binds driver, configured source, epoch, driver generation and lifecycle sequence | Nil only after that generation is admitted. Failure leaves nothing open. Maintain an explicit mapping to native generation; do not cast native counters into semantic generation. Repeated calls for one key join or return its result, without a second start. |
 | Withdrawal | `Stop(ctx, LifecycleCorrelation)`, including a generation that never opened | `StopOutcome{NativeClosed, SemanticCleaned}` with independent, truthful obligations. Native close proof comes from `StopWithReport`; semantic cleanup comes from fenced publication withdrawal/epoch retirement. A close error cannot be converted to success because cancellation was sent. |
 | Recovery | Existing `RecoveryAdapter.Restore`, `Secure`, and managed `Recorder.Writer(source)` when semantic publication is migrated | Restore before native open/admission; commit secured recovery material before pruning terminal work. Route managed publications through the recorder, not a parallel direct writer. A lifecycle-only adapter cannot claim recovery for semantic assets. |
 | Consumer binding | Current admitted generation plus family-owned provider interfaces, Portal contribution leases and publication handles | Stable shell-facing indirection; unavailable while withdrawn. Install generation effects only through a live generation scope and revoke leases before close. Never leave a request holding an unguarded retired provider pointer. |
+
+Required composition order for M02–M06 (Hypothesis until implemented):
+
+1. Validate and register the complete descriptor batch before invoking any
+   adapter. For each enabled, non-withheld driver, obtain
+   `binding, err := registry.Binding(driverID)` (handling its error), then call
+   `binding.Adapter.Construct(ctx, binding.Construction)` once to obtain its
+   inert wrapper. Neither registry acceptance nor service registration calls
+   `Construct` on the application's behalf.
+2. Assemble the complete initial `[]drivermanager.DriverConfig`, including the
+   existing primary driver and each successfully constructed sidecar. Each
+   sidecar entry has `ID: string(driverID)`, `Enabled: true`, `Runtime: wrapper`,
+   and its family-owned capabilities, error classifier and retry policy. Pass
+   the complete list to `drivermanager.New` for the shared manager before
+   creating lifecycle bridges/executors or the service. There is no later
+   runtime registration API; subsequent composition must refactor the current
+   primary-only manager construction rather than create a second manager or
+   try to append sidecars after it exists.
+3. Bind each family bridge and its admission/close hooks to that same manager
+   and driver ID before any manager start. Create its executor and install
+   `runtimecontrol.DriverConfig{DriverID, Executor}` in the shared service.
+   That service config carries the executor, not the constructed runtime.
+4. Bootstrap configured durable entries, create the service with recovery,
+   then start it: restore before reconciliation may open any native runtime.
+   Disabled entries remain visible with `Enabled: false` and no constructed
+   runtime; do not call their adapters. A binding/construction failure withholds
+   the affected manager runtime and supplies a failing executor for its
+   configured service entry, preserving shell and other-driver operation.
+   Clean up partial construction on failure; never start a partial manager
+   configuration after manager creation fails.
 
 `LifecycleCorrelation` supplies identity, not configuration or native authority.
 The service allocates epochs. The family binding supplies the configured source

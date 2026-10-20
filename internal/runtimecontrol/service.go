@@ -177,6 +177,7 @@ type driverState struct {
 	exec LifecycleExecutor
 	wake chan struct{}
 
+	// Lock order: mu before Service.viewMu when both are needed.
 	mu   sync.Mutex
 	cond *sync.Cond
 	// deciding counts decisions whose planner ran for this driver and that
@@ -188,7 +189,10 @@ type driverState struct {
 	// ambiguous retains a planned decision whose commit outcome is unknown.
 	// Its deciding count stays raised (the hold) until resolveAmbiguous
 	// reads the committed record after admission reopened.
-	ambiguous       *ambiguousDecision
+	ambiguous *ambiguousDecision
+	// ambiguousHeld mirrors ambiguous != nil for publication without mu.
+	// Update both under mu; viewMu holders must never acquire mu.
+	ambiguousHeld   atomic.Bool
 	pruning         bool
 	untyped         *attempt
 	inflight        *attempt
@@ -230,6 +234,7 @@ type Service struct {
 	order   []DriverID
 	events  *eventLog
 
+	// viewMu follows driverState.mu; never acquire a driver lock while held.
 	viewMu   sync.Mutex
 	observed map[DriverID]observation
 	// pendingEv holds committed-in-memory events whose view publication
@@ -446,15 +451,15 @@ func (s *Service) start(ctx context.Context) error {
 		}
 	}
 
-	s.viewMu.Lock()
 	for _, id := range s.order {
 		d := s.drivers[id]
 		d.mu.Lock()
 		blocked := d.recoveryBlocked
 		d.mu.Unlock()
+		s.viewMu.Lock()
 		s.observed[id] = initialObservation(records[id], blocked)
+		s.viewMu.Unlock()
 	}
-	s.viewMu.Unlock()
 	if !s.commitView(s.ctx, nil, true) {
 		s.report(fmt.Errorf("%w: initial view not committed", ErrServiceState))
 	}
@@ -728,6 +733,7 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 			// concurrently); otherwise the readback resolver settles it.
 			d.mu.Lock()
 			d.ambiguous = &ambiguousDecision{method: method, expected: req.ExpectedRevision, fence: fence}
+			d.ambiguousHeld.Store(true)
 			d.mu.Unlock()
 			if s.store.AdmissionOpen() {
 				s.resolveAmbiguous([]*driverState{d})
@@ -754,9 +760,10 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 
 // ambiguousDecision is a planned decision whose commit outcome is unknown.
 type ambiguousDecision struct {
-	method   Method
-	expected DesiredRevision
-	fence    bool
+	method    Method
+	expected  DesiredRevision
+	fence     bool
+	resolving bool
 }
 
 // resolveAmbiguous settles the held decisions of the given drivers once the
@@ -769,9 +776,10 @@ type ambiguousDecision struct {
 // only then fences the superseded attempt and ends the hold. A rejected
 // decision emits nothing and ends the hold without fencing, so a typed START
 // it would have canceled resumes with its attempt, budget and deadline
-// unchanged. It reports whether it published a view, which it does only
-// for an adopted decision or an unreadable outcome.
-func (s *Service) resolveAmbiguous(ds []*driverState) bool {
+// unchanged. It reports whether it published a view and whether another
+// resolver owns an in-progress resolution. Either suppresses fallback
+// publication so an adopted view cannot precede its acceptance event.
+func (s *Service) resolveAmbiguous(ds []*driverState) (published, resolving bool) {
 	type settled struct {
 		d     *driverState
 		fence bool
@@ -782,17 +790,24 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 	for _, d := range ds {
 		d.mu.Lock()
 		amb := d.ambiguous
-		d.mu.Unlock()
 		if amb == nil {
+			d.mu.Unlock()
 			continue
 		}
+		if amb.resolving {
+			resolving = true
+			d.mu.Unlock()
+			continue
+		}
+		amb.resolving = true
+		d.mu.Unlock()
 		rec, err := s.store.Driver(d.id)
 		d.mu.Lock()
 		if d.ambiguous != amb {
 			d.mu.Unlock()
 			continue // a concurrent resolution took it
 		}
-		d.ambiguous = nil
+		// Retain ownership until the adopted view and acceptance are published.
 		d.mu.Unlock()
 		if err != nil {
 			// The outcome cannot be read: release without fencing (the
@@ -809,7 +824,6 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 		}
 		done = append(done, settled{d: d, fence: amb.fence && adopted})
 	}
-	published := false
 	committed := true
 	if len(events) > 0 || lost {
 		if lost {
@@ -824,7 +838,7 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 		x := x
 		s.afterPublish(committed, func() { s.releaseDecision(x.d, x.fence) })
 	}
-	return published
+	return published, resolving
 }
 
 // releaseDecision ends a decision's hold, after its acceptance (if any) was
@@ -841,6 +855,8 @@ func (s *Service) releaseDecision(d *driverState, fence bool) {
 			}
 		}
 	}
+	d.ambiguous = nil
+	d.ambiguousHeld.Store(false)
 	d.deciding--
 	d.cond.Broadcast()
 	d.mu.Unlock()
@@ -875,7 +891,8 @@ func (s *Service) planner(d *driverState, planned, fence *bool) Planner {
 		if in.Method != MethodStop && (d.quarantined || d.recoveryBlocked) {
 			return Plan{}, &Refusal{Code: RefusalFailedPrecondition, Row: 7, Reason: "quarantine or unresolved recovery blocks admission"}
 		}
-		if d.ambiguous != nil {
+		if d.deciding > 0 || d.ambiguous != nil {
+			// One owner spans planning, store I/O and acceptance publication.
 			// The outcome of this driver's previous decision is still being
 			// settled; deciding on top of it would make adoption unreadable.
 			return Plan{}, &Refusal{Code: RefusalTransitionBusy, Row: 8, Reason: "previous decision outcome is being resolved"}
@@ -1035,7 +1052,7 @@ func (s *Service) readbackResolved() {
 	for _, id := range s.order {
 		ds = append(ds, s.drivers[id])
 	}
-	if !s.resolveAmbiguous(ds) {
+	if published, resolving := s.resolveAmbiguous(ds); !published && !resolving {
 		s.commitView(s.ctx, nil, false)
 	}
 	for _, d := range ds {
@@ -1208,13 +1225,39 @@ func (s *Service) publish(events []Event) bool {
 	}
 	built := s.buildLocked(catalog)
 	current := s.view.Load()
+	candidates := append(append([]Event(nil), s.pendingEv...), events...)
+	// A catalog read can include another resolver's adopted decision before
+	// that resolver has read its record or supplied its acceptance event.
+	// Keep that driver's published intent until the matching acceptance can
+	// accompany it atomically. Other drivers may still publish independently.
+	for i := range built.Drivers {
+		entry := &built.Drivers[i]
+		d := s.drivers[entry.DriverID]
+		if d == nil || !d.ambiguousHeld.Load() {
+			continue
+		}
+		accepted := false
+		for _, e := range candidates {
+			if e.Kind == EventDesiredAccepted && e.DriverID == entry.DriverID && e.DesiredRevision == entry.DesiredRevision {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			for _, prior := range current.Drivers {
+				if prior.DriverID == entry.DriverID {
+					entry.DesiredState, entry.DesiredRevision = prior.DesiredState, prior.DesiredRevision
+					break
+				}
+			}
+		}
+	}
 	switch {
 	case built.Revision > current.Revision:
 	case built.Revision == current.Revision && reflect.DeepEqual(built.Drivers, current.Drivers):
 	default:
 		return false
 	}
-	candidates := append(append([]Event(nil), s.pendingEv...), events...)
 	entries := make(map[DriverID]DriverStatus, len(built.Drivers))
 	for _, entry := range built.Drivers {
 		entries[entry.DriverID] = entry

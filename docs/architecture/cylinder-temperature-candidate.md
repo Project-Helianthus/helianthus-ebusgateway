@@ -21,8 +21,11 @@ bytes, qualified codec metadata, FM5 context and optional detached prior records
 It has no production provider port. Its sole measurement selector is PB/SB
 B5/24, opcode B524, operation 02, group 05, register 0004. Opcode identifies the
 B524 command; operation identifies its OP02 plane. Instance and direction remain
-part of identity. The mapper never substitutes system cylinder top/bottom, DHW
-outlet, solar-loop values or configuration companions.
+part of identity. Instances of two or above remain caller-qualified, just like
+other instances; the acquisition loop's two-slot implementation bound proves
+neither a device count nor a universal selector rejection. The mapper never
+substitutes system cylinder top/bottom, DHW outlet, solar-loop values or
+configuration companions.
 
 The opaque `Service` string is a caller's physical association fence, **not** a
 Thermal service or FactKey dimension. Identity also includes asset, source, epoch,
@@ -30,8 +33,12 @@ generation, binding and its revision, association/mapping revisions,
 family/profile and profile/registry/codec revisions, request source/destination,
 all selector fields and the complete evidence reference (owner, kind, contract,
 digest, access, redaction). Every field participates in observation, codec and
-retention matching. Missing binding metadata or invalid evidence withholds the
-quantity. A changed binding cannot inherit old qualification; foreign prior
+retention matching. Missing binding metadata, invalid evidence, or an evidence
+grade outside `Proven`, `Hypothesis` and `Unknown` withholds the quantity.
+Empty or arbitrary
+grades cannot become current or last-good records; diagnostic history remains
+inspectable. All three valid grades still require independent codec
+qualification. A changed binding cannot inherit old qualification; foreign prior
 records survive only as diagnostic history. No family is qualified by default.
 
 The caller removes validated framing/status/selector bytes and supplies successful
@@ -68,7 +75,10 @@ caller-supplied `FreshForNS` are required. The clock epoch must match, receipt
 must not be in the future, and age must be strictly less than the window. No TTL
 is invented. Recovery requires a valid fresh same-binding sample with a strictly
 newer receipt in the same clock epoch; replay cannot revive current status.
-A new clock epoch needs a new binding/history boundary supplied by the owner.
+A fresh sample in a new clock epoch remains withheld while the old binding
+retains its last-good receipt. The owner must supply a new binding/history
+boundary for recovery; the mapper never creates that boundary. A changed binding
+keeps the foreign old record only as diagnostic history.
 
 | Synthetic input | Candidate result | Loss / preservation |
 | --- | --- | --- |
@@ -95,6 +105,16 @@ f32 value only; it does not establish decimal representability. The
 [Thermal vocabulary](https://github.com/Project-Helianthus/helianthus-semreg/blob/main/semreg/v1/packs/thermal/definitions.go)
 does not resolve the cylinder service or a collision-free per-instance key.
 Even a qualified, current native candidate therefore emits no SemReg fact.
+
+Focused `TestP17` vectors reject malformed grades independently of qualification,
+compare every prior-codec field and complete codec identity directly, and pin
+clock-epoch withholding plus owner-supplied binding recovery. Encoding and bound
+changes also discriminate retention end to end with independently native-valid
+prior records. Qualification, known-bounds and unit mismatches have redundant
+native guards, so direct helper checks distinguish those equality comparisons.
+Selector identity helper checks do not establish full native-selector guard
+mutation coverage. Ordering-key marshal error handling remains deferred under
+[#1248](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1248).
 
 Focused `TestI34` vectors cover widths, finite values, qualified bounds,
 independent identity fences, evidence provenance, malformed typed time,

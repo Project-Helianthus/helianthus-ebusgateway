@@ -148,6 +148,9 @@ func cylinderTemperatureNative(o cylinderTemperatureObservation, c cylinderTempe
 			return 0, "unknown native binding"
 		}
 	}
+	if o.EvidenceStatus != "Proven" && o.EvidenceStatus != "Hypothesis" && o.EvidenceStatus != "Unknown" {
+		return 0, "invalid native evidence grade"
+	}
 	if id.Evidence.Validate() != nil {
 		return 0, "invalid native evidence"
 	}

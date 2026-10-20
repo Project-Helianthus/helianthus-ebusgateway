@@ -106,9 +106,9 @@ func TestI34NativeVectors(t *testing.T) {
 	}
 }
 
-// Each path is a separate mutant obligation: omit only that member from the
-// observation/codec/retention equality fence. Expected rejection is independent
-// of the implementation's native decoder and selector checks.
+// These end-to-end identity cases retain separate selector and evidence fields.
+// Native validation also rejects some prior codecs, so these cases alone do not
+// independently discriminate every retention comparison; TestP17 adds helpers.
 var i34IdentityPaths = []string{
 	"Selector.PB", "Selector.SB", "Selector.Opcode", "Selector.Operation", "Selector.Group", "Selector.Instance", "Selector.Register", "Selector.Direction",
 	"Asset", "Service", "Source", "Epoch", "Generation", "Binding", "BindingRevision", "AssociationRevision", "MappingRevision", "Family", "Profile", "ProfileRevision", "RegistryRevision", "CodecRevision", "RequestSource", "RequestDestination",
@@ -127,7 +127,7 @@ func i34Change(id *cylinderTemperatureIdentity, path string) {
 		id.Evidence.Contract = "test.synthetic/v2"
 		return
 	case "Evidence.Access":
-		id.Evidence.Access = semreg.EvidenceAccessRestricted
+		id.Evidence.Access = semreg.EvidenceAccessAuthorized
 		return
 	case "Evidence.Redaction":
 		id.Evidence.Redaction = semreg.RedactionRedacted
@@ -414,6 +414,147 @@ func TestI34NativeValuesAndSelectorIsolation(t *testing.T) {
 		r := i34Map(q, n)
 		if !r.Current || r.Attempt.EvidenceStatus != grade || r.Withheld == "" {
 			t.Fatal("evidence grade confused with qualification")
+		}
+	}
+}
+
+func TestP17EvidenceGrades(t *testing.T) {
+	for _, grade := range []string{"", "Bogus", "Proven", "Hypothesis", "Unknown"} {
+		t.Run("grade_"+grade, func(t *testing.T) {
+			valid := grade == "Proven" || grade == "Hypothesis" || grade == "Unknown"
+			for _, qualified := range []bool{true, false} {
+				t.Run(map[bool]string{true: "qualified", false: "unqualified"}[qualified], func(t *testing.T) {
+					q, n := i34Fixture()
+					q.Attempt.EvidenceStatus = grade
+					q.Codec.Qualified = qualified
+					r := i34Map(q, n)
+					if r.Current != (valid && qualified) || (r.LastGood != nil) != (valid && qualified) || r.Attempt.EvidenceStatus != grade {
+						t.Fatalf("grade supplied qualification or malformed metadata admitted: %+v", r)
+					}
+					if !valid && r.Loss != "invalid native evidence grade" {
+						t.Fatalf("invalid grade not diagnosed independently: %q", r.Loss)
+					}
+					if valid && !qualified && r.Loss != "unqualified codec identity" {
+						t.Fatalf("valid grade supplied qualification: %q", r.Loss)
+					}
+				})
+			}
+			q, n := i34Fixture()
+			i34Prior(&q)
+			q.Previous.Observation.EvidenceStatus = grade
+			q.Attempt = nil
+			r := i34Map(q, n)
+			if (r.LastGood != nil) != valid || r.Structural != valid || r.History == nil || r.History.Observation.EvidenceStatus != grade {
+				t.Fatalf("prior grade retention lost validation or diagnostic history: %+v", r)
+			}
+		})
+	}
+}
+
+func TestP17PreviousCodecFields(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		change      func(*cylinderTemperatureCodec)
+		nativeValid bool
+	}{
+		{"Qualified", func(c *cylinderTemperatureCodec) { c.Qualified = false }, false},
+		{"BoundsKnown", func(c *cylinderTemperatureCodec) { c.BoundsKnown = false }, false},
+		{"Encoding", func(c *cylinderTemperatureCodec) { c.Encoding = "f32-be" }, true},
+		{"Unit", func(c *cylinderTemperatureCodec) { c.Unit = "unit.kelvin" }, false},
+		{"Minimum", func(c *cylinderTemperatureCodec) { c.Minimum = -19 }, true},
+		{"Maximum", func(c *cylinderTemperatureCodec) { c.Maximum = 299 }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q, n := i34Fixture()
+			i34Prior(&q)
+			q.Attempt = nil
+			if r := i34Map(q, n); r.LastGood == nil || !r.Structural {
+				t.Fatal("equal codec positive control failed")
+			}
+			if !sameCylinderTemperatureCodec(q.Previous.Codec, q.Codec) {
+				t.Fatal("equal helper positive control failed")
+			}
+			tc.change(&q.Previous.Codec)
+			// Both supported encodings represent the same independent expected value.
+			if tc.name == "Encoding" {
+				q.Previous.Observation.ValueBytes = []byte{0x41, 0x48, 0, 0}
+			}
+			value, loss := cylinderTemperatureNative(q.Previous.Observation, q.Previous.Codec)
+			if (loss == "") != tc.nativeValid || (tc.nativeValid && value != 12.5) {
+				t.Fatalf("unexpected native masking: value=%v loss=%q", value, loss)
+			}
+			// Qualified, BoundsKnown and Unit are redundant end-to-end guards;
+			// the helper assertion independently discriminates those comparisons.
+			if sameCylinderTemperatureCodec(q.Previous.Codec, q.Codec) || sameCylinderTemperatureCodec(q.Codec, q.Previous.Codec) {
+				t.Fatal("changed codec field compared equal")
+			}
+			r := i34Map(q, n)
+			if r.LastGood != nil || r.Structural || r.History == nil || !reflect.DeepEqual(r.History, q.Previous) {
+				t.Fatal("changed prior codec retained or diagnostic evidence lost")
+			}
+		})
+	}
+}
+
+func TestP17CompleteCodecIdentity(t *testing.T) {
+	for _, path := range i34IdentityPaths {
+		t.Run(path, func(t *testing.T) {
+			q, _ := i34Fixture()
+			other := q.Codec
+			if !sameCylinderTemperatureCodec(q.Codec, other) {
+				t.Fatal("equal codec identity positive control failed")
+			}
+			i34Change(&other.Identity, path)
+			if other.Identity.Evidence.Validate() != nil {
+				t.Fatal("identity alternative has malformed evidence")
+			}
+			// Selector alternatives need not be admitted by the native decoder:
+			// this directly tests equality of otherwise well-formed codec metadata.
+			if sameCylinderTemperatureCodec(q.Codec, other) || sameCylinderTemperatureCodec(other, q.Codec) {
+				t.Fatal("codec identity field omitted from equality")
+			}
+		})
+	}
+}
+
+func TestP17ClockEpochOwnerBoundary(t *testing.T) {
+	q, n := i34Fixture()
+	i34Prior(&q)
+	original := cloneCylinderRecord(q.Previous)
+	if r := i34Map(q, n); !r.Current {
+		t.Fatal("same epoch positive control failed")
+	}
+	// The sample, FM5 and evaluation agree on the new epoch, isolating the
+	// comparison with the retained receipt rather than the freshness guard.
+	q.Attempt.Receipt.ClockEpochID = "clock:new-synthetic"
+	q.FM5.Receipt.ClockEpochID = "clock:new-synthetic"
+	n.ClockEpochID = "clock:new-synthetic"
+	r := i34Map(q, n)
+	if r.Current || r.NativeValue != nil || r.Loss != "receipt replay or clock change" || !r.Structural || !reflect.DeepEqual(r.LastGood, original) || !reflect.DeepEqual(r.History, original) {
+		t.Fatalf("old binding crossed clock epoch or lost history: %+v", r)
+	}
+	// Only the owner supplies this new binding; the mapper never invents it.
+	q.Identity.Binding = "binding:new-synthetic"
+	q.Attempt.Identity = q.Identity
+	q.Codec.Identity = q.Identity
+	r = i34Map(q, n)
+	if !r.Current || !r.Structural || r.Loss != "" || r.NativeValue == nil || *r.NativeValue != 0 || r.LastGood == nil || r.LastGood.Observation.Identity.Binding != "binding:new-synthetic" || r.LastGood.Observation.Receipt.ClockEpochID != "clock:new-synthetic" || !reflect.DeepEqual(r.History, original) {
+		t.Fatalf("owner boundary did not recover detached current evidence: %+v", r)
+	}
+}
+
+func TestP17HigherInstanceCallerQualification(t *testing.T) {
+	for _, instance := range []byte{2, 255} {
+		for _, qualified := range []bool{true, false} {
+			q, n := i34Fixture()
+			q.Identity.Selector.Instance = instance
+			q.Attempt.Identity = q.Identity
+			q.Codec.Identity = q.Identity
+			q.Codec.Qualified = qualified
+			r := i34Map(q, n)
+			if r.Current != qualified || (r.LastGood != nil) != qualified || r.Identity.Selector.Instance != instance || r.Withheld == "" {
+				t.Fatalf("instance %d bypassed caller qualification or gained projection: %+v", instance, r)
+			}
 		}
 	}
 }

@@ -1600,7 +1600,8 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	direct := func(at uint64) {
+	// Build fixtures on the test goroutine: synthBatch can call Fatal.
+	prepareDirect := func(at uint64) semreg.PublicationBatch {
 		t.Helper()
 		tx, err := hub.Begin(otherHandle, otherAsset)
 		if err != nil {
@@ -1608,45 +1609,65 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 		}
 		defer tx.Abort()
 		snap, _ := tx.Current()
-		seq := tx.NextSequence()
-		batch := synthBatch(t, snap, otherAsset, otherHandle, seq, int64(at), at)
+		return synthBatch(t, snap, otherAsset, otherHandle, tx.NextSequence(), int64(at), at)
+	}
+	direct := func(batch semreg.PublicationBatch, at uint64) error {
+		tx, err := hub.Begin(otherHandle, otherAsset)
+		if err != nil {
+			return fmt.Errorf("direct begin: %w", err)
+		}
+		defer tx.Abort()
 		if _, _, err := tx.Apply(batch, monoAt(at)); err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("direct apply: %w", err)
 		}
 		if outcome, err := tx.Commit(nil); err != nil || outcome != semhub.Accepted {
-			t.Fatalf("direct publication: %v %v", outcome, err)
+			return fmt.Errorf("direct publication: %v %v", outcome, err)
 		}
+		return nil
 	}
-	direct(uint64(time.Second))
-	checks := func(at uint64, release <-chan struct{}) {
-		assertStalled := func() {
-			t.Helper()
+	if err := direct(prepareDirect(uint64(time.Second)), uint64(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	checks := func(batch semreg.PublicationBatch, at uint64, release <-chan struct{}) error {
+		assertStalled := func() error {
 			select {
 			case <-release:
-				t.Fatal("write released before read checks completed")
+				return errors.New("write released before read checks completed")
 			default:
+				return nil
 			}
 		}
-		assertStalled()
+		if err := assertStalled(); err != nil {
+			return err
+		}
 		for i := 0; i < 20; i++ {
 			if !hub.Admitted(otherAsset) || !hub.ReadAdmitted(otherAsset) {
-				t.Fatal("other family read closed")
+				return errors.New("other family read closed")
 			}
-			assertStalled()
+			if err := assertStalled(); err != nil {
+				return err
+			}
 			if view, err := hub.Inspect(semreg.AssetID(synthAssets[1])); err != nil || !view.Present {
-				t.Fatal("managed inspect failed")
+				return fmt.Errorf("managed inspect failed: present=%v error=%v", view.Present, err)
 			}
-			assertStalled()
+			if err := assertStalled(); err != nil {
+				return err
+			}
 			if _, err := w.m.ControlSnapshot(); err != nil {
-				t.Fatal(err)
+				return fmt.Errorf("control snapshot: %w", err)
 			}
-			assertStalled()
+			if err := assertStalled(); err != nil {
+				return err
+			}
 		}
-		direct(at)
-		assertStalled()
+		if err := direct(batch, at); err != nil {
+			return err
+		}
+		return assertStalled()
 	}
 	runStalled := func(phase string, at uint64, entered, release chan struct{}, write func() error) {
 		t.Helper()
+		batch := prepareDirect(at)
 		var releaseOnce sync.Once
 		unblock := func() { releaseOnce.Do(func() { close(release) }) }
 		wait := func(done <-chan struct{}, what string) bool {
@@ -1666,6 +1687,8 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 			writeErr = write()
 		}()
 		var readsDone chan struct{}
+		readResult := make(chan error, 1)
+		resultReceived := false
 		defer func() {
 			// Release first on every failure path so blocked readers and the
 			// writer can finish before the fixture's cleanup runs.
@@ -1673,8 +1696,10 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 			if wait(writeDone, "writer to join") && writeErr != nil {
 				t.Errorf("%s: durable write: %v", phase, writeErr)
 			}
-			if readsDone != nil {
-				wait(readsDone, "read checks to join")
+			if readsDone != nil && wait(readsDone, "read checks to join") && !resultReceived {
+				if err := <-readResult; err != nil {
+					t.Errorf("%s: read checks: %v", phase, err)
+				}
 			}
 		}()
 		if !wait(entered, "write to reach store") {
@@ -1683,10 +1708,15 @@ func TestRecoveryStalledDurableWriteKeepsOtherFamilyAdmittedReads(t *testing.T) 
 		readsDone = make(chan struct{})
 		go func() {
 			defer close(readsDone)
-			checks(at, release)
+			readResult <- checks(batch, at, release)
 		}()
 		if !wait(readsDone, "read checks while write remains stalled") {
 			t.FailNow()
+		}
+		readErr := <-readResult
+		resultReceived = true
+		if readErr != nil {
+			t.Fatalf("%s: read checks: %v", phase, readErr)
 		}
 		// Both the operations and their ordering sentinels have completed.
 		unblock()

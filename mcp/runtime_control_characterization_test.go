@@ -133,7 +133,68 @@ func ctlCases() []ctlCase {
 		daemon:  ServiceStatus{Status: "running", FirmwareVersion: "0.0.0-char", UpdatesAvailable: true, InitiatorAddress: "0x1A"},
 		adapter: ServiceStatus{Status: "running", FirmwareVersion: "char-adapter-1"},
 	}
+	// G5 shell integration (issue #1222): the production status provider
+	// gates adapter status on current native admission. With eBUS STOPPED
+	// (or not yet admitted) the retained firmware stays visible unchanged,
+	// the adapter is not reported running, the admitted initiator is
+	// withdrawn and daemon status still describes the process.
+	stoppedRetained := ctlStatusProvider{
+		daemon:  ServiceStatus{Status: "running", FirmwareVersion: "0.0.0-char", InitiatorAddress: "auto"},
+		adapter: ServiceStatus{Status: "stopped", FirmwareVersion: "char-adapter-1"},
+	}
+	unavailableRetained := ctlStatusProvider{
+		daemon:  ServiceStatus{Status: "running", FirmwareVersion: "0.0.0-char", InitiatorAddress: "auto"},
+		adapter: ServiceStatus{Status: "unavailable", FirmwareVersion: "char-adapter-1"},
+	}
+	degradedTask := ctlStatusProvider{
+		daemon:  ServiceStatus{Status: "running", FirmwareVersion: "0.0.0-char", InitiatorAddress: "0x1A"},
+		adapter: ServiceStatus{Status: "degraded", FirmwareVersion: "char-adapter-1", Condition: "generation task ebus.passive-observe-first failed"},
+	}
 	return []ctlCase{
+		{
+			name:        "runtime_status_degraded_failed_startup_task",
+			changesWhen: "a failed start-critical eBUS generation task stops being presented as a degraded adapter condition naming the task",
+			tool:        toolRuntimeStatusGetName, args: `{}`,
+			configure: func(server *Server) {
+				server.SetStatusProvider(ctlCapabilityStatusProvider{ctlStatusProvider: degradedTask, capability: "PRESENT"})
+			},
+		},
+		{
+			name:        "runtime_status_stopped_retained_firmware",
+			changesWhen: "the adapter status vocabulary for a natively unadmitted adapter changes, or retained firmware stops being shown while stopped",
+			tool:        toolRuntimeStatusGetName, args: `{}`,
+			configure: func(server *Server) {
+				server.SetStatusProvider(ctlCapabilityStatusProvider{ctlStatusProvider: stoppedRetained, capability: "PRESENT"})
+			},
+		},
+		{
+			name:        "runtime_status_unavailable_retained_firmware",
+			changesWhen: "the adapter status vocabulary for a starting, backing-off or failed adapter changes",
+			tool:        toolRuntimeStatusGetName, args: `{}`,
+			configure: func(server *Server) {
+				server.SetStatusProvider(ctlCapabilityStatusProvider{ctlStatusProvider: unavailableRetained, capability: "PRESENT"})
+			},
+		},
+		{
+			name:        "bus_summary_retained_while_stopped",
+			changesWhen: "STOP starts clearing, moving or relabelling process-scoped bus observability (S7 forbids it); capture pauses and the last admission record keeps its provenance and age",
+			tool:        toolBusSummaryGetName, args: `{}`,
+			configure: func(server *Server) {
+				server.SetBusObservabilityProvider(ctlBusProvider{snapshot: ctlBusSnapshot(&BusAdmissionSourceSelection{
+					State: "active", Mode: "source_selection", Outcome: "active_probe_passed",
+					SelectedSource: ctlUint8(0x1A), CompanionTarget: ctlUint8(0x1F),
+					ActiveProbe: &BusAdmissionActiveProbe{Target: ctlUint8(0x2A), Opcode: "07 04", Status: "passed"},
+				}, "live")})
+			},
+		},
+		{
+			name:        "identification_evidence_retained_while_stopped",
+			changesWhen: "STOP starts clearing or re-stamping retained identification evidence (S7 forbids it); records keep native identity, session, sequence and capture time",
+			tool:        toolBusIdentificationEvidenceListName, args: `{}`,
+			configure: func(server *Server) {
+				server.SetIdentificationEvidenceProvider(ctlEvidenceProvider{snapshot: ctlIdentificationEvidence()})
+			},
+		},
 		{
 			name:        "runtime_status_default_provider",
 			changesWhen: "1a.2 registry seam installs a non-static default status provider or adds driver lifecycle fields to runtime status",
@@ -349,4 +410,34 @@ func TestRuntimeControlCharacterizationMCPPayloads(t *testing.T) {
 		}
 	}
 	t.Errorf("golden mismatch; regenerate with -update-characterization after review")
+}
+
+// TestRuntimeControlCharacterizationS7RetainedEvidenceAcrossStop pins the S7
+// rule at the MCP surface: with capture paused (no admitted generation) the
+// retained bus summary and identification evidence project exactly as they
+// did while admitted, with the same shapes, classification, provenance and
+// capture times; STOP adds no lifecycle field and relabels nothing.
+func TestRuntimeControlCharacterizationS7RetainedEvidenceAcrossStop(t *testing.T) {
+	cases := map[string]ctlCase{}
+	for _, tc := range ctlCases() {
+		cases[tc.name] = tc
+	}
+	for retained, admitted := range map[string]string{
+		"bus_summary_retained_while_stopped":             "bus_summary_admission_active",
+		"identification_evidence_retained_while_stopped": "identification_evidence_list",
+	} {
+		envelopes := map[string][]byte{}
+		for _, name := range []string{retained, admitted} {
+			tc := cases[name]
+			server, err := NewServer(registry.NewDeviceRegistry(nil), &testInvoker{})
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+			tc.configure(server)
+			envelopes[name], _ = json.Marshal(ctlCallNormalized(t, server, tc.tool, tc.args))
+		}
+		if string(envelopes[retained]) != string(envelopes[admitted]) {
+			t.Errorf("%s differs from %s:\n stopped: %s\nadmitted: %s", retained, admitted, envelopes[retained], envelopes[admitted])
+		}
+	}
 }

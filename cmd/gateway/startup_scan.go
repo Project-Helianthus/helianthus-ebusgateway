@@ -143,6 +143,10 @@ type startupScanSignals struct {
 	semanticBootstrapReady <-chan struct{}
 	activeProbePassed      <-chan struct{}
 	admissionFailed        <-chan struct{}
+	// done closes when the scan loop goroutine has returned (immediately when
+	// no loop starts), so a generation-owned caller can join it. A nil done
+	// (a replaced scan seam) means no loop is owned by the caller.
+	done <-chan struct{}
 }
 
 type ebusdScanResultRow struct {
@@ -502,6 +506,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 			close(activeProbePassed)
 		})
 	}
+	loopDone := make(chan struct{})
 	admissionFailed := make(chan struct{})
 	var admissionFailedOnce sync.Once
 	signalAdmissionFailed := func() {
@@ -520,11 +525,13 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 			signalActiveProbePassed()
 		}
 		signalSemanticBootstrapReady()
+		close(loopDone)
 		return startupScanSignals{
 			firstPassDone:          firstPassDone,
 			semanticBootstrapReady: semanticBootstrapReady,
 			activeProbePassed:      activeProbePassed,
 			admissionFailed:        admissionFailed,
+			done:                   loopDone,
 		}
 	}
 	if ctx == nil {
@@ -551,6 +558,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 	}
 
 	go func() {
+		defer close(loopDone)
 		defer func() {
 			signalFirstPassDone()
 			signalSemanticBootstrapReady()
@@ -901,6 +909,7 @@ func startDiscoveryScanLoopWithClassifier(ctx context.Context, cfg ebusgateway.C
 		semanticBootstrapReady: semanticBootstrapReady,
 		activeProbePassed:      activeProbePassed,
 		admissionFailed:        admissionFailed,
+		done:                   loopDone,
 	}
 }
 
@@ -943,6 +952,10 @@ func scheduleDelayedIdentityRetryIfNeeded(ctx context.Context, gateway *ebusgate
 	return true
 }
 
+// postStartupIdentityRetryWG tracks delayed identity enrichment goroutines so
+// the generation that launched them can join them before a successor starts.
+var postStartupIdentityRetryWG sync.WaitGroup
+
 func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.Gateway, builder *graphql.Builder, cfg ebusgateway.Config, targetConfig *ebusgateway.TransportConfig) {
 	if gateway == nil || gateway.Registry == nil {
 		return
@@ -960,7 +973,9 @@ func schedulePostStartupIdentityRetry(ctx context.Context, gateway *ebusgateway.
 		attempts = 1
 	}
 
+	postStartupIdentityRetryWG.Add(1)
 	go func() {
+		defer postStartupIdentityRetryWG.Done()
 		wait := time.NewTimer(delay)
 		defer wait.Stop()
 

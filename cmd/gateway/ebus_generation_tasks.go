@@ -14,11 +14,10 @@ import (
 )
 
 // This file is the generation-owned post-start task runner of the
-// lifecycle-only ebus.primary driver. It is callable composition only:
-// nothing in process startup constructs it, and the existing post-start
-// scan, polling, revalidation, promotion and source-validation code paths
-// are unchanged. Shell integration supplies the tasks, which wrap those
-// existing native functions.
+// lifecycle-only ebus.primary driver. Process startup (gateway_run_setup.go
+// and gateway_run_lifecycle.go) installs it with four ordered tasks that
+// wrap the existing post-start scan, polling, revalidation, promotion and
+// source-validation functions.
 //
 // Ownership split:
 //   - The runner owns task startup, cancellation, completion and join for
@@ -69,7 +68,10 @@ type ebusGenerationKey struct {
 
 func (key ebusGenerationKey) complete() bool {
 	c := key.Control
-	return c.DriverID != "" && c.SourceID != "" && c.Epoch != "" && c.Generation != 0 && c.Sequence != 0 && key.Native != 0
+	// Sequence 0 is the process-start (untyped) attempt of desired RUNNING,
+	// which has no typed slot; the epoch and the process-monotonic native
+	// generation still make the key unique.
+	return c.DriverID != "" && c.SourceID != "" && c.Epoch != "" && c.Generation != 0 && key.Native != 0
 }
 
 // ebusGenerationTask is one post-start action. Run is invoked at most once
@@ -656,6 +658,18 @@ func (scope *ebusGenerationScope) Callback(fn func()) func() bool {
 // It refuses (false) once the generation is fenced or unadmitted. fn
 // receives the generation context.
 func (scope *ebusGenerationScope) Go(fn func(context.Context)) bool {
+	return scope.launch(fn, false)
+}
+
+// GoJoin registers a join obligation: like Go, but fn runs even when the
+// generation is fenced between acceptance and execution, so the obligation
+// it awaits is never reported complete without being awaited. fn receives
+// the generation context, which is cancelled once the generation is fenced.
+func (scope *ebusGenerationScope) GoJoin(fn func(context.Context)) bool {
+	return scope.launch(fn, true)
+}
+
+func (scope *ebusGenerationScope) launch(fn func(context.Context), unconditional bool) bool {
 	run := scope.run
 	runner := run.runner
 	unit := scope.task + "/go"
@@ -678,7 +692,7 @@ func (scope *ebusGenerationScope) Go(fn func(context.Context)) bool {
 		runner.gate.RLock()
 		live := run.liveLocked()
 		runner.gate.RUnlock()
-		if live {
+		if live || unconditional {
 			fn(run.ctx)
 		}
 	}()

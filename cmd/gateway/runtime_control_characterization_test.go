@@ -346,10 +346,13 @@ func TestRuntimeControlCharacterizationSlowAndFailingBootstrapShell(t *testing.T
 			changesBy: "1b durable control changes WaitRunning gating while the driver is in BACKOFF",
 		},
 		{
+			// G5 shell integration (#1222): post-start work is owned by an
+			// admitted generation, so a failing endpoint runs none of it
+			// with or without startup scan; the shell still starts.
 			name:      "failing_construction_without_startup_scan",
-			options:   rccLifecycleOptions{dial: rccDialFailing, scanOnStart: false, cancelAt: "background"},
-			want:      shellPrefix + " -> semantic_poller -> discovery_scan(admitted=false) -> background_full_scan",
-			changesBy: "1b durable control gates the non-scan startup path on driver health (today it proceeds without WaitRunning)",
+			options:   rccLifecycleOptions{dial: rccDialFailing, scanOnStart: false, cancelAt: "http"},
+			want:      shellPrefix,
+			changesBy: "a later change runs post-start eBUS work without an admitted generation",
 		},
 	}
 	for _, tc := range cases {

@@ -89,6 +89,7 @@ func TestRun_AddressTableInserterWiresThroughPassiveReconstructor(t *testing.T) 
 	cfg.ScanSourceAuto = false
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()

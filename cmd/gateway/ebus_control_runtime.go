@@ -18,9 +18,9 @@ import (
 )
 
 // This file is the S4 manager-to-hub bridge for the lifecycle-only
-// ebus.primary driver. It is callable composition only: nothing in process
-// startup constructs it, registers ebus.primary with the control service or
-// wires a shell, and it carries no authorization.
+// ebus.primary driver. Process startup (gateway_run_setup.go) binds it to
+// the eBUS DriverManager before anything starts the manager and registers
+// it as the control service's executor; it carries no authorization.
 //
 // Ownership split:
 //   - DriverManager alone owns native attempts, retry/backoff, drain and
@@ -185,6 +185,12 @@ type ebusControlRuntime struct {
 	dispatchMu sync.Mutex
 	// beforeDispatch is a test seam run before a start dispatch.
 	beforeDispatch func()
+	// admitGate, when set before the manager starts, runs in the admission
+	// hold of a manager-driven same-epoch replacement, outside every bridge
+	// and manager lock and before any hub work. An error keeps the
+	// replacement unadmitted (the generation-task drain of the predecessor
+	// has not joined); the manager retries it as a dependency failure.
+	admitGate func(context.Context) error
 
 	mu          sync.Mutex
 	prepared    bool
@@ -244,6 +250,12 @@ func newEBusControlRuntime(cfg ebusControlConfig) (*ebusControlRuntime, error) {
 		return nil, err
 	}
 	return bridge, nil
+}
+
+// SetAdmitGate installs the replacement admission gate. It must be called
+// before anything starts the manager.
+func (bridge *ebusControlRuntime) SetAdmitGate(gate func(context.Context) error) {
+	bridge.admitGate = gate
 }
 
 // Prepare admits the configured source's inert first epoch (generation 1)
@@ -753,6 +765,13 @@ func (bridge *ebusControlRuntime) holdAdmission(ctx context.Context, hold driver
 		return err
 	}
 
+	if replacement && bridge.admitGate != nil {
+		if err := bridge.admitGate(ctx); err != nil {
+			// Classified by the driver as a retryable dependency failure, so
+			// DriverManager retries the replacement within its own budget.
+			return fmt.Errorf("ebus control: replacement admission gate: %w", err)
+		}
+	}
 	if replacement {
 		// Same-epoch manager retry or failure replacement: the epoch is kept
 		// and the driver generation advances through the hub's Fence/Activate

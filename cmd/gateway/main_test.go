@@ -480,6 +480,7 @@ func TestRun_AttachesPassiveShadowProducerWhenObserveFirstLaneEnabled(t *testing
 	cfg.ObserveFirstEnabled = true
 	cfg.PassiveStateDirectApply = true
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		runErr = run(ctx, cfg)
 		close(done)
@@ -663,6 +664,7 @@ func TestRun_ProxySingleENSAutoUsesDefaultSelectionBeforeProxyResolution(t *test
 	cfg.TransportConfig.Network = "tcp"
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		defer close(done)
 		runErr = run(ctx, cfg)
@@ -796,12 +798,12 @@ func TestRun_DefaultSourceSelectionSeedsStartupProbeTargets(t *testing.T) {
 	cfg.TransportConfig.Protocol = ebusgateway.TransportENS
 	// Disable release discovery; transport and HTTP remain in memory.
 	cfg.HTTPAddr = ""
-	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
 	cfg.BroadcastListen = false
 	cfg.ScanOnStart = true
 	cfg.ScanSource = 0x00
 	cfg.ScanSourceAuto = true
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		defer close(done)
 		runErr = run(ctx, cfg)
@@ -923,6 +925,7 @@ func TestRun_ConfiguredDirectSourceSeedsStartupProbeTargets(t *testing.T) {
 			cfg.ScanSource = tc.source
 			cfg.ScanSourceAuto = false
 
+			withRuntimeControlTestState(t, &cfg)
 			go func() {
 				defer close(done)
 				runErr = run(ctx, cfg)
@@ -1029,6 +1032,7 @@ func TestRun_DefersSemanticBootstrapUntilStartupConfirmationReadyOnPassiveObserv
 	cfg.ScanOnStart = true
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()
@@ -1135,6 +1139,7 @@ func TestRun_OverrideClosesSemanticBarrierOnAdmissionFailure(t *testing.T) {
 	cfg.StartupSource.Source = &overrideSource
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()
@@ -1238,6 +1243,7 @@ func TestRun_DoesNotDeferSemanticBootstrapOutsidePassiveObserveFirst(t *testing.
 	cfg.ScanOnStart = true
 	cfg.BroadcastListen = false
 
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		defer close(done)
 		runErr = run(ctx, cfg)
@@ -1306,6 +1312,7 @@ func TestRun_WaitsForStartupScanFirstPassBeforePassiveObserveFirst(t *testing.T)
 	cfg.ScanOnStart = true
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() {
 		done <- run(ctx, cfg)
 	}()

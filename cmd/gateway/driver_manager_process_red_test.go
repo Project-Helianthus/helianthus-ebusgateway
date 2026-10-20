@@ -70,6 +70,7 @@ func TestIssue851RunKeepsHTTPShellAliveWhenEBusConstructionFails(t *testing.T) {
 	cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
 
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() { done <- run(ctx, cfg) }()
 	select {
 	case <-httpStarted:
@@ -142,6 +143,7 @@ func TestIssue851HTTPShellStartsWhileEBusConstructionIsBlocked(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() { done <- run(ctx, cfg) }()
 	select {
 	case <-dialStarted:
@@ -233,6 +235,7 @@ func TestIssue851DelayedHealthyDriverWakesOneImmediateStartupScan(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() { done <- run(ctx, cfg) }()
 	select {
 	case <-dialStarted:
@@ -333,6 +336,7 @@ func TestIssue851HTTPShellStartsBeforeENHSourceSelectionWarmup(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	withRuntimeControlTestState(t, &cfg)
 	go func() { done <- run(ctx, cfg) }()
 	select {
 	case <-dialStarted:
@@ -438,6 +442,7 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 			cfg.RuntimeStatePath = filepath.Join(t.TempDir(), "runtime-state.json")
 
 			done := make(chan error, 1)
+			withRuntimeControlTestState(t, &cfg)
 			go func() { done <- run(ctx, cfg) }()
 			var httpResult runtimeObservation
 			select {
@@ -460,15 +465,16 @@ func TestIssue851RunCanonicalizesURIOverrideForAllRuntimePolicies(t *testing.T) 
 			default:
 				t.Fatal("observer wiring did not receive runtime config")
 			}
+			// G5 (#1222): discovery and source admission are owned by an
+			// admitted eBUS generation; with a failing endpoint neither runs.
 			select {
 			case discoveryResult := <-discoveryObserved:
-				assertCanonical("discovery", discoveryResult.cfg)
-				if discoveryResult.admitted != test.wantAdmission || discoveryResult.source != test.wantSource {
-					t.Fatalf("discovery admitted source = 0x%02X admitted=%v, want 0x%02X/%v", discoveryResult.source, discoveryResult.admitted, test.wantSource, test.wantAdmission)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("discovery did not receive runtime config")
+				t.Fatalf("discovery ran without an admitted eBUS generation (admitted=%v)", discoveryResult.admitted)
+			case <-time.After(100 * time.Millisecond):
 			}
+			_ = test.wantAdmission
+			_ = test.wantSource
+			cancel()
 			if httpResult.admitted || httpResult.source != 0 {
 				t.Fatalf("early HTTP admitted source = 0x%02X admitted=%v, want fail-closed 0x00/false", httpResult.source, httpResult.admitted)
 			}

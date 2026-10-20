@@ -122,7 +122,7 @@ func startHTTPServer(
 		}
 	}
 	mcpServer.SetAdmittedRPCSourceProvider(ebusSourceProvider)
-	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForBuild(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable))
+	mcpServer.SetStatusProvider(newMCPRuntimeStatusProviderForControl(semanticProvider, ebusSourceProvider, buildInfo, daemonUpdatesAvailable, ebusAdapterLifecycleStatus(ebusDriver), ebusAdapterConditionFor(ebusDriver)))
 	if busObservability != nil {
 		mcpServer.SetBusObservabilityProvider(newMCPBusObservabilityProvider(busObservability))
 	}

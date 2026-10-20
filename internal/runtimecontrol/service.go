@@ -754,9 +754,10 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 
 // ambiguousDecision is a planned decision whose commit outcome is unknown.
 type ambiguousDecision struct {
-	method   Method
-	expected DesiredRevision
-	fence    bool
+	method    Method
+	expected  DesiredRevision
+	fence     bool
+	resolving bool
 }
 
 // resolveAmbiguous settles the held decisions of the given drivers once the
@@ -782,17 +783,19 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 	for _, d := range ds {
 		d.mu.Lock()
 		amb := d.ambiguous
-		d.mu.Unlock()
-		if amb == nil {
+		if amb == nil || amb.resolving {
+			d.mu.Unlock()
 			continue
 		}
+		amb.resolving = true
+		d.mu.Unlock()
 		rec, err := s.store.Driver(d.id)
 		d.mu.Lock()
 		if d.ambiguous != amb {
 			d.mu.Unlock()
 			continue // a concurrent resolution took it
 		}
-		d.ambiguous = nil
+		// Retain ownership until the adopted view and acceptance are published.
 		d.mu.Unlock()
 		if err != nil {
 			// The outcome cannot be read: release without fencing (the
@@ -841,6 +844,7 @@ func (s *Service) releaseDecision(d *driverState, fence bool) {
 			}
 		}
 	}
+	d.ambiguous = nil
 	d.deciding--
 	d.cond.Broadcast()
 	d.mu.Unlock()
@@ -875,7 +879,8 @@ func (s *Service) planner(d *driverState, planned, fence *bool) Planner {
 		if in.Method != MethodStop && (d.quarantined || d.recoveryBlocked) {
 			return Plan{}, &Refusal{Code: RefusalFailedPrecondition, Row: 7, Reason: "quarantine or unresolved recovery blocks admission"}
 		}
-		if d.ambiguous != nil {
+		if d.deciding > 0 || d.ambiguous != nil {
+			// One owner spans planning, store I/O and acceptance publication.
 			// The outcome of this driver's previous decision is still being
 			// settled; deciding on top of it would make adoption unreadable.
 			return Plan{}, &Refusal{Code: RefusalTransitionBusy, Row: 8, Reason: "previous decision outcome is being resolved"}

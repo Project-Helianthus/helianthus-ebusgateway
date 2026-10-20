@@ -533,6 +533,7 @@ func (s *Service) stepStart(d *driverState, t Transition) (bool, time.Duration) 
 	if a == nil || a.sequence != t.Sequence || t.Epoch == "" {
 		next := t
 		if t.Epoch != "" && (t.NativeClosePending || t.SemanticCleanupPending) {
+			s.setCorr(d, s.corr(d, t))
 			settled, err := s.settleObligations(d, t)
 			if err != nil {
 				return s.retryLater()

@@ -592,7 +592,7 @@ func TestRuntimeControlMCPServiceEquivalence(t *testing.T) {
 			} else if errors.Is(wantErr, context.DeadlineExceeded) {
 				wantCode, wantRetriable = string(runtimecontrol.RefusalDeadlineExceeded), true
 			} else {
-				wantCode, wantRetriable = string(runtimecontrol.RefusalUnavailable), true
+				wantCode, wantRetriable = runtimeControlInternalCode, false
 			}
 			if rcErrorCode(got) != wantCode || got.err["retriable"] != wantRetriable || got.err["source_layer"] != "gateway" {
 				t.Fatalf("error = %v; want code %s retriable %v from gateway", got.err, wantCode, wantRetriable)
@@ -979,4 +979,51 @@ func TestRuntimeControlNoForbiddenMembers(t *testing.T) {
 			t.Fatalf("tool %q is outside the plain helianthus.runtime family", tool.Name)
 		}
 	}
+}
+
+func TestRuntimeControlOutsideTableAnswersInternal(t *testing.T) {
+	const message = "control decision outcome is unknown; read back before deciding again"
+	cases := map[string]func(context.Context, runtimecontrol.Method, runtimecontrol.Request) (runtimecontrol.DesiredView, error){
+		"plain_error": func(context.Context, runtimecontrol.Method, runtimecontrol.Request) (runtimecontrol.DesiredView, error) {
+			return runtimecontrol.DesiredView{}, errors.New("boom /synthetic/path")
+		},
+		"unknown_refusal_code": rcRefusal(runtimecontrol.RefusalCode("SYNTHETIC_UNLISTED"), 9, "boom /synthetic/path"),
+	}
+	for name, decide := range cases {
+		t.Run(name, func(t *testing.T) {
+			server, _ := rcServer(t, &rcFake{decide: decide})
+			got := rcHTTP(t, server, rcParams(RuntimeControlStartTool, `{"DriverID":"ebus.primary","ExpectedRevision":"1"}`))
+			if !got.isError || rcErrorCode(got) != "INTERNAL" || got.err["retriable"] != false || got.err["source_layer"] != "gateway" || string(got.data) != "null" {
+				t.Fatalf("answer = %v data %s; want non-retriable INTERNAL with null data", got.err, got.data)
+			}
+			if got.err["message"] != message {
+				t.Fatalf("message = %v; want fixed text", got.err["message"])
+			}
+			if raw, _ := json.Marshal(got.err); strings.Contains(string(raw), "boom") || strings.Contains(string(raw), "/synthetic") {
+				t.Fatalf("error leaks raw text: %s", raw)
+			}
+		})
+	}
+
+	kept := map[string]struct {
+		decide    func(context.Context, runtimecontrol.Method, runtimecontrol.Request) (runtimecontrol.DesiredView, error)
+		code      string
+		retriable bool
+	}{
+		"unavailable_row_0": {rcRefusal(runtimecontrol.RefusalUnavailable, 0, "x"), "UNAVAILABLE", true},
+		"unavailable_row_3": {rcRefusal(runtimecontrol.RefusalUnavailable, 3, "x"), "UNAVAILABLE", true},
+		"wrapped_deadline": {func(context.Context, runtimecontrol.Method, runtimecontrol.Request) (runtimecontrol.DesiredView, error) {
+			return runtimecontrol.DesiredView{}, fmt.Errorf("decide: %w", context.DeadlineExceeded)
+		}, "DEADLINE_EXCEEDED", true},
+	}
+	for name, tc := range kept {
+		t.Run(name, func(t *testing.T) {
+			server, _ := rcServer(t, &rcFake{decide: tc.decide})
+			got := rcHTTP(t, server, rcParams(RuntimeControlStartTool, `{"DriverID":"ebus.primary","ExpectedRevision":"1"}`))
+			if rcErrorCode(got) != tc.code || got.err["retriable"] != tc.retriable {
+				t.Fatalf("answer = %v; want %s retriable %v", got.err, tc.code, tc.retriable)
+			}
+		})
+	}
+	// the nil-service answer is covered by the no-service test above (UNAVAILABLE, retriable).
 }

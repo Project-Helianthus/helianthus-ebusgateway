@@ -1285,9 +1285,9 @@
     "envelope": {
       "data": null,
       "error": {
-        "code": "UNAVAILABLE",
-        "message": "control decision outcome is unavailable; read back before retrying",
-        "retriable": true,
+        "code": "INTERNAL",
+        "message": "control decision outcome is unknown; read back before deciding again",
+        "retriable": false,
         "source_layer": "gateway"
       },
       "is_error": true,

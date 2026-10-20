@@ -331,19 +331,26 @@ func runtimeControlRefusalError(refusal *runtimecontrol.Refusal) *runtimeControl
 	case runtimecontrol.RefusalCounterExhausted:
 		message = "a required revision counter cannot advance"
 	default:
-		return runtimeControlUnknownOutcome()
+		return runtimeControlInternalError()
 	}
 	return &runtimeControlToolError{code: string(refusal.Code), message: message, retriable: refusal.Retryable()}
 }
 
-// runtimeControlUnknownOutcome answers an error outside the refusal table
-// (for example an unresolved readback or a closed service). The decision may
-// or may not have persisted, so the caller reads back before retrying.
-func runtimeControlUnknownOutcome() *runtimeControlToolError {
+// runtimeControlInternalCode is the answer code for an error outside the
+// lifecycle refusal table; the lifecycle codes do not include it.
+const runtimeControlInternalCode = "INTERNAL"
+
+// runtimeControlInternalError answers an error outside the refusal table (for
+// example an unresolved readback or a closed service) and a refusal code the
+// table does not list. The service has already run its own bounded readback,
+// so the answer is not retriable; the caller reads the durable state through
+// list or get before deciding again. UNAVAILABLE stays for the table's
+// transient rows.
+func runtimeControlInternalError() *runtimeControlToolError {
 	return &runtimeControlToolError{
-		code:      string(runtimecontrol.RefusalUnavailable),
-		message:   "control decision outcome is unavailable; read back before retrying",
-		retriable: true,
+		code:      runtimeControlInternalCode,
+		message:   "control decision outcome is unknown; read back before deciding again",
+		retriable: false,
 	}
 }
 
@@ -361,7 +368,7 @@ func runtimeControlFailure(err error) (any, *runtimeControlToolError) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, runtimeControlRefusalError(&runtimecontrol.Refusal{Code: runtimecontrol.RefusalDeadlineExceeded, Row: 5})
 	}
-	return nil, runtimeControlUnknownOutcome()
+	return nil, runtimeControlInternalError()
 }
 
 func runtimeControlResult(data any, toolErr *runtimeControlToolError) map[string]any {

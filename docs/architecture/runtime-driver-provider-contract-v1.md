@@ -962,7 +962,10 @@ returned.
 When the transport supplies none (an HTTP request has none), the adapter
 bounds the call to 10 seconds, longer than the store's bounded namespace-wide
 serialization wait, so contention answers `TRANSITION_BUSY`; an earlier
-caller deadline is kept. The reads take no deadline: they never wait for a
+caller deadline is kept. The service's refusal for a call without a finite
+deadline (refusal row 5, `INVALID_ARGUMENT`) is therefore unreachable through
+MCP by construction: the tools always supply the 10 second default and keep
+an earlier caller deadline. The reads take no deadline: they never wait for a
 store write, a reconciler or a decision.
 
 **Data.** List `data` is exactly `{catalog_revision, drivers}` and get `data`
@@ -1001,12 +1004,15 @@ table's retryable column:
 | `TRANSITION_BUSY` | yes | null |
 | `RESOURCE_EXHAUSTED` | yes | null |
 | `COUNTER_EXHAUSTED` | no | null |
+| `INTERNAL` | no | null |
 
 Messages are fixed categorical texts per code and refusal row; refusal
 reasons and raw errors, which can name storage paths, never reach the wire.
 A service error outside the refusal table (an unresolved readback or a
-closed service) answers `UNAVAILABLE`, retriable after readback, because the
-decision may or may not have persisted.
+closed service), and a refusal code the table does not list, answers
+`INTERNAL`, not retriable, after the service's own readback; the caller reads
+the durable state through list or get before deciding again. `UNAVAILABLE` is
+reserved for the table's transient rows.
 
 **Boundaries.** There is no lifecycle principal, authority adapter or
 authorization check before 0.9, no separate listener or socket and no

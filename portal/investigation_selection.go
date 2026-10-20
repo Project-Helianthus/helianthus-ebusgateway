@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const investigationSelectionMaxBytes = 256 * 1024
@@ -101,8 +102,10 @@ func SelectInvestigationPublic(input []byte, selection InvestigationSelection) (
 		Freshness:   "Unknown",
 		Notes:       []string{"withheld_time", "withheld_identity", "withheld_coordinate", "withheld_secret", "unsafe_raw_evidence", "unreviewed_field", "lineage_unknown", "collection_unknown"},
 	}
-	for path := range selected {
-		result.Diagnostics[path] = InvestigationDiagnosticLoss{}
+	if selection.Timeline {
+		for path := range selected {
+			result.Diagnostics[path] = InvestigationDiagnosticLoss{}
+		}
 	}
 	arrays := map[string][]json.RawMessage{}
 	for _, name := range []string{"snapshots", "timeline", "provenance", "registry_devices"} {
@@ -231,7 +234,35 @@ func investigationObject(raw json.RawMessage) map[string]json.RawMessage {
 
 func investigationString(raw json.RawMessage) string {
 	var value string
-	_ = json.Unmarshal(raw, &value)
+	if !utf8.Valid(raw) || json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	// encoding/json replaces lone surrogates; validate escapes before using IDs.
+	for i := 1; i < len(raw)-1; i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		if raw[i] != 'u' {
+			continue
+		}
+		code, _ := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		i += 4
+		if code >= 0xdc00 && code <= 0xdfff {
+			return ""
+		}
+		if code < 0xd800 || code > 0xdbff {
+			continue
+		}
+		if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+			return ""
+		}
+		low, err := strconv.ParseUint(string(raw[i+3:i+7]), 16, 16)
+		if err != nil || low < 0xdc00 || low > 0xdfff {
+			return ""
+		}
+		i += 6
+	}
 	return value
 }
 
@@ -265,8 +296,15 @@ func investigationPayload(raw json.RawMessage, selected map[string]bool, losses 
 	out := map[string]any{}
 	for path := range selected {
 		parts := strings.Split(path, ".")
-		value, exists := investigationObject(in[parts[0]])[parts[1]]
+		groupRaw, groupPresent := in[parts[0]]
+		inputGroup := investigationObject(groupRaw)
 		loss := losses[path]
+		if groupPresent && inputGroup == nil {
+			loss.Invalid++
+			losses[path] = loss
+			continue
+		}
+		value, exists := inputGroup[parts[1]]
 		if !exists {
 			loss.Missing++
 			losses[path] = loss

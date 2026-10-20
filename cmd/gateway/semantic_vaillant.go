@@ -3960,7 +3960,7 @@ func (p *vaillantSemanticPoller) publishSystem(source semanticSnapshotSource) {
 			ModuleConfigurationVR71: uint16ToIntPtr(snapshot.ModuleConfigurationVR71),
 		},
 	}
-	dhwBound := systemconfig.ResolveDHWBivalenceBound(p.controllerB524Identity())
+	dhwBound := p.controllerConfigBound()
 	current.Config.DhwBivalenceBound = &dhwBound
 
 	switch source {

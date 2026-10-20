@@ -406,3 +406,144 @@ func TestI35CounterOptIns(t *testing.T) {
 		})
 	}
 }
+
+func TestP19UnicodeCorrelations(t *testing.T) {
+	cases := []struct {
+		name, event, provenance string
+		match, alias            bool
+	}{
+		{"escaped-bmp", `"\u00e9"`, `"é"`, true, true},
+		{"literal-bmp", `"é"`, `"\u00e9"`, true, true},
+		{"surrogate-pair", `"\ud83d\ude00"`, `"😀"`, true, true},
+		{"replacement", `"�"`, `"\ufffd"`, true, true},
+		{"escaped-backslash", `"\\ud800"`, `"\\ud800"`, true, true},
+		{"distinct-codepoints", `"é"`, `"e\u0301"`, false, true},
+		{"distinct-event-codepoints", `"e\u0301"`, `"é"`, false, true},
+		{"no-trimming", `" é "`, `"é"`, false, true},
+		{"no-provenance-trimming", `"é"`, `" é "`, false, true},
+		{"high-pair", `"\ud800"`, `"\ud801"`, false, false},
+		{"low-pair", `"\udc00"`, `"\udc01"`, false, false},
+		{"high-before-text", `"\ud800x"`, `"�x"`, false, false},
+		{"high-before-bmp", `"\ud800\u0041"`, `"�A"`, false, false},
+		{"invalid-utf8", "\"\xff\"", "\"\xfe\"", false, false},
+		{"invalid-event", "\"\xff\"", `"�"`, false, false},
+		{"invalid-provenance", `"�"`, "\"\xff\"", false, true},
+		{"surrogate-event", `"\ud800"`, `"�"`, false, false},
+		{"surrogate-provenance", `"�"`, `"\ud800"`, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(`{"evidence":{"timeline":[{"correlation_id":` + tc.event + `,"payload":{}}],"provenance":[{"correlation_id":` + tc.provenance + `}]}}`)
+			result := i35Select(t, raw, InvestigationSelection{Timeline: true, Provenance: true})
+			event := result.Evidence["timeline"][0]
+			alias, present := event["correlation_id"]
+			if present != tc.alias || (present && alias != "event-1") {
+				t.Fatal(event)
+			}
+			wantCount := 0
+			if tc.match {
+				wantCount = 1
+			}
+			if len(result.Evidence["provenance"]) != wantCount {
+				t.Fatal(result)
+			}
+			if tc.match && result.Evidence["provenance"][0]["correlation_id"] != "event-1" {
+				t.Fatal(result)
+			}
+			// Direct oracle covers validation independently of occurrence/matching guards.
+			if !tc.alias && investigationString(json.RawMessage(tc.event)) != "" {
+				t.Fatal("malformed event decoded")
+			}
+		})
+	}
+	// An invalid event must not steal the unique alias of a valid replacement ID.
+	raw := []byte(`{"evidence":{"timeline":[{"correlation_id":"\ud800"},{"correlation_id":"�"}],"provenance":[{"correlation_id":"�"}]}}`)
+	result := i35Select(t, raw, InvestigationSelection{Timeline: true, Provenance: true})
+	if _, ok := result.Evidence["timeline"][0]["correlation_id"]; ok {
+		t.Fatal(result)
+	}
+	if result.Evidence["timeline"][1]["correlation_id"] != "event-2" || len(result.Evidence["provenance"]) != 1 || result.Evidence["provenance"][0]["correlation_id"] != "event-2" {
+		t.Fatal(result)
+	}
+}
+
+func TestP19DiagnosticExamination(t *testing.T) {
+	for _, timeline := range []bool{false, true} {
+		for _, group := range []string{`"x"`, `null`, `[]`, `true`, `3`, `{}`, `{"has_dhw":false}`} {
+			t.Run(group+map[bool]string{false: "/unexamined", true: "/examined"}[timeline], func(t *testing.T) {
+				raw := []byte(`{"evidence":{"timeline":[{"payload":{"semantic":` + group + `}}]}}`)
+				result := i35Select(t, raw, InvestigationSelection{Timeline: timeline, Diagnostics: []string{"semantic.has_dhw"}})
+				if !timeline {
+					if len(result.Diagnostics) != 0 {
+						t.Fatal("unexamined diagnostics", result.Diagnostics)
+					}
+					return
+				}
+				want := InvestigationDiagnosticLoss{Invalid: 1}
+				if group == `{}` {
+					want = InvestigationDiagnosticLoss{Missing: 1}
+				}
+				if group == `{"has_dhw":false}` {
+					want = InvestigationDiagnosticLoss{}
+				}
+				if got, ok := result.Diagnostics["semantic.has_dhw"]; !ok || got != want {
+					t.Fatal(result)
+				}
+			})
+		}
+	}
+	result := i35Select(t, []byte(`{"evidence":{"timeline":[{"payload":{}}]}}`), InvestigationSelection{Timeline: true, Diagnostics: []string{"semantic.has_dhw"}})
+	if result.Diagnostics["semantic.has_dhw"] != (InvestigationDiagnosticLoss{Missing: 1}) {
+		t.Fatal(result)
+	}
+}
+
+func TestP19DecodePaths(t *testing.T) {
+	for _, stage := range []string{"source:poll:composite", "layer:composite", "gateway.portal.stream", "gateway.portal.timeline"} {
+		t.Run(stage, func(t *testing.T) {
+			fixture := i35Fixture()
+			fixture["evidence"].(map[string]any)["provenance"].([]any)[0].(map[string]any)["decode_path"] = []string{"unreviewed", stage, "other"}
+			result := i35Select(t, i35JSON(t, fixture), i35All())
+			if !reflect.DeepEqual(result.Evidence["provenance"][0]["decode_path"], []string{stage}) {
+				t.Fatal(result)
+			}
+		})
+	}
+}
+
+func TestP19BudgetRemovalSequence(t *testing.T) {
+	events, provenance, snapshots := []any{}, []any{}, []any{}
+	for _, id := range []string{"alpha", "beta", "gamma"} {
+		events = append(events, map[string]any{"correlation_id": id, "payload": map[string]any{}})
+		provenance = append(provenance, map[string]any{"correlation_id": id})
+		snapshots = append(snapshots, map[string]any{})
+	}
+	raw := i35JSON(t, map[string]any{"evidence": map[string]any{"timeline": events, "provenance": provenance, "snapshots": snapshots}})
+	selection := InvestigationSelection{Timeline: true, Provenance: true, Snapshots: true}
+	full := i35Select(t, raw, selection)
+	for _, name := range []string{"provenance", "snapshots", "timeline"} {
+		if len(full.Evidence[name]) != 3 || full.Components[name] != (InvestigationComponentLoss{Present: true, Supplied: 3, Retained: 3}) {
+			t.Fatal(full)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		alias := []string{"event-1", "event-2", "event-3"}[i]
+		if full.Evidence["timeline"][i]["correlation_id"] != alias || full.Evidence["provenance"][i]["correlation_id"] != alias || full.Evidence["snapshots"][i]["id"] != []string{"snapshot-1", "snapshot-2", "snapshot-3"}[i] {
+			t.Fatal(full)
+		}
+	}
+	// Independent expected survivor counts cover every transition and each tail.
+	for _, counts := range [][3]int{{2, 3, 3}, {1, 3, 3}, {0, 3, 3}, {0, 2, 3}, {0, 1, 3}, {0, 0, 3}, {0, 0, 2}, {0, 0, 1}, {0, 0, 0}} {
+		expected := i35Select(t, raw, selection)
+		for i, name := range []string{"provenance", "snapshots", "timeline"} {
+			expected.Evidence[name] = expected.Evidence[name][:counts[i]]
+			expected.Components[name] = InvestigationComponentLoss{Present: true, Supplied: 3, Retained: counts[i], Omitted: 3 - counts[i], SizeLimit: 3 - counts[i]}
+		}
+		boundedSelection := selection
+		boundedSelection.MaxBytes = len(i35JSON(t, expected))
+		result := i35Select(t, raw, boundedSelection)
+		if !reflect.DeepEqual(result, expected) {
+			t.Fatalf("survivors %v: got %#v want %#v", counts, result, expected)
+		}
+	}
+}

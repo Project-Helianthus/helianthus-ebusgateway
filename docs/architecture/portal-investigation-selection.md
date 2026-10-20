@@ -4,7 +4,9 @@ This implements the pure selection slice of
 [issue #1235](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1235),
 advancing [#1002](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1002).
 The [bundle contract](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/docs/architecture/portal-investigation-bundle.md)
-remains the governing public-selection proposal. Nothing here is stable before
+remains the governing public-selection proposal. Correlation and selection-loss
+clarifications follow [issue #1255](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1255),
+deferred from [#1254](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1254). Nothing here is stable before
 Helianthus 1.0.
 
 ## Input and selection
@@ -65,7 +67,11 @@ continuity. No private value is hashed. Snapshot and event aliases have distinct
 roles; equal original strings alone do not establish a relationship. Original
 snapshot identifiers never survive. A nonempty event correlation is aliased
 only when unique among all supplied timeline events. A provenance record must
-match that correlation exactly; ambiguous, missing, unmatched, or omitted events
+match that correlation exactly. Ill-formed UTF-8 and lone JSON surrogates are
+ineligible for correlation matching or aliasing. Valid escaped and literal
+representations of the same Unicode string match; distinct code points are not
+normalized and identifiers are not trimmed. Valid replacement characters remain
+distinct from malformed input; ambiguous, missing, unmatched, or omitted events
 have no retained provenance relationship. `payload_keys` is rebuilt from the
 corresponding selected payload's top-level groups and sorted. It never uses
 original key strings. No source generation, receipt, evaluation, replacement,
@@ -81,7 +87,12 @@ by `invalid`, rather than an asserted empty source. `Diagnostics` reports
 missing and invalid selected leaves in timeline records examined before byte
 budget removal, including records later removed. Events beyond the twenty-record
 selection cap are not examined for these leaf counts. These are selection-loss
-counts, not a tally of every private nested field.
+counts, not a tally of every private nested field. With `Timeline=false`, selected
+paths are unexamined and their diagnostic entries are omitted, rather than
+reporting zero missing and zero invalid. With `Timeline=true`, entries start at
+zero and count examined records only. An absent payload group or leaf counts as
+missing; a present group that is not an object (including null) counts as invalid,
+as does a present leaf with the wrong type.
 
 `Notes` contains only fixed policy categories. They describe the loss rules
 below, not assertions that withheld material exists. They never echo an unknown

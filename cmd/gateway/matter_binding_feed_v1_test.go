@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -153,7 +155,7 @@ func matterFeedSemanticFixture(t *testing.T, asset, tag string) (semreg.Snapshot
 	if err != nil {
 		t.Fatal(err)
 	}
-	evidence := semreg.EvidenceRef{Owner: "owner.test", Kind: "evidence.test", Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Contract: "test.evidence/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}
+	evidence := semreg.EvidenceRef{Owner: "owner.test", Kind: "evidence.test", Digest: semreg.Digest(fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("synthetic public feed evidence")))), Contract: "test.evidence/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}
 	point := semreg.TimePoint{UnixNanoseconds: "100", ClockID: "clock.utc", UncertaintyNS: "0"}
 	bindingID := semreg.NativeBindingID("binding:" + tag)
 	epochID := semreg.SourceEpochID("epoch:" + tag)
@@ -255,9 +257,8 @@ func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(
 		body, _ := io.ReadAll(plain.Body)
 		t.Fatalf("certificate-less feed status=%d body=%s", plain.StatusCode, body)
 	}
-	// The Matter routes spend the per-host request budget (two tokens, one
-	// refill per second); both snapshots above came from this loopback host.
-	time.Sleep(1100 * time.Millisecond)
+	// Both snapshots spent two tokens; invoke can spend the third token
+	// from the same host without waiting for refill.
 	invoke, err := withoutCertificate.Post("https://"+runtime.Addr()+"/matter-binding/v1/invoke", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,9 @@
 package m2mgraphql
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +11,96 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestP08ThreeConsumerBurstAndBoundedRefill(t *testing.T) {
+	var now atomic.Int64
+	calls := map[string]int{}
+	provider := func(family string) func(context.Context, string) (json.RawMessage, bool) {
+		return func(_ context.Context, asset string) (json.RawMessage, bool) {
+			if asset != "asset:"+family {
+				t.Fatalf("%s provider received asset %q", family, asset)
+			}
+			calls[family]++
+			return json.RawMessage(`{"snapshot":{},"evaluation":{},"selections":[],"projection":{}}`), true
+		}
+	}
+	h, err := NewHandler(Config{
+		AllowedAssets:         map[string]struct{}{"asset:pv": {}, "asset:storage": {}, "asset:evse": {}},
+		MonotonicMilliseconds: now.Load,
+		SemanticPVCurrent:     provider("pv"), SemanticStorageCurrent: provider("storage"), SemanticEVSECurrent: provider("evse"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := []struct{ family, operation, query, root, contract string }{
+		{"pv", "SemanticPVCurrent", semanticPVFixedQuery, "semanticPVCurrent", "PUBLIC_GRAPHQL_SEMANTIC_PV_V1"},
+		{"storage", "SemanticStorageCurrent", semanticStorageFixedQuery, "semanticStorageCurrent", "PUBLIC_GRAPHQL_SEMANTIC_STORAGE_V1"},
+		{"evse", "SemanticEVSECurrent", semanticEVSEFixedQuery, "semanticEVSECurrent", "PUBLIC_GRAPHQL_SEMANTIC_EVSE_V1"},
+	}
+	read := func(index int, remote string) {
+		t.Helper()
+		r := reads[index]
+		body := fmt.Sprintf(`{"operationName":%q,"query":%q,"variables":{"request":{"contractId":%q,"assetRef":%q}}}`, r.operation, r.query, r.contract, "asset:"+r.family)
+		before := calls[r.family]
+		response := serveRaw(h, http.MethodPost, route, remote, strings.NewReader(body))
+		var decoded struct{ Data map[string]json.RawMessage }
+		if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil || response.Code != http.StatusOK || decoded.Data[r.root] == nil || strings.Contains(response.Body.String(), `"errors"`) || calls[r.family] != before+1 {
+			t.Fatalf("%s read: calls=%d response=%d %s err=%v", r.family, calls[r.family], response.Code, response.Body.String(), err)
+		}
+	}
+	for i := range reads {
+		read(i, fmt.Sprintf("192.0.2.60:%d", 40001+i))
+	}
+	refused := func() {
+		t.Helper()
+		assertLimitRefusal(t, serveRaw(h, http.MethodPost, route, "192.0.2.60:40004", unreadableBody{t}))
+	}
+	refused()
+	// Change the host alone: the same source port has an independent budget.
+	read(0, "192.0.2.61:40001")
+	now.Store(999)
+	refused()
+	now.Store(1000)
+	read(2, "192.0.2.60:40005")
+	refused()
+	// A long idle refill remains capped at three, below the eviction window.
+	now.Store(10_000)
+	for i := range reads {
+		read(i, "192.0.2.60:40006")
+	}
+	refused()
+}
+
+func TestP08GraphQLAndMatterShareSequentialTokens(t *testing.T) {
+	var now atomic.Int64
+	h := newRateLimitTableHandler(t, &now)
+	served := 0
+	matter, err := RequestBudget(h, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		served++
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := serveStorageFrom(t, h, "192.0.2.70:40001"); got != "ok" {
+		t.Fatalf("first GraphQL read=%s", got)
+	}
+	for _, path := range []string{"/matter-binding/v1/snapshot", "/matter-binding/v1/changes?cursor=synthetic:1"} {
+		if response := serveRaw(matter, http.MethodGet, path, "192.0.2.70:40002", nil); response.Code != http.StatusNoContent {
+			t.Fatalf("Matter read=%d %s", response.Code, response.Body.String())
+		}
+	}
+	assertLimitRefusal(t, serveRaw(h, http.MethodPost, route, "192.0.2.70:40003", unreadableBody{t}))
+	assertLimitRefusal(t, serveRaw(matter, http.MethodGet, "/matter-binding/v1/snapshot", "192.0.2.70:40004", nil))
+	if served != 2 {
+		t.Fatalf("Matter calls=%d want 2", served)
+	}
+	now.Store(1000)
+	if response := serveRaw(matter, http.MethodGet, "/matter-binding/v1/snapshot", "192.0.2.70:40005", nil); response.Code != http.StatusNoContent || served != 3 {
+		t.Fatalf("refilled Matter read=%d calls=%d", response.Code, served)
+	}
+	assertLimitRefusal(t, serveRaw(h, http.MethodPost, route, "192.0.2.70:40006", unreadableBody{t}))
+}
 
 // unreadableBody fails the test if the handler ever reads it.
 type unreadableBody struct{ t *testing.T }
@@ -37,9 +130,11 @@ func TestM2MRateLimitRefusedHostBodyIsNeverParsed(t *testing.T) {
 	response := serveRaw(h, http.MethodPost, route, host, unreadableBody{t})
 	assertLimitRefusal(t, response)
 	h.release(held)
-	// Exhausted: both tokens spent, the next malformed body is never read.
-	if got := serveStorageFrom(t, h, host); got != "ok" {
-		t.Fatalf("second token=%s want ok", got)
+	// Exhaust all three tokens; the next malformed body is never read.
+	for token := 2; token <= 3; token++ {
+		if got := serveStorageFrom(t, h, host); got != "ok" {
+			t.Fatalf("token %d=%s want ok", token, got)
+		}
 	}
 	response = serveRaw(h, http.MethodPost, route, host, unreadableBody{t})
 	assertLimitRefusal(t, response)
@@ -50,13 +145,13 @@ func TestM2MRateLimitMalformedRequestsSpendBudgetAndRelease(t *testing.T) {
 	h := newRateLimitTableHandler(t, &now)
 	const host = "[2001:db8::30]:40001"
 	codes := []string{}
-	for _, body := range []string{`{`, `{"operationName":"x"}`, `{`} {
+	for _, body := range []string{`{`, `{"operationName":"x"}`, `{`, `{`} {
 		response := serveRaw(h, http.MethodPost, route, host, strings.NewReader(body))
 		codes = append(codes, errorCode(response.Body.String()))
 	}
 	// Each early error return released its entry (otherwise the second would
-	// hit the in-flight guard) and spent a token (so the third is refused).
-	if strings.Join(codes, ",") != "REQUEST_INVALID,REQUEST_INVALID,REQUEST_LIMIT_EXCEEDED" {
+	// hit the in-flight guard) and spent a token (so the fourth is refused).
+	if strings.Join(codes, ",") != "REQUEST_INVALID,REQUEST_INVALID,REQUEST_INVALID,REQUEST_LIMIT_EXCEEDED" {
 		t.Fatalf("malformed request codes=%v", codes)
 	}
 	if h.rateLimitTableLen(t) != 1 {

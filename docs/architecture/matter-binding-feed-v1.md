@@ -6,7 +6,8 @@ native dispatch. A separately built public Matter binding consumes this feed and
 owns the Matter SDK, node, endpoints, fabric state, commissioning, reporting and
 controller fixture.
 
-The wire contract is `helianthus.gateway.matter-binding-feed/v1`. It is exposed
+The wire contract is `helianthus.gateway.matter-binding-feed/v1`; it remains
+pre-stable before Helianthus 1.0. It is exposed
 only on the existing dedicated M2M listener, over server-authenticated TLS:
 
 - `GET /matter-binding/v1/snapshot`
@@ -28,8 +29,9 @@ A client certificate never becomes a principal: the Gateway derives no identity
 from it, and a caller cannot provide a principal or native route in JSON.
 
 There is no authentication or authorization gate on this listener in this
-release. Authentication and authorization frameworks arrive in a later release;
-until then the feed, like the GraphQL route on the same listener, is exposed to
+release. Authentication and authorization frameworks are roadmap work for 0.11,
+with no authorization gate before 0.9. Until then the feed, like the GraphQL
+route on the same listener, is exposed to
 whatever network the operator chooses to bind the listener to. The M2M asset
 allowlist filters what is published; it does not identify or authorize a caller.
 
@@ -40,12 +42,17 @@ or parsed, and released on every exit path:
 
 | Property | Value |
 | --- | --- |
-| Concurrent requests per host | 1 in flight, burst of 2 tokens |
+| Concurrent requests per host | 1 in flight, burst of 3 tokens |
 | Refill | 1 token per second, up to the burst |
 | Table bound | 4096 host entries |
 | Idle eviction | entries untouched for more than 60 s |
 | Pressure eviction | least recently used entry without a request in flight |
 | In-flight entries | never evicted; the table exceeds 4096 only by in-flight entries |
+
+Three sequential available PV, storage and EVSE reads from one host fit this
+burst before refill. This does not resolve overlapping requests: the one-in-flight
+guard still refuses concurrent consumers. HA refusal retry mapping, retained facts
+and poll staggering remain separate work.
 
 A refused request is answered before any feed capture, cursor parse or intent
 decode. On the GraphQL route it receives the GraphQL error envelope with code
@@ -63,21 +70,15 @@ released entry, which returns with a full budget.
 | Feed request from a host whose GraphQL request is in flight | feed error `unavailable`, HTTP 503 (shared budget) |
 | Concurrent feed request from a different host | admitted; waits for the serialized capture |
 | Malformed body from a refused host | refused without reading the body |
-| Third GraphQL request from one host within one second | `REQUEST_LIMIT_EXCEEDED` |
+| Fourth sequential GraphQL request from one host before refill | `REQUEST_LIMIT_EXCEEDED` |
 
 ## Target and ownership pins
 
 Every snapshot pins the pure projection contract
-`helianthus.gateway.matter-projection/v1`, target `matter.data-model`, version
-`1.7-draft-ballot-0.9+29b4768a513cf566011ab8cd60df1bc495204953`, and mapping
-revision `1`. The machine-readable target is pinned to
-`AryaHassanli/connectedhomeip@29b4768a513cf566011ab8cd60df1bc495204953`
-with specification source `214e40c9d51cfe89050eae68ca5b76238fcfa332`.
-
-The accepted public mapping contract is
-`Project-Helianthus/helianthus-docs-semantic@30f5e5c79ac6da3a7c7c10c990599906d1dfd0cb`,
-path `api/v1/targets/matter-1.7-ballot-0.9-v1.json`, SHA-256
-`5ae81d5e0971d25ead08f982fdf31caf47ada4838d0ee6f2b3e719d11a6df39c`.
+`helianthus.gateway.matter-projection/v1`, target `matter.data-model`, and
+mapping revision `1`. The exact target version, upstream specification source
+and mapping digest are recorded in the accepted public
+[machine-readable mapping contract](https://github.com/Project-Helianthus/helianthus-docs-semantic/blob/main/api/v1/targets/matter-1.7-ballot-0.9-v1.json).
 SemReg remains the canonical semantic owner. Portal's detached catalog capture
 is reused as a Gateway composition primitive; Portal does not own the Matter
 contract or target semantics.

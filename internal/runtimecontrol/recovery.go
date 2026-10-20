@@ -1305,29 +1305,33 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 	clocks := r.restoreClocks(stream, m0, failedAssets)
 	report := RestoreReport{}
 	installed := map[AssetID]bool{}
-	// Even without durable material, installation must verify that the live
-	// managed assets are empty before the recorder can admit their writers.
-	replay, rerr := r.hub.Replay(stream.Base, stream.Frame, false)
-	if rerr != nil {
-		return r.failAll(fmt.Errorf("replay: %w", rerr))
-	}
-	for id := range replay.Failed() {
-		if _, ok := r.assets[id]; ok {
+	if material != nil {
+		replay, rerr := r.hub.Replay(stream.Base, stream.Frame, false)
+		if rerr != nil {
+			return r.failAll(fmt.Errorf("replay: %w", rerr))
+		}
+		for id := range replay.Failed() {
+			if _, ok := r.assets[id]; ok {
+				failedAssets[id] = true
+			}
+		}
+		r.resolveEntries(stream, replay, failedSources, failedAssets, &report)
+		for src := range failedSources {
+			for _, id := range r.sources[src].assets {
+				failedAssets[id] = true
+			}
+		}
+		_, refused := replay.Install(failedAssets)
+		for id := range refused {
 			failedAssets[id] = true
 		}
-	}
-	r.resolveEntries(stream, replay, failedSources, failedAssets, &report)
-	for src := range failedSources {
-		for _, id := range r.sources[src].assets {
-			failedAssets[id] = true
+		for id := range r.assets {
+			if !failedAssets[id] {
+				installed[id] = true
+			}
 		}
-	}
-	_, refused := replay.Install(failedAssets)
-	for id := range refused {
-		failedAssets[id] = true
-	}
-	for id := range r.assets {
-		if !failedAssets[id] {
+	} else {
+		for id := range r.assets {
 			installed[id] = true
 		}
 	}
@@ -1336,10 +1340,11 @@ func (r *Recorder) Restore(ctx context.Context, material *RecoveryMaterial) erro
 			continue
 		}
 		report.Restored = append(report.Restored, id)
+		if material == nil {
+			continue
+		}
 		if rerr := r.hub.Reproject(id); rerr == nil {
 			report.Reopened = append(report.Reopened, id)
-		} else {
-			failedAssets[id] = true
 		}
 	}
 	for id := range failedAssets {

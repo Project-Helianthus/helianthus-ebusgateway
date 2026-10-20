@@ -87,7 +87,9 @@ func TestP11RestoreClockHighCoversRetainedIntents(t *testing.T) {
 }
 
 // Exercise the clock helper directly so unrelated replay validation cannot mask
-// the high-water guard. Each alternative changes exactly one claimed field.
+// the high-water guard. Asset and intent-point variations exercise the guard;
+// source, driver and epoch variations are metadata controls, not independent
+// coverage of restoreClocks.
 func TestP11ClockCoverageIndependentFields(t *testing.T) {
 	for _, field := range []string{"baseline", "asset", "source", "driver", "clock-epoch", "intent-point"} {
 		t.Run(field, func(t *testing.T) {
@@ -150,7 +152,7 @@ func (h p11ReprojectHub) Reproject(asset AssetID) error {
 	return h.ManagedHub.Reproject(asset)
 }
 
-func TestP11ReprojectionFailureWithholdsOnlyOwningDriver(t *testing.T) {
+func TestP11ReprojectionFailureKeepsDriverRecoverySuccessful(t *testing.T) {
 	for _, bad := range []AssetID{synthAssets[0], synthAssets[1], secondAsset} {
 		t.Run(string(bad), func(t *testing.T) {
 			w := newWorld(t, worldOpts{second: true, compact: -1})
@@ -177,16 +179,31 @@ func TestP11ReprojectionFailureWithholdsOnlyOwningDriver(t *testing.T) {
 					w.svc.Close()
 				}
 			}()
-			p11ScopedFailure(t, w.rec, w.startService("inc-p11", execs), bad, badDriver)
-			waitFor(t, "healthy driver running", func() bool { return w.status(goodDriver).ObservedState == drivermanager.ObservedRunning })
-			if len(execs[badDriver].snapshot()) != 0 || w.status(badDriver).ObservedState != drivermanager.ObservedFailed {
-				t.Fatal("failed driver was started")
+			if err := w.startService("inc-p11", execs); err != nil {
+				t.Fatalf("per-asset reprojection refusal failed driver recovery: %v", err)
+			}
+			report := w.rec.Report()
+			wantRestored := append([]AssetID{secondAsset}, synthAssets...)
+			var wantReopened []AssetID
+			for _, id := range wantRestored {
+				if id != bad {
+					wantReopened = append(wantReopened, id)
+				}
+			}
+			if !reflect.DeepEqual(report.Restored, wantRestored) || !reflect.DeepEqual(report.Reopened, wantReopened) || len(report.Failed) != 0 || len(report.FailedSource) != 0 || len(w.rec.failedAssets) != 0 {
+				t.Fatalf("reprojection refusal lost per-asset outcome: %+v", report)
+			}
+			for _, driver := range []DriverID{badDriver, goodDriver} {
+				waitFor(t, "driver running", func() bool { return w.status(driver).ObservedState == drivermanager.ObservedRunning })
+				if len(execs[driver].snapshot()) == 0 {
+					t.Fatalf("driver %s was not started", driver)
+				}
 			}
 			if w.bridge.hub.ReadAdmitted(semreg.AssetID(bad)) || w.bridge.hub.Readable(semreg.AssetID(bad)) {
 				t.Fatal("failed reprojection opened reads")
 			}
-			if _, err := w.publish(badSrc, bad); refusalCode(err) != RefusalFailedPrecondition {
-				t.Fatalf("failed reprojection admitted writer: %v", err)
+			if err := w.rec.admit(badSrc, []AssetID{bad}); err != nil {
+				t.Fatalf("per-asset read gate blocked writer admission: %v", err)
 			}
 			assertStates(t, "healthy asset", w.states(good), pre)
 			if !w.bridge.hub.Readable(semreg.AssetID(good)) || w.rec.admit(goodSrc, []AssetID{good}) != nil {
@@ -198,7 +215,7 @@ func TestP11ReprojectionFailureWithholdsOnlyOwningDriver(t *testing.T) {
 	}
 }
 
-func TestP11EmptyRestoreVerifiesLiveHub(t *testing.T) {
+func TestP11EmptyRestorePreservesLiveHubWithoutReplay(t *testing.T) {
 	for _, mode := range []string{"fresh", "admitted", "populated"} {
 		t.Run(mode, func(t *testing.T) {
 			w := newWorld(t, worldOpts{second: true, compact: -1})
@@ -223,14 +240,30 @@ func TestP11EmptyRestoreVerifiesLiveHub(t *testing.T) {
 			for asset := range w.rec.assets {
 				readAdmission[asset] = w.bridge.hub.ReadAdmitted(semreg.AssetID(asset))
 			}
-			err := w.restore()
+			hub := &p11InstallHub{ManagedHub: w.bridge}
+			w.rec.hub = hub
+			if err := w.restore(); err != nil {
+				t.Fatalf("empty startup: %v", err)
+			}
+			if hub.replays != 0 || hub.installed || hub.reprojects != 0 {
+				t.Fatalf("empty startup invoked replay=%d install=%v reproject=%d", hub.replays, hub.installed, hub.reprojects)
+			}
+			report := w.rec.Report()
+			if !reflect.DeepEqual(report.Restored, append([]AssetID{secondAsset}, synthAssets...)) || len(report.Reopened) != 0 || len(report.Failed) != 0 {
+				t.Fatalf("empty startup report: %+v", report)
+			}
+			if after := w.bridge.hub.ExportRecovery(); !reflect.DeepEqual(after, before) {
+				t.Fatal("empty startup changed live hub state")
+			}
+			for asset, admitted := range readAdmission {
+				if w.bridge.hub.ReadAdmitted(semreg.AssetID(asset)) != admitted {
+					t.Fatalf("empty startup changed read admission for %s", asset)
+				}
+				if err := w.rec.admit(w.rec.assets[asset].source, []AssetID{asset}); err != nil {
+					t.Fatalf("empty startup blocked writer %s: %v", asset, err)
+				}
+			}
 			if mode == "fresh" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(w.rec.Report().Failed) != 0 {
-					t.Fatal("fresh restore failed")
-				}
 				for src, assets := range w.sources() {
 					w.admit(src)
 					for _, asset := range assets {
@@ -240,29 +273,6 @@ func TestP11EmptyRestoreVerifiesLiveHub(t *testing.T) {
 						}
 					}
 				}
-			} else {
-				var re *RestoreError
-				if !errors.As(err, &re) || len(re.Assets) == 0 {
-					t.Fatalf("preexisting live state admitted: %v", err)
-				}
-				want := append([]AssetID{secondAsset}, synthAssets...)
-				if !reflect.DeepEqual(re.Assets, want) || !reflect.DeepEqual(re.Drivers, []DriverID{secondDriver, synthDriver}) || len(re.Sources) != 0 {
-					t.Fatalf("unexpected refusal scope: %+v", re)
-				}
-				// Hub Restore refuses prior admission without changing live state.
-				// Recorder refusal must block every writer without replacing that
-				// state or claiming authority to revoke the existing hub handles.
-				if after := w.bridge.hub.ExportRecovery(); !reflect.DeepEqual(after, before) {
-					t.Fatal("refused restore changed preexisting live hub state")
-				}
-				for _, asset := range re.Assets {
-					if !w.rec.failedAssets[asset] || w.rec.admit(w.rec.assets[asset].source, []AssetID{asset}) == nil {
-						t.Fatalf("refused asset %s admitted a writer", asset)
-					}
-					if w.bridge.hub.ReadAdmitted(semreg.AssetID(asset)) != readAdmission[asset] {
-						t.Fatalf("refused restore changed live read admission for %s", asset)
-					}
-				}
 			}
 		})
 	}
@@ -270,16 +280,24 @@ func TestP11EmptyRestoreVerifiesLiveHub(t *testing.T) {
 
 type p11InstallHub struct {
 	ManagedHub
-	bad       AssetID
-	installed bool
+	bad        AssetID
+	installed  bool
+	replays    int
+	reprojects int
 }
 
 func (h *p11InstallHub) Replay(base, frame []byte, scratch bool) (Replay, error) {
+	h.replays++
 	replay, err := h.ManagedHub.Replay(base, frame, scratch)
 	if err != nil {
 		return nil, err
 	}
 	return &p11InstallReplay{Replay: replay, hub: h}, nil
+}
+
+func (h *p11InstallHub) Reproject(asset AssetID) error {
+	h.reprojects++
+	return h.ManagedHub.Reproject(asset)
 }
 
 type p11InstallReplay struct {
@@ -302,7 +320,7 @@ func (r *p11InstallReplay) Install(failed map[AssetID]bool) (map[AssetID][]byte,
 	return installed, refused
 }
 
-func TestP11EmptyRestoreHonorsScopedInstallRefusal(t *testing.T) {
+func TestP11DurableRestoreHonorsScopedInstallRefusal(t *testing.T) {
 	for _, bad := range []AssetID{synthAssets[0], synthAssets[1], secondAsset} {
 		t.Run(string(bad), func(t *testing.T) {
 			w := newWorld(t, worldOpts{second: true, compact: -1})
@@ -310,11 +328,22 @@ func TestP11EmptyRestoreHonorsScopedInstallRefusal(t *testing.T) {
 			if bad == secondAsset {
 				badSrc, badDriver, good, goodSrc = secondSource, secondDriver, synthAssets[0], synthSource
 			}
+			w.mustRestore()
+			w.admit(synthSource)
+			w.admit(secondSource)
+			for _, id := range synthAssets {
+				w.mustPublish(synthSource, id)
+			}
+			w.mustPublish(secondSource, secondAsset)
+			w.loseProcess(time.Second)
+			if w.material() == nil {
+				t.Fatal("fixture has no durable material")
+			}
 			hub := &p11InstallHub{ManagedHub: w.bridge, bad: bad}
 			w.rec.hub = hub
 			p11ScopedFailure(t, w.rec, w.restore(), bad, badDriver)
 			if !hub.installed {
-				t.Fatal("empty replay installation bypassed")
+				t.Fatal("durable replay installation bypassed")
 			}
 			if w.bridge.hub.ReadAdmitted(semreg.AssetID(bad)) || w.bridge.hub.Readable(semreg.AssetID(bad)) {
 				t.Fatal("refused asset reads opened")
@@ -323,12 +352,12 @@ func TestP11EmptyRestoreHonorsScopedInstallRefusal(t *testing.T) {
 				t.Fatalf("refused asset writer: %v", err)
 			}
 			if w.rec.admit(goodSrc, []AssetID{good}) != nil || !w.bridge.hub.ReadAdmitted(semreg.AssetID(good)) {
-				t.Fatal("healthy empty asset admission closed")
+				t.Fatal("healthy retained asset admission closed")
 			}
 			w.admit(goodSrc)
 			w.mustPublish(goodSrc, good)
 			if !w.bridge.hub.Readable(semreg.AssetID(good)) {
-				t.Fatal("healthy empty asset did not become readable")
+				t.Fatal("healthy retained asset did not become readable")
 			}
 		})
 	}

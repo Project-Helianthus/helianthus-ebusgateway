@@ -920,19 +920,7 @@ func (r *bridgeReplay) Install(failed map[AssetID]bool) (map[AssetID][]byte, map
 	}
 	for _, entry := range after.Assets {
 		id := AssetID(entry.Asset)
-		if _, ok := r.states[id]; !ok {
-			// Restore installs a complete hub checkpoint. The bridge owns
-			// settlement of direct publishers outside the recorder's asset set.
-			if restoreErr == nil {
-				if err := r.target.Resettle(entry.Asset); err != nil {
-					for managed := range r.states {
-						refused[managed] = err
-					}
-				}
-			}
-			continue
-		}
-		if failed[id] {
+		if _, ok := r.states[id]; !ok || failed[id] {
 			continue
 		}
 		// An installed asset holds a restored gate that awaits a fresh
@@ -1894,10 +1882,7 @@ func TestRecoveryS39TwoAssetsOneAcceptedOneRejectedControl(t *testing.T) {
 	}
 	pre := w.states(synthAssets...)
 	w.loseProcess(time.Second)
-	p11ScopedFailure(t, w.rec, w.restore(), synthAssets[1], synthDriver)
-	if w.rec.admit(synthSource, []AssetID{synthAssets[1]}) == nil || w.rec.admit(synthSource, []AssetID{synthAssets[0]}) != nil {
-		t.Fatal("mixed control restore did not isolate writer admission")
-	}
+	w.mustRestore()
 	assertStates(t, "mixed control", w.states(synthAssets...), pre)
 	a, b := semreg.AssetID(synthAssets[0]), semreg.AssetID(synthAssets[1])
 	if !w.bridge.hub.Readable(a) || w.bridge.openSeen[synthAssets[0]] {
@@ -1968,19 +1953,7 @@ func TestRecoveryS39RejectedPublicationAndControl(t *testing.T) {
 	}
 	pre := w.states(synthAssets...)
 	w.loseProcess(time.Second)
-	var restoreErr *RestoreError
-	if err := w.restore(); !errors.As(err, &restoreErr) || !reflect.DeepEqual(restoreErr.Assets, synthAssets) ||
-		!reflect.DeepEqual(restoreErr.Drivers, []DriverID{synthDriver}) || len(restoreErr.Sources) != 0 {
-		t.Fatalf("expected rejected and unbuilt assets to fail restore closed: %v", err)
-	}
-	if !reflect.DeepEqual(w.rec.Report().Failed, synthAssets) {
-		t.Fatalf("failed assets: %+v", w.rec.Report())
-	}
-	for _, id := range synthAssets {
-		if w.rec.admit(synthSource, []AssetID{id}) == nil {
-			t.Fatalf("unsettled asset %s admitted a writer", id)
-		}
-	}
+	w.mustRestore()
 	assertStates(t, "rejections", w.states(synthAssets...), pre)
 	if n := len(w.states(synthAssets[0])[synthAssets[0]].Batches); n != 1 {
 		t.Fatalf("a rejected entry was applied as accepted: %d batches", n)

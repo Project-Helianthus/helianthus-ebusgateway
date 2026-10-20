@@ -50,14 +50,24 @@ func TestK01PartialUpdatesPreserveIndependentBoilerPump(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			poller := k01PumpPoller(0, &initial)
+			pub, _, tick := m15Fixture(t)
+			poller.boilerThermal = pub
+			poller.boilerAddress = pub.binding.Identity.Target
 			for _, raw := range []uint16{0, 1} {
 				poller.circuits[0].PumpStatusRaw = &raw
 				flow := 43.5 + float64(raw)
-				poller.system.SystemFlowTemperature = &flow
+				// A conflicting controller mirror must not replace qualified flow.
+				mirror := flow + 10
+				poller.system.SystemFlowTemperature = &mirror
+				*tick += 1
+				observation := *pub.attempt
+				observation.Received, observation.Receipt = pub.now()
+				observation.Reply = append([]byte{0x0d, 0x18, 0}, encodeTempDATA2c(flow)...)
+				pub.attempt = &observation
 				poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 				k01AssertPublishedPump(t, poller, &initial)
 				if got := poller.provider.BoilerStatus().State.FlowTemperatureC; got == nil || *got != flow {
-					t.Errorf("partial flow update = %v; want %v", got, flow)
+					t.Errorf("qualified partial flow update = %v; want %v", got, flow)
 				}
 			}
 
@@ -110,8 +120,8 @@ func TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded(t *testing.T) {
 			if poller.boiler == nil || poller.boiler.CentralHeatingPumpActive != nil {
 				t.Fatal("hydrated boiler pump must be unknown")
 			}
-			if got := poller.boiler.FlowTemperatureC; got == nil || *got != flow {
-				t.Fatalf("cached flow = %v; want retained %v", got, flow)
+			if got := poller.boiler.FlowTemperatureC; got != nil {
+				t.Fatalf("cached flow = %v; want nil without native provenance", got)
 			}
 			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 			k01AssertPublishedPump(t, poller, nil)

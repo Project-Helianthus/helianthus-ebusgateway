@@ -348,8 +348,9 @@ type vaillantSemanticPoller struct {
 	fm5EvidenceTTL           time.Duration
 	circuitFullScanInterval  time.Duration
 
-	pollMu sync.Mutex
-	readMu sync.Mutex
+	pollMu          sync.Mutex
+	boilerPublishMu sync.Mutex
+	readMu          sync.Mutex
 
 	// identityProbedAddresses tracks per-address probe attempts for
 	// EnqueueAddressIdentityProbe (P5). Each address is probed at
@@ -362,6 +363,7 @@ type vaillantSemanticPoller struct {
 	mu                          sync.Mutex
 	controller                  byte
 	boilerAddress               byte
+	boilerThermal               *boilerThermalPublisher
 	regulatorCapability         productids.ControllerCapability
 	regAbsenceState             regulatorAbsenceState
 	regAbsenceSince             time.Time
@@ -2727,6 +2729,9 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 	boilerAddress := p.boilerAddress
 	p.mu.Unlock()
 	if controller == 0 && boilerAddress == 0 {
+		if p.mergePublishedBoilerFlow() {
+			p.publishBoilerStatus(semanticSnapshotSourceLive)
+		}
 		return
 	}
 
@@ -2749,6 +2754,9 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusTier(ctx context.Context, ti
 			p.mu.Lock()
 			p.boiler = mergeBoilerSnapshotNonDestructive(p.boiler, snapshot)
 			p.mu.Unlock()
+		}
+		if p.mergePublishedBoilerFlow() {
+			p.publishBoilerStatus(semanticSnapshotSourceLive)
 		}
 		return
 	}
@@ -2781,7 +2789,8 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB524(ctx context.Context, ti
 			updated = true
 			switch register.field {
 			case boilerStatusFieldFlowTemperature:
-				snapshot.FlowTemperatureC = &value
+				// Controller flow is not qualified boiler flow.
+				_ = value
 			}
 		case boilerStatusRegisterDecoderUint16Bool:
 			raw, ok := p.readB524Uint16(ctx, register.opcode, register.group, register.instance, register.addr)
@@ -2827,11 +2836,8 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 
 	now := p.now()
 	maxAge := p.boilerMirrorMaxAge()
-	updated := false
-	if system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge) {
-		snapshot.FlowTemperatureC = cloneFloat64Ptr(system.SystemFlowTemperature)
-		updated = true
-	}
+	// Fresh controller flow triggers publication without supplying boiler flow.
+	updated := system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge)
 	if circuit != nil && circuit.Controller == controller {
 		// Circuit pump evidence does not identify the boiler pump. Leave that
 		// field absent so partial merges preserve independent boiler evidence.
@@ -2914,10 +2920,8 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 	updated := false
 	switch tier {
 	case boilerStatusTierFast:
-		if value := p.readB509DATA2c(ctx, boilerAddress, boiler_b509_flow_temperature); value != nil {
-			snapshot.FlowTemperatureC = value
-			updated = true
-		}
+		// Acquisition retains native evidence; only the hub result supplies flow.
+		_, updated = p.readB509Value(ctx, boilerAddress, boiler_b509_flow_temperature)
 		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_central_heating_pump); value != nil {
 			snapshot.CentralHeatingPumpActive = value
 			updated = true
@@ -3066,8 +3070,12 @@ func (p *vaillantSemanticPoller) publishBoilerStatus(source semanticSnapshotSour
 		return
 	}
 
+	p.boilerPublishMu.Lock()
+	defer p.boilerPublishMu.Unlock()
+
+	p.mergePublishedBoilerFlow()
 	p.mu.Lock()
-	snapshot := p.boiler
+	snapshot := cloneBoilerSnapshot(p.boiler)
 	p.mu.Unlock()
 
 	previous := p.provider.BoilerStatus()
@@ -6066,6 +6074,9 @@ func (p *vaillantSemanticPoller) readB509ValueWithMaxAge(ctx context.Context, ta
 			response, err := p.sendSemanticFrame(reqCtx, request)
 			cancel()
 			p.readMu.Unlock()
+			if addr == boiler_b509_flow_temperature {
+				p.retainBoilerThermalRead(request, response, err)
+			}
 
 			if err != nil {
 				lastErr = err

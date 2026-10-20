@@ -403,9 +403,10 @@ func cacheBoilerToGraphQL(cache *semanticCacheBoiler) *graphql.BoilerStatus {
 	if cache == nil {
 		return nil
 	}
+	// Cached flow has no native provenance and is withheld until a fresh
+	// qualified observation arrives. Legacy return keeps its cache behaviour.
 	out := &graphql.BoilerStatus{
 		State: graphql.BoilerState{
-			FlowTemperatureC:      cloneFloatPtr(cache.FlowTemperatureC),
 			ReturnTemperatureC:    cloneFloatPtr(cache.ReturnTemperatureC),
 			DhwTemperatureC:       cloneFloatPtr(cache.DhwTemperatureC),
 			DhwTargetTemperatureC: cloneFloatPtr(cache.DhwTargetTemperatureC),

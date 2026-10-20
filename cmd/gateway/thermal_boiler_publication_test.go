@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strconv"
@@ -294,8 +295,20 @@ func TestM15SelectorOnlyAndClockLoss(t *testing.T) {
 }
 
 func TestM15LifecycleClearsLegacyProjection(t *testing.T) {
+	for _, control := range []string{"retire", "fence"} {
+		t.Run(control, func(t *testing.T) { testM15LifecycleClearsLegacyProjection(t, control) })
+	}
+}
+
+func testM15LifecycleClearsLegacyProjection(t *testing.T, control string) {
 	fixture, h, _ := m15Fixture(t)
-	poller := &vaillantSemanticPoller{provider: graphql.NewLiveSemanticProvider(), boilerAddress: 0x36}
+	poller := &vaillantSemanticPoller{provider: graphql.NewLiveSemanticProvider(), boilerAddress: 0x36, hub: graphql.NewBroadcastHub(nil)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, err := poller.hub.SubscribeBoiler(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	poller.attachBoilerThermal(fixture.hub, fixture.handle)
 	pub := poller.boilerThermal
 	pub.binding, pub.attempt, pub.now = fixture.binding, fixture.attempt, fixture.now
@@ -306,8 +319,21 @@ func TestM15LifecycleClearsLegacyProjection(t *testing.T) {
 	if poller.provider.BoilerStatus().State.FlowTemperatureC == nil {
 		t.Fatal(pub.lastError)
 	}
+	select {
+	case update := <-updates:
+		if update.(*graphql.BoilerStatus).State.FlowTemperatureC == nil {
+			t.Fatal("initial subscription flow missing")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial subscription update missing")
+	}
 	wall, mono := pub.now()
-	if _, err := pub.hub.RetireEpoch(semhub.RetireRequest{Source: h.Source(), Epoch: h.Epoch(), Reason: "boiler.test.retire", Evidence: pub.binding.Basis, ObservedAt: wall, Monotonic: mono}); err != nil {
+	if control == "retire" {
+		_, err = pub.hub.RetireEpoch(semhub.RetireRequest{Source: h.Source(), Epoch: h.Epoch(), Reason: "boiler.test.retire", Evidence: pub.binding.Basis, ObservedAt: wall, Monotonic: mono})
+	} else {
+		_, err = pub.hub.Fence(semhub.FenceRequest{Source: h.Source(), Epoch: h.Epoch(), Generation: h.Generation(), Reason: "boiler.test.fence", Evidence: pub.binding.Basis, ObservedAt: wall, Monotonic: mono})
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -317,5 +343,114 @@ func TestM15LifecycleClearsLegacyProjection(t *testing.T) {
 	}
 	if poller.provider.BoilerStatus().State.FlowTemperatureC != nil {
 		t.Fatal("retired flow remained on legacy surface")
+	}
+	select {
+	case update := <-updates:
+		if update.(*graphql.BoilerStatus).State.FlowTemperatureC != nil {
+			t.Fatal("lifecycle subscription retained flow")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle subscription update missing")
+	}
+}
+
+func TestM15PayloadOnlyRequiresExactLength(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		raw   []byte
+		valid bool
+	}{
+		{"normal", []byte{0x20, 3}, true},
+		{"zero", []byte{0, 0}, true},
+		{"fraction", []byte{1, 0}, true},
+		{"missing", nil, false},
+		{"short", []byte{0x20}, false},
+		{"long", []byte{0x20, 3, 0}, false},
+		{"selector", []byte{0x18, 0, 0x20, 3}, false},
+		{"operation_selector", []byte{0x0d, 0x18, 0, 0x20, 3}, false},
+		{"sentinel", []byte{0, 0x80}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub, _, _ := m15Fixture(t)
+			pub.binding.Identity.ResponseForm = "payload"
+			poller := &vaillantSemanticPoller{boilerThermal: pub}
+			poller.retainBoilerThermalRead(protocol.Frame{FrameType: protocol.FrameTypeInitiatorTarget, Source: 0x31, Target: 0x36, Primary: 0xb5, Secondary: 9, Data: []byte{0x0d, 0x18, 0}}, &protocol.Frame{Data: tc.raw}, nil)
+			if got := pub.scalar(0x36); (got != nil) != tc.valid {
+				t.Fatalf("scalar=%v valid=%v error=%v", got, tc.valid, pub.lastError)
+			}
+		})
+	}
+}
+
+func TestM15SuccessorPublishesAfterBindingChange(t *testing.T) {
+	for _, transition := range []string{"epoch", "generation"} {
+		t.Run(transition, func(t *testing.T) {
+			pub, old, tick := m15Fixture(t)
+			if pub.scalar(0x36) == nil {
+				t.Fatal(pub.lastError)
+			}
+			*tick = 1
+			wall, mono := pub.now()
+			var next *semhub.Handle
+			var err error
+			if transition == "epoch" {
+				_, err = pub.hub.RetireEpoch(semhub.RetireRequest{Source: old.Source(), Epoch: old.Epoch(), Reason: "boiler.test.retire", Evidence: pub.binding.Basis, ObservedAt: wall, Monotonic: mono})
+				if err != nil {
+					t.Fatal(err)
+				}
+				next, err = pub.hub.AdmitSuccessor(semhub.Succession{Previous: old, Operation: "boiler.test.restart"})
+			} else {
+				var tx *semhub.Tx
+				tx, err = pub.hub.BeginGeneration(old, pub.binding.Identity.Asset, old.Generation()+1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Abort()
+				current, _ := tx.Current()
+				batch := semreg.PublicationBatch{Contract: semreg.ContractKernelV1, BatchID: "batch:synthetic-transition", AssetID: pub.binding.Identity.Asset, SourceID: old.Source(), SourceEpochID: old.Epoch(), DriverGeneration: "2", Sequence: tx.NextSequence(), ExpectedSemanticRevision: current.Revisions.Semantic, ObservedAt: wall,
+					GenerationFences: []semreg.GenerationFence{{SourceID: old.Source(), SourceEpochID: old.Epoch(), DriverGeneration: old.GenerationID(), Reason: "boiler.test.replaced", Evidence: pub.binding.Basis, Revision: "1"}}}
+				batch.SourceUpserts = []semreg.SourceDescriptor{}
+				batch.BindingUpserts = []semreg.NativeBinding{}
+				batch.IdentityLinkUpserts = []semreg.IdentityLink{}
+				batch.FactUpserts = []semreg.FactCandidate{}
+				batch.FactWithdrawals = []semreg.CandidateID{}
+				batch.ServiceUpserts = []semreg.ServiceInstance{}
+				batch.ServiceWithdrawals = []semreg.ServiceInstanceID{}
+				batch.CapabilityUpserts = []semreg.CapabilityInstance{}
+				batch.CapabilityWithdrawals = []semreg.CapabilityInstanceID{}
+				batch.SourceRetirements = []semreg.SourceEpochID{}
+				batch.BatchDigest, err = batch.ComputedDigest()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = tx.Apply(batch, mono); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = tx.Commit(nil); err != nil {
+					t.Fatal(err)
+				}
+				next = tx.Handle()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pub.handle = func() (*semhub.Handle, error) { return next, nil }
+			pub.binding.Identity.Epoch = next.Epoch()
+			pub.binding.Identity.Generation = next.GenerationID()
+			pub.binding.Identity.Binding = "binding:synthetic-successor"
+			o := *pub.attempt
+			o.Identity = pub.binding.Identity
+			o.Received, o.Receipt = pub.now()
+			o.Reply = []byte{0x0d, 0x18, 0, 0x30, 3}
+			pub.attempt = &o
+			for i := 0; i < 2; i++ {
+				if got := pub.scalar(0x36); got == nil || *got != 51 {
+					t.Fatalf("successor scalar=%v error=%v", got, pub.lastError)
+				}
+			}
+			if pub.published.Identity != pub.binding.Identity {
+				t.Fatal("successor binding not tracked")
+			}
+		})
 	}
 }

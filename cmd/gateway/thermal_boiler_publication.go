@@ -80,9 +80,12 @@ func (p *vaillantSemanticPoller) attachBoilerThermal(hub *semhub.Hub, handle fun
 		p.mu.Unlock()
 		if p.provider != nil {
 			status := p.provider.BoilerStatus()
-			if status != nil {
+			if status != nil && status.State.FlowTemperatureC != nil {
 				status.State.FlowTemperatureC = nil
 				p.provider.SetBoilerStatus(status)
+				if p.hub != nil {
+					p.hub.PublishBoilerStatusUpdate(status)
+				}
 			}
 		}
 		return nil
@@ -136,6 +139,8 @@ func boilerThermalValue(o *boilerThermalObservation, b *boilerThermalBinding) (*
 	}
 	prefix := []byte{0x18, 0}
 	switch id.ResponseForm {
+	case "payload":
+		prefix = nil
 	case "selector":
 	case "operation_selector":
 		prefix = []byte{0x0d, 0x18, 0}
@@ -201,17 +206,27 @@ func (p *boilerThermalPublisher) scalar(target byte) *float64 {
 	wall, mono := p.now()
 	p.legacyProjection = projection.ProjectionDisposition{Kind: projection.ItemFact, ItemID: boilerThermalKey().FactID, Outcome: projection.ProjectionWithheld, SourceKeys: []semreg.FactKey{}, Loss: []projection.LossDetail{}}
 	if p.published != nil && (p.binding == nil || !p.binding.Qualified || !reflect.DeepEqual(p.binding, p.published) || p.binding.Identity.Target != target) {
-		current := p.binding
-		p.binding = p.published
 		handle, err := p.handle()
-		if err == nil && handle != nil {
-			p.lastError = p.publish(handle, wall, mono, false)
-		}
-		p.binding = current
-		p.withheldNative = p.good
-		p.good, p.attempt = nil, nil
-		if p.lastError != nil {
+		if err != nil || handle == nil {
+			p.lastError = err
 			return nil
+		}
+		old := p.published.Identity
+		// Lifecycle control retires candidates of predecessor epochs and
+		// generations. Never send their identity through a successor handle.
+		if handle.Source() == old.Source && handle.Epoch() == old.Epoch && handle.GenerationID() == old.Generation {
+			current := p.binding
+			p.binding = p.published
+			p.lastError = p.publish(handle, wall, mono, false)
+			p.binding = current
+			if p.lastError != nil {
+				return nil
+			}
+		}
+		p.withheldNative = p.good
+		p.good = nil
+		if p.attempt != nil && (p.binding == nil || p.attempt.Identity != p.binding.Identity) {
+			p.attempt = nil
 		}
 		p.published = nil
 	}

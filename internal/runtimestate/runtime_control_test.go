@@ -911,8 +911,14 @@ func TestControlDecisionRefusalOrderNoOpsAndSlots(t *testing.T) {
 		t.Fatalf("busy or no-op wrote state")
 	}
 	unchanged(t, before)
-	// Terminal obligations settle; RESTART takes the current slot, and a
-	// further changing request during the executing RESTART is busy.
+	// Complete the current work, promote the reserved work, then settle it.
+	// RESTART takes the current slot; further changing requests are busy.
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", v.Reserved, nil); err != nil {
+		t.Fatalf("reserved promotion = %v", err)
+	}
+	if got := rcDriver(t, m, "ebus.primary"); !reflect.DeepEqual(got.Current, v.Reserved) || got.Reserved != nil {
+		t.Fatalf("reserved promotion lost work: %+v", got)
+	}
 	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil); err != nil {
 		t.Fatalf("CommitControlWork() = %v", err)
 	}
@@ -2662,4 +2668,209 @@ func TestControlLoaderRejectsEachInvalidRecordInvariant(t *testing.T) {
 			t.Fatalf("noncanonical id failed=%v sibling kept=%v", failed, kept)
 		}
 	})
+}
+
+func p09Unchanged(t *testing.T, m *Manager, path string, hooks *rcHooks, before []byte, snapshot ControlCatalogView, writes int) {
+	t.Helper()
+	if !bytes.Equal(before, rcRead(t, path)) || hooks.writeCount() != writes {
+		t.Fatal("refused update changed durable bytes or attempted a write")
+	}
+	if got := rcSnapshot(t, m); !reflect.DeepEqual(got, snapshot) {
+		t.Fatalf("refused update changed catalog, desired revision or issued mark: before=%+v after=%+v", snapshot, got)
+	}
+}
+
+func TestP09PlanRequiresNewRequestedKind(t *testing.T) {
+	for _, method := range []ControlMethod{ControlStart, ControlStop, ControlRestart} {
+		for _, layout := range []string{"empty", "retained_only", "wrong_kind", "retained_requested_new_wrong_kind", "new_requested", "retained_and_new_requested"} {
+			t.Run(string(method)+"/"+layout, func(t *testing.T) {
+				path := rcPath(t)
+				state := "RUNNING"
+				if method == ControlStart {
+					state = "STOPPED"
+				}
+				rcWriteLoaded(t, path, "1", "2", `"fam.primary":{"desired_state":"`+state+`","desired_revision":"1","lifecycle_sequence":"1","current":`+
+					rcTransitionJSON(string(method), "1", "1")+`,"reserved":null}`)
+				hooks := &rcHooks{}
+				m := rcManager(t, path, hooks)
+				defer rcStop(t, m)
+				if _, err := m.BootstrapControl(rcCtx(t), []ControlDriverConfig{{DriverID: "fam.primary", Enabled: true}}); err != nil {
+					t.Fatal(err)
+				}
+				before, snapshot, writes := rcRead(t, path), rcSnapshot(t, m), hooks.writeCount()
+				wrong := TransitionStop
+				if method == ControlStop {
+					wrong = TransitionStart
+				}
+				fresh := func(kind TransitionKind) *ControlTransition {
+					return &ControlTransition{Kind: kind, Phase: PhasePending}
+				}
+				_, err := m.DecideControl(rcCtx(t), method, ControlRequest{DriverID: "fam.primary", ExpectedRevision: 1}, func(in ControlPlanInput) (ControlPlan, *ControlRefusal) {
+					switch layout {
+					case "empty":
+						return ControlPlan{}, nil
+					case "retained_only":
+						return ControlPlan{Current: in.Record.Current}, nil
+					case "wrong_kind":
+						return ControlPlan{Current: fresh(wrong)}, nil
+					case "retained_requested_new_wrong_kind":
+						return ControlPlan{Current: in.Record.Current, Reserved: fresh(wrong)}, nil
+					case "retained_and_new_requested":
+						return ControlPlan{Current: in.Record.Current, Reserved: fresh(TransitionKind(method))}, nil
+					default:
+						return ControlPlan{Current: fresh(TransitionKind(method))}, nil
+					}
+				})
+				valid := layout == "new_requested" || layout == "retained_and_new_requested"
+				if !valid {
+					_ = rcRefusal(t, err, RefusalTransitionBusy, 8)
+					p09Unchanged(t, m, path, hooks, before, snapshot, writes)
+					return
+				}
+				if err != nil {
+					t.Fatalf("valid requested allocation refused: %v", err)
+				}
+				got := rcDriver(t, m, "fam.primary")
+				work := got.Current
+				if layout == "retained_and_new_requested" {
+					work = got.Reserved
+				}
+				if work == nil || work.Kind != TransitionKind(method) || work.Sequence != 2 || work.DesiredRevision != 2 ||
+					got.DesiredRevision != 2 || rcSnapshot(t, m).IssuedRevisionMark != 2 || rcSnapshot(t, m).CatalogRevision != 3 {
+					t.Fatalf("requested allocation or counters incorrect: %+v / %+v", got, work)
+				}
+			})
+		}
+	}
+}
+
+func TestP09WorkProgression(t *testing.T) {
+	for _, name := range []string{
+		"epoch_replace_native_pending", "epoch_replace_semantic_pending", "epoch_remove", "epoch_remove_pair",
+		"generation_decrease", "generation_remove", "native_reactivate", "semantic_reactivate",
+		"identity_kind", "identity_revision", "identity_sequence",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := rcPath(t)
+			rcWriteLoaded(t, path, "3", "4", `"fam.primary":{"desired_state":"RUNNING","desired_revision":"3","lifecycle_sequence":"2","current":`+
+				rcTransitionJSON("START", "3", "1")+`,"reserved":null}`)
+			hooks := &rcHooks{}
+			m := rcManager(t, path, hooks)
+			defer rcStop(t, m)
+			if _, err := m.BootstrapControl(rcCtx(t), []ControlDriverConfig{{DriverID: "fam.primary", Enabled: true}}); err != nil {
+				t.Fatal(err)
+			}
+			stored := rcDriver(t, m, "fam.primary").Current
+			stored.Epoch, stored.Generation, stored.Phase = "p09.epoch-one", 2, PhaseActive
+			stored.NativeClosePending = name == "epoch_replace_native_pending" || name == "native_reactivate"
+			stored.SemanticCleanupPending = name == "epoch_replace_semantic_pending" || name == "semantic_reactivate"
+			if err := m.CommitControlWork(rcCtx(t), "fam.primary", stored, nil); err != nil {
+				t.Fatalf("valid initial assignment refused: %v", err)
+			}
+			if name == "native_reactivate" || name == "semantic_reactivate" {
+				stored.NativeClosePending, stored.SemanticCleanupPending = false, false
+				if err := m.CommitControlWork(rcCtx(t), "fam.primary", stored, nil); err != nil {
+					t.Fatalf("valid obligation clearing refused: %v", err)
+				}
+			}
+			next := cloneTransition(stored)
+			switch name {
+			case "epoch_replace_native_pending", "epoch_replace_semantic_pending":
+				next.Epoch = "p09.epoch-two"
+			case "epoch_remove":
+				next.Epoch = ""
+			case "epoch_remove_pair":
+				next.Epoch, next.Generation = "", 0
+			case "generation_decrease":
+				next.Generation = 1
+			case "generation_remove":
+				next.Generation = 0
+			case "native_reactivate":
+				next.NativeClosePending = true
+			case "semantic_reactivate":
+				next.SemanticCleanupPending = true
+			case "identity_kind":
+				next.Kind = TransitionRestart
+			case "identity_revision":
+				next.DesiredRevision = 2
+			case "identity_sequence":
+				next.Sequence = 2
+			}
+			// Both candidates are individually well formed; only progression
+			// from the durable baseline makes the update invalid.
+			if err := validateTransition(next); err != nil {
+				t.Fatalf("candidate is not a valid transition: %v", err)
+			}
+			before, snapshot, writes := rcRead(t, path), rcSnapshot(t, m), hooks.writeCount()
+			if err := m.CommitControlWork(rcCtx(t), "fam.primary", next, nil); !errors.Is(err, ErrControlInvalidWork) {
+				t.Fatalf("invalid progression accepted: %v", err)
+			}
+			p09Unchanged(t, m, path, hooks, before, snapshot, writes)
+		})
+	}
+}
+
+func TestP09ValidCorrelationProgression(t *testing.T) {
+	m, _ := rcSeeded(t, nil)
+	defer rcStop(t, m)
+	if _, err := rcDecide(t, m, ControlRestart, "ebus.primary", 2); err != nil {
+		t.Fatal(err)
+	}
+	base := rcDriver(t, m, "ebus.primary").Current
+	commit := func(next *ControlTransition) {
+		t.Helper()
+		if err := m.CommitControlWork(rcCtx(t), "ebus.primary", next, nil); err != nil {
+			t.Fatalf("valid progression refused: %v", err)
+		}
+		if got := rcDriver(t, m, "ebus.primary").Current; !reflect.DeepEqual(got, next) {
+			t.Fatalf("work not stored: got %+v want %+v", got, next)
+		}
+	}
+	assigned := cloneTransition(base)
+	assigned.Epoch, assigned.Generation = "p09.epoch-one", 1
+	commit(assigned)
+	active := cloneTransition(assigned)
+	active.Phase, active.NativeClosePending, active.SemanticCleanupPending = PhaseActive, true, true
+	commit(active)
+	retry := cloneTransition(active)
+	retry.AttemptsUsed, retry.Generation = 1, 2
+	commit(retry)
+	settled := cloneTransition(retry)
+	settled.NativeClosePending, settled.SemanticCleanupPending = false, false
+	commit(settled)
+	replacement := cloneTransition(settled)
+	replacement.Epoch, replacement.Generation = "p09.epoch-two", 1
+	replacement.NativeClosePending, replacement.SemanticCleanupPending = true, true
+	commit(replacement)
+}
+
+func TestP09ReservedMustSurviveClearing(t *testing.T) {
+	hooks := &rcHooks{}
+	m, path := rcSeeded(t, hooks)
+	defer rcStop(t, m)
+	if _, err := rcDecide(t, m, ControlStop, "ebus.primary", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rcDecide(t, m, ControlStart, "ebus.primary", 3); err != nil {
+		t.Fatal(err)
+	}
+	stored := rcDriver(t, m, "ebus.primary")
+	if stored.Current == nil || stored.Reserved == nil {
+		t.Fatal("valid baseline needs two slots")
+	}
+	before, snapshot, writes := rcRead(t, path), rcSnapshot(t, m), hooks.writeCount()
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil); !errors.Is(err, ErrControlInvalidWork) {
+		t.Fatalf("nil/nil discarded reserved work: %v", err)
+	}
+	p09Unchanged(t, m, path, hooks, before, snapshot, writes)
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", stored.Reserved, nil); err != nil {
+		t.Fatalf("valid reserved promotion refused: %v", err)
+	}
+	promoted := rcDriver(t, m, "ebus.primary")
+	if !reflect.DeepEqual(promoted.Current, stored.Reserved) || promoted.Reserved != nil {
+		t.Fatalf("promotion did not preserve reserved work: %+v", promoted)
+	}
+	if err := m.CommitControlWork(rcCtx(t), "ebus.primary", nil, nil); err != nil {
+		t.Fatalf("terminal clearing without reserved work refused: %v", err)
+	}
 }

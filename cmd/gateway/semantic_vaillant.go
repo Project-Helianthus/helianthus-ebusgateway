@@ -2919,7 +2919,7 @@ func (p *vaillantSemanticPoller) refreshBoilerStatusB509(ctx context.Context, bo
 	switch tier {
 	case boilerStatusTierFast:
 		// Acquisition retains native evidence; only the hub result supplies flow.
-		_, _ = p.readB509Value(ctx, boilerAddress, boiler_b509_flow_temperature)
+		_, updated = p.readB509Value(ctx, boilerAddress, boiler_b509_flow_temperature)
 		if value := p.readB509OnOff(ctx, boilerAddress, boiler_b509_central_heating_pump); value != nil {
 			snapshot.CentralHeatingPumpActive = value
 			updated = true

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
@@ -299,6 +300,69 @@ func TestM15AcquisitionRetainsReceipt(t *testing.T) {
 }
 
 func m15Float(v float64) *float64 { return &v }
+
+func TestM15UnqualifiedFlowOnlyCyclePublishesChangedDHW(t *testing.T) {
+	pub, _, _ := m15Fixture(t)
+	pub.binding.Qualified = false
+	pub.attempt = nil
+	poller := &vaillantSemanticPoller{
+		scheduler:     ebusgateway.NewSemanticReadScheduler(),
+		provider:      graphql.NewLiveSemanticProvider(),
+		hub:           graphql.NewBroadcastHub(nil),
+		source:        pub.binding.Identity.Initiator,
+		controller:    0x15,
+		boilerAddress: pub.binding.Identity.Target,
+		boilerThermal: pub,
+		boiler:        &vaillantBoilerSnapshot{DhwTemperatureC: m15Float(40)},
+		dhw:           &vaillantDhwSnapshot{CurrentTempC: m15Float(47.5)},
+		// No circuit snapshot supplies a fresh circuit-state mirror.
+	}
+	poller.publishBoilerStatus(semanticSnapshotSourceLive)
+	if got := poller.provider.BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
+		t.Fatalf("initial public boiler status = %+v; want DHW 40 and withheld flow", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, err := poller.hub.SubscribeBoiler(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowReads := 0
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if frame.Primary != vaillantB509Primary || frame.Secondary != vaillantB509Secondary {
+			t.Fatalf("unexpected non-B509 read: %+v", frame)
+		}
+		if reflect.DeepEqual(frame.Data, buildB509ReadSelector(boiler_b509_flow_temperature)) {
+			flowReads++
+			return &protocol.Frame{Data: []byte{0x0d, 0x18, 0, 0x20, 3}}, nil
+		}
+		return nil, errors.New("synthetic unrelated read failure")
+	}
+
+	poller.refreshBoilerStatusTier(ctx, boilerStatusTierFast)
+
+	if flowReads != 1 || pub.attempt == nil || !pub.attempt.Valid {
+		t.Fatal("cycle did not acquire exactly one successful native flow read")
+	}
+	if poller.boiler.DhwTemperatureC == nil || *poller.boiler.DhwTemperatureC != 47.5 || poller.boiler.FlowTemperatureC != nil {
+		t.Fatalf("internal boiler = %+v; want merged DHW 47.5 and withheld flow", poller.boiler)
+	}
+	if pub.good != nil || pub.scalar(poller.boilerAddress) != nil {
+		t.Fatal("unqualified acquisition supplied a flow fact")
+	}
+	if got := poller.provider.BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+		t.Fatalf("public boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
+	}
+	select {
+	case update := <-updates:
+		got := update.(*graphql.BoilerStatus)
+		if got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+			t.Fatalf("subscriber boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("changed DHW was not published to boiler subscribers")
+	}
+}
 
 func TestM15NewObservationAndFreshnessBoundaries(t *testing.T) {
 	p, _, tick := m15Fixture(t)

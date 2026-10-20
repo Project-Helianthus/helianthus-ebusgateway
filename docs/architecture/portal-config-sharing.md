@@ -158,8 +158,18 @@ trust, qualification, read admission and write safeguards remain mandatory.
 
 One host-owned writer serializes complete-record replacements. Edits carry the
 expected application revision; stale edits fail before persistence or runtime
-effects. Validate first, then write a restrictive-permission temporary file in
-the same directory, flush its contents, atomically rename over the destination
+effects, including for no-op requests. The server alone owns revision allocation;
+the host-supplied initial record starts at `0`. Under the same writer lock,
+validate the complete edit and compare desired selections with the accepted
+record. A no-op returns the current accepted revision without writing, advancing
+the revision or reapplying runtime effects. For a changing edit, allocate exactly
+the accepted revision plus one and persist it with the complete replacement;
+publish that revision in memory and return it only after durable acceptance.
+Never accept a caller-selected successor or reuse a revision for different
+accepted selections. At the unsigned 64-bit maximum, reject changing edits with
+`revision_exhausted` before writing or applying; never wrap or reset the counter.
+No-ops at the maximum still return that revision. Write a restrictive-permission
+temporary file in the same directory, flush its contents, atomically rename over the destination
 and flush the parent directory. Do not truncate the destination in place, copy
 across filesystems as a fallback, follow an untrusted symlink or report success
 before durable completion. Use a host-controlled storage location, never one
@@ -173,7 +183,13 @@ generation-fenced, not falsely atomic across independent native drivers. On a
 failed write/flush/rename keep the last accepted in-memory desired record and
 report persistence failure. If rename succeeded but directory flush failed,
 durability is uncertain: do not apply new exposure, do not claim the old disk
-record survived, and require validated reread/explicit repair before resuming.
+record survived, and block further edits and new record-controlled admission.
+Before resuming, the serialized writer must validate the destination and
+successfully flush its parent directory, or complete an explicit repair through
+the full durable replacement sequence, including a successful parent-directory
+flush. Reread alone is insufficient. Reconcile the recovered durable record and
+its revision before reopening admission; report failure while durability remains
+uncertain and never reuse an uncertain successor for different selections.
 On restart, ignore incomplete temporary files and validate the destination
 before reconciliation. Recovery must never seed over an unreadable, corrupt,
 unsupported or locked record.
@@ -193,7 +209,9 @@ Errors contain a closed code, allowlisted field location and safe next step:
 `invalid_record` (repair structure), `unsupported_format` (use supported format),
 `unsupported_selection` (choose a provisioned option), `revision_conflict`
 (reload), `persistence_failed` (check local storage), or `evidence_unavailable`
-(inspect the owning driver's sanitized status). Never echo supplied values,
+(inspect the owning driver's sanitized status); `revision_exhausted` requires a
+future supported format migration, not a counter reset. Never echo supplied
+values,
 unknown key text, parser snippets, paths or underlying errors. Diagnostic
 exports are built from an allowlist of format, safe state booleans, statuses
 and closed codes; omit driver IDs, record bytes, revisions, raw errors, native
@@ -202,10 +220,13 @@ export this record or a generic runtime/configuration dump as a diagnostic.
 
 ## Subsequent implementation acceptance
 
-Offline tests must cover valid load/save and concurrent revision conflict;
+Offline tests must cover valid load/save, server-owned successor persistence and
+returned revision, concurrent stale-edit conflict, no-op revision preservation
+and revision exhaustion without wrap/reset;
 duplicate keys/IDs, wrong types, unknown fields/format, size limits and overflow;
 cold-start corrupt/unreadable/locked data with shell survival and no expanded
-exposure; each persistence failure point and restart after incomplete writes;
+exposure; each persistence failure point and restart after incomplete writes,
+including refusal to resume after rename until parent-directory sync succeeds;
 disabled-driver precedence without rewriting lifecycle intent; independent
 GraphQL/MCP/proxy/output selections; withheld and later revoked evidence without
 effective publication; stale generation callbacks; and diagnostic redaction

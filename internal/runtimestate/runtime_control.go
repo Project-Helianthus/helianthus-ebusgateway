@@ -1409,7 +1409,7 @@ func (m *Manager) DecideControl(ctx context.Context, method ControlMethod, req C
 	if !okMark || !okCatalog {
 		return ControlView{}, refuse(RefusalCounterExhausted, 10, "mark or catalog increment would overflow")
 	}
-	updated, err := applyControlPlan(record, plan, newRevision)
+	updated, err := applyControlPlan(record, plan, newRevision, TransitionKind(method))
 	if err != nil {
 		var r *ControlRefusal
 		if errors.As(err, &r) {
@@ -1441,7 +1441,7 @@ func (m *Manager) DecideControl(ctx context.Context, method ControlMethod, req C
 
 // applyControlPlan validates a plan and assigns revision and sequences to its
 // new transitions.
-func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision uint64) (ControlDriverRecord, error) {
+func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision uint64, requestedKind TransitionKind) (ControlDriverRecord, error) {
 	if plan.Reserved != nil && plan.Current == nil {
 		return record, fmt.Errorf("%w: reserved slot without current slot", ErrControlInvalidWork)
 	}
@@ -1453,11 +1453,15 @@ func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision 
 	}
 	out := cloneRecord(record)
 	slots := []*ControlTransition{cloneTransition(plan.Current), cloneTransition(plan.Reserved)}
+	requestedAllocated := false
 	for _, t := range slots {
 		if t == nil {
 			continue
 		}
 		if t.Sequence == 0 {
+			if t.Kind == requestedKind {
+				requestedAllocated = true
+			}
 			next, ok := addCounter(out.LifecycleSequence, 1)
 			if !ok {
 				return record, refuse(RefusalCounterExhausted, 10, "lifecycle sequence increment would overflow")
@@ -1471,6 +1475,9 @@ func applyControlPlan(record ControlDriverRecord, plan ControlPlan, newRevision 
 		if err := validateTransition(t); err != nil {
 			return record, fmt.Errorf("%w: %v", ErrControlInvalidWork, err)
 		}
+	}
+	if !requestedAllocated {
+		return record, fmt.Errorf("%w: plan must allocate the requested transition kind", ErrControlInvalidWork)
 	}
 	out.Current, out.Reserved = slots[0], slots[1]
 	if out.Current != nil && out.Reserved != nil && out.Current.Sequence >= out.Reserved.Sequence {
@@ -1549,9 +1556,10 @@ func (m *Manager) waitTimeoutRefusal(req ControlRequest) *ControlRefusal {
 // desired state, its revision or the mark (phase updates, promotion of the
 // reserved slot, removal after terminal obligations). Transitions must keep
 // the kind, sequence and revision of a currently stored slot. A reserved slot
-// may be retained or promoted; clearing both slots asserts terminal obligations
-// have settled, which remains the caller's responsibility. An update of a
-// stored identity may not regress it (phase, attempts used, deadline).
+// may be retained or promoted, and must be promoted before clearing both slots.
+// Clearing the final slot asserts terminal obligations have settled, which
+// remains the caller's responsibility. Updates must preserve correlation,
+// cleanup and budget progression.
 func (m *Manager) CommitControlWork(ctx context.Context, id string, current, reserved *ControlTransition) error {
 	if err := m.acquireWriteCtx(ctx); err != nil {
 		return err
@@ -1592,7 +1600,7 @@ func (m *Manager) CommitControlWork(ctx context.Context, id string, current, res
 	if reserved != nil && !sameIdentity(reserved, r.Reserved) {
 		return fmt.Errorf("%w: current transition cannot be demoted to reserved", ErrControlInvalidWork)
 	}
-	if current != nil && r.Reserved != nil &&
+	if r.Reserved != nil &&
 		!sameIdentity(current, r.Reserved) && !sameIdentity(reserved, r.Reserved) {
 		return fmt.Errorf("%w: work update would discard the reserved transition", ErrControlInvalidWork)
 	}
@@ -1643,7 +1651,10 @@ func controlPhaseRank(p TransitionPhase) int {
 }
 
 // controlRegression reports why next would regress the stored slot of the
-// same identity, or "" when it only moves forward.
+// same identity, or "" when it only moves forward. Initial correlation
+// assignment and PENDING-to-ACTIVE obligation assignment are allowed. A new
+// epoch may incur new obligations only after the old correlation is settled;
+// within an epoch generations may grow but cleared obligations stay cleared.
 func controlRegression(stored, next *ControlTransition) string {
 	if stored == nil || next == nil {
 		return ""
@@ -1657,6 +1668,26 @@ func controlRegression(stored, next *ControlTransition) string {
 		return "work update removes an established deadline"
 	case !stored.DeadlineUTC.IsZero() && next.DeadlineUTC.After(stored.DeadlineUTC):
 		return "work update extends an established deadline"
+	}
+	switch {
+	case stored.Epoch == "":
+		return ""
+	case next.Epoch == "":
+		return "work update removes an established correlation"
+	case next.Epoch != stored.Epoch:
+		if stored.NativeClosePending || stored.SemanticCleanupPending {
+			return "work update replaces correlation before its obligations cleared"
+		}
+		return ""
+	case next.Generation < stored.Generation:
+		return "work update lowers generation"
+	}
+	incurring := stored.Phase == PhasePending && next.Phase == PhaseActive
+	if !incurring && !stored.NativeClosePending && next.NativeClosePending {
+		return "work update reactivates cleared native close"
+	}
+	if !incurring && !stored.SemanticCleanupPending && next.SemanticCleanupPending {
+		return "work update reactivates cleared semantic cleanup"
 	}
 	return ""
 }

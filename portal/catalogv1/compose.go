@@ -12,7 +12,7 @@ import (
 
 // Catalog is a bounded optimistic detached capture. Sources are called once per
 // attempt and must themselves be committed-state readers with no I/O.
-func (c *Composer) Catalog(caller any) (Catalog, error) {
+func (c *Composer) Catalog() (Catalog, error) {
 	if c == nil {
 		return Catalog{}, errors.New("catalog composer missing")
 	}
@@ -27,7 +27,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		for k := range c.quarantined {
 			quarantined = append(quarantined, k)
 		}
-		source, auth, now := c.source, c.auth, c.now
+		source, invoker, revalidator, now := c.source, c.invoker, c.revalidator, c.now
 		c.mu.RUnlock()
 		fence := ""
 		if fenced, ok := source.(FencedSourceCapture); ok {
@@ -41,15 +41,6 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 		}
 		for _, p := range FivePacks {
 			out.Domains = append(out.Domains, Domain{Pack: p, SourceState: "ABSENT", Reason: "source_unavailable"})
-		}
-		if auth != nil {
-			scope, err := auth.Scope(caller)
-			if err != nil {
-				return Catalog{}, ErrUnauthorized
-			}
-			out.AuthorizationScope = scope
-		} else {
-			out.AuthorizationScope = "public-read/no-actions"
 		}
 		if source != nil {
 			resources, fields, err := source.Capture(at)
@@ -146,10 +137,8 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 					continue
 				}
 				action := Action{ID: a.ID, ResourceID: resourceID, ServiceID: a.ServiceRef.ID, CapabilityID: a.CapabilityRef.ID, OperationID: a.OperationRef.ID, ContributionDriverID: d.Manifest.Contributor.DriverID, ContributionManifestID: d.Manifest.ManifestID, ContributionManifestVersion: d.Manifest.ManifestVersion, Source: resource.Source}
-				if auth != nil {
-					action.Discoverable = auth.Discover(caller, action)
-					action.Enabled = action.Discoverable && auth.Invoke(caller, action)
-				}
+				action.Discoverable = invoker != nil
+				action.Enabled = action.Discoverable && revalidator != nil
 				if action.Discoverable {
 					out.Actions = append(out.Actions, action)
 				}
@@ -186,7 +175,7 @@ func (c *Composer) Catalog(caller any) (Catalog, error) {
 }
 
 // catalogRevisionView excludes response-time decoration from the action claim.
-// It retains descriptors, source records, caller scope, and lifecycle fences;
+// It retains descriptors, source records, and lifecycle fences;
 // native admission still revalidates freshness and expiry immediately before I/O.
 func catalogRevisionView(c Catalog) Catalog {
 	c.EvaluationInstant = time.Time{}
@@ -291,7 +280,7 @@ func fieldMatchesManifest(field Field, resource Resource, manifest contributionv
 	return false
 }
 
-func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
+func (c *Composer) Invoke(claim Claims) (any, error) {
 	if c == nil {
 		return nil, ErrStale
 	}
@@ -303,7 +292,7 @@ func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
 	if claim.Deadline.IsZero() || !now().Before(claim.Deadline) || claim.IdempotencyKey == "" {
 		return nil, ErrStale
 	}
-	catalog, err := c.Catalog(caller)
+	catalog, err := c.Catalog()
 	if err != nil {
 		return nil, err
 	}
@@ -327,9 +316,6 @@ func (c *Composer) Invoke(caller any, claim Claims) (any, error) {
 	invoker, revalidator := c.invoker, c.revalidator
 	c.mu.RUnlock()
 	if invoker == nil {
-		return nil, ErrUnauthorized
-	}
-	if c.auth == nil || !c.auth.Invoke(caller, *action) {
 		return nil, ErrUnauthorized
 	}
 	if revalidator == nil {

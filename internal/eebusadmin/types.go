@@ -9,10 +9,6 @@ import (
 
 const ContractV1 = "helianthus.eebus.operator-admin.v1"
 
-type Principal string
-
-const PrincipalHostOperator Principal = "host_operator"
-
 type ProcessReadiness string
 
 const (
@@ -61,7 +57,6 @@ type Config struct {
 // endpoints, request bodies, or transport/store internals.
 type AuditEvent struct {
 	Action              string    `json:"action"`
-	Principal           Principal `json:"principal"`
 	RequestID           string    `json:"request_id"`
 	IdempotencyOutcome  string    `json:"idempotency_outcome"`
 	PriorStateClass     string    `json:"prior_state_class"`

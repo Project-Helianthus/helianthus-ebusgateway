@@ -114,18 +114,17 @@ type Quarantine struct {
 	Reason          string `json:"reason"`
 }
 type Catalog struct {
-	Contract           string           `json:"contract"`
-	CatalogRevision    string           `json:"catalog_revision"`
-	CatalogDigest      string           `json:"catalog_digest"`
-	EvaluationInstant  time.Time        `json:"evaluation_instant"`
-	AuthorizationScope string           `json:"authorization_scope"`
-	Domains            []Domain         `json:"domains"`
-	Contributions      []Identity       `json:"contributions"`
-	Descriptors        []ReadDescriptor `json:"descriptors"`
-	Resources          []Resource       `json:"resources"`
-	Fields             []Field          `json:"fields"`
-	Actions            []Action         `json:"actions"`
-	Quarantines        []Quarantine     `json:"quarantines"`
+	Contract          string           `json:"contract"`
+	CatalogRevision   string           `json:"catalog_revision"`
+	CatalogDigest     string           `json:"catalog_digest"`
+	EvaluationInstant time.Time        `json:"evaluation_instant"`
+	Domains           []Domain         `json:"domains"`
+	Contributions     []Identity       `json:"contributions"`
+	Descriptors       []ReadDescriptor `json:"descriptors"`
+	Resources         []Resource       `json:"resources"`
+	Fields            []Field          `json:"fields"`
+	Actions           []Action         `json:"actions"`
+	Quarantines       []Quarantine     `json:"quarantines"`
 }
 
 // Descriptor is a validated contribution plus its host-computed digest.
@@ -142,11 +141,6 @@ type SourceCapture interface {
 type FencedSourceCapture interface {
 	SourceCapture
 	Fence() string
-}
-type Authorizer interface {
-	Scope(caller any) (string, error)
-	Discover(caller any, action Action) bool
-	Invoke(caller any, action Action) bool
 }
 type Invoker interface {
 	Invoke(action Action, claim Claims) (json.RawMessage, error)
@@ -179,7 +173,6 @@ type Composer struct {
 	quarantined map[identity]bool
 	revision    uint64
 	source      SourceCapture
-	auth        Authorizer
 	now         func() time.Time
 	invoker     Invoker
 	revalidator Revalidator
@@ -200,8 +193,8 @@ func (c *Composer) SetClock(now func() time.Time) {
 
 type identity struct{ driver, manifest, version string }
 
-func New(index contributionv1.SemanticIndex, source SourceCapture, auth Authorizer, invoker Invoker) *Composer {
-	return &Composer{index: index, descriptors: make(map[identity]Descriptor), quarantined: make(map[identity]bool), source: source, auth: auth, invoker: invoker, now: func() time.Time { return time.Now().UTC() }}
+func New(index contributionv1.SemanticIndex, source SourceCapture, invoker Invoker) *Composer {
+	return &Composer{index: index, descriptors: make(map[identity]Descriptor), quarantined: make(map[identity]bool), source: source, invoker: invoker, now: func() time.Time { return time.Now().UTC() }}
 }
 
 // Publish validates and binds the digest itself. A same identity with divergent

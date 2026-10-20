@@ -21,12 +21,10 @@ mounted on the general Gateway HTTP listener.
 ## Transport and request budget
 
 The listener requires TLS 1.3 and presents the configured server certificate.
-The client CA is optional. When a client CA is configured, a certificate that a
-client presents is verified against it and against the denied-fingerprint list,
-and a failing certificate ends the handshake; a client that presents no
-certificate is accepted. Without a client CA no client certificate is requested.
-A client certificate never becomes a principal: the Gateway derives no identity
-from it, and a caller cannot provide a principal or native route in JSON.
+Client certificates are not requested or authenticated. The deprecated
+client-CA and denied-principal flags are accepted as ignored compatibility
+options with one warning. A caller cannot provide a principal or native route
+in JSON.
 
 There is no authentication or authorization gate on this listener in this
 release. Authentication and authorization frameworks are roadmap work for 0.11,

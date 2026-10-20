@@ -2,8 +2,6 @@ package ebusgateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -102,17 +100,13 @@ type EEBusConfig struct {
 // An all-zero value is disabled. Any partially populated value is rejected by
 // the command runtime rather than being silently enabled. An enabled listener
 // requires the listen address, server identity, server certificate and key and
-// at least one allowed asset; the client CA is optional. When it is set, a
-// presented client certificate is verified, but a client without one is still
-// accepted. DeniedPrincipalFingerprints applies only to presented certificates.
+// at least one allowed asset. Client certificates are not authenticated.
 type M2MGraphQLConfig struct {
-	ListenAddr                  string
-	ServerName                  string
-	ClientCAFile                string
-	ServerCertFile              string
-	ServerKeyFile               string
-	AllowedAssets               []string
-	DeniedPrincipalFingerprints []string
+	ListenAddr     string
+	ServerName     string
+	ServerCertFile string
+	ServerKeyFile  string
+	AllowedAssets  []string
 }
 
 // PortalPVConfig independently enables the Portal PV BFF and raw Modbus
@@ -238,9 +232,8 @@ func growattStorageOperationFitsDeadline(maxQuiescence, responseTimeout, deadlin
 }
 
 func (config M2MGraphQLConfig) Disabled() bool {
-	return config.ListenAddr == "" && config.ServerName == "" && config.ClientCAFile == "" &&
-		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0 &&
-		len(config.DeniedPrincipalFingerprints) == 0
+	return config.ListenAddr == "" && config.ServerName == "" &&
+		config.ServerCertFile == "" && config.ServerKeyFile == "" && len(config.AllowedAssets) == 0
 }
 
 func (config M2MGraphQLConfig) Validate() error {
@@ -261,12 +254,6 @@ func (config M2MGraphQLConfig) Validate() error {
 			return errors.New("M2M GraphQL configuration contains a duplicate allowed asset")
 		}
 		assets[asset] = struct{}{}
-	}
-	for _, fingerprint := range config.DeniedPrincipalFingerprints {
-		decoded, err := hex.DecodeString(fingerprint)
-		if err != nil || len(decoded) != sha256.Size {
-			return errors.New("M2M GraphQL configuration contains an invalid denied principal fingerprint")
-		}
 	}
 	return nil
 }

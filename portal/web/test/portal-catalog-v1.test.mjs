@@ -58,7 +58,7 @@ function validCatalog() {
   });
   return {
     contract: "helianthus.gateway.portal-catalog/v1", catalog_revision: "c".repeat(64), catalog_digest: "d".repeat(64),
-    evaluation_instant: "2026-09-16T00:00:00Z", authorization_scope: "public-read",
+    evaluation_instant: "2026-09-16T00:00:00Z",
     domains: [
       { pack: { id: "helianthus.pack.evse", version: "1.0.0" }, source_state: "PRESENT" },
       { pack: { id: "helianthus.pack.infrastructure", version: "1.0.0" }, source_state: "ABSENT", reason: "source_unavailable" },
@@ -194,7 +194,7 @@ test("Portal catalog preserves server domain order and renders admitted records 
   assert.match(rendered, /Catalog revision: c+/);
   assert.match(rendered, /Catalog digest: d+/);
   assert.match(rendered, /Catalog evaluation instant: 2026-09-16T00:00:00Z/);
-  assert.match(rendered, /Catalog authorization scope: public-read/);
+  assert.doesNotMatch(rendered, /Catalog authorization scope:/);
   assert.match(rendered, /Contribution digest: pv\.driver\/portal\.pv@1\.0\.0; digest=sha256:a+/);
   assert.equal((rendered.match(/Contribution digest:/g) || []).length, 3);
   assert.match(rendered, /Quarantined contributions/);
@@ -846,7 +846,7 @@ test("Portal catalog keeps a maximum structural catalog visible with paged detai
   assert.match(rendered, /quarantined-driver-63\/quarantined-manifest-63@1\.0\.0: not_admitted/);
   assert.equal((rendered.match(/Contribution digest:/g) || []).length, 64);
   assert.match(rendered, /Resource page 1 of 64/);
-  assert.match(rendered, /Evidence page 1 of [0-9]+; page size 92; rows 1-/);
+  assert.match(rendered, /Evidence page 1 of [0-9]+; page size 93; rows 1-/);
   assert.ok(tags(body).length <= 512);
 });
 

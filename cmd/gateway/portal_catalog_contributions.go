@@ -68,7 +68,7 @@ func (c *gatewayPortalCatalogContributions) composer(source catalogv1.SourceCapt
 	// replacement or withdrawal cannot publish an old descriptor snapshot beside
 	// newly captured source rows.
 	boundSource := &gatewayPortalCatalogBoundCapture{source: source, contributions: c, revision: snapshot.Revision}
-	composer := catalogv1.New(c.index, boundSource, nil, nil)
+	composer := catalogv1.New(c.index, boundSource, nil)
 	if err := composer.InstallDetachedRegistrySnapshot(snapshot.Accepted, snapshot.Quarantined); err != nil {
 		return nil, err
 	}

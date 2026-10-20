@@ -25,7 +25,7 @@ func TestConfigDeclaresIndependentDisabledPortalPVCapabilities(t *testing.T) {
 func TestConfigCrossValidatesPortalPVAgainstDedicatedM2MListener(t *testing.T) {
 	type portalPVValidator interface{ ValidatePortalPV() error }
 	validM2M := M2MGraphQLConfig{
-		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test",
 		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-allowed"},
 	}
 	portal := PortalPVConfig{
@@ -52,7 +52,7 @@ func TestConfigCrossValidatesPortalPVAgainstDedicatedM2MListener(t *testing.T) {
 }
 
 func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
-	m2m := M2MGraphQLConfig{ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem", ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"asset:storage-a"}}
+	m2m := M2MGraphQLConfig{ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"asset:storage-a"}}
 	portal := PortalStorageConfig{SemanticEnabled: true, M2MURL: "https://127.0.0.1:8443/graphql/m2m/v1", M2MServerName: "m2m.gateway.test", M2MCAFile: "ca.pem", M2MClientCert: "client.pem", M2MClientKey: "client-key.pem", AssetRef: "asset:storage-a"}
 	valid := Config{M2MGraphQL: m2m, PortalStorage: portal, ModbusTCPConfig: ModbusTCPConfig{GrowattBMSRS485: GrowattBMSRS485Config{Enabled: true, AssetID: "asset:storage-a", ResponseTimeout: time.Second, MaxQuiescence: 200 * time.Millisecond}}}
 	if err := valid.ValidatePortalStorage(); err != nil {
@@ -122,7 +122,7 @@ func TestConfigCrossValidatesPortalStorageAgainstGrowattProducer(t *testing.T) {
 func TestConfigPinsPortalPVURLToLoopbackDedicatedListenerPort(t *testing.T) {
 	base := Config{
 		M2MGraphQL: M2MGraphQLConfig{
-			ListenAddr: "0.0.0.0:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+			ListenAddr: "0.0.0.0:8443", ServerName: "m2m.gateway.test",
 			ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-allowed"},
 		},
 		PortalPV: PortalPVConfig{
@@ -389,18 +389,13 @@ func TestM2MGraphQLConfig_RejectsIncompleteActiveConfiguration(t *testing.T) {
 	}
 }
 
-func TestM2MGraphQLConfig_ClientCAIsOptionalButServerTLSIsRequired(t *testing.T) {
+func TestM2MGraphQLConfig_ServerTLSIsRequired(t *testing.T) {
 	base := M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test",
 		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-one"},
 	}
 	if err := base.Validate(); err != nil {
-		t.Fatalf("enabled listener without client CA rejected: %v", err)
-	}
-	withCA := base
-	withCA.ClientCAFile = "ca.pem"
-	if err := withCA.Validate(); err != nil {
-		t.Fatalf("enabled listener with optional client CA rejected: %v", err)
+		t.Fatalf("server-TLS listener rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*M2MGraphQLConfig){
 		"listen-address": func(config *M2MGraphQLConfig) { config.ListenAddr = "" },
@@ -408,7 +403,6 @@ func TestM2MGraphQLConfig_ClientCAIsOptionalButServerTLSIsRequired(t *testing.T)
 		"server-cert":    func(config *M2MGraphQLConfig) { config.ServerCertFile = "" },
 		"server-key":     func(config *M2MGraphQLConfig) { config.ServerKeyFile = " " },
 		"allowed-assets": func(config *M2MGraphQLConfig) { config.AllowedAssets = nil },
-		"only-client-ca": func(config *M2MGraphQLConfig) { *config = M2MGraphQLConfig{ClientCAFile: "ca.pem"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := base
@@ -420,16 +414,14 @@ func TestM2MGraphQLConfig_ClientCAIsOptionalButServerTLSIsRequired(t *testing.T)
 	}
 }
 
-func TestM2MGraphQLConfig_RejectsMalformedOrDuplicateAuthority(t *testing.T) {
+func TestM2MGraphQLConfig_RejectsDuplicateAllowedAssets(t *testing.T) {
 	base := M2MGraphQLConfig{
-		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test", ClientCAFile: "ca.pem",
+		ListenAddr: "127.0.0.1:8443", ServerName: "m2m.gateway.test",
 		ServerCertFile: "server.pem", ServerKeyFile: "server-key.pem", AllowedAssets: []string{"pv-one"},
 	}
-	malformed := base
-	malformed.DeniedPrincipalFingerprints = []string{strings.Repeat("z", 64)}
 	duplicate := base
 	duplicate.AllowedAssets = []string{"pv-one", "pv-one"}
-	for _, config := range []M2MGraphQLConfig{malformed, duplicate} {
+	for _, config := range []M2MGraphQLConfig{duplicate} {
 		if err := config.Validate(); err == nil {
 			t.Fatalf("invalid M2M GraphQL authority accepted: %+v", config)
 		}

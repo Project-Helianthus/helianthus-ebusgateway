@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -13,8 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -234,42 +231,9 @@ func newM2MTLSConfig(config ebusgateway.M2MGraphQLConfig) (*tls.Config, error) {
 	}
 	certificate.Leaf = leaf
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, ClientAuth: tls.NoClientCert, SessionTicketsDisabled: true}
-	if strings.TrimSpace(config.ClientCAFile) == "" {
-		return tlsConfig, nil
-	}
-	// Transition: when a client CA is configured, a presented certificate is
-	// still verified against it (and against the denied fingerprints), but a
-	// connection without a certificate is accepted.
-	caPEM, err := os.ReadFile(config.ClientCAFile)
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("invalid client CA")
-	}
-	denied := make(map[string]struct{}, len(config.DeniedPrincipalFingerprints))
-	for _, fingerprint := range config.DeniedPrincipalFingerprints {
-		denied[strings.ToLower(fingerprint)] = struct{}{}
-	}
-	tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
-	tlsConfig.ClientCAs = pool
-	tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return nil
-		}
-		if len(verifiedChains) == 0 {
-			return errors.New("unverified client certificate")
-		}
-		if _, blocked := denied[m2mFingerprint(rawCerts[0])]; blocked {
-			return errors.New("denied client certificate")
-		}
-		return nil
-	}
 	return tlsConfig, nil
 }
 
-func m2mFingerprint(der []byte) string { sum := sha256.Sum256(der); return hex.EncodeToString(sum[:]) }
 func (runtime *m2mGraphQLRuntime) Addr() string {
 	if runtime == nil || runtime.listener == nil {
 		return ""

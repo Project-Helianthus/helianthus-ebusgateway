@@ -397,12 +397,12 @@ func (server *server) emitMutationAuditWithReason(action string, status int, bod
 			resulting = "changed"
 		}
 	}
-	prior := "host_operator"
+	prior := "request_received"
 	if invoked {
 		prior = "precondition_accepted"
 	}
 	event := AuditEvent{
-		Action: action, Principal: PrincipalHostOperator, RequestID: envelope.RequestID,
+		Action: action, RequestID: envelope.RequestID,
 		IdempotencyOutcome: idempotencyOutcome, PriorStateClass: prior,
 		ResultingStateClass: resulting, Timestamp: server.now(), Reason: reason,
 	}

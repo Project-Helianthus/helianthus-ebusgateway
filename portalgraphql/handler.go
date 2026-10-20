@@ -12,10 +12,8 @@ import (
 
 const Path = "/graphql/portal/v1"
 
-type CallerResolver func(*http.Request) (any, error)
 type Handler struct {
 	Catalog *catalogv1.Composer
-	Caller  CallerResolver
 }
 type request struct {
 	OperationName string          `json:"operationName"`
@@ -42,19 +40,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid portal graphql request", http.StatusBadRequest)
 		return
 	}
-	var caller any
-	if h.Caller != nil {
-		var err error
-		caller, err = h.Caller(r)
-		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
 	w.Header().Set("Content-Type", "application/json")
 	switch q.OperationName {
 	case "PortalCatalogV1":
-		c, err := h.Catalog.Catalog(caller)
+		c, err := h.Catalog.Catalog()
 		if err != nil {
 			writeError(w, err)
 			return
@@ -71,7 +60,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if v.Claim.Deadline.IsZero() {
 			v.Claim.Deadline = time.Time{}
 		}
-		result, err := h.Catalog.Invoke(caller, v.Claim)
+		result, err := h.Catalog.Invoke(v.Claim)
 		if err != nil {
 			writeError(w, err)
 			return

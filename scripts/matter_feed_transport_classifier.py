@@ -27,14 +27,12 @@ EXPECTED: dict[str, tuple[list[str], list[str]]] = {
         [
             '	fs.StringVar(&cfg.M2MGraphQL.ListenAddr, "m2m-graphql-listen", cfg.M2MGraphQL.ListenAddr, "dedicated M2M GraphQL TLS listen address")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerName, "m2m-graphql-server-name", cfg.M2MGraphQL.ServerName, "dedicated M2M GraphQL server certificate identity")',
-            '	fs.StringVar(&cfg.M2MGraphQL.ClientCAFile, "m2m-graphql-client-ca", cfg.M2MGraphQL.ClientCAFile, "client CA file for the dedicated M2M GraphQL listener")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerCertFile, "m2m-graphql-server-cert", cfg.M2MGraphQL.ServerCertFile, "server certificate file for the dedicated M2M GraphQL listener")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerKeyFile, "m2m-graphql-server-key", cfg.M2MGraphQL.ServerKeyFile, "server private-key file for the dedicated M2M GraphQL listener")',
         ],
         [
             '	fs.StringVar(&cfg.M2MGraphQL.ListenAddr, "m2m-graphql-listen", cfg.M2MGraphQL.ListenAddr, "dedicated M2M API TLS listen address")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerName, "m2m-graphql-server-name", cfg.M2MGraphQL.ServerName, "dedicated M2M API server certificate identity")',
-            '	fs.StringVar(&cfg.M2MGraphQL.ClientCAFile, "m2m-graphql-client-ca", cfg.M2MGraphQL.ClientCAFile, "client CA file for the dedicated M2M API listener")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerCertFile, "m2m-graphql-server-cert", cfg.M2MGraphQL.ServerCertFile, "server certificate file for the dedicated M2M API listener")',
             '	fs.StringVar(&cfg.M2MGraphQL.ServerKeyFile, "m2m-graphql-server-key", cfg.M2MGraphQL.ServerKeyFile, "server private-key file for the dedicated M2M API listener")',
         ],

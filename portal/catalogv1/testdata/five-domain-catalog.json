@@ -3,7 +3,6 @@
   "catalog_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "catalog_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "evaluation_instant": "2026-09-11T00:00:00Z",
-  "authorization_scope": "fixture-public-read",
   "domains": [
     {"pack":{"id":"helianthus.pack.evse","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"},
     {"pack":{"id":"helianthus.pack.infrastructure","version":"1.0.0"},"source_state":"ABSENT","reason":"source_unavailable"},

@@ -19,6 +19,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
@@ -853,6 +854,16 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		// Every admitted generation rebinds the retained poller to its own
 		// initiator and companion.
 		bindPollerSource := func(poller *vaillantSemanticPoller) {
+			if poller == nil {
+				return
+			}
+			poller.attachBoilerThermal(semanticHub, func() (*semhub.Handle, error) {
+				if control.bridge == nil {
+					return nil, errEBusControlNotPrepared
+				}
+				view := control.bridge.View()
+				return control.bridge.PublicationHandle(view.Key)
+			})
 			resolved := resolveStartupScanSourceConfig(genCfg)
 			poller.setSourceAndCompanion(resolved.ScanSource, resolved.StartupCompanionTarget)
 		}

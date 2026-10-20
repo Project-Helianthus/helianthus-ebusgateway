@@ -642,8 +642,11 @@ func TestRefreshBoilerStatusFastProjectsB524MirrorsWithoutActiveB524Reads(t *tes
 	if len(selectors) != 0 {
 		t.Fatalf("refreshBoilerStatusB524(fast) performed %d active reads; want zero", len(selectors))
 	}
-	if snapshot.FlowTemperatureC == nil || *snapshot.FlowTemperatureC != flowTemp {
-		t.Fatalf("flow temperature = %#v; want %.1f", snapshot.FlowTemperatureC, flowTemp)
+	if snapshot.FlowTemperatureC != nil {
+		t.Fatalf("flow temperature = %#v; want withheld without qualified boiler evidence", snapshot.FlowTemperatureC)
+	}
+	if got := poller.system.SystemFlowTemperature; got == nil || *got != flowTemp {
+		t.Fatalf("native system flow = %v; want preserved %.1f", got, flowTemp)
 	}
 	if snapshot.CentralHeatingPumpActive != nil {
 		t.Fatalf("boiler pump active = %#v; want unknown without independent boiler evidence", snapshot.CentralHeatingPumpActive)
@@ -2514,31 +2517,56 @@ func TestMergeBoilerSnapshotNonDestructive_PartialUpdatePreservesLastKnown(t *te
 func TestRefreshBoilerStatusTier_NoSuccessfulReadsPreservesSnapshot(t *testing.T) {
 	t.Parallel()
 
-	flow := 63.0
-	pump := true
-	heatingStatus := 4
-	poller := &vaillantSemanticPoller{
-		controller: 0x15,
-		boiler: &vaillantBoilerSnapshot{
-			FlowTemperatureC:         &flow,
-			CentralHeatingPumpActive: &pump,
-			HeatingStatusRaw:         &heatingStatus,
-		},
-	}
+	for _, qualified := range []bool{false, true} {
+		name := "unqualified"
+		if qualified {
+			name = "qualified"
+		}
+		t.Run(name, func(t *testing.T) {
+			flow := 63.0
+			pump := true
+			heatingStatus := 4
+			provider := graphql.NewLiveSemanticProvider()
+			poller := &vaillantSemanticPoller{
+				provider:   provider,
+				controller: 0x15,
+				boiler: &vaillantBoilerSnapshot{
+					FlowTemperatureC:         &flow,
+					CentralHeatingPumpActive: &pump,
+					HeatingStatusRaw:         &heatingStatus,
+				},
+			}
+			if qualified {
+				pub, _, tick := m15Fixture(t)
+				pub.attempt.Reply = append([]byte{0x0d, 0x18, 0}, encodeTempDATA2c(flow)...)
+				poller.boilerThermal = pub
+				poller.boilerAddress = pub.binding.Identity.Target
+				poller.publishBoilerStatus(semanticSnapshotSourceLive)
+				// No new read succeeds; retained qualified evidence stays fresh.
+				*tick = 50
+				pub.attempt = nil
+			}
 
-	poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
+			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 
-	if poller.boiler == nil {
-		t.Fatal("poller.boiler = nil; want preserved last-known snapshot")
-	}
-	if poller.boiler.FlowTemperatureC == nil || *poller.boiler.FlowTemperatureC != 63.0 {
-		t.Fatalf("poller.boiler.FlowTemperatureC = %v; want preserved 63.0", poller.boiler.FlowTemperatureC)
-	}
-	if poller.boiler.CentralHeatingPumpActive == nil || !*poller.boiler.CentralHeatingPumpActive {
-		t.Fatalf("poller.boiler.CentralHeatingPumpActive = %v; want preserved true", poller.boiler.CentralHeatingPumpActive)
-	}
-	if poller.boiler.HeatingStatusRaw == nil || *poller.boiler.HeatingStatusRaw != 4 {
-		t.Fatalf("poller.boiler.HeatingStatusRaw = %v; want preserved 4", poller.boiler.HeatingStatusRaw)
+			if poller.boiler == nil {
+				t.Fatal("poller.boiler = nil; want preserved last-known snapshot")
+			}
+			got := poller.boiler.FlowTemperatureC
+			if qualified {
+				if got == nil || *got != flow {
+					t.Fatalf("qualified flow = %v; want preserved %.1f", got, flow)
+				}
+			} else if got != nil {
+				t.Fatalf("unqualified flow = %v; want withheld", got)
+			}
+			if poller.boiler.CentralHeatingPumpActive == nil || !*poller.boiler.CentralHeatingPumpActive {
+				t.Fatalf("poller.boiler.CentralHeatingPumpActive = %v; want preserved true", poller.boiler.CentralHeatingPumpActive)
+			}
+			if poller.boiler.HeatingStatusRaw == nil || *poller.boiler.HeatingStatusRaw != 4 {
+				t.Fatalf("poller.boiler.HeatingStatusRaw = %v; want preserved 4", poller.boiler.HeatingStatusRaw)
+			}
+		})
 	}
 }
 
@@ -2635,6 +2663,12 @@ func TestRefreshBoilerStatusFastMergesCachedDHWWhenB509UpdatesWithoutB524Mirrors
 			ConfigurationDHWOperationMode: "1",
 		},
 	}
+	pub, _, _ := m15Fixture(t)
+	pub.attempt = nil // Only the actual B509 acquisition may seed flow.
+	poller.boilerThermal = pub
+	poller.source = pub.binding.Identity.Initiator
+	poller.boilerAddress = pub.binding.Identity.Target
+
 	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
 		if frame.Primary != vaillantB509Primary || frame.Secondary != vaillantB509Secondary {
 			t.Fatalf("unexpected non-B509 active read: primary=0x%02x secondary=0x%02x data=% x", frame.Primary, frame.Secondary, frame.Data)

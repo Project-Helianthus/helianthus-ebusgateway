@@ -838,3 +838,29 @@ func seedDhwFreshness(snapshot *vaillantDhwSnapshot, source semanticSnapshotSour
 		setFieldFreshness(fields, dhwFieldHolidayEndDate, source, stale)
 	}
 }
+
+// mergePublishedBoilerFlow replaces the legacy scalar even on withholding;
+// value-only cache and system-flow mirrors cannot seed this field.
+func (p *vaillantSemanticPoller) mergePublishedBoilerFlow() bool {
+	p.mu.Lock()
+	publisher, target := p.boilerThermal, p.boilerAddress
+	p.mu.Unlock()
+	var flow *float64
+	if publisher != nil {
+		flow = publisher.scalar(target)
+	}
+	p.mu.Lock()
+	var previous *float64
+	if p.boiler != nil {
+		previous = p.boiler.FlowTemperatureC
+	}
+	changed := !floatPtrEquals(previous, flow)
+	if p.boiler == nil && flow != nil {
+		p.boiler = &vaillantBoilerSnapshot{}
+	}
+	if p.boiler != nil {
+		p.boiler.FlowTemperatureC = flow
+	}
+	p.mu.Unlock()
+	return changed
+}

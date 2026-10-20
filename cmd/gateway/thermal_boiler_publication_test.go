@@ -1,0 +1,321 @@
+package main
+
+import (
+	"errors"
+	"reflect"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+)
+
+func m15Fixture(t *testing.T) (*boilerThermalPublisher, *semhub.Handle, *int64) {
+	t.Helper()
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := hub.AdmitSource(semhub.Admission{Source: "source:synthetic-boiler", Driver: string(primaryEBusDriverID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := boilerThermalIdentity{Asset: "asset:synthetic-boiler", Source: handle.Source(), Epoch: handle.Epoch(), Generation: handle.GenerationID(), Binding: "binding:synthetic-boiler", Service: "service:synthetic-boiler", Product: "synthetic-boiler-family", Profile: "boiler.synthetic", Revision: "1", Codec: "DATA2c", ResponseForm: "operation_selector", Initiator: 0x31, Target: 0x36, PB: 0xb5, SB: 9, Operation: 0x0d, Selector: [2]byte{0x18, 0}}
+	tick := int64(0)
+	pub := &boilerThermalPublisher{hub: hub, handle: func() (*semhub.Handle, error) { return handle, nil }}
+	pub.now = func() (semreg.TimePoint, semreg.MonotonicPoint) {
+		return semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(1800000000000000000+tick, 10)), ClockID: "clock.utc", UncertaintyNS: "0"}, semreg.MonotonicPoint{ClockEpochID: "clock:synthetic-boiler", Nanoseconds: semreg.Uint64(strconv.FormatInt(tick, 10))}
+	}
+	wall, mono := pub.now()
+	o := &boilerThermalObservation{Identity: id, Request: []byte{0x0d, 0x18, 0}, Reply: []byte{0x0d, 0x18, 0, 0x20, 3}, Received: wall, Receipt: mono, Valid: true}
+	pub.binding = &boilerThermalBinding{Identity: id, Qualified: true, Basis: []semreg.EvidenceRef{boilerThermalEvidence(o)}, Policy: semreg.FreshnessPolicy{PolicyID: "policy:synthetic-boiler", Version: "1.0.0", FreshForNS: "100", RetainForNS: "200", MaxWallUncertaintyNS: "0"}}
+	pub.attempt = o
+	return pub, handle, &tick
+}
+
+func TestM15QualifiedFlowOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		want float64
+	}{{"normal", []byte{0x20, 3}, 50}, {"zero", []byte{0, 0}, 0}, {"lower", []byte{0xc0, 0xf9}, -100}, {"upper", []byte{0x80, 0x0c}, 200}, {"fraction", []byte{1, 0}, 0.0625}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _, _ := m15Fixture(t)
+			p.attempt.Reply = append([]byte{0x0d, 0x18, 0}, tc.raw...)
+			got := p.scalar(p.binding.Identity.Target)
+			if got == nil || *got != tc.want {
+				t.Fatalf("flow=%v, error=%v", got, p.lastError)
+			}
+			view, err := p.hub.Inspect(p.binding.Identity.Asset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(view.Snapshot.Facts) != 1 || len(view.Snapshot.Facts[0].Candidates) != 1 {
+				t.Fatalf("facts=%+v", view.Snapshot.Facts)
+			}
+			f := view.Snapshot.Facts[0].Candidates[0]
+			if !reflect.DeepEqual(f.Key, boilerThermalKey()) || f.Times.ReceiptMonotonic != p.attempt.Receipt || f.Times.ReceivedAt != p.attempt.Received || f.Times.SourceAt != nil || f.Times.PhenomenonAt != nil {
+				t.Fatalf("fact=%+v", f)
+			}
+			if len(p.legacyProjection.Loss) != 4 {
+				t.Fatal("legacy scalar losses missing")
+			}
+			if len(f.Evidence) != 1 || f.Evidence[0] != boilerThermalEvidence(p.attempt) {
+				t.Fatal("native evidence lost")
+			}
+		})
+	}
+}
+
+func TestM15RejectWithoutDefaultOrAgeRefresh(t *testing.T) {
+	for _, raw := range [][]byte{nil, {0x0d, 0x18, 0}, {0x0d, 0x18, 0, 1}, {0x0d, 0x18, 0, 0x20, 3, 0}, {0x0d, 0x19, 0, 0x20, 3}, {0x0d, 0x18, 1, 0x20, 3}, {0x0e, 0x18, 0, 0x20, 3}, {0x0d, 0x18, 0, 0, 0x80}, {0x0d, 0x18, 0, 0xbf, 0xf9}, {0x0d, 0x18, 0, 0x81, 0x0c}} {
+		p, _, tick := m15Fixture(t)
+		original := *p.attempt
+		if p.scalar(p.binding.Identity.Target) == nil {
+			t.Fatal(p.lastError)
+		}
+		*tick = 50
+		wall, mono := p.now()
+		p.attempt = &boilerThermalObservation{Identity: p.binding.Identity, Request: original.Request, Reply: raw, Valid: true, Received: wall, Receipt: mono}
+		if got := p.scalar(p.binding.Identity.Target); got == nil || *got != 50 {
+			t.Fatalf("retention=%v error=%v", got, p.lastError)
+		}
+		if !reflect.DeepEqual(p.good, &original) {
+			t.Fatal("failure changed retained native evidence")
+		}
+		*tick = 101
+		if p.scalar(p.binding.Identity.Target) != nil {
+			t.Fatal("stale scalar admitted")
+		}
+		*tick = 201
+		if p.scalar(p.binding.Identity.Target) != nil {
+			t.Fatal("expired scalar admitted")
+		}
+		q, _, _ := m15Fixture(t)
+		q.attempt.Reply = raw
+		if q.scalar(q.binding.Identity.Target) != nil {
+			t.Fatal("invalid sample seeded state")
+		}
+	}
+}
+
+func TestM15QualificationPolicyAndLifecycleWithholding(t *testing.T) {
+	for _, mutate := range []func(*boilerThermalPublisher){func(p *boilerThermalPublisher) { p.binding.Qualified = false }, func(p *boilerThermalPublisher) { p.binding = nil }, func(p *boilerThermalPublisher) { p.binding.Policy = semreg.FreshnessPolicy{} }, func(p *boilerThermalPublisher) { p.binding.Basis = nil }, func(p *boilerThermalPublisher) {
+		p.handle = func() (*semhub.Handle, error) { return nil, errors.New("not admitted") }
+	}} {
+		p, _, _ := m15Fixture(t)
+		mutate(p)
+		if p.scalar(0x36) != nil {
+			t.Fatal("missing prerequisites admitted")
+		}
+	}
+	p, h, _ := m15Fixture(t)
+	if p.scalar(0x36) == nil {
+		t.Fatal(p.lastError)
+	}
+	p.binding.Qualified = false
+	if p.scalar(0x36) != nil {
+		t.Fatal("qualification loss retained scalar")
+	}
+	if p.withheldNative == nil || len(p.withheldNative.Reply) == 0 {
+		t.Fatal("qualification loss discarded native evidence")
+	}
+	view, _ := p.hub.Inspect(p.binding.Identity.Asset)
+	for _, e := range view.Snapshot.Facts {
+		for _, f := range e.Candidates {
+			if f.Quality.Availability == semreg.AvailabilityAvailable {
+				t.Fatal("qualification loss left hub fact available")
+			}
+		}
+	}
+	p.binding.Qualified = true
+	wall, mono := p.now()
+	if _, err := p.hub.RetireEpoch(semhub.RetireRequest{Source: h.Source(), Epoch: h.Epoch(), Reason: "boiler.test.retire", Evidence: p.binding.Basis, ObservedAt: wall, Monotonic: mono}); err != nil {
+		t.Fatal(err)
+	}
+	if p.scalar(0x36) != nil {
+		t.Fatal("withdrawn lifecycle handle published")
+	}
+}
+
+func TestM15IdentityEveryField(t *testing.T) {
+	p, _, _ := m15Fixture(t)
+	typ := reflect.TypeOf(p.binding.Identity)
+	for i := 0; i < typ.NumField(); i++ {
+		t.Run(typ.Field(i).Name, func(t *testing.T) {
+			q, _, _ := m15Fixture(t)
+			v := reflect.ValueOf(&q.attempt.Identity).Elem().Field(i)
+			switch v.Kind() {
+			case reflect.String:
+				v.SetString(v.String() + "-other")
+			case reflect.Uint8:
+				v.SetUint(v.Uint() + 1)
+			case reflect.Array:
+				v.Index(1).SetUint(1)
+			default:
+				t.Fatal("uncovered identity field")
+			}
+			if q.scalar(0x36) != nil {
+				t.Fatal("foreign observation admitted")
+			}
+		})
+	}
+	q, _, _ := m15Fixture(t)
+	q.attempt.Identity.Selector[0]++
+	if q.scalar(0x36) != nil {
+		t.Fatal("foreign selector first byte admitted")
+	}
+}
+
+func TestM15SnapshotExcludesMirrorAndCache(t *testing.T) {
+	pub, _, _ := m15Fixture(t)
+	poller := &vaillantSemanticPoller{provider: graphql.NewLiveSemanticProvider(), boilerAddress: 0x36, boilerThermal: pub, boiler: &vaillantBoilerSnapshot{FlowTemperatureC: m15Float(99)}}
+	poller.publishBoilerStatus(semanticSnapshotSourceLive)
+	if got := poller.provider.BoilerStatus().State.FlowTemperatureC; got == nil || *got != 50 {
+		t.Fatalf("flow=%v error=%v", got, pub.lastError)
+	}
+	pub.binding = nil
+	poller.publishBoilerStatus(semanticSnapshotSourceCache)
+	if poller.provider.BoilerStatus().State.FlowTemperatureC != nil {
+		t.Fatal("legacy cached flow admitted")
+	}
+}
+
+func TestM15AcquisitionRetainsReceipt(t *testing.T) {
+	pub, _, tick := m15Fixture(t)
+	poller := &vaillantSemanticPoller{boilerThermal: pub}
+	request := protocol.Frame{FrameType: protocol.FrameTypeInitiatorTarget, Source: 0x31, Target: 0x36, Primary: 0xb5, Secondary: 9, Data: []byte{0x0d, 0x18, 0}}
+	reply := &protocol.Frame{Data: []byte{0x0d, 0x18, 0, 0x20, 3}}
+	poller.retainBoilerThermalRead(request, reply, nil)
+	reply.Data[3] = 0
+	if pub.scalar(0x36) == nil {
+		t.Fatal(pub.lastError)
+	}
+	receipt := pub.good.Receipt
+	*tick = 50
+	if pub.scalar(0x36) == nil || pub.good.Receipt != receipt {
+		t.Fatal("evaluation refreshed native receipt")
+	}
+	poller.retainBoilerThermalRead(request, nil, errors.New("synthetic read failure"))
+	if pub.scalar(0x36) == nil || pub.good.Receipt != receipt {
+		t.Fatalf("failure changed projection: error=%v, good=%+v, original=%+v", pub.lastError, pub.good, receipt)
+	}
+}
+
+func m15Float(v float64) *float64 { return &v }
+
+func TestM15NewObservationAndFreshnessBoundaries(t *testing.T) {
+	p, _, tick := m15Fixture(t)
+	if p.scalar(0x36) == nil {
+		t.Fatal(p.lastError)
+	}
+	*tick = 50
+	o := *p.attempt
+	o.Reply = []byte{0x0d, 0x18, 0, 0x30, 3}
+	o.Received, o.Receipt = p.now()
+	p.attempt = &o
+	if got := p.scalar(0x36); got == nil || *got != 51 {
+		t.Fatalf("new value=%v error=%v", got, p.lastError)
+	}
+	*tick = 149
+	if p.scalar(0x36) == nil {
+		t.Fatal("fresh before deadline withheld")
+	}
+	*tick = 150
+	if p.scalar(0x36) != nil {
+		t.Fatal("fresh deadline extended")
+	}
+	*tick = 250
+	if p.scalar(0x36) != nil {
+		t.Fatal("retention deadline extended")
+	}
+	if p.good.Receipt != o.Receipt {
+		t.Fatal("retention receipt changed")
+	}
+}
+
+func TestM15CurrentIdentityEveryFieldWithdraws(t *testing.T) {
+	p, _, _ := m15Fixture(t)
+	typ := reflect.TypeOf(p.binding.Identity)
+	for i := 0; i < typ.NumField(); i++ {
+		t.Run(typ.Field(i).Name, func(t *testing.T) {
+			q, _, _ := m15Fixture(t)
+			id := q.binding.Identity
+			if q.scalar(0x36) == nil {
+				t.Fatal(q.lastError)
+			}
+			v := reflect.ValueOf(&q.binding.Identity).Elem().Field(i)
+			switch v.Kind() {
+			case reflect.String:
+				v.SetString(v.String() + "-other")
+			case reflect.Uint8:
+				v.SetUint(v.Uint() + 1)
+			case reflect.Array:
+				v.Index(1).SetUint(1)
+			default:
+				t.Fatal("uncovered field")
+			}
+			if q.scalar(0x36) != nil {
+				t.Fatal("conflicting current identity retained scalar")
+			}
+			view, _ := q.hub.Inspect(id.Asset)
+			for _, e := range view.Snapshot.Facts {
+				for _, f := range e.Candidates {
+					if f.Quality.Availability == semreg.AvailabilityAvailable {
+						t.Fatal("conflict left hub fact available")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestM15SelectorOnlyAndClockLoss(t *testing.T) {
+	p, _, tick := m15Fixture(t)
+	p.binding.Identity.ResponseForm = "selector"
+	p.attempt.Identity = p.binding.Identity
+	p.attempt.Reply = []byte{0x18, 0, 0x20, 3}
+	if p.scalar(0x36) == nil {
+		t.Fatal(p.lastError)
+	}
+	original := p.now
+	p.now = func() (semreg.TimePoint, semreg.MonotonicPoint) {
+		w, m := original()
+		m.ClockEpochID = "clock:other"
+		return w, m
+	}
+	*tick = 1
+	if p.scalar(0x36) != nil {
+		t.Fatal("clock discontinuity promoted observation")
+	}
+}
+
+func TestM15LifecycleClearsLegacyProjection(t *testing.T) {
+	fixture, h, _ := m15Fixture(t)
+	poller := &vaillantSemanticPoller{provider: graphql.NewLiveSemanticProvider(), boilerAddress: 0x36}
+	poller.attachBoilerThermal(fixture.hub, fixture.handle)
+	pub := poller.boilerThermal
+	pub.binding, pub.attempt, pub.now = fixture.binding, fixture.attempt, fixture.now
+	ack := make(chan struct{}, 1)
+	original := pub.onControl
+	pub.onControl = func(e semhub.ControlEvent) error { err := original(e); ack <- struct{}{}; return err }
+	poller.publishBoilerStatus(semanticSnapshotSourceLive)
+	if poller.provider.BoilerStatus().State.FlowTemperatureC == nil {
+		t.Fatal(pub.lastError)
+	}
+	wall, mono := pub.now()
+	if _, err := pub.hub.RetireEpoch(semhub.RetireRequest{Source: h.Source(), Epoch: h.Epoch(), Reason: "boiler.test.retire", Evidence: pub.binding.Basis, ObservedAt: wall, Monotonic: mono}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ack:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle reprojection did not settle")
+	}
+	if poller.provider.BoilerStatus().State.FlowTemperatureC != nil {
+		t.Fatal("retired flow remained on legacy surface")
+	}
+}

@@ -326,7 +326,7 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 		}
 		if d.Outcome != projection.ProjectionExact {
 			if reason != "unknown_pending_std_01" {
-				reasons = outcomeReasons(reason, item.Kind, candidates, reasons)
+				reasons = outcomeReasons(reason, item.Kind, causalOutcomeCandidates(reason, item.Kind, candidates, e), reasons)
 			}
 			if len(reasons) > 0 && reason != "unknown_pending_std_01" {
 				sort.Slice(reasons, func(i, j int) bool { return reasons[i] < reasons[j] })
@@ -339,8 +339,56 @@ func project(metadata *semreg.PackMetadataRegistry, s semreg.Snapshot, e semreg.
 	return projection.Project(s, manifest, requested, dispositions, nil)
 }
 
-// outcomeReasons narrows native detail to reasons shared by every supporting
-// candidate whose quality explains the selected withholding outcome. Evaluation
+// causalOutcomeCandidates selects whole source keys before native reason
+// intersection. Available or exact siblings cannot explain another key's
+// withholding; every candidate within a selected key still has to explain it.
+func causalOutcomeCandidates(reason semreg.DefinitionID, kind projection.ItemKind, candidates []semreg.FactCandidate, e semreg.EvaluationView) []semreg.FactCandidate {
+	switch reason {
+	case reasonPrefix + "fact_unavailable", reasonPrefix + "capability_unavailable", reasonPrefix + "capability_unqualified":
+	default:
+		return candidates
+	}
+	keys := map[string][]semreg.FactCandidate{}
+	order := []string{}
+	for _, c := range candidates {
+		key, _ := semreg.CanonicalJSON(c.Key)
+		if _, found := keys[string(key)]; !found {
+			order = append(order, string(key))
+		}
+		keys[string(key)] = append(keys[string(key)], c)
+	}
+	causal := []semreg.FactCandidate{}
+	for _, key := range order {
+		available, qualified := false, false
+		for _, c := range keys[key] {
+			for _, v := range e.Facts {
+				if v.CandidateID != c.CandidateID || v.CandidateRevision != c.Revision {
+					continue
+				}
+				ok := v.EffectiveAvailability != semreg.AvailabilityUnavailable && v.EffectiveAvailability != semreg.AvailabilityWithdrawn
+				available = available || ok
+				q := c.Quality
+				exact := q.Qualification == semreg.QualificationQualified
+				if kind == projection.ItemFact {
+					exact = exact && ok && c.Value != nil && q.Promotion == semreg.PromotionPromoted &&
+						(q.Validity == semreg.ValidityGood || q.Validity == semreg.ValiditySuspect)
+				}
+				qualified = qualified || exact
+			}
+		}
+		blocked := !available
+		if reason == reasonPrefix+"capability_unqualified" {
+			blocked = !qualified
+		}
+		if blocked {
+			causal = append(causal, keys[key]...)
+		}
+	}
+	return causal
+}
+
+// outcomeReasons requires every candidate on the causal keys to explain the
+// selected withholding outcome and intersects their native reasons. Evaluation
 // expiry and instance qualification alone do not establish native causality.
 func outcomeReasons(reason semreg.DefinitionID, kind projection.ItemKind, candidates []semreg.FactCandidate, reasons []semreg.DefinitionID) []semreg.DefinitionID {
 	switch reason {

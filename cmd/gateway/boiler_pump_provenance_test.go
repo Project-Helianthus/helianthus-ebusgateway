@@ -120,8 +120,8 @@ func TestK01CachedBoilerPumpWithoutProvenanceIsDiscarded(t *testing.T) {
 			if poller.boiler == nil || poller.boiler.CentralHeatingPumpActive != nil {
 				t.Fatal("hydrated boiler pump must be unknown")
 			}
-			if got := poller.boiler.FlowTemperatureC; got == nil || *got != flow {
-				t.Fatalf("cached flow = %v; want retained %v", got, flow)
+			if got := poller.boiler.FlowTemperatureC; got != nil {
+				t.Fatalf("cached flow = %v; want nil without native provenance", got)
 			}
 			poller.refreshBoilerStatusTier(context.Background(), boilerStatusTierFast)
 			k01AssertPublishedPump(t, poller, nil)

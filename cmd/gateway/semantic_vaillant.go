@@ -2827,6 +2827,7 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 
 	p.mu.Lock()
 	controller := p.controller
+	system := cloneSystemSnapshot(p.system)
 	circuit := cloneCircuitSnapshot(p.circuits[0x00])
 	p.mu.Unlock()
 	if controller == 0 {
@@ -2835,7 +2836,8 @@ func (p *vaillantSemanticPoller) mergeBoilerMirrorFieldsFromSnapshots(snapshot *
 
 	now := p.now()
 	maxAge := p.boilerMirrorMaxAge()
-	updated := false
+	// Fresh controller flow triggers publication without supplying boiler flow.
+	updated := system != nil && system.Controller == controller && system.SystemFlowTemperature != nil && semanticSnapshotObservedWithin(system.SystemFlowTemperatureLiveAt, now, maxAge)
 	if circuit != nil && circuit.Controller == controller {
 		// Circuit pump evidence does not identify the boiler pump. Leave that
 		// field absent so partial merges preserve independent boiler evidence.

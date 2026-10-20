@@ -364,6 +364,82 @@ func TestM15UnqualifiedFlowOnlyCyclePublishesChangedDHW(t *testing.T) {
 	}
 }
 
+func TestM15FreshSystemFlowMirrorPublishesChangedDHWWithFailedB509(t *testing.T) {
+	pub, _, _ := m15Fixture(t)
+	observedAt := time.Date(2026, time.October, 20, 12, 0, 0, 0, time.UTC)
+	pub.attempt = nil
+	poller := &vaillantSemanticPoller{
+		scheduler:     ebusgateway.NewSemanticReadScheduler(),
+		provider:      graphql.NewLiveSemanticProvider(),
+		hub:           graphql.NewBroadcastHub(nil),
+		source:        pub.binding.Identity.Initiator,
+		controller:    0x15,
+		boilerAddress: pub.binding.Identity.Target,
+		boilerThermal: pub,
+		nowFn:         func() time.Time { return observedAt.Add(time.Second) },
+		system: &vaillantSystemSnapshot{
+			Controller:                  0x15,
+			SystemFlowTemperature:       m15Float(65),
+			SystemFlowTemperatureLiveAt: observedAt,
+		},
+		boiler: &vaillantBoilerSnapshot{DhwTemperatureC: m15Float(40)},
+		dhw:    &vaillantDhwSnapshot{CurrentTempC: m15Float(47.5)},
+		// No circuit snapshot supplies a fresh circuit-state mirror.
+	}
+	poller.publishBoilerStatus(semanticSnapshotSourceLive)
+	if got := poller.provider.BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 40 || got.State.FlowTemperatureC != nil {
+		t.Fatalf("initial public boiler status = %+v; want DHW 40 and withheld flow", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, err := poller.hub.SubscribeBoiler(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowReads, failedReads := 0, 0
+	poller.sendFrameFn = func(_ context.Context, frame protocol.Frame) (*protocol.Frame, error) {
+		if frame.Primary != vaillantB509Primary || frame.Secondary != vaillantB509Secondary {
+			t.Fatalf("unexpected non-B509 read: %+v", frame)
+		}
+		if reflect.DeepEqual(frame.Data, buildB509ReadSelector(boiler_b509_flow_temperature)) {
+			flowReads++
+		}
+		failedReads++
+		return nil, errors.New("synthetic B509 read failure")
+	}
+
+	poller.refreshBoilerStatusTier(ctx, boilerStatusTierFast)
+
+	if flowReads != 3 || failedReads <= flowReads || pub.attempt == nil || pub.attempt.Valid {
+		t.Fatal("cycle did not fail every B509 read, including all three flow attempts")
+	}
+	if poller.boiler.DhwTemperatureC == nil || *poller.boiler.DhwTemperatureC != 47.5 || poller.boiler.FlowTemperatureC != nil {
+		t.Fatalf("internal boiler = %+v; want merged DHW 47.5 and withheld flow", poller.boiler)
+	}
+	if pub.good != nil || pub.scalar(poller.boilerAddress) != nil {
+		t.Fatal("system-flow mirror or failed B509 acquisition supplied a flow fact")
+	}
+	view, err := pub.hub.Inspect(pub.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Facts) != 0 {
+		t.Fatal("system-flow mirror seeded a SemReg flow fact")
+	}
+	if got := poller.provider.BoilerStatus(); got == nil || got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+		t.Fatalf("public boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
+	}
+	select {
+	case update := <-updates:
+		got := update.(*graphql.BoilerStatus)
+		if got.State.DhwTemperatureC == nil || *got.State.DhwTemperatureC != 47.5 || got.State.FlowTemperatureC != nil {
+			t.Fatalf("subscriber boiler status = %+v; want changed DHW 47.5 and withheld flow", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("changed DHW was not published to boiler subscribers")
+	}
+}
+
 func TestM15NewObservationAndFreshnessBoundaries(t *testing.T) {
 	p, _, tick := m15Fixture(t)
 	if p.scalar(0x36) == nil {

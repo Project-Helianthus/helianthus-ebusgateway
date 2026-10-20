@@ -2,6 +2,7 @@ package runtimecontrol
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,21 +16,26 @@ import (
 // replacement observations publish before that old publisher resumes.
 type p14PublicationStore struct {
 	Store
-	mu      sync.Mutex
-	catalog ControlCatalog
-	calls   atomic.Uint32
-	entered chan struct{}
-	release chan struct{}
+	mu           sync.Mutex
+	catalog      ControlCatalog
+	calls        atomic.Uint32
+	failFirstTwo bool
+	entered      chan struct{}
+	release      chan struct{}
 }
 
 func (s *p14PublicationStore) AdvanceCatalog(ctx context.Context) (CatalogRevision, error) {
-	if s.calls.Add(1) == 1 {
+	call := s.calls.Add(1)
+	if call == 1 {
 		close(s.entered)
 		select {
 		case <-s.release:
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
+	}
+	if s.failFirstTwo && call <= 2 {
+		return 0, errors.New("synthetic catalog advance failure")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -154,3 +160,99 @@ func TestP14ObservationPublicationRejectsSupersededCorrelation(t *testing.T) {
 		})
 	}
 }
+
+// The replacement defers first, then the blocked predecessor defers and replaces
+// it. Retrying must expose the replacement view with a resync notification.
+func TestP14DeferredObservationPublicationSignalsSupersededGap(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		epoch      SourceEpoch
+		generation DriverGeneration
+	}{
+		{name: "epoch", epoch: "synthetic.successor", generation: 3},
+		{name: "generation", epoch: "synthetic.predecessor", generation: 4},
+		{name: "epoch_and_generation", epoch: "synthetic.successor", generation: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const id DriverID = "fam.executor"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store := &p14PublicationStore{
+				catalog: ControlCatalog{CatalogRevision: 1, Drivers: []ControlRecord{{
+					DriverID: id, Enabled: true, DesiredState: DesiredRunning, DesiredRevision: 1,
+				}}},
+				entered: make(chan struct{}), release: make(chan struct{}), failFirstTwo: true,
+			}
+			d := &driverState{id: id}
+			old := observation{state: drivermanager.ObservedFailed, reason: drivermanager.ReasonInternalError,
+				epoch: "synthetic.predecessor", generation: 3}
+			s := &Service{store: store, ctx: ctx, order: []DriverID{id}, events: newEventLog(16),
+				observed: map[DriverID]observation{id: {state: drivermanager.ObservedRunning,
+					reason: drivermanager.ReasonNone, epoch: old.epoch, generation: old.generation}},
+				// Keep retries manual so no timer can disturb the forced deferral order.
+				retryArmed: true,
+			}
+			s.view.Store(&Catalog{})
+			if !s.publish(nil) {
+				t.Fatal("positive control: initial view did not publish")
+			}
+			initial := s.List()
+			notify := s.EventNotify()
+			if !s.stageObservation(id, old) {
+				t.Fatal("positive control: predecessor observation was not staged")
+			}
+			done := make(chan struct{})
+			var release sync.Once
+			unblock := func() { release.Do(func() { close(store.release) }) }
+			t.Cleanup(func() {
+				unblock()
+				p14Wait(t, done, "joined deferred predecessor publisher")
+			})
+			go func() {
+				defer close(done)
+				s.commitObserved(d, old)
+			}()
+			p14Wait(t, store.entered, "predecessor catalog entry")
+			next := old
+			next.epoch, next.generation = tc.epoch, tc.generation
+			if !s.stageObservation(id, next) {
+				t.Fatal("positive control: replacement observation was not staged")
+			}
+			s.commitObserved(d, next)
+			if len(s.pendingEv) != 1 || s.pendingEv[0].Epoch != next.epoch || s.pendingEv[0].Generation != next.generation {
+				t.Fatalf("replacement did not defer first: %+v", s.pendingEv)
+			}
+			unblock()
+			p14Wait(t, done, "predecessor deferral")
+			if len(s.pendingEv) != 1 || s.pendingEv[0].Epoch != old.epoch || s.pendingEv[0].Generation != old.generation {
+				t.Fatalf("predecessor did not defer last: %+v", s.pendingEv)
+			}
+			if got := s.List(); got.Revision != initial.Revision || got.Drivers[0].ObservedState != drivermanager.ObservedRunning {
+				t.Fatalf("failed advances exposed staged observation: %+v", got)
+			}
+			select {
+			case <-notify:
+				t.Fatal("failed advances notified event readers")
+			default:
+			}
+			if !s.commitView(ctx, nil, true) {
+				t.Fatal("retry did not publish")
+			}
+			view := s.List()
+			if view.Revision <= initial.Revision || view.Drivers[0].ObservedState != next.state || view.Drivers[0].Reason != next.reason {
+				t.Fatalf("retry did not expose replacement view: %+v", view)
+			}
+			select {
+			case <-notify:
+			default:
+				t.Fatal("replacement transition did not notify event readers")
+			}
+			page := s.EventsSince(initial.EventCursor)
+			if !page.Resync || len(page.Events) != 0 || page.Next != view.EventCursor || view.EventCursor <= initial.EventCursor {
+				t.Fatalf("discarded deferred observation did not produce a coherent resync gap: %+v, view %+v", page, view)
+			}
+		})
+	}
+}
+
+func (s *p14PublicationStore) AdmissionOpen() bool { return true }

@@ -1197,7 +1197,8 @@ func (s *Service) deferPublication(event *Event) {
 // only afterwards. A reader woken by an event therefore finds a list at
 // least as new as the event's catalog revision, and a resync at a published
 // EventCursor always finds that cursor's events. Pending OBSERVED_CHANGED
-// events that the view no longer shows are coalesced away.
+// events that the view no longer shows are coalesced away, with a resync gap
+// when no event carries the current observation.
 func (s *Service) publish(events []Event) bool {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
@@ -1218,9 +1219,15 @@ func (s *Service) publish(events []Event) bool {
 	for _, entry := range built.Drivers {
 		entries[entry.DriverID] = entry
 	}
+	shownEvents := make(map[DriverID]bool)
+	for _, e := range candidates {
+		if e.Kind == EventObservedChanged && observationShown(e, entries[e.DriverID], s.observed[e.DriverID]) {
+			shownEvents[e.DriverID] = true
+		}
+	}
 	emit := candidates[:0]
 	supersededGap := false
-	for _, e := range candidates {
+	for i, e := range candidates {
 		e.CatalogRevision = built.Revision
 		if e.Kind == EventDesiredAccepted && entries[e.DriverID].DesiredRevision != e.DesiredRevision {
 			// A later desired transition superseded this one before its view
@@ -1232,10 +1239,13 @@ func (s *Service) publish(events []Event) bool {
 		if e.Kind == EventObservedChanged {
 			entry := entries[e.DriverID]
 			if !observationShown(e, entry, s.observed[e.DriverID]) {
-				// A newer observation of the driver is already staged in
-				// this view and has its own event: the superseded one is
-				// coalesced away instead of being stamped with a view that
-				// no longer shows it.
+				// Deferral order need not match staging order: an older
+				// publisher can replace the newer pending event. Signal a
+				// gap when discarding a deferred event unless this
+				// publication carries the current observation's event.
+				if i < len(s.pendingEv) && !shownEvents[e.DriverID] {
+					supersededGap = true
+				}
 				continue
 			}
 			e.DesiredState = entry.DesiredState

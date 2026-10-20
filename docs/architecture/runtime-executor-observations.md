@@ -21,11 +21,19 @@ and compares epoch and generation against the staged observation under the same
 
 A publisher paused after staging can resume after STOP and replacement. Even
 when the replacement has the same categorical status, the old event is coalesced
-away if either epoch or generation differs. The focused regression oracle
-independently varies epoch and generation and exercises this interleaving through
-the existing staging/publication functions, with positive controls for current
-events. It does not establish end-to-end lifecycle or executor-observation
-admission coverage.
+away if either epoch or generation differs. Deferred publication can arrive in
+a different order from staging: a predecessor that fails its catalog advance
+last can replace the replacement's pending event. When publication rejects a
+stale deferred observation without an event carrying the current observation,
+it records a resync gap and wakes event readers so they reload the published
+view. When the current event is present, ordinary coalescing preserves it
+without a resync gap.
+
+The focused regression oracles independently vary epoch and generation through
+the existing staging/publication functions. They cover both direct publication
+and replacement-first, predecessor-last deferral after failed catalog advances,
+including notification and cursor coherence for the resync gap. They do not
+establish end-to-end lifecycle or executor-observation admission coverage.
 
 Holding `driverState.mu` from correlation validation through staging closes
 the local check-to-stage window, but extending that lock across

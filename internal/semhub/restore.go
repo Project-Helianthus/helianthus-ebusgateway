@@ -657,7 +657,7 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		if epoch.Kind == EventEpochAdmitted {
 			priorAdmissions[key] = true
 			priorEpochs[[2]string{string(epoch.Source), string(epoch.Epoch)}] = true
-		} else if !priorAdmissions[key] && (!priorEpochs[[2]string{string(epoch.Source), string(epoch.Epoch)}] || !recoveryAcceptedRetirement(entries, epoch)) {
+		} else if !priorAdmissions[key] && (!priorEpochs[[2]string{string(epoch.Source), string(epoch.Epoch)}] || !recoveryHistoricalControl(entries, epoch)) {
 			return errors.New("epoch event without prior exact admission")
 		}
 		// A withdrawn first admission leaves history behind and returns the
@@ -677,7 +677,7 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			return errors.New("invalid epoch event kind")
 		}
 		for i, id := range epoch.Assets {
-			if epoch.Kind == EventGenerationFenced && entries[id].Control == nil && !recoveryAcceptedFence(entries[id], epoch) {
+			if epoch.Kind == EventGenerationFenced && !entries[id].Failed && !recoveryControlMatches(entries[id].Control, epoch) && !recoveryAcceptedFence(entries[id], epoch) {
 				return errors.New("missing control for fenced asset")
 			}
 			if ValidateOpaque(string(id)) != nil || assets[id] != epoch.Source || i > 0 && id <= epoch.Assets[i-1] {
@@ -765,18 +765,24 @@ func recoveryPublishedSource(entry RecoveryAsset, accepted AcceptedBatch) (semre
 	return batch.SourceID, true
 }
 
-// A publication after restart may retire an epoch admitted in an earlier
-// incarnation. Require accepted evidence in the retiring incarnation for every
-// named asset; detached replay still validates the publication's full result.
-func recoveryAcceptedRetirement(entries map[semreg.AssetID]RecoveryAsset, epoch EpochRecord) bool {
-	if epoch.Kind != EventSourceRetired || epoch.Ordinal != 0 || len(epoch.Assets) == 0 {
+// A control or publication after restart may fence or retire a previously
+// admitted epoch. Each non-failed asset needs matching write-ahead control or
+// accepted evidence; detached replay still validates its full result.
+func recoveryHistoricalControl(entries map[semreg.AssetID]RecoveryAsset, epoch EpochRecord) bool {
+	if (epoch.Kind != EventSourceRetired && epoch.Kind != EventGenerationFenced) || epoch.Ordinal != 0 || len(epoch.Assets) == 0 {
 		return false
 	}
 	for _, id := range epoch.Assets {
 		entry := entries[id]
 		// A failed asset is never replayed or installed and stays closed.
 		// Managed recovery may omit its accepted log after continuity loss.
-		if entry.Failed {
+		if entry.Failed || recoveryControlMatches(entry.Control, epoch) {
+			continue
+		}
+		if epoch.Kind == EventGenerationFenced {
+			if !recoveryAcceptedFence(entry, epoch) {
+				return false
+			}
 			continue
 		}
 		covered := false
@@ -797,6 +803,17 @@ func recoveryAcceptedRetirement(entries map[semreg.AssetID]RecoveryAsset, epoch 
 		}
 	}
 	return true
+}
+
+// Matching metadata permits write-ahead controls before accepted evidence exists.
+// restoredGate separately validates the retained control and its attempts.
+func recoveryControlMatches(control *RecoveryControl, epoch EpochRecord) bool {
+	if control == nil || control.Status.ID == nil || control.Status.ID.Source != epoch.Source ||
+		control.Status.ID.Incarnation != epoch.Incarnation || control.Epoch != epoch.Epoch {
+		return false
+	}
+	return epoch.Kind == EventGenerationFenced && control.Kind == ControlFence && control.Generation == epoch.Generation ||
+		epoch.Kind == EventSourceRetired && control.Kind == ControlRetire
 }
 
 // A generation transition carries its initiating asset's fence in the accepted

@@ -2165,3 +2165,163 @@ func TestP06AcceptedRetirementAfterRestart(t *testing.T) {
 		})
 	}
 }
+
+func TestP06FailedFencedAssetReexport(t *testing.T) {
+	origin, handle := populatedRecoveryHub(t, nil)
+	if err := fenceRecovery(t, origin, handle); err != nil {
+		t.Fatal(err)
+	}
+	record := origin.ExportRecovery()
+	record.Assets[0].Accepted[0].Canonical = []byte("corrupt")
+	failedID, validID := record.Assets[0].Asset, record.Assets[1].Asset
+	for round := 0; round < 2; round++ {
+		fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		err := fresh.Restore(record)
+		if !errors.Is(err, ErrRestore) || !bytes.Contains([]byte(err.Error()), []byte("asset "+string(failedID))) {
+			t.Fatalf("round %d: want per-asset failure, got %v", round, err)
+		}
+		_ = fresh.Resettle(failedID)
+		failed, _ := fresh.Inspect(failedID)
+		if failed.Present || fresh.Readable(failedID) || fresh.ReadAdmitted(failedID) || fresh.Settled(failedID) {
+			t.Fatal("failed asset installed evidence or reopened")
+		}
+		want, _ := origin.Inspect(validID)
+		got, _ := fresh.Inspect(validID)
+		if !bytes.Equal(want.Canonical, got.Canonical) {
+			t.Fatal("failed asset prevented independent recovery")
+		}
+		if err := fresh.Resettle(validID); err != nil || !fresh.Readable(validID) {
+			t.Fatalf("valid asset did not reproject: %v", err)
+		}
+		record = fresh.ExportRecovery()
+		if !record.Assets[0].Failed || record.Assets[0].Control != nil || len(record.Assets[0].Accepted) != 0 {
+			t.Fatal("failed asset must re-export without control or log")
+		}
+	}
+}
+
+func TestP06HistoricalControlAfterRestart(t *testing.T) {
+	for _, kind := range []ControlKind{ControlFence, ControlRetire} {
+		for _, outcome := range []string{"accepted", "pending", "rejected"} {
+			t.Run(string(kind)+"/"+outcome, func(t *testing.T) {
+				origin, handle := populatedRecoveryHub(t, nil)
+				var fresh *Hub
+				var pending RecoveryRecord
+				fresh = recoveryHub(t, &RecoveryHooks{BeforeControl: func(ControlAttempt) error {
+					if outcome == "pending" && pending.Version == 0 {
+						pending = fresh.ExportRecovery()
+					}
+					if outcome != "accepted" {
+						return errors.New("synthetic refusal")
+					}
+					return nil
+				}}, func(ControlEvent) error { return nil })
+				if err := fresh.Restore(origin.ExportRecovery()); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if kind == ControlFence {
+					err = fenceRecovery(t, fresh, handle)
+				} else {
+					_, err = fresh.RetireEpoch(RetireRequest{Source: handle.Source(), Epoch: handle.Epoch(), Reason: "semhubtest.stop",
+						Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.retire")}, ObservedAt: testWall(3), Monotonic: testMono(3)})
+				}
+				if (err == nil) != (outcome == "accepted") {
+					t.Fatalf("unexpected control outcome: %v", err)
+				}
+				record := fresh.ExportRecovery()
+				if outcome == "pending" {
+					record = pending
+				}
+				again := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+				if err := again.Restore(record); err != nil {
+					t.Fatalf("historical control refused: %v", err)
+				}
+				for _, entry := range record.Assets {
+					got, _ := again.Inspect(entry.Asset)
+					if !bytes.Equal(got.Canonical, entry.Accepted[len(entry.Accepted)-1].Canonical) || again.Readable(entry.Asset) {
+						t.Fatal("restore changed evidence or opened reads")
+					}
+				}
+				for _, mutation := range []string{"missing-admission", "late-admission", "control-incarnation", "control-source", "control-epoch", "control-kind", "control-generation", "missing-control"} {
+					t.Run(mutation, func(t *testing.T) {
+						if outcome == "accepted" && mutation != "missing-admission" && mutation != "late-admission" {
+							return // Accepted evidence independently covers the event.
+						}
+						if kind == ControlRetire && mutation == "control-generation" {
+							return // Retirement targets every generation of the epoch.
+						}
+						raw, _ := json.Marshal(record)
+						var corrupt RecoveryRecord
+						if err := json.Unmarshal(raw, &corrupt); err != nil {
+							t.Fatal(err)
+						}
+						if mutation == "missing-admission" || mutation == "late-admission" {
+							admission := corrupt.Epochs[0]
+							corrupt.Epochs = corrupt.Epochs[1:]
+							if mutation == "late-admission" {
+								corrupt.Epochs = append(corrupt.Epochs, admission)
+							}
+						} else {
+							control := corrupt.Assets[0].Control
+							switch mutation {
+							case "missing-control":
+								corrupt.Assets[0].Control = nil
+							case "control-source":
+								control.Status.ID.Source = "source:other"
+							case "control-incarnation":
+								control.Status.ID.Incarnation = "incarnation:other"
+							case "control-epoch":
+								control.Epoch = "epoch:other"
+							case "control-kind":
+								control.Kind = "unknown"
+							case "control-generation":
+								control.Generation++
+							}
+						}
+						p06Refuse(t, corrupt)
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestP06AllFailedHistoricalRetirementReexport(t *testing.T) {
+	origin, handle := populatedRecoveryHub(t, nil)
+	restarted := recoveryHub(t, nil, nil)
+	if err := restarted.Restore(origin.ExportRecovery()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.RetireEpoch(RetireRequest{Source: handle.Source(), Epoch: handle.Epoch(), Reason: "semhubtest.stop",
+		Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.retire")}, ObservedAt: testWall(3), Monotonic: testMono(3)}); err != nil {
+		t.Fatal(err)
+	}
+	record := restarted.ExportRecovery()
+	for i := range record.Assets {
+		record.Assets[i].Accepted[0].Canonical = []byte("corrupt")
+	}
+	for round := 0; round < 2; round++ {
+		fresh := recoveryHub(t, nil, nil)
+		err := fresh.Restore(record)
+		if !errors.Is(err, ErrRestore) {
+			t.Fatalf("want per-asset restore failures: %v", err)
+		}
+		for _, id := range recoveryAssets {
+			if !bytes.Contains([]byte(err.Error()), []byte("asset "+string(id))) {
+				t.Fatalf("missing per-asset failure for %s: %v", id, err)
+			}
+			_ = fresh.Resettle(id)
+			view, _ := fresh.Inspect(id)
+			if view.Present || fresh.Readable(id) || fresh.ReadAdmitted(id) || fresh.Settled(id) {
+				t.Fatal("failed asset installed evidence or reopened")
+			}
+		}
+		if !reflect.DeepEqual(record.Epochs, fresh.ExportRecovery().Epochs) {
+			t.Fatal("legitimate inert history was lost")
+		}
+		record = fresh.ExportRecovery()
+	}
+	record.Epochs = record.Epochs[1:]
+	p06Refuse(t, record)
+}

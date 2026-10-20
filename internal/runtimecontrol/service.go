@@ -1217,13 +1217,42 @@ func (s *Service) publish(events []Event) bool {
 	}
 	built := s.buildLocked(catalog)
 	current := s.view.Load()
+	candidates := append(append([]Event(nil), s.pendingEv...), events...)
+	// A catalog read can include another resolver's adopted decision before
+	// that resolver has read its record or supplied its acceptance event.
+	// Keep that driver's published intent until the matching acceptance can
+	// accompany it atomically. Other drivers may still publish independently.
+	for i := range built.Drivers {
+		entry := &built.Drivers[i]
+		d := s.drivers[entry.DriverID]
+		d.mu.Lock()
+		held := d.ambiguous != nil
+		d.mu.Unlock()
+		if !held {
+			continue
+		}
+		accepted := false
+		for _, e := range candidates {
+			if e.Kind == EventDesiredAccepted && e.DriverID == entry.DriverID && e.DesiredRevision == entry.DesiredRevision {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			for _, prior := range current.Drivers {
+				if prior.DriverID == entry.DriverID {
+					entry.DesiredState, entry.DesiredRevision = prior.DesiredState, prior.DesiredRevision
+					break
+				}
+			}
+		}
+	}
 	switch {
 	case built.Revision > current.Revision:
 	case built.Revision == current.Revision && reflect.DeepEqual(built.Drivers, current.Drivers):
 	default:
 		return false
 	}
-	candidates := append(append([]Event(nil), s.pendingEv...), events...)
 	entries := make(map[DriverID]DriverStatus, len(built.Drivers))
 	for _, entry := range built.Drivers {
 		entries[entry.DriverID] = entry

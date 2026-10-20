@@ -14,6 +14,81 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 )
 
+// p07JoinStartupIdentityRetry must be registered after hook restoration cleanup
+// and after the synchronous launch. Scan completion fences every possible Add.
+func p07JoinStartupIdentityRetry(t *testing.T, cancel context.CancelFunc, scanDone <-chan struct{}) <-chan struct{} {
+	t.Helper()
+	joined := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		if scanDone != nil {
+			select {
+			case <-scanDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("startup scan producer did not join before retry wait")
+			}
+		}
+		go func() {
+			postStartupIdentityRetryWG.Wait()
+			close(joined)
+		}()
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Fatal("startup identity retry did not join before hook restoration")
+		}
+	})
+	return joined
+}
+
+func TestP07StartupIdentityRetryJoinsBeforeHookRestoration(t *testing.T) {
+	gw, err := ebusgateway.New(context.Background(), ebusgateway.Config{Transport: transport.NewLoopback()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = gw.Close() })
+	gw.Registry.Register(registry.DeviceInfo{Address: 0x15, Manufacturer: "Vaillant", DeviceID: "SYNTH"})
+	originalIdentity, originalB524 := enrichVaillantIdentityFn, enrichB524InterfaceIdentityFn
+	originalDelay, originalAttempts := postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts
+	entered, released, acquired := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var joined <-chan struct{}
+	t.Cleanup(func() {
+		// These sentinels run before restoring either hook, even on failure.
+		for name, done := range map[string]<-chan struct{}{"released": released, "acquired": acquired, "joined": joined} {
+			select {
+			case <-done:
+			default:
+				t.Errorf("hook restoration preceded retry %s", name)
+			}
+		}
+		enrichVaillantIdentityFn, enrichB524InterfaceIdentityFn = originalIdentity, originalB524
+		postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts = originalDelay, originalAttempts
+	})
+	postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts = time.Millisecond, 1
+	enrichVaillantIdentityFn = func(ctx context.Context, _ *ebusgateway.Gateway, _ ebusgateway.Config) {
+		close(entered)
+		<-ctx.Done()
+		close(released)
+	}
+	enrichB524InterfaceIdentityFn = func(context.Context, *registry.DeviceRegistry, registry.ScanBus, byte, byte) {
+		// The retry reads this global after the blocking serial hook returns.
+		close(acquired)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	schedulePostStartupIdentityRetry(ctx, gw, nil, ebusgateway.DefaultConfig(), nil)
+	joined = p07JoinStartupIdentityRetry(t, cancel, nil)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry did not enter the test-owned identity hook")
+	}
+	select {
+	case <-released:
+		t.Fatal("retry released before cleanup canceled its context")
+	default:
+	}
+}
+
 func TestShouldStopDiscoveryScan(t *testing.T) {
 	t.Parallel()
 
@@ -242,6 +317,7 @@ func TestStartDiscoveryScanLoop_SourceSelectionActiveProbeReleasesSemanticBootst
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-signals.activeProbePassed:
@@ -734,6 +810,7 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstAutoUsesExplicitStartupSource(t
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case got := <-scanSourceCh:
@@ -815,6 +892,7 @@ func TestStartDiscoveryScanLoop_ProxySingleENSWithoutBroadcastResolvesSource(t *
 	cfg.TransportConfig.Address = "127.0.0.1:19001"
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case got := <-scanSourceCh:
@@ -950,7 +1028,8 @@ func TestStartDiscoveryScanLoop_RerunsPhysicalIdentityEnrichmentAfterNormalScan(
 		Address: "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-done:
@@ -1063,7 +1142,8 @@ func TestStartDiscoveryScanLoop_FallbackIdentityEnrichmentRunsOnce(t *testing.T)
 		Address: "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-done:
@@ -1212,7 +1292,8 @@ func TestStartDiscoveryScanLoop_EbusdPreloadKeepsScanningUntilControllerCandidat
 		Address:  "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -1393,7 +1474,8 @@ func TestStartDiscoveryScanLoop_EbusdPreloadWithCoherentRootDoesNotRetryFullRang
 		Address:  "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -1542,6 +1624,7 @@ func TestStartDiscoveryScanLoop_EbusdPreloadRunsWithConfiguredStartupProbeTarget
 	cfg.StartupProbeTargets = []byte{0x08}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 	select {
 	case <-signals.semanticBootstrapReady:
 	case <-time.After(2 * time.Second):
@@ -1630,6 +1713,7 @@ func TestSchedulePostStartupIdentityRetryEnrichesMissingVaillantSerials(t *testi
 	defer cancel()
 
 	schedulePostStartupIdentityRetry(ctx, gateway, nil, ebusgateway.DefaultConfig(), nil)
+	p07JoinStartupIdentityRetry(t, cancel, nil)
 
 	select {
 	case <-done:
@@ -1775,7 +1859,8 @@ func TestStartDiscoveryScanLoop_EbusdPreloadFailedRecoveryContinuesRestrictedSca
 		Address:  "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-activeSuccess:
@@ -1929,7 +2014,8 @@ func TestStartDiscoveryScanLoop_EbusdPreloadNonVaillantImportFallsThroughToRestr
 		Address:  "127.0.0.1:8888",
 	}
 
-	startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-activeSuccess:
@@ -2051,6 +2137,7 @@ func TestStartDiscoveryScanLoop_NonEbusdTransportRejectsFullRangeScanByDefault(t
 	}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	mu.Lock()
 	gotScanRun := scanRun
@@ -2183,6 +2270,7 @@ func TestStartDiscoveryScanLoop_ProxyObserveFirstKeepsSemanticBarrierUntilRootFa
 	}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case got := <-scanRuns:
@@ -2360,6 +2448,7 @@ func TestStartDiscoveryScanLoop_DirectScanSignalsBootstrapAfterConfirmationRetri
 	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-signals.semanticBootstrapReady:
@@ -2501,6 +2590,7 @@ func TestStartDiscoveryScanLoop_DirectScanTimeoutStillSignalsBootstrap(t *testin
 	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-signals.semanticBootstrapReady:
@@ -2635,6 +2725,7 @@ func TestStartDiscoveryScanLoop_SafetyNetForcesBootstrapAfterMaxUnconfirmedPasse
 	cfg.StartupProbeTargets = []byte{0x08, 0x15, 0x26}
 
 	signals := startDiscoveryScanLoop(ctx, cfg, gateway, nil)
+	p07JoinStartupIdentityRetry(t, cancel, signals.done)
 
 	select {
 	case <-signals.semanticBootstrapReady:
@@ -2973,10 +3064,12 @@ func TestStartupScanB524InterfaceIdentityAfterSerialEnrichment(t *testing.T) {
 				reg.Register(info)
 				postStartupIdentityRetryDelay, postStartupIdentityRetryAttempts = time.Millisecond, 1
 				schedulePostStartupIdentityRetry(ctx, gw, nil, cfg, &cfg.TransportConfig)
+				p07JoinStartupIdentityRetry(t, cancel, nil)
 			} else {
 				exited := make(chan struct{})
 				startupScanLoopExitFn = func() { close(exited) }
-				startDiscoveryScanLoopWithClassifier(ctx, cfg, gw, nil, nil)
+				signals := startDiscoveryScanLoopWithClassifier(ctx, cfg, gw, nil, nil)
+				p07JoinStartupIdentityRetry(t, cancel, signals.done)
 				select {
 				case <-exited:
 				case <-time.After(2 * time.Second):

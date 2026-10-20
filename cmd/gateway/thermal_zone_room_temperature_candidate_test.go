@@ -80,8 +80,8 @@ func TestI31NativeVectors(t *testing.T) {
 	i31Good(t, mapZoneRoomTemperatureCandidate(in), 20)
 }
 
-// Each subtest kills the production mutation that omits the named identity
-// field from o.Identity != expected, independently for new and prior evidence.
+// Exercise foreign temperature identity fields in new and prior evidence.
+// P16 additionally checks newer foreign context records and register roles.
 func TestI31IdentityFence(t *testing.T) {
 	base := i31Fixture().Identity
 	var paths [][]int
@@ -153,6 +153,9 @@ func TestI31FreshnessAndCodec(t *testing.T) {
 			r := mapZoneRoomTemperatureCandidate(in)
 			if r.Freshness != tc.want || r.Withheld == "" {
 				t.Fatalf("freshness=%s", r.Freshness)
+			}
+			if tc.name == "evaluation_leading_zero" && (r.Temperature != nil || r.SensorBinding != nil || r.Association != nil || r.LatestLoss != "malformed evaluation point; selection withheld") {
+				t.Fatal("malformed evaluation selected evidence or hid loss")
 			}
 		})
 	}
@@ -336,5 +339,192 @@ func TestI31MalformedCodecBoundsPreserveEvidence(t *testing.T) {
 				t.Fatal("malformed metadata changes permutation order")
 			}
 		}
+	}
+}
+
+func TestP16EvaluationValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*zoneRoomCandidateInput)
+	}{
+		{"monotonic_leading_zero", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluateMonotonic.Nanoseconds = "020" }},
+		{"monotonic_negative", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluateMonotonic.Nanoseconds = "-1" }},
+		{"monotonic_overflow", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluateMonotonic.Nanoseconds = "18446744073709551616" }},
+		{"monotonic_clock", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluateMonotonic.ClockEpochID = "" }},
+		{"wall_nanoseconds", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluatedAt.UnixNanoseconds = "0200" }},
+		{"wall_clock", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluatedAt.ClockID = "" }},
+		{"wall_uncertainty", func(i *zoneRoomCandidateInput) { i.Evaluation.EvaluatedAt.UncertaintyNS = "00" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := i31Fixture()
+			good := mapZoneRoomTemperatureCandidate(in)
+			i31Good(t, good, 20)
+			if good.SensorBinding == nil || good.Association == nil {
+				t.Fatal("positive control lost context")
+			}
+			tc.change(&in)
+			r := mapZoneRoomTemperatureCandidate(in)
+			if r.Temperature != nil || r.SensorBinding != nil || r.Association != nil || r.LatestLoss != "malformed evaluation point; selection withheld" || r.Freshness != "unknown" || len(r.History) != 3 || len(r.Attempts) != 3 || r.Withheld == "" {
+				t.Fatalf("malformed evaluation admitted selection or lost evidence: %+v", r)
+			}
+		})
+	}
+}
+
+func TestP16RejectedReceiptConflict(t *testing.T) {
+	for _, raw := range [][]byte{{1}, nil} {
+		for _, reverse := range []bool{false, true} {
+			in := i31Fixture()
+			i31Good(t, mapZoneRoomTemperatureCandidate(in), 20)
+			bad := zoneRoomClone(in.Observations[0])
+			bad.Value = raw
+			in.Observations = append(in.Observations, bad)
+			if reverse {
+				in.Observations[0], in.Observations[3] = in.Observations[3], in.Observations[0]
+			}
+			r := mapZoneRoomTemperatureCandidate(in)
+			if r.Temperature != nil || r.SensorBinding == nil || r.Association == nil || r.LatestLoss != "ambiguous or incomparable receipts" || len(r.History) != 4 || len(r.Attempts) != 4 {
+				t.Fatalf("rejected tie resolved or evidence lost: %+v", r)
+			}
+		}
+	}
+}
+
+func TestP16ContextAttemptTiming(t *testing.T) {
+	for _, index := range []int{1, 2} {
+		for _, tc := range []struct {
+			name   string
+			change func(*zoneRoomObservation)
+		}{
+			{"receipt_nanoseconds", func(o *zoneRoomObservation) { o.Receipt.Nanoseconds = "012" }},
+			{"receipt_clock", func(o *zoneRoomObservation) { o.Receipt.ClockEpochID = "" }},
+			{"wall_nanoseconds", func(o *zoneRoomObservation) { o.ReceivedAt.UnixNanoseconds = "0100" }},
+			{"wall_clock", func(o *zoneRoomObservation) { o.ReceivedAt.ClockID = "" }},
+			{"wall_uncertainty", func(o *zoneRoomObservation) { o.ReceivedAt.UncertaintyNS = "00" }},
+		} {
+			t.Run(fmt.Sprintf("register_%x/%s", i31Fixture().Observations[index].Identity.Selector.Register, tc.name), func(t *testing.T) {
+				in := i31Fixture()
+				prior := mapZoneRoomTemperatureCandidate(in)
+				i31Good(t, prior, 20)
+				attempt := zoneRoomClone(in.Observations[index])
+				attempt.Receipt.Nanoseconds = "12"
+				tc.change(&attempt)
+				in.Previous = prior.History
+				in.Observations = []zoneRoomObservation{attempt}
+				r := mapZoneRoomTemperatureCandidate(in)
+				if !reflect.DeepEqual(r.Temperature, prior.Temperature) || !reflect.DeepEqual(r.SensorBinding, prior.SensorBinding) || !reflect.DeepEqual(r.Association, prior.Association) || r.LatestLoss != "malformed attempt receipt; ordering unknown" || len(r.Attempts) != 1 || r.Attempts[0].Loss != "malformed original receipt" || len(r.History) != 4 {
+					t.Fatalf("malformed context timing hidden or history replaced: %+v", r)
+				}
+			})
+		}
+	}
+}
+
+func TestP16IdentitySelection(t *testing.T) {
+	typ := reflect.TypeOf(zoneRoomIdentity{})
+	for j := 0; j < typ.NumField(); j++ {
+		paths := [][]int{{j}}
+		if typ.Field(j).Name == "Selector" {
+			paths = nil
+			for k := 0; k < typ.Field(j).Type.NumField(); k++ {
+				paths = append(paths, []int{j, k})
+			}
+		}
+		for _, path := range paths {
+			name := typ.Field(path[0]).Name
+			if len(path) == 2 {
+				name += "." + typ.Field(path[0]).Type.Field(path[1]).Name
+			}
+			for _, historical := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/history_%v", name, historical), func(t *testing.T) {
+					in := i31Fixture()
+					want := mapZoneRoomTemperatureCandidate(in)
+					i31Good(t, want, 20)
+					if want.SensorBinding == nil || want.Association == nil || !reflect.DeepEqual(want.SensorBinding.Observation.Value, []byte{2, 0}) || want.SensorBinding.Observation.Receipt.Nanoseconds != "9" || !reflect.DeepEqual(want.Association.Observation.Value, []byte{4}) || want.Association.Observation.Receipt.Nanoseconds != "10" {
+						t.Fatal("positive control lost expected context bytes or receipts")
+					}
+					for _, own := range i31Fixture().Observations {
+						foreign := zoneRoomClone(own)
+						f := reflect.ValueOf(&foreign.Identity).Elem().FieldByIndex(path)
+						if name == "Selector.Register" {
+							f.SetUint(0x20) // Outside the three explicitly recognized roles.
+						} else if f.Kind() == reflect.String {
+							if f.String() == "1" {
+								f.SetString("2")
+							} else {
+								f.SetString("other.synthetic")
+							}
+						} else {
+							f.SetUint(f.Uint() + 1)
+						}
+						if !zoneRoomIdentityKnown(foreign.Identity) {
+							t.Fatal("foreign alternative is not a valid typed identity")
+						}
+						foreign.Receipt.Nanoseconds = "12"
+						if historical {
+							in.Previous = append(in.Previous, zoneRoomRecord{Observation: foreign})
+						} else {
+							in.Observations = append(in.Observations, foreign)
+						}
+					}
+					r := mapZoneRoomTemperatureCandidate(in)
+					if !reflect.DeepEqual(r.Temperature, want.Temperature) || !reflect.DeepEqual(r.SensorBinding, want.SensorBinding) || !reflect.DeepEqual(r.Association, want.Association) || len(r.History) != 6 {
+						t.Fatalf("foreign identity changed selected temperature, binding or association: %+v", r)
+					}
+				})
+			}
+		}
+	}
+}
+
+// Direct freshness checks avoid the mapper's redundant timing and codec guards.
+func TestP16FreshnessTypedValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*zoneRoomObservation, *semreg.EvaluationContext)
+	}{
+		{"receipt_nanoseconds", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.Receipt.Nanoseconds = "010" }},
+		{"receipt_clock", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.Receipt.ClockEpochID = "" }},
+		{"received_nanoseconds", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.ReceivedAt.UnixNanoseconds = "0100" }},
+		{"received_clock", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.ReceivedAt.ClockID = "" }},
+		{"received_uncertainty", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.ReceivedAt.UncertaintyNS = "00" }},
+		{"evaluation_nanoseconds", func(_ *zoneRoomObservation, e *semreg.EvaluationContext) { e.EvaluateMonotonic.Nanoseconds = "020" }},
+		{"evaluation_clock", func(_ *zoneRoomObservation, e *semreg.EvaluationContext) { e.EvaluateMonotonic.ClockEpochID = "" }},
+		{"evaluation_wall_nanoseconds", func(_ *zoneRoomObservation, e *semreg.EvaluationContext) { e.EvaluatedAt.UnixNanoseconds = "0200" }},
+		{"evaluation_wall_clock", func(_ *zoneRoomObservation, e *semreg.EvaluationContext) { e.EvaluatedAt.ClockID = "" }},
+		{"evaluation_uncertainty", func(_ *zoneRoomObservation, e *semreg.EvaluationContext) { e.EvaluatedAt.UncertaintyNS = "00" }},
+		{"ttl_empty", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.FreshForNS = "" }},
+		{"ttl_zero", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.FreshForNS = "0" }},
+		{"ttl_leading_zero", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.FreshForNS = "015" }},
+		{"ttl_plus", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.FreshForNS = "+15" }},
+		{"ttl_overflow", func(o *zoneRoomObservation, _ *semreg.EvaluationContext) { o.FreshForNS = "18446744073709551616" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := i31Fixture()
+			o := in.Observations[0]
+			if v, loss := zoneRoomDecode(o, in.Codec); v == nil || loss != "" {
+				t.Fatal("positive codec control failed")
+			}
+			if zoneRoomFresh(o, in.Evaluation) != "fresh" {
+				t.Fatal("positive freshness control failed")
+			}
+			tc.change(&o, &in.Evaluation)
+			if got := zoneRoomFresh(o, in.Evaluation); got != "unknown" {
+				t.Fatalf("malformed typed freshness = %s", got)
+			}
+		})
+	}
+}
+
+// The mapper normalizes the register for each recognized role before identity
+// equality. Check its separate input-slot guard directly to avoid that redundancy.
+func TestP16SelectorRegisterRoleValidation(t *testing.T) {
+	s := i31Fixture().Identity.Selector
+	if !zoneRoomSelectorSupported(s) {
+		t.Fatal("positive RR000F slot rejected")
+	}
+	s.Register = 0x20
+	if zoneRoomSelectorSupported(s) {
+		t.Fatal("unsupported input-slot register admitted")
 	}
 }

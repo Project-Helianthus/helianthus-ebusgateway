@@ -159,6 +159,7 @@ func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidat
 	sort.Slice(observations, func(i, j int) bool {
 		return zoneRoomOrder(observations[i]) < zoneRoomOrder(observations[j])
 	})
+	evaluationValid := in.Evaluation.EvaluatedAt.Validate() == nil && in.Evaluation.EvaluateMonotonic.Validate() == nil
 	var temperature, binding, association []int
 	malformedBinding := false
 	malformedAttempt := false
@@ -201,6 +202,9 @@ func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidat
 	}
 	// Select by typed monotonic receipt only, never wall time or input ordering.
 	newest := func(indices []int, goodOnly bool) *zoneRoomRecord {
+		if !evaluationValid {
+			return nil
+		}
 		var best *zoneRoomRecord
 		var point uint64
 		conflict := false
@@ -220,6 +224,16 @@ func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidat
 				best, point, conflict = r, n, false
 			} else if n == point && !zoneRoomSameObservation(r.Observation, best.Observation) {
 				conflict = true
+			}
+		}
+		// Rejected temperature attempts still conflict with a decodable record at
+		// the same receipt; decoding cannot resolve ambiguous native evidence.
+		if best != nil && goodOnly {
+			for _, idx := range indices {
+				o := out.History[idx].Observation
+				if o.Receipt == best.Observation.Receipt && !zoneRoomSameObservation(o, best.Observation) {
+					conflict = true
+				}
 			}
 		}
 		if conflict {
@@ -287,7 +301,7 @@ func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidat
 		if attempt.Identity.Selector.Register == 0x13 && (!attempt.Present || !attempt.Correlated || !in.BindingQualified || in.BindingWidth <= 0 || len(attempt.Value) != in.BindingWidth) {
 			malformedBinding = true
 		}
-		if attempt.Identity.Selector.Register == 0x0f && (attempt.ReceivedAt.Validate() != nil || attempt.Receipt.Validate() != nil) {
+		if (attempt.Identity.Selector.Register == 0x0f || attempt.Identity.Selector.Register == 0x13 || attempt.Identity.Selector.Register == 0x1c) && (attempt.ReceivedAt.Validate() != nil || attempt.Receipt.Validate() != nil) {
 			malformedAttempt = true
 		}
 	}
@@ -299,6 +313,9 @@ func mapZoneRoomTemperatureCandidate(in zoneRoomCandidateInput) zoneRoomCandidat
 	}
 	if malformedAttempt {
 		out.LatestLoss = "malformed attempt receipt; ordering unknown"
+	}
+	if !evaluationValid {
+		out.LatestLoss = "malformed evaluation point; selection withheld"
 	}
 	return out
 }

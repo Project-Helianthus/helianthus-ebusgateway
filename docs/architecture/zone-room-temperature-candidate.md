@@ -1,6 +1,7 @@
 # Detached zone room-temperature candidate
 
-This partial implementation advances [issue #1231](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1231)
+This partial implementation advances [issue #1231](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1231),
+[follow-up #1246](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1246)
 and [parent #952](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/952).
 Nothing here is stable before Helianthus 1.0. The mapper is a pure function over
 supplied observations and detached previous records; it has no acquisition,
@@ -48,7 +49,8 @@ No decimal conversion or rounding takes place.
 
 Every identity field participates in matching: native PB/SB, opcode, operation,
 group, instance, register, direction, initiator, target and reply source;
-asset, service, source, epoch, generation, binding and association revisions;
+asset, service, source, epoch, generation, native binding, binding revision and
+association revision;
 and family, profile, profile revision, decoder revision and mapping revision.
 The two context registers match the same identity with only the explicitly
 recognized register changed. Zone display IDs, radio inference and setpoint
@@ -64,8 +66,11 @@ No RR0013 observation identifies a radio endpoint, and RR001C creates no topolog
 
 Original wall receipt and typed monotonic receipt remain attached to each
 observation. Evaluation never becomes receipt. Selection uses monotonic points
-within the evaluation clock epoch, after canonical typed validation. Equal
-receipt conflicts, including provenance differences, select no winner. Complete
+within the evaluation clock epoch, after canonical typed validation. A malformed
+evaluation wall or monotonic point sets result-level loss and selects neither
+temperature, sensor binding nor association; detached diagnostics remain available.
+Equal receipt conflicts, including rejected or short temperature attempts and
+provenance differences, select no winner at that receipt. Complete
 history remains available even when clock continuity is unknown. Sorting full
 records makes permutation outcomes deterministic without collapsing evidence
 owner, kind, contract, digest, access or redaction differences.
@@ -83,6 +88,7 @@ unknown. No freshness status releases final publication withholding.
 | Good 20 followed by malformed temperature | Retain 20 at its original receipt; record failed attempt separately. |
 | Later valid 21, same complete identity | Independently recover temperature at the new original receipt; context history survives. |
 | New binding bytes differ from qualified bytes | Retain raw binding and temperature independently; explicit association loss requires requalification and a new correlated temperature. A native candidate does not relabel the old sensor. |
+| Malformed binding or association receipt after valid history | Retain all valid historical selections and rejected raw evidence; report malformed attempt timing at result level. |
 | Malformed binding width after good binding | Retain prior width-qualified binding; preserve rejected bytes and association loss. |
 | Requalification with temperature older than binding | Explicit temperature-predates-binding loss; no current association claim. |
 | Equal asset and temperature, different native instance | Foreign record stays in history; it cannot update the requested native slot. No semantic key is constructed. |

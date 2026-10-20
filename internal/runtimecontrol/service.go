@@ -1232,7 +1232,7 @@ func (s *Service) publish(events []Event) bool {
 	for i := range built.Drivers {
 		entry := &built.Drivers[i]
 		d := s.drivers[entry.DriverID]
-		if !d.ambiguousHeld.Load() {
+		if d == nil || !d.ambiguousHeld.Load() {
 			continue
 		}
 		accepted := false

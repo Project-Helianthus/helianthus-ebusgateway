@@ -613,3 +613,20 @@ func TestP10StartSettlementConcurrentPublication(t *testing.T) {
 		})
 	}
 }
+
+// A Service assembled without a driver map must still publish; the held-
+// intent guard may only consult drivers that exist.
+func TestP10PublishToleratesUnregisteredDriver(t *testing.T) {
+	for _, id := range []DriverID{"fam.alpha", "fam.beta"} {
+		store := &p10Store{record: ControlRecord{DriverID: id, Enabled: true, HasRecord: true, DesiredState: DesiredRunning, DesiredRevision: 2}, revision: 3}
+		s := &Service{store: store, ctx: context.Background(), order: []DriverID{id}, events: newEventLog(8),
+			observed: map[DriverID]observation{id: {state: drivermanager.ObservedRunning, reason: drivermanager.ReasonNone}}}
+		s.view.Store(&Catalog{})
+		if !s.publish(nil) {
+			t.Fatalf("%s: publish refused", id)
+		}
+		if got := s.List(); got.Revision != 3 || len(got.Drivers) != 1 || got.Drivers[0].DesiredRevision != 2 {
+			t.Fatalf("%s: unexpected view %+v", id, got)
+		}
+	}
+}

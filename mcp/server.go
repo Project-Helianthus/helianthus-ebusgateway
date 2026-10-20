@@ -526,6 +526,9 @@ type Server struct {
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
 	leafPromotionCapture        LeafPromotionCapture
 	serverVersion               string
+	sharedSemanticMu            sync.RWMutex
+	sharedSemanticProvider      SemanticSnapshotProvider
+	sharedSemanticRegistered    bool
 	runtimeControlMu            sync.RWMutex
 	runtimeControl              RuntimeControlService
 	runtimeControlRegistered    bool
@@ -1123,6 +1126,9 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+	}
+	if rawCall.Name == SemanticSnapshotTool {
+		return s.handleSharedSemanticSnapshot(ctx, rawCall.Arguments, hasDuplicateKeys), nil
 	}
 	if isRuntimeControlTool(rawCall.Name) {
 		// Lifecycle tools refuse duplicate, missing, additional and

@@ -1,0 +1,76 @@
+{
+  "tool": {
+    "name": "semantic.v1.snapshot.get",
+    "description": "Read one bounded detached SemReg snapshot view for selected assets across capability packs.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_ids"
+      ],
+      "properties": {
+        "asset_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    }
+  },
+  "unavailable": {
+    "data": null,
+    "error": {
+      "code": "UNAVAILABLE",
+      "message": "semantic snapshot provider unavailable",
+      "retriable": true,
+      "source_layer": "gateway"
+    },
+    "meta": {
+      "contract": {
+        "name": "helianthus-ebus-mcp",
+        "major": 1,
+        "minor": 0
+      },
+      "consistency": {
+        "mode": "EVALUATED_SEMREG_PUBLICATION"
+      },
+      "data_timestamp": "<evaluation-time>",
+      "data_hash": "<computed-data-hash>"
+    }
+  },
+  "success": {
+    "data": {
+      "assets": [
+        {
+          "asset_id": "asset:missing",
+          "selections": [],
+          "unavailable_reason": "semantic.read.reason.asset_unknown"
+        },
+        {
+          "asset_id": "asset:withheld",
+          "selections": [],
+          "unavailable_reason": "semantic.read.reason.publication_withheld"
+        }
+      ]
+    },
+    "error": null,
+    "meta": {
+      "contract": {
+        "name": "helianthus-ebus-mcp",
+        "major": 1,
+        "minor": 0
+      },
+      "consistency": {
+        "mode": "EVALUATED_SEMREG_PUBLICATION"
+      },
+      "data_timestamp": "<evaluation-time>",
+      "data_hash": "<computed-data-hash>"
+    }
+  }
+}

@@ -186,7 +186,7 @@ func TestM15SnapshotExcludesMirrorAndCache(t *testing.T) {
 	}
 }
 
-func TestM15RestartWithholdsCachedTemperaturesUntilFreshObservation(t *testing.T) {
+func TestM15RestartWithholdsCachedFlowPreservesLegacyReturn(t *testing.T) {
 	store := newSemanticCacheStore(filepath.Join(t.TempDir(), "semantic-cache.json"), t.Logf)
 	if err := store.writeV3(semanticCacheV3{
 		SchemaVersion: semanticCacheSchemaVersionV3,
@@ -204,10 +204,13 @@ func TestM15RestartWithholdsCachedTemperaturesUntilFreshObservation(t *testing.T
 		t.Fatal("populated boiler cache was discarded wholesale")
 	}
 	// Check the public provider before attaching a publisher or polling: no
-	// later reprojection may be needed to remove provenance-free temperatures.
+	// later reprojection may be needed to remove provenance-free flow.
 	status := provider.BoilerStatus()
-	if status == nil || status.State.FlowTemperatureC != nil || status.State.ReturnTemperatureC != nil {
-		t.Fatalf("pre-polling boiler status exposes cached temperatures: %+v", status)
+	if status == nil || status.State.FlowTemperatureC != nil {
+		t.Fatalf("pre-polling boiler status exposes cached flow: %+v", status)
+	}
+	if got := status.State.ReturnTemperatureC; got == nil || *got != 88 {
+		t.Fatalf("pre-polling legacy return=%v, want cached 88", got)
 	}
 	if status.State.DhwTemperatureC == nil || *status.State.DhwTemperatureC != 45 {
 		t.Fatal("unrelated cached boiler field lost")
@@ -217,8 +220,11 @@ func TestM15RestartWithholdsCachedTemperaturesUntilFreshObservation(t *testing.T
 	pub.attempt = nil
 	poller := &vaillantSemanticPoller{provider: provider, boilerAddress: 0x36, boilerThermal: pub}
 	poller.hydrateFromCache(snapshot)
-	if poller.boiler == nil || poller.boiler.FlowTemperatureC != nil || poller.boiler.ReturnTemperatureC != nil {
-		t.Fatal("hydration restored provenance-free temperatures")
+	if poller.boiler == nil || poller.boiler.FlowTemperatureC != nil {
+		t.Fatal("hydration restored provenance-free flow")
+	}
+	if got := poller.boiler.ReturnTemperatureC; got == nil || *got != 88 {
+		t.Fatalf("hydrated legacy return=%v, want cached 88", got)
 	}
 	poller.publishBoilerStatus(semanticSnapshotSourceCache)
 	view, err := pub.hub.Inspect(pub.binding.Identity.Asset)
@@ -227,6 +233,9 @@ func TestM15RestartWithholdsCachedTemperaturesUntilFreshObservation(t *testing.T
 	}
 	if len(view.Snapshot.Facts) != 0 || pub.good != nil || provider.BoilerStatus().State.FlowTemperatureC != nil {
 		t.Fatal("cache seeded a flow candidate or retained observation")
+	}
+	if got := provider.BoilerStatus().State.ReturnTemperatureC; got == nil || *got != 88 {
+		t.Fatalf("cache publication legacy return=%v, want cached 88", got)
 	}
 	poller.retainBoilerThermalRead(protocol.Frame{FrameType: protocol.FrameTypeInitiatorTarget, Source: 0x31, Target: 0x36, Primary: 0xb5, Secondary: 9, Data: fresh.Request}, &protocol.Frame{Data: fresh.Reply}, nil)
 	poller.publishBoilerStatus(semanticSnapshotSourceLive)
@@ -240,8 +249,8 @@ func TestM15RestartWithholdsCachedTemperaturesUntilFreshObservation(t *testing.T
 	if len(view.Snapshot.Facts) != 1 || len(view.Snapshot.Facts[0].Candidates) != 1 || pub.good == nil {
 		t.Fatal("fresh qualified observation did not publish a flow candidate")
 	}
-	if provider.BoilerStatus().State.ReturnTemperatureC != nil {
-		t.Fatal("fresh flow restored cached return temperature")
+	if got := provider.BoilerStatus().State.ReturnTemperatureC; got == nil || *got != 88 {
+		t.Fatalf("fresh flow changed legacy return=%v, want cached 88", got)
 	}
 }
 

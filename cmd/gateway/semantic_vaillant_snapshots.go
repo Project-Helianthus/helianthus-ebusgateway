@@ -480,6 +480,8 @@ func (p *vaillantSemanticPoller) hydrateFromCache(snapshot semanticCacheSnapshot
 	}
 	if snapshot.Boiler != nil {
 		p.boiler = boilerSnapshotFromGraphQL(snapshot.Boiler)
+		// Cache hydration preserves legacy return independently of B524 decoding.
+		p.boiler.ReturnTemperatureC = cloneFloat64Ptr(snapshot.Boiler.State.ReturnTemperatureC)
 	}
 	semanticZoneCount.Set(int64(len(p.zones)))
 }

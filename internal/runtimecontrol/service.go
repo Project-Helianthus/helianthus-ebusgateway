@@ -551,6 +551,13 @@ func (s *Service) publishWithheld(catalog ControlCatalog, readable bool) {
 	}
 	for _, id := range s.order {
 		rec := records[id]
+		if !readable {
+			// The store can still expose configured eligibility and any
+			// last-known intent when its catalog is unavailable.
+			if stored, err := s.store.Driver(id); err == nil {
+				rec = stored
+			}
+		}
 		desired := rec.DesiredState
 		if desired == "" {
 			desired = DesiredStopped
@@ -713,6 +720,14 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 		return DesiredView{}, &Refusal{Code: RefusalNotFound, Row: 2, Reason: "driver id noncanonical or not registered"}
 	}
 	if !s.running() {
+		catalog, err := s.store.Catalog()
+		var refusal *Refusal
+		if errors.As(err, &refusal) && refusal.Code == RefusalFailedPrecondition {
+			return DesiredView{}, refusal
+		}
+		if err == nil && catalog.ReadOnly {
+			return DesiredView{}, &Refusal{Code: RefusalFailedPrecondition, Row: 3, Reason: "control state is read-only"}
+		}
 		return DesiredView{}, &Refusal{Code: RefusalUnavailable, Row: 3, Reason: "control service not running"}
 	}
 	if !s.store.AdmissionOpen() {

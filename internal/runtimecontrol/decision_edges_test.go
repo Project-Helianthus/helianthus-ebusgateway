@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,8 +368,11 @@ func TestP10TwoResolverAcceptanceOrdering(t *testing.T) {
 		p.record.DesiredState = DesiredRunning
 		p.record.DesiredRevision++
 		d := svc.drivers[p.record.DriverID]
+		d.mu.Lock()
 		d.deciding = 1
 		d.ambiguous = &ambiguousDecision{method: MethodStart, expected: revision}
+		d.ambiguousHeld.Store(true)
+		d.mu.Unlock()
 	}
 	a.revision++
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -520,5 +524,92 @@ func TestP10RecoveredCleanupCorrelation(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// The second clock read after Start returns is the deadline revalidation in
+// settle's callback, while d.mu is held, immediately before stageObservation.
+func TestP10StartSettlementConcurrentPublication(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("typed-%t", typed), func(t *testing.T) {
+			const id DriverID = "family.alpha"
+			store := &p10Store{record: ControlRecord{DriverID: id, Enabled: true, HasRecord: true, DesiredState: DesiredRunning, DesiredRevision: 11}, revision: 1}
+			exec := &fakeExec{}
+			svc, err := New(Options{Store: store, Recovery: &fakeRecovery{}, Incarnation: "synthetic", Drivers: []DriverConfig{{DriverID: id, Executor: exec}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.ctx, svc.cancel = context.WithCancel(context.Background())
+			// Cancel without taking driver locks even if the watchdog finds a
+			// deadlock. Close is checked after both goroutines finish below.
+			t.Cleanup(svc.cancel)
+			if !svc.commitView(svc.ctx, nil, false) {
+				t.Fatal("initial publication failed")
+			}
+			settling, resumeSettlement := make(chan struct{}), make(chan struct{})
+			publishing, resumePublication := make(chan struct{}), make(chan struct{})
+			var releaseSettlement, releasePublication sync.Once
+			unblockSettlement := func() { releaseSettlement.Do(func() { close(resumeSettlement) }) }
+			unblockPublication := func() { releasePublication.Do(func() { close(resumePublication) }) }
+			t.Cleanup(unblockSettlement)
+			t.Cleanup(unblockPublication)
+			var returned atomic.Bool
+			var clockReads atomic.Int32
+			svc.now = func() time.Time {
+				if returned.Load() && clockReads.Add(1) == 2 {
+					close(settling)
+					<-resumeSettlement
+				}
+				return time.Now()
+			}
+			exec.setStart(func(context.Context, LifecycleCorrelation) error {
+				returned.Store(true)
+				return nil
+			})
+			d := svc.drivers[id]
+			settled := make(chan struct{})
+			go func() {
+				defer close(settled)
+				if typed {
+					transition := Transition{Kind: KindStart, Phase: PhaseActive, Epoch: "synthetic.start", Generation: 1, DesiredRevision: 11, Sequence: 1, NativeClosePending: true, SemanticCleanupPending: true, DeadlineUTC: time.Now().Add(svc.budget)}
+					store.mu.Lock()
+					store.record.Current = &transition
+					store.mu.Unlock()
+					a := svc.newAttempt(svc.corr(d, transition), transition.DeadlineUTC, transition.Sequence)
+					defer a.cancel()
+					svc.runTypedAttempt(d, transition, a)
+				} else {
+					svc.runUntyped(d)
+				}
+			}()
+			p10Wait(t, settling)
+			store.mu.Lock()
+			store.catalogBarrier = func() {
+				// publish owns viewMu; settlement already owns d.mu.
+				close(publishing)
+				<-resumePublication
+			}
+			store.mu.Unlock()
+			published := make(chan struct{})
+			go func() {
+				defer close(published)
+				svc.publish(nil)
+			}()
+			p10Wait(t, publishing)
+			unblockSettlement()
+			unblockPublication()
+			p10Wait(t, published)
+			p10Wait(t, settled)
+			view, err := svc.Get(id)
+			if err != nil || view.ObservedState != drivermanager.ObservedRunning {
+				t.Fatalf("settled view = %+v, error = %v", view, err)
+			}
+			if exec.count("start") != 1 {
+				t.Fatalf("starts = %d", exec.count("start"))
+			}
+			closed := make(chan struct{})
+			go func() { svc.Close(); close(closed) }()
+			p10Wait(t, closed)
+		})
 	}
 }

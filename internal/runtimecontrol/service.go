@@ -177,6 +177,7 @@ type driverState struct {
 	exec LifecycleExecutor
 	wake chan struct{}
 
+	// Lock order: mu before Service.viewMu when both are needed.
 	mu   sync.Mutex
 	cond *sync.Cond
 	// deciding counts decisions whose planner ran for this driver and that
@@ -188,7 +189,10 @@ type driverState struct {
 	// ambiguous retains a planned decision whose commit outcome is unknown.
 	// Its deciding count stays raised (the hold) until resolveAmbiguous
 	// reads the committed record after admission reopened.
-	ambiguous       *ambiguousDecision
+	ambiguous *ambiguousDecision
+	// ambiguousHeld mirrors ambiguous != nil for publication without mu.
+	// Update both under mu; viewMu holders must never acquire mu.
+	ambiguousHeld   atomic.Bool
 	pruning         bool
 	untyped         *attempt
 	inflight        *attempt
@@ -230,6 +234,7 @@ type Service struct {
 	order   []DriverID
 	events  *eventLog
 
+	// viewMu follows driverState.mu; never acquire a driver lock while held.
 	viewMu   sync.Mutex
 	observed map[DriverID]observation
 	// pendingEv holds committed-in-memory events whose view publication
@@ -446,15 +451,15 @@ func (s *Service) start(ctx context.Context) error {
 		}
 	}
 
-	s.viewMu.Lock()
 	for _, id := range s.order {
 		d := s.drivers[id]
 		d.mu.Lock()
 		blocked := d.recoveryBlocked
 		d.mu.Unlock()
+		s.viewMu.Lock()
 		s.observed[id] = initialObservation(records[id], blocked)
+		s.viewMu.Unlock()
 	}
-	s.viewMu.Unlock()
 	if !s.commitView(s.ctx, nil, true) {
 		s.report(fmt.Errorf("%w: initial view not committed", ErrServiceState))
 	}
@@ -728,6 +733,7 @@ func (s *Service) Decide(ctx context.Context, method Method, req Request) (Desir
 			// concurrently); otherwise the readback resolver settles it.
 			d.mu.Lock()
 			d.ambiguous = &ambiguousDecision{method: method, expected: req.ExpectedRevision, fence: fence}
+			d.ambiguousHeld.Store(true)
 			d.mu.Unlock()
 			if s.store.AdmissionOpen() {
 				s.resolveAmbiguous([]*driverState{d})
@@ -850,6 +856,7 @@ func (s *Service) releaseDecision(d *driverState, fence bool) {
 		}
 	}
 	d.ambiguous = nil
+	d.ambiguousHeld.Store(false)
 	d.deciding--
 	d.cond.Broadcast()
 	d.mu.Unlock()
@@ -1225,10 +1232,7 @@ func (s *Service) publish(events []Event) bool {
 	for i := range built.Drivers {
 		entry := &built.Drivers[i]
 		d := s.drivers[entry.DriverID]
-		d.mu.Lock()
-		held := d.ambiguous != nil
-		d.mu.Unlock()
-		if !held {
+		if !d.ambiguousHeld.Load() {
 			continue
 		}
 		accepted := false

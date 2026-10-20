@@ -186,7 +186,7 @@ func TestM15SnapshotExcludesMirrorAndCache(t *testing.T) {
 	}
 }
 
-func TestM15RestartWithholdsCachedFlowPreservesLegacyReturn(t *testing.T) {
+func TestM15RestartWithholdsCachedFlowKeepsLegacyReturnUntilFirstMerge(t *testing.T) {
 	store := newSemanticCacheStore(filepath.Join(t.TempDir(), "semantic-cache.json"), t.Logf)
 	if err := store.writeV3(semanticCacheV3{
 		SchemaVersion: semanticCacheSchemaVersionV3,
@@ -251,6 +251,29 @@ func TestM15RestartWithholdsCachedFlowPreservesLegacyReturn(t *testing.T) {
 	}
 	if got := provider.BoilerStatus().State.ReturnTemperatureC; got == nil || *got != 88 {
 		t.Fatalf("fresh flow changed legacy return=%v, want cached 88", got)
+	}
+	// The first boiler merge retains the pre-existing legacy return behavior:
+	// even an unrelated successful read clears the restored return value.
+	poller.boiler = mergeBoilerSnapshotNonDestructive(poller.boiler, &vaillantBoilerSnapshot{WaterPressureBar: m15Float(1.5)})
+	if poller.boiler.ReturnTemperatureC != nil {
+		t.Fatal("first boiler merge retained cached legacy return")
+	}
+	if got := poller.boiler.WaterPressureBar; got == nil || *got != 1.5 {
+		t.Fatalf("merged water pressure=%v, want 1.5", got)
+	}
+	poller.publishBoilerStatus(semanticSnapshotSourceLive)
+	if provider.BoilerStatus().State.ReturnTemperatureC != nil {
+		t.Fatal("first boiler merge still serves cached legacy return")
+	}
+	if got := provider.BoilerStatus().State.FlowTemperatureC; got == nil || *got != 50 {
+		t.Fatalf("flow after first boiler merge=%v error=%v", got, pub.lastError)
+	}
+	view, err = pub.hub.Inspect(pub.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Snapshot.Facts) != 1 || len(view.Snapshot.Facts[0].Candidates) != 1 || !reflect.DeepEqual(view.Snapshot.Facts[0].Candidates[0].Key, boilerThermalKey()) || pub.good == nil {
+		t.Fatal("first boiler merge changed qualified flow publication or emitted a return fact")
 	}
 }
 

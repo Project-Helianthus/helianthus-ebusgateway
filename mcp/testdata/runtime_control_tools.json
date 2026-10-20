@@ -1,0 +1,107 @@
+{
+  "tools": [
+    {
+      "description": "List every registered runtime driver from one coherent cached view, sorted by driver_id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "helianthus.runtime.list"
+    },
+    {
+      "description": "Get one registered runtime driver from the coherent cached view.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "DriverID": {
+            "description": "Canonical configured driver identity.",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "DriverID"
+        ],
+        "type": "object"
+      },
+      "name": "helianthus.runtime.get"
+    },
+    {
+      "description": "Request desired RUNNING for one driver. Answers after durable acceptance with desired state and revision only; observe completion through list or get.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "DriverID": {
+            "description": "Canonical configured driver identity.",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "ExpectedRevision": {
+            "description": "The driver's desired_revision read back from list or get: a canonical nonzero unsigned 64-bit decimal string.",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "DriverID",
+          "ExpectedRevision"
+        ],
+        "type": "object"
+      },
+      "name": "helianthus.runtime.start"
+    },
+    {
+      "description": "Request desired STOPPED for one driver. Answers after durable acceptance with desired state and revision only; observe completion through list or get.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "DriverID": {
+            "description": "Canonical configured driver identity.",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "ExpectedRevision": {
+            "description": "The driver's desired_revision read back from list or get: a canonical nonzero unsigned 64-bit decimal string.",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "DriverID",
+          "ExpectedRevision"
+        ],
+        "type": "object"
+      },
+      "name": "helianthus.runtime.stop"
+    },
+    {
+      "description": "Request one replacement of a driver whose desired state is RUNNING. Every accepted call takes a new desired revision; after a lost response, read back before retrying.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "DriverID": {
+            "description": "Canonical configured driver identity.",
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "ExpectedRevision": {
+            "description": "The driver's desired_revision read back from list or get: a canonical nonzero unsigned 64-bit decimal string.",
+            "pattern": "^[1-9][0-9]{0,19}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "DriverID",
+          "ExpectedRevision"
+        ],
+        "type": "object"
+      },
+      "name": "helianthus.runtime.restart"
+    }
+  ]
+}

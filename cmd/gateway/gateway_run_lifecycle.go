@@ -631,7 +631,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver,
+			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver, control,
 		)
 	}
 	// Keep the control plane alive through final transport retirement. The main

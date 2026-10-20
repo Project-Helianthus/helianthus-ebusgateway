@@ -526,6 +526,9 @@ type Server struct {
 	synchronizedEvidenceCapture SynchronizedEvidenceCapture
 	leafPromotionCapture        LeafPromotionCapture
 	serverVersion               string
+	runtimeControlMu            sync.RWMutex
+	runtimeControl              RuntimeControlService
+	runtimeControlRegistered    bool
 
 	tools []Tool
 
@@ -1120,6 +1123,13 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 	}
 	if !s.hasToolNamed(rawCall.Name) {
 		return nil, rpcErrorInvalidParams(fmt.Sprintf("unknown tool %q", rawCall.Name))
+	}
+	if isRuntimeControlTool(rawCall.Name) {
+		// Lifecycle tools refuse duplicate, missing, additional and
+		// non-string members as a tool-level INVALID_ARGUMENT, so they read
+		// the raw arguments before the generic duplicate-key rejection and
+		// before any decoding into a map could discard a member.
+		return s.handleRuntimeControlRawCall(ctx, rawCall.Name, rawCall.Arguments, hasDuplicateKeys), nil
 	}
 	if spec, ok := eebusV1CommandSpecForName(rawCall.Name); ok {
 		if hasDuplicateKeys {

@@ -137,6 +137,7 @@ func TestSemanticStorageErrorsUseStoragePathAndPreoperationErrorsAreNeutral(t *t
 	}
 	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
 	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
+	assertM2MStorageSuccess(t, quota, storageRequest(semanticStorageContractID, "asset:storage-test"))
 	// The request budget is now spent before the body is read, so a refused
 	// host is answered before its operation is known: the refusal is a
 	// neutral pre-operation error with an empty path and it precedes every
@@ -188,15 +189,15 @@ func TestM2MHandlerRateLimitIsKeyedByRemoteHost(t *testing.T) {
 		}
 		return "ok"
 	}
-	// Host 192.0.2.10 spends its two tokens on different source ports; the
-	// port is not part of the key, so a third connection is limited.
-	got := []string{serve("192.0.2.10:40001"), serve("192.0.2.10:40002"), serve("192.0.2.10:40003")}
+	// Host 192.0.2.10 spends its three tokens on different source ports; the
+	// port is not part of the key, so a fourth connection is limited.
+	got := []string{serve("192.0.2.10:40001"), serve("192.0.2.10:40002"), serve("192.0.2.10:40003"), serve("192.0.2.10:40004")}
 	// Exhaust an IPv6 host across ports too, then verify that another IPv6
 	// host has its own budget. Collapsing IPv6 hosts into one key must fail.
 	got = append(got, serve("192.0.2.11:40001"),
-		serve("[2001:db8::1]:40001"), serve("[2001:db8::1]:40002"), serve("[2001:db8::1]:40003"),
+		serve("[2001:db8::1]:40001"), serve("[2001:db8::1]:40002"), serve("[2001:db8::1]:40003"), serve("[2001:db8::1]:40004"),
 		serve("[2001:db8::2]:40001"))
-	want := []string{"ok", "ok", "limited", "ok", "ok", "ok", "limited", "ok"}
+	want := []string{"ok", "ok", "ok", "limited", "ok", "ok", "ok", "ok", "limited", "ok"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("per-remote-host admission=%v want=%v", got, want)
 	}

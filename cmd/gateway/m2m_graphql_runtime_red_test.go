@@ -169,9 +169,7 @@ func TestM2MGraphQLRuntime_NoCertificateClientReachesGraphQLAndAllowListStillFil
 	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-other"); code != "ASSET_FORBIDDEN" {
 		t.Fatalf("certificate client bypassed the asset allow-list: code=%q", code)
 	}
-	// Admission now precedes body parsing, so the two forbidden requests above
-	// spent this loopback host's two tokens; wait for one refill.
-	time.Sleep(1100 * time.Millisecond)
+	// The two forbidden requests spent two tokens; the third remains available.
 	if code := m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"); code != "SOURCE_UNAVAILABLE" {
 		t.Fatalf("certificate-less client did not reach the GraphQL handler: code=%q", code)
 	}
@@ -189,16 +187,17 @@ func TestM2MGraphQLRuntime_RateLimitIsKeyedByRemoteAddressNotCertificate(t *test
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	// One remote host holds two request tokens refilled once per second. A
+	// One remote host holds three request tokens refilled once per second. A
 	// certificate client and a certificate-less client from the same host on
 	// separate connections share that budget.
 	codes := []string{
 		m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-known"),
 		m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"),
 		m2mPVErrorCode(t, runtime.Addr(), certs.pool, certs.goodClient, "pv-asset-known"),
+		m2mPVErrorCode(t, runtime.Addr(), certs.pool, tls.Certificate{}, "pv-asset-known"),
 	}
-	if codes[0] != "SOURCE_UNAVAILABLE" || codes[1] != "SOURCE_UNAVAILABLE" || codes[2] != "REQUEST_LIMIT_EXCEEDED" {
-		t.Fatalf("remote-address budget codes=%v; want two admitted then REQUEST_LIMIT_EXCEEDED", codes)
+	if codes[0] != "SOURCE_UNAVAILABLE" || codes[1] != "SOURCE_UNAVAILABLE" || codes[2] != "SOURCE_UNAVAILABLE" || codes[3] != "REQUEST_LIMIT_EXCEEDED" {
+		t.Fatalf("remote-address budget codes=%v; want three admitted then REQUEST_LIMIT_EXCEEDED", codes)
 	}
 }
 
@@ -380,6 +379,7 @@ func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	fs := flag.NewFlagSet("m2m-graphql", flag.ContinueOnError)
 	bindFlags(fs, &cfg)
+	deniedFingerprint := m2mCertificateFingerprint([]byte("synthetic denied certificate"))
 	err := fs.Parse([]string{
 		"-m2m-graphql-listen=127.0.0.1:8443",
 		"-m2m-graphql-server-name=m2m.gateway.test",
@@ -387,7 +387,7 @@ func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
 		"-m2m-graphql-server-cert=/run/secrets/server.pem",
 		"-m2m-graphql-server-key=/run/secrets/server-key.pem",
 		"-m2m-graphql-allowed-assets=pv-b,pv-a",
-		"-m2m-graphql-denied-principals=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"-m2m-graphql-denied-principals=" + strings.ToUpper(deniedFingerprint),
 	})
 	if err != nil {
 		t.Fatalf("parse M2M GraphQL flags: %v", err)
@@ -396,7 +396,7 @@ func TestM2MGraphQLFlags_WireDedicatedListenerConfiguration(t *testing.T) {
 	if got.ListenAddr != "127.0.0.1:8443" || got.ServerName != "m2m.gateway.test" ||
 		got.ClientCAFile != "/run/secrets/client-ca.pem" || got.ServerCertFile != "/run/secrets/server.pem" ||
 		got.ServerKeyFile != "/run/secrets/server-key.pem" || len(got.AllowedAssets) != 2 || got.AllowedAssets[0] != "pv-a" ||
-		len(got.DeniedPrincipalFingerprints) != 1 || got.DeniedPrincipalFingerprints[0] != strings.Repeat("a", 64) {
+		len(got.DeniedPrincipalFingerprints) != 1 || got.DeniedPrincipalFingerprints[0] != deniedFingerprint {
 		t.Fatalf("M2M GraphQL flag config=%+v", got)
 	}
 }
@@ -799,7 +799,6 @@ func TestCharacterizationM2MGraphQLOfAllThreeFamilies(t *testing.T) {
 	}
 	characterizationGolden(t, "m2m", "pv.json", body(client(families.pvAsset).Current(context.Background())))
 	characterizationGolden(t, "m2m", "storage.json", body(client(storageAsset).StorageCurrent(context.Background())))
-	// One remote host holds two request tokens refilled once per second.
-	time.Sleep(1100 * time.Millisecond)
+	// The third family read fits the same host's three-token burst.
 	characterizationGolden(t, "m2m", "evse.json", body(client(families.tesla.cfg.AssetID).EVSECurrent(context.Background())))
 }

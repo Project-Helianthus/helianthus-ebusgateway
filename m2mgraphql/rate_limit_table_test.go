@@ -125,8 +125,11 @@ func TestM2MRateLimitLRUVictimIsLeastRecentlyUsedKey(t *testing.T) {
 			t.Fatalf("recently used %s was evicted instead of the LRU key", key)
 		}
 	}
-	// Single-host behaviour is unchanged: .1 has spent both tokens.
-	if got := serveStorageFrom(t, h, "192.0.2.1:40003"); got != "limited" {
+	// The surviving host retains its remaining third token, not a fresh budget.
+	if got := serveStorageFrom(t, h, "192.0.2.1:40003"); got != "ok" {
+		t.Fatalf("surviving host third token=%s want ok", got)
+	}
+	if got := serveStorageFrom(t, h, "192.0.2.1:40004"); got != "limited" {
 		t.Fatalf("surviving host budget=%s want limited", got)
 	}
 }
@@ -136,11 +139,11 @@ func TestM2MRateLimitEvictedHostReturnsWithFreshBudget(t *testing.T) {
 	var now atomic.Int64
 	h := newRateLimitTableHandler(t, &now)
 	h.limitCapacity = 2
-	got := []string{serveStorageFrom(t, h, "[2001:db8::1]:1"), serveStorageFrom(t, h, "[2001:db8::1]:2"), serveStorageFrom(t, h, "[2001:db8::1]:3")}
+	got := []string{serveStorageFrom(t, h, "[2001:db8::1]:1"), serveStorageFrom(t, h, "[2001:db8::1]:2"), serveStorageFrom(t, h, "[2001:db8::1]:3"), serveStorageFrom(t, h, "[2001:db8::1]:4")}
 	serveStorageFrom(t, h, "[2001:db8::2]:1")
 	serveStorageFrom(t, h, "[2001:db8::3]:1") // evicts 2001:db8::1
-	got = append(got, serveStorageFrom(t, h, "[2001:db8::1]:4"))
-	want := []string{"ok", "ok", "limited", "ok"}
+	got = append(got, serveStorageFrom(t, h, "[2001:db8::1]:5"))
+	want := []string{"ok", "ok", "ok", "limited", "ok"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("evicted host admission=%v want=%v", got, want)
 	}

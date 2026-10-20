@@ -45,14 +45,14 @@ const (
 // HTTP server already bounds, and the next insertion of a new key trims it
 // back to capacity once those requests are released. rateLimitIdleMillis is
 // the idle window after which an untouched entry is evicted. Any entry idle
-// for longer than two refill intervals is already back at its full budget, so
+// for longer than three refill intervals is already back at its full budget, so
 // idle eviction cannot change admission; only LRU eviction under pressure can,
 // and it can only grant a returning idle key a fresh budget, never deny one.
 // Explicit in-process partitions ("key:") share the same table and policy.
 const (
 	rateLimitTableCapacity = 4096
 	rateLimitIdleMillis    = 60_000
-	rateLimitBurst         = 2
+	rateLimitBurst         = 3
 	rateLimitRefillMillis  = 1000
 )
 

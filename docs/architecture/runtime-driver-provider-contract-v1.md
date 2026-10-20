@@ -871,7 +871,7 @@ event that the published view no longer shows (because a newer observation
 of the same driver is staged and has its own event) is coalesced away rather
 than stamped with the newer view's revision. When control state is read-only
 at start, every driver is withheld as `FAILED`, but the view keeps the stored
-catalog revision and each stored desired revision unchanged. An event carries the driver ID, its kind, the catalog revision,
+catalog revision and each stored desired revision unchanged. Durable withholding refuses lifecycle mutations with non-retriable `FAILED_PRECONDITION` carrying the withholding reason, transient store conditions retain retriable `UNAVAILABLE`, and the withheld view preserves configured enabled state and available durable desired intent independently of service startup. An event carries the driver ID, its kind, the catalog revision,
 desired state and revision, observed state, reason, the quarantine flag and
 the lifecycle correlation (source epoch and driver generation) the observation
 refers to; an accepted decision carries the driver's correlation at

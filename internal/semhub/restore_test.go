@@ -596,6 +596,13 @@ func TestRecoveryEpochsCannotBeReadmitted(t *testing.T) {
 			switch material {
 			case "cursors":
 				record.Epochs = nil
+				for _, entry := range record.Assets {
+					for _, accepted := range entry.Accepted {
+						if source, valid := recoveryPublishedSource(entry, accepted); !valid || source != "source:restore" {
+							t.Fatal("valid envelope lost actual source ownership")
+						}
+					}
+				}
 			case "history":
 				record = recoveryHub(t, nil, nil).ExportRecovery()
 				record.Epochs = hub.ExportRecovery().Epochs
@@ -1719,4 +1726,602 @@ func TestRecoveryExportDuringRestoreIsNotACheckpoint(t *testing.T) {
 	if complete := fresh.ExportRecovery(); complete.Version != 1 || len(complete.Assets) != len(record.Assets) {
 		t.Fatal("export after the restore must be complete again")
 	}
+}
+
+// p06Refuse checks installation side effects independently of the returned error.
+func p06Refuse(t *testing.T, record RecoveryRecord) {
+	t.Helper()
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	owners := make(map[string]idOwner, len(fresh.ids))
+	for id, owner := range fresh.ids {
+		owners[id] = owner
+	}
+	err := fresh.Restore(record)
+	if !reflect.DeepEqual(owners, fresh.ids) || len(fresh.restoredEpochs) != 0 || len(fresh.restoredRegimes) != 0 || len(fresh.epochHistory) != 0 {
+		t.Error("refusal installed ownership, regime or epoch reservation")
+	}
+	for _, src := range fresh.sources {
+		if len(src.epochs) != 0 || src.admission != 0 {
+			t.Error("refusal reserved source epoch or admission")
+		}
+	}
+	for _, id := range recoveryAssets {
+		_ = fresh.Resettle(id)
+		view, _ := fresh.Inspect(id)
+		if view.Present || fresh.Readable(id) || fresh.ReadAdmitted(id) || fresh.Settled(id) {
+			t.Errorf("refusal reopened or installed %s", id)
+		}
+	}
+	if !errors.Is(err, ErrRestore) {
+		t.Fatalf("corruption accepted: %v", err)
+	}
+}
+
+func TestP06MissingFenceControl(t *testing.T) {
+	for _, id := range recoveryAssets {
+		for _, outcome := range []string{"pending", "rejected"} {
+			t.Run(string(id)+"/"+outcome, func(t *testing.T) {
+				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+				var once sync.Once
+				hub, handle := populatedRecoveryHub(t, &RecoveryHooks{BeforeControl: func(ControlAttempt) error {
+					if outcome == "pending" {
+						once.Do(func() { close(entered); <-release })
+					}
+					return errors.New("synthetic refusal")
+				}})
+				var record RecoveryRecord
+				if outcome == "pending" {
+					go func() { done <- fenceRecovery(t, hub, handle) }()
+					select {
+					case <-entered:
+					case <-time.After(5 * time.Second):
+						close(release)
+						select {
+						case <-done:
+						case <-time.After(5 * time.Second):
+							t.Fatal("fence did not join after watchdog release")
+						}
+						t.Fatal("fence did not reach pending export")
+					}
+					record = hub.ExportRecovery()
+					close(release)
+					select {
+					case err := <-done:
+						if err == nil {
+							t.Fatal("fixture fence must be refused")
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("fence did not join after release")
+					}
+				} else {
+					if err := fenceRecovery(t, hub, handle); err == nil {
+						t.Fatal("fixture fence must be refused")
+					}
+					record = hub.ExportRecovery()
+				}
+				positive := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+				if err := positive.Restore(record); err != nil {
+					t.Fatalf("intact control refused: %v", err)
+				}
+				for i := range record.Assets {
+					if record.Assets[i].Asset == id {
+						record.Assets[i].Control = nil
+					}
+				}
+				p06Refuse(t, record)
+			})
+		}
+	}
+}
+
+func TestP06PriorExactAdmission(t *testing.T) {
+	for _, kind := range []EventKind{EventGenerationActivated, EventGenerationFenced, EventGenerationRevoked, EventSourceRetired} {
+		for _, field := range []string{"source", "epoch", "incarnation", "order"} {
+			for _, generation := range []uint64{1, 2} {
+				t.Run(fmt.Sprintf("%s/%s/generation-%d", kind, field, generation), func(t *testing.T) {
+					hub, _ := populatedRecoveryHub(t, nil)
+					admitLegacy(t, hub, "source:other", "other-family", "epoch:other", 1)
+					record := hub.ExportRecovery()
+					event := record.Epochs[0]
+					event.Kind, event.Generation, event.Assets = kind, generation, nil
+					switch field {
+					case "source":
+						event.Source = "source:other"
+					case "epoch":
+						event.Epoch = "epoch:other"
+					case "incarnation":
+						event.Incarnation = "incarnation:other"
+					}
+					admission := event
+					admission.Kind = EventEpochAdmitted
+					valid := record
+					valid.Epochs = append(append(append([]EpochRecord(nil), record.Epochs...), admission), event)
+					positive := recoveryHub(t, nil, nil)
+					if err := positive.Restore(valid); err != nil {
+						t.Fatalf("exact prior admission refused: %v", err)
+					}
+					if field == "order" {
+						record.Epochs = append([]EpochRecord{event}, record.Epochs...)
+					} else {
+						record.Epochs = append(record.Epochs, event)
+					}
+					p06Refuse(t, record)
+				})
+			}
+		}
+	}
+}
+
+func TestP06DeclarationOwnershipBeforeInstall(t *testing.T) {
+	for _, assetID := range recoveryAssets {
+		for _, field := range []string{"source", "driver"} {
+			t.Run(string(assetID)+"/"+field, func(t *testing.T) {
+				hub, _ := populatedRecoveryHub(t, nil)
+				admitLegacy(t, hub, "source:assetless", "other-family", "epoch:assetless", 1)
+				record := hub.ExportRecovery()
+				if err := recoveryHub(t, nil, nil).Restore(record); err != nil {
+					t.Fatalf("valid ownership refused: %v", err)
+				}
+				for i := range record.Assets {
+					entry := &record.Assets[i]
+					if entry.Asset != assetID {
+						continue
+					}
+					if field == "source" {
+						entry.Source = "source:assetless"
+					} else {
+						entry.Driver = "other-family"
+						record.Drivers[entry.Source] = entry.Driver
+					}
+				}
+				// Driver claims also guard ownership; isolate this preflight check.
+				for _, entry := range record.Assets {
+					if entry.Asset == assetID && recoveryDeclarationMatches(hub.assets[assetID], entry) {
+						t.Fatal("declaration preflight accepted different ownership")
+					}
+				}
+				p06Refuse(t, record)
+			})
+		}
+	}
+}
+
+func TestP06PublishedOwnershipUsesBatch(t *testing.T) {
+	for _, field := range []string{"source", "asset", "digest"} {
+		t.Run(field, func(t *testing.T) {
+			hub, _ := populatedRecoveryHub(t, nil)
+			record := hub.ExportRecovery()
+			// Isolate publication-derived ownership from admission history.
+			record.Epochs = nil
+			if err := validateRecoveryHistory(record); err != nil {
+				t.Fatalf("publication ownership control: %v", err)
+			}
+			for i := range record.Assets {
+				entry := &record.Assets[i]
+				switch field {
+				case "source":
+					entry.Source = "source:forged"
+				case "asset":
+					entry.Asset = semreg.AssetID(fmt.Sprintf("asset:other-%d", i))
+				case "digest":
+					for j := range entry.Accepted {
+						var batch semreg.PublicationBatch
+						if err := json.Unmarshal(entry.Accepted[j].Batch, &batch); err != nil {
+							t.Fatal(err)
+						}
+						other := batch
+						other.Sequence = "99"
+						batch.BatchDigest, _ = other.ComputedDigest()
+						var err error
+						entry.Accepted[j].Batch, err = json.Marshal(batch)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			if field == "source" {
+				record.Regimes = map[semreg.SourceID]LegacyFamily{"source:forged": LegacyGrowattStorage}
+				record.Drivers = map[semreg.SourceID]string{"source:forged": "synthetic-family"}
+			}
+			for _, entry := range record.Assets {
+				for _, accepted := range entry.Accepted {
+					if _, valid := recoveryPublishedSource(entry, accepted); valid {
+						t.Fatal("publication ownership preflight accepted invalid envelope")
+					}
+				}
+			}
+			// Direct oracle isolates this guard from declaration/replay guards.
+			if err := validateRecoveryHistory(record); err == nil {
+				t.Fatal("invalid envelope manufactured published ownership")
+			}
+			p06Refuse(t, record)
+		})
+	}
+}
+
+func TestP06SuccessionOrdinalTrailingAndGap(t *testing.T) {
+	for _, kind := range []EventKind{EventGenerationActivated, EventGenerationFenced, EventGenerationRevoked, EventSourceRetired} {
+		t.Run("trailing-"+string(kind), func(t *testing.T) {
+			hub := recoveryHub(t, nil, nil)
+			initial := admitNativeAs(t, hub, "source:restore", "synthetic-family")
+			mustRetire(t, hub, initial, 1)
+			mustSucceed(t, hub, initial, "restart-1")
+			record := hub.ExportRecovery()
+			trailing := record.Epochs[len(record.Epochs)-1]
+			trailing.Kind, trailing.Ordinal = kind, 0
+			record.Epochs = append(record.Epochs, trailing)
+			if err := recoveryHub(t, nil, nil).Restore(record); err != nil {
+				t.Fatalf("valid trailing event refused: %v", err)
+			}
+			record.Epochs[len(record.Epochs)-1].Ordinal = 1
+			p06Refuse(t, record)
+		})
+	}
+	t.Run("middle-gap-1-to-3", func(t *testing.T) {
+		hub := recoveryHub(t, nil, nil)
+		initial := admitNativeAs(t, hub, "source:restore", "synthetic-family")
+		mustRetire(t, hub, initial, 1)
+		second := mustSucceed(t, hub, initial, "restart-1")
+		mustRetire(t, hub, second, 2)
+		mustSucceed(t, hub, second, "restart-2")
+		record := hub.ExportRecovery()
+		if err := recoveryHub(t, nil, nil).Restore(record); err != nil {
+			t.Fatalf("continuous ordinals refused: %v", err)
+		}
+		last := len(record.Epochs) - 1
+		record.Epochs[last-1].Ordinal, record.Epochs[last].Ordinal = 3, 3
+		record.Epochs[last].Epoch = successorEpoch(record.Epochs[last].Incarnation, record.Epochs[last].Source, 3)
+		p06Refuse(t, record)
+	})
+}
+
+func TestP06AcceptedTransitionFenceRoundTrip(t *testing.T) {
+	for _, id := range recoveryAssets {
+		t.Run(string(id), func(t *testing.T) {
+			hub, handle := populatedRecoveryHub(t, nil)
+			transitionGeneration(t, hub, handle, id, 3)
+			record := hub.ExportRecovery()
+			for _, entry := range record.Assets {
+				if entry.Asset == id && entry.Control != nil {
+					t.Fatal("initiating publication must not need a control gate")
+				}
+			}
+			fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+			if err := fresh.Restore(record); err != nil {
+				t.Fatalf("accepted transition refused: %v", err)
+			}
+			for _, asset := range recoveryAssets {
+				var canonical []byte
+				for _, entry := range record.Assets {
+					if entry.Asset == asset {
+						canonical = entry.Accepted[len(entry.Accepted)-1].Canonical
+					}
+				}
+				after, _ := fresh.Inspect(asset)
+				if !bytes.Equal(canonical, after.Canonical) {
+					t.Fatal("transition evidence changed")
+				}
+				if fresh.Readable(asset) {
+					t.Fatal("restore opened reads without fresh reprojection")
+				}
+			}
+		})
+	}
+}
+
+func TestP06AcceptedFenceExactCoverage(t *testing.T) {
+	for _, field := range []string{"asset", "source", "epoch", "incarnation", "generation"} {
+		t.Run(field, func(t *testing.T) {
+			hub, handle := populatedRecoveryHub(t, nil)
+			transitionGeneration(t, hub, handle, recoveryAssets[0], 3)
+			record := hub.ExportRecovery()
+			var entry RecoveryAsset
+			var epoch EpochRecord
+			for _, candidate := range record.Assets {
+				if candidate.Asset == recoveryAssets[0] {
+					entry = candidate
+				}
+			}
+			for _, candidate := range record.Epochs {
+				if candidate.Kind == EventGenerationFenced {
+					epoch = candidate
+					break
+				}
+			}
+			if !recoveryAcceptedFence(entry, epoch) {
+				t.Fatal("valid accepted fence lacks coverage")
+			}
+			switch field {
+			case "asset":
+				entry.Asset = recoveryAssets[1]
+			case "source":
+				epoch.Source = "source:other"
+			case "epoch":
+				epoch.Epoch = "epoch:other"
+			case "incarnation":
+				epoch.Incarnation = "incarnation:other"
+			case "generation":
+				epoch.Generation = 2
+			}
+			if recoveryAcceptedFence(entry, epoch) {
+				t.Fatal("accepted fence covered a different identity")
+			}
+		})
+	}
+}
+
+func TestP06AcceptedRetirementAfterRestart(t *testing.T) {
+	hub, handle := populatedRecoveryHub(t, nil)
+	fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := fresh.Restore(hub.ExportRecovery()); err != nil {
+		t.Fatal(err)
+	}
+	successor := admitLegacy(t, fresh, handle.Source(), "synthetic-family", "epoch:after-restart", 1)
+	for _, id := range recoveryAssets {
+		if err := fresh.Resettle(id); err != nil {
+			t.Fatal(err)
+		}
+		mustPublish(t, fresh, successor, id, "synthetic", 30, 4)
+	}
+	record := fresh.ExportRecovery()
+	retirements := 0
+	for _, epoch := range record.Epochs {
+		if epoch.Kind == EventSourceRetired && epoch.Epoch == handle.Epoch() {
+			retirements++
+			if epoch.Incarnation == hub.Incarnation() || epoch.Incarnation != fresh.Incarnation() {
+				t.Fatal("retirement must belong to the new incarnation")
+			}
+		}
+	}
+	if retirements != len(recoveryAssets) {
+		t.Fatalf("want one historical retirement per asset, got %d", retirements)
+	}
+	again := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+	if err := again.Restore(record); err != nil {
+		t.Fatalf("accepted historical retirements refused: %v", err)
+	}
+	for _, id := range recoveryAssets {
+		want, _ := fresh.Inspect(id)
+		got, _ := again.Inspect(id)
+		if !bytes.Equal(want.Canonical, got.Canonical) || again.Readable(id) {
+			t.Fatal("restart changed evidence or opened reads before reprojection")
+		}
+	}
+	t.Run("failed-asset-without-log", func(t *testing.T) {
+		failed := record
+		failed.Assets = append([]RecoveryAsset(nil), record.Assets...)
+		failed.Assets[0].Failed = true
+		failed.Assets[0].Accepted = nil
+		target := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		if err := target.Restore(failed); !errors.Is(err, ErrRestore) {
+			t.Fatalf("failed asset must report restore failure: %v", err)
+		}
+		id := failed.Assets[0].Asset
+		_ = target.Resettle(id)
+		view, _ := target.Inspect(id)
+		if view.Present || target.Readable(id) || target.ReadAdmitted(id) || target.Settled(id) {
+			t.Fatal("failed asset installed a snapshot or reopened")
+		}
+		other := failed.Assets[1].Asset
+		want, _ := fresh.Inspect(other)
+		got, _ := target.Inspect(other)
+		if !bytes.Equal(want.Canonical, got.Canonical) {
+			t.Fatal("failed asset prevented independent valid recovery")
+		}
+	})
+	for _, field := range []string{"source", "epoch", "incarnation", "asset", "accepted-incarnation", "digest", "missing-admission", "late-admission"} {
+		t.Run(field, func(t *testing.T) {
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var corrupt RecoveryRecord
+			if err := json.Unmarshal(raw, &corrupt); err != nil {
+				t.Fatal(err)
+			}
+			for i := range corrupt.Epochs {
+				epoch := &corrupt.Epochs[i]
+				if epoch.Kind != EventSourceRetired || epoch.Epoch != handle.Epoch() {
+					continue
+				}
+				switch field {
+				case "source":
+					epoch.Source = "source:other"
+				case "epoch":
+					epoch.Epoch = "epoch:other"
+				case "incarnation":
+					epoch.Incarnation = "incarnation:other"
+				case "asset":
+					epoch.Assets = []semreg.AssetID{"asset:other"}
+				}
+				break
+			}
+			if field == "missing-admission" || field == "late-admission" {
+				admission := corrupt.Epochs[0]
+				corrupt.Epochs = corrupt.Epochs[1:]
+				if field == "late-admission" {
+					corrupt.Epochs = append(corrupt.Epochs, admission)
+				}
+			}
+			if field == "accepted-incarnation" || field == "digest" {
+				entry := &corrupt.Assets[0]
+				accepted := &entry.Accepted[len(entry.Accepted)-1]
+				if field == "accepted-incarnation" {
+					accepted.Incarnation = "incarnation:other"
+				} else {
+					var batch semreg.PublicationBatch
+					if err := json.Unmarshal(accepted.Batch, &batch); err != nil {
+						t.Fatal(err)
+					}
+					batch.Sequence = "99"
+					accepted.Batch, err = json.Marshal(batch)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			p06Refuse(t, corrupt)
+		})
+	}
+}
+
+func TestP06FailedFencedAssetReexport(t *testing.T) {
+	origin, handle := populatedRecoveryHub(t, nil)
+	if err := fenceRecovery(t, origin, handle); err != nil {
+		t.Fatal(err)
+	}
+	record := origin.ExportRecovery()
+	record.Assets[0].Accepted[0].Canonical = []byte("corrupt")
+	failedID, validID := record.Assets[0].Asset, record.Assets[1].Asset
+	for round := 0; round < 2; round++ {
+		fresh := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+		err := fresh.Restore(record)
+		if !errors.Is(err, ErrRestore) || !bytes.Contains([]byte(err.Error()), []byte("asset "+string(failedID))) {
+			t.Fatalf("round %d: want per-asset failure, got %v", round, err)
+		}
+		_ = fresh.Resettle(failedID)
+		failed, _ := fresh.Inspect(failedID)
+		if failed.Present || fresh.Readable(failedID) || fresh.ReadAdmitted(failedID) || fresh.Settled(failedID) {
+			t.Fatal("failed asset installed evidence or reopened")
+		}
+		want, _ := origin.Inspect(validID)
+		got, _ := fresh.Inspect(validID)
+		if !bytes.Equal(want.Canonical, got.Canonical) {
+			t.Fatal("failed asset prevented independent recovery")
+		}
+		if err := fresh.Resettle(validID); err != nil || !fresh.Readable(validID) {
+			t.Fatalf("valid asset did not reproject: %v", err)
+		}
+		record = fresh.ExportRecovery()
+		if !record.Assets[0].Failed || record.Assets[0].Control != nil || len(record.Assets[0].Accepted) != 0 {
+			t.Fatal("failed asset must re-export without control or log")
+		}
+	}
+}
+
+func TestP06HistoricalControlAfterRestart(t *testing.T) {
+	for _, kind := range []ControlKind{ControlFence, ControlRetire} {
+		for _, outcome := range []string{"accepted", "pending", "rejected"} {
+			t.Run(string(kind)+"/"+outcome, func(t *testing.T) {
+				origin, handle := populatedRecoveryHub(t, nil)
+				var fresh *Hub
+				var pending RecoveryRecord
+				fresh = recoveryHub(t, &RecoveryHooks{BeforeControl: func(ControlAttempt) error {
+					if outcome == "pending" && pending.Version == 0 {
+						pending = fresh.ExportRecovery()
+					}
+					if outcome != "accepted" {
+						return errors.New("synthetic refusal")
+					}
+					return nil
+				}}, func(ControlEvent) error { return nil })
+				if err := fresh.Restore(origin.ExportRecovery()); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if kind == ControlFence {
+					err = fenceRecovery(t, fresh, handle)
+				} else {
+					_, err = fresh.RetireEpoch(RetireRequest{Source: handle.Source(), Epoch: handle.Epoch(), Reason: "semhubtest.stop",
+						Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.retire")}, ObservedAt: testWall(3), Monotonic: testMono(3)})
+				}
+				if (err == nil) != (outcome == "accepted") {
+					t.Fatalf("unexpected control outcome: %v", err)
+				}
+				record := fresh.ExportRecovery()
+				if outcome == "pending" {
+					record = pending
+				}
+				again := recoveryHub(t, nil, func(ControlEvent) error { return nil })
+				if err := again.Restore(record); err != nil {
+					t.Fatalf("historical control refused: %v", err)
+				}
+				for _, entry := range record.Assets {
+					got, _ := again.Inspect(entry.Asset)
+					if !bytes.Equal(got.Canonical, entry.Accepted[len(entry.Accepted)-1].Canonical) || again.Readable(entry.Asset) {
+						t.Fatal("restore changed evidence or opened reads")
+					}
+				}
+				for _, mutation := range []string{"missing-admission", "late-admission", "control-incarnation", "control-source", "control-epoch", "control-kind", "control-generation", "missing-control"} {
+					t.Run(mutation, func(t *testing.T) {
+						if outcome == "accepted" && mutation != "missing-admission" && mutation != "late-admission" {
+							return // Accepted evidence independently covers the event.
+						}
+						if kind == ControlRetire && mutation == "control-generation" {
+							return // Retirement targets every generation of the epoch.
+						}
+						raw, _ := json.Marshal(record)
+						var corrupt RecoveryRecord
+						if err := json.Unmarshal(raw, &corrupt); err != nil {
+							t.Fatal(err)
+						}
+						if mutation == "missing-admission" || mutation == "late-admission" {
+							admission := corrupt.Epochs[0]
+							corrupt.Epochs = corrupt.Epochs[1:]
+							if mutation == "late-admission" {
+								corrupt.Epochs = append(corrupt.Epochs, admission)
+							}
+						} else {
+							control := corrupt.Assets[0].Control
+							switch mutation {
+							case "missing-control":
+								corrupt.Assets[0].Control = nil
+							case "control-source":
+								control.Status.ID.Source = "source:other"
+							case "control-incarnation":
+								control.Status.ID.Incarnation = "incarnation:other"
+							case "control-epoch":
+								control.Epoch = "epoch:other"
+							case "control-kind":
+								control.Kind = "unknown"
+							case "control-generation":
+								control.Generation++
+							}
+						}
+						p06Refuse(t, corrupt)
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestP06AllFailedHistoricalRetirementReexport(t *testing.T) {
+	origin, handle := populatedRecoveryHub(t, nil)
+	restarted := recoveryHub(t, nil, nil)
+	if err := restarted.Restore(origin.ExportRecovery()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.RetireEpoch(RetireRequest{Source: handle.Source(), Epoch: handle.Epoch(), Reason: "semhubtest.stop",
+		Evidence: []semreg.EvidenceRef{testEvidence("semhubtest.retire")}, ObservedAt: testWall(3), Monotonic: testMono(3)}); err != nil {
+		t.Fatal(err)
+	}
+	record := restarted.ExportRecovery()
+	for i := range record.Assets {
+		record.Assets[i].Accepted[0].Canonical = []byte("corrupt")
+	}
+	for round := 0; round < 2; round++ {
+		fresh := recoveryHub(t, nil, nil)
+		err := fresh.Restore(record)
+		if !errors.Is(err, ErrRestore) {
+			t.Fatalf("want per-asset restore failures: %v", err)
+		}
+		for _, id := range recoveryAssets {
+			if !bytes.Contains([]byte(err.Error()), []byte("asset "+string(id))) {
+				t.Fatalf("missing per-asset failure for %s: %v", id, err)
+			}
+			_ = fresh.Resettle(id)
+			view, _ := fresh.Inspect(id)
+			if view.Present || fresh.Readable(id) || fresh.ReadAdmitted(id) || fresh.Settled(id) {
+				t.Fatal("failed asset installed evidence or reopened")
+			}
+		}
+		if !reflect.DeepEqual(record.Epochs, fresh.ExportRecovery().Epochs) {
+			t.Fatal("legitimate inert history was lost")
+		}
+		record = fresh.ExportRecovery()
+	}
+	record.Epochs = record.Epochs[1:]
+	p06Refuse(t, record)
 }

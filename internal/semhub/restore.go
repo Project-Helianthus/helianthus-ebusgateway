@@ -274,6 +274,12 @@ func (h *Hub) Restore(input RecoveryRecord) error {
 			h.failRestoreAssets(closure)
 			return fmt.Errorf("%w: missing or duplicate asset", ErrRestore)
 		}
+		if !recoveryDeclarationMatches(target, entry) {
+			closure := h.allRecoveryAssetsLocked(record)
+			h.mu.RUnlock()
+			h.failRestoreAssets(closure)
+			return fmt.Errorf("%w: asset declaration ownership", ErrRestore)
+		}
 		targets[i] = target
 		sources[target.source] = h.sources[target.source]
 	}
@@ -630,13 +636,29 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		}
 	}
 	history := map[semreg.SourceID]bool{}
+	type admissionKey struct {
+		source      semreg.SourceID
+		epoch       semreg.SourceEpochID
+		incarnation string
+	}
+	priorAdmissions := map[admissionKey]bool{}
+	priorEpochs := map[[2]string]bool{}
 	assets := map[semreg.AssetID]semreg.SourceID{}
+	entries := map[semreg.AssetID]RecoveryAsset{}
 	for _, entry := range record.Assets {
 		assets[entry.Asset] = entry.Source
+		entries[entry.Asset] = entry
 	}
 	for _, epoch := range record.Epochs {
 		if ValidateOpaque(epoch.Incarnation) != nil || ValidateOpaque(string(epoch.Source)) != nil || ValidateOpaque(string(epoch.Epoch)) != nil || epoch.Generation == 0 {
 			return errors.New("invalid epoch identity")
+		}
+		key := admissionKey{epoch.Source, epoch.Epoch, epoch.Incarnation}
+		if epoch.Kind == EventEpochAdmitted {
+			priorAdmissions[key] = true
+			priorEpochs[[2]string{string(epoch.Source), string(epoch.Epoch)}] = true
+		} else if !priorAdmissions[key] && (!priorEpochs[[2]string{string(epoch.Source), string(epoch.Epoch)}] || !recoveryHistoricalControl(entries, epoch)) {
+			return errors.New("epoch event without prior exact admission")
 		}
 		// A withdrawn first admission leaves history behind and returns the
 		// source to an unfixed regime, which the checkpoint must say explicitly.
@@ -655,6 +677,9 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 			return errors.New("invalid epoch event kind")
 		}
 		for i, id := range epoch.Assets {
+			if epoch.Kind == EventGenerationFenced && !entries[id].Failed && !recoveryControlMatches(entries[id].Control, epoch) && !recoveryAcceptedFence(entries[id], epoch) {
+				return errors.New("missing control for fenced asset")
+			}
 			if ValidateOpaque(string(id)) != nil || assets[id] != epoch.Source || i > 0 && id <= epoch.Assets[i-1] {
 				return errors.New("invalid epoch assets")
 			}
@@ -691,8 +716,10 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 	}
 	published := map[semreg.SourceID]bool{}
 	for _, entry := range record.Assets {
-		if len(entry.Accepted) > 0 {
-			published[entry.Source] = true
+		for _, accepted := range entry.Accepted {
+			if source, valid := recoveryPublishedSource(entry, accepted); valid {
+				published[source] = true
+			}
 		}
 	}
 	// A regime is fixed by an admission: its history, or the accepted
@@ -720,6 +747,91 @@ func validateRecoveryHistory(record RecoveryRecord) error {
 		}
 	}
 	return nil
+}
+
+func recoveryDeclarationMatches(target *asset, entry RecoveryAsset) bool {
+	return entry.Source == target.source && entry.Driver == target.driver
+}
+
+func recoveryPublishedSource(entry RecoveryAsset, accepted AcceptedBatch) (semreg.SourceID, bool) {
+	var batch semreg.PublicationBatch
+	if json.Unmarshal(accepted.Batch, &batch) != nil || batch.AssetID != entry.Asset || batch.SourceID != entry.Source {
+		return "", false
+	}
+	digest, err := batch.ComputedDigest()
+	if err != nil || digest != batch.BatchDigest {
+		return "", false
+	}
+	return batch.SourceID, true
+}
+
+// A control or publication after restart may fence or retire a previously
+// admitted epoch. Each non-failed asset needs matching write-ahead control or
+// accepted evidence; detached replay still validates its full result.
+func recoveryHistoricalControl(entries map[semreg.AssetID]RecoveryAsset, epoch EpochRecord) bool {
+	if (epoch.Kind != EventSourceRetired && epoch.Kind != EventGenerationFenced) || epoch.Ordinal != 0 || len(epoch.Assets) == 0 {
+		return false
+	}
+	for _, id := range epoch.Assets {
+		entry := entries[id]
+		// A failed asset is never replayed or installed and stays closed.
+		// Managed recovery may omit its accepted log after continuity loss.
+		if entry.Failed || recoveryControlMatches(entry.Control, epoch) {
+			continue
+		}
+		if epoch.Kind == EventGenerationFenced {
+			if !recoveryAcceptedFence(entry, epoch) {
+				return false
+			}
+			continue
+		}
+		covered := false
+		for _, accepted := range entry.Accepted {
+			if source, valid := recoveryPublishedSource(entry, accepted); !valid || source != epoch.Source || accepted.Incarnation != epoch.Incarnation {
+				continue
+			}
+			var batch semreg.PublicationBatch
+			_ = json.Unmarshal(accepted.Batch, &batch)
+			for _, retired := range batch.SourceRetirements {
+				if retired == epoch.Epoch {
+					covered = true
+				}
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+// Matching metadata permits write-ahead controls before accepted evidence exists.
+// restoredGate separately validates the retained control and its attempts.
+func recoveryControlMatches(control *RecoveryControl, epoch EpochRecord) bool {
+	if control == nil || control.Status.ID == nil || control.Status.ID.Source != epoch.Source ||
+		control.Status.ID.Incarnation != epoch.Incarnation || control.Epoch != epoch.Epoch {
+		return false
+	}
+	return epoch.Kind == EventGenerationFenced && control.Kind == ControlFence && control.Generation == epoch.Generation ||
+		epoch.Kind == EventSourceRetired && control.Kind == ControlRetire
+}
+
+// A generation transition carries its initiating asset's fence in the accepted
+// publication itself, rather than in a separate control operation.
+func recoveryAcceptedFence(entry RecoveryAsset, epoch EpochRecord) bool {
+	for _, accepted := range entry.Accepted {
+		if _, valid := recoveryPublishedSource(entry, accepted); !valid || accepted.Incarnation != epoch.Incarnation {
+			continue
+		}
+		var batch semreg.PublicationBatch
+		_ = json.Unmarshal(accepted.Batch, &batch)
+		for _, fence := range batch.GenerationFences {
+			if fence.SourceID == epoch.Source && fence.SourceEpochID == epoch.Epoch && fence.DriverGeneration == semreg.Uint64(strconv.FormatUint(epoch.Generation, 10)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Succession pairs are adjacent because the journal appends them atomically.

@@ -1197,7 +1197,8 @@ func (s *Service) deferPublication(event *Event) {
 // only afterwards. A reader woken by an event therefore finds a list at
 // least as new as the event's catalog revision, and a resync at a published
 // EventCursor always finds that cursor's events. Pending OBSERVED_CHANGED
-// events that the view no longer shows are coalesced away.
+// events that the view no longer shows are coalesced away, with a resync gap
+// when no event carries the current observation.
 func (s *Service) publish(events []Event) bool {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
@@ -1218,9 +1219,15 @@ func (s *Service) publish(events []Event) bool {
 	for _, entry := range built.Drivers {
 		entries[entry.DriverID] = entry
 	}
+	shownEvents := make(map[DriverID]bool)
+	for _, e := range candidates {
+		if e.Kind == EventObservedChanged && observationShown(e, entries[e.DriverID], s.observed[e.DriverID]) {
+			shownEvents[e.DriverID] = true
+		}
+	}
 	emit := candidates[:0]
 	supersededGap := false
-	for _, e := range candidates {
+	for i, e := range candidates {
 		e.CatalogRevision = built.Revision
 		if e.Kind == EventDesiredAccepted && entries[e.DriverID].DesiredRevision != e.DesiredRevision {
 			// A later desired transition superseded this one before its view
@@ -1231,11 +1238,14 @@ func (s *Service) publish(events []Event) bool {
 		}
 		if e.Kind == EventObservedChanged {
 			entry := entries[e.DriverID]
-			if !observationShown(e, entry) {
-				// A newer observation of the driver is already staged in
-				// this view and has its own event: the superseded one is
-				// coalesced away instead of being stamped with a view that
-				// no longer shows it.
+			if !observationShown(e, entry, s.observed[e.DriverID]) {
+				// Deferral order need not match staging order: an older
+				// publisher can replace the newer pending event. Signal a
+				// gap when discarding a deferred event unless this
+				// publication carries the current observation's event.
+				if i < len(s.pendingEv) && !shownEvents[e.DriverID] {
+					supersededGap = true
+				}
 				continue
 			}
 			e.DesiredState = entry.DesiredState
@@ -1254,10 +1264,12 @@ func (s *Service) publish(events []Event) bool {
 }
 
 // observationShown reports whether a view entry shows exactly the observed
-// transition an OBSERVED_CHANGED event reports.
-func observationShown(e Event, entry DriverStatus) bool {
+// transition an OBSERVED_CHANGED event reports, including its staged lifecycle
+// correlation. The caller holds viewMu so the entry and observation are coherent.
+func observationShown(e Event, entry DriverStatus, obs observation) bool {
 	return entry.ObservedState == e.ObservedState && entry.Reason == e.Reason &&
-		entry.SafetyQuarantined == e.SafetyQuarantined
+		entry.SafetyQuarantined == e.SafetyQuarantined &&
+		obs.epoch == e.Epoch && obs.generation == e.Generation
 }
 
 func (s *Service) buildLocked(catalog ControlCatalog) Catalog {

@@ -79,9 +79,9 @@ func (h *handler) serveContributionCatalog(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// This seam is read-only even if the existing catalog transport also supports
-	// action invocation elsewhere. No authorizer, invoker or revalidator is wired.
+	// action invocation elsewhere. No invoker or revalidator is wired.
 	snapshot := h.opts.Contributions.Registry.Snapshot()
-	composer := catalogv1.New(h.opts.Contributions.Index, contributionCapture{ctx: r.Context(), opts: h.opts, revision: snapshot.Revision}, nil, nil)
+	composer := catalogv1.New(h.opts.Contributions.Index, contributionCapture{ctx: r.Context(), opts: h.opts, revision: snapshot.Revision}, nil)
 	if err := composer.InstallDetachedRegistrySnapshot(snapshot.Accepted, snapshot.Quarantined); err != nil {
 		http.Error(w, "portal catalog unavailable", http.StatusServiceUnavailable)
 		return

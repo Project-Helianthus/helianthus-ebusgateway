@@ -93,7 +93,7 @@ func TestPUBLIC05SunSpecSemRegSurvivesGatewayProvidersAndPortal(t *testing.T) {
 	asset := string(direct.Snapshot.AssetID)
 	runtime, err := newM2MGraphQLRuntime(ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
-		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
 		AllowedAssets: []string{asset},
 	}}, adapter)
 	if err != nil {

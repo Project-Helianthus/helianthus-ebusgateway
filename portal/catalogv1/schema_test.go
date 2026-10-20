@@ -218,11 +218,11 @@ func TestM22DescriptorSchemaIsClosedAndRequiresDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, index := actionManifestAndIndex()
-	composer := New(index, nil, nil, nil)
+	composer := New(index, nil, nil)
 	if err := composer.Publish(m); err != nil {
 		t.Fatal(err)
 	}
-	result, err := composer.Catalog(nil)
+	result, err := composer.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}

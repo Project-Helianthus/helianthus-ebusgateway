@@ -219,8 +219,6 @@ semreg_public_config_only() {
 			"// M2MGraphQLConfig configures the dedicated public canonical-PV listener."|\
 			"// M2MGraphQLConfig configures the dedicated public SemReg PV listener."|\
 			"KnownAssets                 []string"|\
-			"len(config.KnownAssets) == 0 && len(config.DeniedPrincipalFingerprints) == 0"|\
-			"len(config.DeniedPrincipalFingerprints) == 0"|\
 			"known := make(map[string]struct{}, len(config.KnownAssets))"|\
 			"for _, asset := range config.KnownAssets {"|\
 			"if _, allowed := assets[asset]; !allowed {"|\

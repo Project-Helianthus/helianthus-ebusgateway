@@ -211,7 +211,7 @@ func TestM2MRuntimeMountsMatterFeedBehindServerTLSWithOptionalClientCertificate(
 	certs := newM2MTLSCertificates(t)
 	cfg := ebusgateway.Config{M2MGraphQL: ebusgateway.M2MGraphQLConfig{
 		ListenAddr: "127.0.0.1:0", ServerName: "m2m.gateway.test",
-		ClientCAFile: certs.caFile, ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
+		ServerCertFile: certs.serverCertFile, ServerKeyFile: certs.serverKeyFile,
 		AllowedAssets: []string{"asset:test"},
 	}}
 	provider := matterFeedRuntimeFixture{snapshot: matterFeedRuntimeEmptySnapshot()}

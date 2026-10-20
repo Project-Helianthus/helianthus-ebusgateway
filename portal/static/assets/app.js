@@ -78,7 +78,7 @@ function validCatalogSource(source) {
 }
 
 function validatePortalCatalog(catalog) {
-  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant", "authorization_scope"]) ||
+  if (!hasCatalogStrings(catalog, ["contract", "catalog_revision", "catalog_digest", "evaluation_instant"]) ||
       catalog.contract !== PORTAL_CATALOG_CONTRACT ||
       !/^[a-f0-9]{64}$/.test(catalog.catalog_revision) || !/^[a-f0-9]{64}$/.test(catalog.catalog_digest) ||
       !Array.isArray(catalog.domains) || catalog.domains.length !== PORTAL_CATALOG_PACK_VERSIONS.size ||
@@ -410,7 +410,6 @@ function portalCatalogMetadataSummaries(catalog) {
     `Catalog revision: ${catalogBrief(catalog.catalog_revision, 96)}`,
     `Catalog digest: ${catalogBrief(catalog.catalog_digest, 96)}`,
     `Catalog evaluation instant: ${catalogBrief(catalog.evaluation_instant, 240)}`,
-    `Catalog authorization scope: ${catalogBrief(catalog.authorization_scope, 240)}`,
   ];
 }
 

@@ -346,7 +346,8 @@ forwarding or prefix headers never become trusted merely by reaching Portal.
 Do not add users, principals, roles, login redirects or an authorization gate
 before the 0.11 authentication and authorization frameworks. Preserve existing host trust configuration and native qualification,
 read/write safeguards and fail-closed action admission. Existing catalog action
-interfaces are separate: this read-only adapter does not implement an authorizer,
-turn caller presence into permission, expose actions or enable invocation.
+interfaces are separate: the catalog has no Authorizer hook or caller
+`authorization_scope` field. This read-only adapter does not turn caller presence
+into permission, expose actions or enable invocation.
 The current runtime default with no trusted action adapter continues to expose
 no actions and reject invocation.

@@ -61,11 +61,11 @@ func (p *gatewayMatterBindingFeedProvider) Capture(ctx context.Context) (feedv1.
 	if err != nil {
 		return feedv1.Snapshot{}, fmt.Errorf("matter binding feed source capture: %w", err)
 	}
-	composer := catalogv1.New(p.contributions.index, matterBindingStaticCapture{resources: rawResources, fields: rawFields}, nil, nil)
+	composer := catalogv1.New(p.contributions.index, matterBindingStaticCapture{resources: rawResources, fields: rawFields}, nil)
 	if err := composer.InstallDetachedRegistrySnapshot(registry.Accepted, registry.Quarantined); err != nil {
 		return feedv1.Snapshot{}, fmt.Errorf("matter binding feed catalog composition: %w", err)
 	}
-	catalog, err := composer.Catalog(nil)
+	catalog, err := composer.Catalog()
 	if err != nil {
 		return feedv1.Snapshot{}, fmt.Errorf("matter binding feed catalog capture: %w", err)
 	}
@@ -215,7 +215,7 @@ func projectMatterFeedResource(resource catalogv1.Resource) (matter.Result, feed
 // No production Matter operation is admitted yet. The feed publishes an empty
 // operation collection, and this final fail-closed boundary prevents a future
 // descriptor from becoming executable until Gateway supplies an accepted
-// authorizer, revalidator and exact native-owner bridge.
+// revalidator and exact native-owner bridge.
 func (*gatewayMatterBindingFeedProvider) Invoke(context.Context, feedv1.Invocation) (feedv1.Execution, error) {
 	return feedv1.Execution{}, errMatterBindingOperationUnavailable
 }

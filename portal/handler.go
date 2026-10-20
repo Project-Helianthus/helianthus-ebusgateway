@@ -59,6 +59,8 @@ var (
 )
 
 type Options struct {
+	Config *ConfigCallbacks
+
 	// PortalCatalogAvailable declares a catalog route mounted by the host outside
 	// this handler. A configured URL alone does not establish availability.
 	PortalCatalogAvailable bool
@@ -1032,6 +1034,10 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 
 	// Explorer routes support POST/DELETE, must be checked before the GET-only guard.
 	trimmed := strings.Trim(path, "/")
+	if trimmed == "config" {
+		h.handleConfig(w, r)
+		return
+	}
 	if trimmed == "semantic/pv/current" {
 		h.handleSemanticPV(w, r)
 		return

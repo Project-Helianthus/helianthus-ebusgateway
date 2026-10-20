@@ -770,9 +770,10 @@ type ambiguousDecision struct {
 // only then fences the superseded attempt and ends the hold. A rejected
 // decision emits nothing and ends the hold without fencing, so a typed START
 // it would have canceled resumes with its attempt, budget and deadline
-// unchanged. It reports whether it published a view, which it does only
-// for an adopted decision or an unreadable outcome.
-func (s *Service) resolveAmbiguous(ds []*driverState) bool {
+// unchanged. It reports whether it published a view and whether another
+// resolver owns an in-progress resolution. Either suppresses fallback
+// publication so an adopted view cannot precede its acceptance event.
+func (s *Service) resolveAmbiguous(ds []*driverState) (published, resolving bool) {
 	type settled struct {
 		d     *driverState
 		fence bool
@@ -783,7 +784,12 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 	for _, d := range ds {
 		d.mu.Lock()
 		amb := d.ambiguous
-		if amb == nil || amb.resolving {
+		if amb == nil {
+			d.mu.Unlock()
+			continue
+		}
+		if amb.resolving {
+			resolving = true
 			d.mu.Unlock()
 			continue
 		}
@@ -812,7 +818,6 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 		}
 		done = append(done, settled{d: d, fence: amb.fence && adopted})
 	}
-	published := false
 	committed := true
 	if len(events) > 0 || lost {
 		if lost {
@@ -827,7 +832,7 @@ func (s *Service) resolveAmbiguous(ds []*driverState) bool {
 		x := x
 		s.afterPublish(committed, func() { s.releaseDecision(x.d, x.fence) })
 	}
-	return published
+	return published, resolving
 }
 
 // releaseDecision ends a decision's hold, after its acceptance (if any) was
@@ -1040,7 +1045,7 @@ func (s *Service) readbackResolved() {
 	for _, id := range s.order {
 		ds = append(ds, s.drivers[id])
 	}
-	if !s.resolveAmbiguous(ds) {
+	if published, resolving := s.resolveAmbiguous(ds); !published && !resolving {
 		s.commitView(s.ctx, nil, false)
 	}
 	for _, d := range ds {

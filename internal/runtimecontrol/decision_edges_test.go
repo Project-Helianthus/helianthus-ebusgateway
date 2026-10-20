@@ -21,11 +21,19 @@ type p10Store struct {
 	fail           bool
 	adopted        bool
 	afterPlan      func()
+	driverBarrier  func()
 	catalogBarrier func()
 }
 
 func (p *p10Store) AdmissionOpen() bool { return true }
 func (p *p10Store) Driver(id DriverID) (ControlRecord, error) {
+	p.mu.Lock()
+	barrier := p.driverBarrier
+	p.driverBarrier = nil
+	p.mu.Unlock()
+	if barrier != nil {
+		barrier()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if id != p.record.DriverID {
@@ -225,11 +233,15 @@ func TestP10AdoptedPublicationRetainsOwner(t *testing.T) {
 		{"driver", "family.beta", 11},
 		{"revision", "family.alpha", 17},
 	} {
-		t.Run(tc.name, func(t *testing.T) { p10AdoptedPublicationRetainsOwner(t, tc.id, tc.revision) })
+		for _, blockRead := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/block-read-%t", tc.name, blockRead), func(t *testing.T) {
+				p10AdoptedPublicationRetainsOwner(t, tc.id, tc.revision, blockRead)
+			})
+		}
 	}
 }
 
-func p10AdoptedPublicationRetainsOwner(t *testing.T, id DriverID, revision DesiredRevision) {
+func p10AdoptedPublicationRetainsOwner(t *testing.T, id DriverID, revision DesiredRevision, blockRead bool) {
 	t.Helper()
 	svc, store, _ := p10Service(t, id, revision)
 	d := svc.drivers[id]
@@ -239,7 +251,12 @@ func p10AdoptedPublicationRetainsOwner(t *testing.T, id DriverID, revision Desir
 	t.Cleanup(func() { unblock(); p10Wait(t, done) })
 	store.mu.Lock()
 	store.fail, store.adopted = true, true
-	store.catalogBarrier = func() { close(entered); <-release }
+	barrier := func() { close(entered); <-release }
+	if blockRead {
+		store.driverBarrier = barrier
+	} else {
+		store.catalogBarrier = barrier
+	}
 	store.mu.Unlock()
 	var failed error
 	go func() {
@@ -260,8 +277,17 @@ func p10AdoptedPublicationRetainsOwner(t *testing.T, id DriverID, revision Desir
 	}
 	_, err := svc.Decide(context.Background(), MethodStop, Request{DriverID: d.id, ExpectedRevision: revision + 1})
 	p10Busy(t, err)
-	if svc.resolveAmbiguous([]*driverState{d}) {
-		t.Error("duplicate resolver claimed publishing owner")
+	// A concurrent readback must return without publishing or waiting for the
+	// resolver that owns the acceptance, whether it is reading or publishing.
+	readbackDone := make(chan struct{})
+	t.Cleanup(func() { unblock(); p10Wait(t, readbackDone) })
+	go func() {
+		defer close(readbackDone)
+		svc.readbackResolved()
+	}()
+	p10Wait(t, readbackDone)
+	if svc.List().Drivers[0].DesiredRevision != revision {
+		t.Error("concurrent readback published adopted view before acceptance")
 	}
 	unblock()
 	p10Wait(t, done)

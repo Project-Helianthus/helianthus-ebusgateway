@@ -288,12 +288,12 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 			if a.work != nil {
 				workErr = a.work.Close()
 			}
+			a.workErr = workErr
+			a.nativeCleanupFailed.Store(workErr != nil)
 			closeErr := a.adapter.Close()
 			if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
 				closeErr = errors.Join(closeErr, a.retryStartupCleanup())
 			}
-			a.workErr = workErr
-			a.nativeCleanupFailed.Store(workErr != nil)
 			a.stopErr = errors.Join(closeErr, workErr, <-semanticDone)
 			driver.revision.Add(1)
 		}()

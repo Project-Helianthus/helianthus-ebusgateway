@@ -1308,6 +1308,105 @@ func TestM03NativeCleanupFailureQuarantinesManager(t *testing.T) {
 	}
 }
 
+type m03BlockingFenceJournal struct {
+	*semhub.MemoryJournal
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (j *m03BlockingFenceJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Kind == semhub.EventGenerationFenced {
+			j.once.Do(func() { close(j.entered) })
+			<-j.release
+		}
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+func TestM03WorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *testing.T) {
+	journal := &m03BlockingFenceJournal{
+		MemoryJournal: semhub.NewMemoryJournal(),
+		entered:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeErr := errors.New("synthetic worker cleanup failure")
+	endpoint := &m03Endpoint{}
+	var workCloses atomic.Int32
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return endpoint, nil
+	}, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+		return &m03Work{start: func() {}, close: func() error {
+			workCloses.Add(1)
+			return closeErr
+		}}
+	})
+	// Release the journal before the driver's registered cleanup joins Stop.
+	t.Cleanup(func() { close(journal.release) })
+	driver.hub = hub
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.active.Load().adapter.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := manager.Start(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		snapshot, changed, _ := manager.Watch("pv.primary")
+		if snapshot.ObservedState == drivermanager.ObservedRunning {
+			break
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	stopCtx, stopCancel := context.WithTimeout(ctx, time.Second)
+	defer stopCancel()
+	report, err := manager.StopWithReport(stopCtx, "pv.primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-journal.entered:
+	default:
+		t.Fatal("semantic withdrawal did not reach the blocked journal")
+	}
+	if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || workCloses.Load() != 1 || endpoint.closes.Load() != 1 {
+		t.Fatalf("deadline=%v worker closes=%d endpoint closes=%d", stopCtx.Err(), workCloses.Load(), endpoint.closes.Load())
+	}
+	if report.Class != drivermanager.CloseUnconfirmed || !driver.SafetyQuarantined() {
+		t.Fatalf("blocked cleanup class=%v quarantine=%v", report.Class, driver.SafetyQuarantined())
+	}
+	snapshot, _ := manager.Snapshot("pv.primary")
+	if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+		t.Fatalf("blocked cleanup snapshot=%+v", snapshot)
+	}
+	if err := manager.Start(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Fatalf("start=%v", err)
+	}
+	if err := manager.Replace(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Fatalf("replace=%v", err)
+	}
+	if driver.Generation() != 1 {
+		t.Fatal("quarantine allowed a successor generation")
+	}
+}
+
 func TestM03CancelDuringWorkStartCleansBeforeRetry(t *testing.T) {
 	entered, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var calls, workCloses atomic.Int32

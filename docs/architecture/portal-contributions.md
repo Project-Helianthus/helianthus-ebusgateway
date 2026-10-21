@@ -103,8 +103,11 @@ schema uses the same string representation; its native feed generation fields
 retain their existing representation.
 
 On mismatch the client refetches both requests, at most two times. While
-refetching it shows an inconsistent/refreshing state and renders no values; if
-the mismatch persists it stays in the generation-conflict state below. It never
+refetching it shows an inconsistent/refreshing state and retains previous valid
+cards explicitly as historical, withholding the mismatched response's values.
+Only three confirmed mismatched pairs enter the generation-conflict state below;
+an inconclusive HTTP, timeout or malformed-response failure during a retry keeps
+the historical cards with a refresh error. It never
 presents rows from one response under the identity of the other. Identities are
 compared exactly and never recomputed from the selected GraphQL response. The
 shared GraphQL read is **Unknown** in the current code (not yet exposed), so
@@ -117,7 +120,7 @@ Implementation acceptance must exercise sequential catalog/shared reads:
 | --- | --- |
 | Unchanged Storage publication; evaluation clocks and digests advance on every request | Publication/lifecycle identities match; render on the first pair without refetching. Repeated pairs remain readable. |
 | Same publication; shared evaluation crosses a freshness boundary after catalog capture | Render the shared read's updated freshness/disposition, including withholding values when required by M07; do not retain catalog freshness or refetch solely for evaluation drift. |
-| Publication, binding, source epoch or driver generation changes between requests | Withhold values and refetch both within the bound; render once a pair matches. Persistent mismatch remains a generation conflict. |
+| Publication, binding, source epoch or driver generation changes between requests | Withhold mismatched values and refetch both within the bound, retaining previous valid cards as historical; render once a pair matches. Three confirmed mismatches become a generation conflict; an inconclusive retry failure retains historical cards. |
 
 These are required tests for the future shared-read implementation, not claims
 of current production coverage.

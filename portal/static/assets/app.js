@@ -2831,14 +2831,12 @@ class PortalShell extends HTMLElement {
                 asset.snapshot != null || asset.evaluation != null || asset.projection != null || asset.selections.length) throw new Error("invalid unavailable asset");
           } else if (!Array.isArray(asset.snapshot?.facts) || !Array.isArray(asset.evaluation?.facts) || !Array.isArray(asset.projection?.dispositions)) throw new Error("incomplete shared read");
         }
-        conflict = catalog.resources.some((resource) => {
+        const mismatch = catalog.resources.some((resource) => {
           const asset = assets.find((asset) => asset.asset_id === resource.source.asset_id);
           return !asset.unavailable_reason && !semanticSourceMatches(resource, asset);
         });
-        if (conflict) {
-          listEl.innerHTML = "<li>Inconsistent semantic source; refreshing. Values withheld.</li>";
-          this._semanticHasValid = false;
-          announce("Inconsistent semantic source; refreshing.");
+        if (mismatch) {
+          announce(`Inconsistent semantic source; refreshing.${this._semanticHasValid ? " Showing historical last valid contributions." : ""}`);
           continue;
         }
         const cards = semanticContributionCards(catalog, assets);
@@ -2847,6 +2845,7 @@ class PortalShell extends HTMLElement {
         announce("Semantic contributions loaded. Live updates unavailable; use Refresh.");
         return true;
       }
+      conflict = true;
       throw new Error("generation conflict");
     } catch {
       if (!isActive()) return false;

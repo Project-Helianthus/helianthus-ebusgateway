@@ -246,6 +246,52 @@ test("M23 mismatch refetches both sources and converges on a matching pair", asy
   assert.equal(await h.refresh(), true); assert.equal(h.requests.length, 4); assert.match(h.list.innerHTML, /Power: 0e0/);
 });
 
+for (const mismatches of [1, 2]) for (const stage of ["catalog", "shared read"]) {
+  for (const failure of ["HTTP", "timeout", "malformed response"]) test(`M23 ${mismatches} mismatches then ${stage} ${failure} retains historical cards`, async () => {
+    const h = harness(), valid = fixture(1), changed = fixture(1);
+    h.pair(valid); assert.equal(await h.refresh(), true);
+    const previous = h.list.innerHTML;
+    sourceMutations.binding_id(changed.assets[0]);
+    for (let i = 0; i < mismatches; i++) h.pair(changed);
+    let complete;
+    h.queue.push(new Promise((resolve) => { complete = resolve; }));
+    if (stage === "shared read") h.queue.push(failure === "HTTP" ? { ok: false } : { ok: true, json: async () => {
+      if (failure === "timeout") { h.deadline(); throw new Error("synthetic timeout"); }
+      return { data: {} };
+    } });
+    const pending = h.refresh();
+    // Observe the historical view while the retry's catalog request is pending.
+    while (h.requests.length < 2 + mismatches * 2 + 1) await Promise.resolve();
+    assert.equal(h.list.innerHTML, previous);
+    assert.equal(h.shell._semanticHasValid, true);
+    assert.match(h.notice.textContent, /historical last valid/);
+    complete(stage === "shared read" ? { ok: true, json: async () => ({ data: { portalCatalogV1: valid.catalog } }) } :
+      failure === "HTTP" ? { ok: false } : { ok: true, json: async () => {
+        if (failure === "timeout") { h.deadline(); throw new Error("synthetic timeout"); }
+        return { data: {} };
+      } });
+    assert.equal(await pending, false);
+    assert.equal(h.list.innerHTML, previous);
+    assert.equal(h.shell._semanticHasValid, true);
+    assert.match(h.notice.textContent, failure === "timeout" ? /timed out.*historical last valid/ : /failed or unavailable.*historical last valid/);
+    h.pair(valid); assert.equal(await h.refresh(), true);
+    assert.doesNotMatch(h.notice.textContent, /historical/);
+  });
+}
+
+test("M23 three confirmed mismatches replace historical cards with a generation conflict", async () => {
+  const h = harness(), changed = fixture(1);
+  h.pair(); assert.equal(await h.refresh(), true);
+  sourceMutations.binding_id(changed.assets[0]);
+  for (let i = 0; i < 3; i++) h.pair(changed);
+  assert.equal(await h.refresh(), false);
+  assert.equal(h.requests.length, 8);
+  assert.equal(h.shell._semanticHasValid, false);
+  assert.match(h.list.innerHTML, /generation conflict/);
+  assert.doesNotMatch(h.list.innerHTML, /Power:|portal-catalog-resource/);
+  assert.doesNotMatch(h.notice.textContent, /historical/);
+});
+
 for (const field of ["driver_id", "manifest_id", "manifest_version"]) test(`M23 descriptor identity compares ${field}`, async () => {
   const h = harness(), f = fixture(1);
   f.catalog.descriptors[0][field] += ".other";

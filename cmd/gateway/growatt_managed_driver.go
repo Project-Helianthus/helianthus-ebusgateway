@@ -47,9 +47,13 @@ type growattManagedDriver struct {
 	drainErr    error
 	starting    chan struct{}
 	startCancel context.CancelFunc
+
+	publicationDrained chan struct{}
 }
 
 var _ drivermanager.Runtime = (*growattManagedDriver)(nil)
+
+var errGrowattPublicationFenceTimeout = errors.New("growatt publication fence timeout")
 
 func (driver *growattManagedDriver) Start(ctx context.Context) (uint64, error) {
 	driver.mu.Lock()
@@ -155,14 +159,10 @@ func (driver *growattManagedDriver) Replace(ctx context.Context) (uint64, error)
 	return driver.Start(ctx)
 }
 
-// Withdrawal cancels acquisition and joins publication; Stop joins native work.
+// Withdrawal only cancels acquisition and publication admission. Stop joins work.
 func (driver *growattManagedDriver) FenceWithdrawal() {
 	if provider := driver.current.Load(); provider != nil {
 		provider.cancel()
-		func() {
-			provider.publicationMu.Lock()
-			defer provider.publicationMu.Unlock()
-		}()
 	}
 }
 
@@ -185,7 +185,18 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		driver.provider = nil
 		driver.draining = make(chan struct{})
 		done := driver.draining
+		provider.publicationMu.Lock()
+		publicationDrained := provider.publicationDone
+		if publicationDrained == nil {
+			publicationDrained = make(chan struct{})
+			close(publicationDrained)
+		}
+		provider.publicationMu.Unlock()
+		driver.publicationDrained = publicationDrained
 		go func() {
+			// Only this generation's drain joins publication. Deadline expiry
+			// below records failed fencing; cleanup still owns the in-flight work.
+			<-publicationDrained
 			// Fence before native work, outside mu so callers can time out
 			// and inspect status even if the hub's drain stalls.
 			fenceErr := driver.fence(handle, provider)
@@ -193,15 +204,15 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 			provider.release()
 			closeErr := provider.Close()
 			driver.mu.Lock()
-			// Keep withdrawal able to join publication until native work drains.
+			// Keep withdrawal cancellation attached until native work drains.
 			driver.current.Store(nil)
-			driver.drainErr = errors.Join(closeErr, fenceErr)
+			driver.drainErr = errors.Join(driver.drainErr, closeErr, fenceErr)
 			driver.revision++
 			close(done)
 			driver.mu.Unlock()
 		}()
 	}
-	done := driver.draining
+	done, publicationDrained := driver.draining, driver.publicationDrained
 	driver.mu.Unlock()
 	if done == nil {
 		return nil
@@ -212,7 +223,21 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		defer driver.mu.Unlock()
 		return driver.drainErr
 	case <-ctx.Done():
-		return ctx.Err()
+		driver.mu.Lock()
+		defer driver.mu.Unlock()
+		if driver.draining == done && publicationDrained != nil {
+			select {
+			case <-publicationDrained:
+			default:
+				// Cancellation is not proof of fencing an entered publication.
+				// Preserve the timeout even if background cleanup later succeeds.
+				if !errors.Is(driver.drainErr, errGrowattPublicationFenceTimeout) {
+					driver.drainErr = errors.Join(driver.drainErr, errGrowattPublicationFenceTimeout, ctx.Err())
+					driver.revision++
+				}
+			}
+		}
+		return errors.Join(driver.drainErr, ctx.Err())
 	}
 }
 

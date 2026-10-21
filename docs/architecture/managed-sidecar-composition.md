@@ -149,10 +149,18 @@ block the caller deadline or provider and status inspection. A deadline does not
 prove that semantic withdrawal completed.
 Native evidence remains retained; a separate evidence lock lets the fence read
 the last completed observation without waiting for transport acquisition.
-`FenceWithdrawal` cancels acquisition and joins the publication critical section;
-publication rechecks the generation lifetime inside that same section. A refresh
-paused after observation cannot publish after withdrawal returns, while an
-already-entered publication must finish before withdrawal returns.
+`FenceWithdrawal` only cancels acquisition and publication admission. It takes no
+publication lock and returns immediately while the manager holds its state lock.
+Publication rechecks the generation lifetime and registers a completion signal
+under a short-held state mutex, released before publication begins. A refresh
+paused after observation cannot publish after withdrawal returns. Stop's tracked
+drain awaits an already-entered publication's completion signal outside both the
+driver mutex and manager lock, bounded by the generation's stop deadline. If
+publication is still running at that deadline, Stop reports a publication fence
+timeout and
+quarantines the generation: fencing is not complete. Status reads and Replace
+deadlines remain responsive. Background cleanup retains ownership of the stalled
+publication; its eventual completion cannot clear the recorded fence timeout.
 Cancelled or late refresh results cannot publish. Stop joins acquisition before
 closing the endpoint once. A caller deadline returns its context error while
 the drain continues; Start refuses a successor until that drain completes.

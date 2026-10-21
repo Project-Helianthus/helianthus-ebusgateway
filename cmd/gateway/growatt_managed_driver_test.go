@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -639,7 +640,7 @@ func TestM04WithdrawalFencesObservedRefreshBeforePublication(t *testing.T) {
 	}
 }
 
-func TestM04WithdrawalJoinsPublicationAlreadyInProgress(t *testing.T) {
+func TestM04WithdrawalReturnsDuringPublicationAlreadyInProgress(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	hub, err := semhub.New(semhub.Options{Faults: func(stage string, _ semreg.AssetID) {
 		if stage == "commit" {
@@ -684,7 +685,83 @@ func TestM04WithdrawalJoinsPublicationAlreadyInProgress(t *testing.T) {
 	}
 	select {
 	case <-withdrawn:
-		t.Fatal("withdrawal returned before in-flight publication finished")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("FenceWithdrawal waited for in-flight publication")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("publication finished before release: %v", err)
+	default:
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("publication already in progress=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("publication did not finish")
+	}
+	select {
+	case <-withdrawn:
+	case <-ctx.Done():
+		t.Fatal("withdrawal did not return promptly")
+	}
+}
+
+func TestM04StopJoinsPublicationAlreadyInProgress(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, _ semreg.AssetID) {
+		if stage == "commit" {
+			close(entered)
+			<-release
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	driver.hub = hub
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := driver.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	result := make(chan error, 1)
+	go func() { _, err := provider.SemanticStorageCurrent(ctx); result <- err }()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("publication did not reach commit")
+	}
+	withdrawn := make(chan struct{})
+	go func() {
+		driver.FenceWithdrawal()
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+		close(withdrawn)
+	}()
+	select {
+	case <-provider.lifetime.Done():
+	case <-ctx.Done():
+		t.Fatal("withdrawal did not cancel acquisition")
+	}
+	select {
+	case <-withdrawn:
+		t.Fatal("Stop returned before in-flight publication finished")
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(release)
@@ -700,6 +777,109 @@ func TestM04WithdrawalJoinsPublicationAlreadyInProgress(t *testing.T) {
 	select {
 	case <-withdrawn:
 	case <-ctx.Done():
-		t.Fatal("withdrawal did not join publication")
+		t.Fatal("Stop did not join publication")
+	}
+}
+
+func TestM04StalledPublicationWithdrawalIsNonBlockingAndDrainTimesOut(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, _ semreg.AssetID) {
+		if stage == "commit" {
+			close(entered)
+			<-release
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	driver.hub = hub
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	generation, err := driver.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	result := make(chan error, 1)
+	go func() { _, err := provider.SemanticStorageCurrent(ctx); result <- err }()
+	defer func() {
+		close(release)
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-ctx.Done():
+			t.Error("publication did not finish")
+		}
+		// A timed-out fence stays quarantined even after background cleanup completes.
+		if err := driver.Stop(ctx); !errors.Is(err, errGrowattPublicationFenceTimeout) {
+			t.Errorf("completed drain lost fence timeout: %v", err)
+		}
+		if !driver.SafetyQuarantined() {
+			t.Error("completed drain cleared quarantine")
+		}
+		if _, err := driver.Start(ctx); !errors.Is(err, errGrowattPublicationFenceTimeout) {
+			t.Errorf("restart after fence timeout=%v", err)
+		}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("publication did not reach commit")
+	}
+	withdrawn := make(chan struct{})
+	go func() { driver.FenceWithdrawal(); close(withdrawn) }()
+	select {
+	case <-withdrawn:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("FenceWithdrawal blocked on publication lock")
+	}
+	if provider.lifetime.Err() == nil {
+		t.Fatal("withdrawal did not cancel generation")
+	}
+	short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(short) }()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "publication fence timeout") {
+			t.Fatalf("stop=%v, want publication fence timeout", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Stop deadline blocked on publication")
+	}
+	responsive := make(chan struct{})
+	go func() {
+		defer close(responsive)
+		if driver.Generation() != generation {
+			t.Error("generation changed during stalled publication")
+		}
+		_ = driver.Revision()
+		if _, ok := driver.Provider(); ok {
+			t.Error("draining provider exposed")
+		}
+		if !driver.SafetyQuarantined() {
+			t.Error("publication fence timeout did not quarantine generation")
+		}
+		replacement, replaceCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer replaceCancel()
+		if _, err := driver.Replace(replacement); !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "publication fence timeout") {
+			t.Errorf("replace=%v", err)
+		}
+	}()
+	select {
+	case <-responsive:
+	case <-ctx.Done():
+		t.Fatal("status reads or Replace blocked on publication")
+	}
+	endpoint.mu.Lock()
+	closed := endpoint.closed
+	endpoint.mu.Unlock()
+	if closed != 0 {
+		t.Fatal("endpoint closed before publication finished")
 	}
 }

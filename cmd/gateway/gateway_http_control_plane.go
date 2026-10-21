@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -147,6 +148,44 @@ func newGatewayControlPlaneContext(ctx context.Context) (context.Context, contex
 	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
+// httpControlPlaneHandler retains host resources until admitted handlers finish.
+type httpControlPlaneHandler struct {
+	http.Handler
+	mu             sync.Mutex
+	active         int
+	retired        bool
+	closeResources func()
+}
+
+func (h *httpControlPlaneHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	if h.retired {
+		h.mu.Unlock()
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	h.active++
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.active--
+		if h.retired && h.active == 0 {
+			h.closeResources()
+		}
+	}()
+	h.Handler.ServeHTTP(w, r)
+}
+
+func (h *httpControlPlaneHandler) retire() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.retired = true
+	if h.active == 0 {
+		h.closeResources()
+	}
+}
+
 func startHTTPControlPlaneListener(
 	ctx context.Context,
 	cfg ebusgateway.Config,
@@ -156,12 +195,12 @@ func startHTTPControlPlaneListener(
 	eebusProvider mcp.EEBusV1Provider,
 	resources ...io.Closer,
 ) (*http.Server, mdns.Advertiser, error) {
-	// Release host resources on startup failure or whenever Serve exits, including Close.
-	closeResources := func() {
+	// Startup failure, Serve termination, and the shutdown owner may race to clean up.
+	closeResources := sync.OnceFunc(func() {
 		for _, resource := range resources {
 			_ = resource.Close()
 		}
-	}
+	})
 	started := false
 	defer func() {
 		if !started {
@@ -185,14 +224,15 @@ func startHTTPControlPlaneListener(
 		return nil, nil, err
 	}
 
-	server := &http.Server{Addr: listener.Addr().String(), Handler: mux}
+	handler := &httpControlPlaneHandler{Handler: mux, closeResources: closeResources}
+	server := &http.Server{Addr: listener.Addr().String(), Handler: handler}
 	if operatorEndpoint != nil {
 		server.RegisterOnShutdown(func() {
 			_ = operatorEndpoint.Close()
 		})
 	}
 	go func() {
-		defer closeResources()
+		defer handler.retire()
 		defer func() {
 			if operatorEndpoint != nil {
 				_ = operatorEndpoint.Close()
@@ -234,6 +274,9 @@ func shutdownHTTPControlPlane(server *http.Server) error {
 func shutdownHTTPControlPlaneWithContext(server *http.Server, ctx context.Context) error {
 	if server == nil {
 		return nil
+	}
+	if handler, ok := server.Handler.(*httpControlPlaneHandler); ok {
+		defer handler.retire()
 	}
 	if err := server.Shutdown(ctx); err == nil {
 		return nil

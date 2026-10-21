@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
@@ -216,5 +218,122 @@ func TestPortalConfigDisabledDriverSeed(t *testing.T) {
 	got, err := store.Read()
 	if err != nil || len(got.Drivers) != 1 || got.Drivers[0].Enabled {
 		t.Fatalf("disabled host seed: %+v, %v", got, err)
+	}
+}
+
+func TestPortalConfigShutdownRetainsWriterUntilRequestDrains(t *testing.T) {
+	testPortalConfigRetainsWriterUntilRequestDrains(t, true)
+}
+
+func TestPortalConfigRetirementRetainsWriterUntilRequestDrainsOffline(t *testing.T) {
+	testPortalConfigRetainsWriterUntilRequestDrains(t, false)
+}
+
+func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.PortalConfigRoot = t.TempDir()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	store := openGatewayPortalConfig(cfg, nil)
+	defer func() { _ = store.Close() }()
+	record, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Sharing.GraphQL = true
+	body, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portalMux := http.NewServeMux()
+	registerHTTPPortalRoutes(portalMux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store)}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/portal/", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release // Keep the admitted PUT before body decoding and Store.Update.
+		portalMux.ServeHTTP(w, r)
+	})
+	server := &http.Server{Addr: "gateway.test", Handler: &httpControlPlaneHandler{Handler: mux, closeResources: func() { _ = store.Close() }}}
+	if listen {
+		server, _, err = startHTTPControlPlaneListener(context.Background(), cfg, mux, nil, nil, nil, store)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { _ = server.Close() }()
+	defer func() { close(release) }()
+	client := &http.Client{Timeout: 5 * time.Second}
+	requestDone := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodPut, "http://"+server.Addr+"/portal/api/v1/config", bytes.NewReader(body))
+		if err == nil {
+			var res *http.Response
+			if listen {
+				res, err = client.Do(req)
+			} else {
+				recorder := httptest.NewRecorder()
+				server.Handler.ServeHTTP(recorder, req)
+				res = recorder.Result()
+			}
+			if err == nil {
+				defer func() { _ = res.Body.Close() }()
+				if res.StatusCode != http.StatusOK {
+					err = fmt.Errorf("PUT status = %d; want %d", res.StatusCode, http.StatusOK)
+				} else {
+					_, err = io.Copy(io.Discard, res.Body)
+				}
+			}
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT did not enter handler")
+	}
+	shutdownDone := make(chan error, 1)
+	handler := server.Handler.(*httpControlPlaneHandler)
+	go func() {
+		if listen {
+			shutdownDone <- shutdownHTTPControlPlane(server)
+		} else {
+			handler.retire() // Simulate Serve returning while the PUT is active.
+			shutdownDone <- nil
+		}
+	}()
+	// Wait for admission retirement while the PUT is still active.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		handler.mu.Lock()
+		retired := handler.retired
+		handler.mu.Unlock()
+		if retired {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Serve did not retire admission")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := store.Read(); err != nil {
+		t.Fatalf("store closed before request drained: %v", err)
+	}
+	blocked := openGatewayPortalConfig(cfg, nil)
+	defer func() { _ = blocked.Close() }()
+	if _, err := blocked.Read(); err == nil {
+		t.Fatal("writer lock released before request drained")
+	}
+	release <- struct{}{}
+	if err := <-requestDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatal(err)
+	}
+	reopened := openGatewayPortalConfig(cfg, nil)
+	defer func() { _ = reopened.Close() }()
+	got, err := reopened.Read()
+	if err != nil || got.Revision != "1" || !got.Sharing.GraphQL {
+		t.Fatalf("drained PUT was not persisted or writer was not released: %+v, %v", got, err)
 	}
 }

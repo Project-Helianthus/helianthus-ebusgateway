@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -76,6 +77,7 @@ function createPortalShellHarness({ source, sourcePath, elements, fetchImpl }) {
     AbortController,
     URLSearchParams,
     TextDecoder,
+    TextEncoder,
   };
 
   sandbox.fetch = (url, requestInit) => {
@@ -278,60 +280,129 @@ test("PortalShell renders unsupported adapter info with an unsupported label", a
   assert.ok(!identityBody.innerHTML.includes("Serial"), "unsupported adapter info must not be labeled as Serial");
 });
 
-test("PortalShell renders promoted false and zero values distinctly from unavailable", async () => {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourcePath = path.resolve(here, "../src/app.js");
+test("PortalShell semantic refresh fails closed without shared-read bootstrap metadata", async () => {
+  const sourcePath = fileURLToPath(new URL("../src/app.js", import.meta.url));
   const source = await readFile(sourcePath, "utf8");
-  const snapshot = createDeferredResponse({
-    zones: [{
-      id: "zone-1", name: "Kitchen", state: { current_temp_c: 0 },
-      config: { target_temp_c: 0, operating_mode: "auto", operation_mode_changeable: false, source_label: "Zone 1" },
-    }, { id: "zone-2", name: "Office", state: {}, config: {} }],
-    dhw: { state: { current_temp_c: 0, overrun_active: false }, config: { target_temp_c: 0, operating_mode: "auto", operation_mode_changeable: false } },
-    system: { state: { outdoor_temperature: 0 }, gateway_brand: "", gateway_vendor: "" },
+  const list = { innerHTML: "" };
+  const { shell, fetchRequests } = createPortalShellHarness({ source, sourcePath, elements: new Map(), fetchImpl() { throw new Error("unexpected legacy request"); } });
+  const token = shell.beginBootstrapLifecycle();
+  assert.equal(await shell.loadSemanticPreview(list, token, shell.bootstrapLifecycleAbort), false);
+  assert.match(list.innerHTML, /unavailable/);
+  assert.deepEqual(fetchRequests, []);
+});
+
+test("PortalShell contribution controls expose loading and error announcements", async () => {
+  const source = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
+  const semantic = source.slice(source.indexOf('<section id="section-semantic"'), source.indexOf('<section id="section-bus"'));
+  assert.match(semantic, /<button type="button" data-role="semantic-refresh">Refresh Contributions<\/button>/);
+  assert.match(semantic, /data-role="semantic-notice" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(semantic, /data-role="semantic-list" role="status" aria-live="polite" aria-atomic="true" aria-busy="false"/);
+});
+
+// Synthetic admitted descriptors and shared reads exercise the production card path.
+function createSemanticContributionFixture(resources) {
+  const hash = (value) => createHash("sha256").update(value).digest("hex");
+  const identity = { driver_id: "fixture.thermal", manifest_id: "portal.fixture", manifest_version: "1.0.0", digest: `sha256:${hash("descriptor")}` };
+  const pack = { id: "helianthus.pack.thermal", version: "1.0.0" };
+  const descriptor = { ...identity, descriptor_version: "helianthus.gateway.portal-descriptor/v1", groups: [], fields: [], views: [], diagnostics: [] };
+  const catalog = {
+    contract: "helianthus.gateway.portal-catalog/v1", catalog_revision: hash("revision"), catalog_digest: hash("catalog"), evaluation_instant: "synthetic-evaluation",
+    domains: ["evse", "infrastructure", "pv", "storage", "thermal"].map((id) => ({ pack: { id: `helianthus.pack.${id}`, version: id === "storage" ? "1.1.0" : "1.0.0" }, source_state: "PRESENT" })),
+    contributions: [identity], descriptors: [descriptor], resources: [], fields: [], actions: [], quarantines: [],
+  };
+  const assets = resources.map(({ id, fields }) => {
+    const revisions = { semantic: "1", identity: "2", facts: "3", services: "4", capabilities: "5" };
+    const binding = { binding_id: `binding:${id}`, source_epoch_id: "epoch:fixture", driver_generation: "1", asset_id: `asset:${id}`, state: "current" };
+    const snapshot = { asset_id: binding.asset_id, snapshot_id: `snapshot:${id}`, revisions, bindings: [binding], facts: [] };
+    const tuple = { snapshot_id: snapshot.snapshot_id, revisions };
+    const asset = { asset_id: binding.asset_id, snapshot, evaluation: { ...tuple, evaluation_digest: "synthetic-evaluation", facts: [] }, projection: { ...tuple, dispositions: [] }, selections: [] };
+    descriptor.groups.push({ id, order: descriptor.groups.length, resource_context: id, label: { default: id } });
+    descriptor.views.push({ id, group: id, label: { default: id }, renderer: "summary", slot: "lens", field_ids: [], diagnostic_ids: [], order: 0 });
+    for (const [label, value, unavailable = false] of fields) {
+      const fieldId = `${id}.${label}`;
+      const key = { pack_id: pack.id, pack_version: pack.version, fact_id: fieldId, dimensions: [] };
+      const candidate = { candidate_id: `candidate:${fieldId}`, revision: "1", key, value, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: unavailable ? "unavailable" : "available", reasons: [] } };
+      snapshot.facts.push({ key, candidates: [candidate], conflicts: [] });
+      asset.evaluation.facts.push({ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: candidate.quality.availability });
+      asset.projection.dispositions.push({ kind: "fact", item_id: fieldId, outcome: "exact", source_keys: [key], loss: [] });
+      descriptor.fields.push({ id: fieldId, group: id, label: { default: label }, ref: { pack, id: fieldId, version: "1.0.0" }, order: descriptor.fields.length });
+      descriptor.views.at(-1).field_ids.push(fieldId);
+    }
+    catalog.resources.push({ id, domain: pack.id, service_id: "fixture.service", capability_id: "fixture.read", contribution_driver_id: identity.driver_id, contribution_manifest_id: identity.manifest_id, contribution_manifest_version: identity.manifest_version, state: "CURRENT", source: { asset_id: snapshot.asset_id, snapshot_id: snapshot.snapshot_id, revision: JSON.stringify(revisions), evaluation_digest: asset.evaluation.evaluation_digest, binding_id: binding.binding_id, source_epoch: binding.source_epoch_id, driver_generation: binding.driver_generation, snapshot: structuredClone(snapshot), evaluation: {}, projection: {}, selections: [] } });
+    return asset;
   });
+  return { catalog, assets };
+}
+
+async function renderSemanticContributionFixture(fixture) {
+  const sourcePath = fileURLToPath(new URL("../src/app.js", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+  const catalog = createDeferredResponse({ data: { portalCatalogV1: fixture.catalog } });
+  const snapshot = createDeferredResponse({ data: { semanticSnapshot: { assets: fixture.assets } } });
   const semanticList = { innerHTML: "" };
-  const { shell } = createPortalShellHarness({
-    source,
-    sourcePath,
-    elements: new Map(),
-    fetchImpl() { return snapshot.promise; },
+  const { shell, fetchRequests } = createPortalShellHarness({
+    source, sourcePath, elements: new Map(),
+    fetchImpl(url) {
+      if (url === "/fixture/catalog") return catalog.promise;
+      if (url === "/fixture/graphql") return snapshot.promise;
+      throw new Error(`unexpected endpoint: ${url}`);
+    },
   });
+  shell._portalCatalogEndpoint = "/fixture/catalog";
+  shell._semanticGraphqlEndpoint = "/fixture/graphql";
+  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
   const token = shell.beginBootstrapLifecycle();
   const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
+  catalog.resolve();
   snapshot.resolve();
-  await render;
+  assert.equal(await render, true);
+  assert.deepEqual(fetchRequests, ["/fixture/catalog", "/fixture/graphql"]);
+  return semanticList.innerHTML;
+}
 
-  assert.match(semanticList.innerHTML, /current=0\.0°C target=0\.0°C/);
-  assert.match(semanticList.innerHTML, /mode_changeable=off/);
-  assert.match(semanticList.innerHTML, /overrun=off/);
-  assert.match(semanticList.innerHTML, /mode=auto/);
-  assert.match(semanticList.innerHTML, /brand=&lt;empty&gt; vendor=&lt;empty&gt;/);
-  assert.match(semanticList.innerHTML, /<strong>Office<\/strong>.*current=unavailable.*target=unavailable/);
+test("PortalShell renders promoted false and zero values distinctly from unavailable", async () => {
+  const zero = { kind: "quantity", quantity: { number: { coefficient: "0", exponent10: 0 }, unit: "unit.degree_celsius" } };
+  const off = { kind: "boolean", boolean: false };
+  const auto = { kind: "text", text: "auto" };
+  const empty = { kind: "text", text: "" };
+  const fixture = createSemanticContributionFixture([
+    { id: "Kitchen", fields: [["current", zero], ["target", zero], ["mode_changeable", off], ["mode", auto]] },
+    { id: "DHW", fields: [["current", zero], ["target", zero], ["mode_changeable", off], ["overrun", off], ["mode", auto]] },
+    { id: "System", fields: [["outdoor", zero], ["brand", empty], ["vendor", empty]] },
+    { id: "Office", fields: [["current", zero, true], ["target", zero, true]] },
+  ]);
+  const html = await renderSemanticContributionFixture(fixture);
+  const card = (id) => html.split('<li class="portal-catalog-resource">').find((row) => row.includes(` — ${id}</strong>`));
+  for (const id of ["Kitchen", "DHW"]) {
+    assert.match(card(id), /current: 0e0 unit.degree_celsius/);
+    assert.match(card(id), /target: 0e0 unit.degree_celsius/);
+    assert.match(card(id), /mode_changeable: false/);
+    assert.match(card(id), /mode: auto/);
+    assert.doesNotMatch(card(id), /withheld|availability=unavailable/);
+  }
+  assert.match(card("DHW"), /overrun: false/);
+  assert.match(card("System"), /outdoor: 0e0 unit.degree_celsius/);
+  assert.match(card("System"), /brand: &lt;empty&gt;/);
+  assert.match(card("System"), /vendor: &lt;empty&gt;/);
+  assert.match(card("Office"), /current: withheld;[^<]*availability=unavailable/);
+  assert.match(card("Office"), /target: withheld;[^<]*availability=unavailable/);
+  assert.doesNotMatch(card("Office"), /0e0|: false/);
 });
 
 test("PortalShell renders the provider-owned FM5 degraded verdict", async () => {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourcePath = path.resolve(here, "../src/app.js");
-  const source = await readFile(sourcePath, "utf8");
   for (const reason of ["EVIDENCE_STALE", "INCOHERENT_ACQUISITION"]) {
-    const snapshot = createDeferredResponse({
-      fm5_semantic_mode: "GPIO_ONLY",
-      fm5_semantic_degraded_reason: reason,
-      fm5_semantic_evidence_revision: "fm5-g7-a42",
-    });
-    const semanticList = { innerHTML: "" };
-    const { shell } = createPortalShellHarness({
-      source,
-      sourcePath,
-      elements: new Map(),
-      fetchImpl() { return snapshot.promise; },
-    });
-    const token = shell.beginBootstrapLifecycle();
-    const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
-    snapshot.resolve();
-    await render;
-
-    assert.match(semanticList.innerHTML, new RegExp(`mode=GPIO_ONLY reason=${reason} revision=fm5-g7-a42`));
+    const fixture = createSemanticContributionFixture([{ id: "FM5", fields: [
+      ["mode", { kind: "text", text: "GPIO_ONLY" }],
+      ["reason", { kind: "text", text: reason }],
+      ["revision", { kind: "text", text: "fm5-g7-a42" }],
+    ] }]);
+    for (const fact of fixture.assets[0].snapshot.facts) fact.candidates[0].quality.availability = "degraded";
+    for (const fact of fixture.assets[0].evaluation.facts) fact.effective_availability = "degraded";
+    const html = await renderSemanticContributionFixture(fixture);
+    assert.match(html, /mode: GPIO_ONLY/);
+    assert.match(html, new RegExp(`reason: ${reason}`));
+    assert.match(html, /revision: fm5-g7-a42/);
+    assert.match(html, /availability=degraded/);
+    assert.match(html, new RegExp(`mode: GPIO_ONLY.*reason: ${reason}.*revision: fm5-g7-a42`));
   }
 });

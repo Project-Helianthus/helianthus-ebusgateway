@@ -1,0 +1,272 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import vm from "node:vm";
+
+const source = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
+const digest = (text) => createHash("sha256").update(text).digest("hex");
+const clone = structuredClone;
+
+function fixture(count = 6) {
+  const catalog = {
+    contract: "helianthus.gateway.portal-catalog/v1", catalog_revision: digest("revision"), catalog_digest: digest("catalog"), evaluation_instant: "synthetic-evaluation",
+    domains: ["evse", "infrastructure", "pv", "storage", "thermal"].map((id) => ({ pack: { id: `helianthus.pack.${id}`, version: id === "storage" ? "1.1.0" : "1.0.0" }, source_state: "PRESENT" })),
+    contributions: [], descriptors: [], resources: [], fields: [], actions: [], quarantines: [],
+  };
+  const assets = [];
+  for (let i = 0; i < count; i++) {
+    const identity = { driver_id: `fixture.driver.${i}`, manifest_id: `portal.fixture.${i}`, manifest_version: "1.0.0", digest: `sha256:${digest(`descriptor-${i}`)}` };
+    const group = { id: "summary", order: 0, resource_context: "resource", label: { default: "Summary" } };
+    const ref = { pack: { id: "helianthus.pack.pv", version: "1.0.0" }, id: "fixture.power", version: "1.0.0" };
+    const key = { pack_id: ref.pack.id, pack_version: ref.pack.version, fact_id: ref.id, dimensions: [] };
+    const revisions = { semantic: "1", identity: "2", facts: "3", services: "4", capabilities: "5" };
+    const binding = { binding_id: "binding:fixture", source_epoch_id: "epoch:fixture", driver_generation: (2n ** 53n + 1n).toString(), asset_id: `asset:fixture:${i}`, state: "current" };
+    const candidate = { candidate_id: "candidate:fixture", revision: "7", key: clone(key), value: { kind: "quantity", quantity: { number: { coefficient: "0", exponent10: 0 }, unit: "unit.watt" } }, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: "available", reasons: [] } };
+    const snapshot = { asset_id: binding.asset_id, snapshot_id: `snapshot:fixture:${i}`, revisions, bindings: [binding], facts: [{ key, candidates: [candidate], conflicts: [] }] };
+    const tuple = { snapshot_id: snapshot.snapshot_id, revisions: clone(revisions) };
+    const asset = { asset_id: snapshot.asset_id, snapshot, evaluation: { ...clone(tuple), evaluation_digest: `sha256:${digest("shared-evaluation")}`, facts: [{ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: "available" }] }, projection: { ...clone(tuple), dispositions: [{ kind: "fact", item_id: ref.id, outcome: "exact", source_keys: [clone(key)], loss: [] }] }, selections: [] };
+    const field = { id: "power", group: group.id, label: { default: "Power" }, ref, unit_ref: { ...clone(ref), id: "unit.watt" }, order: 0 };
+    catalog.contributions.push(identity);
+    catalog.descriptors.push({ ...identity, descriptor_version: "helianthus.gateway.portal-descriptor/v1", groups: [group], fields: [field], views: [{ id: "summary", group: group.id, label: { default: "Readings" }, renderer: "summary", slot: "lens", field_ids: [field.id], diagnostic_ids: [], order: 0 }], diagnostics: [] });
+    catalog.resources.push({ id: "resource", domain: ref.pack.id, service_id: "fixture.service", capability_id: "fixture.read", contribution_driver_id: identity.driver_id, contribution_manifest_id: identity.manifest_id, contribution_manifest_version: identity.manifest_version, state: "CURRENT", source: { asset_id: snapshot.asset_id, snapshot_id: snapshot.snapshot_id, revision: JSON.stringify(revisions), evaluation_digest: "catalog-local-evaluation", binding_id: binding.binding_id, source_epoch: binding.source_epoch_id, driver_generation: binding.driver_generation, snapshot: clone(snapshot), evaluation: {}, projection: {}, selections: [] } });
+    assets.push(asset);
+  }
+  return { catalog, assets };
+}
+
+function harness() {
+  const document = { activeElement: null };
+  const node = () => ({ innerHTML: "", textContent: "", attributes: {}, handlers: {}, setAttribute(k, v) { this.attributes[k] = v; }, addEventListener(k, f) { this.handlers[k] = f; }, focus() { document.activeElement = this; } });
+  const list = node(), notice = node(), button = node(), search = node();
+  const elements = new Map([["semantic-list", list], ["semantic-notice", notice], ["semantic-refresh", button], ["search-input", search]]);
+  const requests = [], queue = [], deadlines = [];
+  const sandbox = { HTMLElement: class {}, document, customElements: { define() {} }, console, AbortController, TextEncoder, setTimeout(callback, delay) { deadlines.push(callback); return setTimeout(callback, delay); }, clearTimeout, fetch: async (url, init) => {
+    requests.push({ url, body: JSON.parse(init.body), signal: init.signal });
+    assert.ok(queue.length, "unexpected request");
+    const next = queue.shift();
+    if (next instanceof Error) throw next;
+    return await next;
+  } };
+  vm.createContext(sandbox);
+  vm.runInContext(`${source}\nglobalThis.Shell = PortalShell; globalThis.readQuery = PORTAL_SEMANTIC_QUERY;`, sandbox);
+  const shell = new sandbox.Shell(); shell.isConnected = true;
+  shell.querySelector = (selector) => elements.get(selector.match(/data-role="([^"]+)"/)?.[1]) || null;
+  shell.querySelectorAll = () => [];
+  shell._portalCatalogEndpoint = "/fixture/catalog"; shell._semanticGraphqlEndpoint = "/fixture/graphql";
+  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
+  shell.beginBootstrapLifecycle(); shell.bindEvents();
+  const respond = (data) => queue.push({ ok: true, json: async () => ({ data }) });
+  return { shell, list, notice, button, search, document, requests, queue, query: sandbox.readQuery, deadline: () => deadlines.at(-1)(),
+    pair(f = fixture()) { respond({ portalCatalogV1: f.catalog }); respond({ semanticSnapshot: { assets: f.assets } }); },
+    refresh: () => shell.loadSemanticPreview(list),
+  };
+}
+
+const candidate = (f, index = 0) => f.assets[index].snapshot.facts[0].candidates[0];
+
+test("M23 sixth contribution renders through production preview with the same pack and no family branch", async () => {
+  const h = harness(), f = fixture(); h.pair(f);
+  assert.equal(await h.refresh(), true);
+  assert.equal((h.list.innerHTML.match(/class="portal-catalog-resource"/g) || []).length, 6);
+  assert.match(h.list.innerHTML, /fixture.driver.5\/portal.fixture.5@1.0.0/);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  assert.deepEqual(h.requests.map((request) => request.url), ["/fixture/catalog", "/fixture/graphql"]);
+  assert.deepEqual(h.requests[1].body.variables.assetIds, f.assets.map((asset) => asset.asset_id));
+  assert.match(h.query, /asset_id: assetId/); assert.match(h.query, /retained_observations: retainedObservations/);
+  assert.match(h.query, /evidence \{ \.\.\.ReadSemanticEvidenceRef/);
+});
+
+test("M23 values distinguish zero, false, empty, unknown, withheld and projection loss", async () => {
+  const h = harness(), f = fixture();
+  candidate(f, 1).value = { kind: "boolean", boolean: false };
+  candidate(f, 2).value = { kind: "text", text: "" };
+  candidate(f, 3).value = null;
+  f.assets[4].projection.dispositions[0].outcome = "withheld";
+  candidate(f, 4).value = { kind: "text", text: "must-never-render" };
+  const last = f.assets[5];
+  candidate(f, 5).value.quantity.number = { coefficient: ((2n ** 53n + 1n) * 10n ** 5n + (123n * 100n + 45n)).toString(), exponent10: -8 };
+  last.projection.dispositions[0].outcome = "transformed";
+  last.projection.dispositions[0].loss.push({ kind: "precision", description: "synthetic loss", reversible: false });
+  last.evaluation.facts[0].freshness = "stale";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  for (const text of [/Power: 0e0/, /Power: false/, /Power: &lt;empty&gt;/, /Power: unknown/, /Power: withheld/, /synthetic loss/, /historical/]) assert.match(h.list.innerHTML, text);
+  assert.ok(h.list.innerHTML.includes(["9007", "1992", "5474", "0993", "1234", "5e-8 unit.watt"].join("")));
+  assert.doesNotMatch(h.list.innerHTML, /must-never-render/);
+});
+
+test("M23 unavailable asset keeps readable siblings and escapes supplied labels", async () => {
+  const h = harness(), f = fixture(2);
+  f.assets[0] = { asset_id: f.assets[0].asset_id, selections: [], unavailable_reason: "semantic.read.reason.publication_withheld" };
+  f.catalog.descriptors[1].fields[0].label.default = "<script>fixture</script>";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /publication_withheld/); assert.match(h.list.innerHTML, /0e0 unit.watt/);
+  assert.match(h.list.innerHTML, /&lt;script&gt;/); assert.doesNotMatch(h.list.innerHTML, /<script>/);
+});
+
+test("M23 read error announces historical retained cards and preserves Refresh focus", async () => {
+  const h = harness(); h.pair(); await h.refresh();
+  const previous = h.list.innerHTML;
+  h.button.focus(); h.queue.push(new Error("synthetic failure"));
+  assert.equal(await h.refresh(), false);
+  assert.equal(h.list.innerHTML, previous); assert.equal(h.document.activeElement, h.button);
+  assert.match(h.notice.textContent, /failed.*historical last valid/);
+  assert.equal(h.list.attributes["aria-busy"], "false");
+  h.pair(); h.button.handlers.click(); await new Promise(setImmediate);
+  assert.match(h.notice.textContent, /loaded/); assert.equal(h.document.activeElement, h.button);
+});
+
+test("M23 pending and overlapping reads expose busy state and ignore late completions", async () => {
+  const h = harness(); let complete;
+  h.queue.push(new Promise((resolve) => { complete = resolve; }));
+  const old = h.refresh(); assert.equal(h.list.attributes["aria-busy"], "true");
+  assert.match(h.notice.textContent, /Loading/);
+  h.pair(); assert.equal(await h.refresh(), true); const previous = h.list.innerHTML;
+  complete({ ok: true, json: async () => ({ data: { portalCatalogV1: fixture(1).catalog } }) });
+  assert.equal(await old, false); assert.equal(h.list.innerHTML, previous);
+  assert.equal(h.list.attributes["aria-busy"], "false"); assert.equal(h.requests[0].signal.aborted, true);
+});
+
+test("M23 unavailable operations and unsafe endpoints fail closed without native fallback", async () => {
+  for (const configure of [
+    (s) => { s._portalRead.unavailable_operations = ["semanticSnapshot"]; },
+    (s) => { s._portalRead.unavailable_operations = ["PortalCatalogV1"]; },
+    (s) => { s._portalRead = undefined; },
+    (s) => { s._semanticGraphqlEndpoint = "//fixture.invalid/graphql"; },
+    (s) => { s._semanticGraphqlEndpoint = "/fixture/../graphql"; },
+  ]) {
+    const h = harness(); configure(h.shell); assert.equal(await h.refresh(), false);
+    assert.equal(h.requests.length, 0); assert.match(h.list.innerHTML, /unavailable/);
+  }
+});
+
+// Each participating identity dimension has its own mutation. Removing that
+// production comparison would admit the changed shared source and fail the test.
+const sourceMutations = {
+  asset_id: (a) => { a.snapshot.asset_id = "asset:other"; },
+  snapshot_id: (a) => { a.snapshot.snapshot_id = "snapshot:other"; a.evaluation.snapshot_id = a.projection.snapshot_id = a.snapshot.snapshot_id; },
+  binding_id: (a) => { a.snapshot.bindings[0].binding_id = "binding:other"; },
+  source_epoch: (a) => { a.snapshot.bindings[0].source_epoch_id = "epoch:other"; },
+  driver_generation: (a) => { a.snapshot.bindings[0].driver_generation = (2n ** 53n).toString(); },
+  ...Object.fromEntries(["semantic", "identity", "facts", "services", "capabilities"].map((key) => [`revisions.${key}`, (a) => { a.snapshot.revisions[key] = "8"; a.evaluation.revisions[key] = a.projection.revisions[key] = "8"; }])),
+};
+for (const [field, mutate] of Object.entries(sourceMutations)) test(`M23 source identity mismatch withholds values after bounded retries: ${field}`, async () => {
+  const h = harness(), f = fixture(1); mutate(f.assets[0]);
+  for (let i = 0; i < 3; i++) h.pair(f);
+  assert.equal(await h.refresh(), false); assert.equal(h.requests.length, 6);
+  assert.match(h.list.innerHTML, /generation conflict/); assert.doesNotMatch(h.list.innerHTML, /Power:/);
+});
+
+test("M23 evaluation drift does not conflict; shared freshness controls withholding", async () => {
+  const h = harness(), f = fixture(1);
+  f.assets[0].evaluation.evaluation_digest = `sha256:${digest("later evaluation")}`;
+  f.assets[0].evaluation.facts[0].freshness = "expired";
+  f.assets[0].evaluation.facts[0].effective_availability = "unavailable";
+  h.pair(f); assert.equal(await h.refresh(), true); assert.equal(h.requests.length, 2);
+  assert.match(h.list.innerHTML, /Power: withheld/); assert.match(h.list.innerHTML, /freshness=expired/);
+});
+
+test("M23 mismatch refetches both sources and converges on a matching pair", async () => {
+  const h = harness(), changed = fixture(1); sourceMutations.binding_id(changed.assets[0]);
+  h.pair(changed); h.pair(fixture(1));
+  assert.equal(await h.refresh(), true); assert.equal(h.requests.length, 4); assert.match(h.list.innerHTML, /Power: 0e0/);
+});
+
+for (const field of ["driver_id", "manifest_id", "manifest_version"]) test(`M23 descriptor identity compares ${field}`, async () => {
+  const h = harness(), f = fixture(1);
+  f.catalog.descriptors[0][field] += ".other";
+  h.pair(f); assert.equal(await h.refresh(), false); assert.doesNotMatch(h.list.innerHTML, /Power:/);
+});
+
+test("M23 replacement catalog withdraws cards; unsupported view preserves valid siblings", async () => {
+  const h = harness(); h.pair(); await h.refresh();
+  const f = fixture(2); f.catalog.descriptors[0].views[0].renderer = "unrecognized";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /unsupported contribution view/); assert.match(h.list.innerHTML, /Power: 0e0/);
+  assert.doesNotMatch(h.list.innerHTML, /fixture.driver.5/);
+});
+
+for (const field of ["pack_id", "pack_version", "fact_id", "dimensions"]) test(`M23 projection FactKey includes ${field}`, async () => {
+  const h = harness(), f = fixture(1), key = f.assets[0].projection.dispositions[0].source_keys[0];
+  key[field] = field === "dimensions" ? [{ id: "fixture.dimension", value: { kind: "boolean", boolean: false } }] : "other";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: withheld/); assert.doesNotMatch(h.list.innerHTML, /Power: 0e0/);
+});
+
+for (const field of ["candidate_id", "revision", "key"]) test(`M23 selected candidate requires exact ${field}`, async () => {
+  const h = harness(), f = fixture(1), asset = f.assets[0], selected = candidate(f);
+  asset.selections.push({ snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(selected.key), selected_candidate: selected.candidate_id, candidate_revision: selected.revision });
+  if (field === "key") selected.key.dimensions.push({ id: "fixture.dimension", value: { kind: "boolean", boolean: true } });
+  else selected[field] = "other";
+  h.pair(f); assert.equal(await h.refresh(), true); assert.match(h.list.innerHTML, /Power: withheld/);
+});
+
+test("M23 GraphQL errors and malformed shared responses retain previous valid cards", async () => {
+  for (const response of [
+    { errors: [{ message: "synthetic error" }] },
+    { data: { semanticSnapshot: { assets: [] } } },
+    { data: { semanticSnapshot: { assets: [{ asset_id: "asset:fixture:0", selections: [], unavailable_reason: "invented" }] } } },
+  ]) {
+    const h = harness(), f = fixture(1); h.pair(f); await h.refresh(); const previous = h.list.innerHTML;
+    h.queue.push({ ok: true, json: async () => ({ data: { portalCatalogV1: f.catalog } }) });
+    h.queue.push({ ok: true, json: async () => response });
+    assert.equal(await h.refresh(), false); assert.equal(h.list.innerHTML, previous); assert.match(h.notice.textContent, /historical/);
+  }
+});
+
+test("M23 disconnect fences a late semantic completion", async () => {
+  const h = harness(); let resolve;
+  h.queue.push(new Promise((complete) => { resolve = complete; }));
+  const pending = h.refresh(); h.shell.endBootstrapLifecycle();
+  resolve({ ok: true, json: async () => ({ data: { portalCatalogV1: fixture(1).catalog } }) });
+  assert.equal(await pending, false); assert.equal(h.requests.length, 1); assert.equal(h.list.innerHTML, "");
+  assert.equal(h.requests[0].signal.aborted, true);
+});
+
+for (const field of ["id", "value.kind", "value.boolean"]) test(`M23 dimension identity includes ${field}`, async () => {
+  const h = harness(), f = fixture(1), asset = f.assets[0];
+  const dimension = { id: "fixture.dimension", value: { kind: "boolean", boolean: false } };
+  asset.snapshot.facts[0].key.dimensions = [clone(dimension)];
+  candidate(f).key.dimensions = [clone(dimension)];
+  const key = asset.projection.dispositions[0].source_keys[0]; key.dimensions = [clone(dimension)];
+  if (field === "id") key.dimensions[0].id = "fixture.other";
+  if (field === "value.kind") key.dimensions[0].value.kind = "text";
+  if (field === "value.boolean") key.dimensions[0].value.boolean = true;
+  h.pair(f); assert.equal(await h.refresh(), true); assert.match(h.list.innerHTML, /Power: withheld/);
+});
+
+test("M23 exact selected candidate is readable while duplicate selection policies withhold", async () => {
+  const f = fixture(1), asset = f.assets[0], selected = candidate(f);
+  const selection = { snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(selected.key), selected_candidate: selected.candidate_id, candidate_revision: selected.revision };
+  asset.selections = [selection];
+  const h = harness(); h.pair(f); assert.equal(await h.refresh(), true); assert.match(h.list.innerHTML, /Power: 0e0/);
+  asset.selections.push(clone(selection)); h.pair(f); assert.equal(await h.refresh(), true); assert.match(h.list.innerHTML, /Power: withheld/);
+});
+
+test("M23 whole-read bound withholds previous values and reports limit", async () => {
+  const h = harness(), f = fixture(1); h.pair(f); await h.refresh();
+  candidate(f).value = { kind: "text", text: "x".repeat(4 * 1024 * 1024) };
+  h.pair(f); assert.equal(await h.refresh(), false);
+  assert.match(h.list.innerHTML, /read limit/); assert.doesNotMatch(h.list.innerHTML, /Power:/);
+});
+
+test("M23 views remain scoped to their resource context and follow group/view order", async () => {
+  const h = harness(), f = fixture(1), descriptor = f.catalog.descriptors[0];
+  descriptor.groups.push({ id: "other", resource_context: "another-resource", order: -1, label: { default: "Other" } });
+  descriptor.views.push({ ...clone(descriptor.views[0]), id: "other", group: "other", label: { default: "must-never-render" } });
+  descriptor.views.push({ ...clone(descriptor.views[0]), id: "first", order: -1, label: { default: "First view" } });
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.doesNotMatch(h.list.innerHTML, /must-never-render/);
+  assert.ok(h.list.innerHTML.indexOf("First view") < h.list.innerHTML.indexOf("Readings"));
+});
+
+test("M23 semantic timeout announces failure and retains last valid cards", async () => {
+  const h = harness(); h.pair(fixture(1)); await h.refresh(); const previous = h.list.innerHTML;
+  // Model an aborting fetch while invoking the same deadline callback as the browser.
+  let abort;
+  h.queue.push(new Promise((resolve, reject) => { abort = () => reject(new Error("synthetic abort")); }));
+  const pending = h.refresh();
+  h.deadline(); abort();
+  assert.equal(await pending, false); assert.equal(h.list.innerHTML, previous);
+  assert.match(h.notice.textContent, /timed out.*historical last valid/);
+});

@@ -876,19 +876,148 @@ function formatYesNo(value) {
   return "n/a";
 }
 
-function formatSemanticTemperature(value) {
-  return value == null ? "unavailable" : formatTemperature(value);
+// Typed shared-read selection uses aliases to restore public SemReg member names.
+const PORTAL_SEMANTIC_QUERY = `query PortalSemanticContributions($assetIds: [ID!]!) { semanticSnapshot(assetIds: $assetIds) { assets { ...ReadAssetSnapshotRead } } }
+fragment ReadAssetSnapshotRead on AssetSnapshotRead { asset_id: assetId snapshot { ...ReadSemanticSnapshot } evaluation { ...ReadSemanticEvaluationView } projection { ...ReadSemanticProjectionReport } selections { ...ReadSemanticSelection } unavailable_reason: unavailableReason }
+fragment ReadSemanticSnapshot on SemanticSnapshot { contract snapshot_id: snapshotId asset_id: assetId revisions { ...ReadSemanticRevisionVector } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } sources { ...ReadSemanticSourceDescriptor } bindings { ...ReadSemanticNativeBinding } identity_links: identityLinks { ...ReadSemanticIdentityLink } facts { ...ReadSemanticFactEnvelope } retained_observations: retainedObservations { ...ReadSemanticRetainedObservationRecord } services { ...ReadSemanticServiceInstance } capabilities { ...ReadSemanticCapabilityInstance } fences { ...ReadSemanticGenerationFence } cursors { ...ReadSemanticPublicationCursor } }
+fragment ReadSemanticRevisionVector on SemanticRevisionVector { semantic identity facts services capabilities }
+fragment ReadSemanticTimePoint on SemanticTimePoint { unix_nanoseconds: unixNanoseconds clock_id: clockId uncertainty_ns: uncertaintyNs }
+fragment ReadSemanticMonotonicPoint on SemanticMonotonicPoint { clock_epoch_id: clockEpochId nanoseconds }
+fragment ReadSemanticSourceDescriptor on SemanticSourceDescriptor { source_id: sourceId source_epoch_id: sourceEpochId protocol_id: protocolId profile_id: profileId profile_version: profileVersion registry_evidence: registryEvidence { ...ReadSemanticEvidenceRef } started_at: startedAt { ...ReadSemanticTimePoint } state revision }
+fragment ReadSemanticEvidenceRef on SemanticEvidenceRef { owner kind digest contract access redaction }
+fragment ReadSemanticNativeBinding on SemanticNativeBinding { binding_id: bindingId asset_id: assetId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration native_resource: nativeResource { ...ReadSemanticEvidenceRef } state revision }
+fragment ReadSemanticIdentityLink on SemanticIdentityLink { asset_id: assetId binding_id: bindingId state basis { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticFactEnvelope on SemanticFactEnvelope { asset_id: assetId key { ...ReadSemanticFactKey } candidates { ...ReadSemanticFactCandidate } conflicts { ...ReadSemanticConflict } revision }
+fragment ReadSemanticFactKey on SemanticFactKey { pack_id: packId pack_version: packVersion fact_id: factId dimensions { ...ReadSemanticDimension } }
+fragment ReadSemanticDimension on SemanticDimension { id value { ...ReadSemanticValue } }
+fragment ReadSemanticValue on SemanticValue { kind quantity { ...ReadSemanticQuantity } boolean text symbol { ...ReadSemanticSymbol } symbols { ...ReadSemanticSymbol } time { ...ReadSemanticTimePoint } }
+fragment ReadSemanticQuantity on SemanticQuantity { number { ...ReadSemanticDecimal } unit }
+fragment ReadSemanticDecimal on SemanticDecimal { coefficient exponent10 }
+fragment ReadSemanticSymbol on SemanticSymbol { namespace token known }
+fragment ReadSemanticFactCandidate on SemanticFactCandidate { candidate_id: candidateId key { ...ReadSemanticFactKey } value { ...ReadSemanticValue } quality { ...ReadSemanticQuality } times { ...ReadSemanticTimes } freshness_policy: freshnessPolicy { ...ReadSemanticFreshnessPolicy } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration origin { ...ReadSemanticOriginRef } causal { ...ReadSemanticCausalContext } evidence { ...ReadSemanticEvidenceRef } derivation { ...ReadSemanticDerivation } revision }
+fragment ReadSemanticQuality on SemanticQuality { assertion qualification promotion validity availability freshness reasons }
+fragment ReadSemanticTimes on SemanticTimes { phenomenon_at: phenomenonAt { ...ReadSemanticTimePoint } source_at: sourceAt { ...ReadSemanticTimePoint } received_at: receivedAt { ...ReadSemanticTimePoint } receipt_monotonic: receiptMonotonic { ...ReadSemanticMonotonicPoint } evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } }
+fragment ReadSemanticFreshnessPolicy on SemanticFreshnessPolicy { policy_id: policyId version fresh_for_ns: freshForNs retain_for_ns: retainForNs max_wall_uncertainty_ns: maxWallUncertaintyNs }
+fragment ReadSemanticOriginRef on SemanticOriginRef { origin_id: originId kind source_id: sourceId source_epoch_id: sourceEpochId binding_id: bindingId evidence { ...ReadSemanticEvidenceRef } }
+fragment ReadSemanticCausalContext on SemanticCausalContext { origin { ...ReadSemanticOriginRef } correlation_id: correlationId parent_correlation_id: parentCorrelationId hop_count: hopCount max_hops: maxHops first_seen_at: firstSeenAt { ...ReadSemanticTimePoint } expires_at: expiresAt { ...ReadSemanticTimePoint } path }
+fragment ReadSemanticDerivation on SemanticDerivation { algorithm version inputs { ...ReadSemanticDerivationInput } evidence { ...ReadSemanticEvidenceRef } }
+fragment ReadSemanticDerivationInput on SemanticDerivationInput { candidate_id: candidateId candidate_revision: candidateRevision source_paths: sourcePaths { ...ReadSemanticSourcePathRef } }
+fragment ReadSemanticSourcePathRef on SemanticSourcePathRef { binding_id: bindingId source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration }
+fragment ReadSemanticConflict on SemanticConflict { conflict_id: conflictId kind candidates evidence { ...ReadSemanticEvidenceRef } state }
+fragment ReadSemanticRetainedObservationRecord on SemanticRetainedObservationRecord { contract candidate { ...ReadSemanticFactCandidate } removal }
+fragment ReadSemanticServiceInstance on SemanticServiceInstance { instance_id: instanceId asset_id: assetId definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability revision }
+fragment ReadSemanticDefinitionRef on SemanticDefinitionRef { pack { ...ReadSemanticPackRef } id version }
+fragment ReadSemanticPackRef on SemanticPackRef { id version }
+fragment ReadSemanticCapabilityInstance on SemanticCapabilityInstance { instance_id: instanceId asset_id: assetId service_instance: serviceInstance definition { ...ReadSemanticDefinitionRef } binding_id: bindingId source_epoch_id: sourceEpochId driver_generation: driverGeneration qualification availability constraints { ...ReadSemanticTypedField } activation_evidence: activationEvidence { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticTypedField on SemanticTypedField { id value { ...ReadSemanticValue } }
+fragment ReadSemanticGenerationFence on SemanticGenerationFence { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration reason evidence { ...ReadSemanticEvidenceRef } revision }
+fragment ReadSemanticPublicationCursor on SemanticPublicationCursor { source_id: sourceId source_epoch_id: sourceEpochId driver_generation: driverGeneration last_sequence: lastSequence last_batch_digest: lastBatchDigest fenced }
+fragment ReadSemanticEvaluationView on SemanticEvaluationView { contract snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } context { ...ReadSemanticEvaluationContext } facts { ...ReadSemanticEvaluatedFact } retained_observations: retainedObservations { ...ReadSemanticEvaluatedRetainedObservation } evaluation_digest: evaluationDigest }
+fragment ReadSemanticEvaluationContext on SemanticEvaluationContext { evaluated_at: evaluatedAt { ...ReadSemanticTimePoint } evaluate_monotonic: evaluateMonotonic { ...ReadSemanticMonotonicPoint } }
+fragment ReadSemanticEvaluatedFact on SemanticEvaluatedFact { candidate_id: candidateId candidate_revision: candidateRevision freshness effective_availability: effectiveAvailability }
+fragment ReadSemanticEvaluatedRetainedObservation on SemanticEvaluatedRetainedObservation { observation { ...ReadSemanticRetainedObservationRecord } freshness }
+fragment ReadSemanticProjectionReport on SemanticProjectionReport { contract manifest { ...ReadSemanticProjectionManifest } snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } requested { ...ReadSemanticRequestedItem } dispositions { ...ReadSemanticProjectionDisposition } causal { ...ReadSemanticCausalContext } }
+fragment ReadSemanticProjectionManifest on SemanticProjectionManifest { target_id: targetId target_version: targetVersion kernel_version: kernelVersion pack_versions: packVersions { ...ReadSemanticPackRef } mapping_revision: mappingRevision }
+fragment ReadSemanticRequestedItem on SemanticRequestedItem { item_id: itemId kind }
+fragment ReadSemanticProjectionDisposition on SemanticProjectionDisposition { kind item_id: itemId outcome source_keys: sourceKeys { ...ReadSemanticFactKey } loss { ...ReadSemanticLossDetail } reason }
+fragment ReadSemanticLossDetail on SemanticLossDetail { kind source_items: sourceItems description reversible }
+fragment ReadSemanticSelection on SemanticSelection { contract snapshot_id: snapshotId revisions { ...ReadSemanticRevisionVector } evaluation_digest: evaluationDigest context { ...ReadSemanticEvaluationContext } key { ...ReadSemanticFactKey } policy_id: policyId policy_version: policyVersion selected_candidate: selectedCandidate candidate_revision: candidateRevision presentation_only: presentationOnly }`;
+
+function semanticEndpoint(value) {
+  return typeof value === "string" && /^\/(?!\/)/.test(value) &&
+    !/[\\%?#\s]/.test(value) && !value.split("/").some((part) => part === "." || part === "..") && !value.includes("//");
 }
 
-function formatSemanticToggle(value) {
-  return value == null ? "unavailable" : formatToggle(value);
+function semanticKey(value) {
+  if (Array.isArray(value)) return `[${value.map(semanticKey).join(",")}]`;
+  if (isPlainRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${semanticKey(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
 }
 
-function formatSemanticText(value) {
-  if (value == null) {
-    return "unavailable";
+function semanticSourceMatches(resource, asset) {
+  const source = resource.source, snapshot = asset?.snapshot;
+  const revisions = ["semantic", "identity", "facts", "services", "capabilities"];
+  if (!snapshot || asset.asset_id !== source.asset_id || snapshot.asset_id !== source.asset_id ||
+      snapshot.snapshot_id !== source.snapshot_id || !revisions.every((key) =>
+        typeof snapshot.revisions?.[key] === "string" && snapshot.revisions[key] === source.snapshot.revisions?.[key])) return false;
+  if (![asset.evaluation, asset.projection, ...asset.selections].every((record) =>
+    record?.snapshot_id === snapshot.snapshot_id && semanticKey(record.revisions) === semanticKey(snapshot.revisions))) return false;
+  if (!asset.selections.every((selection) => selection.evaluation_digest === asset.evaluation.evaluation_digest)) return false;
+  return snapshot.bindings?.some((binding) => binding.asset_id === asset.asset_id && binding.state === "current" &&
+    binding.binding_id === source.binding_id && binding.source_epoch_id === source.source_epoch &&
+    typeof binding.driver_generation === "string" && binding.driver_generation === source.driver_generation);
+}
+
+function formatContributionValue(value) {
+  if (!value) return "unknown";
+  switch (value.kind) {
+    case "boolean": return typeof value.boolean === "boolean" ? String(value.boolean) : "unknown";
+    case "text": return typeof value.text === "string" ? (value.text === "" ? "<empty>" : value.text) : "unknown";
+    case "quantity": {
+      const number = value.quantity?.number;
+      // Keep the exact decimal coefficient and exponent; never pass through Number.
+      return number && /^-?\d+$/.test(number.coefficient) && Number.isInteger(number.exponent10)
+        ? `${number.coefficient}e${number.exponent10} ${value.quantity.unit}` : "unknown";
+    }
+    case "symbol": return value.symbol ? `${value.symbol.namespace}:${value.symbol.token} (known=${value.symbol.known})` : "unknown";
+    case "symbols": return Array.isArray(value.symbols) ? value.symbols.map((symbol) => `${symbol.namespace}:${symbol.token} (known=${symbol.known})`).join(", ") : "unknown";
+    case "time": return value.time ? `${value.time.unix_nanoseconds} (${value.time.clock_id})` : "unknown";
+    default: return "unknown";
   }
-  return value === "" ? "<empty>" : String(value);
+}
+
+function semanticContributionCards(catalog, assets) {
+  if (!Array.isArray(catalog.descriptors) || catalog.descriptors.length > PORTAL_CATALOG_MAX_CONTRIBUTIONS) throw new Error("invalid descriptors");
+  const descriptors = new Map();
+  for (const descriptor of catalog.descriptors) {
+    const key = catalogContributionKey(descriptor);
+    if (descriptors.has(key) || descriptor.descriptor_version !== "helianthus.gateway.portal-descriptor/v1" ||
+        !catalog.contributions.some((row) => catalogContributionKey(row) === key && row.digest === descriptor.digest) ||
+        ![descriptor.groups, descriptor.fields, descriptor.views, descriptor.diagnostics].every(Array.isArray)) throw new Error("invalid descriptor identity");
+    descriptors.set(key, descriptor);
+  }
+  const byAsset = new Map(assets.map((asset) => [asset.asset_id, asset]));
+  const order = (a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const html = [];
+  for (const resource of catalog.resources) {
+    const descriptor = descriptors.get(catalogContributionKey(resource));
+    if (!descriptor) throw new Error("missing admitted descriptor");
+    const asset = byAsset.get(resource.source.asset_id);
+    const identity = `${descriptor.driver_id}/${descriptor.manifest_id}@${descriptor.manifest_version}`;
+    const rows = [];
+    if (asset.unavailable_reason) rows.push(`unavailable: ${asset.unavailable_reason}`);
+    else if (descriptor.views.some((view) => !["summary", "field_table", "state_strip"].includes(view.renderer))) rows.push("unsupported contribution view");
+    else {
+      const groups = descriptor.groups.filter((group) => group.resource_context === resource.id).sort(order);
+      const views = groups.flatMap((group) => descriptor.views.filter((view) => view.group === group.id).sort(order));
+      for (const view of views) {
+        rows.push(view.label?.default || view.id);
+        for (const field of [...descriptor.fields].filter((field) => view.field_ids.includes(field.id)).sort(order)) {
+          const prefix = field.label?.default || field.id;
+          const facts = asset.snapshot.facts.filter((fact) => fact.key.pack_id === field.ref.pack.id && fact.key.pack_version === field.ref.pack.version && fact.key.fact_id === field.ref.id);
+          if (!facts.length) rows.push(`${prefix}: unknown`);
+          for (const fact of facts) {
+            const key = semanticKey(fact.key);
+            const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);
+            const selected = selections.length === 1 ? fact.candidates.filter((candidate) => candidate.candidate_id === selections[0].selected_candidate && candidate.revision === selections[0].candidate_revision) : fact.candidates;
+            const candidate = selections.length <= 1 && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
+            const evaluation = candidate && asset.evaluation.facts.find((entry) => entry.candidate_id === candidate.candidate_id && entry.candidate_revision === candidate.revision);
+            const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id && entry.source_keys.some((source) => semanticKey(source) === key));
+            const readable = dispositions.length === 1 && ["exact", "transformed"].includes(dispositions[0].outcome) && evaluation && ["available", "degraded"].includes(evaluation.effective_availability) && ["fresh", "stale"].includes(evaluation.freshness);
+            const value = readable ? formatContributionValue(candidate?.value) : "withheld";
+            rows.push(`${prefix}: ${value}; key=${key}; freshness=${evaluation?.freshness || "unknown"}; availability=${evaluation?.effective_availability || "unknown"}${evaluation?.freshness === "stale" ? "; historical" : ""}`);
+            if (candidate) rows.push(`Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
+            for (const disposition of dispositions) rows.push(`Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
+            if (!dispositions.length) rows.push("Projection: unknown");
+          }
+        }
+        for (const diagnostic of [...descriptor.diagnostics].filter((row) => view.diagnostic_ids.includes(row.id)).sort(order)) rows.push(`Diagnostic: ${diagnostic.label.default}; kind=${diagnostic.kind}; member=${diagnostic.member_id}`);
+      }
+      if (asset.snapshot.retained_observations?.length) rows.push("Retained observations are historical; inspect the native evidence and catalog details.");
+    }
+    html.push(`<li class="portal-catalog-resource"><strong>${escapeHtml(identity)} — ${escapeHtml(resource.id)}</strong>${rows.map((row) => `<p>${escapeHtml(row)}</p>`).join("")}</li>`);
+  }
+  return html.join("") || "<li>No admitted semantic contributions.</li>";
 }
 
 function formatInteger(value) {
@@ -1049,6 +1178,7 @@ class PortalShell extends HTMLElement {
   }
 
   beginBootstrapLifecycle() {
+    this._semanticHasValid = false;
     if (this.bootstrapLifecycleAbort) {
       this.bootstrapLifecycleAbort.abort();
     }
@@ -1098,6 +1228,10 @@ class PortalShell extends HTMLElement {
   }
 
   bindEvents() {
+    this.querySelector('[data-role="semantic-refresh"]')?.addEventListener("click", () => {
+      const list = this.querySelector('[data-role="semantic-list"]');
+      if (list) void this.loadSemanticPreview(list);
+    });
     const toggle = this.querySelector('[data-role="theme-toggle"]');
     const search = this.querySelector('[data-role="search-input"]');
     const correlation = this.querySelector('[data-role="timeline-correlation"]');
@@ -1477,6 +1611,8 @@ class PortalShell extends HTMLElement {
         ? bootstrap.endpoints.graphql
         : "/graphql";
       this._graphqlEndpoint = gqlEndpoint;
+      this._semanticGraphqlEndpoint = bootstrap.endpoints?.graphql;
+      this._portalRead = bootstrap.portal_read;
 	  this._portalCatalogEndpoint = typeof bootstrap?.endpoints?.portal_catalog === "string"
 	    ? bootstrap.endpoints.portal_catalog
 	    : "";
@@ -1510,7 +1646,8 @@ class PortalShell extends HTMLElement {
       if (capabilities.registry && listEl) {
         await this.loadRegistryPreview(listEl, lifecycleToken, lifecycleAbort);
       }
-      if (capabilities.semantic && semanticEl) {
+      this.setNavState("semantic", Boolean(this._portalCatalogEndpoint) || capabilities.semantic_pv);
+      if (semanticEl) {
         await this.loadSemanticPreview(semanticEl, lifecycleToken, lifecycleAbort);
       }
       if (busObservabilityEl) {
@@ -2591,124 +2728,75 @@ class PortalShell extends HTMLElement {
   }
 
   async loadSemanticPreview(listEl, lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
-    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort);
+    const generation = (this._semanticRequestGeneration || 0) + 1;
+    this._semanticRequestGeneration = generation;
+    const isActive = () => this.isActiveBootstrapLifecycle(lifecycleToken, lifecycleAbort) && this._semanticRequestGeneration === generation;
+    const notice = this.querySelector('[data-role="semantic-notice"]');
+    const announce = (text) => { if (notice) notice.textContent = text; };
+    this._semanticRequestAbort?.abort();
+    const request = beginPortalCatalogRequestAbort(lifecycleAbort);
+    this._semanticRequestAbort = request;
+    listEl.setAttribute?.("aria-busy", "true");
+    announce("Loading semantic contributions. Live updates unavailable; use Refresh.");
+    let conflict = false;
     try {
-      const response = await fetch("api/v1/semantic/snapshot");
-      const payload = await response.json();
-      if (!isActive()) {
-        return false;
-      }
-      const zones = Array.isArray(payload.zones) ? payload.zones : [];
-      const circuits = Array.isArray(payload.circuits) ? payload.circuits : [];
-      const radioDevices = Array.isArray(payload.radio_devices) ? payload.radio_devices : [];
-      const cylinders = Array.isArray(payload.cylinders) ? payload.cylinders : [];
-      const dhw = payload.dhw;
-      const rows = [];
-      rows.push(`<li><strong>Zones detected:</strong> ${zones.length}</li>`);
-      if (zones.length === 0) {
-        rows.push("<li>No semantic zones available.</li>");
-      } else {
-        zones.forEach((zone) => {
-          const state = zone.state || {};
-          const config = zone.config || {};
-          const name = escapeHtml(zone.name || zone.id || "zone");
-          const mode = escapeHtml(formatSemanticText(config.operating_mode));
-          const preset = escapeHtml(config.preset || "n/a");
-          const current = formatSemanticTemperature(state.current_temp_c);
-          const target = formatSemanticTemperature(config.target_temp_c);
-          const demand = formatPercent(state.heating_demand_pct);
-          const hvacAction = escapeHtml(state.hvac_action || "n/a");
-          const circuitType = escapeHtml(config.circuit_type || "n/a");
-          const changeable = escapeHtml(formatSemanticToggle(config.operation_mode_changeable));
-          const source = escapeHtml(formatSemanticText(config.source_label));
-          rows.push(
-            `<li><strong>${name}</strong> <span class="muted-inline">mode=${mode} mode_changeable=${changeable} source=${source} preset=${preset} current=${escapeHtml(current)} target=${escapeHtml(target)} demand=${escapeHtml(demand)} hvac=${hvacAction} circuit=${circuitType}</span></li>`,
-          );
+      const unavailable = this._portalRead?.unavailable_operations;
+      if (!Array.isArray(unavailable) || this._portalRead.snapshot_operation !== "semanticSnapshot" ||
+          unavailable.includes("semanticSnapshot") || unavailable.includes("PortalCatalogV1") ||
+          !semanticEndpoint(this._portalCatalogEndpoint) || !semanticEndpoint(this._semanticGraphqlEndpoint)) throw new Error("operation unavailable");
+      const read = async (endpoint, body) => {
+        const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: request.controller.signal });
+        if (!response.ok) throw new Error("read failed");
+        const payload = await response.json();
+        if (payload.errors) throw new Error("GraphQL read failed");
+        if (new TextEncoder().encode(JSON.stringify(payload)).length > 4 * 1024 * 1024) { conflict = true; throw new Error("read limit"); }
+        return payload.data;
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const catalog = (await read(this._portalCatalogEndpoint, { operationName: "PortalCatalogV1", variables: {} }))?.portalCatalogV1;
+        if (!isActive()) return false;
+        if (!validatePortalCatalog(catalog)) throw new Error("invalid catalog");
+        const ids = [...new Set(catalog.resources.map((resource) => resource.source.asset_id))];
+        if (ids.length > 32) { conflict = true; throw new Error("asset bound"); }
+        const assets = ids.length ? (await read(this._semanticGraphqlEndpoint, { operationName: "PortalSemanticContributions", query: PORTAL_SEMANTIC_QUERY, variables: { assetIds: ids } }))?.semanticSnapshot?.assets : [];
+        if (!isActive()) return false;
+        if (!Array.isArray(assets) || assets.length !== ids.length || new Set(assets.map((asset) => asset?.asset_id)).size !== ids.length || assets.some((asset) => !ids.includes(asset?.asset_id) || !Array.isArray(asset.selections))) throw new Error("invalid shared read");
+        for (const asset of assets) {
+          if (asset.unavailable_reason) {
+            if (!["asset_unknown", "snapshot_unavailable", "source_unavailable", "publication_withheld"].some((reason) => asset.unavailable_reason === `semantic.read.reason.${reason}`) ||
+                asset.snapshot != null || asset.evaluation != null || asset.projection != null || asset.selections.length) throw new Error("invalid unavailable asset");
+          } else if (!Array.isArray(asset.snapshot?.facts) || !Array.isArray(asset.evaluation?.facts) || !Array.isArray(asset.projection?.dispositions)) throw new Error("incomplete shared read");
+        }
+        conflict = catalog.resources.some((resource) => {
+          const asset = assets.find((asset) => asset.asset_id === resource.source.asset_id);
+          return !asset.unavailable_reason && !semanticSourceMatches(resource, asset);
         });
+        if (conflict) {
+          listEl.innerHTML = "<li>Inconsistent semantic source; refreshing. Values withheld.</li>";
+          this._semanticHasValid = false;
+          announce("Inconsistent semantic source; refreshing.");
+          continue;
+        }
+        const cards = semanticContributionCards(catalog, assets);
+        listEl.innerHTML = cards;
+        this._semanticHasValid = true;
+        announce("Semantic contributions loaded. Live updates unavailable; use Refresh.");
+        return true;
       }
-      if (dhw) {
-        const dhwState = dhw.state || {};
-        const dhwConfig = dhw.config || {};
-        const dhwPreset = dhwConfig.preset ? ` preset=${escapeHtml(dhwConfig.preset)}` : "";
-        const dhwDemand = dhwState.heating_demand_pct != null
-          ? ` demand=${escapeHtml(formatPercent(dhwState.heating_demand_pct))}`
-          : "";
-        const specialFunction = dhwState.special_function
-          ? ` special=${escapeHtml(dhwState.special_function)}`
-          : "";
-        rows.push(`<li><strong>DHW</strong> <span class="muted-inline">mode=${escapeHtml(formatSemanticText(dhwConfig.operating_mode))} mode_changeable=${escapeHtml(formatSemanticToggle(dhwConfig.operation_mode_changeable))} current=${escapeHtml(formatSemanticTemperature(dhwState.current_temp_c))} target=${escapeHtml(formatSemanticTemperature(dhwConfig.target_temp_c))} overrun=${escapeHtml(formatSemanticToggle(dhwState.overrun_active))}${dhwPreset}${dhwDemand}${specialFunction}</span></li>`);
+      throw new Error("generation conflict");
+    } catch {
+      if (!isActive()) return false;
+      const message = conflict ? "Semantic generation conflict or read limit. Values withheld." : request.timedOut ? "Semantic refresh timed out." : "Semantic refresh failed or unavailable.";
+      announce(`${message}${this._semanticHasValid ? " Showing historical last valid contributions." : ""}`);
+      if (!this._semanticHasValid || conflict) listEl.innerHTML = `<li>${escapeHtml(message)}</li>`;
+      return false;
+    } finally {
+      request.cleanup();
+      if (this._semanticRequestAbort === request) {
+        this._semanticRequestAbort = undefined;
+        listEl.setAttribute?.("aria-busy", "false");
       }
-      if (payload.boiler_status) {
-        const boilerState = payload.boiler_status.state || {};
-        const boilerConfig = payload.boiler_status.config || {};
-        const boilerPressure = formatFixed(boilerState.water_pressure_bar, 2);
-        rows.push(
-          `<li><strong>Boiler</strong> <span class="muted-inline">flow=${escapeHtml(formatTemperature(boilerState.flow_temperature_c))} return=${escapeHtml(formatTemperature(boilerState.return_temperature_c))} pressure=${escapeHtml(boilerPressure === "n/a" ? boilerPressure : `${boilerPressure}bar`)} flame=${escapeHtml(formatToggle(boilerState.flame_active))} dhw_mode=${escapeHtml(boilerConfig.dhw_operating_mode || "n/a")}</span></li>`,
-        );
-      }
-      if (payload.system) {
-        const systemState = payload.system.state || {};
-        const systemConfig = payload.system.config || {};
-        const systemPressure = formatFixed(systemState.system_water_pressure, 2);
-        rows.push(
-          `<li><strong>System</strong> <span class="muted-inline">brand=${escapeHtml(formatSemanticText(payload.system.gateway_brand))} vendor=${escapeHtml(formatSemanticText(payload.system.gateway_vendor))} flow=${escapeHtml(formatTemperature(systemState.system_flow_temperature))} pressure=${escapeHtml(systemPressure === "n/a" ? systemPressure : `${systemPressure}bar`)} outdoor=${escapeHtml(formatSemanticTemperature(systemState.outdoor_temperature))} maintenance=${escapeHtml(formatYesNo(systemState.maintenance_due))} adaptive=${escapeHtml(formatYesNo(systemConfig.adaptive_heating_curve))}</span></li>`,
-        );
-      }
-      if (payload.fm5_semantic_mode) {
-        const degradedReason = payload.fm5_semantic_degraded_reason || "none";
-        const evidenceRevision = payload.fm5_semantic_evidence_revision || "unavailable";
-        rows.push(`<li><strong>FM5</strong> <span class="muted-inline">mode=${escapeHtml(payload.fm5_semantic_mode)} reason=${escapeHtml(degradedReason)} revision=${escapeHtml(evidenceRevision)}</span></li>`);
-      }
-      if (payload.solar) {
-        const solar = payload.solar || {};
-        rows.push(
-          `<li><strong>Solar</strong> <span class="muted-inline">collector=${escapeHtml(formatTemperature(solar.collector_temperature_c))} return=${escapeHtml(formatTemperature(solar.return_temperature_c))} pump=${escapeHtml(formatToggle(solar.pump_active))} yield=${escapeHtml(formatFixed(solar.current_yield, 2))}</span></li>`,
-        );
-      }
-      if (payload.energy_totals) {
-        const et = payload.energy_totals;
-        rows.push(
-          `<li><strong>Energy (gas)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.gas?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.gas?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.gas?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.gas?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.gas?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.gas?.dhw?.today_meta))})</span></li>`,
-        );
-        rows.push(
-          `<li><strong>Energy (electric)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.electric?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.electric?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.electric?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.electric?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.electric?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.electric?.dhw?.today_meta))})</span></li>`,
-        );
-        rows.push(
-          `<li><strong>Energy (solar)</strong> <span class="muted-inline">today climate=${escapeHtml(formatFixed(et.solar?.climate?.today, 2))} dhw=${escapeHtml(formatFixed(et.solar?.dhw?.today, 2))} yearly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.yearly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.yearly))}] monthly climate=[${escapeHtml(formatSeriesYearly(et.solar?.climate?.monthly))}] dhw=[${escapeHtml(formatSeriesYearly(et.solar?.dhw?.monthly))}] meta climate(${escapeHtml(formatEnergyMeta(et.solar?.climate?.today_meta))}) dhw(${escapeHtml(formatEnergyMeta(et.solar?.dhw?.today_meta))})</span></li>`,
-        );
-      }
-      if (circuits.length > 0) {
-        circuits.forEach((circuit) => {
-          const state = circuit.state || {};
-          const config = circuit.config || {};
-          rows.push(
-            `<li><strong>Circuit ${escapeHtml(formatInteger(circuit.index))}</strong> <span class="muted-inline">type=${escapeHtml(circuit.circuit_type || "n/a")} mixer=${escapeHtml(formatYesNo(circuit.has_mixer))} flow=${escapeHtml(formatTemperature(state.flow_temperature_c))} setpoint=${escapeHtml(formatTemperature(state.flow_setpoint_c))} pump=${escapeHtml(formatToggle(state.pump_active))} curve=${escapeHtml(formatFixed(config.heating_curve, 2))}</span></li>`,
-          );
-        });
-      }
-      if (radioDevices.length > 0) {
-        radioDevices.forEach((device) => {
-          rows.push(
-            `<li><strong>Radio ${escapeHtml(device.device_model || `group-${formatInteger(device.group)}-${formatInteger(device.instance)}`)}</strong> <span class="muted-inline">slot=${escapeHtml(device.slot_mode || "n/a")} connected=${escapeHtml(formatYesNo(device.device_connected))} zone=${escapeHtml(formatInteger(device.zone_assignment))} temp=${escapeHtml(formatTemperature(device.room_temperature_c))} humidity=${escapeHtml(formatPercent(device.room_humidity_pct))}</span></li>`,
-          );
-        });
-      }
-      if (cylinders.length > 0) {
-        cylinders.forEach((cylinder) => {
-          rows.push(
-            `<li><strong>Cylinder ${escapeHtml(formatInteger(cylinder.index))}</strong> <span class="muted-inline">temp=${escapeHtml(formatTemperature(cylinder.temperature_c))} max=${escapeHtml(formatTemperature(cylinder.max_setpoint_c))} hysteresis=${escapeHtml(formatTemperature(cylinder.charge_hysteresis_c))} offset=${escapeHtml(formatTemperature(cylinder.charge_offset_c))}</span></li>`,
-          );
-        });
-      }
-      listEl.innerHTML = rows.join("");
-    } catch (err) {
-      if (!isActive()) {
-        return false;
-      }
-      listEl.innerHTML = "<li>Semantic preview unavailable.</li>";
-      console.error("semantic preview failed", err);
     }
-    return true;
   }
 
   async refreshAdapterInfo() {
@@ -4027,7 +4115,9 @@ class PortalShell extends HTMLElement {
             </section>
             <section id="section-semantic" class="registry-preview">
               <h2>Semantic Preview</h2>
-              <ul data-role="semantic-list">
+              <button type="button" data-role="semantic-refresh">Refresh Contributions</button>
+              <p data-role="semantic-notice" role="status" aria-live="polite" aria-atomic="true">Loading semantic contributions.</p>
+              <ul data-role="semantic-list" role="status" aria-live="polite" aria-atomic="true" aria-busy="false">
                 <li>Loading semantic snapshot...</li>
               </ul>
               <div data-role="pv-panel" hidden>

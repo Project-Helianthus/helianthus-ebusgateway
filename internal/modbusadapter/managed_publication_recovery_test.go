@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
@@ -18,8 +20,9 @@ import (
 
 type withdrawalFailureJournal struct {
 	*semhub.MemoryJournal
-	failSource     semreg.SourceID
-	failActivation semreg.SourceID
+	failSource         semreg.SourceID
+	failActivation     semreg.SourceID
+	failActivationOnce bool
 }
 
 var errWithdrawalJournal = errors.New("synthetic withdrawal journal failure")
@@ -28,6 +31,9 @@ func (j *withdrawalFailureJournal) Append(records ...semhub.EpochRecord) error {
 	for _, record := range records {
 		if (record.Kind == semhub.EventGenerationFenced && record.Source == j.failSource) ||
 			(record.Kind == semhub.EventGenerationActivated && record.Source == j.failActivation) {
+			if record.Kind == semhub.EventGenerationActivated && j.failActivationOnce {
+				j.failActivation = ""
+			}
 			return errWithdrawalJournal
 		}
 	}
@@ -170,6 +176,51 @@ func TestManagedReplacementRetainsRefreshEvidenceAcrossIdentities(t *testing.T) 
 	}
 }
 
+type managedActivationResult struct {
+	adapter *Adapter
+	err     error
+}
+
+// Keep the same lifecycle-bound configuration for every manager-owned retry.
+type managedActivationRuntime struct {
+	mu         sync.Mutex
+	config     Config
+	generation atomic.Uint64
+	adapter    *Adapter
+	results    chan managedActivationResult
+}
+
+func (r *managedActivationRuntime) Start(ctx context.Context) (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	generation := r.generation.Add(1)
+	client, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	config := r.config
+	config.Publication = &PublicationScope{Previous: r.config.Publication.Previous, Epoch: r.config.Publication.Epoch, Generation: r.config.Publication.Generation}
+	adapter, err := Start(ctx, config,
+		func(context.Context, string, string) (net.Conn, error) { return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) { return &fakeEndpoint{}, nil })
+	_ = client.Close()
+	r.adapter = adapter
+	r.results <- managedActivationResult{adapter, err}
+	return generation, err
+}
+func (r *managedActivationRuntime) Replace(ctx context.Context) (uint64, error) {
+	if err := r.Stop(ctx); err != nil {
+		return 0, err
+	}
+	return r.Start(ctx)
+}
+func (r *managedActivationRuntime) Stop(context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.adapter.Close()
+}
+func (r *managedActivationRuntime) Generation() uint64      { return r.generation.Load() }
+func (r *managedActivationRuntime) Revision() uint64        { return r.generation.Load() }
+func (r *managedActivationRuntime) SafetyQuarantined() bool { return false }
+
 func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 	journal := &withdrawalFailureJournal{MemoryJournal: semhub.NewMemoryJournal()}
 	hub, err := semhub.New(semhub.Options{Journal: journal})
@@ -203,15 +254,43 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 	config := validConfig()
 	config.SemanticPV = class
 	config.Publication = &PublicationScope{Previous: scope, Epoch: scope.Epoch, Generation: 2}
-	client, peer := net.Pipe()
-	defer func() { _ = client.Close() }()
-	defer func() { _ = peer.Close() }()
-	failed, err := Start(context.Background(), config,
-		func(context.Context, string, string) (net.Conn, error) { return client, nil },
-		func(modbus.TCPEndpointConfig) (Endpoint, error) { return &fakeEndpoint{}, nil })
-	if failed != nil || !errors.Is(err, errWithdrawalJournal) {
-		t.Fatalf("partial activation result=%v err=%v", failed, err)
+	journal.failActivationOnce = true
+	runtime := &managedActivationRuntime{config: config, results: make(chan managedActivationResult, 2)}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: "pv.primary", Enabled: true, Runtime: runtime,
+		ClassifyError: func(error) drivermanager.Failure {
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, JitterRatio: -1},
+	}}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	defer func() {
+		if err := manager.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := manager.Start(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	var results [2]managedActivationResult
+	for i := range results {
+		select {
+		case results[i] = <-runtime.results:
+		case <-ctx.Done():
+			t.Fatal("manager did not finish its first retry")
+		}
+	}
+	if results[0].adapter != nil || !errors.Is(results[0].err, errWithdrawalJournal) {
+		t.Fatalf("partial activation result=%v err=%v", results[0].adapter, results[0].err)
+	}
+	if results[1].err != nil || results[1].adapter == nil {
+		t.Fatalf("manager retry failed: %v", results[1].err)
+	}
+	successor := results[1].adapter
 	activated, fenced := false, false
 	for _, record := range journal.Records() {
 		if record.Source == sources[0] && record.Generation == 2 {
@@ -219,11 +298,21 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 			fenced = fenced || record.Kind == semhub.EventGenerationFenced
 		}
 	}
+	counts := make(map[semreg.SourceID]int)
+	for _, record := range journal.Records() {
+		if record.Kind == semhub.EventGenerationActivated && record.Generation == 2 {
+			counts[record.Source]++
+		}
+	}
+	if counts[sources[0]] != 1 || counts[sources[1]] != 0 {
+		t.Fatalf("partial activation repeated or skipped: %v", counts)
+	}
+	if runtime.Generation() != 2 {
+		t.Fatalf("manager attempts=%d, want 2", runtime.Generation())
+	}
 	if !activated || !fenced {
 		t.Fatal("partial activation did not activate and clean up the first source")
 	}
-	journal.failActivation = ""
-	successor := startManagedPublicationTestAdapter(t, class, &PublicationScope{Previous: scope, Epoch: scope.Epoch, Generation: 3})
 	for _, source := range sources {
 		handle := successor.semanticPV.handles[source]
 		if handle == nil || handle.Generation() != 3 {

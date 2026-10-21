@@ -565,16 +565,31 @@ func (c *pvPublicationCore) admitEpochLocked(epoch semreg.SourceEpochID, generat
 			return err
 		}
 	}
+	// Manager retries keep the service correlation. A prior partial activation
+	// may already have consumed its generation before cleanup fenced it. Map the
+	// retry above every retained handle, independently of the native counter.
+	var previous *pvPublicationCore
+	if c.scope != nil && c.scope.Previous != nil && c.scope.Previous.Epoch == epoch && c.scope.Previous.core != nil {
+		previous = c.scope.Previous.core
+		previous.lifecycleMu.Lock()
+		defer previous.lifecycleMu.Unlock()
+		for _, handle := range previous.handles {
+			if handle.Generation() >= generation {
+				if handle.Generation() == ^uint64(0) {
+					return errors.New("PV managed generation exhausted")
+				}
+				generation = handle.Generation() + 1
+			}
+		}
+		c.scope.Generation = generation
+	}
 	provisional, err := c.hub.AdmitProvisional(pvSemanticDriver, semhub.LegacyPVSunSpec, epoch, generation)
 	if err != nil {
 		return err
 	}
 	c.epochs[epoch] = true
 	c.provisional, c.handles = provisional, make(map[semreg.SourceID]*semhub.Handle)
-	if c.scope != nil && c.scope.Previous != nil && c.scope.Previous.Epoch == epoch && c.scope.Previous.core != nil {
-		previous := c.scope.Previous.core
-		previous.lifecycleMu.Lock()
-		defer previous.lifecycleMu.Unlock()
+	if previous != nil {
 		for _, source := range previous.sortedHandleSources() {
 			handle := previous.handles[source]
 			next, err := c.hub.Activate(handle, generation)

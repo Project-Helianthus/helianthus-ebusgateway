@@ -55,7 +55,8 @@ type Config struct {
 
 // PublicationScope binds one adapter to its managed generation. Withdrawal is
 // non-blocking; Close drains admitted publication work before fencing it.
-// Identity fields and Previous are frozen before Start; Previous must be joined.
+// Inputs are frozen before Start; Previous must be joined. Admission maps the
+// requested Generation above any generation already consumed by Previous.
 type PublicationScope struct {
 	Previous    *PublicationScope
 	core        *pvPublicationCore

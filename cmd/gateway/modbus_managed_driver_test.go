@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -244,6 +245,11 @@ func m03Observation(t *testing.T) modbusreg.SunSpecQualificationObservation {
 
 func m03ObservationSample(t *testing.T, pollGeneration uint64) modbusreg.SunSpecQualificationObservation {
 	t.Helper()
+	return m03ScopedObservation(t, pollGeneration, sunspectest.ObservedFroniusFloatWords(), "fixture:managed")
+}
+
+func m03ScopedObservation(t *testing.T, pollGeneration uint64, words []uint16, scope string) modbusreg.SunSpecQualificationObservation {
+	t.Helper()
 	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +259,6 @@ func m03ObservationSample(t *testing.T, pollGeneration uint64) modbusreg.SunSpec
 		t.Fatal(err)
 	}
 	chain := modbusreg.NewSunSpecChain(plan)
-	words := sunspectest.ObservedFroniusFloatWords()
 	offset := 0
 	for id := uint64(1); ; id++ {
 		requests := chain.NextRequests()
@@ -265,7 +270,7 @@ func m03ObservationSample(t *testing.T, pollGeneration uint64) modbusreg.SunSpec
 		if offset+count > len(words) {
 			t.Fatal("synthetic replay exceeded words")
 		}
-		view, err := modbusreg.NewLogicalViewSnapshot(modbusreg.LogicalViewRecord{LogicalViewID: id, WireResponseID: id + 100, PhysicalRequestID: id + 200, Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5, UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters, Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(), AuthorizationScope: "fixture:managed", PollGeneration: pollGeneration, DeadlineIdentity: 2, LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceWordCount: request.WordCount(), Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)}})
+		view, err := modbusreg.NewLogicalViewSnapshot(modbusreg.LogicalViewRecord{LogicalViewID: id, WireResponseID: id + 100, PhysicalRequestID: id + 200, Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5, UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters, Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(), AuthorizationScope: scope, PollGeneration: pollGeneration, DeadlineIdentity: 2, LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceWordCount: request.WordCount(), Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -858,4 +863,120 @@ func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
 	if !attempt.withdrawn() {
 		t.Fatal("withdrawal gate did not close")
 	}
+}
+
+// Fail the second source activation once, leaving the first journalled and
+// subsequently fenced by startup cleanup before the manager retries.
+type m03PartialActivationJournal struct {
+	*semhub.MemoryJournal
+	source semreg.SourceID
+	failed atomic.Bool
+}
+
+func (j *m03PartialActivationJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Kind == semhub.EventGenerationActivated && record.Source == j.source && j.failed.CompareAndSwap(false, true) {
+			return errM03JournalFailure
+		}
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+func TestM03ManagerRetryAfterPartialActivation(t *testing.T) {
+	journal := &m03PartialActivationJournal{MemoryJournal: semhub.NewMemoryJournal()}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opens atomic.Int32
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		opens.Add(1)
+		return &m03Endpoint{}, nil
+	}, nil)
+	driver.hub = hub
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: "pv.primary", Enabled: true, Runtime: driver,
+		ClassifyError: func(error) drivermanager.Failure {
+			return drivermanager.Failure{Reason: drivermanager.Reason{Code: drivermanager.ReasonDependencyUnavailable, Retryable: true}}
+		},
+		Retry: drivermanager.RetryPolicy{Budget: 1, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond, JitterRatio: -1},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer func() {
+		if err := manager.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := manager.Start(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	old := driver.active.Load().adapter
+	var sources []semreg.SourceID
+	for i, scope := range []string{"fixture:manager-a", "fixture:manager-b"} {
+		words := sunspectest.ObservedFroniusFloatWords()
+		if i != 0 {
+			words[52] ^= 1
+		}
+		if err := old.RecordSunSpecQualificationObservation(m03ScopedObservation(t, uint64(i+1), words, scope)); err != nil {
+			t.Fatal(err)
+		}
+		view, ok := old.SemanticPVCurrentSingle()
+		if !ok {
+			t.Fatal("initial source unavailable")
+		}
+		sources = append(sources, view.Snapshot.Sources[0].SourceID)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	if sources[0] == sources[1] {
+		t.Fatal("fixture did not create distinct sources")
+	}
+	journal.source = sources[1]
+	if err := manager.Replace(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		snapshot, ok := manager.Snapshot("pv.primary")
+		if ok && snapshot.ObservedState == drivermanager.ObservedRunning {
+			break
+		}
+		if ok && snapshot.ObservedState == drivermanager.ObservedFailed {
+			t.Fatalf("manager retry failed: %+v", snapshot)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("manager retry did not recover")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if !journal.failed.Load() || opens.Load() != 3 {
+		t.Fatalf("failure=%v opens=%d; want one failed activation and one retry", journal.failed.Load(), opens.Load())
+	}
+	counts := make(map[semreg.SourceID]map[uint64]int)
+	for _, record := range journal.Records() {
+		if record.Kind == semhub.EventGenerationActivated {
+			if counts[record.Source] == nil {
+				counts[record.Source] = make(map[uint64]int)
+			}
+			counts[record.Source][record.Generation]++
+		}
+	}
+	if counts[sources[0]][2] != 1 || counts[sources[1]][2] != 0 || counts[sources[0]][3] != 1 || counts[sources[1]][3] != 1 {
+		t.Fatalf("activation counts=%v", counts)
+	}
+	if driver.correlation != m03Correlation() {
+		t.Fatal("retry changed the bound service correlation")
+	}
+	current := driver.active.Load().adapter
+	if err := current.RecordSunSpecQualificationObservation(m03ScopedObservation(t, 10, sunspectest.ObservedFroniusFloatWords(), "fixture:manager-a")); err != nil {
+		t.Fatal(err)
+	}
+	view, ok := current.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("recovered driver did not publish")
+	}
+	m03AssertGeneration(t, view, semreg.SourceEpochID(m03Correlation().Epoch), "3")
 }

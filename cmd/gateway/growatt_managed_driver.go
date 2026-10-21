@@ -135,7 +135,9 @@ func (driver *growattManagedDriver) Start(ctx context.Context) (uint64, error) {
 		if provider != nil {
 			provider.cancel()
 		}
-		if withdrawErr := driver.hub.Withdraw(admitted); withdrawErr == nil {
+		// Only an initial admission can roll back. Retain and fence activated
+		// generations so the next retry replaces the latest handle.
+		if previous == nil && driver.hub.Withdraw(admitted) == nil {
 			admitted = nil
 		} else {
 			cleanupErr = driver.fence(admitted, provider)

@@ -171,9 +171,11 @@ generation and rejects calls through the retired provider.
 
 A stop during construction cancels and joins the pending start. If endpoint open
 returns late, startup rechecks cancellation under the same lifecycle lock used
-by Stop before exposing the provider. A cancelled start withdraws unpublished
-admission (or fences an activated generation) before waiting for native close
-and settling. A stop deadline does not prove that open, acquisition or close
+by Stop before exposing the provider. A failed or cancelled start withdraws only
+an unused initial admission. An activated replacement is fenced and its handle
+and generation retained for the next retry, even if no generation has published.
+Cleanup precedes waiting for native close and settling.
+A stop deadline does not prove that open, acquisition or close
 finished.
 Unknown: physical-device behavior; the deterministic injected-endpoint tests
 exercise software cancellation, retained-state withdrawal, late results, timing,

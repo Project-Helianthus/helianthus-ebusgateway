@@ -156,6 +156,84 @@ func TestM04FactoryProfileAndObservedStatesNeverOpenHardware(t *testing.T) {
 	}
 }
 
+func TestM04FailedOpenRetainsActivatedGenerationForRetry(t *testing.T) {
+	for _, replacement := range []bool{false, true} {
+		name := "initial_admission"
+		if replacement {
+			name = "activated_generation"
+		}
+		t.Run(name, func(t *testing.T) {
+			config := growattProductionConfig()
+			openErr := errors.New("synthetic endpoint open failure")
+			failOpen, opens := false, 0
+			driver := m04Driver(t, config, func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+				opens++
+				if failOpen {
+					return nil, openErr
+				}
+				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: uint64(opens)}, nil
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			defer func() {
+				if err := driver.Stop(ctx); err != nil {
+					t.Error(err)
+				}
+			}()
+			wantGeneration := config.DriverGeneration
+			if replacement {
+				if _, err := driver.Start(ctx); err != nil {
+					t.Fatal(err)
+				}
+				// Stop without acquiring or publishing any observation.
+				if err := driver.Stop(ctx); err != nil {
+					t.Fatal(err)
+				}
+				wantGeneration++
+			}
+			failOpen = true
+			for attempt := 0; attempt < 2; attempt++ {
+				before := opens
+				if _, err := driver.Start(ctx); !errors.Is(err, openErr) {
+					t.Fatalf("failed open: %v", err)
+				}
+				if opens != before+1 {
+					t.Fatal("retry did not reach endpoint open")
+				}
+				if _, ok := driver.Provider(); ok {
+					t.Fatal("failed start exposed provider")
+				}
+				info, _ := driver.hub.Source(semreg.SourceID(config.SourceID))
+				if info.Live || driver.SafetyQuarantined() {
+					t.Fatal("failed open left live admission or quarantined retry")
+				}
+				if replacement {
+					if info.Generation != wantGeneration || driver.Generation() != wantGeneration || driver.handle == nil || driver.handle.Generation() != wantGeneration {
+						t.Fatal("failed activation did not retain its fenced generation")
+					}
+					wantGeneration++
+				} else if driver.handle != nil {
+					t.Fatal("failed initial admission retained a handle")
+				}
+			}
+			failOpen = false
+			if generation, err := driver.Start(ctx); err != nil || generation != wantGeneration {
+				t.Fatalf("retry generation=%d want=%d error=%v", generation, wantGeneration, err)
+			}
+			provider, ok := driver.Provider()
+			if !ok {
+				t.Fatal("successful retry exposed no provider")
+			}
+			if _, err := provider.SemanticStorageCurrent(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if evidence, ok := provider.LastObservationEvidence(); !ok || evidence.DriverGeneration != wantGeneration {
+				t.Fatal("retry observation used the wrong generation")
+			}
+		})
+	}
+}
+
 func TestM04ManagedTransportPreservesTimingAndAdmission(t *testing.T) {
 	config := growattProductionConfig()
 	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}

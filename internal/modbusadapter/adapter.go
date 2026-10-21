@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
@@ -40,6 +41,7 @@ type Dialer func(context.Context, string, string) (net.Conn, error)
 
 // Config contains the already-validated bounded runtime configuration.
 type Config struct {
+	Publication *PublicationScope
 	Enabled     bool
 	Endpoint    modbus.TCPEndpointConfig
 	DialTimeout time.Duration
@@ -49,6 +51,62 @@ type Config struct {
 	// SemanticPV is the PV asset class of the process's semantic publication
 	// hub. Every discovered PV asset is declared and published through it.
 	SemanticPV *semhub.Class
+}
+
+// PublicationScope binds one adapter to its managed generation. Withdrawal is
+// non-blocking; Close drains admitted publication work before fencing it.
+// Inputs are frozen before Start; Previous must be joined. Admission maps the
+// requested Generation above any generation already consumed by Previous.
+type PublicationScope struct {
+	Previous    *PublicationScope
+	core        *pvPublicationCore
+	adapter     *Adapter
+	startedWall time.Time
+	Epoch       semreg.SourceEpochID
+	Generation  uint64
+	withdrawn   atomic.Bool
+
+	startupCleanup func() error
+}
+
+var managedModbusMonotonicOrigin = time.Now()
+
+var ErrStartupCloseUnproven = errors.New("modbus startup endpoint close unproven")
+
+func closeStartupEndpoint(endpoint Endpoint) error {
+	if endpoint == nil {
+		return nil
+	}
+	if err := endpoint.Close(); err != nil {
+		return errors.Join(ErrStartupCloseUnproven, err)
+	}
+	return nil
+}
+
+func closeStartupConnection(connection net.Conn) error {
+	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return errors.Join(ErrStartupCloseUnproven, err)
+	}
+	return nil
+}
+
+func (scope *PublicationScope) Withdraw() {
+	if scope != nil {
+		scope.withdrawn.Store(true)
+	}
+}
+
+// RetryStartupCleanup retries retained semantic cleanup after a failed admission.
+// The boolean reports ownership; absent ownership never proves startup close.
+func (scope *PublicationScope) RetryStartupCleanup() (error, bool) {
+	if scope == nil || scope.startupCleanup == nil {
+		return nil, false
+	}
+	return scope.startupCleanup(), true
+}
+
+func (scope *PublicationScope) valid() bool {
+	return scope == nil || (!scope.withdrawn.Load() && scope.Epoch != "" && scope.Generation != 0)
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -70,23 +128,25 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce       sync.Once
-	closeErr        error
-	executeMu       sync.Mutex
-	connectionMu    sync.RWMutex
-	closed          bool
-	lastRequest     modbus.TCPRequestHandle
-	profileMu       sync.RWMutex
-	profiles        map[string]ProfileObservationRecord
-	qualifications  map[string]sunSpecQualificationRecord
-	refreshEvidence map[string]sunSpecQualificationRecord
-	refreshOrder    []string
-	semanticPV      *pvPublicationCore
-	pvSourceEpoch   semreg.SourceEpochID
-	startedWall     time.Time
-	startedMono     time.Time
-	wallNow         func() time.Time
-	monotonicNow    func() time.Time
+	closeOnce      sync.Once
+	closeErr       error
+	executeMu      sync.Mutex
+	connectionMu   sync.RWMutex
+	closed         bool
+	lastRequest    modbus.TCPRequestHandle
+	profileMu      sync.RWMutex
+	profiles       map[string]ProfileObservationRecord
+	qualifications map[string]sunSpecQualificationRecord
+	// Inherited terminal samples must publish once in the new generation.
+	replayQualifications map[string]bool
+	refreshEvidence      map[string]sunSpecQualificationRecord
+	refreshOrder         []string
+	semanticPV           *pvPublicationCore
+	pvSourceEpoch        semreg.SourceEpochID
+	startedWall          time.Time
+	startedMono          time.Time
+	wallNow              func() time.Time
+	monotonicNow         func() time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -131,17 +191,21 @@ func Start(
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
 	}
+	if !config.Publication.valid() {
+		return nil, errors.New("managed Modbus publication scope unavailable")
+	}
 	semanticPV, err := newPVPublicationCore(config.SemanticPV)
 	if err != nil {
 		return nil, fmt.Errorf("construct SemReg PV publication: %w", err)
 	}
+	semanticPV.scope = config.Publication
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {
 		return nil, err
 	}
 	endpoint, err := factory(config.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("construct Modbus TCP endpoint: %w", err)
+		return nil, errors.Join(fmt.Errorf("construct Modbus TCP endpoint: %w", err), closeStartupEndpoint(endpoint))
 	}
 	if endpoint == nil {
 		return nil, errors.New("construct Modbus TCP endpoint: factory returned nil")
@@ -153,15 +217,15 @@ func Start(
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("dial Modbus TCP endpoint: %w", err),
-			endpoint.Close(),
+			closeStartupEndpoint(endpoint),
 		)
 	}
 	handle, err := endpoint.OpenConnection(connection)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open Modbus TCP endpoint: %w", err),
-			connection.Close(),
-			endpoint.Close(),
+			closeStartupConnection(connection),
+			closeStartupEndpoint(endpoint),
 		)
 	}
 	clock := time.Now
@@ -171,12 +235,55 @@ func Start(
 	processStarted := clock()
 	startedWall := processStarted.UTC()
 	epoch := semhub.PVEpochID(config.Endpoint.Endpoint, startedWall.Format(time.RFC3339Nano))
+	generation := uint64(1)
+	if config.Publication != nil {
+		epoch, generation = config.Publication.Epoch, config.Publication.Generation
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+	}
+	if !config.Publication.valid() {
+		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+	}
 	// The provisional PV source epoch is admitted exactly at the historical
 	// sample point, after the endpoint factory, dial and open.
-	if err := semanticPV.admitEpoch(epoch, 1); err != nil {
-		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), connection.Close(), endpoint.Close())
+	if err := semanticPV.admitEpoch(epoch, generation); err != nil {
+		var cleanup error
+		if config.Publication != nil {
+			cleanup = semanticPV.withdrawManaged(semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(clock().UTC()), EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin))})
+			if cleanup != nil {
+				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
+			}
+		}
+		nativeCleanup := errors.Join(closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+		if config.Publication != nil && cleanup != nil {
+			// Keep the partially activated core reachable even though no adapter
+			// was admitted. Native cleanup is immutable; semantic fencing retries.
+			config.Publication.core = semanticPV
+			config.Publication.startupCleanup = func() error {
+				return errors.Join(nativeCleanup, semanticPV.withdrawManaged(semreg.EvaluationContext{
+					EvaluatedAt:       pvPublicationWall(clock().UTC()),
+					EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin)),
+				}))
+			}
+		}
+		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, nativeCleanup)
 	}
-	return &Adapter{
+	var previousAdapter *Adapter
+	if config.Publication != nil {
+		config.Publication.core = semanticPV
+		previous := config.Publication.Previous
+		if previous != nil {
+			previousAdapter = previous.adapter
+		}
+		if previous != nil && previous.Epoch == epoch && !previous.startedWall.IsZero() {
+			startedWall = previous.startedWall
+		}
+		config.Publication.startedWall = startedWall
+		config.Publication.Previous = nil
+		processStarted = managedModbusMonotonicOrigin
+	}
+	adapter := &Adapter{
 		endpoint:        endpoint,
 		connection:      handle,
 		source:          config.Endpoint.RuntimeAcquisitionSource,
@@ -191,7 +298,39 @@ func Start(
 		startedMono:     processStarted,
 		wallNow:         clock,
 		monotonicNow:    clock,
-	}, nil
+	}
+	if previousAdapter != nil {
+		// The predecessor is joined. Copy its bounded stores so retained hub
+		// snapshots remain replayable without sharing mutable map ownership.
+		previousAdapter.profileMu.RLock()
+		for key, record := range previousAdapter.profiles {
+			adapter.profiles[key] = record
+		}
+		adapter.replayQualifications = make(map[string]bool)
+		for key, record := range previousAdapter.qualifications {
+			adapter.qualifications[key] = record
+			adapter.replayQualifications[key] = true
+		}
+		for key, record := range previousAdapter.refreshEvidence {
+			adapter.refreshEvidence[key] = record
+		}
+		adapter.refreshOrder = append([]string(nil), previousAdapter.refreshOrder...)
+		previousAdapter.profileMu.RUnlock()
+		previousCore := previousAdapter.semanticPV
+		previousCore.mu.RLock()
+		semanticPV.inheritedAssets = make(map[semreg.AssetID]bool, len(previousCore.assets)+len(previousCore.inheritedAssets))
+		for id := range previousCore.assets {
+			semanticPV.inheritedAssets[id] = true
+		}
+		for id := range previousCore.inheritedAssets {
+			semanticPV.inheritedAssets[id] = true
+		}
+		previousCore.mu.RUnlock()
+	}
+	if config.Publication != nil {
+		config.Publication.adapter = adapter
+	}
+	return adapter, nil
 }
 
 // ValidateTCPEndpoint applies the endpoint grammar used by Start without
@@ -445,13 +584,17 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	key := capability + "\x00" + sampleID
 	adapter.profileMu.Lock()
 	defer adapter.profileMu.Unlock()
-	if existing, exists := adapter.qualifications[key]; exists {
+	existing, exists := adapter.qualifications[key]
+	if exists {
 		if !bytes.Equal(existing.encoded, encoded) {
 			return errors.New("SunSpec qualification observation identity collision")
 		}
-		return nil
+		if !adapter.replayQualifications[key] {
+			adapter.semanticPV.retryCovers()
+			return nil
+		}
 	}
-	if len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
+	if !exists && len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{
@@ -462,11 +605,14 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 		// and cites this record, so the record is kept and only the cover
 		// failure is reported.
 		var cover *semhub.CoverError
-		if !errors.As(err, &cover) {
+		if errors.As(err, &cover) {
+			delete(adapter.replayQualifications, key)
+		} else if !exists {
 			delete(adapter.qualifications, key)
 		}
 		return err
 	}
+	delete(adapter.replayQualifications, key)
 	return nil
 }
 
@@ -604,8 +750,12 @@ func (adapter *Adapter) publishSemanticPVWithValidation(observation modbusreg.Su
 	if err != nil {
 		return err
 	}
+	generation := uint64(1)
+	if adapter.config.Publication != nil {
+		generation = adapter.config.Publication.Generation
+	}
 	lifecycle := pvPublicationLifecycle{
-		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: "1",
+		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: semreg.Uint64(strconv.FormatUint(generation, 10)),
 		sourceStartedAt: pvPublicationWall(adapter.startedWall), receivedAt: context.EvaluatedAt,
 		receiptMonotonic: context.EvaluateMonotonic, evaluatedAt: context.EvaluatedAt,
 		evaluateMonotonic: context.EvaluateMonotonic,
@@ -839,13 +989,32 @@ func (adapter *Adapter) Close() error {
 	if adapter == nil || adapter.endpoint == nil {
 		return nil
 	}
-	// The endpoint shuts down once; the provisional retirement is retried on
-	// every Close until it is journalled (retire is idempotent once done).
+	adapter.config.Publication.Withdraw()
+	// Neither cleanup obligation waits for the other to make progress.
+	semanticDone := make(chan error, 1)
+	go func() { semanticDone <- adapter.WithdrawSemantic() }()
 	adapter.closeOnce.Do(func() {
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
 	})
-	return errors.Join(adapter.closeErr, adapter.semanticPV.retire())
+	return errors.Join(adapter.closeErr, <-semanticDone)
+}
+
+// WithdrawSemantic revokes read/publication admission and retries the semantic
+// fence independently of worker joins and native endpoint shutdown.
+func (adapter *Adapter) WithdrawSemantic() error {
+	if adapter == nil {
+		return nil
+	}
+	adapter.config.Publication.Withdraw()
+	if adapter.config.Publication != nil {
+		context, err := adapter.semanticPVReadContext()
+		if err != nil {
+			return err
+		}
+		return adapter.semanticPV.withdrawManaged(context)
+	}
+	return adapter.semanticPV.retire()
 }

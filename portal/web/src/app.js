@@ -986,11 +986,14 @@ function semanticContributionCards(catalog, assets) {
     const identity = `${descriptor.driver_id}/${descriptor.manifest_id}@${descriptor.manifest_version}`;
     const rows = [];
     if (asset.unavailable_reason) rows.push(`unavailable: ${asset.unavailable_reason}`);
-    else if (descriptor.views.some((view) => !["summary", "field_table", "state_strip"].includes(view.renderer))) rows.push("unsupported contribution view");
     else {
       const groups = descriptor.groups.filter((group) => group.resource_context === resource.id).sort(order);
       const views = groups.flatMap((group) => descriptor.views.filter((view) => view.group === group.id).sort(order));
       for (const view of views) {
+        if (!["summary", "field_table", "state_strip"].includes(view.renderer)) {
+          rows.push("unsupported contribution view");
+          continue;
+        }
         rows.push(view.label?.default || view.id);
         for (const field of [...descriptor.fields].filter((field) => view.field_ids.includes(field.id)).sort(order)) {
           const prefix = field.label?.default || field.id;

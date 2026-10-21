@@ -186,6 +186,23 @@ test("M23 replacement catalog withdraws cards; unsupported view preserves valid 
   assert.doesNotMatch(h.list.innerHTML, /fixture.driver.5/);
 });
 
+for (const scope of ["another resource", "native diagnostics", "same resource"]) test(`M23 admitted timeline for ${scope} preserves supported views in the same descriptor`, async () => {
+  const h = harness(), f = fixture(1), descriptor = f.catalog.descriptors[0];
+  const view = { ...clone(descriptor.views[0]), id: "timeline", renderer: "timeline", label: { default: "Unsupported timeline" }, order: -1 };
+  if (scope === "another resource") {
+    descriptor.groups.push({ id: "other", resource_context: "another-resource", order: -1, label: { default: "Other" } });
+    view.group = "other";
+  }
+  if (scope === "native diagnostics") view.slot = "native_diagnostics";
+  descriptor.views.push(view);
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Readings/);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  assert.doesNotMatch(h.list.innerHTML, /Unsupported timeline/);
+  if (scope === "another resource") assert.doesNotMatch(h.list.innerHTML, /unsupported contribution view/);
+  else assert.match(h.list.innerHTML, /unsupported contribution view/);
+});
+
 for (const field of ["pack_id", "pack_version", "fact_id", "dimensions"]) test(`M23 projection FactKey includes ${field}`, async () => {
   const h = harness(), f = fixture(1), key = f.assets[0].projection.dispositions[0].source_keys[0];
   key[field] = field === "dimensions" ? [{ id: "fixture.dimension", value: { kind: "boolean", boolean: false } }] : "other";

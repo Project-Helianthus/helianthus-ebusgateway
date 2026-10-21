@@ -637,6 +637,9 @@ func (adapter *eebusRuntimeAdapter) refreshSemregSnapshot(ctx context.Context) (
 	}
 	// The hook receives its own deep native copy. A failure never clears a
 	// previously accepted item and never triggers an implicit retry.
+	if err := ctx.Err(); err != nil {
+		return snapshot, err
+	}
 	if err := adapter.publicationHook(observation); err != nil {
 		return snapshot, err
 	}

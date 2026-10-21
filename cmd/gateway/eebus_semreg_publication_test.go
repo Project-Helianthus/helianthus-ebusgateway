@@ -322,6 +322,52 @@ func TestM18SlotGenerationRejectsReadAfterReplacementClearsRetirement(t *testing
 	}
 }
 
+type m18AfterContextCheck struct {
+	context.Context
+	afterCheck func()
+}
+
+func (ctx *m18AfterContextCheck) Err() error {
+	err := ctx.Context.Err()
+	if ctx.afterCheck != nil {
+		afterCheck := ctx.afterCheck
+		ctx.afterCheck = nil
+		afterCheck()
+	}
+	return err
+}
+
+func TestM18CancellationAfterReadBeforePublication(t *testing.T) {
+	native := m18Snapshot(t)
+	reads, calls := 0, 0
+	slot := newEEBusRuntimeSlot(&m18Runtime{snapshot: func() (eebusruntime.SnapshotV1, error) {
+		reads++
+		return native, nil
+	}})
+	adapter := &eebusRuntimeAdapter{runtime: slot}
+	if err := adapter.setSemregPublicationHook(func(eebusSemregObservation) error { calls++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	base, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &m18AfterContextCheck{Context: base, afterCheck: func() {
+		if reads != 1 {
+			t.Fatalf("snapshot reads = %d; want 1 before cancellation", reads)
+		}
+		// Cancel after the first context check sampled nil, while the slot
+		// lock is held, before refresh can enter its publication boundary.
+		slot.operationMu.Lock()
+		cancel()
+		slot.operationMu.Unlock()
+	}}
+	if _, err := adapter.refreshSemregSnapshot(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("refresh error = %v; want context.Canceled", err)
+	}
+	if calls != 0 {
+		t.Fatalf("publication calls = %d; want 0", calls)
+	}
+}
+
 func TestM18CanceledRefreshAndAbsentHookCannotClaimPublication(t *testing.T) {
 	native := m18Snapshot(t)
 	ctx, cancel := context.WithCancel(context.Background())

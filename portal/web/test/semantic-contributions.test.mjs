@@ -287,3 +287,63 @@ test("M23 semantic timeout announces failure and retains last valid cards", asyn
   assert.equal(await pending, false); assert.equal(h.list.innerHTML, previous);
   assert.match(h.notice.textContent, /timed out.*historical last valid/);
 });
+
+for (const [axis, state] of [
+  ["qualification", "candidate"], ["qualification", "unknown"], ["qualification", "unsupported"],
+  ["qualification", "rejected"], ["promotion", "unpromoted"],
+  ["validity", "bad"], ["validity", "unknown"],
+]) test(`M23 selected ${axis}=${state} cannot borrow an eligible sibling's projection`, async () => {
+  const h = harness(), f = fixture(1), asset = f.assets[0], selected = candidate(f);
+  const sibling = clone(selected);
+  sibling.candidate_id = "candidate:eligible-sibling";
+  asset.snapshot.facts[0].candidates.push(sibling);
+  asset.evaluation.facts.push({ ...clone(asset.evaluation.facts[0]), candidate_id: sibling.candidate_id });
+  selected.quality[axis] = state;
+  selected.value = { kind: "text", text: "audit-only-value" };
+  asset.selections = [{ snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(selected.key), selected_candidate: selected.candidate_id, candidate_revision: selected.revision, presentation_only: true }];
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: withheld/);
+  assert.doesNotMatch(h.list.innerHTML, /audit-only-value/);
+  assert.match(h.list.innerHTML, new RegExp(`${axis}.*${state}`));
+});
+
+test("M23 promoted suspect value retains degraded shared availability", async () => {
+  const h = harness(), f = fixture(1);
+  candidate(f).quality.validity = "suspect";
+  f.assets[0].evaluation.facts[0].effective_availability = "degraded";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  assert.match(h.list.innerHTML, /availability=degraded/);
+});
+
+test("M23 cards retain selected provenance, evidence policy and competing fact conflicts", async () => {
+  const h = harness(), f = fixture(1), asset = f.assets[0], selected = candidate(f);
+  const evidence = { owner: "fixture.owner", kind: "native", digest: `sha256:${digest("synthetic evidence")}`, contract: "fixture.evidence", access: "restricted", redaction: "redacted" };
+  Object.assign(selected, {
+    binding_id: "binding:fixture", source_epoch_id: "epoch:fixture", driver_generation: "9007199254740993",
+    origin: { origin_id: "origin:selected", kind: "driver", source_id: "source:selected", evidence: [clone(evidence)] },
+    causal: { correlation_id: "correlation:selected", path: ["source:selected"] },
+    times: { received_at: { unix_nanoseconds: "9007199254740993", clock_id: "clock:fixture" } },
+    evidence: [evidence], derivation: { algorithm: "fixture.derivation", version: "1", inputs: [{ candidate_id: "candidate:input", candidate_revision: "9" }], evidence: [clone(evidence)] },
+  });
+  const sibling = clone(selected); sibling.candidate_id = "candidate:competing";
+  sibling.value = { kind: "text", text: "unselected-value" };
+  asset.snapshot.facts[0].candidates.push(sibling);
+  asset.snapshot.facts[0].conflicts = [{ conflict_id: "conflict:fixture", kind: "value", candidates: [selected.candidate_id, sibling.candidate_id], state: "open", evidence: [{ ...clone(evidence), owner: "<fixture-conflict>", access: "authorized", redaction: "metadata_only" }] }];
+  asset.selections = [{ snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(selected.key), selected_candidate: selected.candidate_id, candidate_revision: selected.revision }];
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  for (const text of ["Provenance:", "binding:fixture", "epoch:fixture", "9007199254740993", "source:selected", "origin:selected", "correlation:selected", "received_at", "fixture.derivation", "candidate:input", "Evidence:", evidence.digest, "fixture.owner", "fixture.evidence", "restricted", "redacted", "Conflicts:", "conflict:fixture", "candidate:competing", "value", "open", "authorized", "metadata_only", "&lt;fixture-conflict&gt;"]) assert.ok(h.list.innerHTML.includes(text), text);
+  const evidenceRow = h.list.innerHTML.match(/<p>Evidence: ([\s\S]*?)<\/p>/)[1];
+  for (const text of [evidence.owner, evidence.kind, evidence.digest, evidence.contract, evidence.access, evidence.redaction]) assert.ok(evidenceRow.includes(text), text);
+  const conflictRow = h.list.innerHTML.match(/<p>Conflicts: ([\s\S]*?)<\/p>/)[1];
+  for (const text of ["conflict:fixture", selected.candidate_id, sibling.candidate_id, "authorized", "metadata_only"]) assert.ok(conflictRow.includes(text), text);
+  assert.doesNotMatch(h.list.innerHTML, /unselected-value|<fixture-conflict>/);
+  assert.equal(h.requests.length, 2);
+  asset.projection.dispositions[0].outcome = "withheld";
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: withheld/);
+  assert.match(h.list.innerHTML, /Provenance:.*source:selected/);
+  assert.match(h.list.innerHTML, /Evidence:.*restricted/);
+  assert.match(h.list.innerHTML, /Conflicts:.*candidate:competing/);
+});

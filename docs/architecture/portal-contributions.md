@@ -142,6 +142,16 @@ lifecycle fences. Native evidence remains with its owner; an evidence reference
 is not permission to retrieve its body. Native interpretation requires its
 public native documentation first; this interface defines no native facts.
 
+Contribution cards check the selected candidate itself: qualification must be
+`qualified`, promotion `promoted`, and validity `good` or `suspect`, in addition
+to the shared evaluation and projection checks. A presentation selection cannot
+borrow eligibility from another candidate that makes the fact projection
+`exact`. Cards keep the selected candidate's source binding, epoch, generation,
+origin, causal context, times, derivation and evidence references, including
+access/redaction metadata, alongside the fact's conflict records and competing
+candidate identities. These details remain visible when the value is withheld;
+all are escaped text and no evidence body is fetched.
+
 Render decimal coefficient/exponent and canonical units without floating-point
 conversion; preserve string revisions/time coordinates. Missing values stay
 missing, while zero, false and empty text remain present. Evaluate freshness

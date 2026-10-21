@@ -1006,10 +1006,19 @@ function semanticContributionCards(catalog, assets) {
             const candidate = selections.length <= 1 && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
             const evaluation = candidate && asset.evaluation.facts.find((entry) => entry.candidate_id === candidate.candidate_id && entry.candidate_revision === candidate.revision);
             const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id && entry.source_keys.some((source) => semanticKey(source) === key));
-            const readable = dispositions.length === 1 && ["exact", "transformed"].includes(dispositions[0].outcome) && evaluation && ["available", "degraded"].includes(evaluation.effective_availability) && ["fresh", "stale"].includes(evaluation.freshness);
+            // A fact-level projection may be exact because of an eligible sibling;
+            // a presentation selection cannot promote its own audit-only candidate.
+            const eligible = candidate?.quality?.qualification === "qualified" && candidate.quality.promotion === "promoted" && ["good", "suspect"].includes(candidate.quality.validity);
+            const readable = eligible && dispositions.length === 1 && ["exact", "transformed"].includes(dispositions[0].outcome) && evaluation && ["available", "degraded"].includes(evaluation.effective_availability) && ["fresh", "stale"].includes(evaluation.freshness);
             const value = readable ? formatContributionValue(candidate?.value) : "withheld";
             rows.push(`${prefix}: ${value}; key=${key}; freshness=${evaluation?.freshness || "unknown"}; availability=${evaluation?.effective_availability || "unknown"}${evaluation?.freshness === "stale" ? "; historical" : ""}`);
-            if (candidate) rows.push(`Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
+            if (candidate) {
+              rows.push(`Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
+              const { binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation } = candidate;
+              rows.push(`Provenance: ${semanticKey({ binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation })}`);
+              rows.push(`Evidence: ${semanticKey(candidate.evidence || [])}`);
+            }
+            rows.push(`Conflicts: ${semanticKey(fact.conflicts || [])}`);
             for (const disposition of dispositions) rows.push(`Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
             if (!dispositions.length) rows.push("Projection: unknown");
           }

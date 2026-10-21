@@ -4,8 +4,9 @@ Status: application design contract for [#1299](https://github.com/Project-Helia
 a partial slice of [#1000](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1000),
 [#1001](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1001)
 and [#1002](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1002).
-This defines subsequent implementation requirements. It adds no implemented
-configuration endpoint, persistence reader, authorization system or plugin loader.
+This defines the application contract. The bounded desired-record persistence
+and Portal GET/PUT API are implemented; runtime application, authorization
+changes and plugin loading remain outside this slice.
 
 ## Owners and precedence
 
@@ -92,6 +93,30 @@ record with all sharing/proxy/output selections false and only explicitly
 provisioned driver enablement. Do not silently import legacy listener settings
 as consent to broader sharing. Existing installations require explicit local
 adoption; this contract does not change today's defaults by itself.
+
+## Gateway persistence composition
+
+**Proven**: the production HTTP composition supplies the Portal config callbacks
+from one host-owned store whenever Portal is mounted. `-portal-config-root`
+selects an existing, trusted local directory (default `/data`); the store uses
+`portal-config.json` and a separate writer lock there. It never accepts a path
+from the browser or desired record and does not create a missing directory.
+The writer is released on HTTP listener exit or startup failure.
+
+The initial driver list comes from the composed runtime-control registry and
+its configured dispositions. Only those driver IDs are editable; unmanaged
+sidecars are excluded. All initial sharing/proxy/output choices are false.
+Desired GraphQL and MCP selections require their respective host-provisioned
+routes, proxy requires host proxy configuration, and Matter requires existing
+M2M configuration. None of these checks proves effective operation.
+
+A failed load retains the store's sanitized error view in GET and PUT while
+the Portal shell and bootstrap stay mounted. No failed load is replaced with
+defaults. Saves persist desired choices only; they do not change driver
+lifecycle, listeners, sharing or output publication. Each effective choice
+remains false with `withheld`/`evidence_unavailable` until runtime application
+and owner readback are implemented. Existing host-controlled operation remains
+outside this record's control in this persistence slice.
 
 ## Desired, effective and error views
 

@@ -10,6 +10,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
@@ -174,7 +175,7 @@ func startHTTPServer(
 	// semantics on absence, so this MUST be called before any MCP
 	// surface serves its first envelope. The provider closure is
 	// evaluated per-envelope; hot-path cost is a single pointer load +
-	// struct copy. See decision doc @ 567a6798 §4.2 + §5.
+	// struct copy. See the responder capability decision, sections 4.2 and 5.
 	//
 	// A nil return from buildResponderCapabilityProvider means the raw
 	// transport protocol does not canonicalize to any of the three
@@ -206,7 +207,9 @@ func startHTTPServer(
 		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
 	var portalOptions portal.Options
+	var configStore *portalconfig.Store
 	if routePlan.portalPath != "" {
+		configStore = openGatewayPortalConfig(cfg, runtimeControl.Registry())
 		portalModbusProvider := portalTCPModbusProvider(modbusProvider)
 		var getPortalBusObservability func() any
 		if busObservability != nil {
@@ -215,6 +218,7 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
+			Config:           gatewayPortalConfigCallbacks(configStore),
 			GraphQLPath:      cfg.GraphQLPath,
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
@@ -389,6 +393,9 @@ func startHTTPServer(
 	}
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
+	if configStore != nil {
+		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, configStore)
+	}
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"expvar"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -147,6 +149,69 @@ func newGatewayControlPlaneContext(ctx context.Context) (context.Context, contex
 	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
+// httpControlPlaneHandler retains host resources until admitted HTTP handlers
+// finish. Hijacked transports cannot access the Portal configuration store.
+type httpControlPlaneHandler struct {
+	http.Handler
+	mu             sync.Mutex
+	active         int
+	retired        bool
+	closeResources func()
+}
+
+func (h *httpControlPlaneHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	if h.retired {
+		h.mu.Unlock()
+		http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	h.active++
+	h.mu.Unlock()
+	release := sync.OnceFunc(func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.active--
+		if h.retired && h.active == 0 {
+			h.closeResources()
+		}
+	})
+	defer release()
+	h.Handler.ServeHTTP(&httpControlPlaneResponseWriter{ResponseWriter: w, release: release}, r)
+}
+
+type httpControlPlaneResponseWriter struct {
+	http.ResponseWriter
+	release func()
+}
+
+func (w *httpControlPlaneResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *httpControlPlaneResponseWriter) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *httpControlPlaneResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		// net/http no longer owns this connection, and shutdown does not wait
+		// for it. Do not let its read loop retain the configuration writer.
+		w.release()
+	}
+	return conn, rw, err
+}
+
+func (h *httpControlPlaneHandler) retire() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.retired = true
+	if h.active == 0 {
+		h.closeResources()
+	}
+}
+
 func startHTTPControlPlaneListener(
 	ctx context.Context,
 	cfg ebusgateway.Config,
@@ -154,7 +219,20 @@ func startHTTPControlPlaneListener(
 	gateway *ebusgateway.Gateway,
 	mcpServer *mcp.Server,
 	eebusProvider mcp.EEBusV1Provider,
+	resources ...io.Closer,
 ) (*http.Server, mdns.Advertiser, error) {
+	// Startup failure, Serve termination, and the shutdown owner may race to clean up.
+	closeResources := sync.OnceFunc(func() {
+		for _, resource := range resources {
+			_ = resource.Close()
+		}
+	})
+	started := false
+	defer func() {
+		if !started {
+			closeResources()
+		}
+	}()
 	var operatorEndpoint io.Closer
 	var err error
 	if eebusProvider != nil {
@@ -172,13 +250,15 @@ func startHTTPControlPlaneListener(
 		return nil, nil, err
 	}
 
-	server := &http.Server{Addr: listener.Addr().String(), Handler: mux}
+	handler := &httpControlPlaneHandler{Handler: mux, closeResources: closeResources}
+	server := &http.Server{Addr: listener.Addr().String(), Handler: handler}
 	if operatorEndpoint != nil {
 		server.RegisterOnShutdown(func() {
 			_ = operatorEndpoint.Close()
 		})
 	}
 	go func() {
+		defer handler.retire()
 		defer func() {
 			if operatorEndpoint != nil {
 				_ = operatorEndpoint.Close()
@@ -207,6 +287,7 @@ func startHTTPControlPlaneListener(
 		}
 	}
 
+	started = true
 	return server, advertiser, nil
 }
 
@@ -219,6 +300,9 @@ func shutdownHTTPControlPlane(server *http.Server) error {
 func shutdownHTTPControlPlaneWithContext(server *http.Server, ctx context.Context) error {
 	if server == nil {
 		return nil
+	}
+	if handler, ok := server.Handler.(*httpControlPlaneHandler); ok {
+		defer handler.retire()
 	}
 	if err := server.Shutdown(ctx); err == nil {
 		return nil

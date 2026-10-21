@@ -26,7 +26,7 @@ function fixture(count = 6) {
     const snapshot = { asset_id: binding.asset_id, snapshot_id: `snapshot:fixture:${i}`, revisions, bindings: [binding], facts: [{ key, candidates: [candidate], conflicts: [] }] };
     const tuple = { snapshot_id: snapshot.snapshot_id, revisions: clone(revisions) };
     const asset = { asset_id: snapshot.asset_id, snapshot, evaluation: { ...clone(tuple), evaluation_digest: `sha256:${digest("shared-evaluation")}`, facts: [{ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: "available" }] }, projection: { ...clone(tuple), dispositions: [{ kind: "fact", item_id: ref.id, outcome: "exact", source_keys: [clone(key)], loss: [] }] }, selections: [] };
-    const field = { id: "power", group: group.id, label: { default: "Power" }, ref, unit_ref: { ...clone(ref), id: "unit.watt" }, order: 0 };
+    const field = { id: "power", group: group.id, label: { default: "Power" }, ref, service_ref: { ...clone(ref), id: "fixture.service" }, capability_ref: { ...clone(ref), id: "fixture.read" }, unit_ref: { ...clone(ref), id: "unit.watt" }, order: 0 };
     catalog.contributions.push(identity);
     catalog.descriptors.push({ ...identity, descriptor_version: "helianthus.gateway.portal-descriptor/v1", groups: [group], fields: [field], views: [{ id: "summary", group: group.id, label: { default: "Readings" }, renderer: "summary", slot: "lens", field_ids: [field.id], diagnostic_ids: [], order: 0 }], diagnostics: [] });
     catalog.resources.push({ id: "resource", domain: ref.pack.id, service_id: "fixture.service", capability_id: "fixture.read", contribution_driver_id: identity.driver_id, contribution_manifest_id: identity.manifest_id, contribution_manifest_version: identity.manifest_version, state: "CURRENT", source: { asset_id: snapshot.asset_id, snapshot_id: snapshot.snapshot_id, revision: JSON.stringify(revisions), evaluation_digest: "catalog-local-evaluation", binding_id: binding.binding_id, source_epoch: binding.source_epoch_id, driver_generation: binding.driver_generation, snapshot: clone(snapshot), evaluation: {}, projection: {}, selections: [] } });
@@ -76,6 +76,32 @@ test("M23 sixth contribution renders through production preview with the same pa
   assert.deepEqual(h.requests[1].body.variables.assetIds, f.assets.map((asset) => asset.asset_id));
   assert.match(h.query, /asset_id: assetId/); assert.match(h.query, /retained_observations: retainedObservations/);
   assert.match(h.query, /evidence \{ \.\.\.ReadSemanticEvidenceRef/);
+});
+
+for (const context of ["domain", "service", "capability"]) test(`M23 contribution fields stay within resource ${context} context`, async () => {
+  const h = harness(), f = fixture(1);
+  const descriptor = f.catalog.descriptors[0], asset = f.assets[0];
+  const field = clone(descriptor.fields[0]);
+  field.id = "foreign-power";
+  field.label.default = "Foreign power";
+  field.ref.id = "fixture.foreign-power";
+  if (context === "domain") {
+    for (const ref of [field.ref, field.service_ref, field.capability_ref, field.unit_ref]) ref.pack.id = "helianthus.pack.storage";
+  } else field[`${context}_ref`].id = `fixture.foreign-${context}`;
+  descriptor.fields.push(field);
+  descriptor.views[0].field_ids.push(field.id);
+  const fact = clone(asset.snapshot.facts[0]);
+  fact.key.pack_id = field.ref.pack.id;
+  fact.key.fact_id = field.ref.id;
+  fact.candidates[0].key = clone(fact.key);
+  fact.candidates[0].candidate_id = "candidate:foreign";
+  fact.candidates[0].value = { kind: "text", text: "foreign-value" };
+  asset.snapshot.facts.push(fact);
+  asset.evaluation.facts.push({ ...clone(asset.evaluation.facts[0]), candidate_id: "candidate:foreign" });
+  asset.projection.dispositions.push({ ...clone(asset.projection.dispositions[0]), item_id: field.ref.id, source_keys: [clone(fact.key)] });
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  assert.doesNotMatch(h.list.innerHTML, /Foreign power|foreign-value/);
 });
 
 test("M23 values distinguish zero, false, empty, unknown, withheld and projection loss", async () => {

@@ -996,7 +996,10 @@ function semanticContributionCards(catalog, assets) {
           continue;
         }
         rows.push(view.label?.default || view.id);
-        for (const field of [...descriptor.fields].filter((field) => view.field_ids.includes(field.id)).sort(order)) {
+        for (const field of descriptor.fields.filter((field) => view.field_ids.includes(field.id) &&
+          field.ref.pack.id === resource.domain && field.service_ref?.pack.id === resource.domain &&
+          field.capability_ref?.pack.id === resource.domain && field.service_ref.id === resource.service_id &&
+          field.capability_ref.id === resource.capability_id).sort(order)) {
           const prefix = field.label?.default || field.id;
           const facts = asset.snapshot.facts.filter((fact) => fact.key.pack_id === field.ref.pack.id && fact.key.pack_version === field.ref.pack.version && fact.key.fact_id === field.ref.id);
           if (!facts.length) rows.push(`${prefix}: unknown`);

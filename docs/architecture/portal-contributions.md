@@ -142,6 +142,11 @@ lifecycle fences. Native evidence remains with its owner; an evidence reference
 is not permission to retrieve its body. Native interpretation requires its
 public native documentation first; this interface defines no native facts.
 
+Contribution cards restrict view fields to the resource's domain, service and
+capability: the field, service and capability pack IDs must match the domain,
+and the service and capability IDs must match the resource. View membership
+alone does not authorize rendering another context's fields.
+
 Contribution cards first filter candidates by the resource's exact binding ID,
 source epoch and decimal-string driver generation, for both default choices and
 explicit selections. A selection outside that source tuple withholds the value

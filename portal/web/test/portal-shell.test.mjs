@@ -356,7 +356,7 @@ function createSemanticContributionFixture(resources) {
       snapshot.facts.push({ key, candidates: [candidate], conflicts: [] });
       asset.evaluation.facts.push({ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: candidate.quality.availability });
       asset.projection.dispositions.push({ kind: "fact", item_id: fieldId, outcome: "exact", source_keys: [key], loss: [] });
-      descriptor.fields.push({ id: fieldId, group: id, label: { default: label }, ref: { pack, id: fieldId, version: "1.0.0" }, order: descriptor.fields.length });
+      descriptor.fields.push({ id: fieldId, group: id, label: { default: label }, ref: { pack, id: fieldId, version: "1.0.0" }, service_ref: { pack, id: "fixture.service", version: "1.0.0" }, capability_ref: { pack, id: "fixture.read", version: "1.0.0" }, order: descriptor.fields.length });
       descriptor.views.at(-1).field_ids.push(fieldId);
     }
     catalog.resources.push({ id, domain: pack.id, service_id: "fixture.service", capability_id: "fixture.read", contribution_driver_id: identity.driver_id, contribution_manifest_id: identity.manifest_id, contribution_manifest_version: identity.manifest_version, state: "CURRENT", source: { asset_id: snapshot.asset_id, snapshot_id: snapshot.snapshot_id, revision: JSON.stringify(revisions), evaluation_digest: asset.evaluation.evaluation_digest, binding_id: binding.binding_id, source_epoch: binding.source_epoch_id, driver_generation: binding.driver_generation, snapshot: structuredClone(snapshot), evaluation: {}, projection: {}, selections: [] } });

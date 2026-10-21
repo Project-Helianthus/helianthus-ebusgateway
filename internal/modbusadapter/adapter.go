@@ -559,6 +559,7 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 			return errors.New("SunSpec qualification observation identity collision")
 		}
 		if !adapter.replayQualifications[key] {
+			adapter.semanticPV.retryCovers()
 			return nil
 		}
 	}
@@ -573,7 +574,9 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 		// and cites this record, so the record is kept and only the cover
 		// failure is reported.
 		var cover *semhub.CoverError
-		if !errors.As(err, &cover) && !exists {
+		if errors.As(err, &cover) {
+			delete(adapter.replayQualifications, key)
+		} else if !exists {
 			delete(adapter.qualifications, key)
 		}
 		return err
@@ -960,10 +963,10 @@ func (adapter *Adapter) Close() error {
 	semanticDone := make(chan error, 1)
 	go func() { semanticDone <- adapter.WithdrawSemantic() }()
 	adapter.closeOnce.Do(func() {
-		adapter.closeErr = adapter.endpoint.Close()
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
+		adapter.closeErr = adapter.endpoint.Close()
 	})
 	return errors.Join(adapter.closeErr, <-semanticDone)
 }

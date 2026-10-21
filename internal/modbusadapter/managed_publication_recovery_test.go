@@ -1,10 +1,14 @@
 package modbusadapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
@@ -232,4 +236,141 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 	if _, ok := successor.SemanticPVCurrentSingle(); !ok {
 		t.Fatal("recovered generation did not publish")
 	}
+}
+
+func TestManagedInheritedReplayCoverDoesNotRepublish(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		target semreg.AssetID
+	)
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, asset semreg.AssetID) {
+		mu.Lock()
+		hit := stage == "before-swap" && asset != "" && asset == target
+		if hit {
+			target = ""
+		}
+		mu.Unlock()
+		if hit {
+			panic("injected cover interruption")
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	core, err := newPVPublicationCore(class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	current := started
+	adapter := &Adapter{semanticPV: core, pvSourceEpoch: "source-epoch:pv:cover-a", startedWall: started.UTC(), startedMono: started,
+		wallNow: func() time.Time { return current }, monotonicNow: func() time.Time { return current },
+		qualifications: make(map[string]sunSpecQualificationRecord), profiles: make(map[string]ProfileObservationRecord), refreshEvidence: make(map[string]sunSpecQualificationRecord)}
+	firstWords := observedFroniusFloatControlsWords()
+	first := pvCoreObservation(t, firstWords, 1, 2)
+	if err := adapter.RecordSunSpecQualificationObservation(first); err != nil {
+		t.Fatal(err)
+	}
+	firstIdentity, _, err := resolvePVPublicationIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAsset := semreg.AssetID("pv-asset-" + pvCoreRawHash(firstIdentity)[:32])
+	current = current.Add(time.Second)
+	rotatedWords := append([]uint16(nil), firstWords...)
+	putSunSpecString(rotatedWords[52:68], "rotated-identity")
+	if err := adapter.RecordSunSpecQualificationObservation(pvCoreObservation(t, rotatedWords, 3, 4)); err != nil {
+		t.Fatal(err)
+	}
+	// A new epoch on the rotated asset retires the old epoch on the first
+	// asset through a cover, whose submission is interrupted.
+	current = current.Add(time.Second)
+	adapter.startedWall = current.UTC()
+	adapter.pvSourceEpoch = "source-epoch:pv:cover-b"
+	mu.Lock()
+	target = firstAsset
+	mu.Unlock()
+	observation := pvCoreObservation(t, rotatedWords, 5, 6)
+	key := observation.Capability().ProfileID() + "\x00" + observation.SampleID()
+	encoded, err := json.Marshal(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.qualifications[key] = sunSpecQualificationRecord{observation: observation, encoded: encoded}
+	adapter.replayQualifications = map[string]bool{key: true}
+	err = adapter.RecordSunSpecQualificationObservation(observation)
+	var cover *semhub.CoverError
+	if !errors.As(err, &cover) {
+		t.Fatalf("record with an interrupted cover=%v, want a CoverError", err)
+	}
+	adapter.profileMu.Lock()
+	_, retained := adapter.qualifications[key]
+	adapter.profileMu.Unlock()
+	if !retained {
+		t.Fatal("the accepted publication's staged evidence was deleted")
+	}
+	if hub.Readable(firstAsset) {
+		t.Fatal("the asset behind the interrupted cover is readable")
+	}
+	before, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("accepted replay snapshot missing")
+	}
+	if adapter.replayQualifications[key] {
+		t.Fatal("accepted cover retained replay admission")
+	}
+	if err := adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+		t.Fatal(err)
+	}
+	after, ok := adapter.SemanticPVCurrentSingle()
+	if !ok || !bytes.Equal(before.Canonical, after.Canonical) {
+		t.Fatal("duplicate replay advanced accepted snapshot")
+	}
+	waitForPV(t, func() bool { return hub.Readable(firstAsset) })
+	core.lifecycleMu.Lock()
+	pending := len(core.covers)
+	core.lifecycleMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("covers still pending: %d", pending)
+	}
+}
+
+type managedDrainingEndpoint struct {
+	Endpoint
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (e *managedDrainingEndpoint) Close() error {
+	close(e.entered)
+	<-e.release
+	return nil
+}
+func TestManagedCloseRevokesAdmissionBeforeEndpointDrain(t *testing.T) {
+	adapter := startManagedPublicationTestAdapter(t, testSemanticPVClass(), &PublicationScope{Epoch: "source-epoch:pv:draining", Generation: 1})
+	endpoint := &managedDrainingEndpoint{Endpoint: adapter.endpoint, entered: make(chan struct{}), release: make(chan struct{})}
+	adapter.endpoint = endpoint
+	done := make(chan error, 1)
+	go func() { done <- adapter.Close() }()
+	<-endpoint.entered
+	adapter.connectionMu.RLock()
+	closed := adapter.closed
+	adapter.connectionMu.RUnlock()
+	observation := pvCoreObservation(t, observedFroniusFloatWords(), 1, 2)
+	if err := adapter.RecordSunSpecQualificationObservation(observation); err == nil {
+		t.Error("draining adapter admitted observation")
+	}
+	if !closed {
+		t.Error("draining adapter still admits endpoint work")
+	}
+	close(endpoint.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// Fixture cleanup closes the original endpoint directly.
+	adapter.endpoint = endpoint.Endpoint
 }

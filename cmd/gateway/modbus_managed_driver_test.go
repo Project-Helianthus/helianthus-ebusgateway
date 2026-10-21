@@ -294,6 +294,14 @@ func TestM03SameEpochReplacementPublishesNextGeneration(t *testing.T) {
 	if err := old.RecordSunSpecQualificationObservation(observation); err != nil {
 		t.Fatal(err)
 	}
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	correlation := m03Correlation()
+	correlation.Generation, correlation.Sequence = 2, 2
+	if err := driver.BindLifecycle(correlation); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := driver.Replace(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -538,14 +546,14 @@ func TestM03ReplacementRetainsDistinctSampleEvidence(t *testing.T) {
 			if err := driver.Stop(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			epoch := semreg.SourceEpochID("epoch:synthetic-a")
+			c := m03Correlation()
+			c.Generation, c.Sequence = 2, 2
 			if newEpoch {
-				c := m03Correlation()
-				c.Epoch, c.Generation, c.Sequence = "epoch:synthetic-b", 2, 2
-				epoch = semreg.SourceEpochID(c.Epoch)
-				if err := driver.BindLifecycle(c); err != nil {
-					t.Fatal(err)
-				}
+				c.Epoch = "epoch:synthetic-b"
+			}
+			epoch := semreg.SourceEpochID(c.Epoch)
+			if err := driver.BindLifecycle(c); err != nil {
+				t.Fatal(err)
 			}
 			if _, err := driver.Start(context.Background()); err != nil {
 				t.Fatal(err)
@@ -568,6 +576,13 @@ func TestM03ReplacementRetainsDistinctSampleEvidence(t *testing.T) {
 				t.Fatal("replacement did not publish distinct sample")
 			}
 			m03AssertGeneration(t, view, epoch, "2")
+			if err := driver.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			c.Generation, c.Sequence = 3, 3
+			if err := driver.BindLifecycle(c); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := driver.Replace(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -634,6 +649,14 @@ func TestM03SemanticCleanupRetriesAfterJournalRecovery(t *testing.T) {
 			}
 			journal.failed.Store(false)
 			if replace {
+				if err := driver.Stop(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				c := m03Correlation()
+				c.Generation, c.Sequence = 2, 2
+				if err := driver.BindLifecycle(c); err != nil {
+					t.Fatal(err)
+				}
 				if generation, err := driver.Replace(context.Background()); err != nil || generation != 2 {
 					t.Fatalf("recovered replacement generation=%d err=%v", generation, err)
 				}
@@ -740,5 +763,99 @@ func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
 				t.Fatalf("replacement bypassed pending shutdown: %v", err)
 			}
 		})
+	}
+}
+
+func TestM03BoundSemanticGenerationSurvivesNativeRetry(t *testing.T) {
+	var calls atomic.Int32
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		if calls.Add(1) == 1 {
+			return nil, errors.New("synthetic startup failure")
+		}
+		return &m03Endpoint{}, nil
+	}, nil)
+	correlation := m03Correlation()
+	correlation.Generation = 7
+	if err := driver.BindLifecycle(correlation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.Start(context.Background()); err == nil {
+		t.Fatal("failure hidden")
+	}
+	native, err := driver.Start(context.Background())
+	if err != nil || native != 2 {
+		t.Fatalf("native retry=%d error=%v", native, err)
+	}
+	attempt := driver.active.Load()
+	if attempt.nativeGeneration != native || attempt.scope.Generation != 7 {
+		t.Fatal("native to semantic mapping lost")
+	}
+	if err := attempt.adapter.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
+		t.Fatal(err)
+	}
+	view, ok := attempt.adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("restored generation did not publish")
+	}
+	m03AssertGeneration(t, view, semreg.SourceEpochID(correlation.Epoch), "7")
+}
+
+func TestM03CanceledStartupWithAdapterCanRetry(t *testing.T) {
+	var calls atomic.Int32
+	first := &m03Endpoint{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		if calls.Add(1) == 1 {
+			return first, nil
+		}
+		return &m03Endpoint{}, nil
+	}, func(runCtx context.Context, _ *modbusadapter.Adapter) modbusManagedWork {
+		if calls.Load() == 1 {
+			cancel()
+			<-runCtx.Done()
+		}
+		return nil
+	})
+	if _, err := driver.Start(ctx); err == nil {
+		t.Fatal("canceled startup admitted")
+	}
+	attempt := driver.active.Load()
+	<-attempt.started
+	if !attempt.startupClosed || first.closes.Load() != 1 {
+		t.Fatal("canceled startup did not prove close")
+	}
+	if generation, err := driver.Start(context.Background()); err != nil || generation != 2 {
+		t.Fatalf("retry=%d error=%v", generation, err)
+	}
+	if calls.Load() != 2 {
+		t.Fatal("retry did not open fresh endpoint")
+	}
+	if driver.active.Load().scope.Generation != 1 {
+		t.Fatal("retry changed service generation")
+	}
+}
+
+func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) { return &m03Endpoint{}, nil }, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+		return &m03Work{start: func() { close(entered); <-release }, close: func() error { return nil }}
+	})
+	result := make(chan error, 1)
+	go func() { _, err := driver.Start(context.Background()); result <- err }()
+	<-entered
+	attempt := driver.active.Load()
+	fenced := make(chan struct{})
+	go func() { driver.FenceWithdrawal(); close(fenced) }()
+	select {
+	case <-fenced:
+		t.Error("withdrawal completed while generation effects were still installing")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	<-fenced
+	<-result
+	if !attempt.withdrawn() {
+		t.Fatal("withdrawal gate did not close")
 	}
 }

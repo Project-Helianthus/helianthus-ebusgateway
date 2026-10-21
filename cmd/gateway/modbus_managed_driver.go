@@ -18,20 +18,25 @@ type modbusManagedWork interface {
 	Start()
 	Close() error
 }
+
+// Factories prepare inert work; Start installs generation-owned effects.
 type modbusManagedWorkFactory func(context.Context, *modbusadapter.Adapter) modbusManagedWork
 
 type modbusManagedAttempt struct {
-	scopeWithdrawn atomic.Bool
-	scope          *modbusadapter.PublicationScope
-	cancel         context.CancelFunc
-	started        chan struct{}
-	stopped        chan struct{}
-	stopOnce       sync.Once
-	adapter        *modbusadapter.Adapter
-	work           modbusManagedWork
-	startErr       error
-	stopErr        error
-	workErr        error
+	admissionMu      sync.Mutex
+	nativeGeneration uint64
+	startupClosed    bool
+	scopeWithdrawn   atomic.Bool
+	scope            *modbusadapter.PublicationScope
+	cancel           context.CancelFunc
+	started          chan struct{}
+	stopped          chan struct{}
+	stopOnce         sync.Once
+	adapter          *modbusadapter.Adapter
+	work             modbusManagedWork
+	startErr         error
+	stopErr          error
+	workErr          error
 }
 
 // modbusManagedDriver is inert until the shared manager starts it. M06 binds
@@ -114,8 +119,11 @@ func (driver *modbusManagedDriver) Start(ctx context.Context) (uint64, error) {
 		default:
 			select {
 			case <-a.started:
-				if a.startErr != nil && a.adapter == nil && !a.scopeWithdrawn.Load() && !errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
+				if a.startErr != nil && (a.adapter == nil || a.startupClosed) && !a.scopeWithdrawn.Load() && !errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
 					a.cancel()
+					if a.adapter != nil {
+						driver.previous = a.scope
+					}
 					driver.active.Store(nil)
 					a = nil
 				}
@@ -130,7 +138,7 @@ func (driver *modbusManagedDriver) Start(ctx context.Context) (uint64, error) {
 		}
 		generation := driver.generation.Add(1)
 		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		a = &modbusManagedAttempt{scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: generation, Previous: driver.previous}, cancel: cancel, started: make(chan struct{}), stopped: make(chan struct{})}
+		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, started: make(chan struct{}), stopped: make(chan struct{})}
 		driver.active.Store(a)
 		driver.revision.Add(1)
 		forwardCancel := context.AfterFunc(ctx, cancel)
@@ -147,7 +155,7 @@ func (driver *modbusManagedDriver) Start(ctx context.Context) (uint64, error) {
 		if !driver.current(a) {
 			return 0, errors.New("modbus managed start withdrawn")
 		}
-		return a.scope.Generation, nil
+		return a.nativeGeneration, nil
 	}
 }
 
@@ -170,30 +178,50 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 		return
 	}
 	if ctx.Err() != nil || a.scopeWithdrawn.Load() {
-		a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), a.adapter.Close())
+		closeErr := a.adapter.Close()
+		a.startupClosed = closeErr == nil
+		a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), closeErr)
 		return
 	}
 	if a.adapter != nil && driver.workFactory != nil {
 		a.work = driver.workFactory(ctx, a.adapter)
-		// Keep late work owned by this attempt for Stop's join and close,
-		// but never start it after withdrawal while the factory was blocked.
+		// Serialize effect installation with withdrawal after inert preparation.
+		a.admissionMu.Lock()
 		if ctx.Err() != nil || a.withdrawn() {
-			a.startErr = errors.New("modbus managed start withdrawn")
+			a.admissionMu.Unlock()
+			var workErr error
+			if a.work != nil {
+				workErr = a.work.Close()
+				a.work = nil
+			}
+			closeErr := a.adapter.Close()
+			a.startupClosed = workErr == nil && closeErr == nil
+			a.workErr = workErr
+			a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), workErr, closeErr)
 			return
 		}
 		if a.work != nil {
 			a.work.Start()
 		}
+		a.admissionMu.Unlock()
 	}
+}
+
+// withdraw serializes revocation with effect installation. Factories may finish
+// late, but their inert work cannot Start after this gate closes.
+func (a *modbusManagedAttempt) withdraw() {
+	a.admissionMu.Lock()
+	defer a.admissionMu.Unlock()
+	a.scopeWithdrawn.Store(true)
+	a.scope.Withdraw()
+	a.cancel()
 }
 
 // FenceWithdrawal only revokes admission and signals cancellation. Stop owns
 // the join, native close, and semantic retirement proof.
 func (driver *modbusManagedDriver) FenceWithdrawal() {
 	if a := driver.active.Load(); a != nil {
-		a.scopeWithdrawn.Store(true)
-		a.scope.Withdraw()
-		a.cancel()
+		a.withdraw()
 	}
 }
 
@@ -204,16 +232,14 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 		driver.mu.Unlock()
 		return nil
 	}
-	a.scopeWithdrawn.Store(true)
-	a.scope.Withdraw()
-	a.cancel()
+	a.withdraw()
 	a.stopOnce.Do(func() {
 		go func() {
 			defer close(a.stopped)
 			<-a.started
 			semanticDone := make(chan error, 1)
 			go func() { semanticDone <- a.adapter.WithdrawSemantic() }()
-			var workErr error
+			workErr := a.workErr
 			if a.work != nil {
 				workErr = a.work.Close()
 			}

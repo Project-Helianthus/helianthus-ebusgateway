@@ -13,9 +13,6 @@ type ListenerBinding struct {
 
 type ListenerAvailability struct {
 	Local, GraphQL, MCP, AdapterProxy ListenerBinding
-	// LocalAddressExplicit permits a host-configured non-loopback local endpoint.
-	// Omitted addresses must still be loopback; browser selections cannot opt in.
-	LocalAddressExplicit bool
 }
 
 type PlannedSurface struct {
@@ -62,7 +59,7 @@ func DeriveListenerPlan(r Record, a ListenerAvailability) ListenerPlan {
 			b := bindings[i]
 			hasZone := b.Address.Zone() != "" // Unmap drops zones from mapped IPv4 addresses.
 			b.Address = b.Address.Unmap()
-			if hasZone || !validListenerBinding(b) || (i == 0 && !b.Address.IsLoopback() && !a.LocalAddressExplicit) {
+			if hasZone || !validListenerBinding(b) {
 				s.Reason = "invalid_binding"
 			} else {
 				s.Binding = &b

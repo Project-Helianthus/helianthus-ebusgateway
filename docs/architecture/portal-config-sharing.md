@@ -132,10 +132,14 @@ local, GraphQL and MCP routes share the HTTP listener owner; the proxy has a
 separate owner. Only provisioned routes receive bindings. Numeric IP endpoints
 with fixed ports supply planning evidence; hostnames, unresolved endpoints and
 unassigned ephemeral ports remain unavailable without DNS or socket probing.
-An omitted HTTP host (including the default `HTTPAddr=":8080"`) plans IPv4
-loopback on the configured port for all provisioned HTTP routes. An explicit
-numeric host in `HTTPAddr` preserves that address, including wildcard and
-non-loopback addresses, and opts into broader scope. No new setting is required.
+An omitted HTTP host (including the default `HTTPAddr=":8080"`) binds and is
+planned as a wildcard on the configured port for all provisioned HTTP routes:
+network-exposed with scope `shared`. Explicit unspecified IPv4 and IPv6 hosts
+also remain wildcard binds. An explicit numeric host in `HTTPAddr` preserves
+that address; only an explicit loopback host gives the local surface scope
+`local_only`. The plan and listener use the same address mapping, preserving the
+configured listener address byte-for-byte. This pull request changes no listener
+bind or default, and requires no new setting.
 An empty proxy host is conservatively treated as an IPv6 wildcard. This snapshot describes
 configuration, not live readiness. A nil callback supplies no available bindings.
 The plan does not open sockets, change routes, apply selections, admit native access or
@@ -158,8 +162,9 @@ Successful `GET /api/v1/config` and `PUT /api/v1/config` responses include:
   `state.output_bindings.matter` mirror their corresponding planned surfaces.
   Driver state retains its existing desired/effective/status/reason view.
 
-The local surface is always desired and defaults to `local_only`; an explicitly
-configured non-loopback HTTP address gives it scope `shared`. GraphQL and MCP have scope
+The local surface is always desired; a valid host-reported loopback binding
+gives it scope `local_only`, and a wildcard or non-loopback binding gives it
+scope `shared`. Without binding evidence its scope remains `local_only`. GraphQL and MCP have scope
 `shared` when selected and `local_only` otherwise; proxy has scope `shared` and
 Matter has scope `output`. Every surface remains `effective: false`.
 
@@ -175,10 +180,9 @@ Matter has no listener binding in this planner. When selected it remains
 `withheld`/`evidence_unavailable`; selection alone supplies no output evidence.
 Bindings require an owner of 1–64 lowercase ASCII letters, digits, dots,
 underscores or hyphens, a valid non-multicast IP address without a zone and a
-nonzero port. The local binding must also be loopback unless the host callback
-confirms an explicitly configured address through `LocalAddressExplicit`.
-This flag is host evidence, is not persisted or serialized, and does not bypass
-binding validation or conflict checks. IPv4-mapped addresses
+nonzero port. A host-reported local binding is a fact, including wildcard and
+non-loopback binds; browser selections cannot override it. All bindings retain
+the same validation and conflict checks. IPv4-mapped addresses
 normalize to IPv4 before comparison. No socket options are inferred.
 
 Equal owner, address and port can cohost local, GraphQL and MCP HTTP routes.

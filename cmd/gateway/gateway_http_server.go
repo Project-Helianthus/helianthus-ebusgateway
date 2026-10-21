@@ -393,6 +393,7 @@ func startHTTPServer(
 	}
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
+	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
 	if configStore != nil {
 		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, configStore)
 	}

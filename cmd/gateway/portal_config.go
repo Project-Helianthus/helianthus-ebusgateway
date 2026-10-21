@@ -39,15 +39,8 @@ func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Re
 func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {
 	// Snapshot provisioned endpoints, not socket readiness or desired selections.
 	plan := newHTTPControlPlaneRoutePlan(cfg, false)
-	httpEndpoint := cfg.HTTPAddr
-	host, port, err := net.SplitHostPort(httpEndpoint)
-	explicitAddress := err == nil && host != ""
-	if err == nil && host == "" {
-		// Omitted HTTP hosts plan loopback; broader exposure requires an explicit IP.
-		httpEndpoint = net.JoinHostPort("127.0.0.1", port)
-	}
-	httpBinding := gatewayPortalListenerBinding("http", httpEndpoint)
-	bindings := portalconfig.ListenerAvailability{Local: httpBinding, LocalAddressExplicit: explicitAddress}
+	_, httpBinding := gatewayPortalHTTPAddress(cfg.HTTPAddr)
+	bindings := portalconfig.ListenerAvailability{Local: httpBinding}
 	if plan.graphqlPath != "" {
 		bindings.GraphQL = httpBinding
 	}
@@ -62,6 +55,13 @@ func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Con
 			return store.Update(record)
 		},
 	}
+}
+
+// gatewayPortalHTTPAddress maps the configured HTTP endpoint to listener input
+// and planning evidence together. Preserve the listen address byte-for-byte:
+// omitted and unspecified hosts bind wildcard interfaces, never loopback.
+func gatewayPortalHTTPAddress(endpoint string) (string, portalconfig.ListenerBinding) {
+	return endpoint, gatewayPortalListenerBinding("http", endpoint)
 }
 
 // gatewayPortalListenerBinding deliberately performs no DNS resolution or socket

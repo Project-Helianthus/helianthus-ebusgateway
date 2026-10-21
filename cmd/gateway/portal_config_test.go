@@ -477,7 +477,7 @@ func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) 
 
 func TestPortalConfigHostListenerPlan(t *testing.T) {
 	endpoint := func(host net.IP, port string) string { return net.JoinHostPort(host.String(), port) }
-	for _, mode := range []string{"cohost", "proxy_collision", "wildcard_local", "empty_host", "ipv6", "hostname", "ephemeral", "missing_routes", "invalid_zone"} {
+	for _, mode := range []string{"cohost", "proxy_collision", "wildcard_local", "empty_host", "empty_host_ipv6_collision", "ipv6", "hostname", "ephemeral", "missing_routes", "invalid_zone"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := ebusgateway.DefaultConfig()
 			cfg.PortalConfigRoot = t.TempDir()
@@ -492,6 +492,10 @@ func TestPortalConfigHostListenerPlan(t *testing.T) {
 				cfg.HTTPAddr = endpoint(net.IPv4zero, "8080")
 			case "empty_host":
 				cfg.HTTPAddr = net.JoinHostPort("", "8080")
+			case "empty_host_ipv6_collision":
+				cfg.HTTPAddr = ":8080"
+				cfg.ProxyListenAddr = endpoint(net.IPv6loopback, "8080")
+				wantReason, wantError = "listener_collision", "listener_conflict"
 			case "ipv6":
 				cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8080")
 			case "hostname":
@@ -616,7 +620,7 @@ func TestPortalConfigDefaultHTTPBindingPUT(t *testing.T) {
 			t.Fatal(err)
 		}
 		local := view.Plan.Surfaces[0]
-		if local.Binding == nil || !local.Binding.Address.IsLoopback() || local.Binding.Port != 8080 || local.Scope != "local_only" || local.Reason != "listener_application_pending" {
+		if local.Binding == nil || !local.Binding.Address.IsUnspecified() || local.Binding.Port != 8080 || local.Scope != "shared" || local.Reason != "listener_application_pending" {
 			t.Fatalf("%s local plan: %+v", edit, local)
 		}
 		accepted, err := store.Read()
@@ -687,5 +691,75 @@ func TestPortalConfigExplicitHTTPAddress(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestGatewayPortalHTTPAddress(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint, address string
+	}{
+		{":8080", "::"},
+		{"127.0.0.1:8080", "127.0.0.1"},
+		{"[::1]:8080", "::1"},
+		{"127.0.0.2:8080", "127.0.0.2"},
+		{"0.0.0.0:8080", "0.0.0.0"},
+		{"[::]:8080", "::"},
+		{"192.0.2.1:8080", "192.0.2.1"},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			listenAddress, binding := gatewayPortalHTTPAddress(tc.endpoint)
+			if listenAddress != tc.endpoint || !binding.Available || binding.Owner != "http" || binding.Address.String() != tc.address || binding.Port != 8080 {
+				t.Fatalf("HTTP address mapping: %q, %+v", listenAddress, binding)
+			}
+			cfg := ebusgateway.DefaultConfig()
+			cfg.HTTPAddr = tc.endpoint
+			callbacks := gatewayPortalConfigCallbacks(nil, cfg)
+			a := callbacks.Bindings(context.Background())
+			if a.Local != binding || a.GraphQL != binding || a.MCP != binding {
+				t.Fatalf("HTTP plan differs from shared mapping: %+v", a)
+			}
+			plan := portalconfig.DeriveListenerPlan(portalconfig.Record{}, a)
+			local := plan.Surfaces[0]
+			wantScope := "shared"
+			if binding.Address.IsLoopback() {
+				wantScope = "local_only"
+			}
+			if local.Binding == nil || *local.Binding != binding || local.Scope != wantScope || local.Status != "pending" || local.Reason != "listener_application_pending" || local.Effective || len(plan.Conflicts) != 0 {
+				t.Fatalf("HTTP local plan: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestPortalConfigHTTPListenerBind(t *testing.T) {
+	for _, host := range []string{"", "127.0.0.1", "::1", "0.0.0.0", "::"} {
+		t.Run("host_"+host, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.MDNSAdvertise = false
+			// Let the OS allocate a port; the configured host has the same bind
+			// semantics as the fixed-port plan tested above.
+			endpoint := net.JoinHostPort(host, "0")
+			cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(endpoint)
+			server, _, err := startHTTPControlPlaneListener(context.Background(), cfg, http.NewServeMux(), nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = server.Close() }()
+			actualHost, port, err := net.SplitHostPort(server.Addr)
+			if err != nil || port == "0" {
+				t.Fatalf("actual listener endpoint: %q, %v", server.Addr, err)
+			}
+			actual := net.ParseIP(actualHost)
+			if actual == nil {
+				t.Fatalf("actual listener host: %q", actualHost)
+			}
+			wantLoopback := net.ParseIP(host).IsLoopback()
+			if actual.IsLoopback() != wantLoopback || actual.IsUnspecified() == wantLoopback {
+				t.Fatalf("configured host %q bound as %q", host, actualHost)
+			}
+			if wantLoopback && !actual.Equal(net.ParseIP(host)) {
+				t.Fatalf("explicit loopback host changed: %q", actualHost)
+			}
+		})
 	}
 }

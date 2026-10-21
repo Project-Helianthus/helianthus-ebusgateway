@@ -181,11 +181,16 @@ func TestM29CollisionsAndInvalidBindings(t *testing.T) {
 				invalidIndex = 1
 			case "nonlocal_portal":
 				a.Local.Address = netip.IPv4Unspecified()
-				invalidIndex = 0
 			}
 			p := portalconfig.DeriveListenerPlan(r, a)
 			if len(p.Conflicts) != wantConflicts {
 				t.Fatalf("conflicts: %+v", p)
+			}
+			if field == "nonlocal_portal" {
+				local := p.Surfaces[0]
+				if local.Binding == nil || *local.Binding != a.Local || local.Scope != "shared" || local.Status != "pending" || local.Reason != "listener_application_pending" || local.Effective {
+					t.Fatalf("host wildcard binding misreported: %+v", local)
+				}
 			}
 			if invalidIndex >= 0 {
 				s := p.Surfaces[invalidIndex]
@@ -363,11 +368,10 @@ func TestM29ConfigAPIValidationAndPending(t *testing.T) {
 	}
 }
 
-func TestM29ExplicitLocalAddressPreservesValidation(t *testing.T) {
+func TestM29HostLocalAddressPreservesValidation(t *testing.T) {
 	for _, invalid := range []string{"zero_port", "empty_owner", "invalid_address", "zone", "multicast"} {
 		t.Run(invalid, func(t *testing.T) {
 			a := m29Availability()
-			a.LocalAddressExplicit = true
 			switch invalid {
 			case "zero_port":
 				a.Local.Port = 0
@@ -383,7 +387,7 @@ func TestM29ExplicitLocalAddressPreservesValidation(t *testing.T) {
 			plan := portalconfig.DeriveListenerPlan(m29Record(), a)
 			local := plan.Surfaces[0]
 			if local.Binding != nil || local.Reason != "invalid_binding" || local.Status != "withheld" || local.Effective {
-				t.Fatalf("explicit address bypassed validation: %+v", local)
+				t.Fatalf("host address bypassed validation: %+v", local)
 			}
 		})
 	}

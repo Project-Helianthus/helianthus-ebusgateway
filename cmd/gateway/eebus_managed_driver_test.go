@@ -42,6 +42,9 @@ func TestM05DescriptorLifecycleAndNativeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := newEEBusManagedDriverDescriptor("eebus.fixture", []runtimecontrol.SourceID{"eebus-source"}, options)
+	if descriptor.NativeContract.Owner != "github.com/Project-Helianthus/helianthus-eebusreg" {
+		t.Fatalf("native contract owner = %q", descriptor.NativeContract.Owner)
+	}
 	if descriptor.Direction != runtimecontrol.DirectionSouthbound || descriptor.Disposition != runtimecontrol.DispositionEnabled || len(descriptor.Hooks) != 0 {
 		t.Fatalf("descriptor = %#v", descriptor)
 	}

@@ -35,7 +35,7 @@ func newEEBusManagedDriverDescriptor(id runtimecontrol.DriverID, sources []runti
 	return runtimecontrol.Descriptor{
 		Format: runtimecontrol.DescriptorFormatV1, DriverID: id,
 		Direction: runtimecontrol.DirectionSouthbound, Disposition: disposition,
-		NativeContract: runtimecontrol.NativeContractRef{Owner: "helianthus-eebusreg", Contract: "Runtime", Version: "v0.1.36"},
+		NativeContract: runtimecontrol.NativeContractRef{Owner: "github.com/Project-Helianthus/helianthus-eebusreg", Contract: "Runtime", Version: "v0.1.36"},
 		Sources:        append([]runtimecontrol.SourceID(nil), sources...),
 		Adapter: runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*eebusManagedDriver, error) {
 			return newEEBusManagedDriver(options), nil

@@ -29,19 +29,20 @@ const (
 )
 
 type modbusManagedAttempt struct {
-	admission        atomic.Uint32
-	nativeGeneration uint64
-	startupClosed    bool
-	scope            *modbusadapter.PublicationScope
-	cancel           context.CancelFunc
-	started          chan struct{}
-	stopped          chan struct{}
-	stopOnce         sync.Once
-	adapter          *modbusadapter.Adapter
-	work             modbusManagedWork
-	startErr         error
-	stopErr          error
-	workErr          error
+	admission           atomic.Uint32
+	nativeCleanupFailed atomic.Bool
+	nativeGeneration    uint64
+	startupClosed       bool
+	scope               *modbusadapter.PublicationScope
+	cancel              context.CancelFunc
+	started             chan struct{}
+	stopped             chan struct{}
+	stopOnce            sync.Once
+	adapter             *modbusadapter.Adapter
+	work                modbusManagedWork
+	startErr            error
+	stopErr             error
+	workErr             error
 }
 
 // modbusManagedDriver is inert until the shared manager starts it. M06 binds
@@ -154,6 +155,9 @@ retry:
 	driver.mu.Unlock()
 	select {
 	case <-ctx.Done():
+		if !joined {
+			a.cancel()
+		}
 		return 0, ctx.Err()
 	case <-a.started:
 		if a.startErr != nil {
@@ -214,12 +218,23 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 			closeErr := a.adapter.Close()
 			a.startupClosed = workErr == nil && closeErr == nil
 			a.workErr = workErr
+			a.nativeCleanupFailed.Store(workErr != nil)
 			a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), workErr, closeErr)
 			return
 		}
 		if a.work != nil {
 			a.work.Start()
 		}
+	}
+	if ctx.Err() != nil && !a.withdrawn() {
+		if a.work != nil {
+			a.workErr = a.work.Close()
+			a.work = nil
+		}
+		closeErr := a.adapter.Close()
+		a.nativeCleanupFailed.Store(a.workErr != nil)
+		a.startupClosed = a.workErr == nil && closeErr == nil
+		a.startErr = errors.Join(ctx.Err(), a.workErr, closeErr)
 	}
 }
 
@@ -262,6 +277,7 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 				closeErr = errors.Join(closeErr, a.retryStartupCleanup())
 			}
 			a.workErr = workErr
+			a.nativeCleanupFailed.Store(workErr != nil)
 			a.stopErr = errors.Join(closeErr, workErr, <-semanticDone)
 			driver.revision.Add(1)
 		}()
@@ -318,4 +334,18 @@ func (driver *modbusManagedDriver) Replace(ctx context.Context) (uint64, error) 
 }
 func (driver *modbusManagedDriver) Generation() uint64 { return driver.generation.Load() }
 func (driver *modbusManagedDriver) Revision() uint64   { return driver.revision.Load() }
-func (*modbusManagedDriver) SafetyQuarantined() bool   { return false }
+func (driver *modbusManagedDriver) SafetyQuarantined() bool {
+	a := driver.active.Load()
+	if a == nil {
+		return false
+	}
+	if a.nativeCleanupFailed.Load() {
+		return true
+	}
+	select {
+	case <-a.started:
+		return a.adapter.NativeCloseUnconfirmed()
+	default:
+		return false
+	}
+}

@@ -1239,3 +1239,122 @@ func TestM03PartialActivationCleanupRetriedAfterJournalRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestM03NativeCleanupFailureQuarantinesManager(t *testing.T) {
+	for _, failure := range []string{"endpoint", "work"} {
+		t.Run(failure, func(t *testing.T) {
+			closeErr := errors.New("synthetic native cleanup failure")
+			endpoint := &m03Endpoint{}
+			if failure == "endpoint" {
+				endpoint.closeErr = closeErr
+			}
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				return endpoint, nil
+			}, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+				return &m03Work{start: func() {}, close: func() error {
+					if failure == "work" {
+						return closeErr
+					}
+					return nil
+				}}
+			})
+			if _, err := driver.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := manager.Start(ctx, "pv.primary"); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				snapshot, changed, ok := manager.Watch("pv.primary")
+				if !ok {
+					t.Fatal("driver missing")
+				}
+				if snapshot.ObservedState == drivermanager.ObservedRunning {
+					break
+				}
+				select {
+				case <-changed:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			report, err := manager.StopWithReport(ctx, "pv.primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Class != drivermanager.CloseUnconfirmed || !driver.SafetyQuarantined() {
+				t.Fatalf("native cleanup class=%v quarantine=%v", report.Class, driver.SafetyQuarantined())
+			}
+			snapshot, _ := manager.Snapshot("pv.primary")
+			if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+				t.Fatalf("cleanup failure snapshot=%+v", snapshot)
+			}
+			if err := manager.Start(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("start=%v", err)
+			}
+			if err := manager.Replace(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("replace=%v", err)
+			}
+			if driver.Generation() != 1 || endpoint.closes.Load() != 1 {
+				t.Fatal("quarantine allowed native retry")
+			}
+		})
+	}
+}
+
+func TestM03CancelDuringWorkStartCleansBeforeRetry(t *testing.T) {
+	entered, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var calls, workCloses atomic.Int32
+	first := &m03Endpoint{}
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		if calls.Add(1) == 1 {
+			return first, nil
+		}
+		return &m03Endpoint{}, nil
+	}, func(runCtx context.Context, _ *modbusadapter.Adapter) modbusManagedWork {
+		if calls.Load() != 1 {
+			return nil
+		}
+		return &m03Work{start: func() {
+			close(entered)
+			<-runCtx.Done()
+			close(canceled)
+			<-release
+		}, close: func() error { workCloses.Add(1); return nil }}
+	})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := driver.Start(ctx); result <- err }()
+	<-entered
+	attempt := driver.active.Load()
+	cancel()
+	<-canceled
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("initial start=%v", err)
+	}
+	close(release)
+	<-attempt.started
+	if attempt.startErr == nil || !attempt.startupClosed || first.closes.Load() != 1 || workCloses.Load() != 1 {
+		t.Fatalf("canceled installation error=%v closed=%v endpoint=%d work=%d", attempt.startErr, attempt.startupClosed, first.closes.Load(), workCloses.Load())
+	}
+	if generation, err := driver.Start(context.Background()); err != nil || generation != 2 {
+		t.Fatalf("retry generation=%d error=%v", generation, err)
+	}
+	if calls.Load() != 2 || workCloses.Load() != 1 {
+		t.Fatal("retry reused canceled work or repeated cleanup")
+	}
+}

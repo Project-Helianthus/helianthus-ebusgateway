@@ -547,3 +547,42 @@ func TestManagedStartupConnectionCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestM03ManagedInjectedClockPublishesAndWithdraws(t *testing.T) {
+	config := validConfig()
+	current := time.Date(2001, time.January, 1, 0, 0, 0, 0, time.UTC)
+	config.Clock = func() time.Time { return current }
+	config.SemanticPV = testSemanticPVClass()
+	config.Publication = &PublicationScope{Epoch: "source-epoch:pv:synthetic-clock", Generation: 1}
+	client, peer := net.Pipe()
+	defer func() { _ = client.Close(); _ = peer.Close() }()
+	adapter, err := Start(context.Background(), config,
+		func(context.Context, string, string) (net.Conn, error) { return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) { return &fakeEndpoint{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	current = current.Add(time.Second)
+	if elapsed := adapter.monotonicNow().Sub(adapter.startedMono); elapsed != time.Second {
+		t.Errorf("elapsed=%v, want one second", elapsed)
+	}
+	observation := pvCoreObservation(t, observedFroniusFloatWords(), 1, 2)
+	if err := adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := adapter.SemanticPVCurrentSingle(); !ok {
+		t.Fatal("managed publication missing")
+	}
+	current = current.Add(time.Second)
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("withdrawal=%v", err)
+	}
+	if _, ok := adapter.SemanticPVCurrentSingle(); ok {
+		t.Fatal("closed publication remains available")
+	}
+}

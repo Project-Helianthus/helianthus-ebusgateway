@@ -128,15 +128,16 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce      sync.Once
-	closeErr       error
-	executeMu      sync.Mutex
-	connectionMu   sync.RWMutex
-	closed         bool
-	lastRequest    modbus.TCPRequestHandle
-	profileMu      sync.RWMutex
-	profiles       map[string]ProfileObservationRecord
-	qualifications map[string]sunSpecQualificationRecord
+	closeOnce         sync.Once
+	closeErr          error
+	nativeCloseFailed atomic.Bool
+	executeMu         sync.Mutex
+	connectionMu      sync.RWMutex
+	closed            bool
+	lastRequest       modbus.TCPRequestHandle
+	profileMu         sync.RWMutex
+	profiles          map[string]ProfileObservationRecord
+	qualifications    map[string]sunSpecQualificationRecord
 	// Inherited terminal samples must publish once in the new generation.
 	replayQualifications map[string]bool
 	refreshEvidence      map[string]sunSpecQualificationRecord
@@ -281,7 +282,11 @@ func Start(
 		}
 		config.Publication.startedWall = startedWall
 		config.Publication.Previous = nil
-		processStarted = managedModbusMonotonicOrigin
+		if config.Clock == nil {
+			processStarted = managedModbusMonotonicOrigin
+		} else if previousAdapter != nil {
+			processStarted = previousAdapter.startedMono
+		}
 	}
 	adapter := &Adapter{
 		endpoint:        endpoint,
@@ -998,6 +1003,7 @@ func (adapter *Adapter) Close() error {
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
+		adapter.nativeCloseFailed.Store(adapter.closeErr != nil)
 	})
 	return errors.Join(adapter.closeErr, <-semanticDone)
 }
@@ -1017,4 +1023,9 @@ func (adapter *Adapter) WithdrawSemantic() error {
 		return adapter.semanticPV.withdrawManaged(context)
 	}
 	return adapter.semanticPV.retire()
+}
+
+// NativeCloseUnconfirmed reports failed native cleanup independently of semantic withdrawal.
+func (adapter *Adapter) NativeCloseUnconfirmed() bool {
+	return adapter != nil && adapter.nativeCloseFailed.Load()
 }

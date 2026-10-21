@@ -459,12 +459,16 @@ func NewSemanticPVClass(hub *semhub.Hub) (*semhub.Class, error) {
 }
 
 type pvPublicationCore struct {
-	mu            sync.RWMutex
-	assets        map[semreg.AssetID]*pvPublicationAsset
-	activeAssetID semreg.AssetID
-	selection     *semreg.SelectionKernel
-	hub           *semhub.Hub
-	class         *semhub.Class
+	scope             *PublicationScope
+	publicationMu     sync.Mutex
+	managedWithdrawn  bool
+	withdrawalContext *semreg.EvaluationContext
+	mu                sync.RWMutex
+	assets            map[semreg.AssetID]*pvPublicationAsset
+	activeAssetID     semreg.AssetID
+	selection         *semreg.SelectionKernel
+	hub               *semhub.Hub
+	class             *semhub.Class
 	// lifecycleMu guards the provisional source and the per-source handles.
 	// It is taken alone or inside mu, never the other way round.
 	lifecycleMu sync.Mutex
@@ -543,6 +547,9 @@ func (c *pvPublicationCore) admitEpoch(epoch semreg.SourceEpochID, generation ui
 }
 
 func (c *pvPublicationCore) admitEpochLocked(epoch semreg.SourceEpochID, generation uint64) error {
+	if !c.scope.valid() {
+		return errors.New("PV managed generation withdrawn")
+	}
 	if c.epochs[epoch] {
 		return &semreg.Error{ID: semreg.StaleSourceEpoch, Detail: "retired PV source epoch"}
 	}
@@ -557,7 +564,59 @@ func (c *pvPublicationCore) admitEpochLocked(epoch semreg.SourceEpochID, generat
 	}
 	c.epochs[epoch] = true
 	c.provisional, c.handles = provisional, make(map[semreg.SourceID]*semhub.Handle)
+	if c.scope != nil && c.scope.Previous != nil && c.scope.Previous.Epoch == epoch && c.scope.Previous.core != nil {
+		previous := c.scope.Previous.core
+		previous.lifecycleMu.Lock()
+		defer previous.lifecycleMu.Unlock()
+		for _, source := range previous.sortedHandleSources() {
+			handle := previous.handles[source]
+			next, err := c.hub.Activate(handle, generation)
+			if err != nil {
+				return err
+			}
+			if err := provisional.Adopt(next); err != nil {
+				return err
+			}
+			c.handles[source] = next
+		}
+	}
 	return nil
+}
+
+func (c *pvPublicationCore) sortedHandleSources() []semreg.SourceID {
+	sources := make([]semreg.SourceID, 0, len(c.handles))
+	for source := range c.handles {
+		sources = append(sources, source)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	return sources
+}
+
+// withdrawManaged fences the generation while preserving the service epoch
+// for a manager-owned retry. The next explicit service start supplies a new epoch.
+func (c *pvPublicationCore) withdrawManaged(context semreg.EvaluationContext) error {
+	c.scope.Withdraw()
+	c.publicationMu.Lock()
+	defer c.publicationMu.Unlock()
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.managedWithdrawn {
+		return nil
+	}
+	if c.withdrawalContext == nil {
+		c.withdrawalContext = &context
+	}
+	context = *c.withdrawalContext
+	var result error
+	for _, source := range c.sortedHandleSources() {
+		handle := c.handles[source]
+		_, err := c.hub.Fence(semhub.FenceRequest{Source: source, Epoch: handle.Epoch(), Generation: handle.Generation(), Reason: "lifecycle.driver_generation_replaced", ObservedAt: context.EvaluatedAt, Monotonic: context.EvaluateMonotonic, Evidence: []semreg.EvidenceRef{{Owner: "helianthus.modbusadapter", Kind: "lifecycle.driver_withdrawal", Digest: semreg.Digest("sha256:" + pvCoreHash("managed-modbus-withdrawal", []byte(string(source)+"\x00"+string(handle.Epoch())+"\x00"+strconv.FormatUint(handle.Generation(), 10)))), Contract: "helianthus.gateway/managed-sidecar/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}}})
+		result = errors.Join(result, err)
+	}
+	if result == nil {
+		c.managedWithdrawn = true
+	}
+	return result
 }
 
 // retire retires the provisional source with its runtime. No SemReg batch
@@ -566,6 +625,9 @@ func (c *pvPublicationCore) retire() error {
 	if c == nil {
 		return nil
 	}
+	c.scope.Withdraw()
+	c.publicationMu.Lock()
+	defer c.publicationMu.Unlock()
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	if err := c.retirePendingLocked(); err != nil {
@@ -602,6 +664,9 @@ func (c *pvPublicationCore) retirePendingLocked() error {
 // or epoch atomically with that commit, so a rejected draft leaves the
 // current epoch, its handles and the public views untouched.
 func (c *pvPublicationCore) handleFor(draft pvPublicationDraft) (pvLifecycle, error) {
+	if !c.scope.valid() {
+		return pvLifecycle{}, errors.New("PV managed generation withdrawn")
+	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	generation, err := strconv.ParseUint(string(draft.lifecycle.driverGeneration), 10, 64)
@@ -747,6 +812,8 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	if c == nil {
 		return pvPublicationReceipt{}, errors.New("PV publication core is unavailable")
 	}
+	c.publicationMu.Lock()
+	defer c.publicationMu.Unlock()
 	detached, err := draft.detached()
 	if err != nil {
 		return pvPublicationReceipt{}, err
@@ -829,6 +896,9 @@ func (c *pvPublicationCore) ingestWithOrderAndValidation(draft pvPublicationDraf
 	// snapshot was committed. Read-time wall clocks may roll back, but cannot be
 	// allowed to precede this snapshot's receipt/evaluation coordinate.
 	view := &pvPublicationView{snapshot: snapshot, canonical: canonical, wallFloor: floor, evaluation: evaluation, selections: selections, projection: report}
+	if !c.scope.valid() {
+		return pvPublicationReceipt{}, errors.New("PV managed generation withdrawn")
+	}
 	_, err = tx.Commit(func(semhub.Committed) {
 		asset.current = view
 		c.assets[detached.assetID] = asset

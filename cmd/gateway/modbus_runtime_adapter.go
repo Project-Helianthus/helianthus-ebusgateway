@@ -26,6 +26,10 @@ func startModbusRuntime(
 	dial modbusadapter.Dialer,
 	factory modbusadapter.Factory,
 ) (*modbusadapter.Adapter, error) {
+	return startModbusRuntimeWithPublication(ctx, config, hub, dial, factory, nil)
+}
+
+func startModbusRuntimeWithPublication(ctx context.Context, config ebusgateway.ModbusTCPConfig, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, scope *modbusadapter.PublicationScope) (*modbusadapter.Adapter, error) {
 	runtimeConfig, err := mapModbusRuntimeConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("map Modbus TCP runtime configuration: %w", err)
@@ -40,6 +44,7 @@ func startModbusRuntime(
 			return nil, fmt.Errorf("start Modbus TCP runtime: %w", err)
 		}
 	}
+	runtimeConfig.Publication = scope
 	adapter, err := modbusadapter.Start(ctx, runtimeConfig, dial, factory)
 	if err != nil {
 		return nil, fmt.Errorf("start Modbus TCP runtime: %w", err)

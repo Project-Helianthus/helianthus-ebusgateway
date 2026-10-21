@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
@@ -40,6 +41,7 @@ type Dialer func(context.Context, string, string) (net.Conn, error)
 
 // Config contains the already-validated bounded runtime configuration.
 type Config struct {
+	Publication *PublicationScope
 	Enabled     bool
 	Endpoint    modbus.TCPEndpointConfig
 	DialTimeout time.Duration
@@ -49,6 +51,42 @@ type Config struct {
 	// SemanticPV is the PV asset class of the process's semantic publication
 	// hub. Every discovered PV asset is declared and published through it.
 	SemanticPV *semhub.Class
+}
+
+// PublicationScope binds one adapter to its managed generation. Withdrawal is
+// non-blocking; Close drains admitted publication work before fencing it.
+// Identity fields and Previous are frozen before Start; Previous must be joined.
+type PublicationScope struct {
+	Previous    *PublicationScope
+	core        *pvPublicationCore
+	startedWall time.Time
+	Epoch       semreg.SourceEpochID
+	Generation  uint64
+	withdrawn   atomic.Bool
+}
+
+var managedModbusMonotonicOrigin = time.Now()
+
+var ErrStartupCloseUnproven = errors.New("modbus startup endpoint close unproven")
+
+func closeStartupEndpoint(endpoint Endpoint) error {
+	if endpoint == nil {
+		return nil
+	}
+	if err := endpoint.Close(); err != nil {
+		return errors.Join(ErrStartupCloseUnproven, err)
+	}
+	return nil
+}
+
+func (scope *PublicationScope) Withdraw() {
+	if scope != nil {
+		scope.withdrawn.Store(true)
+	}
+}
+
+func (scope *PublicationScope) valid() bool {
+	return scope == nil || (!scope.withdrawn.Load() && scope.Epoch != "" && scope.Generation != 0)
 }
 
 // ReadPlan is a gateway-side request without socket ownership. The adapter
@@ -131,17 +169,21 @@ func Start(
 	if ctx == nil || dial == nil || factory == nil || config.DialTimeout <= 0 {
 		return nil, errors.New("enabled Modbus TCP adapter configuration is incomplete")
 	}
+	if !config.Publication.valid() {
+		return nil, errors.New("managed Modbus publication scope unavailable")
+	}
 	semanticPV, err := newPVPublicationCore(config.SemanticPV)
 	if err != nil {
 		return nil, fmt.Errorf("construct SemReg PV publication: %w", err)
 	}
+	semanticPV.scope = config.Publication
 	address, err := dialAddress(config.Endpoint.Endpoint)
 	if err != nil {
 		return nil, err
 	}
 	endpoint, err := factory(config.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("construct Modbus TCP endpoint: %w", err)
+		return nil, errors.Join(fmt.Errorf("construct Modbus TCP endpoint: %w", err), closeStartupEndpoint(endpoint))
 	}
 	if endpoint == nil {
 		return nil, errors.New("construct Modbus TCP endpoint: factory returned nil")
@@ -153,7 +195,7 @@ func Start(
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("dial Modbus TCP endpoint: %w", err),
-			endpoint.Close(),
+			closeStartupEndpoint(endpoint),
 		)
 	}
 	handle, err := endpoint.OpenConnection(connection)
@@ -161,7 +203,7 @@ func Start(
 		return nil, errors.Join(
 			fmt.Errorf("open Modbus TCP endpoint: %w", err),
 			connection.Close(),
-			endpoint.Close(),
+			closeStartupEndpoint(endpoint),
 		)
 	}
 	clock := time.Now
@@ -171,10 +213,37 @@ func Start(
 	processStarted := clock()
 	startedWall := processStarted.UTC()
 	epoch := semhub.PVEpochID(config.Endpoint.Endpoint, startedWall.Format(time.RFC3339Nano))
+	generation := uint64(1)
+	if config.Publication != nil {
+		epoch, generation = config.Publication.Epoch, config.Publication.Generation
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, connection.Close(), closeStartupEndpoint(endpoint))
+	}
+	if !config.Publication.valid() {
+		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), connection.Close(), closeStartupEndpoint(endpoint))
+	}
 	// The provisional PV source epoch is admitted exactly at the historical
 	// sample point, after the endpoint factory, dial and open.
-	if err := semanticPV.admitEpoch(epoch, 1); err != nil {
-		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), connection.Close(), endpoint.Close())
+	if err := semanticPV.admitEpoch(epoch, generation); err != nil {
+		var cleanup error
+		if config.Publication != nil {
+			cleanup = semanticPV.withdrawManaged(semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(clock().UTC()), EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin))})
+			if cleanup != nil {
+				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
+			}
+		}
+		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, connection.Close(), closeStartupEndpoint(endpoint))
+	}
+	if config.Publication != nil {
+		config.Publication.core = semanticPV
+		previous := config.Publication.Previous
+		if previous != nil && previous.Epoch == epoch && !previous.startedWall.IsZero() {
+			startedWall = previous.startedWall
+		}
+		config.Publication.startedWall = startedWall
+		config.Publication.Previous = nil
+		processStarted = managedModbusMonotonicOrigin
 	}
 	return &Adapter{
 		endpoint:        endpoint,
@@ -604,8 +673,12 @@ func (adapter *Adapter) publishSemanticPVWithValidation(observation modbusreg.Su
 	if err != nil {
 		return err
 	}
+	generation := uint64(1)
+	if adapter.config.Publication != nil {
+		generation = adapter.config.Publication.Generation
+	}
 	lifecycle := pvPublicationLifecycle{
-		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: "1",
+		sourceEpochID: adapter.pvSourceEpoch, driverGeneration: semreg.Uint64(strconv.FormatUint(generation, 10)),
 		sourceStartedAt: pvPublicationWall(adapter.startedWall), receivedAt: context.EvaluatedAt,
 		receiptMonotonic: context.EvaluateMonotonic, evaluatedAt: context.EvaluatedAt,
 		evaluateMonotonic: context.EvaluateMonotonic,
@@ -839,13 +912,21 @@ func (adapter *Adapter) Close() error {
 	if adapter == nil || adapter.endpoint == nil {
 		return nil
 	}
-	// The endpoint shuts down once; the provisional retirement is retried on
-	// every Close until it is journalled (retire is idempotent once done).
+	// Native shutdown runs once. Semantic withdrawal is retried independently
+	// until journalled; managed generations are fenced and legacy epochs retire.
+	adapter.config.Publication.Withdraw()
 	adapter.closeOnce.Do(func() {
+		adapter.closeErr = adapter.endpoint.Close()
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
-		adapter.closeErr = adapter.endpoint.Close()
 	})
+	if adapter.config.Publication != nil {
+		context, err := adapter.semanticPVReadContext()
+		if err != nil {
+			return errors.Join(adapter.closeErr, err)
+		}
+		return errors.Join(adapter.closeErr, adapter.semanticPV.withdrawManaged(context))
+	}
 	return errors.Join(adapter.closeErr, adapter.semanticPV.retire())
 }

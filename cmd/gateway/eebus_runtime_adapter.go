@@ -10,9 +10,12 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/projection"
 )
 
 type eebusRuntimeFactory func(eebusruntime.Config) (eebusruntime.Runtime, error)
@@ -29,6 +32,12 @@ type eebusRuntimeAdapter struct {
 	promotion             mcp.LeafPromotionCapture
 	startupDegradedReason eebusadmin.EEBusDegradedReason
 
+	snapshotMu            sync.Mutex
+	publicationMu         sync.Mutex
+	publicationHook       eebusSemregPublicationHook
+	publicationGeneration uint64
+	publicationClosed     bool
+
 	shutdownOnce sync.Once
 	shutdownErr  error
 }
@@ -39,11 +48,12 @@ type eebusRuntimeAdapter struct {
 // it. The seam is intentionally eeBUS-local; a later DriverManager can own the
 // same start/replace/stop shape without changing the runtime package.
 type eebusRuntimeSlot struct {
-	mu       sync.RWMutex
-	runtime  eebusruntime.Runtime
-	closed   atomic.Bool
-	retiring atomic.Bool
-	cancel   context.CancelFunc
+	mu                    sync.RWMutex
+	runtime               eebusruntime.Runtime
+	closed                atomic.Bool
+	retiring              atomic.Bool
+	cancel                context.CancelFunc
+	publicationGeneration uint64
 
 	operationMu  sync.Mutex
 	retiredErr   error
@@ -81,6 +91,7 @@ func (slot *eebusRuntimeSlot) ReplaceDetached(runtime eebusruntime.Runtime) (eeb
 	}
 	previous := slot.runtime
 	slot.runtime = runtime
+	slot.publicationGeneration++
 	slot.retiring.Store(false)
 	if previous != nil {
 		slot.drains.Add(1)
@@ -125,6 +136,7 @@ func (slot *eebusRuntimeSlot) FenceTerminal() {
 	slot.operationMu.Lock()
 	slot.closed.Store(true)
 	slot.retiring.Store(true)
+	slot.publicationGeneration++
 	slot.operationMu.Unlock()
 }
 
@@ -152,6 +164,7 @@ func (slot *eebusRuntimeSlot) BeginRetire() bool {
 		return false
 	}
 	slot.retiring.Store(true)
+	slot.publicationGeneration++
 	slot.operationMu.Unlock()
 	return true
 }
@@ -493,6 +506,11 @@ func (adapter *eebusRuntimeAdapter) Shutdown() error {
 		return nil
 	}
 	adapter.shutdownOnce.Do(func() {
+		adapter.publicationMu.Lock()
+		adapter.publicationClosed = true
+		adapter.publicationGeneration++
+		adapter.publicationHook = nil
+		adapter.publicationMu.Unlock()
 		adapter.shutdownErr = adapter.runtime.Shutdown()
 	})
 	return adapter.shutdownErr
@@ -503,4 +521,124 @@ func (adapter *eebusRuntimeAdapter) Snapshot() (eebusruntime.SnapshotV1, error) 
 		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
 	}
 	return adapter.runtime.Snapshot()
+}
+
+// Native snapshots stay inside the approved eeBUS runtime adapter seam.
+type eebusSemregObservation struct {
+	Native   eebusruntime.SnapshotV1
+	Evidence semreg.EvidenceRef
+	Items    []eebusSemregItem
+}
+
+func eebusSemregObservationFrom(snapshot eebusruntime.SnapshotV1) (eebusSemregObservation, error) {
+	if err := snapshot.Validate(); err != nil {
+		return eebusSemregObservation{}, err
+	}
+	registry, err := promotioncapture.DefaultRegistry()
+	if err != nil {
+		return eebusSemregObservation{}, err
+	}
+	observation := eebusSemregObservation{
+		Native: snapshot.Clone(),
+		Evidence: semreg.EvidenceRef{
+			Owner: "helianthus.eebusreg", Kind: "native.snapshot",
+			Digest: semreg.Digest(snapshot.Meta.DataHash), Contract: eebusruntime.SnapshotContractV1,
+			Access: semreg.EvidenceAccessAuthorized, Redaction: semreg.RedactionNone,
+		},
+	}
+	for _, candidate := range registry.Candidates() {
+		if candidate.SemanticPath == nil || candidate.EEBusSource == nil ||
+			(candidate.ProtocolEligibility != promotioncapture.ProtocolCrossProtocol && candidate.ProtocolEligibility != promotioncapture.ProtocolEEBusNative) {
+			continue
+		}
+		availability := semreg.AvailabilityAvailable
+		if snapshot.Status.State != eebusruntime.ObservedRuntimeStateV1Ready {
+			availability = semreg.AvailabilityUnavailable
+		}
+		observation.Items = append(observation.Items, eebusSemregItem{
+			CatalogRef: candidate.CandidateID,
+			Evidence:   []semreg.EvidenceRef{observation.Evidence},
+			Quality: semreg.Quality{
+				Assertion: semreg.AssertionObserved, Qualification: semreg.QualificationUnknown,
+				Promotion: semreg.PromotionUnpromoted, Validity: semreg.ValidityUnknown,
+				Availability: availability, Freshness: semreg.FreshnessUnknown,
+				Reasons: []semreg.DefinitionID{eebusPendingNormativeRevision},
+			},
+			Disposition: projection.ProjectionUnknown,
+			Loss: []projection.LossDetail{{Kind: projection.LossPolicy,
+				SourceItems: []semreg.DefinitionID{}, Description: string(eebusPendingNormativeRevision)},
+				{Kind: projection.LossCapability, SourceItems: []semreg.DefinitionID{},
+					Description: "snapshot inventory does not establish a semantic value or capability"}},
+		})
+	}
+	return observation, nil
+}
+
+func (adapter *eebusRuntimeAdapter) setSemregPublicationHook(hook eebusSemregPublicationHook) error {
+	if adapter == nil || adapter.runtime == nil {
+		return errors.New("eeBUS runtime unavailable")
+	}
+	adapter.publicationMu.Lock()
+	defer adapter.publicationMu.Unlock()
+	if adapter.publicationClosed {
+		return errors.New("eeBUS publication closed")
+	}
+	adapter.publicationGeneration++
+	adapter.publicationHook = hook
+	return nil
+}
+
+func (adapter *eebusRuntimeAdapter) refreshSemregSnapshot(ctx context.Context) (eebusruntime.SnapshotV1, error) {
+	if adapter == nil || adapter.runtime == nil {
+		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
+	}
+	// Serialize refreshes so an older native read cannot overwrite a later
+	// disconnect observation. Lifecycle fencing does not wait for this read.
+	adapter.snapshotMu.Lock()
+	defer adapter.snapshotMu.Unlock()
+	adapter.publicationMu.Lock()
+	generation, closed := adapter.publicationGeneration, adapter.publicationClosed
+	adapter.publicationMu.Unlock()
+	if closed {
+		return eebusruntime.SnapshotV1{}, errors.New("eeBUS publication closed")
+	}
+	var slotGeneration uint64
+	slot, isSlot := adapter.runtime.(*eebusRuntimeSlot)
+	if isSlot {
+		slot.operationMu.Lock()
+		slotGeneration = slot.publicationGeneration
+		slot.operationMu.Unlock()
+	}
+	snapshot, err := adapter.runtime.Snapshot()
+	if err != nil {
+		return snapshot, err
+	}
+	adapter.publicationMu.Lock()
+	defer adapter.publicationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return snapshot, err
+	}
+	if adapter.publicationClosed || adapter.publicationGeneration != generation {
+		return snapshot, errors.New("eeBUS publication fenced")
+	}
+	if isSlot {
+		slot.operationMu.Lock()
+		defer slot.operationMu.Unlock()
+		if slot.closed.Load() || slot.retiring.Load() || slot.publicationGeneration != slotGeneration {
+			return snapshot, errors.New("eeBUS publication fenced")
+		}
+	}
+	if adapter.publicationHook == nil {
+		return snapshot, errors.New("eeBUS SemReg publication hook unavailable")
+	}
+	observation, err := eebusSemregObservationFrom(snapshot)
+	if err != nil {
+		return snapshot, err
+	}
+	// The hook receives its own deep native copy. A failure never clears a
+	// previously accepted item and never triggers an implicit retry.
+	if err := adapter.publicationHook(observation); err != nil {
+		return snapshot, err
+	}
+	return snapshot, nil
 }

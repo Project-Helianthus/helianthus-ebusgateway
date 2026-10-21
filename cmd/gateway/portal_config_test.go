@@ -490,10 +490,8 @@ func TestPortalConfigHostListenerPlan(t *testing.T) {
 				wantReason, wantError = "listener_collision", "listener_conflict"
 			case "wildcard_local":
 				cfg.HTTPAddr = endpoint(net.IPv4zero, "8080")
-				wantError = "invalid_binding"
 			case "empty_host":
 				cfg.HTTPAddr = net.JoinHostPort("", "8080")
-				wantError = "invalid_binding"
 			case "ipv6":
 				cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8080")
 			case "hostname":
@@ -525,7 +523,7 @@ func TestPortalConfigHostListenerPlan(t *testing.T) {
 			if plan.Surfaces[1].Reason != wantReason || plan.Surfaces[2].Reason != wantReason {
 				t.Fatalf("host plan: %+v", plan)
 			}
-			if mode == "cohost" || mode == "ipv6" {
+			if mode == "cohost" || mode == "ipv6" || mode == "wildcard_local" || mode == "empty_host" {
 				if len(plan.Conflicts) != 0 || plan.Surfaces[0].Binding == nil || *plan.Surfaces[0].Binding != *plan.Surfaces[1].Binding || *plan.Surfaces[1].Binding != *plan.Surfaces[2].Binding {
 					t.Fatalf("HTTP routes did not cohost: %+v", plan)
 				}
@@ -571,5 +569,123 @@ func TestPortalConfigHostListenerPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPortalConfigDefaultHTTPBindingPUT(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.PortalConfigRoot = t.TempDir()
+	registry := runtimecontrol.NewRegistry(nil)
+	descriptor, err := newEBusPrimaryDescriptor(runtimecontrol.NativeContractRef{Owner: "example.org/native", Contract: "synthetic", Version: "synthetic"}, ctlSource, newEBusPrimaryLifecycleAdapter(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(descriptor); err != nil {
+		t.Fatal(err)
+	}
+	store := openGatewayPortalConfig(cfg, registry)
+	defer func() { _ = store.Close() }()
+	handler := portal.NewHandler(portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)})
+	record, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edit := range []string{"driver_only", "enable_sharing", "disable_all_sharing"} {
+		switch edit {
+		case "driver_only":
+			record.Drivers[0].Enabled = false
+		case "enable_sharing":
+			record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+		case "disable_all_sharing":
+			record.Sharing = portalconfig.Sharing{}
+		}
+		body, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s PUT: %d %s", edit, response.Code, response.Body.String())
+		}
+		var view struct {
+			Desired portalconfig.Record       `json:"desired"`
+			Plan    portalconfig.ListenerPlan `json:"listener_plan"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		local := view.Plan.Surfaces[0]
+		if local.Binding == nil || !local.Binding.Address.IsLoopback() || local.Binding.Port != 8080 || local.Scope != "local_only" || local.Reason != "listener_application_pending" {
+			t.Fatalf("%s local plan: %+v", edit, local)
+		}
+		accepted, err := store.Read()
+		if err != nil || accepted.Revision == record.Revision || accepted.Drivers[0].Enabled || accepted.Sharing != record.Sharing || view.Desired.Revision != accepted.Revision {
+			t.Fatalf("%s persistence: %+v, %v", edit, accepted, err)
+		}
+		record = accepted
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openGatewayPortalConfig(cfg, registry)
+	defer func() { _ = reopened.Close() }()
+	accepted, err := reopened.Read()
+	if err != nil || accepted.Revision != record.Revision || accepted.Drivers[0].Enabled || accepted.Sharing != (portalconfig.Sharing{}) {
+		t.Fatalf("restart persistence: %+v, %v", accepted, err)
+	}
+}
+
+func TestPortalConfigExplicitHTTPAddress(t *testing.T) {
+	for _, address := range []string{"0.0.0.0", "::", "192.0.2.1"} {
+		for _, collision := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/collision_%t", address, collision), func(t *testing.T) {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.PortalConfigRoot = t.TempDir()
+				cfg.HTTPAddr = net.JoinHostPort(address, "8080")
+				cfg.ProxyListenAddr = net.JoinHostPort(address, "8081")
+				if collision {
+					cfg.ProxyListenAddr = cfg.HTTPAddr
+				}
+				store := openGatewayPortalConfig(cfg, nil)
+				defer func() { _ = store.Close() }()
+				callbacks := gatewayPortalConfigCallbacks(store, cfg)
+				record, err := store.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+				record.AdapterProxy = true
+				plan := portalconfig.DeriveListenerPlan(record, callbacks.Bindings(context.Background()))
+				for _, surface := range plan.Surfaces[:3] {
+					if surface.Binding == nil || surface.Binding.Address.String() != address || surface.Binding.Port != 8080 || surface.Scope != "shared" {
+						t.Fatalf("explicit address lost: %+v", surface)
+					}
+				}
+				body, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				portal.NewHandler(portal.Options{Config: callbacks}).ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+				accepted, err := store.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if collision {
+					var view struct {
+						Error *portalconfig.Error `json:"error"`
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+						t.Fatal(err)
+					}
+					if len(plan.Conflicts) != 3 || response.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != "listener_conflict" || accepted.Revision != "0" || accepted.Sharing != (portalconfig.Sharing{}) || accepted.AdapterProxy {
+						t.Fatalf("collision accepted: %+v, %d %s, %+v", plan, response.Code, response.Body.String(), accepted)
+					}
+				} else if len(plan.Conflicts) != 0 || response.Code != http.StatusOK || accepted.Revision != "1" || accepted.Sharing != record.Sharing || !accepted.AdapterProxy {
+					t.Fatalf("explicit binding rejected: %+v, %d %s, %+v", plan, response.Code, response.Body.String(), accepted)
+				}
+			})
+		}
 	}
 }

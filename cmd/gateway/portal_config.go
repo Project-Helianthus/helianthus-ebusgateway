@@ -39,8 +39,15 @@ func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Re
 func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {
 	// Snapshot provisioned endpoints, not socket readiness or desired selections.
 	plan := newHTTPControlPlaneRoutePlan(cfg, false)
-	httpBinding := gatewayPortalListenerBinding("http", cfg.HTTPAddr)
-	bindings := portalconfig.ListenerAvailability{Local: httpBinding}
+	httpEndpoint := cfg.HTTPAddr
+	host, port, err := net.SplitHostPort(httpEndpoint)
+	explicitAddress := err == nil && host != ""
+	if err == nil && host == "" {
+		// Omitted HTTP hosts plan loopback; broader exposure requires an explicit IP.
+		httpEndpoint = net.JoinHostPort("127.0.0.1", port)
+	}
+	httpBinding := gatewayPortalListenerBinding("http", httpEndpoint)
+	bindings := portalconfig.ListenerAvailability{Local: httpBinding, LocalAddressExplicit: explicitAddress}
 	if plan.graphqlPath != "" {
 		bindings.GraphQL = httpBinding
 	}

@@ -362,3 +362,29 @@ func TestM29ConfigAPIValidationAndPending(t *testing.T) {
 		})
 	}
 }
+
+func TestM29ExplicitLocalAddressPreservesValidation(t *testing.T) {
+	for _, invalid := range []string{"zero_port", "empty_owner", "invalid_address", "zone", "multicast"} {
+		t.Run(invalid, func(t *testing.T) {
+			a := m29Availability()
+			a.LocalAddressExplicit = true
+			switch invalid {
+			case "zero_port":
+				a.Local.Port = 0
+			case "empty_owner":
+				a.Local.Owner = ""
+			case "invalid_address":
+				a.Local.Address = netip.Addr{}
+			case "zone":
+				a.Local.Address = netip.IPv6Unspecified().WithZone("synthetic")
+			case "multicast":
+				a.Local.Address = netip.AddrFrom16([16]byte{0xff, 2})
+			}
+			plan := portalconfig.DeriveListenerPlan(m29Record(), a)
+			local := plan.Surfaces[0]
+			if local.Binding != nil || local.Reason != "invalid_binding" || local.Status != "withheld" || local.Effective {
+				t.Fatalf("explicit address bypassed validation: %+v", local)
+			}
+		})
+	}
+}

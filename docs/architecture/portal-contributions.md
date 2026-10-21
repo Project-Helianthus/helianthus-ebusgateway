@@ -343,6 +343,10 @@ Reconnect only to the same advertised URL, preserving prefix and query policy.
 | Stream disconnect/parse failure | Mark disconnected/degraded, retain last-known data with source freshness; never mark it fresh on reconnect. |
 | Generation conflict (catalog/read identity mismatch persisting after the bounded refetch, or a changed registry/publication generation) or whole-read limit exceeded | Display the inconsistent/contract error and no values; do not splice/truncate a successful view. |
 
+Structured GraphQL errors with `extensions.code` of `CONFLICT` or
+`RESOURCE_EXHAUSTED` use the no-values conflict/limit state, including after a
+previous successful read.
+
 ## Already trusted external caller context
 
 A host adapter may attach an opaque, immutable, request-scoped context value

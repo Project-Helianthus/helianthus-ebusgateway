@@ -231,6 +231,19 @@ test("M23 GraphQL errors and malformed shared responses retain previous valid ca
   }
 });
 
+for (const code of ["RESOURCE_EXHAUSTED", "CONFLICT"]) test(`M23 structured ${code} shared-read error withholds previous values`, async () => {
+  const h = harness(), f = fixture(1); h.pair(f);
+  assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+  h.queue.push({ ok: true, json: async () => ({ data: { portalCatalogV1: f.catalog } }) });
+  h.queue.push({ ok: true, json: async () => ({ data: { semanticSnapshot: null }, errors: [{ message: "synthetic read refusal", extensions: { code } }] }) });
+  assert.equal(await h.refresh(), false);
+  assert.match(h.list.innerHTML, /generation conflict or read limit.*Values withheld/);
+  assert.doesNotMatch(h.list.innerHTML, /Power:|portal-catalog-resource/);
+  assert.doesNotMatch(h.notice.textContent, /historical/);
+  assert.equal(h.shell._semanticHasValid, false);
+});
+
 test("M23 disconnect fences a late semantic completion", async () => {
   const h = harness(); let resolve;
   h.queue.push(new Promise((complete) => { resolve = complete; }));

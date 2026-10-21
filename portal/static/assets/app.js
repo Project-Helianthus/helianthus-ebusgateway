@@ -2761,7 +2761,11 @@ class PortalShell extends HTMLElement {
         const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: request.controller.signal });
         if (!response.ok) throw new Error("read failed");
         const payload = await response.json();
-        if (payload.errors) throw new Error("GraphQL read failed");
+        if (payload.errors) {
+          conflict = conflict || (Array.isArray(payload.errors) && payload.errors.some((error) =>
+            ["CONFLICT", "RESOURCE_EXHAUSTED"].includes(error?.extensions?.code)));
+          throw new Error("GraphQL read failed");
+        }
         if (new TextEncoder().encode(JSON.stringify(payload)).length > 4 * 1024 * 1024) { conflict = true; throw new Error("read limit"); }
         return payload.data;
       };
@@ -2799,6 +2803,7 @@ class PortalShell extends HTMLElement {
       throw new Error("generation conflict");
     } catch {
       if (!isActive()) return false;
+      if (conflict) this._semanticHasValid = false;
       const message = conflict ? "Semantic generation conflict or read limit. Values withheld." : request.timedOut ? "Semantic refresh timed out." : "Semantic refresh failed or unavailable.";
       announce(`${message}${this._semanticHasValid ? " Showing historical last valid contributions." : ""}`);
       if (!this._semanticHasValid || conflict) listEl.innerHTML = `<li>${escapeHtml(message)}</li>`;

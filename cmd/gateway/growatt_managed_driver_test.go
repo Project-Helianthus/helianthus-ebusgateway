@@ -883,3 +883,156 @@ func TestM04StalledPublicationWithdrawalIsNonBlockingAndDrainTimesOut(t *testing
 		t.Fatal("endpoint closed before publication finished")
 	}
 }
+
+func TestM04CancelledStartCommitWithdrawsBeforeStalledClose(t *testing.T) {
+	endpoint := &m04CloseEndpoint{growattEndpointFake: &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}, closing: make(chan struct{}), release: make(chan struct{})}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	entered, release := make(chan struct{}), make(chan struct{})
+	driver.beforeStartCommit = func() {
+		close(entered)
+		<-release
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := driver.Start(ctx); result <- err }()
+	startupReleased, closeReleased := false, false
+	defer func() {
+		if !startupReleased {
+			close(release)
+		}
+		if !closeReleased {
+			close(endpoint.release)
+		}
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("startup did not reach commit boundary")
+	}
+	short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stopCancel()
+	if err := driver.Stop(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pending startup stop=%v", err)
+	}
+	close(release)
+	startupReleased = true
+	select {
+	case <-endpoint.closing:
+	case err := <-result:
+		t.Fatalf("cancelled startup returned without closing endpoint: %v", err)
+	case <-ctx.Done():
+		t.Fatal("cancelled startup did not close endpoint")
+	}
+	if info, _ := driver.hub.Source(semreg.SourceID(growattProductionConfig().SourceID)); info.Live {
+		t.Fatal("cancelled startup retained admission during native close")
+	}
+	if _, ok := driver.Provider(); ok || driver.current.Load() != nil {
+		t.Fatal("cancelled startup installed a provider")
+	}
+	if _, err := driver.Start(ctx); !errors.Is(err, drivermanager.ErrUnavailable) {
+		t.Fatalf("successor admitted before startup drain: %v", err)
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("startup settled before native close: %v", err)
+	default:
+	}
+	// Release close separately so the startup result also proves cancellation.
+	close(endpoint.release)
+	closeReleased = true
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled startup commit=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("startup did not settle after close")
+	}
+}
+
+func TestM04WithdrawalRejectsEvidenceAtCommitBoundary(t *testing.T) {
+	for _, phase := range []string{"native_evidence", "semantic_evidence", "semantic_publication"} {
+		t.Run(phase, func(t *testing.T) {
+			endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+			driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := driver.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			provider, _ := driver.Provider()
+			if _, err := provider.SemanticStorageCurrent(ctx); err != nil {
+				t.Fatal(err)
+			}
+			previous, _ := provider.LastObservationEvidence()
+			entered, release := make(chan struct{}), make(chan struct{})
+			commits := 0
+			provider.beforeCommit = func() {
+				commits++
+				if phase == "semantic_publication" && commits == 1 {
+					return
+				}
+				close(entered)
+				<-release
+			}
+			result := make(chan error, 1)
+			go func() {
+				var err error
+				if phase != "native_evidence" {
+					_, err = provider.SemanticStorageCurrent(ctx)
+				} else {
+					_, err = provider.GrowattBMSRS485V202(ctx)
+				}
+				result <- err
+			}()
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+				if err := driver.Stop(ctx); err != nil {
+					t.Error(err)
+				}
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("refresh did not reach evidence commit boundary")
+			}
+			driver.FenceWithdrawal()
+			short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer stopCancel()
+			if err := driver.Stop(short); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("paused evidence stop=%v", err)
+			}
+			close(release)
+			released = true
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("withdrawn refresh=%v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("withdrawn refresh did not finish")
+			}
+			if err := driver.Stop(ctx); err != nil {
+				t.Fatal(err)
+			}
+			last, ok := provider.LastObservationEvidence()
+			if phase == "semantic_publication" {
+				if !ok || last.Revision != previous.Revision+1 {
+					t.Fatal("withdrawal lost evidence committed before publication admission")
+				}
+			} else if !ok || last.Revision != previous.Revision || last.ObservationID != previous.ObservationID {
+				t.Fatal("withdrawn refresh replaced retained native evidence")
+			}
+			if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
+				t.Fatal("withdrawn refresh republished current storage")
+			}
+		})
+	}
+}

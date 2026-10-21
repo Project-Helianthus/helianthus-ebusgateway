@@ -49,6 +49,7 @@ type growattManagedDriver struct {
 	startCancel context.CancelFunc
 
 	publicationDrained chan struct{}
+	beforeStartCommit  func() // Optional deterministic pause before the startup commit lock.
 }
 
 var _ drivermanager.Runtime = (*growattManagedDriver)(nil)
@@ -119,18 +120,31 @@ func (driver *growattManagedDriver) Start(ctx context.Context) (uint64, error) {
 	if err == nil {
 		err = ctx.Err()
 	}
+	if driver.beforeStartCommit != nil {
+		driver.beforeStartCommit()
+	}
+	driver.mu.Lock()
+	// Stop cancels startup under this same lock. Never publish a provider
+	// whose start was cancelled while it waited to commit.
+	if err == nil {
+		err = ctx.Err()
+	}
 	var cleanupErr error
 	if err != nil && admitted != nil {
+		driver.mu.Unlock()
 		if provider != nil {
-			cleanupErr = provider.Close()
+			provider.cancel()
 		}
 		if withdrawErr := driver.hub.Withdraw(admitted); withdrawErr == nil {
 			admitted = nil
 		} else {
-			cleanupErr = errors.Join(cleanupErr, driver.fence(admitted, provider))
+			cleanupErr = driver.fence(admitted, provider)
 		}
+		if provider != nil {
+			cleanupErr = errors.Join(cleanupErr, provider.Close())
+		}
+		driver.mu.Lock()
 	}
-	driver.mu.Lock()
 	defer driver.mu.Unlock()
 	driver.starting, driver.startCancel = nil, nil
 	defer close(done)
@@ -185,13 +199,11 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		driver.provider = nil
 		driver.draining = make(chan struct{})
 		done := driver.draining
-		provider.publicationMu.Lock()
-		publicationDrained := provider.publicationDone
+		publicationDrained := provider.commit.Load().done
 		if publicationDrained == nil {
 			publicationDrained = make(chan struct{})
 			close(publicationDrained)
 		}
-		provider.publicationMu.Unlock()
 		driver.publicationDrained = publicationDrained
 		go func() {
 			// Only this generation's drain joins publication. Deadline expiry

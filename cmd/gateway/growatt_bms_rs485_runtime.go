@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -184,9 +185,51 @@ type growattBMSRS485ProductionProvider struct {
 	closeOnce    sync.Once
 	closeErr     error
 
-	publicationMu   sync.Mutex // Protects publicationDone, never held during publication.
-	publicationDone chan struct{}
-	beforePublish   func() // Optional deterministic pause after observation, before publication.
+	commit        atomic.Pointer[growattBMSRS485Commit]
+	beforeCommit  func() // Optional deterministic pause before atomic commit admission.
+	beforePublish func() // Optional deterministic pause after observation, before publication.
+}
+
+// A commit is admitted atomically against withdrawal. Entered work is joined
+// by Stop; withdrawal never waits for evidence or semantic publication.
+type growattBMSRS485Commit struct {
+	withdrawn bool
+	done      chan struct{}
+}
+
+func (provider *growattBMSRS485ProductionProvider) beginCommit(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if provider.beforeCommit != nil {
+		provider.beforeCommit()
+	}
+	commit := &growattBMSRS485Commit{done: make(chan struct{})}
+	// provider.mu serializes commits; a non-nil state means withdrawal won.
+	if !provider.commit.CompareAndSwap(nil, commit) {
+		return nil, context.Canceled
+	}
+	return func() {
+		close(commit.done)
+		provider.commit.CompareAndSwap(commit, nil)
+	}, nil
+}
+
+func (provider *growattBMSRS485ProductionProvider) withdraw(cancel context.CancelFunc) {
+	for {
+		current := provider.commit.Load()
+		if current != nil && current.withdrawn {
+			break
+		}
+		withdrawn := &growattBMSRS485Commit{withdrawn: true}
+		if current != nil {
+			withdrawn.done = current.done
+		}
+		if provider.commit.CompareAndSwap(current, withdrawn) {
+			break
+		}
+	}
+	cancel()
 }
 
 func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
@@ -254,6 +297,11 @@ func (provider *growattBMSRS485ProductionProvider) observeLocked(ctx context.Con
 	if err := provider.lifetime.Err(); err != nil {
 		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
+	finish, err := provider.beginCommit(ctx)
+	if err != nil {
+		return mcp.GrowattBMSRS485V202Observation{}, err
+	}
+	defer finish()
 	provider.next++
 	evidence, err := provider.session.complete(fmt.Sprintf("%s:%s:%d:%d", provider.session.sourceID, provider.session.sourceEpoch, provider.session.driverGeneration, provider.next), provider.next)
 	if err != nil {
@@ -290,23 +338,13 @@ func (provider *growattBMSRS485ProductionProvider) SemanticStorageCurrent(ctx co
 	if provider.beforePublish != nil {
 		provider.beforePublish()
 	}
-	// Register publication before releasing the state lock. Stop cancels admission
-	// before reading this completion signal; it never waits on a publication lock.
-	// provider.mu serializes publications, so there is at most one active signal.
-	provider.publicationMu.Lock()
-	if err := provider.lifetime.Err(); err != nil {
-		provider.publicationMu.Unlock()
+	// Admission and withdrawal share one atomic commit point. An entered
+	// publication remains tracked until Stop joins it before fencing the hub.
+	finish, err := provider.beginCommit(ctx)
+	if err != nil {
 		return nil, err
 	}
-	done := make(chan struct{})
-	provider.publicationDone = done
-	provider.publicationMu.Unlock()
-	defer func() {
-		provider.publicationMu.Lock()
-		close(done)
-		provider.publicationDone = nil
-		provider.publicationMu.Unlock()
-	}()
+	defer finish()
 	return provider.storage.Publish(observation.Status, evidence)
 }
 
@@ -443,7 +481,9 @@ func startGrowattBMSRS485RuntimeWithEndpoint(config ebusgateway.GrowattBMSRS485C
 		return nil, errors.Join(err, endpoint.Close())
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
-	return &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1), lifetime: lifetime, cancel: cancel}, nil
+	provider = &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1), lifetime: lifetime}
+	provider.cancel = func() { provider.withdraw(cancel) }
+	return provider, nil
 }
 
 type growattBMSRTUAdmission struct{ unitID byte }

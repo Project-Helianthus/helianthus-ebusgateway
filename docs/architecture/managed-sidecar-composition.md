@@ -151,8 +151,9 @@ Native evidence remains retained; a separate evidence lock lets the fence read
 the last completed observation without waiting for transport acquisition.
 `FenceWithdrawal` only cancels acquisition and publication admission. It takes no
 publication lock and returns immediately while the manager holds its state lock.
-Publication rechecks the generation lifetime and registers a completion signal
-under a short-held state mutex, released before publication begins. A refresh
+Native evidence and semantic publication each enter an atomic commit admission
+ordered against withdrawal. Withdrawal closes that admission without waiting;
+Stop joins an already-entered commit before sampling fence evidence. A refresh
 paused after observation cannot publish after withdrawal returns. Stop's tracked
 drain awaits an already-entered publication's completion signal outside both the
 driver mutex and manager lock, bounded by the generation's stop deadline. If
@@ -169,8 +170,11 @@ requires successful Stop before Start; a successful restart advances the driver
 generation and rejects calls through the retired provider.
 
 A stop during construction cancels and joins the pending start. If endpoint open
-returns late, the start closes it and withdraws unpublished admission before
-settling. A stop deadline does not prove that open, acquisition or close finished.
+returns late, startup rechecks cancellation under the same lifecycle lock used
+by Stop before exposing the provider. A cancelled start withdraws unpublished
+admission (or fences an activated generation) before waiting for native close
+and settling. A stop deadline does not prove that open, acquisition or close
+finished.
 Unknown: physical-device behavior; the deterministic injected-endpoint tests
 exercise software cancellation, retained-state withdrawal, late results, timing,
 admission and close failure without qualifying an installation.

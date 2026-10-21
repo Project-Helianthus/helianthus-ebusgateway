@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"encoding/hex"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/ebus/evidence/specimens"
 
 	"github.com/Project-Helianthus/helianthus-ebusgo/protocol"
 )
@@ -27,8 +27,8 @@ const (
 	watchEfficiencySavedMinSamples = 5
 	watchEfficiencySavedStaleTTL   = 15 * time.Minute
 
-	specimenMaxPerFamily = 32
-	specimenMaxFamilies  = 64
+	specimenMaxPerFamily = specimens.MaxPerFamily
+	specimenMaxFamilies  = specimens.MaxFamilies
 )
 
 var (
@@ -103,7 +103,7 @@ type BusObservabilityStore struct {
 
 	passive passiveWarmupRuntime
 
-	specimens map[string]*specimenFamilyBucket // keyed by family
+	specimens specimens.Store
 
 	startupSurfaceProvider func() *BusObservabilityStartup
 
@@ -353,28 +353,6 @@ type busySegment struct {
 	End   time.Time
 }
 
-type specimenEntry struct {
-	Family       string
-	Source       byte
-	Target       byte
-	FrameType    string
-	RequestData  []byte
-	ResponseData []byte
-	RequestLen   int
-	ResponseLen  int
-	Outcome      string
-	FirstSeenAt  time.Time
-	LastSeenAt   time.Time
-	Count        uint64
-	dedupKey     string
-}
-
-type specimenFamilyBucket struct {
-	entries [specimenMaxPerFamily]specimenEntry
-	start   int
-	length  int
-}
-
 type passiveWarmupRuntime struct {
 	processStartedAt           time.Time
 	startupWindowClosed        bool
@@ -479,7 +457,6 @@ func NewBusObservabilityStore(cfg Config) *BusObservabilityStore {
 		echoMismatchSubclasses: make(map[echoMismatchSubclassKey]uint64),
 		recent:                 make([]BusMessageRecord, cfg.ObserveFirstRecentMessageCapacity),
 		addressBuckets:         make(map[byte]string),
-		specimens:              make(map[string]*specimenFamilyBucket),
 		periodicity:            make(map[periodicityKey]*BusPeriodicityEntry),
 		watchEfficiency: watchEfficiencyRuntime{
 			buckets:   make(map[watchEfficiencyBucketKey]*watchEfficiencyBucketRuntime),
@@ -2418,64 +2395,13 @@ func isImplementedFamily(family string) bool {
 	}
 }
 
-func specimenDedupKey(family string, source, target byte, frameType string, requestData []byte, outcome string, hasResponse bool, responseData []byte) string {
-	key := family + fmt.Sprintf("/%02x/%02x/", source, target) + frameType + "/" + hex.EncodeToString(requestData) + "/" + outcome
-	if hasResponse {
-		key += "/" + hex.EncodeToString(responseData)
-	}
-	return key
-}
-
 func (store *BusObservabilityStore) pushSpecimenLocked(family string, event PassiveClassifiedEvent, frameType, outcome string, now time.Time) {
-	bucket, exists := store.specimens[family]
-	if !exists {
-		if len(store.specimens) >= specimenMaxFamilies {
-			return
-		}
-		bucket = &specimenFamilyBucket{}
-		store.specimens[family] = bucket
-	}
-
-	key := specimenDedupKey(family, event.Request.Source, event.Request.Target, frameType, event.Request.Data, outcome, event.HasResponse, event.Response.Data)
-
-	// Search for existing entry with same dedup key.
-	for i := 0; i < bucket.length; i++ {
-		idx := (bucket.start + i) % specimenMaxPerFamily
-		if bucket.entries[idx].dedupKey == key {
-			bucket.entries[idx].Count++
-			bucket.entries[idx].LastSeenAt = now
-			return
-		}
-	}
-
-	// Build new entry.
-	entry := specimenEntry{
-		Family:      family,
-		Source:      event.Request.Source,
-		Target:      event.Request.Target,
-		FrameType:   frameType,
-		RequestData: append([]byte(nil), event.Request.Data...),
-		RequestLen:  frameWireLen(event.Request),
-		Outcome:     outcome,
-		FirstSeenAt: now,
-		LastSeenAt:  now,
-		Count:       1,
-		dedupKey:    key,
-	}
-	if event.HasResponse {
-		entry.ResponseData = append([]byte(nil), event.Response.Data...)
-		entry.ResponseLen = responseWireLen(event.Response)
-	}
-
-	// Ring buffer push.
-	if bucket.length < specimenMaxPerFamily {
-		idx := (bucket.start + bucket.length) % specimenMaxPerFamily
-		bucket.entries[idx] = entry
-		bucket.length++
-	} else {
-		bucket.entries[bucket.start] = entry
-		bucket.start = (bucket.start + 1) % specimenMaxPerFamily
-	}
+	store.specimens.Insert(specimens.Input{
+		Family: family, Source: event.Request.Source, Target: event.Request.Target,
+		FrameType: frameType, RequestData: event.Request.Data, ResponseData: event.Response.Data,
+		RequestLen: frameWireLen(event.Request), ResponseLen: responseWireLen(event.Response),
+		Outcome: outcome, HasResponse: event.HasResponse, ObservedAt: now,
+	})
 }
 
 func classifyActiveFrameType(frame protocol.Frame, local LocalAddressSnapshot) string {

@@ -471,14 +471,12 @@ func cloneUint8Ptr(source *uint8) *uint8 {
 }
 
 func (store *BusObservabilityStore) specimenFamilyCountLocked() int {
-	return len(store.specimens)
+	families, _ := store.specimens.Counts()
+	return families
 }
 
 func (store *BusObservabilityStore) specimenTotalCountLocked() int {
-	total := 0
-	for _, bucket := range store.specimens {
-		total += bucket.length
-	}
+	_, total := store.specimens.Counts()
 	return total
 }
 
@@ -491,28 +489,21 @@ func (store *BusObservabilityStore) ProtocolSpecimens(family string) []ProtocolS
 
 	var items []ProtocolSpecimenExport
 
-	for fam, bucket := range store.specimens {
-		if family != "" && fam != family {
-			continue
-		}
-		for i := 0; i < bucket.length; i++ {
-			idx := (bucket.start + i) % specimenMaxPerFamily
-			entry := &bucket.entries[idx]
-			items = append(items, ProtocolSpecimenExport{
-				Family:      entry.Family,
-				Source:      entry.Source,
-				Target:      entry.Target,
-				FrameType:   entry.FrameType,
-				RequestHex:  hex.EncodeToString(entry.RequestData),
-				ResponseHex: hex.EncodeToString(entry.ResponseData),
-				RequestLen:  entry.RequestLen,
-				ResponseLen: entry.ResponseLen,
-				Outcome:     entry.Outcome,
-				FirstSeenAt: entry.FirstSeenAt,
-				LastSeenAt:  entry.LastSeenAt,
-				Count:       entry.Count,
-			})
-		}
+	for _, entry := range store.specimens.Snapshot(family) {
+		items = append(items, ProtocolSpecimenExport{
+			Family:      entry.Family,
+			Source:      entry.Source,
+			Target:      entry.Target,
+			FrameType:   entry.FrameType,
+			RequestHex:  hex.EncodeToString(entry.RequestData),
+			ResponseHex: hex.EncodeToString(entry.ResponseData),
+			RequestLen:  entry.RequestLen,
+			ResponseLen: entry.ResponseLen,
+			Outcome:     entry.Outcome,
+			FirstSeenAt: entry.FirstSeenAt,
+			LastSeenAt:  entry.LastSeenAt,
+			Count:       entry.Count,
+		})
 	}
 
 	// Sort by LastSeenAt descending, then deterministic tiebreakers.

@@ -1826,3 +1826,111 @@ func TestM03StartupEndpointFailureQuarantinesWhileSemanticWithdrawalBlocked(t *t
 		})
 	}
 }
+
+func TestM03ManagerRecoversPartialActivationCleanupAfterJournalRecovery(t *testing.T) {
+	journal := &m03ActivationCleanupJournal{MemoryJournal: semhub.NewMemoryJournal()}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var endpoints []*m03Endpoint
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		endpoint := &m03Endpoint{}
+		endpoints = append(endpoints, endpoint)
+		return endpoint, nil
+	}, nil)
+	driver.hub = hub
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+		ID: "pv.primary", Enabled: true, Runtime: driver,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Synchronous manager calls are the lifecycle barriers; the test runner
+	// bounds the regression without canceling an operation mid-inspection.
+	ctx := context.Background()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer shutdownCancel()
+		if err := manager.Shutdown(shutdownCtx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := manager.Start(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	var sources []semreg.SourceID
+	for i, scope := range []string{"fixture:cleanup-a", "fixture:cleanup-b"} {
+		words := sunspectest.ObservedFroniusFloatWords()
+		if i != 0 {
+			words[52] ^= 1
+		}
+		adapter := driver.active.Load().adapter
+		if err := adapter.RecordSunSpecQualificationObservation(m03ScopedObservation(t, uint64(i+1), words, scope)); err != nil {
+			t.Fatal(err)
+		}
+		view, ok := adapter.SemanticPVCurrentSingle()
+		if !ok {
+			t.Fatal("source unavailable")
+		}
+		sources = append(sources, view.Snapshot.Sources[0].SourceID)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	journal.source = sources[1]
+	// Replace synchronously joins the failed activation before status is read.
+	if err := manager.Replace(ctx, "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	attempt := driver.active.Load()
+	if attempt.adapter != nil || !errors.Is(attempt.startErr, modbusadapter.ErrStartupCloseUnproven) {
+		t.Fatalf("partial activation admitted=%v error=%v", attempt.adapter != nil, attempt.startErr)
+	}
+	if len(endpoints) != 2 || endpoints[0].closes.Load() != 1 || endpoints[1].closes.Load() != 1 {
+		t.Fatal("native startup cleanup was not proven exactly once")
+	}
+	snapshot, ok := manager.Snapshot("pv.primary")
+	if !ok || snapshot.SafetyQuarantined || driver.SafetyQuarantined() {
+		t.Fatalf("semantic cleanup quarantined manager: %+v", snapshot)
+	}
+	report, err := manager.StopWithReport(ctx, "pv.primary")
+	if err != nil || report.Class != drivermanager.CloseInternalError || !errors.Is(attempt.stopErr, errM03JournalFailure) {
+		t.Fatalf("pending semantic cleanup report=%+v error=%v retained=%v", report, err, attempt.stopErr)
+	}
+	if len(endpoints) != 2 {
+		t.Fatal("successor bypassed semantic cleanup")
+	}
+	journal.source = ""
+	journal.unavailable.Store(false)
+	if err := manager.Replace(ctx, "pv.primary"); err != nil {
+		t.Fatalf("retry retained cleanup after recovery: %v", err)
+	}
+	snapshot, ok = manager.Snapshot("pv.primary")
+	if !ok || snapshot.ObservedState != drivermanager.ObservedRunning || snapshot.SafetyQuarantined || driver.Generation() != 3 {
+		t.Fatalf("manager did not recover: %+v", snapshot)
+	}
+	if len(endpoints) != 3 || endpoints[0].closes.Load() != 1 || endpoints[1].closes.Load() != 1 {
+		t.Fatal("recovery repeated native cleanup or lost successor")
+	}
+	fenced := 0
+	activated := make(map[semreg.SourceID]int)
+	for _, record := range journal.Records() {
+		if record.Kind == semhub.EventGenerationFenced && record.Source == sources[0] && record.Generation == 2 {
+			fenced++
+		}
+		if record.Kind == semhub.EventGenerationActivated && record.Generation == 3 {
+			activated[record.Source]++
+		}
+	}
+	if fenced != 1 || activated[sources[0]] != 1 || activated[sources[1]] != 1 {
+		t.Fatalf("recovered fences=%d activations=%v", fenced, activated)
+	}
+	adapter := driver.active.Load().adapter
+	if err := adapter.RecordSunSpecQualificationObservation(m03ScopedObservation(t, 10, sunspectest.ObservedFroniusFloatWords(), "fixture:cleanup-a")); err != nil {
+		t.Fatal(err)
+	}
+	view, ok := adapter.SemanticPVCurrentSingle()
+	if !ok {
+		t.Fatal("recovered driver did not publish")
+	}
+	m03AssertGeneration(t, view, semreg.SourceEpochID(m03Correlation().Epoch), "3")
+}

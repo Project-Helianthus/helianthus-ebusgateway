@@ -538,6 +538,9 @@ func TestManagedStartupConnectionCleanup(t *testing.T) {
 			if errors.Is(err, ErrStartupCloseUnproven) != tc.unproven {
 				t.Errorf("unproven cleanup=%v, want %v: %v", errors.Is(err, ErrStartupCloseUnproven), tc.unproven, err)
 			}
+			if errors.Is(err, ErrStartupNativeCloseUnproven) != tc.unproven {
+				t.Errorf("unproven native cleanup=%v, want %v: %v", errors.Is(err, ErrStartupNativeCloseUnproven), tc.unproven, err)
+			}
 			if tc.unproven && !errors.Is(err, tc.closeErr) {
 				t.Errorf("startup lost connection close failure: %v", err)
 			}

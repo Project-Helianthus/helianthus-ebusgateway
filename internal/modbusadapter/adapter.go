@@ -73,19 +73,23 @@ var managedModbusMonotonicOrigin = time.Now()
 
 var ErrStartupCloseUnproven = errors.New("modbus startup endpoint close unproven")
 
+// ErrStartupNativeCloseUnproven distinguishes native close failure from
+// retryable semantic cleanup included in ErrStartupCloseUnproven.
+var ErrStartupNativeCloseUnproven = errors.New("modbus startup native close unproven")
+
 func closeStartupEndpoint(endpoint Endpoint) error {
 	if endpoint == nil {
 		return nil
 	}
 	if err := endpoint.Close(); err != nil {
-		return errors.Join(ErrStartupCloseUnproven, err)
+		return errors.Join(ErrStartupCloseUnproven, ErrStartupNativeCloseUnproven, err)
 	}
 	return nil
 }
 
 func closeStartupConnection(connection net.Conn) error {
 	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		return errors.Join(ErrStartupCloseUnproven, err)
+		return errors.Join(ErrStartupCloseUnproven, ErrStartupNativeCloseUnproven, err)
 	}
 	return nil
 }

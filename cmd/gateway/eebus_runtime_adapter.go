@@ -355,12 +355,15 @@ func startEEBusOperatorRuntime(
 ) (*eebusRuntimeAdapter, eebusruntime.AdminV1, error) {
 	adapter, admin, err := startEEBusOperatorRuntimeRetained(ctx, config, resolve, factory)
 	if err != nil {
+		if closeErr := adapter.Shutdown(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, nil, err
 	}
 	return adapter, admin, nil
 }
 
-// The managed lifecycle retains failed-start adapters to preserve close failures.
+// The caller owns cleanup of every returned adapter, including failed starts.
 func startEEBusOperatorRuntimeRetained(
 	ctx context.Context,
 	config ebusgateway.EEBusConfig,
@@ -386,18 +389,14 @@ func startEEBusOperatorRuntimeRetained(
 	}
 	runtime, admin, factoryErr := factory(runtimeConfig)
 	adapter := &eebusRuntimeAdapter{runtime: runtime}
+	if factoryErr != nil {
+		return adapter, nil, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS operator runtime: %w", factoryErr))
+	}
 	if runtime == nil || admin == nil {
-		factoryErr = errors.Join(factoryErr, adapter.Shutdown())
-		if factoryErr != nil {
-			return adapter, nil, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS operator runtime: %w", factoryErr))
-		}
 		return adapter, nil, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonAdminBoundaryUnavailable, errors.New("construct eeBUS operator runtime: factory returned incomplete capability pair"))
 	}
-	if factoryErr != nil {
-		return adapter, nil, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS operator runtime: %w", errors.Join(factoryErr, adapter.Shutdown())))
-	}
 	if err := runtime.Start(ctx); err != nil {
-		return adapter, nil, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS operator runtime: %w", errors.Join(err, adapter.Shutdown())))
+		return adapter, nil, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS operator runtime: %w", err))
 	}
 	return adapter, admin, nil
 }
@@ -437,12 +436,15 @@ func startEEBusRuntime(
 ) (*eebusRuntimeAdapter, error) {
 	adapter, err := startEEBusRuntimeRetained(ctx, config, resolve, factory)
 	if err != nil {
+		if closeErr := adapter.Shutdown(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
 	return adapter, nil
 }
 
-// The managed lifecycle retains failed-start adapters to preserve close failures.
+// The caller owns cleanup of every returned adapter, including failed starts.
 func startEEBusRuntimeRetained(
 	ctx context.Context,
 	config ebusgateway.EEBusConfig,
@@ -478,10 +480,10 @@ func startEEBusRuntimeRetained(
 	}
 	adapter := &eebusRuntimeAdapter{runtime: runtime}
 	if factoryErr != nil {
-		return adapter, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS runtime: %w", errors.Join(factoryErr, adapter.Shutdown())))
+		return adapter, markEEBusStartupFailure(classifyEEBusFactoryFailure(factoryErr), fmt.Errorf("construct eeBUS runtime: %w", factoryErr))
 	}
 	if err := runtime.Start(ctx); err != nil {
-		return adapter, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS runtime: %w", errors.Join(err, adapter.Shutdown())))
+		return adapter, markEEBusStartupFailure(eebusadmin.EEBusDegradedReasonListenerUnavailable, fmt.Errorf("start eeBUS runtime: %w", err))
 	}
 	return adapter, nil
 }

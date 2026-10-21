@@ -105,7 +105,21 @@ func (driver *eebusManagedDriver) Start(ctx context.Context) (uint64, error) {
 }
 
 func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
+	return driver.startRuntime(ctx, driver.options.OperatorFactory != nil, nil)
+}
+
+func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator bool, degraded error) (uint64, error) {
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
 	driver.mu.Lock()
+	if err := attemptCtx.Err(); err != nil {
+		driver.mu.Unlock()
+		return 0, err
+	}
+	if driver.quarantined.Load() {
+		driver.mu.Unlock()
+		return 0, drivermanager.ErrUnavailable
+	}
 	if driver.current != nil {
 		current := driver.current
 		driver.mu.Unlock()
@@ -114,18 +128,25 @@ func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
 		}
 		return 0, drivermanager.ErrUnavailable
 	}
-	startCtx, cancel := context.WithCancel(ctx)
-	driver.cancel = cancel
+	// Native workers belong to this generation, beyond the manager attempt.
+	startCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopForwarding := context.AfterFunc(attemptCtx, cancel)
+	defer stopForwarding()
+	driver.cancel = func() { cancelAttempt(); cancel() }
 	driver.mu.Unlock()
 	var adapter *eebusRuntimeAdapter
 	var admin eebusruntime.AdminV1
 	var err error
-	if driver.options.OperatorFactory != nil {
+	if operator {
 		adapter, admin, err = startEEBusOperatorRuntimeRetained(startCtx, driver.options.Config, driver.options.Resolve, driver.options.OperatorFactory)
 	} else {
 		adapter, err = startEEBusRuntimeRetained(startCtx, driver.options.Config, driver.options.Resolve, driver.options.Factory)
 	}
+	stopForwarding()
 	driver.mu.Lock()
+	if err == nil {
+		err = attemptCtx.Err()
+	}
 	if err == nil {
 		err = startCtx.Err()
 	}
@@ -133,30 +154,56 @@ func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
 		err = runtimecontrol.ErrNilRuntime
 	}
 	if err != nil {
+		fallback := operator && attemptCtx.Err() == nil && startCtx.Err() == nil
 		cancel()
-		driver.cancel = nil
 		driver.mu.Unlock()
 		if adapter != nil {
-			// Keep the failed attempt fenced until closure succeeds. The adapter
-			// retains any shutdown result already produced by startup cleanup.
-			failed := &eebusManagedGeneration{adapter: adapter, closed: make(chan struct{})}
-			failed.retire()
-			<-failed.closed
-			if failed.closeErr != nil {
-				driver.mu.Lock()
-				driver.current = failed
-				driver.mu.Unlock()
-				driver.quarantined.Store(true)
+			if closeErr := driver.retireFailedStart(ctx, adapter); closeErr != nil {
+				return 0, errors.Join(err, closeErr)
 			}
-			err = errors.Join(err, failed.closeErr)
+		}
+		if fallback && attemptCtx.Err() == nil {
+			// Only proven cleanup permits the established read-only fallback.
+			number, fallbackErr := driver.startRuntime(attemptCtx, false, err)
+			if fallbackErr != nil {
+				return 0, errors.Join(err, fallbackErr)
+			}
+			return number, nil
 		}
 		return 0, err
+	}
+	if degraded != nil {
+		adapter.startupDegradedReason = eebusStartupFailureReason(degraded)
 	}
 	number := driver.generation.Add(1)
 	driver.current = &eebusManagedGeneration{adapter: adapter, admin: admin, number: number, closed: make(chan struct{})}
 	driver.revision.Add(1)
 	driver.mu.Unlock()
 	return number, nil
+}
+
+// Failed native starts remain owned and fenced until closure is proven.
+func (driver *eebusManagedDriver) retireFailedStart(ctx context.Context, adapter *eebusRuntimeAdapter) error {
+	failed := &eebusManagedGeneration{adapter: adapter, closed: make(chan struct{})}
+	failed.fenced.Store(true)
+	driver.mu.Lock()
+	driver.current = failed
+	driver.mu.Unlock()
+	failed.retire()
+	select {
+	case <-failed.closed:
+		if failed.closeErr != nil {
+			driver.quarantined.Store(true)
+			return failed.closeErr
+		}
+	case <-ctx.Done():
+		driver.quarantined.Store(true)
+		return ctx.Err()
+	}
+	driver.mu.Lock()
+	driver.current = nil
+	driver.mu.Unlock()
+	return nil
 }
 
 func (driver *eebusManagedDriver) Replace(ctx context.Context) (uint64, error) {
@@ -208,6 +255,9 @@ func (driver *eebusManagedDriver) stop(ctx context.Context) error {
 	if current.closeErr != nil {
 		driver.quarantined.Store(true)
 		return current.closeErr
+	}
+	if driver.quarantined.Load() {
+		return drivermanager.ErrSafetyQuarantined
 	}
 	driver.mu.Lock()
 	driver.current = nil

@@ -122,6 +122,29 @@ test("M23 values distinguish zero, false, empty, unknown, withheld and projectio
   assert.doesNotMatch(h.list.innerHTML, /must-never-render/);
 });
 
+for (const sourceKeys of ["present", "empty"]) test(`M23 absent fact preserves projection outcome reason and loss with ${sourceKeys} source keys`, async () => {
+  const h = harness(), f = fixture(1), asset = f.assets[0];
+  asset.snapshot.facts = [];
+  asset.evaluation.facts = [];
+  const disposition = asset.projection.dispositions[0];
+  disposition.outcome = "withheld";
+  disposition.reason = "<synthetic-reason>";
+  disposition.loss = [{ kind: "omission", description: "<synthetic-loss>", reversible: false }];
+  if (sourceKeys === "empty") disposition.source_keys = [];
+  for (const field of ["pack_id", "pack_version", "fact_id"]) {
+    const unrelated = clone(disposition);
+    unrelated.reason = "unrelated-projection";
+    unrelated.source_keys = [clone(f.catalog.resources[0].source.snapshot.facts[0].key)];
+    unrelated.source_keys[0][field] = "other";
+    asset.projection.dispositions.push(unrelated);
+  }
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.match(h.list.innerHTML, /Power: unknown/);
+  assert.match(h.list.innerHTML, /Projection: withheld; reason=&lt;synthetic-reason&gt;/);
+  assert.match(h.list.innerHTML, /&lt;synthetic-loss&gt;/);
+  assert.doesNotMatch(h.list.innerHTML, /unrelated-projection|<synthetic-reason>|<synthetic-loss>|Power: 0e0/);
+});
+
 test("M23 unavailable asset keeps readable siblings and escapes supplied labels", async () => {
   const h = harness(), f = fixture(2);
   f.assets[0] = { asset_id: f.assets[0].asset_id, selections: [], unavailable_reason: "semantic.read.reason.publication_withheld" };

@@ -179,7 +179,11 @@ all are escaped text and no evidence body is fetched.
 
 Render decimal coefficient/exponent and canonical units without floating-point
 conversion; preserve string revisions/time coordinates. Missing values stay
-missing, while zero, false and empty text remain present. Evaluate freshness
+missing, while zero, false and empty text remain present. When a requested fact
+is absent, show its value as unknown and retain matching shared projection
+outcomes, reasons and losses. Match the fact item ID and, when source keys are
+present, the requested pack ID, pack version and fact ID; source-less dispositions
+remain visible for that item. Evaluate freshness
 from the captured evaluation, not browser receipt time. Valid partial
 publications retain omitted last-known fields and their original aging rules;
 rejected publications replace nothing. Retained or stale values are visibly

@@ -1015,7 +1015,13 @@ function semanticContributionCards(catalog, assets) {
           field.capability_ref.id === resource.capability_id).sort(order)) {
           const prefix = field.label?.default || field.id;
           const facts = asset.snapshot.facts.filter((fact) => fact.key.pack_id === field.ref.pack.id && fact.key.pack_version === field.ref.pack.version && fact.key.fact_id === field.ref.id);
-          if (!facts.length) addRow(() => `${prefix}: unknown`);
+          if (!facts.length) {
+            addRow(() => `${prefix}: unknown`);
+            const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id &&
+              (!entry.source_keys.length || entry.source_keys.some((key) => key.pack_id === field.ref.pack.id && key.pack_version === field.ref.pack.version && key.fact_id === field.ref.id)));
+            for (const disposition of dispositions) addRow(() => `Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
+            if (!dispositions.length) addRow(() => "Projection: unknown");
+          }
           for (const fact of facts) {
             const key = semanticKey(fact.key);
             const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);

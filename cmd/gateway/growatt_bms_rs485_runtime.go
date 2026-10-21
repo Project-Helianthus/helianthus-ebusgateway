@@ -183,6 +183,9 @@ type growattBMSRS485ProductionProvider struct {
 	cancel       context.CancelFunc
 	closeOnce    sync.Once
 	closeErr     error
+
+	publicationMu sync.Mutex
+	beforePublish func() // Optional deterministic pause after observation, before publication.
 }
 
 func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
@@ -282,6 +285,16 @@ func (provider *growattBMSRS485ProductionProvider) SemanticStorageCurrent(ctx co
 	evidence, ok := provider.LastObservationEvidenceLocked()
 	if !ok {
 		return nil, errors.New("growatt BMS storage evidence unavailable")
+	}
+	if provider.beforePublish != nil {
+		provider.beforePublish()
+	}
+	// Withdrawal cancels first, then joins this critical section. A completed
+	// observation must still belong to a live generation when it publishes.
+	provider.publicationMu.Lock()
+	defer provider.publicationMu.Unlock()
+	if err := provider.lifetime.Err(); err != nil {
+		return nil, err
 	}
 	return provider.storage.Publish(observation.Status, evidence)
 }

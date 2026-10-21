@@ -155,10 +155,14 @@ func (driver *growattManagedDriver) Replace(ctx context.Context) (uint64, error)
 	return driver.Start(ctx)
 }
 
-// Withdrawal cancels acquisition immediately; Stop supplies the join proof.
+// Withdrawal cancels acquisition and joins publication; Stop joins native work.
 func (driver *growattManagedDriver) FenceWithdrawal() {
 	if provider := driver.current.Load(); provider != nil {
 		provider.cancel()
+		func() {
+			provider.publicationMu.Lock()
+			defer provider.publicationMu.Unlock()
+		}()
 	}
 }
 
@@ -179,7 +183,6 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		provider, handle := driver.provider, driver.handle
 		provider.cancel()
 		driver.provider = nil
-		driver.current.Store(nil)
 		driver.draining = make(chan struct{})
 		done := driver.draining
 		go func() {
@@ -190,6 +193,8 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 			provider.release()
 			closeErr := provider.Close()
 			driver.mu.Lock()
+			// Keep withdrawal able to join publication until native work drains.
+			driver.current.Store(nil)
 			driver.drainErr = errors.Join(closeErr, fenceErr)
 			driver.revision++
 			close(done)

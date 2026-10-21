@@ -586,3 +586,120 @@ func TestM04StalledSemanticFenceHonorsStopDeadline(t *testing.T) {
 		t.Fatal("retained storage remained admitted after completed stop")
 	}
 }
+
+func TestM04WithdrawalFencesObservedRefreshBeforePublication(t *testing.T) {
+	endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := driver.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	observed, release := make(chan struct{}), make(chan struct{})
+	provider.beforePublish = func() {
+		close(observed)
+		<-release
+	}
+	result := make(chan error, 1)
+	go func() { _, err := provider.SemanticStorageCurrent(ctx); result <- err }()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Fatal("refresh did not reach observation/publication boundary")
+	}
+	if _, ok := provider.LastObservationEvidence(); !ok {
+		t.Fatal("completed native observation missing")
+	}
+	driver.FenceWithdrawal()
+	close(release)
+	released = true
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("refresh after withdrawal=%v, want cancellation", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("refresh did not finish after withdrawal")
+	}
+	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
+		t.Fatal("observed refresh published after withdrawal returned")
+	}
+	if _, ok := provider.LastObservationEvidence(); !ok {
+		t.Fatal("withdrawal deleted completed native evidence")
+	}
+}
+
+func TestM04WithdrawalJoinsPublicationAlreadyInProgress(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, _ semreg.AssetID) {
+		if stage == "commit" {
+			close(entered)
+			<-release
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	driver.hub = hub
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := driver.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	result := make(chan error, 1)
+	go func() { _, err := provider.SemanticStorageCurrent(ctx); result <- err }()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("publication did not reach commit")
+	}
+	withdrawn := make(chan struct{})
+	go func() { driver.FenceWithdrawal(); close(withdrawn) }()
+	select {
+	case <-provider.lifetime.Done():
+	case <-ctx.Done():
+		t.Fatal("withdrawal did not cancel acquisition")
+	}
+	select {
+	case <-withdrawn:
+		t.Fatal("withdrawal returned before in-flight publication finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("publication already in progress=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("publication did not finish")
+	}
+	select {
+	case <-withdrawn:
+	case <-ctx.Done():
+		t.Fatal("withdrawal did not join publication")
+	}
+}

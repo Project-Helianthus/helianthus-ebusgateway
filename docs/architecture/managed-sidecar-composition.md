@@ -149,6 +149,10 @@ block the caller deadline or provider and status inspection. A deadline does not
 prove that semantic withdrawal completed.
 Native evidence remains retained; a separate evidence lock lets the fence read
 the last completed observation without waiting for transport acquisition.
+`FenceWithdrawal` cancels acquisition and joins the publication critical section;
+publication rechecks the generation lifetime inside that same section. A refresh
+paused after observation cannot publish after withdrawal returns, while an
+already-entered publication must finish before withdrawal returns.
 Cancelled or late refresh results cannot publish. Stop joins acquisition before
 closing the endpoint once. A caller deadline returns its context error while
 the drain continues; Start refuses a successor until that drain completes.

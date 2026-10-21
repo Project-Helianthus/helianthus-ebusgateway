@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"expvar"
@@ -148,7 +149,8 @@ func newGatewayControlPlaneContext(ctx context.Context) (context.Context, contex
 	return context.WithCancel(context.WithoutCancel(ctx))
 }
 
-// httpControlPlaneHandler retains host resources until admitted handlers finish.
+// httpControlPlaneHandler retains host resources until admitted HTTP handlers
+// finish. Hijacked transports cannot access the Portal configuration store.
 type httpControlPlaneHandler struct {
 	http.Handler
 	mu             sync.Mutex
@@ -166,15 +168,39 @@ func (h *httpControlPlaneHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	}
 	h.active++
 	h.mu.Unlock()
-	defer func() {
+	release := sync.OnceFunc(func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.active--
 		if h.retired && h.active == 0 {
 			h.closeResources()
 		}
-	}()
-	h.Handler.ServeHTTP(w, r)
+	})
+	defer release()
+	h.Handler.ServeHTTP(&httpControlPlaneResponseWriter{ResponseWriter: w, release: release}, r)
+}
+
+type httpControlPlaneResponseWriter struct {
+	http.ResponseWriter
+	release func()
+}
+
+func (w *httpControlPlaneResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *httpControlPlaneResponseWriter) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *httpControlPlaneResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		// net/http no longer owns this connection, and shutdown does not wait
+		// for it. Do not let its read loop retain the configuration writer.
+		w.release()
+	}
+	return conn, rw, err
 }
 
 func (h *httpControlPlaneHandler) retire() {

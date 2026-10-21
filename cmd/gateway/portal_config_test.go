@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +20,141 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
+	"github.com/gorilla/websocket"
 )
+
+type portalConfigHijackRecorder struct {
+	*httptest.ResponseRecorder
+	conn net.Conn
+}
+
+func (w *portalConfigHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func TestHTTPControlPlanePreservesResponseFlushing(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	handler := &httpControlPlaneHandler{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.(http.Flusher).Flush()
+		}),
+	}
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/subscription", nil))
+	if !recorder.Flushed {
+		t.Fatal("response wrapper did not flush the underlying writer")
+	}
+}
+
+func TestPortalConfigHijackRetirementOffline(t *testing.T) {
+	for _, hijackOK := range []bool{true, false} {
+		t.Run(fmt.Sprintf("hijack_success_%t", hijackOK), func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.PortalConfigRoot = t.TempDir()
+			store := openGatewayPortalConfig(cfg, nil)
+			defer func() { _ = store.Close() }()
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			defer close(release)
+			handler := &httpControlPlaneHandler{
+				closeResources: func() { _ = store.Close() },
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					_, _, err := w.(http.Hijacker).Hijack()
+					if (err == nil) != hijackOK {
+						t.Errorf("Hijack error = %v; success wanted %t", err, hijackOK)
+					}
+					close(entered)
+					<-release
+				}),
+			}
+			var writer http.ResponseWriter = httptest.NewRecorder()
+			if hijackOK {
+				conn, peer := net.Pipe()
+				defer func() { _ = conn.Close() }()
+				defer func() { _ = peer.Close() }()
+				writer = &portalConfigHijackRecorder{ResponseRecorder: httptest.NewRecorder(), conn: conn}
+			}
+			go func() {
+				defer close(done)
+				handler.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/subscription", nil))
+			}()
+			<-entered
+			handler.retire()
+			reopened := openGatewayPortalConfig(cfg, nil)
+			_, err := reopened.Read()
+			_ = reopened.Close()
+			if (err == nil) != hijackOK {
+				t.Fatalf("replacement store error = %v; available wanted %t", err, hijackOK)
+			}
+			rejected := httptest.NewRecorder()
+			handler.ServeHTTP(rejected, httptest.NewRequest(http.MethodGet, "/subscription", nil))
+			if rejected.Code != http.StatusServiceUnavailable {
+				t.Fatalf("retired admission status = %d", rejected.Code)
+			}
+			release <- struct{}{}
+			<-done // The deferred release after hijack must not decrement twice.
+			handler.mu.Lock()
+			active := handler.active
+			handler.mu.Unlock()
+			if active != 0 {
+				t.Fatalf("active requests after handler return = %d", active)
+			}
+			reopened = openGatewayPortalConfig(cfg, nil)
+			defer func() { _ = reopened.Close() }()
+			if _, err := reopened.Read(); err != nil {
+				t.Fatalf("writer retained after handler return: %v", err)
+			}
+		})
+	}
+}
+
+func TestPortalConfigShutdownReleasesWriterWithOpenWebSocket(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.PortalConfigRoot = t.TempDir()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	store := openGatewayPortalConfig(cfg, nil)
+	defer func() { _ = store.Close() }()
+	done := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/subscription", func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+	})
+	server, _, err := startHTTPControlPlaneListener(context.Background(), cfg, mux, nil, nil, nil, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = server.Close() }()
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+server.Addr+"/subscription", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := shutdownHTTPControlPlane(server); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+		t.Fatal("WebSocket handler returned before the peer disconnected")
+	default:
+	}
+	reopened := openGatewayPortalConfig(cfg, nil)
+	defer func() { _ = reopened.Close() }()
+	if _, err := reopened.Read(); err != nil {
+		t.Fatalf("open WebSocket retained writer lock: %v", err)
+	}
+	_ = conn.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WebSocket handler did not exit after peer disconnect")
+	}
+}
 
 func TestPortalConfigProductionComposition(t *testing.T) { testPortalConfigComposition(t, true) }
 func TestPortalConfigOfflineComposition(t *testing.T)    { testPortalConfigComposition(t, false) }

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,7 +161,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	eebusAdapter := &eebusRuntimeAdapter{managed: bindings}
 	eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)
 	if evidenceRuntime != nil {
-		if err := evidenceRuntime.Configure(bindings.captureEEBus, resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
+		if err := evidenceRuntime.Configure(bindings.eebusEvidenceCapture(), resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
 			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
 		}
 	}
@@ -212,7 +210,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	} else {
 		metrics.SetExplicitSourceActive(false)
 	}
-	artifactPath := filepath.Join(os.TempDir(), "helianthus-source-selection-artifact.json")
+	const artifactPath = "/tmp/helianthus-source-selection-artifact.json"
 	go func() {
 		timer := time.NewTimer(60 * time.Second)
 		defer timer.Stop()
@@ -832,9 +830,8 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			// re-enter dedup locks while passive fingerprints are being built.
 			deduplicator.SetWatchObserver(poller.shadow)
 		}
-		// The managed facade exists even when eeBUS is disabled. Capture
-		// setup belongs only to configured eeBUS, not the eBUS surface.
-		if poller != nil && cfg.EEBusConfig.Enabled && !surfaceCaptureDone {
+		// Set up capture only while the managed eeBUS runtime is admitted.
+		if poller != nil && bindings.eebusAvailable() && !surfaceCaptureDone {
 			captureSource := newLeafPromotionLiveSource(
 				poller,
 				eebusAdapter,

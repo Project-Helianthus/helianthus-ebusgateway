@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,13 +13,11 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
-	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 )
@@ -90,12 +87,12 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	descriptors := gatewayManagedSidecarDescriptorsFor([]runtimecontrol.Descriptor{
 		descriptor(managedSunSpecID, cfg.ModbusTCPConfig.Enabled, source(managedSunSpecID), sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "TCPEndpoint"), newModbusManagedDriverAdapter(cfg.ModbusTCPConfig, hub, dialModbusEndpointFn, newModbusEndpointFn, work)),
 		descriptor(managedGrowattID, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, growattSource, sidecarNativeContract("github.com/Project-Helianthus/helianthus-modbus", "RTUProductionEndpoint"), newGrowattManagedDriverFactory(cfg.ModbusTCPConfig.GrowattBMSRS485, modbusProviderGrowattBMS, hub, openGrowattBMSRTUEndpoint)),
-		newEEBusManagedDriverDescriptor(managedEEBusID, []runtimecontrol.SourceID{source(managedEEBusID)}, eebusManagedDriverOptions{Config: cfg.EEBusConfig, Resolve: resolveEEBusInterfaceAddressesFn, Factory: newEEBusRuntimeFn, OperatorFactory: newEEBusOperatorRuntimeFn}),
+		managedEEBusDescriptor(cfg, source(managedEEBusID)),
 	})
 	registry := runtimecontrol.NewRegistry(controlHubOwnership{hub: hub})
 	result := &managedSidecars{registry: registry}
-	// Validate the whole configured batch before constructing any sidecar.
-	batch := append([]runtimecontrol.Descriptor(nil), descriptors...)
+	// Register fixed identities before the configurable Growatt identity.
+	// A refusal withholds only its driver; no factory runs during registration.
 	if primarySource, err := ebusPrimarySourceID(guid); err == nil {
 		if native, err := readEBusPrimaryNativeContract(); err == nil {
 			if primary, err := newEBusPrimaryDescriptor(native, primarySource, runtimecontrol.NewAdapter(func(context.Context, runtimecontrol.Construction) (*ebusDriverRuntime, error) {
@@ -104,13 +101,20 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 				}
 				return result.primary, nil
 			})); err == nil {
-				batch = append(batch, primary)
+				_ = registry.Register(primary)
 			}
 		}
 	}
-	registrationErr := registry.Register(batch...)
+	registrationErrors := make(map[runtimecontrol.DriverID]error)
+	for _, id := range []runtimecontrol.DriverID{managedSunSpecID, managedEEBusID, managedGrowattID} {
+		for _, d := range descriptors {
+			if d.DriverID == id {
+				registrationErrors[id] = registry.Register(d)
+			}
+		}
+	}
 	for _, d := range descriptors {
-		sidecar := &managedSidecar{descriptor: d, withheld: registrationErr}
+		sidecar := &managedSidecar{descriptor: d, withheld: registrationErrors[d.DriverID]}
 		result.entries = append(result.entries, sidecar)
 		if sidecar.withheld != nil || d.Disposition != runtimecontrol.DispositionEnabled {
 			continue
@@ -340,17 +344,13 @@ func (runtime *managedSidecarRuntime) Start(ctx context.Context) (uint64, error)
 			lease.storage = provider.contribution
 		}
 	}
-	if eebus, ok := runtime.Runtime.(*eebusManagedDriver); ok {
-		_ = eebus.WithGeneration(generation, func(adapter *eebusRuntimeAdapter, admin eebusruntime.AdminV1) error {
-			if admin != nil {
-				snapshot := eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning, RuntimeAvailable: true, AdminAvailable: true, DegradedReason: adapter.startupDegradedReason}
-				lease.adminHandler, err = newEEBusAdminHandler(adapter, admin, eebusReadinessForLifecycle(snapshot))
-				lease.adminAvailable = err == nil
-			}
-			lease.worker = newEEBusPromotedSemanticProvider(adapter)
-			lease.worker.Start(workCtx)
-			return nil
-		})
+	if setup, ok := runtime.Runtime.(interface {
+		prepareManagedLease(context.Context, uint64, *managedSidecarLease) error
+	}); ok {
+		if err := setup.prepareManagedLease(workCtx, generation, lease); err != nil {
+			cancel()
+			return 0, errors.Join(err, runtime.Runtime.Stop(ctx))
+		}
 	}
 	runtime.mu.Lock()
 	runtime.current = lease
@@ -520,15 +520,6 @@ func (b *managedSidecarBindings) growatt(ctx context.Context, call func(*growatt
 		return call(provider)
 	})
 }
-func (b *managedSidecarBindings) eebus(ctx context.Context, call func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error) error {
-	return b.entry(managedEEBusID).with(ctx, func(native drivermanager.Runtime) error {
-		driver, ok := native.(*eebusManagedDriver)
-		if !ok {
-			return drivermanager.ErrUnavailable
-		}
-		return driver.WithGeneration(driver.Generation(), call)
-	})
-}
 
 // Compose the existing family MCP wrappers inside the admitted lease, so their
 // policy, request normalization, native evidence and envelopes stay unchanged.
@@ -599,61 +590,6 @@ func (p *managedModbusMCPProvider) ModbusV1OptionalToolAvailable(tool string) bo
 		return p.tesla != nil
 	}
 	return false
-}
-
-func (b *managedSidecarBindings) eebusSnapshot() (out eebusruntime.SnapshotV1, err error) {
-	err = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error { out, err = a.Snapshot(); return err })
-	return
-}
-func (b *managedSidecarBindings) serveEEBusAdmin(w http.ResponseWriter, r *http.Request) {
-	entry := b.entry(managedEEBusID)
-	err := entry.with(r.Context(), func(native drivermanager.Runtime) error {
-		lease := entry.runtime.active.Load()
-		if lease == nil || lease.adminHandler == nil {
-			return drivermanager.ErrUnavailable
-		}
-		return native.(*eebusManagedDriver).WithGeneration(native.Generation(), func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error { lease.adminHandler.ServeHTTP(w, r); return nil })
-	})
-	if err != nil {
-		unavailableEEBusAdminHandler(eebusReadinessForLifecycle(b.eebusLifecycleSnapshot())).ServeHTTP(w, r)
-	}
-}
-func (b *managedSidecarBindings) eebusLifecycleSnapshot() eebusRuntimeLifecycleSnapshot {
-	result := eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDisabled}
-	s := b.entry(managedEEBusID)
-	if s == nil || s.descriptor.Disposition != runtimecontrol.DispositionEnabled {
-		return result
-	}
-	result.State = eebusLifecycleDegraded
-	result.DegradedReason = eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable
-	if s.manager != nil {
-		snapshot, _ := s.manager.Snapshot(string(managedEEBusID))
-		result.Revision = snapshot.Revision
-		if snapshot.ObservedState == drivermanager.ObservedStarting {
-			result.State = eebusLifecycleStarting
-		}
-		if snapshot.ObservedState == drivermanager.ObservedStopped {
-			result.State = eebusLifecycleStopped
-		}
-	}
-	_ = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, admin eebusruntime.AdminV1) error {
-		result.State = eebusLifecycleRunning
-		result.RuntimeAvailable = true
-		result.AdminAvailable = admin != nil && s.runtime.active.Load().adminAvailable
-		result.DegradedReason = a.startupDegradedReason
-		if !result.AdminAvailable {
-			result.State = eebusLifecycleDegraded
-		}
-		return nil
-	})
-	return result
-}
-func (b *managedSidecarBindings) captureEEBus(key []byte) (out json.RawMessage, at time.Time, err error) {
-	err = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
-		out, at, err = mcp.CaptureEEBusV1ServicesEvidence(a, key)
-		return err
-	})
-	return
 }
 
 func (b *managedSidecarBindings) observeTransports(ctx context.Context, cfg ebusgateway.Config, store *ebusgateway.BusObservabilityStore) func() {

@@ -419,3 +419,58 @@ func TestM06ConstructionFailureKeepsSiblingRegistered(t *testing.T) {
 	}
 	process.stop()
 }
+
+func TestM06RegistrationRefusalKeepsSiblingsRunning(t *testing.T) {
+	for _, disabled := range []runtimecontrol.DriverID{"", managedGrowattID} {
+		for _, source := range []runtimecontrol.SourceID{"modbus.sunspec", "eebus.primary", "invalid source"} {
+			t.Run(string(disabled)+"/"+string(source), func(t *testing.T) {
+				natives := m06Factories(t, "", disabled)
+				cfg := ebusgateway.DefaultConfig()
+				cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID = string(source)
+				sidecars := prepareManagedSidecars(context.Background(), cfg, nil, "", nil)
+				bindings := &managedSidecarBindings{sidecars: sidecars}
+				if bindings.entry(managedGrowattID).withheld == nil {
+					t.Fatal("bad Growatt source was admitted")
+				}
+				manager, err := drivermanager.New(drivermanager.Config{Drivers: sidecars.driverConfigs()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = manager.Shutdown(context.Background()) }()
+				sidecars.bind(manager, nil)
+				for _, id := range []runtimecontrol.DriverID{managedSunSpecID, managedEEBusID} {
+					if _, err := sidecars.registry.Binding(id); err != nil {
+						t.Fatalf("healthy %s registration refused: %v", id, err)
+					}
+					entry := bindings.entry(id)
+					key := runtimecontrol.LifecycleCorrelation{DriverID: id, Epoch: "synthetic-epoch", Generation: 1}
+					if err := entry.Start(context.Background(), key); err != nil || natives[id].starts.Load() != 1 {
+						t.Fatalf("healthy %s did not start: %v", id, err)
+					}
+				}
+				if natives[managedGrowattID].starts.Load() != 0 {
+					t.Fatal("refused Growatt opened a runtime")
+				}
+			})
+		}
+	}
+}
+
+type m06LeaseFailureRuntime struct {
+	m06Runtime
+	setupErr error
+}
+
+func (r *m06LeaseFailureRuntime) prepareManagedLease(context.Context, uint64, *managedSidecarLease) error {
+	return r.setupErr
+}
+
+func TestM06LeaseSetupFailureIsReturnedAndNativeStopped(t *testing.T) {
+	setupErr := errors.New("synthetic generation refused")
+	native := &m06LeaseFailureRuntime{setupErr: setupErr}
+	runtime := &managedSidecarRuntime{Runtime: native}
+	generation, err := runtime.Start(context.Background())
+	if !errors.Is(err, setupErr) || generation != 0 || native.stops.Load() != 1 || native.running.Load() || runtime.active.Load() != nil || runtime.current != nil {
+		t.Fatalf("lease refusal: generation=%d err=%v stops=%d active=%v", generation, err, native.stops.Load(), runtime.active.Load())
+	}
+}

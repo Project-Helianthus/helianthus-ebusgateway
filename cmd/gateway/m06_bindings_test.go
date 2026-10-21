@@ -243,3 +243,74 @@ func TestM06SunSpecBindingAndRawReadBudgetSurviveReplacement(t *testing.T) {
 		t.Fatal("replacement did not close predecessor exactly once")
 	}
 }
+
+func TestM06EEBusLeaseRejectsRetiredGeneration(t *testing.T) {
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return &m06EEBusRuntime{}, nil
+	}))
+	generation, err := native.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = native.Stop(context.Background()) }()
+	lease := &managedSidecarLease{}
+	if err := native.prepareManagedLease(context.Background(), generation+1, lease); !errors.Is(err, drivermanager.ErrUnavailable) {
+		t.Fatalf("stale generation lease error = %v", err)
+	}
+	if lease.worker != nil || lease.adminHandler != nil {
+		t.Fatal("refused generation installed lease work")
+	}
+}
+
+func TestM06EEBusCaptureRequiresAdmittedRuntime(t *testing.T) {
+	var absent *managedSidecarBindings
+	if absent.eebusEvidenceCapture() != nil || absent.eebusAvailable() {
+		t.Fatal("disabled runtime admitted evidence or leaf capture")
+	}
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return &m06EEBusRuntime{}, nil
+	}))
+	runtime := &managedSidecarRuntime{Runtime: native}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: string(managedEEBusID), Enabled: true, Runtime: runtime}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID}, runtime: runtime, manager: manager}}}}
+	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+		t.Fatal("unavailable runtime admitted evidence or leaf capture")
+	}
+	if err := manager.Start(context.Background(), string(managedEEBusID)); err != nil {
+		t.Fatal(err)
+	}
+	if bindings.eebusEvidenceCapture() == nil || !bindings.eebusAvailable() {
+		t.Fatal("running runtime withheld evidence or leaf capture")
+	}
+	runtime.FenceWithdrawal()
+	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+		t.Fatal("withdrawn runtime admitted evidence or leaf capture")
+	}
+}
+
+func TestM06FailedEEBusWithholdsCapture(t *testing.T) {
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		return nil, errors.New("synthetic runtime unavailable")
+	}))
+	runtime := &managedSidecarRuntime{Runtime: native}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: string(managedEEBusID), Enabled: true, Runtime: runtime}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = manager.Shutdown(context.Background()) }()
+	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID}, runtime: runtime, manager: manager}}}}
+	if err := manager.Start(context.Background(), string(managedEEBusID)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, ok := manager.Snapshot(string(managedEEBusID))
+	if !ok || snapshot.ObservedState != drivermanager.ObservedFailed || runtime.active.Load() != nil {
+		t.Fatalf("factory failure did not withhold the runtime: %+v", snapshot)
+	}
+	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+		t.Fatal("failed runtime admitted evidence or leaf capture")
+	}
+}

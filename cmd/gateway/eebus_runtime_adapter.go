@@ -2,15 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
@@ -704,4 +708,88 @@ func (router managedEEBusCommands) MutationsRollback(ctx context.Context, auth e
 		terminal = eebusRuntimeUnavailableError()
 	}
 	return
+}
+
+func managedEEBusDescriptor(cfg ebusgateway.Config, source runtimecontrol.SourceID) runtimecontrol.Descriptor {
+	return newEEBusManagedDriverDescriptor(managedEEBusID, []runtimecontrol.SourceID{source}, eebusManagedDriverOptions{Config: cfg.EEBusConfig, Resolve: resolveEEBusInterfaceAddressesFn, Factory: newEEBusRuntimeFn, OperatorFactory: newEEBusOperatorRuntimeFn})
+}
+
+func (driver *eebusManagedDriver) prepareManagedLease(ctx context.Context, generation uint64, lease *managedSidecarLease) error {
+	return driver.WithGeneration(generation, func(adapter *eebusRuntimeAdapter, admin eebusruntime.AdminV1) error {
+		if admin != nil {
+			snapshot := eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning, RuntimeAvailable: true, AdminAvailable: true, DegradedReason: adapter.startupDegradedReason}
+			var err error
+			lease.adminHandler, err = newEEBusAdminHandler(adapter, admin, eebusReadinessForLifecycle(snapshot))
+			if err != nil {
+				return err
+			}
+			lease.adminAvailable = true
+		}
+		lease.worker = newEEBusPromotedSemanticProvider(adapter)
+		lease.worker.Start(ctx)
+		return nil
+	})
+}
+
+func (b *managedSidecarBindings) eebus(ctx context.Context, call func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error) error {
+	return b.entry(managedEEBusID).with(ctx, func(native drivermanager.Runtime) error {
+		driver, ok := native.(*eebusManagedDriver)
+		if !ok {
+			return drivermanager.ErrUnavailable
+		}
+		return driver.WithGeneration(driver.Generation(), call)
+	})
+}
+
+func (b *managedSidecarBindings) eebusSnapshot() (out eebusruntime.SnapshotV1, err error) {
+	err = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error { out, err = a.Snapshot(); return err })
+	return
+}
+func (b *managedSidecarBindings) eebusLifecycleSnapshot() eebusRuntimeLifecycleSnapshot {
+	result := eebusRuntimeLifecycleSnapshot{State: eebusLifecycleDisabled}
+	s := b.entry(managedEEBusID)
+	if s == nil || s.descriptor.Disposition != runtimecontrol.DispositionEnabled {
+		return result
+	}
+	result.State = eebusLifecycleDegraded
+	result.DegradedReason = eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable
+	if s.manager != nil {
+		snapshot, _ := s.manager.Snapshot(string(managedEEBusID))
+		result.Revision = snapshot.Revision
+		if snapshot.ObservedState == drivermanager.ObservedStarting {
+			result.State = eebusLifecycleStarting
+		}
+		if snapshot.ObservedState == drivermanager.ObservedStopped {
+			result.State = eebusLifecycleStopped
+		}
+	}
+	_ = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, admin eebusruntime.AdminV1) error {
+		result.State = eebusLifecycleRunning
+		result.RuntimeAvailable = true
+		result.AdminAvailable = admin != nil && s.runtime.active.Load().adminAvailable
+		result.DegradedReason = a.startupDegradedReason
+		if !result.AdminAvailable {
+			result.State = eebusLifecycleDegraded
+		}
+		return nil
+	})
+	return result
+}
+func (b *managedSidecarBindings) captureEEBus(key []byte) (out json.RawMessage, at time.Time, err error) {
+	err = b.eebus(context.Background(), func(a *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, at, err = mcp.CaptureEEBusV1ServicesEvidence(a, key)
+		return err
+	})
+	return
+}
+
+func (b *managedSidecarBindings) eebusAvailable() bool {
+	return b.eebus(context.Background(), func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error { return nil }) == nil
+}
+
+func (b *managedSidecarBindings) eebusEvidenceCapture() eebusEvidenceCapture {
+	if !b.eebusAvailable() {
+		return nil
+	}
+	return b.captureEEBus
 }

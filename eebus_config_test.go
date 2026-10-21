@@ -70,8 +70,6 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 	}
 
 	allowedConfigReferences := []string{
-		// Issue #1319 composes private generation-fenced lifecycle bindings.
-		"cmd/gateway/managed_sidecar_composition.go",
 		"cmd/gateway/eebus_admin_config.go",
 		"cmd/gateway/eebus_config_flags.go",
 		// Issue #1306 snapshots native config inside the private lifecycle seam.
@@ -83,7 +81,6 @@ func TestMSP06EEBusRuntimeCouplingIsConfinedToApprovedSeams(t *testing.T) {
 		"config.go",
 	}
 	requiredRuntimeImports := map[string]bool{
-		"cmd/gateway/managed_sidecar_composition.go": false,
 		// Issue #1306 keeps native runtime/admin handles inside the private
 		// managed-driver lifecycle seam, behind generation-fenced callbacks.
 		"cmd/gateway/eebus_managed_driver.go":       false,

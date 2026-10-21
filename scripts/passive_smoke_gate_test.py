@@ -186,6 +186,17 @@ type Config struct {
         except OSError as exc:
             self.fail(f"cannot read immutable pre-candidate fixture: {exc}")
 
+    def _transport_snapshot_candidate(self) -> str:
+        # Freeze both sides of the transport-only exception. Reading the live
+        # store here would fold unrelated future edits into the allowed case.
+        candidate = self._pre_candidate_bus_observability_base()
+        fixture = SCRIPT_DIR / "testdata" / "passive_smoke_transport_snapshot_edits.json"
+        for edit in json.loads(fixture.read_text(encoding="utf-8")):
+            self.assertEqual(candidate.count(edit["before"]), 1,
+                             "transport fixture edit must match exactly once")
+            candidate = candidate.replace(edit["before"], edit["after"], 1)
+        return candidate
+
     def _create_temp_repo(
         self,
         changed_file: str,
@@ -339,7 +350,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
 
     def test_bus_observability_transport_snapshot_is_only_exception(self) -> None:
         base = self._pre_candidate_bus_observability_base()
-        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        allowed = self._transport_snapshot_candidate()
         repo_path, _ = self._create_temp_repo(
             "bus_observability_store.go", base_text=base, modified_text=allowed
         )
@@ -350,6 +361,20 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("not triggered", result.stdout)
+
+        specimen_change = allowed.replace(
+            "specimens map[string]*specimenFamilyBucket // keyed by family",
+            "specimens specimens.Store",
+        )
+        self.assertNotEqual(specimen_change, allowed)
+        (repo_path / "bus_observability_store.go").write_text(specimen_change, encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "scripts/passive_smoke_gate.sh"], cwd=repo_path,
+            env=self._script_env(PASSIVE_SMOKE_GATE_BASE_REF="HEAD"),
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PASSIVE_SMOKE_REPORT is required", result.stdout)
 
         for hostile in (
             '\nfunc transportSnapshotPassiveMutation(store *BusObservabilityStore) { store.passive.state = "unsafe" }\n',
@@ -373,7 +398,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.name", "Codex"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.email", "codex@example.com"], cwd=repo_path, check=True, capture_output=True, text=True)
-        (repo_path / "bus_observability_store.go").write_text((REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8"), encoding="utf-8")
+        (repo_path / "bus_observability_store.go").write_text(self._transport_snapshot_candidate(), encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", "depth-one candidate"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "checkout", "--detach", "HEAD"], cwd=repo_path, check=True, capture_output=True, text=True)
@@ -384,7 +409,7 @@ func (store *BusObservabilityStore) RenderPrometheus() {
 
     def test_transport_snapshot_fixture_survives_empty_successor_commit(self) -> None:
         base = self._pre_candidate_bus_observability_base()
-        allowed = (REPO_ROOT / "bus_observability_store.go").read_text(encoding="utf-8")
+        allowed = self._transport_snapshot_candidate()
         repo_path, _ = self._create_temp_repo("bus_observability_store.go", base_text=base, modified_text=base)
         tracked = repo_path / "bus_observability_store.go"
         tracked.write_text(allowed, encoding="utf-8")

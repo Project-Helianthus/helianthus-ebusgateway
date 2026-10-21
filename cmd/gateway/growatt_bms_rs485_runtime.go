@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -176,14 +177,67 @@ type growattBMSRS485ProductionProvider struct {
 	storage      *growattStoragePublication
 	contribution *gatewayPortalContributionLifecycle
 	next         uint64
+	evidenceMu   sync.Mutex
 	last         GrowattBMSRS485ObservationEvidence
 	have         bool
+	lifetime     context.Context
+	cancel       context.CancelFunc
+	closeOnce    sync.Once
+	closeErr     error
+
+	commit        atomic.Pointer[growattBMSRS485Commit]
+	beforeCommit  func() // Optional deterministic pause before atomic commit admission.
+	beforePublish func() // Optional deterministic pause after observation, before publication.
+}
+
+// A commit is admitted atomically against withdrawal. Entered work is joined
+// by Stop; withdrawal never waits for evidence or semantic publication.
+type growattBMSRS485Commit struct {
+	withdrawn bool
+	done      chan struct{}
+}
+
+func (provider *growattBMSRS485ProductionProvider) beginCommit(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if provider.beforeCommit != nil {
+		provider.beforeCommit()
+	}
+	commit := &growattBMSRS485Commit{done: make(chan struct{})}
+	// provider.mu serializes commits; a non-nil state means withdrawal won.
+	if !provider.commit.CompareAndSwap(nil, commit) {
+		return nil, context.Canceled
+	}
+	return func() {
+		close(commit.done)
+		provider.commit.CompareAndSwap(commit, nil)
+	}, nil
+}
+
+func (provider *growattBMSRS485ProductionProvider) withdraw(cancel context.CancelFunc) {
+	for {
+		current := provider.commit.Load()
+		if current != nil && current.withdrawn {
+			break
+		}
+		withdrawn := &growattBMSRS485Commit{withdrawn: true}
+		if current != nil {
+			withdrawn.done = current.done
+		}
+		if provider.commit.CompareAndSwap(current, withdrawn) {
+			break
+		}
+	}
+	cancel()
 }
 
 func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx context.Context) (mcp.GrowattBMSRS485V202Observation, error) {
 	if provider == nil || provider.runtime == nil || provider.session == nil {
 		return mcp.GrowattBMSRS485V202Observation{}, errors.New("growatt BMS RTU production provider unavailable")
 	}
+	ctx, cancel := provider.acquisitionContext(ctx)
+	defer cancel()
 	if err := provider.acquire(ctx); err != nil {
 		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
@@ -191,6 +245,18 @@ func (provider *growattBMSRS485ProductionProvider) GrowattBMSRS485V202(ctx conte
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	return provider.observeLocked(ctx)
+}
+
+func (provider *growattBMSRS485ProductionProvider) acquisitionContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(provider.lifetime, cancel)
+	if provider.lifetime.Err() != nil {
+		cancel()
+	}
+	return ctx, func() { stop(); cancel() }
 }
 
 func (provider *growattBMSRS485ProductionProvider) acquire(ctx context.Context) error {
@@ -225,12 +291,25 @@ func (provider *growattBMSRS485ProductionProvider) observeLocked(ctx context.Con
 	if err != nil {
 		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return mcp.GrowattBMSRS485V202Observation{}, err
+	}
+	if err := provider.lifetime.Err(); err != nil {
+		return mcp.GrowattBMSRS485V202Observation{}, err
+	}
+	finish, err := provider.beginCommit(ctx)
+	if err != nil {
+		return mcp.GrowattBMSRS485V202Observation{}, err
+	}
+	defer finish()
 	provider.next++
 	evidence, err := provider.session.complete(fmt.Sprintf("%s:%s:%d:%d", provider.session.sourceID, provider.session.sourceEpoch, provider.session.driverGeneration, provider.next), provider.next)
 	if err != nil {
 		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
+	provider.evidenceMu.Lock()
 	provider.last, provider.have = evidence, true
+	provider.evidenceMu.Unlock()
 	return mcp.GrowattBMSRS485V202Observation{Status: status, ReceiptWall: evidence.ReceiptWall}, nil
 }
 
@@ -240,6 +319,8 @@ func (provider *growattBMSRS485ProductionProvider) SemanticStorageCurrent(ctx co
 	if provider == nil || provider.storage == nil {
 		return nil, errors.New("growatt BMS storage semantic provider unavailable")
 	}
+	ctx, cancel := provider.acquisitionContext(ctx)
+	defer cancel()
 	if err := provider.acquire(ctx); err != nil {
 		return nil, err
 	}
@@ -254,6 +335,16 @@ func (provider *growattBMSRS485ProductionProvider) SemanticStorageCurrent(ctx co
 	if !ok {
 		return nil, errors.New("growatt BMS storage evidence unavailable")
 	}
+	if provider.beforePublish != nil {
+		provider.beforePublish()
+	}
+	// Admission and withdrawal share one atomic commit point. An entered
+	// publication remains tracked until Stop joins it before fencing the hub.
+	finish, err := provider.beginCommit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	return provider.storage.Publish(observation.Status, evidence)
 }
 
@@ -265,15 +356,15 @@ func (provider *growattBMSRS485ProductionProvider) LastObservationEvidence() (Gr
 	if provider == nil {
 		return GrowattBMSRS485ObservationEvidence{}, false
 	}
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
-	return provider.last.clone(), provider.have
+	return provider.LastObservationEvidenceLocked()
 }
 
 func (provider *growattBMSRS485ProductionProvider) LastObservationEvidenceLocked() (GrowattBMSRS485ObservationEvidence, bool) {
 	if provider == nil {
 		return GrowattBMSRS485ObservationEvidence{}, false
 	}
+	provider.evidenceMu.Lock()
+	defer provider.evidenceMu.Unlock()
 	return provider.last.clone(), provider.have
 }
 
@@ -281,16 +372,16 @@ func (provider *growattBMSRS485ProductionProvider) Close() error {
 	if provider == nil || provider.session == nil || provider.session.endpoint == nil {
 		return nil
 	}
-	if provider.contribution != nil {
-		provider.contribution.Stop()
-	}
-	if err := provider.acquire(context.Background()); err != nil {
-		return err
-	}
-	defer provider.release()
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
-	return provider.session.endpoint.Close()
+	provider.closeOnce.Do(func() {
+		provider.cancel()
+		if provider.contribution != nil {
+			provider.contribution.Stop()
+		}
+		_ = provider.acquire(context.Background())
+		defer provider.release()
+		provider.closeErr = provider.session.endpoint.Close()
+	})
+	return provider.closeErr
 }
 
 func attachGatewayPortalStorageContribution(provider *growattBMSRS485ProductionProvider, contributions *gatewayPortalCatalogContributions) error {
@@ -333,7 +424,11 @@ func growattBMSRS485Timing(config ebusgateway.GrowattBMSRS485Config) (modbus.RTU
 	return timing, nil
 }
 
-func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *semhub.Hub) (provider *growattBMSRS485ProductionProvider, err error) {
+func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *semhub.Hub) (*growattBMSRS485ProductionProvider, error) {
+	return startGrowattBMSRS485RuntimeWithEndpoint(config, hub, openGrowattBMSRTUEndpoint, nil)
+}
+
+func startGrowattBMSRS485RuntimeWithEndpoint(config ebusgateway.GrowattBMSRS485Config, hub *semhub.Hub, open func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error), admit func(semhub.Admission) (*semhub.Handle, error)) (provider *growattBMSRS485ProductionProvider, err error) {
 	if !config.Enabled {
 		if config != (ebusgateway.GrowattBMSRS485Config{}) {
 			return nil, errors.New("disabled Growatt BMS RS-485 configuration contains active fields")
@@ -352,15 +447,18 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *
 	if err != nil {
 		return nil, fmt.Errorf("growatt BMS semantic declaration: %w", err)
 	}
-	handle, err := hub.AdmitSource(semhub.Admission{Source: semreg.SourceID(config.SourceID), Driver: growattStorageDriver, Legacy: semhub.LegacyGrowattStorage, Epoch: semreg.SourceEpochID(config.SourceEpoch), Generation: config.DriverGeneration})
+	managedAdmission := admit != nil
+	if admit == nil {
+		admit = hub.AdmitSource
+	}
+	handle, err := admit(semhub.Admission{Source: semreg.SourceID(config.SourceID), Driver: growattStorageDriver, Legacy: semhub.LegacyGrowattStorage, Epoch: semreg.SourceEpochID(config.SourceEpoch), Generation: config.DriverGeneration})
 	if err != nil {
 		return nil, fmt.Errorf("growatt BMS source epoch admission: %w", err)
 	}
-	// Any later startup failure withdraws the admission, journal-first, so
-	// the source is not left live without a runtime and a retry with the
-	// same configuration can admit again.
+	// Legacy startup rolls back an unused admission. Managed startup owns
+	// cleanup of both initial admissions and activated generations.
 	defer func() {
-		if err != nil {
+		if err != nil && !managedAdmission {
 			err = errors.Join(err, hub.Withdraw(handle))
 		}
 	}()
@@ -369,7 +467,7 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *
 		return nil, err
 	}
 	admission := growattBMSRTUAdmission{unitID: config.UnitID}
-	endpoint, err := openGrowattBMSRTUEndpoint(modbus.RTUProductionConfig{
+	endpoint, err := open(modbus.RTUProductionConfig{
 		Endpoint: config.SourceID,
 		Serial:   modbus.RTUSerialConfig{Path: config.SerialPath, Baud: config.Baud, DataBits: 8, Parity: parity, StopBits: config.StopBits},
 		Timing:   timing, ResponseTimeout: config.ResponseTimeout, Enabled: true, Admission: admission,
@@ -382,7 +480,10 @@ func startGrowattBMSRS485Runtime(config ebusgateway.GrowattBMSRS485Config, hub *
 	if err != nil {
 		return nil, errors.Join(err, endpoint.Close())
 	}
-	return &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1)}, nil
+	lifetime, cancel := context.WithCancel(context.Background())
+	provider = &growattBMSRS485ProductionProvider{runtime: runtime, session: session, storage: storage, gate: make(chan struct{}, 1), lifetime: lifetime}
+	provider.cancel = func() { provider.withdraw(cancel) }
+	return provider, nil
 }
 
 type growattBMSRTUAdmission struct{ unitID byte }

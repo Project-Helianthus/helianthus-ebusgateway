@@ -308,6 +308,7 @@ type Config struct {
             "TestRTUProductionRejectsRecoveryBoundsAndNoByteTimeout\n"
             "TESTS\n"
             "fi\n"
+            'if [[ "$1" == "test" && "$2" == "./cmd/gateway" && "$*" != *"M04"* ]]; then exit 1; fi\n'
             f"exit {exit_code}\n",
             encoding="utf-8",
         )
@@ -485,6 +486,7 @@ type Config struct {
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
 			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/growatt_managed_driver.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/m2m_graphql_config.go", "// base\n", "// modified\n"),
@@ -532,6 +534,7 @@ type Config struct {
             ("cmd/gateway/gateway_http_server.go", "// base\n", "// modified\n"),
 			("cmd/gateway/gateway_run_setup.go", "// base\n", "// modified\n"),
             ("cmd/gateway/growatt_bms_rs485_runtime.go", "// base\n", "// modified\n"),
+            ("cmd/gateway/growatt_managed_driver.go", "// base\n", "// modified\n"),
 			("cmd/gateway/growatt_storage_semreg.go", "// base\n", "// modified\n"),
             ("cmd/gateway/m2m_graphql_runtime.go", "// base\n", "// modified\n"),
 			("cmd/gateway/m2m_graphql_config.go", "// base\n", "// modified\n"),

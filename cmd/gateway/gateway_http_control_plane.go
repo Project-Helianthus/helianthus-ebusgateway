@@ -154,7 +154,20 @@ func startHTTPControlPlaneListener(
 	gateway *ebusgateway.Gateway,
 	mcpServer *mcp.Server,
 	eebusProvider mcp.EEBusV1Provider,
+	resources ...io.Closer,
 ) (*http.Server, mdns.Advertiser, error) {
+	// Release host resources on startup failure or whenever Serve exits, including Close.
+	closeResources := func() {
+		for _, resource := range resources {
+			_ = resource.Close()
+		}
+	}
+	started := false
+	defer func() {
+		if !started {
+			closeResources()
+		}
+	}()
 	var operatorEndpoint io.Closer
 	var err error
 	if eebusProvider != nil {
@@ -179,6 +192,7 @@ func startHTTPControlPlaneListener(
 		})
 	}
 	go func() {
+		defer closeResources()
 		defer func() {
 			if operatorEndpoint != nil {
 				_ = operatorEndpoint.Close()
@@ -207,6 +221,7 @@ func startHTTPControlPlaneListener(
 		}
 	}
 
+	started = true
 	return server, advertiser, nil
 }
 

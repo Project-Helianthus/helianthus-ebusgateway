@@ -174,6 +174,7 @@ func bindFlags(fs *flag.FlagSet, cfg *ebusgateway.Config) *gatewayFlagInputs {
 	fs.StringVar(&cfg.RuntimeStatePath, "runtime-state-path",
 		cfg.RuntimeStatePath,
 		"override /data/runtime_state.json path (empty uses runtimestate package default)")
+	fs.StringVar(&cfg.PortalConfigRoot, "portal-config-root", cfg.PortalConfigRoot, "existing host-owned directory for Portal desired configuration (no runtime application)")
 	fs.StringVar(&cfg.DumpOutputDir, "dump-output-dir", cfg.DumpOutputDir, "unknown device dump output dir")
 	fs.StringVar(&cfg.DumpUploadURL, "dump-upload-url", cfg.DumpUploadURL, "unknown device dump upload url (internal)")
 	fs.BoolVar(&cfg.DumpIncludePII, "dump-include-pii", cfg.DumpIncludePII, "include identifiers in unknown device dumps")

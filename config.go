@@ -299,6 +299,7 @@ type Config struct {
 	M2MGraphQL               M2MGraphQLConfig
 	PortalPV                 PortalPVConfig
 	PortalStorage            PortalStorageConfig
+	PortalConfigRoot         string // Host-owned, existing directory for the separate Portal desired record.
 	ModbusTCPConfig          ModbusTCPConfig
 	EvidenceRecorderConfig   EvidenceRecorderConfig
 	EvidenceOneShotEnabled   bool
@@ -490,6 +491,7 @@ func DefaultConfig() Config {
 		MCPPath:                                 "/mcp",
 		UIPath:                                  "/ui",
 		PortalPath:                              "/portal",
+		PortalConfigRoot:                        "/data",
 		MDNSAdvertise:                           true,
 		MDNSInstance:                            "helianthus",
 		InstanceGUID:                            "",

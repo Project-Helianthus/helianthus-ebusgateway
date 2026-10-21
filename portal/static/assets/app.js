@@ -1400,7 +1400,9 @@ class PortalShell extends HTMLElement {
       section.style.display = visible.has(id) ? "" : "none";
     });
     this.querySelectorAll("[data-nav-target]").forEach((btn) => {
-      btn.classList.toggle("active", btn.getAttribute("data-nav-target") === targetID);
+      const active = btn.getAttribute("data-nav-target") === targetID;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-current", active ? "page" : "false");
     });
     // First time the L7 Catalog section is activated, kick off the
     // services list fetch so the panel isn't empty. Subsequent clicks
@@ -1734,6 +1736,7 @@ class PortalShell extends HTMLElement {
       const button = append(parent, "button", label, "button portal-catalog-page");
       if (!button) return null;
       button.setAttribute("type", "button");
+      button.setAttribute("data-catalog-control", label);
       button.disabled = disabled;
       button.addEventListener?.("click", handler);
       return button;
@@ -1826,7 +1829,15 @@ class PortalShell extends HTMLElement {
       }
     }
     if (nodes > PORTAL_CATALOG_MAX_NODES) return false;
+    const focused = document.activeElement;
+    const restoreFocus = focused && body.contains?.(focused);
+    const control = restoreFocus ? focused.getAttribute("data-catalog-control") : null;
     body.replaceChildren(root);
+    if (restoreFocus) {
+      const replacement = control ? body.querySelector(`[data-catalog-control="${control}"]`) : null;
+      const target = replacement && !replacement.disabled ? replacement : this.querySelector('[data-role="portal-catalog-refresh"]');
+      target?.focus();
+    }
     return true;
   }
 
@@ -1845,12 +1856,14 @@ class PortalShell extends HTMLElement {
       this._renderPortalCatalogUnavailable(body, message);
     };
     if (typeof endpoint !== "string" || endpoint.length === 0 || !body) {
+      body?.setAttribute("aria-busy", "false");
       showFailure("Catalog unavailable. No admitted catalog is currently available.");
       return false;
     }
     this._portalCatalogRequestAbort?.abort();
     const requestAbort = beginPortalCatalogRequestAbort(lifecycleAbort);
     this._portalCatalogRequestAbort = requestAbort;
+    body.setAttribute("aria-busy", "true");
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -1877,7 +1890,10 @@ class PortalShell extends HTMLElement {
       return false;
     } finally {
       requestAbort.cleanup();
-      if (this._portalCatalogRequestAbort === requestAbort) this._portalCatalogRequestAbort = undefined;
+      if (this._portalCatalogRequestAbort === requestAbort) {
+        this._portalCatalogRequestAbort = undefined;
+        body.setAttribute("aria-busy", "false");
+      }
     }
   }
 

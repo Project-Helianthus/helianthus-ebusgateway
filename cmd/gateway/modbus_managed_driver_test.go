@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	sunspectest "github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter/testfixture"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	modbusreg "github.com/Project-Helianthus/helianthus-modbusreg"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -236,6 +239,10 @@ func TestM03PublicationScopeFencesOldEpoch(t *testing.T) {
 }
 
 func m03Observation(t *testing.T) modbusreg.SunSpecQualificationObservation {
+	return m03ObservationSample(t, 1)
+}
+
+func m03ObservationSample(t *testing.T, pollGeneration uint64) modbusreg.SunSpecQualificationObservation {
 	t.Helper()
 	registry, err := modbusreg.NewStandardSunSpecDecoderRegistry(modbusreg.SunSpecModelsRevisionV1)
 	if err != nil {
@@ -258,7 +265,7 @@ func m03Observation(t *testing.T) modbusreg.SunSpecQualificationObservation {
 		if offset+count > len(words) {
 			t.Fatal("synthetic replay exceeded words")
 		}
-		view, err := modbusreg.NewLogicalViewSnapshot(modbusreg.LogicalViewRecord{LogicalViewID: id, WireResponseID: id + 100, PhysicalRequestID: id + 200, Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5, UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters, Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(), AuthorizationScope: "fixture:managed", PollGeneration: 1, DeadlineIdentity: 2, LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceWordCount: request.WordCount(), Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)}})
+		view, err := modbusreg.NewLogicalViewSnapshot(modbusreg.LogicalViewRecord{LogicalViewID: id, WireResponseID: id + 100, PhysicalRequestID: id + 200, Endpoint: "fixture", ConnectionID: 4, Transport: modbusreg.TransportTCP, TransportGeneration: 5, UnitID: 1, RequestedFunction: modbusreg.FunctionReadHoldingRegisters, ReceivedFunction: modbusreg.FunctionReadHoldingRegisters, Table: modbusreg.HoldingRegisters, PhysicalOffset: request.Address(), PhysicalWordCount: request.WordCount(), AuthorizationScope: "fixture:managed", PollGeneration: pollGeneration, DeadlineIdentity: 2, LogicalOffset: request.Address(), LogicalWordCount: request.WordCount(), SliceWordCount: request.WordCount(), Words: append([]uint16(nil), words[offset:offset+count]...), WireResponseBytes: []byte{byte(id)}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,5 +448,150 @@ func TestM03ManagerRetryAfterClosedStartFailure(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatal("retry did not construct fresh endpoint")
+	}
+}
+
+func TestM03ReplacementRetainsDistinctSampleEvidence(t *testing.T) {
+	for _, newEpoch := range []bool{false, true} {
+		t.Run(fmt.Sprint("new_epoch=", newEpoch), func(t *testing.T) {
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) { return &m03Endpoint{}, nil }, nil)
+			if _, err := driver.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			first, refresh := m03ObservationSample(t, 1), m03ObservationSample(t, 2)
+			old := driver.active.Load().adapter
+			if first.SampleID() == refresh.SampleID() {
+				t.Fatal("fixture samples are identical")
+			}
+			if err := old.RecordSunSpecQualificationObservation(first); err != nil {
+				t.Fatal(err)
+			}
+			if err := old.RecordSunSpecCurrentObservation(refresh); err != nil {
+				t.Fatal(err)
+			}
+			profile := first.Capability().ProfileID()
+			_, firstBytes, _ := old.SunSpecQualificationObservation(profile, first.SampleID())
+			_, refreshBytes, _ := old.SunSpecQualificationObservation(profile, refresh.SampleID())
+			if err := driver.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			epoch := semreg.SourceEpochID("epoch:synthetic-a")
+			if newEpoch {
+				c := m03Correlation()
+				c.Epoch, c.Generation, c.Sequence = "epoch:synthetic-b", 2, 2
+				epoch = semreg.SourceEpochID(c.Epoch)
+				if err := driver.BindLifecycle(c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := driver.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			current := driver.active.Load().adapter
+			if err := current.RecordSunSpecQualificationObservation(m03ObservationSample(t, 3)); err != nil {
+				t.Fatal(err)
+			}
+			for _, retained := range []struct {
+				sample  string
+				encoded []byte
+			}{{first.SampleID(), firstBytes}, {refresh.SampleID(), refreshBytes}} {
+				_, encoded, ok := current.SunSpecQualificationObservation(profile, retained.sample)
+				if !ok || len(encoded) == 0 || !bytes.Equal(encoded, retained.encoded) {
+					t.Fatal("replacement lost exact predecessor evidence")
+				}
+			}
+			view, ok := current.SemanticPVCurrentSingle()
+			if !ok {
+				t.Fatal("replacement did not publish distinct sample")
+			}
+			m03AssertGeneration(t, view, epoch, "2")
+			if _, err := driver.Replace(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			current = driver.active.Load().adapter
+			if err := current.RecordSunSpecQualificationObservation(m03ObservationSample(t, 4)); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, ok := current.SunSpecQualificationObservation(profile, first.SampleID()); !ok {
+				t.Fatal("second replacement lost original qualification")
+			}
+		})
+	}
+}
+
+type m03RecoverableJournal struct {
+	*semhub.MemoryJournal
+	failed atomic.Bool
+}
+
+var errM03JournalFailure = errors.New("synthetic journal unavailable")
+
+func (j *m03RecoverableJournal) Append(records ...semhub.EpochRecord) error {
+	if j.failed.Load() {
+		return errM03JournalFailure
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+func TestM03SemanticCleanupRetriesAfterJournalRecovery(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(fmt.Sprint("replace=", replace), func(t *testing.T) {
+			journal := &m03RecoverableJournal{MemoryJournal: semhub.NewMemoryJournal()}
+			hub, err := semhub.New(semhub.Options{Journal: journal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := &m03Endpoint{}
+			var opens, closes atomic.Int32
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				if opens.Add(1) == 1 {
+					return first, nil
+				}
+				return &m03Endpoint{}, nil
+			}, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+				return &m03Work{start: func() {}, close: func() error { closes.Add(1); return nil }}
+			})
+			driver.hub = hub
+			if _, err := driver.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			old := driver.active.Load().adapter
+			if err := old.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
+				t.Fatal(err)
+			}
+			journal.failed.Store(true)
+			if err := driver.Stop(context.Background()); !errors.Is(err, errM03JournalFailure) {
+				t.Fatalf("stop lost journal error: %v", err)
+			}
+			if _, err := driver.Replace(context.Background()); !errors.Is(err, errM03JournalFailure) {
+				t.Fatalf("replacement bypassed failed semantic cleanup: %v", err)
+			}
+			if opens.Load() != 1 {
+				t.Fatal("replacement opened before cleanup proof")
+			}
+			journal.failed.Store(false)
+			if replace {
+				if generation, err := driver.Replace(context.Background()); err != nil || generation != 2 {
+					t.Fatalf("recovered replacement generation=%d err=%v", generation, err)
+				}
+			} else if err := driver.Stop(context.Background()); err != nil {
+				t.Fatalf("recovered stop: %v", err)
+			}
+			if first.closes.Load() != 1 || closes.Load() != 1 {
+				t.Fatal("cleanup retry repeated native or worker shutdown")
+			}
+			fenced := false
+			for _, record := range journal.Records() {
+				if record.Kind == semhub.EventGenerationFenced && record.Generation == 1 {
+					fenced = true
+				}
+			}
+			if !fenced {
+				t.Fatal("recovered cleanup did not journal the generation fence")
+			}
+			if err := old.RecordSunSpecCurrentObservation(m03ObservationSample(t, 2)); err == nil {
+				t.Fatal("retired generation published after cleanup")
+			}
+		})
 	}
 }

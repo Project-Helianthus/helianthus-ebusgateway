@@ -31,6 +31,7 @@ type modbusManagedAttempt struct {
 	work           modbusManagedWork
 	startErr       error
 	stopErr        error
+	workErr        error
 }
 
 // modbusManagedDriver is inert until the shared manager starts it. M06 binds
@@ -212,6 +213,7 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 			if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
 				closeErr = errors.Join(closeErr, a.startErr)
 			}
+			a.workErr = workErr
 			a.stopErr = errors.Join(closeErr, workErr)
 			driver.revision.Add(1)
 		}()
@@ -221,17 +223,33 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-a.stopped:
-		if a.stopErr == nil {
-			driver.mu.Lock()
-			if driver.active.Load() == a {
-				if a.adapter != nil {
-					driver.previous = a.scope
+		stopErr := a.stopErr
+		if stopErr != nil {
+			// Close caches native shutdown but retries semantic withdrawal.
+			// Keep the joined work/startup failures immutable and fail closed.
+			retried := make(chan error, 1)
+			go func() {
+				err := errors.Join(a.workErr, a.adapter.Close())
+				if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
+					err = errors.Join(err, a.startErr)
 				}
-				driver.active.Store(nil)
+				retried <- err
+			}()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case stopErr = <-retried:
 			}
-			driver.mu.Unlock()
 		}
-		return a.stopErr
+		driver.mu.Lock()
+		defer driver.mu.Unlock()
+		if stopErr == nil && driver.active.Load() == a {
+			if a.adapter != nil {
+				driver.previous = a.scope
+			}
+			driver.active.Store(nil)
+		}
+		return stopErr
 	}
 }
 

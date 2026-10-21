@@ -59,6 +59,7 @@ type Config struct {
 type PublicationScope struct {
 	Previous    *PublicationScope
 	core        *pvPublicationCore
+	adapter     *Adapter
 	startedWall time.Time
 	Epoch       semreg.SourceEpochID
 	Generation  uint64
@@ -108,23 +109,25 @@ type Adapter struct {
 	config     Config
 	dial       Dialer
 
-	closeOnce       sync.Once
-	closeErr        error
-	executeMu       sync.Mutex
-	connectionMu    sync.RWMutex
-	closed          bool
-	lastRequest     modbus.TCPRequestHandle
-	profileMu       sync.RWMutex
-	profiles        map[string]ProfileObservationRecord
-	qualifications  map[string]sunSpecQualificationRecord
-	refreshEvidence map[string]sunSpecQualificationRecord
-	refreshOrder    []string
-	semanticPV      *pvPublicationCore
-	pvSourceEpoch   semreg.SourceEpochID
-	startedWall     time.Time
-	startedMono     time.Time
-	wallNow         func() time.Time
-	monotonicNow    func() time.Time
+	closeOnce      sync.Once
+	closeErr       error
+	executeMu      sync.Mutex
+	connectionMu   sync.RWMutex
+	closed         bool
+	lastRequest    modbus.TCPRequestHandle
+	profileMu      sync.RWMutex
+	profiles       map[string]ProfileObservationRecord
+	qualifications map[string]sunSpecQualificationRecord
+	// Inherited terminal samples must publish once in the new generation.
+	replayQualifications map[string]bool
+	refreshEvidence      map[string]sunSpecQualificationRecord
+	refreshOrder         []string
+	semanticPV           *pvPublicationCore
+	pvSourceEpoch        semreg.SourceEpochID
+	startedWall          time.Time
+	startedMono          time.Time
+	wallNow              func() time.Time
+	monotonicNow         func() time.Time
 }
 
 const maxRetainedProfileObservations = 32
@@ -235,9 +238,13 @@ func Start(
 		}
 		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, connection.Close(), closeStartupEndpoint(endpoint))
 	}
+	var previousAdapter *Adapter
 	if config.Publication != nil {
 		config.Publication.core = semanticPV
 		previous := config.Publication.Previous
+		if previous != nil {
+			previousAdapter = previous.adapter
+		}
 		if previous != nil && previous.Epoch == epoch && !previous.startedWall.IsZero() {
 			startedWall = previous.startedWall
 		}
@@ -245,7 +252,7 @@ func Start(
 		config.Publication.Previous = nil
 		processStarted = managedModbusMonotonicOrigin
 	}
-	return &Adapter{
+	adapter := &Adapter{
 		endpoint:        endpoint,
 		connection:      handle,
 		source:          config.Endpoint.RuntimeAcquisitionSource,
@@ -260,7 +267,29 @@ func Start(
 		startedMono:     processStarted,
 		wallNow:         clock,
 		monotonicNow:    clock,
-	}, nil
+	}
+	if previousAdapter != nil {
+		// The predecessor is joined. Copy its bounded stores so retained hub
+		// snapshots remain replayable without sharing mutable map ownership.
+		previousAdapter.profileMu.RLock()
+		for key, record := range previousAdapter.profiles {
+			adapter.profiles[key] = record
+		}
+		adapter.replayQualifications = make(map[string]bool)
+		for key, record := range previousAdapter.qualifications {
+			adapter.qualifications[key] = record
+			adapter.replayQualifications[key] = true
+		}
+		for key, record := range previousAdapter.refreshEvidence {
+			adapter.refreshEvidence[key] = record
+		}
+		adapter.refreshOrder = append([]string(nil), previousAdapter.refreshOrder...)
+		previousAdapter.profileMu.RUnlock()
+	}
+	if config.Publication != nil {
+		config.Publication.adapter = adapter
+	}
+	return adapter, nil
 }
 
 // ValidateTCPEndpoint applies the endpoint grammar used by Start without
@@ -514,13 +543,16 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 	key := capability + "\x00" + sampleID
 	adapter.profileMu.Lock()
 	defer adapter.profileMu.Unlock()
-	if existing, exists := adapter.qualifications[key]; exists {
+	existing, exists := adapter.qualifications[key]
+	if exists {
 		if !bytes.Equal(existing.encoded, encoded) {
 			return errors.New("SunSpec qualification observation identity collision")
 		}
-		return nil
+		if !adapter.replayQualifications[key] {
+			return nil
+		}
 	}
-	if len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
+	if !exists && len(adapter.profiles)+len(adapter.qualifications) >= maxRetainedProfileObservations {
 		return errors.New("profile observation retention limit reached")
 	}
 	adapter.qualifications[key] = sunSpecQualificationRecord{
@@ -531,11 +563,12 @@ func (adapter *Adapter) RecordSunSpecQualificationObservation(observation modbus
 		// and cites this record, so the record is kept and only the cover
 		// failure is reported.
 		var cover *semhub.CoverError
-		if !errors.As(err, &cover) {
+		if !errors.As(err, &cover) && !exists {
 			delete(adapter.qualifications, key)
 		}
 		return err
 	}
+	delete(adapter.replayQualifications, key)
 	return nil
 }
 

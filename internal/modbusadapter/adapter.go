@@ -65,6 +65,8 @@ type PublicationScope struct {
 	Epoch       semreg.SourceEpochID
 	Generation  uint64
 	withdrawn   atomic.Bool
+
+	startupCleanup func() error
 }
 
 var managedModbusMonotonicOrigin = time.Now()
@@ -85,6 +87,15 @@ func (scope *PublicationScope) Withdraw() {
 	if scope != nil {
 		scope.withdrawn.Store(true)
 	}
+}
+
+// RetryStartupCleanup retries retained semantic cleanup after a failed admission.
+// The boolean reports ownership; absent ownership never proves startup close.
+func (scope *PublicationScope) RetryStartupCleanup() (error, bool) {
+	if scope == nil || scope.startupCleanup == nil {
+		return nil, false
+	}
+	return scope.startupCleanup(), true
 }
 
 func (scope *PublicationScope) valid() bool {
@@ -237,7 +248,19 @@ func Start(
 				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
 			}
 		}
-		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, connection.Close(), closeStartupEndpoint(endpoint))
+		nativeCleanup := errors.Join(connection.Close(), closeStartupEndpoint(endpoint))
+		if config.Publication != nil && cleanup != nil {
+			// Keep the partially activated core reachable even though no adapter
+			// was admitted. Native cleanup is immutable; semantic fencing retries.
+			config.Publication.core = semanticPV
+			config.Publication.startupCleanup = func() error {
+				return errors.Join(nativeCleanup, semanticPV.withdrawManaged(semreg.EvaluationContext{
+					EvaluatedAt:       pvPublicationWall(clock().UTC()),
+					EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin)),
+				}))
+			}
+		}
+		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, nativeCleanup)
 	}
 	var previousAdapter *Adapter
 	if config.Publication != nil {

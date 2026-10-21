@@ -259,7 +259,7 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 			}
 			closeErr := a.adapter.Close()
 			if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
-				closeErr = errors.Join(closeErr, a.startErr)
+				closeErr = errors.Join(closeErr, a.retryStartupCleanup())
 			}
 			a.workErr = workErr
 			a.stopErr = errors.Join(closeErr, workErr, <-semanticDone)
@@ -279,7 +279,7 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 			go func() {
 				err := errors.Join(a.workErr, a.adapter.Close())
 				if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
-					err = errors.Join(err, a.startErr)
+					err = errors.Join(err, a.retryStartupCleanup())
 				}
 				retried <- err
 			}()
@@ -299,6 +299,15 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 		}
 		return stopErr
 	}
+}
+
+// Native startup failures remain unproven unless the failed admission retained
+// an explicit cleanup owner. Only that owner can replace the historical error.
+func (a *modbusManagedAttempt) retryStartupCleanup() error {
+	if err, owned := a.scope.RetryStartupCleanup(); owned {
+		return err
+	}
+	return a.startErr
 }
 
 func (driver *modbusManagedDriver) Replace(ctx context.Context) (uint64, error) {

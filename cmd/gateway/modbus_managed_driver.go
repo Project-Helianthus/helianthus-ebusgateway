@@ -227,10 +227,10 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 				workErr = a.work.Close()
 				a.work = nil
 			}
-			closeErr := a.adapter.Close()
-			a.startupClosed = workErr == nil && closeErr == nil
 			a.workErr = workErr
 			a.nativeCleanupFailed.Store(workErr != nil)
+			closeErr := a.adapter.Close()
+			a.startupClosed = workErr == nil && closeErr == nil
 			a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), workErr, closeErr)
 			return
 		}
@@ -247,8 +247,8 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 			a.workErr = a.work.Close()
 			a.work = nil
 		}
-		closeErr := a.adapter.Close()
 		a.nativeCleanupFailed.Store(a.workErr != nil)
+		closeErr := a.adapter.Close()
 		a.startupClosed = a.workErr == nil && closeErr == nil
 		a.startErr = errors.Join(cancelErr, a.workErr, closeErr)
 	}

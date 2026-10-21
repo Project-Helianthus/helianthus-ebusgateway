@@ -1526,3 +1526,115 @@ func TestM03CancellationAfterStartupFinalizationPreservesWorker(t *testing.T) {
 		t.Fatal("finalized generation was canceled, replaced, or cleaned up")
 	}
 }
+
+func TestM03StartupWorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *testing.T) {
+	for _, phase := range []string{"before installation", "during installation"} {
+		t.Run(phase, func(t *testing.T) {
+			journal := &m03BlockingFenceJournal{
+				MemoryJournal: semhub.NewMemoryJournal(),
+				entered:       make(chan struct{}),
+				release:       make(chan struct{}),
+			}
+			hub, err := semhub.New(semhub.Options{Journal: journal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			resume := func() { releaseOnce.Do(func() { close(release) }) }
+			endpoint := &m03Endpoint{}
+			closeErr := errors.New("synthetic startup worker cleanup failure")
+			var workStarts, workCloses atomic.Int32
+			observation := m03Observation(t)
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				return endpoint, nil
+			}, func(runCtx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+				if err := adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+					t.Error(err)
+				}
+				pause := func() {
+					close(entered)
+					<-runCtx.Done()
+					close(canceled)
+					<-release
+				}
+				if phase == "before installation" {
+					pause()
+				}
+				return &m03Work{start: func() {
+					workStarts.Add(1)
+					pause()
+				}, close: func() error {
+					workCloses.Add(1)
+					return closeErr
+				}}
+			})
+			var semanticOnce sync.Once
+			releaseSemantic := func() { semanticOnce.Do(func() { close(journal.release) }) }
+			// Unblock startup and semantic cleanup before the fixture joins Stop.
+			t.Cleanup(func() { resume(); releaseSemantic() })
+			driver.hub = hub
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			callerCtx, callerCancel := context.WithCancel(context.Background())
+			defer callerCancel()
+			startDone := make(chan error, 1)
+			go func() { startDone <- manager.Start(callerCtx, "pv.primary") }()
+			<-entered
+			attempt := driver.active.Load()
+			callerCancel()
+			<-canceled
+			if err := <-startDone; err != nil {
+				t.Fatal(err)
+			}
+			resume()
+			<-journal.entered
+			select {
+			case <-attempt.started:
+				t.Fatal("startup completed while semantic cleanup was blocked")
+			default:
+			}
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+			defer stopCancel()
+			report, err := manager.StopWithReport(stopCtx, "pv.primary")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || workCloses.Load() != 1 {
+				t.Fatalf("deadline=%v worker closes=%d", stopCtx.Err(), workCloses.Load())
+			}
+			if report.Class != drivermanager.CloseUnconfirmed || !driver.SafetyQuarantined() {
+				t.Fatalf("blocked startup cleanup class=%v quarantine=%v", report.Class, driver.SafetyQuarantined())
+			}
+			snapshot, _ := manager.Snapshot("pv.primary")
+			if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+				t.Fatalf("blocked startup cleanup snapshot=%+v", snapshot)
+			}
+			if err := manager.Start(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("start=%v", err)
+			}
+			if err := manager.Replace(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("replace=%v", err)
+			}
+			wantStarts := int32(0)
+			if phase == "during installation" {
+				wantStarts = 1
+			}
+			if driver.Generation() != 1 || workStarts.Load() != wantStarts || endpoint.closes.Load() != 1 {
+				t.Fatal("quarantine allowed successor work or lost native cleanup")
+			}
+			releaseSemantic()
+			<-attempt.started
+			<-attempt.stopped
+			if !errors.Is(attempt.startErr, closeErr) || !errors.Is(attempt.stopErr, closeErr) {
+				t.Fatal("startup cleanup lost the worker-close error")
+			}
+			snapshot, _ = manager.Snapshot("pv.primary")
+			if !snapshot.SafetyQuarantined || !driver.SafetyQuarantined() {
+				t.Fatal("completed semantic cleanup cleared native quarantine")
+			}
+		})
+	}
+}

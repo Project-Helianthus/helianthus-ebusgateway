@@ -133,8 +133,87 @@ func TestM05PartialFailureClosesExactlyOnce(t *testing.T) {
 			if err := driver.Stop(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if native.stopCalls != 1 || driver.Generation() != 0 {
+			if native.stopCalls != 1 || driver.Generation() != 0 || driver.Revision() != 0 {
 				t.Fatalf("close=%d generation=%d", native.stopCalls, driver.Generation())
+			}
+		})
+	}
+}
+
+func TestM05FailedStartupCloseRetainsQuarantine(t *testing.T) {
+	for _, stage := range []string{"factory", "start", "operator-factory", "operator-start", "operator-incomplete", "late-start", "operator-late-start"} {
+		t.Run(stage, func(t *testing.T) {
+			startupErr := errors.New("synthetic startup failure")
+			closeErr := errors.New("synthetic close failure")
+			native := &msp05bRuntime{shutdownErr: closeErr}
+			var runtime eebusruntime.Runtime = native
+			late := &m05LateStartRuntime{entered: make(chan struct{}), release: make(chan struct{})}
+			if strings.Contains(stage, "late-start") {
+				late.shutdownErr = closeErr
+				native = &late.msp05bRuntime
+				runtime = late
+			}
+			var factoryErr error
+			if stage == "factory" || stage == "operator-factory" {
+				factoryErr = startupErr
+			}
+			if stage == "start" || stage == "operator-start" {
+				native.startErr = startupErr
+			}
+			calls := 0
+			options := m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+				calls++
+				return runtime, factoryErr
+			})
+			if strings.HasPrefix(stage, "operator-") {
+				options.OperatorFactory = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+					calls++
+					if stage == "operator-incomplete" {
+						return runtime, nil, nil
+					}
+					return runtime, issue809AdminStub{}, factoryErr
+				}
+			}
+			driver := newEEBusManagedDriver(options)
+			var err error
+			if strings.Contains(stage, "late-start") {
+				done := make(chan error, 1)
+				go func() { _, err := driver.Start(context.Background()); done <- err }()
+				<-late.entered
+				driver.FenceWithdrawal()
+				close(late.release)
+				err = <-done
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("late start = %v", err)
+				}
+			} else {
+				_, err = driver.Start(context.Background())
+				if stage != "operator-incomplete" && !errors.Is(err, startupErr) {
+					t.Fatalf("start lost original failure: %v", err)
+				}
+			}
+			if !errors.Is(err, closeErr) || !driver.SafetyQuarantined() {
+				t.Fatalf("start = %v, quarantined = %v", err, driver.SafetyQuarantined())
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				if err := driver.Stop(context.Background()); !errors.Is(err, closeErr) {
+					t.Fatalf("stop = %v", err)
+				}
+				if _, err := driver.Start(context.Background()); !errors.Is(err, drivermanager.ErrUnavailable) {
+					t.Fatalf("restart = %v", err)
+				}
+				if _, err := driver.Replace(context.Background()); !errors.Is(err, closeErr) {
+					t.Fatalf("replace = %v", err)
+				}
+			}
+			if err := driver.WithGeneration(0, func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error {
+				t.Fatal("failed startup callback admitted")
+				return nil
+			}); !errors.Is(err, drivermanager.ErrUnavailable) {
+				t.Fatal(err)
+			}
+			if calls != 1 || native.stopCalls != 1 || driver.Generation() != 0 || driver.Revision() != 0 {
+				t.Fatalf("factory=%d close=%d generation=%d revision=%d", calls, native.stopCalls, driver.Generation(), driver.Revision())
 			}
 		})
 	}

@@ -121,9 +121,9 @@ func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
 	var admin eebusruntime.AdminV1
 	var err error
 	if driver.options.OperatorFactory != nil {
-		adapter, admin, err = startEEBusOperatorRuntime(startCtx, driver.options.Config, driver.options.Resolve, driver.options.OperatorFactory)
+		adapter, admin, err = startEEBusOperatorRuntimeRetained(startCtx, driver.options.Config, driver.options.Resolve, driver.options.OperatorFactory)
 	} else {
-		adapter, err = startEEBusRuntime(startCtx, driver.options.Config, driver.options.Resolve, driver.options.Factory)
+		adapter, err = startEEBusRuntimeRetained(startCtx, driver.options.Config, driver.options.Resolve, driver.options.Factory)
 	}
 	driver.mu.Lock()
 	if err == nil {
@@ -137,7 +137,18 @@ func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
 		driver.cancel = nil
 		driver.mu.Unlock()
 		if adapter != nil {
-			err = errors.Join(err, adapter.Shutdown())
+			// Keep the failed attempt fenced until closure succeeds. The adapter
+			// retains any shutdown result already produced by startup cleanup.
+			failed := &eebusManagedGeneration{adapter: adapter, closed: make(chan struct{})}
+			failed.retire()
+			<-failed.closed
+			if failed.closeErr != nil {
+				driver.mu.Lock()
+				driver.current = failed
+				driver.mu.Unlock()
+				driver.quarantined.Store(true)
+			}
+			err = errors.Join(err, failed.closeErr)
 		}
 		return 0, err
 	}

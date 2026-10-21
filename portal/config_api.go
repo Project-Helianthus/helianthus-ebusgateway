@@ -86,11 +86,14 @@ func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 	} else {
 		data, e := io.ReadAll(io.LimitReader(r.Body, portalconfig.MaxBytes+1))
 		if e != nil {
-			configError(w, &portalconfig.Error{Code: "invalid_record"})
-			return
+			err = &portalconfig.Error{Code: "invalid_record"}
+		} else {
+			record, err = portalconfig.Decode(data)
 		}
-		record, err = portalconfig.Decode(data)
-		if err == nil {
+		if err != nil {
+			// Read can retain accepted history even when storage is unavailable.
+			record, _ = c.Read(r.Context())
+		} else {
 			record, err = c.Update(r.Context(), record)
 		}
 	}

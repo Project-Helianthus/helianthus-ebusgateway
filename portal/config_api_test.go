@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,5 +131,68 @@ func TestM26ConfigHistoricalDesiredOnLoadError(t *testing.T) {
 	}
 	if w.Code != 400 || !got.Historical || got.Desired.Revision != "3" || !got.Desired.Sharing.GraphQL || got.Error == nil {
 		t.Fatal("historical selection lost", w.Body.String())
+	}
+}
+
+type configFailingBody struct{}
+
+func (configFailingBody) Read([]byte) (int, error) { return 0, errors.New("private_body_marker") }
+
+func TestM26InvalidPutPreservesHistoricalDesired(t *testing.T) {
+	accepted := portalconfig.Record{Format: portalconfig.Format, Revision: "3", Drivers: []portalconfig.Driver{{ID: "family.primary", Enabled: true}}, Sharing: portalconfig.Sharing{GraphQL: true}}
+	for _, state := range []string{"accepted", "historical", "unavailable"} {
+		for _, body := range []string{"malformed", "oversized", "read_error"} {
+			t.Run(state+"/"+body, func(t *testing.T) {
+				reads, updates := 0, 0
+				h := NewHandler(Options{Config: &ConfigCallbacks{
+					Read: func(context.Context) (portalconfig.Record, error) {
+						reads++
+						if state == "unavailable" {
+							return portalconfig.Record{}, errors.New("private_storage_marker")
+						}
+						if state == "historical" {
+							return accepted, errors.New("private_storage_marker")
+						}
+						return accepted, nil
+					},
+					Update: func(context.Context, portalconfig.Record) (portalconfig.Record, error) {
+						updates++
+						return portalconfig.Record{}, nil
+					},
+				}})
+				var input io.Reader = strings.NewReader(`{"private_body_marker":true}`)
+				if body == "oversized" {
+					input = strings.NewReader(strings.Repeat("x", portalconfig.MaxBytes+1))
+				}
+				if body == "read_error" {
+					input = configFailingBody{}
+				}
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/api/v1/config", input))
+				var got struct {
+					Desired    *portalconfig.Record `json:"desired"`
+					Historical bool                 `json:"historical"`
+					Error      *portalconfig.Error  `json:"error"`
+					State      struct {
+						Sharing struct {
+							GraphQL configSelection `json:"graphql"`
+						} `json:"sharing"`
+					} `json:"state"`
+				}
+				if e := json.Unmarshal(w.Body.Bytes(), &got); e != nil {
+					t.Fatal(e)
+				}
+				if w.Code != http.StatusBadRequest || got.Error == nil || got.Error.Code != "invalid_record" || reads != 1 || updates != 0 || strings.Contains(w.Body.String(), "private_") {
+					t.Fatal("invalid PUT handling", reads, updates, w.Code, w.Body.String())
+				}
+				if state == "unavailable" {
+					if got.Desired != nil || got.Historical {
+						t.Fatal("cold failure invented history", w.Body.String())
+					}
+				} else if got.Desired == nil || got.Desired.Revision != accepted.Revision || !got.Desired.Sharing.GraphQL || !got.Historical || !got.State.Sharing.GraphQL.Desired || got.State.Sharing.GraphQL.Effective || got.State.Sharing.GraphQL.Status != "withheld" {
+					t.Fatal("historical selection lost or applied", w.Body.String())
+				}
+			})
+		}
 	}
 }

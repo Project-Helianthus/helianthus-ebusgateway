@@ -334,6 +334,10 @@ func (s *Store) Update(r Record) (Record, error) {
 		return clone(s.current), failure("revision_exhausted")
 	}
 	r.Revision = strconv.FormatUint(n+1, 10)
+	r, e = s.validate(r)
+	if e != nil {
+		return clone(s.current), e
+	}
 	if e = s.persist(r); e != nil {
 		return clone(s.current), e
 	}
@@ -415,6 +419,9 @@ func (s *Store) syncDir() error {
 func (s *Store) RecoverDurability() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lock == nil {
+		return failure("persistence_failed")
+	}
 	if !s.uncertain {
 		return s.blocked
 	}

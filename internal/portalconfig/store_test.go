@@ -381,3 +381,111 @@ func TestM26EachSelectionRequiresHostSupport(t *testing.T) {
 		})
 	}
 }
+
+func TestM26ClosedStoreCannotRecoverDurability(t *testing.T) {
+	s, root := openTest(t)
+	old, e := s.Read()
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := clone(old)
+	r.AdapterProxy = true
+	s.fault = func(stage string) error {
+		if stage == "directory_sync" {
+			return errors.New("synthetic failure")
+		}
+		return nil
+	}
+	_, e = s.Update(r)
+	requireCode(t, e, "persistence_failed")
+	if e = s.Close(); e != nil {
+		t.Fatal(e)
+	}
+	s.fault = nil
+	other, e := Open(root, initial(), constraints())
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() {
+		if err := other.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
+	requireCode(t, s.RecoverDurability(), "persistence_failed")
+	got, e := s.Read()
+	requireCode(t, e, "persistence_failed")
+	if !reflect.DeepEqual(got, old) {
+		t.Fatal("closed recovery changed accepted record")
+	}
+	r, e = other.Read()
+	if e != nil {
+		t.Fatal(e)
+	}
+	r.Sharing.GraphQL = true
+	_, e = s.Update(r)
+	requireCode(t, e, "persistence_failed")
+	if _, e = other.Update(r); e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestM26SuccessorMustFitRecordLimit(t *testing.T) {
+	root := t.TempDir()
+	old := initial()
+	old.Revision = "9"
+	b, e := json.Marshal(old)
+	if e != nil {
+		t.Fatal(e)
+	}
+	old.Drivers[0].ID += strings.Repeat("x", MaxBytes-1-len(b))
+	b, e = json.Marshal(old)
+	if e != nil || len(b) != MaxBytes-1 {
+		t.Fatalf("fixture size %d: %v", len(b), e)
+	}
+	path := filepath.Join(root, "portal-config.json")
+	if e = os.WriteFile(path, b, 0600); e != nil {
+		t.Fatal(e)
+	}
+	c := constraints()
+	c.Drivers = []string{old.Drivers[0].ID}
+	s, e := Open(root, initial(), c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	r := clone(old)
+	r.Drivers[0].Enabled = false
+	input, e := json.Marshal(r)
+	if e != nil || len(input) != MaxBytes {
+		t.Fatalf("request size %d: %v", len(input), e)
+	}
+	if _, e = Decode(input); e != nil {
+		t.Fatal(e)
+	}
+	s.fault = func(stage string) error { t.Fatalf("oversized successor reached persistence: %s", stage); return nil }
+	got, e := s.Update(r)
+	requireCode(t, e, "invalid_record")
+	if !reflect.DeepEqual(got, old) {
+		t.Fatal("rejected successor changed accepted record")
+	}
+	disk, e := os.ReadFile(path)
+	if e != nil || string(disk) != string(b) {
+		t.Fatal("rejected successor changed disk", e)
+	}
+	if e = s.Close(); e != nil {
+		t.Fatal(e)
+	}
+	reopened, e := Open(root, initial(), c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
+	got, e = reopened.Read()
+	if e != nil || !reflect.DeepEqual(got, old) {
+		t.Fatal("reopen lost accepted record", e)
+	}
+}

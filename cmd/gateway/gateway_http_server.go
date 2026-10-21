@@ -218,7 +218,7 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			Config:           gatewayPortalConfigCallbacks(configStore),
+			Config:           gatewayPortalConfigCallbacks(configStore, cfg),
 			GraphQLPath:      cfg.GraphQLPath,
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,

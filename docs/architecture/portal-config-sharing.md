@@ -127,8 +127,15 @@ this record's control in this persistence slice.
 and [configuration API](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/portal/config_api.go)
 derive a bounded plan from desired selections and a snapshot supplied by the
 host-owned `ConfigCallbacks.Bindings` callback. Browser input cannot provide or
-override bindings. A nil callback supplies no available bindings. The plan does
-not open sockets, change routes, apply selections, admit native access or
+override bindings. Production composition snapshots host-configured endpoints:
+local, GraphQL and MCP routes share the HTTP listener owner; the proxy has a
+separate owner. Only provisioned routes receive bindings. Numeric IP endpoints
+with fixed ports supply planning evidence; hostnames, unresolved endpoints and
+unassigned ephemeral ports remain unavailable without DNS or socket probing.
+An empty host is conservatively treated as an IPv6 wildcard. A non-loopback
+HTTP endpoint fails the local binding requirement. This snapshot describes
+configuration, not live readiness. A nil callback supplies no available bindings.
+The plan does not open sockets, change routes, apply selections, admit native access or
 publish outputs. **Unknown**: listener readiness and effective publication;
 planned bindings do not establish either.
 

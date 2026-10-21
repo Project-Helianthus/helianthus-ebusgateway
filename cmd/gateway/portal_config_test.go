@@ -176,6 +176,7 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 			var process *rctlProcess
 			cfg := ebusgateway.DefaultConfig()
 			cfg.PortalConfigRoot = root
+			cfg.HTTPAddr = net.JoinHostPort(net.IPv6loopback.String(), "8080")
 			registry := runtimecontrol.NewRegistry(nil)
 			descriptor, err := newEBusPrimaryDescriptor(runtimecontrol.NativeContractRef{Owner: "example.org/native", Contract: "synthetic", Version: "synthetic"}, ctlSource, newEBusPrimaryLifecycleAdapter(cfg))
 			if err != nil {
@@ -200,7 +201,7 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 				store = openGatewayPortalConfig(cfg, registry)
 				defer func() { _ = store.Close() }()
 				mux := http.NewServeMux()
-				registerHTTPPortalRoutes(mux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store)}, nil)
+				registerHTTPPortalRoutes(mux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)}, nil)
 				handler = mux
 			}
 			request := func(method, route string, body []byte, want int) []byte {
@@ -381,7 +382,7 @@ func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) 
 		t.Fatal(err)
 	}
 	portalMux := http.NewServeMux()
-	registerHTTPPortalRoutes(portalMux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store)}, nil)
+	registerHTTPPortalRoutes(portalMux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)}, nil)
 	entered, release := make(chan struct{}), make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/portal/", func(w http.ResponseWriter, r *http.Request) {
@@ -471,5 +472,104 @@ func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) 
 	got, err := reopened.Read()
 	if err != nil || got.Revision != "1" || !got.Sharing.GraphQL {
 		t.Fatalf("drained PUT was not persisted or writer was not released: %+v, %v", got, err)
+	}
+}
+
+func TestPortalConfigHostListenerPlan(t *testing.T) {
+	endpoint := func(host net.IP, port string) string { return net.JoinHostPort(host.String(), port) }
+	for _, mode := range []string{"cohost", "proxy_collision", "wildcard_local", "empty_host", "ipv6", "hostname", "ephemeral", "missing_routes", "invalid_zone"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.PortalConfigRoot = t.TempDir()
+			cfg.HTTPAddr = endpoint(net.IPv6loopback, "8080")
+			cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8081")
+			wantReason, wantError := "listener_application_pending", ""
+			switch mode {
+			case "proxy_collision":
+				cfg.ProxyListenAddr = cfg.HTTPAddr
+				wantReason, wantError = "listener_collision", "listener_conflict"
+			case "wildcard_local":
+				cfg.HTTPAddr = endpoint(net.IPv4zero, "8080")
+				wantError = "invalid_binding"
+			case "empty_host":
+				cfg.HTTPAddr = net.JoinHostPort("", "8080")
+				wantError = "invalid_binding"
+			case "ipv6":
+				cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8080")
+			case "hostname":
+				cfg.HTTPAddr = net.JoinHostPort("gateway.test", "8080")
+				wantReason = "evidence_unavailable"
+			case "ephemeral":
+				cfg.HTTPAddr = endpoint(net.IPv6loopback, "0")
+				wantReason = "evidence_unavailable"
+			case "missing_routes":
+				cfg.GraphQLPath, cfg.MCPPath, cfg.ProxyListenAddr = "", "", ""
+				wantReason = "evidence_unavailable"
+			case "invalid_zone":
+				cfg.HTTPAddr = net.JoinHostPort(net.IPv6loopback.String()+"%synthetic", "8080")
+				wantReason, wantError = "invalid_binding", "invalid_binding"
+			}
+			store := openGatewayPortalConfig(cfg, nil)
+			defer func() { _ = store.Close() }()
+			callbacks := gatewayPortalConfigCallbacks(store, cfg)
+			if callbacks.Bindings == nil {
+				t.Fatal("gateway omitted host binding callback")
+			}
+			record, err := store.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+			record.AdapterProxy = true
+			plan := portalconfig.DeriveListenerPlan(record, callbacks.Bindings(context.Background()))
+			if plan.Surfaces[1].Reason != wantReason || plan.Surfaces[2].Reason != wantReason {
+				t.Fatalf("host plan: %+v", plan)
+			}
+			if mode == "cohost" || mode == "ipv6" {
+				if len(plan.Conflicts) != 0 || plan.Surfaces[0].Binding == nil || *plan.Surfaces[0].Binding != *plan.Surfaces[1].Binding || *plan.Surfaces[1].Binding != *plan.Surfaces[2].Binding {
+					t.Fatalf("HTTP routes did not cohost: %+v", plan)
+				}
+			}
+			if mode == "missing_routes" {
+				record.Sharing, record.AdapterProxy = portalconfig.Sharing{}, false
+			}
+			body, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := portal.NewHandler(portal.Options{Config: callbacks})
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+			var view struct {
+				Error *portalconfig.Error       `json:"error"`
+				Plan  portalconfig.ListenerPlan `json:"listener_plan"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			if wantError != "" {
+				if response.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != wantError {
+					t.Fatalf("invalid host edit accepted: %d %s", response.Code, response.Body.String())
+				}
+				accepted, err := store.Read()
+				if err != nil || accepted.Revision != "0" || accepted.Sharing.GraphQL || accepted.AdapterProxy {
+					t.Fatalf("rejected edit changed history: %+v, %v", accepted, err)
+				}
+				return
+			}
+			if response.Code != http.StatusOK || view.Error != nil {
+				t.Fatalf("valid host edit rejected: %d %s", response.Code, response.Body.String())
+			}
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil || response.Code != http.StatusOK {
+				t.Fatalf("GET plan failed: %v %s", err, response.Body.String())
+			}
+			for _, surface := range view.Plan.Surfaces {
+				if surface.Effective {
+					t.Fatal("host configuration claimed runtime application", surface)
+				}
+			}
+		})
 	}
 }

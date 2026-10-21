@@ -147,7 +147,7 @@ func TestM29CollisionsAndInvalidBindings(t *testing.T) {
 				wantConflicts = 1
 			case "wildcard":
 				a.AdapterProxy.Port = a.GraphQL.Port
-				a.AdapterProxy.Address = netip.IPv6Loopback()
+				a.AdapterProxy.Address = netip.AddrFrom4([4]byte{127, 0, 0, 1})
 				wantConflicts = 1
 			case "distinct_address":
 				a.AdapterProxy.Port = a.GraphQL.Port
@@ -194,14 +194,65 @@ func TestM29CollisionsAndInvalidBindings(t *testing.T) {
 	}
 }
 
+func TestM29WildcardAddressFamilies(t *testing.T) {
+	r := m29Record()
+	r.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+	v4Loopback := netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	for _, tc := range []struct {
+		name          string
+		first, second netip.Addr
+		collision     bool
+	}{
+		{"ipv4_wildcard_ipv6", netip.IPv4Unspecified(), netip.IPv6Loopback(), false},
+		{"ipv4_wildcard_ipv4", netip.IPv4Unspecified(), v4Loopback, true},
+		{"ipv6_wildcard_ipv4", netip.IPv6Unspecified(), v4Loopback, true},
+		{"ipv6_wildcard_ipv6", netip.IPv6Unspecified(), netip.IPv6Loopback(), true},
+		{"both_wildcards", netip.IPv4Unspecified(), netip.IPv6Unspecified(), true},
+		{"distinct_families", v4Loopback, netip.IPv6Loopback(), false},
+		{"mapped_ipv4_wildcard_ipv6", netip.AddrFrom16(netip.IPv4Unspecified().As16()), netip.IPv6Loopback(), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				a := m29Availability()
+				a.GraphQL.Address, a.MCP.Address = tc.first, tc.second
+				if reverse {
+					a.GraphQL.Address, a.MCP.Address = a.MCP.Address, a.GraphQL.Address
+				}
+				a.GraphQL.Port, a.MCP.Port = 8080, 8080
+				p := portalconfig.DeriveListenerPlan(r, a)
+				want := 0
+				if tc.collision {
+					want = 1
+				}
+				if len(p.Conflicts) != want {
+					t.Fatalf("reverse=%t: conflicts: %+v", reverse, p)
+				}
+				for _, s := range p.Surfaces[1:3] {
+					status, reason := "pending", "listener_application_pending"
+					if tc.collision {
+						status, reason = "withheld", "listener_collision"
+					}
+					if s.Status != status || s.Reason != reason || s.Effective || s.Binding == nil {
+						t.Fatalf("reverse=%t: unexpected surface: %+v", reverse, s)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestM29ConfigAPIValidationAndPending(t *testing.T) {
-	for _, mode := range []string{"ready", "missing", "collision", "invalid"} {
+	for _, mode := range []string{"ready", "missing", "collision", "invalid", "separate_families"} {
 		t.Run(mode, func(t *testing.T) {
 			accepted := m29Record()
 			r := accepted
 			r.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
 			r.AdapterProxy, r.OutputBindings.Matter = true, true
 			a := m29Availability()
+			if mode == "separate_families" {
+				a.GraphQL.Port, a.MCP.Port = 8080, 8080
+				a.MCP.Address = netip.IPv6Loopback()
+			}
 			if mode == "collision" {
 				a.MCP = a.GraphQL
 				a.MCP.Owner = "other"

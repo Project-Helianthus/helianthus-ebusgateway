@@ -107,5 +107,8 @@ func validListenerBinding(b ListenerBinding) bool {
 
 func listenerOverlap(x, y ListenerBinding) bool {
 	// Treat wildcard IPv6 as potentially dual-stack; no socket option is inferred.
-	return x.Port == y.Port && (x.Address == y.Address || x.Address.IsUnspecified() || y.Address.IsUnspecified())
+	wildcardOverlaps := func(wildcard, other netip.Addr) bool {
+		return wildcard.IsUnspecified() && (wildcard.Is6() || other.Is4())
+	}
+	return x.Port == y.Port && (x.Address == y.Address || wildcardOverlaps(x.Address, y.Address) || wildcardOverlaps(y.Address, x.Address))
 }

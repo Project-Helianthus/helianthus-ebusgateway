@@ -33,6 +33,7 @@ type modbusManagedAttempt struct {
 	startupFinalized    bool
 	admission           atomic.Uint32
 	nativeCleanupFailed atomic.Bool
+	cleanupAdapter      atomic.Pointer[modbusadapter.Adapter]
 	nativeGeneration    uint64
 	startupClosed       bool
 	scope               *modbusadapter.PublicationScope
@@ -208,6 +209,8 @@ func (a *modbusManagedAttempt) withdrawn() bool {
 
 func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAttempt) {
 	a.adapter, a.startErr = startModbusRuntimeWithPublication(ctx, driver.config, driver.hub, driver.dial, driver.factory, a.scope)
+	// Publish native close evidence before startup cleanup can block on semantics.
+	a.cleanupAdapter.Store(a.adapter)
 	if a.startErr != nil {
 		return
 	}
@@ -358,10 +361,5 @@ func (driver *modbusManagedDriver) SafetyQuarantined() bool {
 	if a.nativeCleanupFailed.Load() {
 		return true
 	}
-	select {
-	case <-a.started:
-		return a.adapter.NativeCloseUnconfirmed()
-	default:
-		return false
-	}
+	return a.cleanupAdapter.Load().NativeCloseUnconfirmed()
 }

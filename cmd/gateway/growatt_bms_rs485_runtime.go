@@ -176,6 +176,7 @@ type growattBMSRS485ProductionProvider struct {
 	storage      *growattStoragePublication
 	contribution *gatewayPortalContributionLifecycle
 	next         uint64
+	evidenceMu   sync.Mutex
 	last         GrowattBMSRS485ObservationEvidence
 	have         bool
 	lifetime     context.Context
@@ -254,7 +255,9 @@ func (provider *growattBMSRS485ProductionProvider) observeLocked(ctx context.Con
 	if err != nil {
 		return mcp.GrowattBMSRS485V202Observation{}, err
 	}
+	provider.evidenceMu.Lock()
 	provider.last, provider.have = evidence, true
+	provider.evidenceMu.Unlock()
 	return mcp.GrowattBMSRS485V202Observation{Status: status, ReceiptWall: evidence.ReceiptWall}, nil
 }
 
@@ -291,15 +294,15 @@ func (provider *growattBMSRS485ProductionProvider) LastObservationEvidence() (Gr
 	if provider == nil {
 		return GrowattBMSRS485ObservationEvidence{}, false
 	}
-	provider.mu.Lock()
-	defer provider.mu.Unlock()
-	return provider.last.clone(), provider.have
+	return provider.LastObservationEvidenceLocked()
 }
 
 func (provider *growattBMSRS485ProductionProvider) LastObservationEvidenceLocked() (GrowattBMSRS485ObservationEvidence, bool) {
 	if provider == nil {
 		return GrowattBMSRS485ObservationEvidence{}, false
 	}
+	provider.evidenceMu.Lock()
+	defer provider.evidenceMu.Unlock()
 	return provider.last.clone(), provider.have
 }
 

@@ -2,7 +2,9 @@
 
 Status: application contract for [issue #1290](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1290),
 a partial slice of Project #2 INT-06 / INT-07. This specifies subsequent
-composition work for M02–M06. It implements no adapter and activates no family.
+composition work for M02–M06. The Growatt lifecycle wrapper described below
+is implemented for [issue #1305](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1305);
+shared service registration and family activation remain subsequent work.
 
 ## Contract precedence and evidence
 
@@ -128,6 +130,39 @@ runtime must be shut down and its drain accounted for. A rejected replacement
 must also be closed. A slot becoming unavailable proves neither native close
 nor semantic cleanup.
 
+## Growatt lifecycle implementation status
+
+Proven: `newGrowattManagedDriverFactory` constructs an inert wrapper around the
+existing read-only BMS RS-485 family provider. It refuses unsupported profiles;
+construction opens no endpoint. Start validates configuration, admits the source
+before opening, and exposes the provider only after successful construction.
+Disabled or failed starts expose no provider. This wrapper alone does not install
+a descriptor, executor or driver in the shared service, migrate publication to
+the managed recorder, or establish durable recovery or consumer rebinding.
+
+Stop cancels the generation and fences semantic admission before waiting for
+in-flight acquisition or native close. Retained Storage becomes unavailable
+immediately, including when a refresh stalls after a successful publication.
+Native evidence remains retained; a separate evidence lock lets the fence read
+the last completed observation without waiting for transport acquisition.
+Cancelled or late refresh results cannot publish. Stop joins acquisition before
+closing the endpoint once. A caller deadline returns its context error while
+the drain continues; Start refuses a successor until that drain completes.
+Close or fence failure quarantines the wrapper and refuses restart. Replace
+requires successful Stop before Start; a successful restart advances the driver
+generation and rejects calls through the retired provider.
+
+A stop during construction cancels and joins the pending start. If endpoint open
+returns late, the start closes it and withdraws unpublished admission before
+settling. A stop deadline does not prove that open, acquisition or close finished.
+Unknown: physical-device behavior; the deterministic injected-endpoint tests
+exercise software cancellation, retained-state withdrawal, late results, timing,
+admission and close failure without qualifying an installation.
+
+The offline Modbus RTU transport gate classifies the managed wrapper and runs
+all `TestM04` fixtures alongside the existing composition and native endpoint
+conformance tests. These fixtures do not establish shared-service activation.
+
 ## Lifecycle rules reused unchanged
 
 | Rule | Existing API and behavior | Sidecar obligation |
@@ -188,7 +223,7 @@ and native qualification; no status read opens an endpoint.
 | Family | Provider availability (software evidence) | Native qualification | Actual composition after G5 / activation boundary |
 | --- | --- | --- | --- |
 | SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Existing startup sidecar, not a managed service registration. Managed attachment is Hypothesis until implemented and reviewed. |
-| Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Existing startup sidecar; managed attachment and managed recovery are subsequent work. No Protocol II or CAN inference. |
+| Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration, durable recovery and consumer rebinding remain subsequent work. No Protocol II or CAN inference. |
 | eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Existing sidecar lifecycle; generic managed registration and semantic admission are not established here. |
 | Huawei SmartLogger | Typed/injected-provider contracts exist; availability alone is insufficient. | Unknown for an unprovisioned peer/profile. | Withheld: no activation without its own accepted evidence and composition decision. |
 | Huawei EMMA | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld; SunSpec or SmartLogger evidence cannot activate it. |

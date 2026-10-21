@@ -124,6 +124,7 @@ requires_modbus_rtu_transport_gate() {
 	cmd/gateway/gateway_http_server.go|\
 	cmd/gateway/gateway_run_setup.go|\
     cmd/gateway/growatt_bms_rs485_runtime.go|\
+    cmd/gateway/growatt_managed_driver.go|\
 	cmd/gateway/tesla_hsc_retained_owner.go|\
 	cmd/gateway/growatt_storage_semreg.go|\
 	cmd/gateway/m2m_graphql_runtime.go|\
@@ -165,7 +166,7 @@ run_modbus_rtu_transport_gate() {
   )
   echo "transport gate: Modbus RTU production conformance."
   if ! GOWORK=off go test ./cmd/gateway \
-    -run 'Test(GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
+    -run 'Test(M04|GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
     echo "transport gate: FAIL — Modbus RTU gateway composition evidence failed."
     return 1
   fi

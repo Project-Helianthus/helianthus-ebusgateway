@@ -205,7 +205,7 @@ type m04LateEndpoint struct {
 }
 
 func (endpoint *m04LateEndpoint) Read(ctx context.Context, unit byte, request modbus.ReadRegistersRequest) (modbus.ReadRegistersResponse, modbus.RTUReadEvidence, error) {
-	if request.Offset() == 0x010d {
+	if request.Offset() == 0x010d && endpoint.entered != nil {
 		close(endpoint.entered)
 		<-endpoint.release
 	}
@@ -362,5 +362,90 @@ func TestM04SemanticWithdrawalPrecedesNativeCloseAndFailureQuarantines(t *testin
 	}
 	if _, err := driver.Start(ctx); !errors.Is(err, endpoint.err) {
 		t.Fatalf("unconfirmed close allowed successor: %v", err)
+	}
+}
+
+func TestM04StopWithdrawsRetainedStorageBeforeStalledRefreshDrains(t *testing.T) {
+	endpoint := &m04LateEndpoint{growattEndpointFake: &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := driver.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	if _, err := provider.SemanticStorageCurrent(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); !ok {
+		t.Fatal("initial storage not admitted")
+	}
+	before, ok := provider.LastObservationEvidence()
+	if !ok {
+		t.Fatal("initial native evidence missing")
+	}
+	endpoint.entered, endpoint.release = make(chan struct{}), make(chan struct{})
+	result := make(chan error, 1)
+	go func() { _, err := provider.SemanticStorageCurrent(context.Background()); result <- err }()
+	released := false
+	defer func() {
+		if !released {
+			close(endpoint.release)
+		}
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-endpoint.entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(short) }()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stop=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("withdrawal blocked on stalled refresh")
+	}
+	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
+		t.Fatal("retained storage remained admitted after timed-out stop")
+	}
+	if _, ok := driver.Provider(); ok {
+		t.Fatal("retired provider still exposed")
+	}
+	if _, err := driver.Start(ctx); !errors.Is(err, drivermanager.ErrUnavailable) {
+		t.Fatalf("restart during drain=%v", err)
+	}
+	endpoint.mu.Lock()
+	closed := endpoint.closed
+	endpoint.mu.Unlock()
+	if closed != 0 {
+		t.Fatal("endpoint closed before refresh drained")
+	}
+	close(endpoint.release)
+	released = true
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("late refresh=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := driver.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, ok := provider.LastObservationEvidence()
+	if !ok || after.ObservationID != before.ObservationID {
+		t.Fatal("withdrawal lost or replaced retained native evidence")
+	}
+	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
+		t.Fatal("late refresh restored admission")
 	}
 }

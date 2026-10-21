@@ -182,10 +182,11 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		driver.current.Store(nil)
 		driver.draining = make(chan struct{})
 		done := driver.draining
+		// Withdraw retained semantic visibility before waiting for native work.
+		fenceErr := driver.fence(handle, provider)
 		go func() {
 			_ = provider.acquire(context.Background())
 			provider.release()
-			fenceErr := driver.fence(handle, provider)
 			closeErr := provider.Close()
 			driver.mu.Lock()
 			driver.drainErr = errors.Join(closeErr, fenceErr)

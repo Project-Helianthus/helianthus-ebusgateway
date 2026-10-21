@@ -2,17 +2,26 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
+	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
 
@@ -312,5 +321,115 @@ func TestM06FailedEEBusWithholdsCapture(t *testing.T) {
 	}
 	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
 		t.Fatal("failed runtime admitted evidence or leaf capture")
+	}
+}
+
+func TestM06DisabledEEBusSurfaceIsDiscoverableAndFailsClosed(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.EEBusConfig.Enabled = false
+	hub, err := preflightSemanticHub(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecars := prepareManagedSidecars(context.Background(), cfg, hub, rctlGUID, nil)
+	bindings := &managedSidecarBindings{sidecars: sidecars}
+	entry := bindings.entry(managedEEBusID)
+	if entry == nil || entry.runtime != nil || entry.descriptor.Disposition != runtimecontrol.DispositionDisabled {
+		t.Fatal("disabled eeBUS constructed a runtime or lost its descriptor")
+	}
+	adapter := &eebusRuntimeAdapter{managed: bindings}
+	server, err := mcp.NewServer(registry.NewDeviceRegistry(nil), &rctlCountingInvoker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RegisterEEBusV1Provider(eebusMCPProvider(adapter)); err != nil {
+		t.Fatal(err)
+	}
+	router := eebusMCPCommandRouter(adapter)
+	if err := server.RegisterEEBusV1CommandRouter(router); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(rctlRPCBody("tools/list", "")))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	result, rpcErr := rctlDecodeRPC(t, response.Body.Bytes())
+	if rpcErr != nil {
+		t.Fatalf("tools/list: %+v", rpcErr)
+	}
+	var listed struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &listed); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tool := range listed.Tools {
+		if strings.HasPrefix(tool.Name, "eebus.v1.") {
+			got = append(got, tool.Name)
+		}
+	}
+	want := []string{
+		"eebus.v1.runtime.status.get", "eebus.v1.services.list", "eebus.v1.services.get",
+		"eebus.v1.sessions.list", "eebus.v1.sessions.get", "eebus.v1.topology.get",
+		"eebus.v1.snapshot.capture", "eebus.v1.snapshot.drop", "eebus.v1.pairing.status.get",
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("disabled eeBUS tools = %v; want %v", got, want)
+	}
+	for _, command := range []eebusraw.ToolV1{eebusraw.ToolV1FeaturesGet, eebusraw.ToolV1FeaturesDataGet, eebusraw.ToolV1FeaturesDataSet, eebusraw.ToolV1MutationsGet, eebusraw.ToolV1MutationsRollback} {
+		for _, name := range got {
+			if name == string(command) {
+				t.Fatalf("operator tool %s leaked into public discovery", command)
+			}
+		}
+	}
+	request = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(rctlRPCBody("tools/call", rctlCallParams("eebus.v1.services.list", `{}`))))
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	result, rpcErr = rctlDecodeRPC(t, response.Body.Bytes())
+	if rpcErr != nil {
+		t.Fatalf("disabled public read: %+v", rpcErr)
+	}
+	var call struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(result, &call); err != nil || !call.IsError || len(call.Content) != 1 {
+		t.Fatalf("disabled read response = %s, %v", result, err)
+	}
+	var envelope struct {
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(call.Content[0].Text), &envelope); err != nil || envelope.Error == nil || envelope.Error.Code != "backend_unavailable" {
+		t.Fatalf("disabled read envelope = %s, %v", call.Content[0].Text, err)
+	}
+	if _, err := adapter.Snapshot(); !errors.Is(err, drivermanager.ErrUnavailable) {
+		t.Fatalf("disabled read error = %v", err)
+	}
+	_, terminal := router.FeaturesDataSet(context.Background(), eebusraw.WriteAuthorizationV1{}, eebusraw.FeatureDataSetRequestV1{})
+	if terminal == nil || terminal.Code != eebusraw.ErrorCodeV1Disconnected {
+		t.Fatalf("disabled mutation error = %+v", terminal)
+	}
+	_, terminal = router.MutationsRollback(context.Background(), eebusraw.WriteAuthorizationV1{}, eebusraw.MutationRollbackRequestV1{})
+	if terminal == nil || terminal.Code != eebusraw.ErrorCodeV1Disconnected {
+		t.Fatalf("disabled rollback error = %+v", terminal)
+	}
+	if promoted := newEEBusPromotedSemanticProvider(adapter); promoted == nil || !reflect.DeepEqual(promoted.Overlay(), graphql.PromotedSemanticOverlay{}) {
+		t.Fatal("disabled managed GraphQL overlay is missing or nonempty")
+	}
+	oneShot, err := newSynchronizedEvidenceOneShotRuntime(true, adapter, router, gatewayBuildInfo{})
+	if err != nil || oneShot == nil {
+		t.Fatalf("disabled one-shot registration = %v, %v", oneShot, err)
+	}
+	if bindings.eebusAvailable() || entry.runtime != nil {
+		t.Fatal("surface discovery or a call started disabled eeBUS")
 	}
 }

@@ -4,7 +4,43 @@ Status: application contract for [issue #1290](https://github.com/Project-Helian
 a partial slice of Project #2 INT-06 / INT-07. This specifies subsequent
 composition work for M02–M06. The Growatt lifecycle wrapper described below
 is implemented for [issue #1305](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1305);
-shared service registration and family activation remain subsequent work.
+shared service registration is composed for
+[issue #1319](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1319)
+as described below. Physical family activation remains Unknown.
+
+## Gateway registration and consumer behavior
+
+Proven: [issue #1319](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1319)
+composes the three sidecars through the shared registry, native manager and
+durable service. Disabled entries remain visible without constructing native
+runtimes. Consumer bindings acquire only the current admitted generation.
+
+The managed eeBUS shell intentionally registers its read and command-router
+MCP bindings even when eeBUS is disabled, stopped or unavailable. This changes the
+previous eager-start behavior, which omitted these tools without a started
+runtime. Discovery does not grant native admission: live reads return
+`backend_unavailable` and the command router returns `disconnected` while no
+generation is admitted. Existing request authorization, trust and mutation
+safeguards still apply. The disabled-case M06 fixture pins the complete eeBUS
+public list of nine read/evidence tools, excludes the five operator-only raw
+command tools from that list, and checks unavailable reads, mutations and
+rollback without native construction. The managed GraphQL compatibility
+overlay is composed but empty without admitted observations. When explicitly enabled, synchronized one-shot
+evidence also retains the managed provider and router; registration alone does
+not establish evidence availability. Portal readiness reads the managed
+lifecycle snapshot rather than a retained eager runtime.
+
+`prepareManagedSidecars` registers `ebus.primary` before assembling the shared
+manager. `composeEBusPrimary` accepts that same descriptor when identical;
+conflicting registrations still fail. The retained Tesla HSC owner starts after
+the runtime control service, and its shutdown remains in reverse acquisition
+order. Native sidecar work and consumer leases belong to their managed
+generations rather than duplicate eager shutdown calls.
+
+Unknown: physical transport behavior and qualification. The offline RTU gate
+currently selects `TestRTUProduction`; it does not select `TestM06`. M06 fixtures
+are run separately. Adding them to the gate remains an unmet merge requirement,
+not a delivered gate change or transport result.
 
 ## Contract precedence and evidence
 
@@ -50,10 +86,11 @@ The compiled registry lives in
 
 The existing production example is `composeEBusPrimary` in
 [`gateway_run_setup.go`](../../cmd/gateway/gateway_run_setup.go). It binds
-manager hooks before startup and registers only `ebus.primary`. Its typed
-factory returns the already prepared native runtime wrapper; registry
-acceptance alone does not connect the service to a family. There is no
-universal sidecar implementation to call today.
+manager hooks before startup and accepts the identical `ebus.primary`
+descriptor registered by `prepareManagedSidecars`. Its typed factory returns
+the already prepared native runtime wrapper; registry acceptance alone does
+not connect the service to a family. The gateway explicitly composes the
+three family bindings described above; reserved hooks remain unavailable.
 
 ## Adapter inputs, outputs and ownership
 

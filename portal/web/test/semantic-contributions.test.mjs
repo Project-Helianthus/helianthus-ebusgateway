@@ -49,7 +49,7 @@ function harness() {
     return await next;
   } };
   vm.createContext(sandbox);
-  vm.runInContext(`${source}\nglobalThis.Shell = PortalShell; globalThis.readQuery = PORTAL_SEMANTIC_QUERY;`, sandbox);
+  vm.runInContext(`${source}\nglobalThis.Shell = PortalShell; globalThis.readQuery = PORTAL_SEMANTIC_QUERY; globalThis.renderCards = semanticContributionCards;`, sandbox);
   const shell = new sandbox.Shell(); shell.isConnected = true;
   shell.querySelector = (selector) => elements.get(selector.match(/data-role="([^"]+)"/)?.[1]) || null;
   shell.querySelectorAll = () => [];
@@ -58,7 +58,7 @@ function harness() {
   shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
   shell.bindEvents();
   const respond = (data) => queue.push({ ok: true, json: async () => ({ data }) });
-  return { shell, list, notice, button, search, document, requests, queue, query: sandbox.readQuery, deadline: () => deadlines.at(-1)(),
+  return { shell, list, notice, button, search, document, requests, queue, renderCards: sandbox.renderCards, query: sandbox.readQuery, deadline: () => deadlines.at(-1)(),
     pair(f = fixture()) { respond({ portalCatalogV1: f.catalog }); respond({ semanticSnapshot: { assets: f.assets } }); },
     refresh: () => shell.loadSemanticPreview(list),
   };
@@ -482,3 +482,62 @@ for (const field of ["binding_id", "source_epoch_id", "driver_generation"]) {
     else assert.match(h.list.innerHTML, /Power: withheld/);
   });
 }
+
+function repeatViews(f, count) {
+  const descriptor = f.catalog.descriptors[0], view = descriptor.views[0];
+  descriptor.views = Array.from({ length: count }, (_, order) => ({ ...clone(view), id: `view:${order}`, order }));
+}
+
+test("M23 semantic expansion fits the node budget at its boundary", async () => {
+  const h = harness(), f = fixture(1);
+  repeatViews(f, 36);
+  h.pair(f); assert.equal(await h.refresh(), true);
+  // Each card has three nodes; each view has seven paragraph/text pairs.
+  assert.equal((h.list.innerHTML.match(/<p>/g) || []).length, 252);
+});
+
+for (const shape of ["repeated views", "repeated fields", "many facts", "many projections", "many diagnostics", "multiple resources"]) {
+  test(`M23 semantic expansion rejects ${shape} beyond the node budget`, async () => {
+    const h = harness(), f = fixture(shape === "multiple resources" ? 2 : 1);
+    const descriptor = f.catalog.descriptors[0], asset = f.assets[0];
+    if (shape === "repeated views") repeatViews(f, 37);
+    if (shape === "repeated fields") {
+      descriptor.fields = Array.from({ length: 512 }, (_, order) => ({ ...clone(descriptor.fields[0]), id: `field:${order}`, order }));
+      descriptor.views[0].field_ids = descriptor.fields.map((field) => field.id);
+      repeatViews(f, 64);
+    }
+    if (shape === "many facts") asset.snapshot.facts = Array.from({ length: 64 }, () => clone(asset.snapshot.facts[0]));
+    if (shape === "many projections") asset.projection.dispositions = Array.from({ length: 256 }, () => clone(asset.projection.dispositions[0]));
+    if (shape === "many diagnostics") {
+      descriptor.diagnostics = Array.from({ length: 64 }, (_, order) => ({ id: `diagnostic:${order}`, label: { default: "Diagnostic" }, kind: "fixture", member_id: "fixture", order }));
+      descriptor.views[0].diagnostic_ids = descriptor.diagnostics.map((row) => row.id);
+      repeatViews(f, 4);
+    }
+    if (shape === "multiple resources") repeatViews(f, 36);
+    assert.ok(JSON.stringify(f).length < 4 * 1024 * 1024);
+    h.pair(f); assert.equal(await h.refresh(), false);
+    assert.equal(h.shell._semanticHasValid, undefined);
+    assert.doesNotMatch(h.list.innerHTML, /portal-catalog-resource|Power:|Quality:|Provenance:/);
+    assert.match(h.notice.textContent, /unavailable/i);
+  });
+}
+
+test("M23 oversized semantic expansion retains historical cards", async () => {
+  const h = harness(), f = fixture(1);
+  h.pair(f); assert.equal(await h.refresh(), true);
+  const previous = h.list.innerHTML;
+  repeatViews(f, 37);
+  h.pair(f); assert.equal(await h.refresh(), false);
+  assert.equal(h.list.innerHTML, previous);
+  assert.match(h.notice.textContent, /historical last valid/);
+});
+
+test("M23 semantic budget is checked before value and audit row formatting", () => {
+  const h = harness(), f = fixture(1);
+  repeatViews(f, 37);
+  let formatted = 0;
+  Object.defineProperty(candidate(f), "value", { get() { formatted++; return { kind: "text", text: "value" }; } });
+  Object.defineProperty(candidate(f), "evidence", { get() { formatted++; return []; } });
+  assert.throws(() => h.renderCards(f.catalog, f.assets), /semantic render node budget exceeded/);
+  assert.equal(formatted, 0);
+});

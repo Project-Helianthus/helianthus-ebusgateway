@@ -8,6 +8,7 @@ const PORTAL_CATALOG_MAX_ACTIONS = 64;
 const PORTAL_CATALOG_MAX_QUARANTINES = 64;
 const PORTAL_CATALOG_MAX_TEXT = 512;
 const PORTAL_CATALOG_MAX_NODES = 512;
+const PORTAL_SEMANTIC_MAX_NODES = 512;
 const PORTAL_CATALOG_MAX_EVIDENCE_PAGE_ROWS = 128;
 const PORTAL_CATALOG_MAX_QUALITY_CANDIDATES = 8;
 const PORTAL_CATALOG_TIMEOUT_MS = 5000;
@@ -979,30 +980,41 @@ function semanticContributionCards(catalog, assets) {
   }
   const byAsset = new Map(assets.map((asset) => [asset.asset_id, asset]));
   const order = (a, b) => a.order - b.order || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const html = [];
+  const cards = [];
+  let nodes = 0;
+  const reserveNodes = (count) => {
+    nodes += count;
+    if (nodes > PORTAL_SEMANTIC_MAX_NODES) throw new Error("semantic render node budget exceeded");
+  };
   for (const resource of catalog.resources) {
     const descriptor = descriptors.get(catalogContributionKey(resource));
     if (!descriptor) throw new Error("missing admitted descriptor");
     const asset = byAsset.get(resource.source.asset_id);
     const identity = `${descriptor.driver_id}/${descriptor.manifest_id}@${descriptor.manifest_version}`;
+    // Plan the entire expansion before formatting values or constructing HTML.
+    reserveNodes(3); // Card, heading and heading text.
     const rows = [];
-    if (asset.unavailable_reason) rows.push(`unavailable: ${asset.unavailable_reason}`);
+    const addRow = (render) => {
+      reserveNodes(2); // Paragraph and text, including empty rows conservatively.
+      rows.push(render);
+    };
+    if (asset.unavailable_reason) addRow(() => `unavailable: ${asset.unavailable_reason}`);
     else {
       const groups = descriptor.groups.filter((group) => group.resource_context === resource.id).sort(order);
       const views = groups.flatMap((group) => descriptor.views.filter((view) => view.group === group.id).sort(order));
       for (const view of views) {
         if (!["summary", "field_table", "state_strip"].includes(view.renderer)) {
-          rows.push("unsupported contribution view");
+          addRow(() => "unsupported contribution view");
           continue;
         }
-        rows.push(view.label?.default || view.id);
+        addRow(() => view.label?.default || view.id);
         for (const field of descriptor.fields.filter((field) => view.field_ids.includes(field.id) &&
           field.ref.pack.id === resource.domain && field.service_ref?.pack.id === resource.domain &&
           field.capability_ref?.pack.id === resource.domain && field.service_ref.id === resource.service_id &&
           field.capability_ref.id === resource.capability_id).sort(order)) {
           const prefix = field.label?.default || field.id;
           const facts = asset.snapshot.facts.filter((fact) => fact.key.pack_id === field.ref.pack.id && fact.key.pack_version === field.ref.pack.version && fact.key.fact_id === field.ref.id);
-          if (!facts.length) rows.push(`${prefix}: unknown`);
+          if (!facts.length) addRow(() => `${prefix}: unknown`);
           for (const fact of facts) {
             const key = semanticKey(fact.key);
             const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);
@@ -1019,26 +1031,25 @@ function semanticContributionCards(catalog, assets) {
             // a presentation selection cannot promote its own audit-only candidate.
             const eligible = candidate?.quality?.qualification === "qualified" && candidate.quality.promotion === "promoted" && ["good", "suspect"].includes(candidate.quality.validity);
             const readable = eligible && dispositions.length === 1 && ["exact", "transformed"].includes(dispositions[0].outcome) && evaluation && ["available", "degraded"].includes(evaluation.effective_availability) && ["fresh", "stale"].includes(evaluation.freshness);
-            const value = readable ? formatContributionValue(candidate?.value) : "withheld";
-            rows.push(`${prefix}: ${value}; key=${key}; freshness=${evaluation?.freshness || "unknown"}; availability=${evaluation?.effective_availability || "unknown"}${evaluation?.freshness === "stale" ? "; historical" : ""}`);
+            addRow(() => `${prefix}: ${readable ? formatContributionValue(candidate?.value) : "withheld"}; key=${key}; freshness=${evaluation?.freshness || "unknown"}; availability=${evaluation?.effective_availability || "unknown"}${evaluation?.freshness === "stale" ? "; historical" : ""}`);
             if (candidate) {
-              rows.push(`Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
+              addRow(() => `Quality: ${semanticKey(candidate.quality)}; candidate=${candidate.candidate_id}; revision=${candidate.revision}`);
               const { binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation } = candidate;
-              rows.push(`Provenance: ${semanticKey({ binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation })}`);
-              rows.push(`Evidence: ${semanticKey(candidate.evidence || [])}`);
+              addRow(() => `Provenance: ${semanticKey({ binding_id, source_epoch_id, driver_generation, origin, causal, times, derivation })}`);
+              addRow(() => `Evidence: ${semanticKey(candidate.evidence || [])}`);
             }
-            rows.push(`Conflicts: ${semanticKey(fact.conflicts || [])}`);
-            for (const disposition of dispositions) rows.push(`Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
-            if (!dispositions.length) rows.push("Projection: unknown");
+            addRow(() => `Conflicts: ${semanticKey(fact.conflicts || [])}`);
+            for (const disposition of dispositions) addRow(() => `Projection: ${disposition.outcome}; reason=${disposition.reason || "none"}; loss=${semanticKey(disposition.loss)}`);
+            if (!dispositions.length) addRow(() => "Projection: unknown");
           }
         }
-        for (const diagnostic of [...descriptor.diagnostics].filter((row) => view.diagnostic_ids.includes(row.id)).sort(order)) rows.push(`Diagnostic: ${diagnostic.label.default}; kind=${diagnostic.kind}; member=${diagnostic.member_id}`);
+        for (const diagnostic of [...descriptor.diagnostics].filter((row) => view.diagnostic_ids.includes(row.id)).sort(order)) addRow(() => `Diagnostic: ${diagnostic.label.default}; kind=${diagnostic.kind}; member=${diagnostic.member_id}`);
       }
-      if (asset.snapshot.retained_observations?.length) rows.push("Retained observations are historical; inspect the native evidence and catalog details.");
+      if (asset.snapshot.retained_observations?.length) addRow(() => "Retained observations are historical; inspect the native evidence and catalog details.");
     }
-    html.push(`<li class="portal-catalog-resource"><strong>${escapeHtml(identity)} — ${escapeHtml(resource.id)}</strong>${rows.map((row) => `<p>${escapeHtml(row)}</p>`).join("")}</li>`);
+    cards.push(() => `<li class="portal-catalog-resource"><strong>${escapeHtml(identity)} — ${escapeHtml(resource.id)}</strong>${rows.map((render) => `<p>${escapeHtml(render())}</p>`).join("")}</li>`);
   }
-  return html.join("") || "<li>No admitted semantic contributions.</li>";
+  return cards.map((render) => render()).join("") || "<li>No admitted semantic contributions.</li>";
 }
 
 function formatInteger(value) {

@@ -142,6 +142,13 @@ lifecycle fences. Native evidence remains with its owner; an evidence reference
 is not permission to retrieve its body. Native interpretation requires its
 public native documentation first; this interface defines no native facts.
 
+Contribution cards plan the complete expansion before formatting rows or building
+HTML, with a shared budget of 512 DOM nodes across all resources. Card headings,
+view labels, fact and audit rows, projections, diagnostics and unavailable or
+historical notices all consume that budget, including repeated references.
+An oversized expansion fails closed through the unavailable-read path; a prior
+valid view remains explicitly historical.
+
 Contribution cards restrict view fields to the resource's domain, service and
 capability: the field, service and capability pack IDs must match the domain,
 and the service and capability IDs must match the resource. View membership

@@ -291,6 +291,37 @@ test("PortalShell semantic refresh fails closed without shared-read bootstrap me
   assert.deepEqual(fetchRequests, []);
 });
 
+test("PortalShell reattachment rejects semantic Refresh until bootstrap succeeds", async () => {
+  const sourcePath = fileURLToPath(new URL("../src/app.js", import.meta.url));
+  const source = await readFile(sourcePath, "utf8");
+  let failBootstrap = false;
+  const { shell, fetchRequests } = createPortalShellHarness({ source, sourcePath, elements: new Map(), fetchImpl(url) {
+    if (url === "api/v1/bootstrap" && failBootstrap) throw new Error("synthetic bootstrap failure");
+    return Promise.resolve({ ok: true, json: async () => url === "api/v1/health" ? { status: "ok" } : {
+      capabilities: {}, endpoints: { graphql: "/fixture/graphql", portal_catalog: "/fixture/catalog" },
+      portal_read: { snapshot_operation: "semanticSnapshot", unavailable_operations: [] },
+    } });
+  } });
+  shell.beginBootstrapLifecycle();
+  await shell.loadStatus();
+  assert.equal(shell._portalRead.snapshot_operation, "semanticSnapshot");
+  shell.endBootstrapLifecycle();
+  shell.beginBootstrapLifecycle();
+  const list = { innerHTML: "<li>historical fixture</li>" };
+  shell._semanticHasValid = true;
+  failBootstrap = true;
+  await shell.loadStatus();
+  const before = fetchRequests.length;
+  assert.equal(await shell.loadSemanticPreview(list), false);
+  assert.equal(fetchRequests.length, before, "failed bootstrap must not authorize either shared read");
+  assert.equal(list.innerHTML, "<li>historical fixture</li>");
+  failBootstrap = false;
+  await shell.loadStatus();
+  assert.equal(shell._portalRead.snapshot_operation, "semanticSnapshot");
+  await shell.loadSemanticPreview(list);
+  assert.equal(fetchRequests.at(-1), "/fixture/catalog", "successful new bootstrap restores shared-read admission");
+});
+
 test("PortalShell contribution controls expose loading and error announcements", async () => {
   const source = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
   const semantic = source.slice(source.indexOf('<section id="section-semantic"'), source.indexOf('<section id="section-bus"'));
@@ -350,8 +381,8 @@ async function renderSemanticContributionFixture(fixture) {
   });
   shell._portalCatalogEndpoint = "/fixture/catalog";
   shell._semanticGraphqlEndpoint = "/fixture/graphql";
-  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
   const token = shell.beginBootstrapLifecycle();
+  shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
   const render = shell.loadSemanticPreview(semanticList, token, shell.bootstrapLifecycleAbort);
   catalog.resolve();
   snapshot.resolve();

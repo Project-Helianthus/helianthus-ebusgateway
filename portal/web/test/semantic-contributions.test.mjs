@@ -54,8 +54,9 @@ function harness() {
   shell.querySelector = (selector) => elements.get(selector.match(/data-role="([^"]+)"/)?.[1]) || null;
   shell.querySelectorAll = () => [];
   shell._portalCatalogEndpoint = "/fixture/catalog"; shell._semanticGraphqlEndpoint = "/fixture/graphql";
+  shell.beginBootstrapLifecycle();
   shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
-  shell.beginBootstrapLifecycle(); shell.bindEvents();
+  shell.bindEvents();
   const respond = (data) => queue.push({ ok: true, json: async () => ({ data }) });
   return { shell, list, notice, button, search, document, requests, queue, query: sandbox.readQuery, deadline: () => deadlines.at(-1)(),
     pair(f = fixture()) { respond({ portalCatalogV1: f.catalog }); respond({ semanticSnapshot: { assets: f.assets } }); },
@@ -116,6 +117,26 @@ test("M23 read error announces historical retained cards and preserves Refresh f
   assert.match(h.notice.textContent, /loaded/); assert.equal(h.document.activeElement, h.button);
 });
 
+test("M23 pending refresh keeps retained fresh-source cards explicitly historical", async () => {
+  const h = harness(); h.pair(); assert.equal(await h.refresh(), true);
+  const previous = h.list.innerHTML;
+  assert.match(previous, /freshness=fresh/);
+  h.queue.push(new Error("synthetic failure"));
+  assert.equal(await h.refresh(), false);
+  assert.match(h.notice.textContent, /historical last valid/);
+  let complete;
+  h.queue.push(new Promise((resolve) => { complete = resolve; }));
+  const pending = h.refresh();
+  assert.equal(h.list.innerHTML, previous);
+  assert.equal(h.list.attributes["aria-busy"], "true");
+  assert.match(h.notice.textContent, /Loading.*historical last valid/);
+  complete({ ok: false });
+  assert.equal(await pending, false);
+  assert.match(h.notice.textContent, /failed.*historical last valid/);
+  h.pair(); assert.equal(await h.refresh(), true);
+  assert.doesNotMatch(h.notice.textContent, /historical/);
+});
+
 for (const failure of ["HTTP", "timeout", "malformed response"]) test(`M23 reattachment retains historical cards after ${failure}`, async () => {
   const h = harness(), f = fixture(1);
   h.pair(f); assert.equal(await h.refresh(), true);
@@ -126,6 +147,7 @@ for (const failure of ["HTTP", "timeout", "malformed response"]) test(`M23 reatt
   } });
   h.shell.endBootstrapLifecycle();
   h.shell.beginBootstrapLifecycle();
+  h.shell._portalRead = { snapshot_operation: "semanticSnapshot", unavailable_operations: [] };
   h.shell.render();
   assert.equal(h.list.innerHTML, previous);
   assert.equal(h.shell._semanticHasValid, true);

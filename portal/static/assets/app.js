@@ -1193,6 +1193,7 @@ class PortalShell extends HTMLElement {
   }
 
   beginBootstrapLifecycle() {
+    this._portalRead = undefined;
     if (this.bootstrapLifecycleAbort) {
       this.bootstrapLifecycleAbort.abort();
     }
@@ -2751,7 +2752,7 @@ class PortalShell extends HTMLElement {
     const request = beginPortalCatalogRequestAbort(lifecycleAbort);
     this._semanticRequestAbort = request;
     listEl.setAttribute?.("aria-busy", "true");
-    announce("Loading semantic contributions. Live updates unavailable; use Refresh.");
+    announce(`Loading semantic contributions.${this._semanticHasValid ? " Showing historical last valid contributions." : ""} Live updates unavailable; use Refresh.`);
     let conflict = false;
     try {
       const unavailable = this._portalRead?.unavailable_operations;

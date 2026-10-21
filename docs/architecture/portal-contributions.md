@@ -349,7 +349,10 @@ Reconnect only to the same advertised URL, preserving prefix and query policy.
 
 Component reattachment preserves previous valid semantic cards as historical while
 the new bootstrap and refresh run. A refresh failure retains those cards; a
-successful replacement or a conflict/limit result replaces them.
+successful replacement or a conflict/limit result replaces them. Every pending
+refresh keeps retained cards explicitly marked historical, including when their
+source freshness is fresh. A new lifecycle clears shared-read authorization;
+Refresh issues no shared reads until its bootstrap supplies that authorization.
 
 Structured GraphQL errors with `extensions.code` of `CONFLICT` or
 `RESOURCE_EXHAUSTED` use the no-values conflict/limit state, including after a

@@ -321,7 +321,7 @@ function createSemanticContributionFixture(resources) {
     for (const [label, value, unavailable = false] of fields) {
       const fieldId = `${id}.${label}`;
       const key = { pack_id: pack.id, pack_version: pack.version, fact_id: fieldId, dimensions: [] };
-      const candidate = { candidate_id: `candidate:${fieldId}`, revision: "1", key, value, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: unavailable ? "unavailable" : "available", reasons: [] } };
+      const candidate = { binding_id: binding.binding_id, source_epoch_id: binding.source_epoch_id, driver_generation: binding.driver_generation, candidate_id: `candidate:${fieldId}`, revision: "1", key, value, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: unavailable ? "unavailable" : "available", reasons: [] } };
       snapshot.facts.push({ key, candidates: [candidate], conflicts: [] });
       asset.evaluation.facts.push({ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: candidate.quality.availability });
       asset.projection.dispositions.push({ kind: "fact", item_id: fieldId, outcome: "exact", source_keys: [key], loss: [] });

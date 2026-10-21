@@ -142,6 +142,10 @@ lifecycle fences. Native evidence remains with its owner; an evidence reference
 is not permission to retrieve its body. Native interpretation requires its
 public native documentation first; this interface defines no native facts.
 
+Contribution cards first filter candidates by the resource's exact binding ID,
+source epoch and decimal-string driver generation, for both default choices and
+explicit selections. A selection outside that source tuple withholds the value
+without falling back to a matching sibling.
 Contribution cards check the selected candidate itself: qualification must be
 `qualified`, promotion `promoted`, and validity `good` or `suspect`, in addition
 to the shared evaluation and projection checks. A presentation selection cannot

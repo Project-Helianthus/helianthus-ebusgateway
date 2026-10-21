@@ -1002,7 +1002,9 @@ function semanticContributionCards(catalog, assets) {
           for (const fact of facts) {
             const key = semanticKey(fact.key);
             const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);
-            const selected = selections.length === 1 ? fact.candidates.filter((candidate) => candidate.candidate_id === selections[0].selected_candidate && candidate.revision === selections[0].candidate_revision) : fact.candidates;
+            const candidates = fact.candidates.filter((candidate) => candidate.binding_id === resource.source.binding_id &&
+              candidate.source_epoch_id === resource.source.source_epoch && candidate.driver_generation === resource.source.driver_generation);
+            const selected = selections.length === 1 ? candidates.filter((candidate) => candidate.candidate_id === selections[0].selected_candidate && candidate.revision === selections[0].candidate_revision) : candidates;
             const candidate = selections.length <= 1 && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
             const evaluation = candidate && asset.evaluation.facts.find((entry) => entry.candidate_id === candidate.candidate_id && entry.candidate_revision === candidate.revision);
             const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id && entry.source_keys.some((source) => semanticKey(source) === key));

@@ -22,7 +22,7 @@ function fixture(count = 6) {
     const key = { pack_id: ref.pack.id, pack_version: ref.pack.version, fact_id: ref.id, dimensions: [] };
     const revisions = { semantic: "1", identity: "2", facts: "3", services: "4", capabilities: "5" };
     const binding = { binding_id: "binding:fixture", source_epoch_id: "epoch:fixture", driver_generation: (2n ** 53n + 1n).toString(), asset_id: `asset:fixture:${i}`, state: "current" };
-    const candidate = { candidate_id: "candidate:fixture", revision: "7", key: clone(key), value: { kind: "quantity", quantity: { number: { coefficient: "0", exponent10: 0 }, unit: "unit.watt" } }, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: "available", reasons: [] } };
+    const candidate = { binding_id: binding.binding_id, source_epoch_id: binding.source_epoch_id, driver_generation: binding.driver_generation, candidate_id: "candidate:fixture", revision: "7", key: clone(key), value: { kind: "quantity", quantity: { number: { coefficient: "0", exponent10: 0 }, unit: "unit.watt" } }, quality: { assertion: "native_observation", qualification: "qualified", promotion: "promoted", validity: "good", freshness: "fresh", availability: "available", reasons: [] } };
     const snapshot = { asset_id: binding.asset_id, snapshot_id: `snapshot:fixture:${i}`, revisions, bindings: [binding], facts: [{ key, candidates: [candidate], conflicts: [] }] };
     const tuple = { snapshot_id: snapshot.snapshot_id, revisions: clone(revisions) };
     const asset = { asset_id: snapshot.asset_id, snapshot, evaluation: { ...clone(tuple), evaluation_digest: `sha256:${digest("shared-evaluation")}`, facts: [{ candidate_id: candidate.candidate_id, candidate_revision: candidate.revision, freshness: "fresh", effective_availability: "available" }] }, projection: { ...clone(tuple), dispositions: [{ kind: "fact", item_id: ref.id, outcome: "exact", source_keys: [clone(key)], loss: [] }] }, selections: [] };
@@ -360,3 +360,22 @@ test("M23 cards retain selected provenance, evidence policy and competing fact c
   assert.match(h.list.innerHTML, /Evidence:.*restricted/);
   assert.match(h.list.innerHTML, /Conflicts:.*candidate:competing/);
 });
+
+for (const field of ["binding_id", "source_epoch_id", "driver_generation"]) {
+  for (const choice of ["default", "explicit selection", "default with matching sibling"]) test(`M23 candidate source ${field} must match resource through ${choice}`, async () => {
+    const h = harness(), f = fixture(1), asset = f.assets[0], foreign = candidate(f);
+    const matching = clone(foreign);
+    matching.candidate_id = "candidate:matching";
+    foreign[field] = field === "driver_generation" ? "9007199254740994" : "other-source";
+    foreign.value = { kind: "text", text: "foreign-source-value" };
+    if (choice !== "default") {
+      asset.snapshot.facts[0].candidates.push(matching);
+      asset.evaluation.facts.push({ ...clone(asset.evaluation.facts[0]), candidate_id: matching.candidate_id });
+    }
+    if (choice === "explicit selection") asset.selections = [{ snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(foreign.key), selected_candidate: foreign.candidate_id, candidate_revision: foreign.revision }];
+    h.pair(f); assert.equal(await h.refresh(), true);
+    assert.doesNotMatch(h.list.innerHTML, /foreign-source-value/);
+    if (choice === "default with matching sibling") assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+    else assert.match(h.list.innerHTML, /Power: withheld/);
+  });
+}

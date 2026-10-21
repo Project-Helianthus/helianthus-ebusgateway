@@ -691,3 +691,93 @@ func TestM05UnconfirmedStartupCloseKeepsQuarantineAfterLateSuccess(t *testing.T)
 		t.Fatal("late close success cleared quarantine or reopened native runtime")
 	}
 }
+
+// Done is evaluated by lock only after Stop has fenced the current generation.
+type m05StopQueuedContext struct {
+	context.Context
+	queued chan struct{}
+	once   sync.Once
+}
+
+func (ctx *m05StopQueuedContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.queued) })
+	return ctx.Context.Done()
+}
+
+func TestM05WithdrawalWhileReplaceDrains(t *testing.T) {
+	for _, withdrawal := range []string{"stop", "fence"} {
+		t.Run(withdrawal, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			old := &m05BlockedCloseRuntime{entered: make(chan struct{}), release: make(chan struct{})}
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(old.release) }) }
+			defer release()
+			successor := &m05ContextRuntime{entered: make(chan struct{})}
+			calls := 0
+			driver := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+				calls++
+				if calls == 1 {
+					return old, nil
+				}
+				return successor, nil
+			}))
+			if _, err := driver.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			replaced := make(chan error, 1)
+			go func() { _, err := driver.Replace(ctx); replaced <- err }()
+			select {
+			case <-old.entered:
+			case <-ctx.Done():
+				t.Fatal("Replace did not reach native close")
+			}
+			stopped := make(chan error, 1)
+			if withdrawal == "stop" {
+				stopCtx := &m05StopQueuedContext{Context: ctx, queued: make(chan struct{})}
+				go func() { stopped <- driver.Stop(stopCtx) }()
+				select {
+				case <-stopCtx.queued:
+				case <-ctx.Done():
+					t.Fatal("Stop did not fence before queuing")
+				}
+			} else {
+				driver.FenceWithdrawal()
+			}
+			release()
+			select {
+			case err := <-replaced:
+				if !errors.Is(err, drivermanager.ErrUnavailable) {
+					t.Errorf("withdrawn Replace = %v, want unavailable", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Replace did not return")
+			}
+			if withdrawal == "stop" {
+				select {
+				case err := <-stopped:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-ctx.Done():
+					t.Fatal("Stop did not return")
+				}
+			}
+			if err := driver.WithGeneration(driver.Generation(), func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error {
+				t.Error("successor callback admitted after withdrawal")
+				return nil
+			}); !errors.Is(err, drivermanager.ErrUnavailable) {
+				t.Errorf("withdrawn callback = %v", err)
+			}
+			if successor.ctx != nil && successor.ctx.Err() == nil {
+				t.Error("successor context survived withdrawal")
+			}
+			if calls != 1 {
+				t.Errorf("factory calls = %d, successor started after withdrawal", calls)
+			}
+			if err := driver.Stop(ctx); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

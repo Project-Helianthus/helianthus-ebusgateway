@@ -72,6 +72,7 @@ type eebusManagedDriver struct {
 	mu          sync.Mutex
 	current     *eebusManagedGeneration
 	cancel      context.CancelFunc
+	withdrawal  uint64
 	generation  atomic.Uint64
 	revision    atomic.Uint64
 	quarantined atomic.Bool
@@ -105,16 +106,23 @@ func (driver *eebusManagedDriver) Start(ctx context.Context) (uint64, error) {
 }
 
 func (driver *eebusManagedDriver) start(ctx context.Context) (uint64, error) {
-	return driver.startRuntime(ctx, driver.options.OperatorFactory != nil, nil)
+	driver.mu.Lock()
+	withdrawal := driver.withdrawal
+	driver.mu.Unlock()
+	return driver.startRuntime(ctx, driver.options.OperatorFactory != nil, nil, withdrawal)
 }
 
-func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator bool, degraded error) (uint64, error) {
+func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator bool, degraded error, withdrawal uint64) (uint64, error) {
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
 	driver.mu.Lock()
 	if err := attemptCtx.Err(); err != nil {
 		driver.mu.Unlock()
 		return 0, err
+	}
+	if driver.withdrawal != withdrawal {
+		driver.mu.Unlock()
+		return 0, drivermanager.ErrUnavailable
 	}
 	if driver.quarantined.Load() {
 		driver.mu.Unlock()
@@ -164,7 +172,7 @@ func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator boo
 		}
 		if fallback && attemptCtx.Err() == nil {
 			// Only proven cleanup permits the established read-only fallback.
-			number, fallbackErr := driver.startRuntime(attemptCtx, false, err)
+			number, fallbackErr := driver.startRuntime(attemptCtx, false, err, withdrawal)
 			if fallbackErr != nil {
 				return 0, errors.Join(err, fallbackErr)
 			}
@@ -207,21 +215,35 @@ func (driver *eebusManagedDriver) retireFailedStart(ctx context.Context, adapter
 }
 
 func (driver *eebusManagedDriver) Replace(ctx context.Context) (uint64, error) {
-	driver.FenceWithdrawal()
+	withdrawal := driver.fenceWithdrawal()
 	if err := driver.lock(ctx); err != nil {
 		return 0, err
 	}
 	defer func() { <-driver.operation }()
+	driver.mu.Lock()
+	driver.fenceCurrentLocked()
+	driver.mu.Unlock()
 	if err := driver.stop(ctx); err != nil {
 		return 0, err
 	}
-	return driver.start(ctx)
+	// A withdrawal requested during the drain supersedes this replacement.
+	return driver.startRuntime(ctx, driver.options.OperatorFactory != nil, nil, withdrawal)
 }
 
 // FenceWithdrawal never calls native code or waits for a callback.
 func (driver *eebusManagedDriver) FenceWithdrawal() {
+	driver.fenceWithdrawal()
+}
+
+func (driver *eebusManagedDriver) fenceWithdrawal() uint64 {
 	driver.mu.Lock()
 	defer driver.mu.Unlock()
+	driver.withdrawal++
+	driver.fenceCurrentLocked()
+	return driver.withdrawal
+}
+
+func (driver *eebusManagedDriver) fenceCurrentLocked() {
 	if driver.cancel != nil {
 		driver.cancel()
 	}
@@ -236,6 +258,7 @@ func (driver *eebusManagedDriver) Stop(ctx context.Context) error {
 		return err
 	}
 	defer func() { <-driver.operation }()
+	driver.FenceWithdrawal()
 	return driver.stop(ctx)
 }
 

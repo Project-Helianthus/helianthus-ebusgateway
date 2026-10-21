@@ -1007,8 +1007,11 @@ function semanticContributionCards(catalog, assets) {
             const selections = asset.selections.filter((selection) => semanticKey(selection.key) === key);
             const candidates = fact.candidates.filter((candidate) => candidate.binding_id === resource.source.binding_id &&
               candidate.source_epoch_id === resource.source.source_epoch && candidate.driver_generation === resource.source.driver_generation);
-            const selected = selections.length === 1 ? candidates.filter((candidate) => candidate.candidate_id === selections[0].selected_candidate && candidate.revision === selections[0].candidate_revision) : candidates;
-            const candidate = selections.length <= 1 && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
+            const distinctPolicies = new Set(selections.map((selection) => semanticKey([selection.policy_id, selection.policy_version]))).size === selections.length;
+            // Distinct policies may agree on one candidate; disagreement stays withheld.
+            const selected = selections.length ? candidates.filter((candidate) => selections.every((selection) =>
+              candidate.candidate_id === selection.selected_candidate && candidate.revision === selection.candidate_revision)) : candidates;
+            const candidate = distinctPolicies && selected.length === 1 && semanticKey(selected[0].key) === key ? selected[0] : null;
             const evaluation = candidate && asset.evaluation.facts.find((entry) => entry.candidate_id === candidate.candidate_id && entry.candidate_revision === candidate.revision);
             const dispositions = asset.projection.dispositions.filter((entry) => entry.kind === "fact" && entry.item_id === field.ref.id && entry.source_keys.some((source) => semanticKey(source) === key));
             // A fact-level projection may be exact because of an eligible sibling;

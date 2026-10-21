@@ -150,7 +150,10 @@ alone does not authorize rendering another context's fields.
 Contribution cards first filter candidates by the resource's exact binding ID,
 source epoch and decimal-string driver generation, for both default choices and
 explicit selections. A selection outside that source tuple withholds the value
-without falling back to a matching sibling.
+without falling back to a matching sibling. Distinct selection policy IDs or
+versions for the same fact key coalesce only when every selection agrees on the
+candidate identity and revision. Conflicting choices or duplicate policy tuples
+withhold the value.
 Contribution cards check the selected candidate itself: qualification must be
 `qualified`, promotion `promoted`, and validity `good` or `suspect`, in addition
 to the shared evaluation and projection checks. A presentation selection cannot

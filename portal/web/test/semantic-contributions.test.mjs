@@ -347,6 +347,35 @@ test("M23 exact selected candidate is readable while duplicate selection policie
   asset.selections.push(clone(selection)); h.pair(f); assert.equal(await h.refresh(), true); assert.match(h.list.innerHTML, /Power: withheld/);
 });
 
+for (const policyField of ["policy_id", "policy_version"]) {
+  for (const outcome of ["agreement", "different candidate", "different revision", "foreign binding", "foreign epoch", "foreign generation"]) test(`M23 distinct ${policyField} selections handle ${outcome}`, async () => {
+    const h = harness(), f = fixture(1), asset = f.assets[0], selected = candidate(f);
+    const selection = { snapshot_id: asset.snapshot.snapshot_id, revisions: clone(asset.snapshot.revisions), evaluation_digest: asset.evaluation.evaluation_digest, key: clone(selected.key), policy_id: "policy:fixture", policy_version: "1", selected_candidate: selected.candidate_id, candidate_revision: selected.revision };
+    asset.selections = [selection, { ...clone(selection), [policyField]: "other" }];
+    if (outcome === "different candidate") {
+      const sibling = clone(selected); sibling.candidate_id = "candidate:other";
+      asset.snapshot.facts[0].candidates.push(sibling);
+      asset.evaluation.facts.push({ ...clone(asset.evaluation.facts[0]), candidate_id: sibling.candidate_id });
+      asset.selections[1].selected_candidate = sibling.candidate_id;
+    }
+    if (outcome === "different revision") asset.selections[1].candidate_revision = "8";
+    if (outcome === "foreign binding") selected.binding_id = "binding:other";
+    if (outcome === "foreign epoch") selected.source_epoch_id = "epoch:other";
+    if (outcome === "foreign generation") selected.driver_generation = "9007199254740994";
+    for (const selections of [asset.selections, [...asset.selections].reverse()]) {
+      asset.selections = selections;
+      h.pair(f); assert.equal(await h.refresh(), true);
+      if (outcome === "agreement") {
+        assert.match(h.list.innerHTML, /Power: 0e0 unit.watt/);
+        assert.doesNotMatch(h.list.innerHTML, /Power: withheld/);
+      } else {
+        assert.match(h.list.innerHTML, /Power: withheld/);
+        assert.doesNotMatch(h.list.innerHTML, /Power: 0e0/);
+      }
+    }
+  });
+}
+
 test("M23 whole-read bound withholds previous values and reports limit", async () => {
   const h = harness(), f = fixture(1); h.pair(f); await h.refresh();
   candidate(f).value = { kind: "text", text: "x".repeat(4 * 1024 * 1024) };

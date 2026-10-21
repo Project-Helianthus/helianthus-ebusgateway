@@ -595,3 +595,87 @@ func TestM03SemanticCleanupRetriesAfterJournalRecovery(t *testing.T) {
 		})
 	}
 }
+
+type m03BlockingEndpoint struct {
+	m03Endpoint
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (e *m03BlockingEndpoint) Close() error {
+	close(e.entered)
+	<-e.release
+	return e.m03Endpoint.Close()
+}
+
+func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
+	for _, blocked := range []string{"worker", "endpoint"} {
+		t.Run(blocked, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			defer close(release)
+			endpoint := &m03BlockingEndpoint{entered: entered, release: release}
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				if blocked == "endpoint" {
+					return endpoint, nil
+				}
+				return &m03Endpoint{}, nil
+			}, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+				return &m03Work{start: func() {}, close: func() error {
+					if blocked == "worker" {
+						close(entered)
+						<-release
+					}
+					return nil
+				}}
+			})
+			if _, err := driver.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			old := driver.active.Load().adapter
+			if err := old.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
+				t.Fatal(err)
+			}
+			view, ok := old.SemanticPVCurrentSingle()
+			if !ok {
+				t.Fatal("fixture publication missing")
+			}
+			asset := view.Snapshot.AssetID
+			driver.FenceWithdrawal()
+			if _, ok := old.SemanticPVCurrentSingle(); ok {
+				t.Error("withdrawn single read admitted")
+			}
+			if _, ok := old.SemanticPVCurrentByAsset(string(asset)); ok {
+				t.Error("withdrawn asset read admitted")
+			}
+			if _, ok := old.SemanticPVCurrentSingleAt(time.Now()); ok {
+				t.Error("withdrawn timed read admitted")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			if err := driver.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("blocked shutdown result=%v", err)
+			}
+			<-entered
+			deadline := time.After(time.Second)
+			for driver.hub.Admitted(asset) {
+				select {
+				case <-deadline:
+					t.Fatal("semantic withdrawal waited for native shutdown")
+				case <-time.After(time.Millisecond):
+				}
+			}
+			retained, err := driver.hub.Inspect(asset)
+			if err != nil || !retained.Present {
+				t.Fatalf("withdrawal lost retained evidence: %v", err)
+			}
+			if driver.active.Load() == nil {
+				t.Fatal("pending shutdown released generation ownership")
+			}
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer retryCancel()
+			if _, err := driver.Replace(retryCtx); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("replacement bypassed pending shutdown: %v", err)
+			}
+		})
+	}
+}

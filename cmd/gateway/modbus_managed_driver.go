@@ -205,6 +205,8 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 		go func() {
 			defer close(a.stopped)
 			<-a.started
+			semanticDone := make(chan error, 1)
+			go func() { semanticDone <- a.adapter.WithdrawSemantic() }()
 			var workErr error
 			if a.work != nil {
 				workErr = a.work.Close()
@@ -214,7 +216,7 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 				closeErr = errors.Join(closeErr, a.startErr)
 			}
 			a.workErr = workErr
-			a.stopErr = errors.Join(closeErr, workErr)
+			a.stopErr = errors.Join(closeErr, workErr, <-semanticDone)
 			driver.revision.Add(1)
 		}()
 	})

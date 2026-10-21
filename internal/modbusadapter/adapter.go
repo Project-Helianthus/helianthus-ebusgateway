@@ -955,21 +955,32 @@ func (adapter *Adapter) Close() error {
 	if adapter == nil || adapter.endpoint == nil {
 		return nil
 	}
-	// Native shutdown runs once. Semantic withdrawal is retried independently
-	// until journalled; managed generations are fenced and legacy epochs retire.
 	adapter.config.Publication.Withdraw()
+	// Neither cleanup obligation waits for the other to make progress.
+	semanticDone := make(chan error, 1)
+	go func() { semanticDone <- adapter.WithdrawSemantic() }()
 	adapter.closeOnce.Do(func() {
 		adapter.closeErr = adapter.endpoint.Close()
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
 	})
+	return errors.Join(adapter.closeErr, <-semanticDone)
+}
+
+// WithdrawSemantic revokes read/publication admission and retries the semantic
+// fence independently of worker joins and native endpoint shutdown.
+func (adapter *Adapter) WithdrawSemantic() error {
+	if adapter == nil {
+		return nil
+	}
+	adapter.config.Publication.Withdraw()
 	if adapter.config.Publication != nil {
 		context, err := adapter.semanticPVReadContext()
 		if err != nil {
-			return errors.Join(adapter.closeErr, err)
+			return err
 		}
-		return errors.Join(adapter.closeErr, adapter.semanticPV.withdrawManaged(context))
+		return adapter.semanticPV.withdrawManaged(context)
 	}
-	return errors.Join(adapter.closeErr, adapter.semanticPV.retire())
+	return adapter.semanticPV.retire()
 }

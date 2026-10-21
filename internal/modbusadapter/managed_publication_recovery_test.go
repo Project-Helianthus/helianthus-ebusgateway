@@ -14,14 +14,16 @@ import (
 
 type withdrawalFailureJournal struct {
 	*semhub.MemoryJournal
-	failSource semreg.SourceID
+	failSource     semreg.SourceID
+	failActivation semreg.SourceID
 }
 
 var errWithdrawalJournal = errors.New("synthetic withdrawal journal failure")
 
 func (j *withdrawalFailureJournal) Append(records ...semhub.EpochRecord) error {
 	for _, record := range records {
-		if record.Kind == semhub.EventGenerationFenced && record.Source == j.failSource {
+		if (record.Kind == semhub.EventGenerationFenced && record.Source == j.failSource) ||
+			(record.Kind == semhub.EventGenerationActivated && record.Source == j.failActivation) {
 			return errWithdrawalJournal
 		}
 	}
@@ -161,5 +163,73 @@ func TestManagedReplacementRetainsRefreshEvidenceAcrossIdentities(t *testing.T) 
 				t.Fatalf("generation %d pruned evidence for retained identity %d", generation, i)
 			}
 		}
+	}
+}
+
+func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
+	journal := &withdrawalFailureJournal{MemoryJournal: semhub.NewMemoryJournal()}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	class, err := NewSemanticPVClass(hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := &PublicationScope{Epoch: "source-epoch:pv:partial-activation", Generation: 1}
+	adapter := startManagedPublicationTestAdapter(t, class, scope)
+	words := observedFroniusFloatWords()
+	for i, nativeScope := range []string{"fixture:activation-a", "fixture:activation-b"} {
+		rotated := append([]uint16(nil), words...)
+		if i != 0 {
+			putSunSpecString(rotated[52:68], "fixture-identity-b")
+		}
+		if err := adapter.RecordSunSpecQualificationObservation(pvCoreScopedObservation(t, rotated, uint64(i+1), uint64(i+2), nativeScope)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sources := adapter.semanticPV.sortedHandleSources()
+	if len(sources) != 2 {
+		t.Fatalf("sources=%d", len(sources))
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journal.failActivation = sources[1]
+	config := validConfig()
+	config.SemanticPV = class
+	config.Publication = &PublicationScope{Previous: scope, Epoch: scope.Epoch, Generation: 2}
+	client, peer := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = peer.Close() }()
+	failed, err := Start(context.Background(), config,
+		func(context.Context, string, string) (net.Conn, error) { return client, nil },
+		func(modbus.TCPEndpointConfig) (Endpoint, error) { return &fakeEndpoint{}, nil })
+	if failed != nil || !errors.Is(err, errWithdrawalJournal) {
+		t.Fatalf("partial activation result=%v err=%v", failed, err)
+	}
+	activated, fenced := false, false
+	for _, record := range journal.Records() {
+		if record.Source == sources[0] && record.Generation == 2 {
+			activated = activated || record.Kind == semhub.EventGenerationActivated
+			fenced = fenced || record.Kind == semhub.EventGenerationFenced
+		}
+	}
+	if !activated || !fenced {
+		t.Fatal("partial activation did not activate and clean up the first source")
+	}
+	journal.failActivation = ""
+	successor := startManagedPublicationTestAdapter(t, class, &PublicationScope{Previous: scope, Epoch: scope.Epoch, Generation: 3})
+	for _, source := range sources {
+		handle := successor.semanticPV.handles[source]
+		if handle == nil || handle.Generation() != 3 {
+			t.Fatal("retry did not recover every source in the same epoch")
+		}
+	}
+	if err := successor.RecordSunSpecQualificationObservation(pvCoreScopedObservation(t, words, 10, 11, "fixture:activation-a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := successor.SemanticPVCurrentSingle(); !ok {
+		t.Fatal("recovered generation did not publish")
 	}
 }

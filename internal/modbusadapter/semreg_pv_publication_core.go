@@ -581,10 +581,14 @@ func (c *pvPublicationCore) admitEpochLocked(epoch semreg.SourceEpochID, generat
 			if err != nil {
 				return err
 			}
+			// Activation is journalled independently for each source. Retain the
+			// newest handle even if a later activation fails and Start discards
+			// this core after cleanup; the next attempt uses Previous again.
+			previous.handles[source] = next
+			c.handles[source] = next
 			if err := provisional.Adopt(next); err != nil {
 				return err
 			}
-			c.handles[source] = next
 		}
 	}
 	return nil
@@ -1040,7 +1044,7 @@ func (c *pvPublicationCore) publicView(assetID semreg.AssetID) (pvPublicationVie
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	asset := c.assets[assetID]
-	if asset == nil || asset.current == nil || !c.hub.Admitted(assetID) {
+	if !c.scope.valid() || asset == nil || asset.current == nil || !c.hub.Admitted(assetID) {
 		return pvPublicationView{}, errors.New("PV publication state is unavailable")
 	}
 	return asset.current.detached()
@@ -1071,6 +1075,9 @@ func (c *pvPublicationCore) evaluatePublicView(view pvPublicationView, context s
 	selections, err := pvPresentationSelections(c.selection, view.snapshot, evaluation)
 	if err != nil {
 		return pvPublicationView{}, err
+	}
+	if !c.scope.valid() {
+		return pvPublicationView{}, errors.New("PV managed generation withdrawn")
 	}
 	view.evaluation, view.selections = evaluation, selections
 	return view, nil

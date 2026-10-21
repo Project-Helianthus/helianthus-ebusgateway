@@ -29,6 +29,8 @@ const (
 )
 
 type modbusManagedAttempt struct {
+	startupMu           sync.Mutex
+	startupFinalized    bool
 	admission           atomic.Uint32
 	nativeCleanupFailed atomic.Bool
 	nativeGeneration    uint64
@@ -149,14 +151,14 @@ retry:
 		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, started: make(chan struct{}), stopped: make(chan struct{})}
 		driver.active.Store(a)
 		driver.revision.Add(1)
-		forwardCancel := context.AfterFunc(ctx, cancel)
+		forwardCancel := context.AfterFunc(ctx, a.cancelStartup)
 		go func() { defer close(a.started); defer forwardCancel(); driver.open(runCtx, a) }()
 	}
 	driver.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		if !joined {
-			a.cancel()
+			a.cancelStartup()
 		}
 		return 0, ctx.Err()
 	case <-a.started:
@@ -172,6 +174,16 @@ retry:
 			return 0, errors.New("modbus managed start withdrawn")
 		}
 		return a.nativeGeneration, nil
+	}
+}
+
+// cancelStartup and successful finalization share a lock so caller cancellation
+// either reaches open's final cleanup check or leaves the admitted worker alive.
+func (a *modbusManagedAttempt) cancelStartup() {
+	a.startupMu.Lock()
+	defer a.startupMu.Unlock()
+	if !a.startupFinalized {
+		a.cancel()
 	}
 }
 
@@ -226,7 +238,11 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 			a.work.Start()
 		}
 	}
-	if ctx.Err() != nil && !a.withdrawn() {
+	a.startupMu.Lock()
+	cancelErr := ctx.Err()
+	a.startupFinalized = true
+	a.startupMu.Unlock()
+	if cancelErr != nil && !a.withdrawn() {
 		if a.work != nil {
 			a.workErr = a.work.Close()
 			a.work = nil
@@ -234,7 +250,7 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 		closeErr := a.adapter.Close()
 		a.nativeCleanupFailed.Store(a.workErr != nil)
 		a.startupClosed = a.workErr == nil && closeErr == nil
-		a.startErr = errors.Join(ctx.Err(), a.workErr, closeErr)
+		a.startErr = errors.Join(cancelErr, a.workErr, closeErr)
 	}
 }
 

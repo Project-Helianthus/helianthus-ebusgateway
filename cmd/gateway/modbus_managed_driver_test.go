@@ -1358,3 +1358,72 @@ func TestM03CancelDuringWorkStartCleansBeforeRetry(t *testing.T) {
 		t.Fatal("retry reused canceled work or repeated cleanup")
 	}
 }
+
+// m03CompletionContext holds the originating caller at its select until open
+// has detached cancellation, and holds started open until that caller returns.
+type m03CompletionContext struct {
+	context.Context
+	registered atomic.Bool
+	detached   chan struct{}
+	resume     chan struct{}
+	cancel     context.CancelFunc
+}
+
+func (ctx *m03CompletionContext) Value(any) any { return nil }
+
+func (ctx *m03CompletionContext) Done() <-chan struct{} {
+	if ctx.registered.Load() {
+		<-ctx.detached
+		ctx.cancel()
+	}
+	return ctx.Context.Done()
+}
+
+func (ctx *m03CompletionContext) AfterFunc(f func()) func() bool {
+	stop := context.AfterFunc(ctx.Context, f)
+	ctx.registered.Store(true)
+	return func() bool {
+		stopped := stop()
+		close(ctx.detached)
+		<-ctx.resume
+		return stopped
+	}
+}
+
+func TestM03CancellationAfterStartupFinalizationPreservesWorker(t *testing.T) {
+	var workerContext context.Context
+	var starts, closes atomic.Int32
+	endpoint := &m03Endpoint{}
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return endpoint, nil
+	}, func(ctx context.Context, _ *modbusadapter.Adapter) modbusManagedWork {
+		workerContext = ctx
+		return &m03Work{start: func() { starts.Add(1) }, close: func() error { closes.Add(1); return nil }}
+	})
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &m03CompletionContext{Context: callerCtx, detached: make(chan struct{}), resume: make(chan struct{}), cancel: cancel}
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(ctx.resume) }) }
+	defer resume()
+	if _, err := driver.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("originating caller error=%v", err)
+	}
+	// open is complete and its cancellation callback is detached, but started
+	// cannot close until this test releases resume.
+	if workerContext.Err() != nil {
+		t.Fatal("canceled caller killed the successfully installed worker")
+	}
+	resume()
+	attempt := driver.active.Load()
+	<-attempt.started
+	// A cancellation callback already queued before detachment must also
+	// leave the finalized generation alive when it eventually runs.
+	attempt.cancelStartup()
+	if generation, err := driver.Start(context.Background()); err != nil || generation != 1 {
+		t.Fatalf("subsequent start generation=%d error=%v", generation, err)
+	}
+	if workerContext.Err() != nil || starts.Load() != 1 || closes.Load() != 0 || endpoint.closes.Load() != 0 {
+		t.Fatal("finalized generation was canceled, replaced, or cleaned up")
+	}
+}

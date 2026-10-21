@@ -146,8 +146,11 @@ Contribution cards plan the complete expansion before formatting rows or buildin
 HTML, with a shared budget of 512 DOM nodes across all resources. Card headings,
 view labels, fact and audit rows, projections, diagnostics and unavailable or
 historical notices all consume that budget, including repeated references.
-An oversized expansion fails closed through the unavailable-read path; a prior
-valid view remains explicitly historical.
+After node planning, a shared 4 MiB UTF-8 HTML budget counts markup, headings,
+row text and HTML escaping across all resources, including repeated audit records.
+Each row is checked before allocating its escaped HTML; overflow stops further
+formatting and discards the partial result. An oversized expansion fails closed
+through the unavailable-read path; a prior valid view remains explicitly historical.
 
 Contribution cards restrict view fields to the resource's domain, service and
 capability: the field, service and capability pack IDs must match the domain,

@@ -9,6 +9,7 @@ const PORTAL_CATALOG_MAX_QUARANTINES = 64;
 const PORTAL_CATALOG_MAX_TEXT = 512;
 const PORTAL_CATALOG_MAX_NODES = 512;
 const PORTAL_SEMANTIC_MAX_NODES = 512;
+const PORTAL_SEMANTIC_MAX_BYTES = 4 * 1024 * 1024;
 const PORTAL_CATALOG_MAX_EVIDENCE_PAGE_ROWS = 128;
 const PORTAL_CATALOG_MAX_QUALITY_CANDIDATES = 8;
 const PORTAL_CATALOG_TIMEOUT_MS = 5000;
@@ -1047,9 +1048,36 @@ function semanticContributionCards(catalog, assets) {
       }
       if (asset.snapshot.retained_observations?.length) addRow(() => "Retained observations are historical; inspect the native evidence and catalog details.");
     }
-    cards.push(() => `<li class="portal-catalog-resource"><strong>${escapeHtml(identity)} — ${escapeHtml(resource.id)}</strong>${rows.map((render) => `<p>${escapeHtml(render())}</p>`).join("")}</li>`);
+    cards.push({ identity, resourceID: resource.id, rows });
   }
-  return cards.map((render) => render()).join("") || "<li>No admitted semantic contributions.</li>";
+  // Bound the complete UTF-8 HTML, including escaping, before allocating each
+  // escaped row. Stop formatting immediately on overflow; never publish a prefix.
+  const html = [], encoder = new TextEncoder();
+  let bytes = 0;
+  const append = (value, escape = false) => {
+    const text = String(value);
+    if (text.length > PORTAL_SEMANTIC_MAX_BYTES - bytes) throw new Error("semantic render byte budget exceeded");
+    let size = encoder.encode(text).byteLength;
+    if (escape) {
+      const expansion = { "&": 4, "<": 3, ">": 3, '"': 5, "'": 4 };
+      for (const [character] of text.matchAll(/[&<>"']/g)) size += expansion[character];
+    }
+    bytes += size;
+    if (bytes > PORTAL_SEMANTIC_MAX_BYTES) throw new Error("semantic render byte budget exceeded");
+    html.push(escape ? escapeHtml(text) : text);
+  };
+  for (const { identity, resourceID, rows } of cards) {
+    append('<li class="portal-catalog-resource"><strong>');
+    append(`${identity} — ${resourceID}`, true);
+    append("</strong>");
+    for (const render of rows) {
+      append("<p>");
+      append(render(), true);
+      append("</p>");
+    }
+    append("</li>");
+  }
+  return html.join("") || "<li>No admitted semantic contributions.</li>";
 }
 
 function formatInteger(value) {

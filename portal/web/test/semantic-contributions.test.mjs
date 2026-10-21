@@ -541,3 +541,45 @@ test("M23 semantic budget is checked before value and audit row formatting", () 
   assert.throws(() => h.renderCards(f.catalog, f.assets), /semantic render node budget exceeded/);
   assert.equal(formatted, 0);
 });
+
+for (const record of ["value", "provenance", "evidence", "conflicts", "loss"]) {
+  test(`M23 semantic text budget rejects repeated ${record} below the input and node limits`, async () => {
+    const h = harness(), f = fixture(1), asset = f.assets[0];
+    h.pair(f); assert.equal(await h.refresh(), true);
+    const previous = h.list.innerHTML;
+    const large = "<&界".repeat(16 * 1024);
+    if (record === "value") candidate(f).value = { kind: "text", text: large };
+    if (record === "provenance") candidate(f).origin = { origin_id: large };
+    if (record === "evidence") candidate(f).evidence = [{ owner: large }];
+    if (record === "conflicts") asset.snapshot.facts[0].conflicts = [{ conflict_id: large }];
+    if (record === "loss") asset.projection.dispositions[0].loss = [{ reason: large }];
+    repeatViews(f, 36);
+    assert.ok(Buffer.byteLength(JSON.stringify(f)) < 4 * 1024 * 1024);
+    h.pair(f); assert.equal(await h.refresh(), false);
+    assert.equal(h.list.innerHTML, previous);
+    assert.match(h.notice.textContent, /historical last valid/);
+    const initial = harness();
+    initial.pair(f); assert.equal(await initial.refresh(), false);
+    assert.doesNotMatch(initial.list.innerHTML, /portal-catalog-resource|Power:|Provenance:/);
+  });
+}
+
+test("M23 semantic HTML byte budget includes escaping and UTF-8 at its boundary", () => {
+  const h = harness(), f = fixture(1), limit = 4 * 1024 * 1024;
+  candidate(f).value = { kind: "text", text: `界<&>"'` };
+  const remaining = limit - Buffer.byteLength(h.renderCards(f.catalog, f.assets));
+  candidate(f).value.text += "x".repeat(remaining);
+  assert.equal(Buffer.byteLength(h.renderCards(f.catalog, f.assets)), limit);
+  candidate(f).value.text += "x";
+  assert.throws(() => h.renderCards(f.catalog, f.assets), /semantic render byte budget exceeded/);
+});
+
+test("M23 semantic byte budget is shared across resources and stops formatting on overflow", () => {
+  const h = harness(), f = fixture(2);
+  candidate(f).value = { kind: "text", text: "x".repeat(2 * 1024 * 1024) };
+  candidate(f, 1).value = clone(candidate(f).value);
+  let formatted = 0;
+  Object.defineProperty(candidate(f, 1), "evidence", { get() { formatted++; return []; } });
+  assert.throws(() => h.renderCards(f.catalog, f.assets), /semantic render byte budget exceeded/);
+  assert.equal(formatted, 0);
+});

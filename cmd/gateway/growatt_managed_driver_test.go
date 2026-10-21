@@ -9,7 +9,9 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func m04Driver(t *testing.T, config ebusgateway.GrowattBMSRS485Config, open func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error)) *growattManagedDriver {
@@ -368,6 +370,16 @@ func TestM04SemanticWithdrawalPrecedesNativeCloseAndFailureQuarantines(t *testin
 func TestM04StopWithdrawsRetainedStorageBeforeStalledRefreshDrains(t *testing.T) {
 	endpoint := &m04LateEndpoint{growattEndpointFake: &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}}
 	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	fenced := make(chan struct{})
+	hub, err := semhub.New(semhub.Options{Faults: func(stage string, _ semreg.AssetID) {
+		if stage == "after-commit" {
+			close(fenced)
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver.hub = hub
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := driver.Start(ctx); err != nil {
@@ -400,6 +412,14 @@ func TestM04StopWithdrawsRetainedStorageBeforeStalledRefreshDrains(t *testing.T)
 	case <-endpoint.entered:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	// Complete semantic withdrawal before timing the still-stalled native drain.
+	joined := make(chan error, 1)
+	go func() { joined <- driver.Stop(ctx) }()
+	select {
+	case <-fenced:
+	case <-ctx.Done():
+		t.Fatal("semantic withdrawal did not complete")
 	}
 	short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer stopCancel()
@@ -441,11 +461,128 @@ func TestM04StopWithdrawsRetainedStorageBeforeStalledRefreshDrains(t *testing.T)
 	if err := driver.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case err := <-joined:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("initial stop did not join drain")
+	}
 	after, ok := provider.LastObservationEvidence()
 	if !ok || after.ObservationID != before.ObservationID {
 		t.Fatal("withdrawal lost or replaced retained native evidence")
 	}
 	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
 		t.Fatal("late refresh restored admission")
+	}
+}
+
+type m04StalledFenceJournal struct {
+	*semhub.MemoryJournal
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (journal *m04StalledFenceJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Kind == semhub.EventGenerationFenced {
+			close(journal.entered)
+			<-journal.release
+			break
+		}
+	}
+	return journal.MemoryJournal.Append(records...)
+}
+
+func TestM04StalledSemanticFenceHonorsStopDeadline(t *testing.T) {
+	journal := &m04StalledFenceJournal{MemoryJournal: semhub.NewMemoryJournal(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1}
+	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) { return endpoint, nil })
+	driver.hub = hub
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	generation, err := driver.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := driver.Provider()
+	if _, err := provider.SemanticStorageCurrent(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Always release the fence, including on failure against a mutex-blocking Stop.
+	released := false
+	defer func() {
+		if !released {
+			close(journal.release)
+		}
+		cleanup, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := driver.Stop(cleanup); err != nil {
+			t.Error(err)
+		}
+	}()
+	short, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(short) }()
+	select {
+	case <-journal.entered:
+	case <-ctx.Done():
+		t.Fatal("semantic fence did not reach journal")
+	}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stop=%v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Stop deadline blocked on semantic fence")
+	}
+	responsive := make(chan struct{})
+	go func() {
+		defer close(responsive)
+		if _, ok := driver.Provider(); ok {
+			t.Error("draining provider exposed")
+		}
+		if got := driver.Generation(); got != generation {
+			t.Errorf("generation=%d, want %d", got, generation)
+		}
+		_ = driver.Revision()
+		if driver.SafetyQuarantined() {
+			t.Error("pending fence reported as failed")
+		}
+		if _, err := driver.Start(ctx); !errors.Is(err, drivermanager.ErrUnavailable) {
+			t.Errorf("restart during fence=%v", err)
+		}
+	}()
+	select {
+	case <-responsive:
+	case <-ctx.Done():
+		t.Fatal("provider/status/start blocked on semantic fence")
+	}
+	endpoint.mu.Lock()
+	closed := endpoint.closed
+	endpoint.mu.Unlock()
+	if closed != 0 {
+		t.Fatal("endpoint closed before semantic fence completed")
+	}
+	close(journal.release)
+	released = true
+	if err := driver.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.mu.Lock()
+	closed = endpoint.closed
+	endpoint.mu.Unlock()
+	if closed != 1 {
+		t.Fatalf("endpoint close count after fence=%d", closed)
+	}
+	if _, ok := provider.storage.Current(growattProductionConfig().AssetID); ok {
+		t.Fatal("retained storage remained admitted after completed stop")
 	}
 }

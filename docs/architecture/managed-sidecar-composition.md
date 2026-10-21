@@ -140,9 +140,13 @@ Disabled or failed starts expose no provider. This wrapper alone does not instal
 a descriptor, executor or driver in the shared service, migrate publication to
 the managed recorder, or establish durable recovery or consumer rebinding.
 
-Stop cancels the generation and fences semantic admission before waiting for
-in-flight acquisition or native close. Retained Storage becomes unavailable
-immediately, including when a refresh stalls after a successful publication.
+Stop cancels the generation and removes the exposed provider immediately. Its
+tracked drain fences semantic admission before waiting for in-flight acquisition
+or native close. Retained Storage becomes unavailable when that fence completes,
+including when a refresh stalls after a successful publication. Fencing runs
+outside the lifecycle mutex, so a stalled journal or reprojection drain does not
+block the caller deadline or provider and status inspection. A deadline does not
+prove that semantic withdrawal completed.
 Native evidence remains retained; a separate evidence lock lets the fence read
 the last completed observation without waiting for transport acquisition.
 Cancelled or late refresh results cannot publish. Stop joins acquisition before

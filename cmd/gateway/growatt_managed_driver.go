@@ -182,9 +182,10 @@ func (driver *growattManagedDriver) Stop(ctx context.Context) error {
 		driver.current.Store(nil)
 		driver.draining = make(chan struct{})
 		done := driver.draining
-		// Withdraw retained semantic visibility before waiting for native work.
-		fenceErr := driver.fence(handle, provider)
 		go func() {
+			// Fence before native work, outside mu so callers can time out
+			// and inspect status even if the hub's drain stalls.
+			fenceErr := driver.fence(handle, provider)
 			_ = provider.acquire(context.Background())
 			provider.release()
 			closeErr := provider.Close()

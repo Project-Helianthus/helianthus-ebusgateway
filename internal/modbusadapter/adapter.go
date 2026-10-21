@@ -285,6 +285,16 @@ func Start(
 		}
 		adapter.refreshOrder = append([]string(nil), previousAdapter.refreshOrder...)
 		previousAdapter.profileMu.RUnlock()
+		previousCore := previousAdapter.semanticPV
+		previousCore.mu.RLock()
+		semanticPV.inheritedAssets = make(map[semreg.AssetID]bool, len(previousCore.assets)+len(previousCore.inheritedAssets))
+		for id := range previousCore.assets {
+			semanticPV.inheritedAssets[id] = true
+		}
+		for id := range previousCore.inheritedAssets {
+			semanticPV.inheritedAssets[id] = true
+		}
+		previousCore.mu.RUnlock()
 	}
 	if config.Publication != nil {
 		config.Publication.adapter = adapter

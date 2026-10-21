@@ -459,16 +459,23 @@ func NewSemanticPVClass(hub *semhub.Hub) (*semhub.Class, error) {
 }
 
 type pvPublicationCore struct {
-	scope             *PublicationScope
-	publicationMu     sync.Mutex
-	managedWithdrawn  bool
-	withdrawalContext *semreg.EvaluationContext
-	mu                sync.RWMutex
-	assets            map[semreg.AssetID]*pvPublicationAsset
-	activeAssetID     semreg.AssetID
-	selection         *semreg.SelectionKernel
-	hub               *semhub.Hub
-	class             *semhub.Class
+	scope            *PublicationScope
+	publicationMu    sync.Mutex
+	managedWithdrawn bool
+	// Retain per-source progress so retries neither repeat completed fences nor
+	// replace an unfinished control with a fresh fence request.
+	withdrawnSources   map[semreg.SourceID]bool
+	withdrawalControls map[semreg.SourceID]semhub.ControlID
+	withdrawalContext  *semreg.EvaluationContext
+	mu                 sync.RWMutex
+	assets             map[semreg.AssetID]*pvPublicationAsset
+	// inheritedAssets keeps retained hub snapshots in the evidence retention set
+	// without exposing predecessor views as current in this generation.
+	inheritedAssets map[semreg.AssetID]bool
+	activeAssetID   semreg.AssetID
+	selection       *semreg.SelectionKernel
+	hub             *semhub.Hub
+	class           *semhub.Class
 	// lifecycleMu guards the provisional source and the per-source handles.
 	// It is taken alone or inside mu, never the other way round.
 	lifecycleMu sync.Mutex
@@ -607,10 +614,30 @@ func (c *pvPublicationCore) withdrawManaged(context semreg.EvaluationContext) er
 		c.withdrawalContext = &context
 	}
 	context = *c.withdrawalContext
+	if c.withdrawnSources == nil {
+		c.withdrawnSources = make(map[semreg.SourceID]bool)
+		c.withdrawalControls = make(map[semreg.SourceID]semhub.ControlID)
+	}
 	var result error
 	for _, source := range c.sortedHandleSources() {
-		handle := c.handles[source]
-		_, err := c.hub.Fence(semhub.FenceRequest{Source: source, Epoch: handle.Epoch(), Generation: handle.Generation(), Reason: "lifecycle.driver_generation_replaced", ObservedAt: context.EvaluatedAt, Monotonic: context.EvaluateMonotonic, Evidence: []semreg.EvidenceRef{{Owner: "helianthus.modbusadapter", Kind: "lifecycle.driver_withdrawal", Digest: semreg.Digest("sha256:" + pvCoreHash("managed-modbus-withdrawal", []byte(string(source)+"\x00"+string(handle.Epoch())+"\x00"+strconv.FormatUint(handle.Generation(), 10)))), Contract: "helianthus.gateway/managed-sidecar/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}}})
+		if c.withdrawnSources[source] {
+			continue
+		}
+		var outcome semhub.ControlResult
+		var err error
+		if id, pending := c.withdrawalControls[source]; pending {
+			outcome, err = c.hub.RetryControl(id)
+		} else {
+			handle := c.handles[source]
+			outcome, err = c.hub.Fence(semhub.FenceRequest{Source: source, Epoch: handle.Epoch(), Generation: handle.Generation(), Reason: "lifecycle.driver_generation_replaced", ObservedAt: context.EvaluatedAt, Monotonic: context.EvaluateMonotonic, Evidence: []semreg.EvidenceRef{{Owner: "helianthus.modbusadapter", Kind: "lifecycle.driver_withdrawal", Digest: semreg.Digest("sha256:" + pvCoreHash("managed-modbus-withdrawal", []byte(string(source)+"\x00"+string(handle.Epoch())+"\x00"+strconv.FormatUint(handle.Generation(), 10)))), Contract: "helianthus.gateway/managed-sidecar/v1", Access: semreg.EvidenceAccessPublic, Redaction: semreg.RedactionNone}}})
+		}
+		if outcome.ID.N != 0 {
+			c.withdrawalControls[source] = outcome.ID
+		}
+		if err == nil {
+			c.withdrawnSources[source] = true
+			delete(c.withdrawalControls, source)
+		}
 		result = errors.Join(result, err)
 	}
 	if result == nil {
@@ -1111,6 +1138,17 @@ func (c *pvPublicationCore) currentSunSpecObservationDigestsLocked(assetID semre
 		}
 		for _, fence := range snapshot.Fences {
 			collect(fence.Evidence)
+		}
+	}
+	for id := range c.inheritedAssets {
+		if id == assetID && replacement != nil {
+			continue
+		}
+		if asset := c.assets[id]; asset != nil && asset.current != nil {
+			continue
+		}
+		if view, err := c.hub.Inspect(id); err == nil && view.Present {
+			collectSnapshot(view.Snapshot)
 		}
 	}
 	for id, asset := range c.assets {

@@ -154,7 +154,7 @@ func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing
 	}
 	text := string(source)
 
-	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg)")
+	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)")
 	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
 	start := strings.Index(text, "startGatewayRuntimeControl(ctx")
 	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start || strings.Contains(text, "ebusDriver.Start(") {
@@ -172,11 +172,12 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 	last := -1
 	for _, closeCall := range []string{
 		"evidenceRuntime.Close()",
-		"modbusAdapter.Close()",
-		"m2mRuntime.Close()",
-		"eebusLifecycle.Shutdown()",
 		"runtimeStateMgr.Stop(stopCtx)",
 		"ebusDriver.Shutdown(stopCtx)",
+		"control.CloseAdmission(closeCtx)",
+		"control.CloseNative(closeCtx)",
+		"teslaHSCRetained.Close()",
+		"m2mRuntime.Close()",
 		"artifactBuilder.EmitToFile(artifactPath)",
 		"gateway.Close()",
 		"shutdownHTTPControlPlane(server)",
@@ -216,7 +217,7 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	assertOrder(mainText, "flag.Parse()", "applyTransportSourcePolicy(&cfg)", "run(ctx, cfg)")
 	assertOrder(lifecycleText,
 		"prepareGatewayRunConfig(&cfg)",
-		"prepareGatewayEBusDriver(&cfg)",
+		"prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)",
 		"startGatewayRuntimeControl(ctx",
 		"ResolveAdmissionPath(cfg.TransportConfig.Protocol)",
 	)

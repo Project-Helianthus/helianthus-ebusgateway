@@ -47,8 +47,8 @@ func prepareGatewayRunConfig(cfg *ebusgateway.Config) (gatewayBuildInfo, error) 
 
 // prepareGatewayEBusDriver preserves the driver configuration phase before
 // run installs its historical LIFO shutdown defer and starts the driver.
-func prepareGatewayEBusDriver(cfg *ebusgateway.Config) (*ebusDriverController, error) {
-	ebusDriver, err := newEBusDriverController(*cfg)
+func prepareGatewayEBusDriver(cfg *ebusgateway.Config, sidecars ...drivermanager.DriverConfig) (*ebusDriverController, error) {
+	ebusDriver, err := newEBusDriverController(*cfg, sidecars...)
 	if err != nil {
 		return nil, fmt.Errorf("construct eBUS DriverManager: %w", err)
 	}
@@ -70,7 +70,7 @@ func prepareGatewayEBusDriver(cfg *ebusgateway.Config) (*ebusDriverController, e
 //
 // startGatewayRuntimeControl composes the frozen driver registry, the
 // durable desired-state service and the ebus.primary manager-to-hub bridge
-// before eBUS reconciliation. It is the single owner of eBUS startup: the
+// before reconciliation. It is the single owner of eBUS startup: the
 // bridge binds its DriverManager hooks before anything can start the
 // manager, and only the service's reconciliation (through the bridge) ever
 // starts, stops or replaces the eBUS generation. There is no unconditional
@@ -79,7 +79,7 @@ func prepareGatewayEBusDriver(cfg *ebusgateway.Config) (*ebusDriverController, e
 // Order:
 //  1. derive the configured source (DriverID plus persisted instance GUID)
 //     and the exact native contract reference, and bind the bridge;
-//  2. register ebus.primary only, validated and frozen before any effect;
+//  2. use the complete frozen registry and bind ebus.primary before any start;
 //  3. register the configured drivers in the durable store (one-time seed
 //     when a GUID exists, mark-only registration otherwise);
 //  4. start the service: D5 restoration first, then preparation of the
@@ -116,6 +116,7 @@ var errEBusGenerationTasksDraining = errors.New("ebus control: predecessor gener
 // gatewayRuntimeControlOptions is the composition input. Recovery, Disabled,
 // Now and the timeouts are test seams; production supplies none of them.
 type gatewayRuntimeControlOptions struct {
+	Sidecars     *managedSidecars
 	Driver       *ebusDriverController
 	Hub          *semhub.Hub
 	Store        *runtimestate.Manager
@@ -168,6 +169,9 @@ func (view controlHubOwnership) SourceOwner(source runtimecontrol.SourceID) (run
 	if !ok {
 		return "", false
 	}
+	if info.Driver == growattStorageDriver {
+		return managedGrowattID, true
+	}
 	return runtimecontrol.DriverID(info.Driver), true
 }
 
@@ -184,6 +188,12 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 		registry: runtimecontrol.NewRegistry(controlHubOwnership{hub: opts.Hub}),
 		store:    opts.Store,
 		driver:   opts.Driver,
+	}
+	if opts.Sidecars != nil {
+		control.registry = opts.Sidecars.registry
+		if opts.Driver != nil {
+			opts.Sidecars.bind(opts.Driver.manager, opts.Driver.runtime)
+		}
 	}
 	id := runtimecontrol.DriverID(primaryEBusDriverID)
 
@@ -206,17 +216,23 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 
 	// 3: durable registration. A failed load disposition writes nothing and
 	// presents every configured driver as FAILED.
-	if _, err := opts.Store.BootstrapControl(ctx, []runtimestate.ControlDriverConfig{{DriverID: primaryEBusDriverID, Enabled: !opts.Disabled}}); err != nil {
+	sidecarStore, sidecarService := opts.Sidecars.serviceConfigs()
+	storeConfigs := append([]runtimestate.ControlDriverConfig{{DriverID: primaryEBusDriverID, Enabled: !opts.Disabled}}, sidecarStore...)
+	serviceConfigs := append([]runtimecontrol.DriverConfig{{DriverID: id, Executor: control.executor}}, sidecarService...)
+	if _, err := opts.Store.BootstrapControl(ctx, storeConfigs); err != nil {
 		report(fmt.Errorf("register drivers in runtime_control: %w (load=%s)", err, opts.Store.ControlLoad().Disposition))
 	}
 
 	prepare := control.executor.prepare
 	recovery := &controlRecovery{inner: opts.Recovery, drivers: []runtimecontrol.DriverID{id},
 		prepare: map[runtimecontrol.DriverID]func(context.Context) error{id: prepare}}
+	for _, d := range sidecarService {
+		recovery.drivers = append(recovery.drivers, d.DriverID)
+	}
 	service, err := runtimecontrol.New(runtimecontrol.Options{
 		Store:       &runtimeControlStore{m: opts.Store},
 		Recovery:    recovery,
-		Drivers:     []runtimecontrol.DriverConfig{{DriverID: id, Executor: control.executor}},
+		Drivers:     serviceConfigs,
 		Incarnation: incarnation,
 		OnError:     report,
 	})
@@ -304,6 +320,12 @@ func composeEBusPrimary(registry *runtimecontrol.Registry, opts gatewayRuntimeCo
 	descriptor, err := newEBusPrimaryDescriptor(native, source, adapter)
 	if err != nil {
 		return bridge, err
+	}
+	if existing, err := registry.Get(descriptor.DriverID); err == nil {
+		if existing.Driver.NativeContract != descriptor.NativeContract || len(existing.Driver.Sources) != 1 || existing.Driver.Sources[0] != source {
+			return bridge, errEBusControlInvalidConfig
+		}
+		return bridge, nil
 	}
 	if err := registry.Register(descriptor); err != nil {
 		return bridge, err

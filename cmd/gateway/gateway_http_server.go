@@ -225,7 +225,11 @@ func startHTTPServer(
 			MCPPath:          cfg.MCPPath,
 			EEBusAdminPath:   "/admin/eebus/v1",
 			Readiness: func() portal.RuntimeReadiness {
-				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
+				snapshot := eebusLifecycle.LifecycleSnapshot()
+				if adapter, ok := eebusProvider.(*eebusRuntimeAdapter); ok && adapter.managed != nil {
+					snapshot = adapter.managed.eebusLifecycleSnapshot()
+				}
+				return projectGatewayReadiness(ebusProxyReadiness, snapshot)
 			},
 			GatewayVersion:         buildInfo.ReleaseVersion,
 			BuildID:                buildInfo.BuildID,

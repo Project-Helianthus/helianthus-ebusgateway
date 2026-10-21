@@ -12,16 +12,19 @@ import (
 // The compatibility overlay stays empty until the shared SemReg consumer
 // admits a documented mapping. Refresh only supplies native observations.
 type eebusPromotedSemanticProvider struct {
-	adapter *eebusRuntimeAdapter
-	mu      sync.RWMutex
-	overlay graphql.PromotedSemanticOverlay
+	adapter   *eebusRuntimeAdapter
+	mu        sync.RWMutex
+	overlay   graphql.PromotedSemanticOverlay
+	startOnce sync.Once
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func newEEBusPromotedSemanticProvider(adapter *eebusRuntimeAdapter) *eebusPromotedSemanticProvider {
-	if adapter == nil || adapter.runtime == nil {
+	if adapter == nil || (adapter.runtime == nil && adapter.managed == nil) {
 		return nil
 	}
-	return &eebusPromotedSemanticProvider{adapter: adapter}
+	return &eebusPromotedSemanticProvider{adapter: adapter, done: make(chan struct{})}
 }
 
 // wireEEBusPromotedSemanticGraphQL composes the public-safe overlay for
@@ -35,7 +38,9 @@ func wireEEBusPromotedSemanticGraphQL(ctx context.Context, builder *graphql.Buil
 	if promoted == nil {
 		return base
 	}
-	promoted.Start(ctx)
+	if adapter.managed == nil {
+		promoted.Start(ctx)
+	}
 	composed := graphql.NewPromotedSemanticProvider(base, promoted.Overlay)
 	builder.SetSemanticProvider(composed)
 	return composed
@@ -54,19 +59,41 @@ func (p *eebusPromotedSemanticProvider) Start(ctx context.Context) {
 	if p == nil {
 		return
 	}
-	go func() {
-		p.Refresh(ctx)
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				p.Refresh(ctx)
-			}
+	p.startOnce.Do(func() {
+		if p.done == nil {
+			p.done = make(chan struct{})
 		}
-	}()
+		ctx, p.cancel = context.WithCancel(ctx)
+		go func() {
+			defer close(p.done)
+			p.Refresh(ctx)
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					p.Refresh(ctx)
+				}
+			}
+		}()
+	})
+}
+
+func (p *eebusPromotedSemanticProvider) Close(ctx context.Context) error {
+	if p == nil {
+		return nil
+	}
+	if p.cancel != nil {
+		p.cancel()
+	}
+	select {
+	case <-p.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Refresh delegates to the adapter publication boundary without native feature

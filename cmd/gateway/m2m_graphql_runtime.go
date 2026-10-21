@@ -84,7 +84,7 @@ func newM2MGraphQLRuntimeWithTesla(config ebusgateway.Config, adapter *modbusada
 	return newM2MGraphQLRuntimeWithMatter(config, adapter, growatt, tesla, nil)
 }
 
-func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider) (*m2mGraphQLRuntime, error) {
+func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider, managed ...*managedSidecarBindings) (*m2mGraphQLRuntime, error) {
 	if config.M2MGraphQL.Disabled() {
 		return nil, nil
 	}
@@ -109,20 +109,45 @@ func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusad
 			return current, err == nil
 		}
 	}
+	pvCurrent := func(_ context.Context, asset string) (json.RawMessage, bool) {
+		if adapter == nil {
+			return nil, false
+		}
+		current, ok := adapter.SemanticPVCurrentByAsset(asset)
+		if !ok {
+			return nil, false
+		}
+		encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+		return encoded, err == nil
+	}
+	storageCurrent := newGrowattStorageGraphQLProvider(growatt)
+	if len(managed) == 1 && managed[0] != nil {
+		bindings := managed[0]
+		pvCurrent = func(ctx context.Context, asset string) (out json.RawMessage, ok bool) {
+			err := bindings.modbus(ctx, func(adapter *modbusadapter.Adapter) error {
+				current, available := adapter.SemanticPVCurrentByAsset(asset)
+				if !available {
+					return errors.New("PV publication unavailable")
+				}
+				var err error
+				out, err = json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
+				return err
+			})
+			return out, err == nil
+		}
+		storageCurrent = func(ctx context.Context, asset string) (out json.RawMessage, ok bool) {
+			err := bindings.growatt(ctx, func(provider *growattBMSRS485ProductionProvider) error {
+				var err error
+				out, err = currentGrowattStoragePublic(ctx, asset, provider)
+				return err
+			})
+			return out, err == nil
+		}
+	}
 	graphqlHandler, err := m2mgraphql.NewHandler(m2mgraphql.Config{
-		AllowedAssets: allowed,
-		SemanticPVCurrent: func(_ context.Context, asset string) (json.RawMessage, bool) {
-			if adapter == nil {
-				return nil, false
-			}
-			current, ok := adapter.SemanticPVCurrentByAsset(asset)
-			if !ok {
-				return nil, false
-			}
-			encoded, err := json.Marshal(map[string]any{"snapshot": current.Snapshot, "evaluation": current.Evaluation, "selections": current.Selections, "projection": current.Projection})
-			return encoded, err == nil
-		},
-		SemanticStorageCurrent: newGrowattStorageGraphQLProvider(growatt),
+		AllowedAssets:          allowed,
+		SemanticPVCurrent:      pvCurrent,
+		SemanticStorageCurrent: storageCurrent,
 		SemanticEVSECurrent:    semanticEVSECurrent,
 	})
 	if err != nil {

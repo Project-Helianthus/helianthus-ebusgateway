@@ -28,6 +28,7 @@ var (
 )
 
 type eebusRuntimeAdapter struct {
+	managed               *managedSidecarBindings
 	runtime               eebusruntime.Runtime
 	promotion             mcp.LeafPromotionCapture
 	startupDegradedReason eebusadmin.EEBusDegradedReason
@@ -435,6 +436,9 @@ func eebusMCPProvider(adapter *eebusRuntimeAdapter) mcp.EEBusV1Provider {
 }
 
 func eebusMCPCommandRouter(adapter *eebusRuntimeAdapter) mcp.EEBusV1CommandRouter {
+	if adapter != nil && adapter.managed != nil {
+		return managedEEBusCommands{bindings: adapter.managed}
+	}
 	if adapter == nil || adapter.runtime == nil {
 		return nil
 	}
@@ -517,6 +521,9 @@ func (adapter *eebusRuntimeAdapter) Shutdown() error {
 }
 
 func (adapter *eebusRuntimeAdapter) Snapshot() (eebusruntime.SnapshotV1, error) {
+	if adapter != nil && adapter.managed != nil {
+		return adapter.managed.eebusSnapshot()
+	}
 	if adapter == nil || adapter.runtime == nil {
 		return eebusruntime.SnapshotV1{}, errors.New("eeBUS runtime unavailable")
 	}
@@ -644,4 +651,57 @@ func (adapter *eebusRuntimeAdapter) refreshSemregSnapshot(ctx context.Context) (
 		return snapshot, err
 	}
 	return snapshot, nil
+}
+
+type managedEEBusCommands struct{ bindings *managedSidecarBindings }
+
+func (router managedEEBusCommands) FeaturesGet(ctx context.Context, auth eebusraw.ReadAuthorizationV1, request eebusraw.FeaturesGetRequestV1) (out eebusraw.FeaturesGetDataV1, terminal *eebusraw.ErrorV1) {
+	err := router.bindings.eebus(ctx, func(adapter *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, terminal = eebuscommand.New(adapter.runtime).FeaturesGet(ctx, auth, request)
+		return nil
+	})
+	if err != nil {
+		terminal = eebusRuntimeUnavailableError()
+	}
+	return
+}
+func (router managedEEBusCommands) FeaturesDataGet(ctx context.Context, auth eebusraw.ReadAuthorizationV1, request eebusraw.FeatureDataGetRequestV1) (out eebusraw.FeatureDataGetDataV1, terminal *eebusraw.ErrorV1) {
+	err := router.bindings.eebus(ctx, func(adapter *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, terminal = eebuscommand.New(adapter.runtime).FeaturesDataGet(ctx, auth, request)
+		return nil
+	})
+	if err != nil {
+		terminal = eebusRuntimeUnavailableError()
+	}
+	return
+}
+func (router managedEEBusCommands) FeaturesDataSet(ctx context.Context, auth eebusraw.WriteAuthorizationV1, request eebusraw.FeatureDataSetRequestV1) (out eebusruntime.RawMutationOutcomeV1, terminal *eebusraw.ErrorV1) {
+	err := router.bindings.eebus(ctx, func(adapter *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, terminal = eebuscommand.New(adapter.runtime).FeaturesDataSet(ctx, auth, request)
+		return nil
+	})
+	if err != nil {
+		terminal = eebusRuntimeUnavailableError()
+	}
+	return
+}
+func (router managedEEBusCommands) MutationsGet(ctx context.Context, auth eebusraw.ReadAuthorizationV1, request eebusraw.MutationGetRequestV1) (out eebusruntime.RawMutationOutcomeV1, terminal *eebusraw.ErrorV1) {
+	err := router.bindings.eebus(ctx, func(adapter *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, terminal = eebuscommand.New(adapter.runtime).MutationsGet(ctx, auth, request)
+		return nil
+	})
+	if err != nil {
+		terminal = eebusRuntimeUnavailableError()
+	}
+	return
+}
+func (router managedEEBusCommands) MutationsRollback(ctx context.Context, auth eebusraw.WriteAuthorizationV1, request eebusraw.MutationRollbackRequestV1) (out eebusruntime.RawMutationOutcomeV1, terminal *eebusraw.ErrorV1) {
+	err := router.bindings.eebus(ctx, func(adapter *eebusRuntimeAdapter, _ eebusruntime.AdminV1) error {
+		out, terminal = eebuscommand.New(adapter.runtime).MutationsRollback(ctx, auth, request)
+		return nil
+	})
+	if err != nil {
+		terminal = eebusRuntimeUnavailableError()
+	}
+	return
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -843,9 +844,17 @@ func TestM03CanceledStartupWithAdapterCanRetry(t *testing.T) {
 
 func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
+	var closes atomic.Int32
 	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) { return &m03Endpoint{}, nil }, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
-		return &m03Work{start: func() { close(entered); <-release }, close: func() error { return nil }}
+		return &m03Work{start: func() { close(entered); <-release }, close: func() error { closes.Add(1); return nil }}
 	})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
 	result := make(chan error, 1)
 	go func() { _, err := driver.Start(context.Background()); result <- err }()
 	<-entered
@@ -854,14 +863,115 @@ func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
 	go func() { driver.FenceWithdrawal(); close(fenced) }()
 	select {
 	case <-fenced:
-		t.Error("withdrawal completed while generation effects were still installing")
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("withdrawal blocked behind work installation")
 	}
-	close(release)
-	<-fenced
-	<-result
 	if !attempt.withdrawn() {
 		t.Fatal("withdrawal gate did not close")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(ctx) }()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cleanup completed while generation effects were still installing: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not honor its deadline")
+	}
+	if closes.Load() != 0 {
+		t.Fatal("work closed before installation joined")
+	}
+	close(release)
+	if err := <-result; err == nil {
+		t.Fatal("withdrawn installation admitted")
+	}
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if closes.Load() != 1 || driver.active.Load() != nil {
+		t.Fatal("cleanup did not join installation and close its work exactly once")
+	}
+}
+
+// Done signals that Start reached the join select, without timing assumptions.
+type m03JoinContext struct {
+	context.Context
+	joined chan struct{}
+	once   sync.Once
+}
+
+func (c *m03JoinContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.joined) })
+	return c.Context.Done()
+}
+
+func TestM03RetryJoinsCanceledStartupThenOpensFreshEndpoint(t *testing.T) {
+	for _, block := range []string{"endpoint", "work factory"} {
+		t.Run(block, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			first := &m03Endpoint{}
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				if calls.Add(1) == 1 {
+					if block == "endpoint" {
+						close(entered)
+						<-release
+					}
+					return first, nil
+				}
+				return &m03Endpoint{}, nil
+			}, func(ctx context.Context, _ *modbusadapter.Adapter) modbusManagedWork {
+				if block == "work factory" && calls.Load() == 1 {
+					close(entered)
+					<-release
+				}
+				return nil
+			})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			initial := make(chan error, 1)
+			go func() { _, err := driver.Start(ctx); initial <- err }()
+			<-entered
+			cancel()
+			if err := <-initial; !errors.Is(err, context.Canceled) {
+				t.Fatalf("initial start=%v", err)
+			}
+			retryCtx, retryCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer retryCancel()
+			joined := &m03JoinContext{Context: retryCtx, joined: make(chan struct{})}
+			retried := make(chan error, 1)
+			go func() {
+				generation, err := driver.Start(joined)
+				if err == nil && generation != 2 {
+					err = fmt.Errorf("retry generation=%d, want 2", generation)
+				}
+				retried <- err
+			}()
+			<-joined.joined
+			if calls.Load() != 1 {
+				t.Fatal("retry opened before predecessor cleanup")
+			}
+			close(release)
+			if err := <-retried; err != nil {
+				t.Fatalf("joined retry did not start a fresh attempt: %v", err)
+			}
+			if calls.Load() != 2 || first.closes.Load() != 1 {
+				t.Fatal("retry did not close predecessor and open exactly one fresh endpoint")
+			}
+			if driver.active.Load().scope.Generation != 1 {
+				t.Fatal("native retry changed service generation")
+			}
+		})
 	}
 }
 

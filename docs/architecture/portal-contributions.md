@@ -347,6 +347,10 @@ Reconnect only to the same advertised URL, preserving prefix and query policy.
 | Stream disconnect/parse failure | Mark disconnected/degraded, retain last-known data with source freshness; never mark it fresh on reconnect. |
 | Generation conflict (catalog/read identity mismatch persisting after the bounded refetch, or a changed registry/publication generation) or whole-read limit exceeded | Display the inconsistent/contract error and no values; do not splice/truncate a successful view. |
 
+Component reattachment preserves previous valid semantic cards as historical while
+the new bootstrap and refresh run. A refresh failure retains those cards; a
+successful replacement or a conflict/limit result replaces them.
+
 Structured GraphQL errors with `extensions.code` of `CONFLICT` or
 `RESOURCE_EXHAUSTED` use the no-values conflict/limit state, including after a
 previous successful read.

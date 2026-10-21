@@ -1193,7 +1193,6 @@ class PortalShell extends HTMLElement {
   }
 
   beginBootstrapLifecycle() {
-    this._semanticHasValid = false;
     if (this.bootstrapLifecycleAbort) {
       this.bootstrapLifecycleAbort.abort();
     }
@@ -4091,6 +4090,8 @@ class PortalShell extends HTMLElement {
   }
 
   render() {
+    const semanticCards = this._semanticHasValid
+      ? this.querySelector('[data-role="semantic-list"]')?.innerHTML : undefined;
     // render() replaces the Portal DOM. A prior catalog is no longer visible,
     // so a failed bootstrap after reattach must not claim it is still shown.
     this._portalCatalogHasValid = false;
@@ -4481,6 +4482,11 @@ class PortalShell extends HTMLElement {
         </div>
       </div>
     `;
+    if (semanticCards !== undefined) {
+      this.querySelector('[data-role="semantic-list"]').innerHTML = semanticCards;
+      this.querySelector('[data-role="semantic-notice"]').textContent =
+        "Showing historical last valid contributions. Refresh pending.";
+    }
   }
 
   // ---------------------------------------------------------------------

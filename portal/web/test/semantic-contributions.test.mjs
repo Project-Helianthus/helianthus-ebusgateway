@@ -116,6 +116,32 @@ test("M23 read error announces historical retained cards and preserves Refresh f
   assert.match(h.notice.textContent, /loaded/); assert.equal(h.document.activeElement, h.button);
 });
 
+for (const failure of ["HTTP", "timeout", "malformed response"]) test(`M23 reattachment retains historical cards after ${failure}`, async () => {
+  const h = harness(), f = fixture(1);
+  h.pair(f); assert.equal(await h.refresh(), true);
+  const previous = h.list.innerHTML;
+  // Model DOM replacement so the real render() cannot silently discard cards.
+  Object.defineProperty(h.shell, "innerHTML", { set(html) {
+    h.list.innerHTML = html.match(/<ul data-role="semantic-list"[^>]*>([\s\S]*?)<\/ul>/)[1];
+  } });
+  h.shell.endBootstrapLifecycle();
+  h.shell.beginBootstrapLifecycle();
+  h.shell.render();
+  assert.equal(h.list.innerHTML, previous);
+  assert.equal(h.shell._semanticHasValid, true);
+  let abort;
+  if (failure === "HTTP") h.queue.push({ ok: false });
+  else if (failure === "malformed response") h.queue.push({ ok: true, json: async () => ({ data: {} }) });
+  else h.queue.push(new Promise((resolve, reject) => { abort = () => reject(new Error("synthetic abort")); }));
+  const pending = h.refresh();
+  if (abort) { h.deadline(); abort(); }
+  assert.equal(await pending, false);
+  assert.equal(h.list.innerHTML, previous);
+  assert.match(h.notice.textContent, /historical last valid/);
+  h.pair(f); assert.equal(await h.refresh(), true);
+  assert.doesNotMatch(h.notice.textContent, /historical/);
+});
+
 test("M23 pending and overlapping reads expose busy state and ignore late completions", async () => {
   const h = harness(); let complete;
   h.queue.push(new Promise((resolve) => { complete = resolve; }));

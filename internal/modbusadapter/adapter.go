@@ -83,6 +83,13 @@ func closeStartupEndpoint(endpoint Endpoint) error {
 	return nil
 }
 
+func closeStartupConnection(connection net.Conn) error {
+	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return errors.Join(ErrStartupCloseUnproven, err)
+	}
+	return nil
+}
+
 func (scope *PublicationScope) Withdraw() {
 	if scope != nil {
 		scope.withdrawn.Store(true)
@@ -217,7 +224,7 @@ func Start(
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open Modbus TCP endpoint: %w", err),
-			connection.Close(),
+			closeStartupConnection(connection),
 			closeStartupEndpoint(endpoint),
 		)
 	}
@@ -233,10 +240,10 @@ func Start(
 		epoch, generation = config.Publication.Epoch, config.Publication.Generation
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, errors.Join(err, connection.Close(), closeStartupEndpoint(endpoint))
+		return nil, errors.Join(err, closeStartupConnection(connection), closeStartupEndpoint(endpoint))
 	}
 	if !config.Publication.valid() {
-		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), connection.Close(), closeStartupEndpoint(endpoint))
+		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), closeStartupConnection(connection), closeStartupEndpoint(endpoint))
 	}
 	// The provisional PV source epoch is admitted exactly at the historical
 	// sample point, after the endpoint factory, dial and open.
@@ -248,7 +255,7 @@ func Start(
 				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
 			}
 		}
-		nativeCleanup := errors.Join(connection.Close(), closeStartupEndpoint(endpoint))
+		nativeCleanup := errors.Join(closeStartupConnection(connection), closeStartupEndpoint(endpoint))
 		if config.Publication != nil && cleanup != nil {
 			// Keep the partially activated core reachable even though no adapter
 			// was admitted. Native cleanup is immutable; semantic fencing retries.

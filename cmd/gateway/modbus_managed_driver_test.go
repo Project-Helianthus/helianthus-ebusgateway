@@ -488,6 +488,56 @@ func TestM03UnprovenCloseBlocksReplacement(t *testing.T) {
 	}
 }
 
+type m03StartupCloseErrorConn struct {
+	net.Conn
+	closeErr error
+}
+
+func (c *m03StartupCloseErrorConn) Close() error {
+	_ = c.Conn.Close()
+	return c.closeErr
+}
+
+type m03OpenFailureEndpoint struct {
+	m03Endpoint
+	openErr error
+}
+
+func (e *m03OpenFailureEndpoint) OpenConnection(net.Conn) (modbus.TCPConnectionHandle, error) {
+	return modbus.TCPConnectionHandle{}, e.openErr
+}
+
+func TestM03UnprovenConnectionCloseBlocksReplacement(t *testing.T) {
+	closeErr := errors.New("synthetic connection close failure")
+	openErr := errors.New("synthetic open failure")
+	endpoint := &m03OpenFailureEndpoint{openErr: openErr}
+	var calls atomic.Int32
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		calls.Add(1)
+		return endpoint, nil
+	}, nil)
+	client, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	driver.dial = func(context.Context, string, string) (net.Conn, error) {
+		return &m03StartupCloseErrorConn{Conn: client, closeErr: closeErr}, nil
+	}
+	if _, err := driver.Start(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) || !errors.Is(err, closeErr) || !errors.Is(err, openErr) {
+		t.Errorf("start lost unproven connection cleanup: %v", err)
+	}
+	if _, err := driver.Start(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) {
+		t.Errorf("second start bypassed unproven cleanup: %v", err)
+	}
+	if err := driver.Stop(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) || !errors.Is(err, closeErr) {
+		t.Errorf("stop claimed cleanup proof: %v", err)
+	}
+	if _, err := driver.Replace(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) {
+		t.Errorf("replacement bypassed unproven cleanup: %v", err)
+	}
+	if calls.Load() != 1 || endpoint.closes.Load() != 1 {
+		t.Errorf("endpoint factory calls=%d closes=%d, want 1 each", calls.Load(), endpoint.closes.Load())
+	}
+}
+
 func m03AssertGeneration(t *testing.T, view modbusadapter.SemanticPVCurrent, epoch semreg.SourceEpochID, generation semreg.Uint64) {
 	t.Helper()
 	available := 0

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -462,4 +463,87 @@ func TestManagedCloseRevokesAdmissionBeforeEndpointDrain(t *testing.T) {
 	}
 	// Fixture cleanup closes the original endpoint directly.
 	adapter.endpoint = endpoint.Endpoint
+}
+
+type startupCloseErrorConn struct {
+	net.Conn
+	closeErr error
+}
+
+func (c *startupCloseErrorConn) Close() error {
+	_ = c.Conn.Close()
+	return c.closeErr
+}
+
+type startupFailureEndpoint struct {
+	fakeEndpoint
+	afterOpen func()
+}
+
+func (e *startupFailureEndpoint) OpenConnection(c net.Conn) (modbus.TCPConnectionHandle, error) {
+	handle, err := e.fakeEndpoint.OpenConnection(c)
+	if e.afterOpen != nil {
+		e.afterOpen()
+	}
+	return handle, err
+}
+
+func TestManagedStartupConnectionCleanup(t *testing.T) {
+	openErr := errors.New("synthetic open failure")
+	closeErr := errors.New("synthetic connection close failure")
+	for _, tc := range []struct {
+		name     string
+		path     string
+		closeErr error
+		unproven bool
+	}{
+		{"open failure", "open", closeErr, true},
+		{"caller cancelled", "cancel", closeErr, true},
+		{"scope withdrawn", "withdraw", closeErr, true},
+		{"source epoch admission", "admission", closeErr, true},
+		{"already closed socket", "open", fmt.Errorf("socket cleanup: %w", net.ErrClosed), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			config := validConfig()
+			config.Publication = &PublicationScope{Epoch: "source-epoch:pv:startup-cleanup", Generation: 1}
+			endpoint := &startupFailureEndpoint{}
+			var cause error
+			switch tc.path {
+			case "open":
+				endpoint.openErr = openErr
+				cause = openErr
+			case "cancel":
+				endpoint.afterOpen = cancel
+				cause = context.Canceled
+			case "withdraw":
+				endpoint.afterOpen = config.Publication.Withdraw
+			case "admission":
+				config.Publication.Epoch = "invalid epoch"
+				cause = semhub.ErrAdmission
+			}
+			client, peer := net.Pipe()
+			defer func() { _ = peer.Close() }()
+			connection := &startupCloseErrorConn{Conn: client, closeErr: tc.closeErr}
+			adapter, err := Start(ctx, config,
+				func(context.Context, string, string) (net.Conn, error) { return connection, nil },
+				func(modbus.TCPEndpointConfig) (Endpoint, error) { return endpoint, nil })
+			if adapter != nil || err == nil {
+				t.Fatalf("failed startup adapter=%v error=%v", adapter, err)
+			}
+			if cause != nil && !errors.Is(err, cause) {
+				t.Errorf("startup lost failure cause: %v", err)
+			}
+			if errors.Is(err, ErrStartupCloseUnproven) != tc.unproven {
+				t.Errorf("unproven cleanup=%v, want %v: %v", errors.Is(err, ErrStartupCloseUnproven), tc.unproven, err)
+			}
+			if tc.unproven && !errors.Is(err, tc.closeErr) {
+				t.Errorf("startup lost connection close failure: %v", err)
+			}
+			if endpoint.closeCalls != 1 {
+				t.Errorf("endpoint closes=%d, want 1", endpoint.closeCalls)
+			}
+		})
+	}
 }

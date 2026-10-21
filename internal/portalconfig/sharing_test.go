@@ -137,7 +137,7 @@ func TestM29MissingBindingsAndLocalSeparation(t *testing.T) {
 func TestM29CollisionsAndInvalidBindings(t *testing.T) {
 	r := m29Record()
 	r.Sharing.GraphQL, r.AdapterProxy = true, true
-	for _, field := range []string{"proxy_cohost", "wildcard", "distinct_address", "distinct_port", "zero_port", "invalid_address", "zone", "multicast", "empty_owner", "unsafe_owner", "long_owner", "nonlocal_portal"} {
+	for _, field := range []string{"proxy_cohost", "wildcard", "distinct_address", "distinct_port", "zero_port", "invalid_address", "zone", "mapped_zone", "multicast", "empty_owner", "unsafe_owner", "long_owner", "nonlocal_portal"} {
 		t.Run(field, func(t *testing.T) {
 			a := m29Availability()
 			wantConflicts, invalidIndex := 0, -1
@@ -163,6 +163,9 @@ func TestM29CollisionsAndInvalidBindings(t *testing.T) {
 				invalidIndex = 1
 			case "zone":
 				a.GraphQL.Address = netip.IPv6Loopback().WithZone("synthetic")
+				invalidIndex = 1
+			case "mapped_zone":
+				a.GraphQL.Address = netip.AddrFrom16([16]byte{10: 0xff, 11: 0xff, 12: 127, 15: 1}).WithZone("synthetic")
 				invalidIndex = 1
 			case "multicast":
 				a.GraphQL.Address = netip.AddrFrom16([16]byte{0xff, 2})
@@ -242,7 +245,7 @@ func TestM29WildcardAddressFamilies(t *testing.T) {
 }
 
 func TestM29ConfigAPIValidationAndPending(t *testing.T) {
-	for _, mode := range []string{"ready", "missing", "collision", "invalid", "separate_families"} {
+	for _, mode := range []string{"ready", "missing", "collision", "invalid", "mapped_zone", "separate_families"} {
 		t.Run(mode, func(t *testing.T) {
 			accepted := m29Record()
 			r := accepted
@@ -259,6 +262,9 @@ func TestM29ConfigAPIValidationAndPending(t *testing.T) {
 			}
 			if mode == "invalid" {
 				a.GraphQL.Port = 0
+			}
+			if mode == "mapped_zone" {
+				a.GraphQL.Address = netip.AddrFrom16([16]byte{10: 0xff, 11: 0xff, 12: 127, 15: 1}).WithZone("synthetic")
 			}
 			updates := 0
 			callbacks := &portal.ConfigCallbacks{
@@ -298,9 +304,9 @@ func TestM29ConfigAPIValidationAndPending(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
 				t.Fatal(err)
 			}
-			if mode == "collision" || mode == "invalid" {
+			if mode == "collision" || mode == "invalid" || mode == "mapped_zone" {
 				code := "listener_conflict"
-				if mode == "invalid" {
+				if mode == "invalid" || mode == "mapped_zone" {
 					code = "invalid_binding"
 				}
 				if w.Code != http.StatusBadRequest || updates != 0 || view.Desired.Sharing.GraphQL || view.Error == nil || view.Error.Code != code {

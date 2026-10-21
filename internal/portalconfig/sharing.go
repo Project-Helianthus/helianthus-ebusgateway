@@ -57,8 +57,9 @@ func DeriveListenerPlan(r Record, a ListenerAvailability) ListenerPlan {
 			s.Reason = "not_selected"
 		} else if i < len(bindings) && bindings[i].Available {
 			b := bindings[i]
+			hasZone := b.Address.Zone() != "" // Unmap drops zones from mapped IPv4 addresses.
 			b.Address = b.Address.Unmap()
-			if !validListenerBinding(b) || (i == 0 && !b.Address.IsLoopback()) {
+			if hasZone || !validListenerBinding(b) || (i == 0 && !b.Address.IsLoopback()) {
 				s.Reason = "invalid_binding"
 			} else {
 				s.Binding = &b

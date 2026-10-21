@@ -319,6 +319,69 @@ type m03Work struct {
 func (w *m03Work) Start()       { w.start() }
 func (w *m03Work) Close() error { return w.close() }
 
+func TestM03BlockedWorkFactoryWithdrawal(t *testing.T) {
+	for _, withdrawal := range []string{"FenceWithdrawal", "Stop"} {
+		t.Run(withdrawal, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var starts, consumerLeaseStarts, closes atomic.Int32
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				return &m03Endpoint{}, nil
+			}, func(context.Context, *modbusadapter.Adapter) modbusManagedWork {
+				close(entered)
+				<-release
+				return &m03Work{start: func() {
+					starts.Add(1)
+					consumerLeaseStarts.Add(1)
+				}, close: func() error { closes.Add(1); return nil }}
+			})
+			t.Cleanup(func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result := make(chan error, 1)
+			go func() { _, err := driver.Start(ctx); result <- err }()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("work factory was not entered")
+			}
+			if withdrawal == "FenceWithdrawal" {
+				driver.FenceWithdrawal()
+			} else {
+				stopCtx, stopCancel := context.WithTimeout(ctx, 20*time.Millisecond)
+				defer stopCancel()
+				if err := driver.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("stop bypassed blocked factory join: %v", err)
+				}
+			}
+			close(release)
+			if err := <-result; err == nil {
+				t.Error("withdrawn start was admitted")
+			}
+			if err := driver.Stop(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := driver.Stop(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := starts.Load(); got != 0 {
+				t.Errorf("withdrawn work Start calls=%d, want 0", got)
+			}
+			if got := consumerLeaseStarts.Load(); got != 0 {
+				t.Errorf("withdrawn consumer lease starts=%d, want 0", got)
+			}
+			if got := closes.Load(); got != 1 {
+				t.Errorf("returned work Close calls=%d, want 1", got)
+			}
+		})
+	}
+}
+
 func TestM03WorkerLifetimeAndJoin(t *testing.T) {
 	var workerContext context.Context
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})

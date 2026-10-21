@@ -175,6 +175,12 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 	}
 	if a.adapter != nil && driver.workFactory != nil {
 		a.work = driver.workFactory(ctx, a.adapter)
+		// Keep late work owned by this attempt for Stop's join and close,
+		// but never start it after withdrawal while the factory was blocked.
+		if ctx.Err() != nil || a.withdrawn() {
+			a.startErr = errors.New("modbus managed start withdrawn")
+			return
+		}
 		if a.work != nil {
 			a.work.Start()
 		}

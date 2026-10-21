@@ -19,7 +19,7 @@ import (
 func m05Options(t *testing.T, factory eebusRuntimeFactory) eebusManagedDriverOptions {
 	t.Helper()
 	cfg := msp05bEnabledConfig()
-	cfg.StateRoot = t.TempDir()
+	cfg.StateRoot = issue755SecureStateRoot(t)
 	prefix := netip.MustParsePrefix(cfg.Subnets[0])
 	return eebusManagedDriverOptions{Config: cfg, Factory: factory, Resolve: func(string) ([]netip.Addr, error) {
 		return []netip.Addr{prefix.Addr().Next()}, nil

@@ -176,6 +176,7 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 			var process *rctlProcess
 			cfg := ebusgateway.DefaultConfig()
 			cfg.PortalConfigRoot = root
+			cfg.HTTPAddr = net.JoinHostPort(net.IPv6loopback.String(), "8080")
 			registry := runtimecontrol.NewRegistry(nil)
 			descriptor, err := newEBusPrimaryDescriptor(runtimecontrol.NativeContractRef{Owner: "example.org/native", Contract: "synthetic", Version: "synthetic"}, ctlSource, newEBusPrimaryLifecycleAdapter(cfg))
 			if err != nil {
@@ -200,7 +201,7 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 				store = openGatewayPortalConfig(cfg, registry)
 				defer func() { _ = store.Close() }()
 				mux := http.NewServeMux()
-				registerHTTPPortalRoutes(mux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store)}, nil)
+				registerHTTPPortalRoutes(mux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)}, nil)
 				handler = mux
 			}
 			request := func(method, route string, body []byte, want int) []byte {
@@ -381,7 +382,7 @@ func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) 
 		t.Fatal(err)
 	}
 	portalMux := http.NewServeMux()
-	registerHTTPPortalRoutes(portalMux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store)}, nil)
+	registerHTTPPortalRoutes(portalMux, "/portal", portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)}, nil)
 	entered, release := make(chan struct{}), make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/portal/", func(w http.ResponseWriter, r *http.Request) {
@@ -471,5 +472,294 @@ func testPortalConfigRetainsWriterUntilRequestDrains(t *testing.T, listen bool) 
 	got, err := reopened.Read()
 	if err != nil || got.Revision != "1" || !got.Sharing.GraphQL {
 		t.Fatalf("drained PUT was not persisted or writer was not released: %+v, %v", got, err)
+	}
+}
+
+func TestPortalConfigHostListenerPlan(t *testing.T) {
+	endpoint := func(host net.IP, port string) string { return net.JoinHostPort(host.String(), port) }
+	for _, mode := range []string{"cohost", "proxy_collision", "wildcard_local", "empty_host", "empty_host_ipv6_collision", "ipv6", "hostname", "ephemeral", "missing_routes", "invalid_zone"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.PortalConfigRoot = t.TempDir()
+			cfg.HTTPAddr = endpoint(net.IPv6loopback, "8080")
+			cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8081")
+			wantReason, wantError := "listener_application_pending", ""
+			switch mode {
+			case "proxy_collision":
+				cfg.ProxyListenAddr = cfg.HTTPAddr
+				wantReason, wantError = "listener_collision", "listener_conflict"
+			case "wildcard_local":
+				cfg.HTTPAddr = endpoint(net.IPv4zero, "8080")
+			case "empty_host":
+				cfg.HTTPAddr = net.JoinHostPort("", "8080")
+			case "empty_host_ipv6_collision":
+				cfg.HTTPAddr = ":8080"
+				cfg.ProxyListenAddr = endpoint(net.IPv6loopback, "8080")
+				wantReason, wantError = "listener_collision", "listener_conflict"
+			case "ipv6":
+				cfg.ProxyListenAddr = endpoint(net.IPv4zero, "8080")
+			case "hostname":
+				cfg.HTTPAddr = net.JoinHostPort("gateway.test", "8080")
+				wantReason = "evidence_unavailable"
+			case "ephemeral":
+				cfg.HTTPAddr = endpoint(net.IPv6loopback, "0")
+				wantReason = "evidence_unavailable"
+			case "missing_routes":
+				cfg.GraphQLPath, cfg.MCPPath, cfg.ProxyListenAddr = "", "", ""
+				wantReason = "evidence_unavailable"
+			case "invalid_zone":
+				cfg.HTTPAddr = net.JoinHostPort(net.IPv6loopback.String()+"%synthetic", "8080")
+				wantReason, wantError = "invalid_binding", "invalid_binding"
+			}
+			store := openGatewayPortalConfig(cfg, nil)
+			defer func() { _ = store.Close() }()
+			callbacks := gatewayPortalConfigCallbacks(store, cfg)
+			if callbacks.Bindings == nil {
+				t.Fatal("gateway omitted host binding callback")
+			}
+			record, err := store.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+			record.AdapterProxy = true
+			plan := portalconfig.DeriveListenerPlan(record, callbacks.Bindings(context.Background()))
+			if plan.Surfaces[1].Reason != wantReason || plan.Surfaces[2].Reason != wantReason {
+				t.Fatalf("host plan: %+v", plan)
+			}
+			if mode == "cohost" || mode == "ipv6" || mode == "wildcard_local" || mode == "empty_host" {
+				if len(plan.Conflicts) != 0 || plan.Surfaces[0].Binding == nil || *plan.Surfaces[0].Binding != *plan.Surfaces[1].Binding || *plan.Surfaces[1].Binding != *plan.Surfaces[2].Binding {
+					t.Fatalf("HTTP routes did not cohost: %+v", plan)
+				}
+			}
+			if mode == "missing_routes" {
+				record.Sharing, record.AdapterProxy = portalconfig.Sharing{}, false
+			}
+			body, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := portal.NewHandler(portal.Options{Config: callbacks})
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+			var view struct {
+				Error *portalconfig.Error       `json:"error"`
+				Plan  portalconfig.ListenerPlan `json:"listener_plan"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			if wantError != "" {
+				if response.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != wantError {
+					t.Fatalf("invalid host edit accepted: %d %s", response.Code, response.Body.String())
+				}
+				accepted, err := store.Read()
+				if err != nil || accepted.Revision != "0" || accepted.Sharing.GraphQL || accepted.AdapterProxy {
+					t.Fatalf("rejected edit changed history: %+v, %v", accepted, err)
+				}
+				return
+			}
+			if response.Code != http.StatusOK || view.Error != nil {
+				t.Fatalf("valid host edit rejected: %d %s", response.Code, response.Body.String())
+			}
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil || response.Code != http.StatusOK {
+				t.Fatalf("GET plan failed: %v %s", err, response.Body.String())
+			}
+			for _, surface := range view.Plan.Surfaces {
+				if surface.Effective {
+					t.Fatal("host configuration claimed runtime application", surface)
+				}
+			}
+		})
+	}
+}
+
+func TestPortalConfigDefaultHTTPBindingPUT(t *testing.T) {
+	cfg := ebusgateway.DefaultConfig()
+	cfg.PortalConfigRoot = t.TempDir()
+	registry := runtimecontrol.NewRegistry(nil)
+	descriptor, err := newEBusPrimaryDescriptor(runtimecontrol.NativeContractRef{Owner: "example.org/native", Contract: "synthetic", Version: "synthetic"}, ctlSource, newEBusPrimaryLifecycleAdapter(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(descriptor); err != nil {
+		t.Fatal(err)
+	}
+	store := openGatewayPortalConfig(cfg, registry)
+	defer func() { _ = store.Close() }()
+	handler := portal.NewHandler(portal.Options{Config: gatewayPortalConfigCallbacks(store, cfg)})
+	record, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edit := range []string{"driver_only", "enable_sharing", "disable_all_sharing"} {
+		switch edit {
+		case "driver_only":
+			record.Drivers[0].Enabled = false
+		case "enable_sharing":
+			record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+		case "disable_all_sharing":
+			record.Sharing = portalconfig.Sharing{}
+		}
+		body, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s PUT: %d %s", edit, response.Code, response.Body.String())
+		}
+		var view struct {
+			Desired portalconfig.Record       `json:"desired"`
+			Plan    portalconfig.ListenerPlan `json:"listener_plan"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		local := view.Plan.Surfaces[0]
+		if local.Binding == nil || !local.Binding.Address.IsUnspecified() || local.Binding.Port != 8080 || local.Scope != "shared" || local.Reason != "listener_application_pending" {
+			t.Fatalf("%s local plan: %+v", edit, local)
+		}
+		accepted, err := store.Read()
+		if err != nil || accepted.Revision == record.Revision || accepted.Drivers[0].Enabled || accepted.Sharing != record.Sharing || view.Desired.Revision != accepted.Revision {
+			t.Fatalf("%s persistence: %+v, %v", edit, accepted, err)
+		}
+		record = accepted
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openGatewayPortalConfig(cfg, registry)
+	defer func() { _ = reopened.Close() }()
+	accepted, err := reopened.Read()
+	if err != nil || accepted.Revision != record.Revision || accepted.Drivers[0].Enabled || accepted.Sharing != (portalconfig.Sharing{}) {
+		t.Fatalf("restart persistence: %+v, %v", accepted, err)
+	}
+}
+
+func TestPortalConfigExplicitHTTPAddress(t *testing.T) {
+	for _, address := range []string{"0.0.0.0", "::", "192.0.2.1"} {
+		for _, collision := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/collision_%t", address, collision), func(t *testing.T) {
+				cfg := ebusgateway.DefaultConfig()
+				cfg.PortalConfigRoot = t.TempDir()
+				cfg.HTTPAddr = net.JoinHostPort(address, "8080")
+				cfg.ProxyListenAddr = net.JoinHostPort(address, "8081")
+				if collision {
+					cfg.ProxyListenAddr = cfg.HTTPAddr
+				}
+				store := openGatewayPortalConfig(cfg, nil)
+				defer func() { _ = store.Close() }()
+				callbacks := gatewayPortalConfigCallbacks(store, cfg)
+				record, err := store.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.Sharing = portalconfig.Sharing{GraphQL: true, MCP: true}
+				record.AdapterProxy = true
+				plan := portalconfig.DeriveListenerPlan(record, callbacks.Bindings(context.Background()))
+				for _, surface := range plan.Surfaces[:3] {
+					if surface.Binding == nil || surface.Binding.Address.String() != address || surface.Binding.Port != 8080 || surface.Scope != "shared" {
+						t.Fatalf("explicit address lost: %+v", surface)
+					}
+				}
+				body, err := json.Marshal(record)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := httptest.NewRecorder()
+				portal.NewHandler(portal.Options{Config: callbacks}).ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/v1/config", bytes.NewReader(body)))
+				accepted, err := store.Read()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if collision {
+					var view struct {
+						Error *portalconfig.Error `json:"error"`
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+						t.Fatal(err)
+					}
+					if len(plan.Conflicts) != 3 || response.Code != http.StatusBadRequest || view.Error == nil || view.Error.Code != "listener_conflict" || accepted.Revision != "0" || accepted.Sharing != (portalconfig.Sharing{}) || accepted.AdapterProxy {
+						t.Fatalf("collision accepted: %+v, %d %s, %+v", plan, response.Code, response.Body.String(), accepted)
+					}
+				} else if len(plan.Conflicts) != 0 || response.Code != http.StatusOK || accepted.Revision != "1" || accepted.Sharing != record.Sharing || !accepted.AdapterProxy {
+					t.Fatalf("explicit binding rejected: %+v, %d %s, %+v", plan, response.Code, response.Body.String(), accepted)
+				}
+			})
+		}
+	}
+}
+
+func TestGatewayPortalHTTPAddress(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint, address string
+	}{
+		{":8080", "::"},
+		{"127.0.0.1:8080", "127.0.0.1"},
+		{"[::1]:8080", "::1"},
+		{"127.0.0.2:8080", "127.0.0.2"},
+		{"0.0.0.0:8080", "0.0.0.0"},
+		{"[::]:8080", "::"},
+		{"192.0.2.1:8080", "192.0.2.1"},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			listenAddress, binding := gatewayPortalHTTPAddress(tc.endpoint)
+			if listenAddress != tc.endpoint || !binding.Available || binding.Owner != "http" || binding.Address.String() != tc.address || binding.Port != 8080 {
+				t.Fatalf("HTTP address mapping: %q, %+v", listenAddress, binding)
+			}
+			cfg := ebusgateway.DefaultConfig()
+			cfg.HTTPAddr = tc.endpoint
+			callbacks := gatewayPortalConfigCallbacks(nil, cfg)
+			a := callbacks.Bindings(context.Background())
+			if a.Local != binding || a.GraphQL != binding || a.MCP != binding {
+				t.Fatalf("HTTP plan differs from shared mapping: %+v", a)
+			}
+			plan := portalconfig.DeriveListenerPlan(portalconfig.Record{}, a)
+			local := plan.Surfaces[0]
+			wantScope := "shared"
+			if binding.Address.IsLoopback() {
+				wantScope = "local_only"
+			}
+			if local.Binding == nil || *local.Binding != binding || local.Scope != wantScope || local.Status != "pending" || local.Reason != "listener_application_pending" || local.Effective || len(plan.Conflicts) != 0 {
+				t.Fatalf("HTTP local plan: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestPortalConfigHTTPListenerBind(t *testing.T) {
+	for _, host := range []string{"", "127.0.0.1", "::1", "0.0.0.0", "::"} {
+		t.Run("host_"+host, func(t *testing.T) {
+			cfg := ebusgateway.DefaultConfig()
+			cfg.MDNSAdvertise = false
+			// Let the OS allocate a port; the configured host has the same bind
+			// semantics as the fixed-port plan tested above.
+			endpoint := net.JoinHostPort(host, "0")
+			cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(endpoint)
+			server, _, err := startHTTPControlPlaneListener(context.Background(), cfg, http.NewServeMux(), nil, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = server.Close() }()
+			actualHost, port, err := net.SplitHostPort(server.Addr)
+			if err != nil || port == "0" {
+				t.Fatalf("actual listener endpoint: %q, %v", server.Addr, err)
+			}
+			actual := net.ParseIP(actualHost)
+			if actual == nil {
+				t.Fatalf("actual listener host: %q", actualHost)
+			}
+			wantLoopback := net.ParseIP(host).IsLoopback()
+			if actual.IsLoopback() != wantLoopback || actual.IsUnspecified() == wantLoopback {
+				t.Fatalf("configured host %q bound as %q", host, actualHost)
+			}
+			if wantLoopback && !actual.Equal(net.ParseIP(host)) {
+				t.Fatalf("explicit loopback host changed: %q", actualHost)
+			}
+		})
 	}
 }

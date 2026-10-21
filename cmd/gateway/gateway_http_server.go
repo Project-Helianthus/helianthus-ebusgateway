@@ -218,7 +218,7 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			Config:           gatewayPortalConfigCallbacks(configStore),
+			Config:           gatewayPortalConfigCallbacks(configStore, cfg),
 			GraphQLPath:      cfg.GraphQLPath,
 			SnapshotPath:     cfg.SnapshotPath,
 			SubscriptionPath: cfg.SubscriptionPath,
@@ -393,6 +393,7 @@ func startHTTPServer(
 	}
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
+	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
 	if configStore != nil {
 		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, configStore)
 	}

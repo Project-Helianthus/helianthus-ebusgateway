@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"net"
+	"net/netip"
+	"strconv"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
@@ -33,11 +36,51 @@ func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Re
 	return store
 }
 
-func gatewayPortalConfigCallbacks(store *portalconfig.Store) *portal.ConfigCallbacks {
+func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {
+	// Snapshot provisioned endpoints, not socket readiness or desired selections.
+	plan := newHTTPControlPlaneRoutePlan(cfg, false)
+	_, httpBinding := gatewayPortalHTTPAddress(cfg.HTTPAddr)
+	bindings := portalconfig.ListenerAvailability{Local: httpBinding}
+	if plan.graphqlPath != "" {
+		bindings.GraphQL = httpBinding
+	}
+	if plan.mcpPath != "" {
+		bindings.MCP = httpBinding
+	}
+	bindings.AdapterProxy = gatewayPortalListenerBinding("adapter_proxy", cfg.ProxyListenAddr)
 	return &portal.ConfigCallbacks{
-		Read: func(context.Context) (portalconfig.Record, error) { return store.Read() },
+		Bindings: func(context.Context) portalconfig.ListenerAvailability { return bindings },
+		Read:     func(context.Context) (portalconfig.Record, error) { return store.Read() },
 		Update: func(_ context.Context, record portalconfig.Record) (portalconfig.Record, error) {
 			return store.Update(record)
 		},
 	}
+}
+
+// gatewayPortalHTTPAddress maps the configured HTTP endpoint to listener input
+// and planning evidence together. Preserve the listen address byte-for-byte:
+// omitted and unspecified hosts bind wildcard interfaces, never loopback.
+func gatewayPortalHTTPAddress(endpoint string) (string, portalconfig.ListenerBinding) {
+	return endpoint, gatewayPortalListenerBinding("http", endpoint)
+}
+
+// gatewayPortalListenerBinding deliberately performs no DNS resolution or socket
+// probing. Hostnames and unassigned ephemeral ports lack a concrete endpoint.
+func gatewayPortalListenerBinding(owner, endpoint string) portalconfig.ListenerBinding {
+	host, portText, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return portalconfig.ListenerBinding{}
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return portalconfig.ListenerBinding{}
+	}
+	address := netip.IPv6Unspecified() // Empty host may bind both address families.
+	if host != "" {
+		address, err = netip.ParseAddr(host)
+		if err != nil {
+			return portalconfig.ListenerBinding{}
+		}
+	}
+	return portalconfig.ListenerBinding{Owner: owner, Address: address, Port: uint16(port), Available: true}
 }

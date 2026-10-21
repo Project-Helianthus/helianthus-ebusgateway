@@ -5,7 +5,9 @@ a partial slice of [#1000](https://github.com/Project-Helianthus/helianthus-ebus
 [#1001](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1001)
 and [#1002](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1002).
 This defines the application contract. The bounded desired-record persistence
-and Portal GET/PUT API are implemented; runtime application, authorization
+and Portal GET/PUT API are implemented. The listener-plan companion for
+[#1307](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1307)
+adds detached planning and pre-save validation; runtime application, authorization
 changes and plugin loading remain outside this slice.
 
 ## Owners and precedence
@@ -113,10 +115,101 @@ M2M configuration. None of these checks proves effective operation.
 A failed load retains the store's sanitized error view in GET and PUT while
 the Portal shell and bootstrap stay mounted. No failed load is replaced with
 defaults. Saves persist desired choices only; they do not change driver
-lifecycle, listeners, sharing or output publication. Each effective choice
-remains false with `withheld`/`evidence_unavailable` until runtime application
-and owner readback are implemented. Existing host-controlled operation remains
-outside this record's control in this persistence slice.
+lifecycle, listeners, sharing or output publication. Every effective choice
+remains false until runtime application and owner readback are implemented.
+Driver choices remain `withheld`/`evidence_unavailable`; listener-related choices
+use the plan statuses below. Existing host-controlled operation remains outside
+this record's control in this persistence slice.
+
+## Detached listener plan and API validation
+
+**Proven**: the [planner](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/internal/portalconfig/sharing.go)
+and [configuration API](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/portal/config_api.go)
+derive a bounded plan from desired selections and a snapshot supplied by the
+host-owned `ConfigCallbacks.Bindings` callback. Browser input cannot provide or
+override bindings. Production composition snapshots host-configured endpoints:
+local, GraphQL and MCP routes share the HTTP listener owner; the proxy has a
+separate owner. Only provisioned routes receive bindings. Numeric IP endpoints
+with fixed ports supply planning evidence; hostnames, unresolved endpoints and
+unassigned ephemeral ports remain unavailable without DNS or socket probing.
+An omitted HTTP host (including the default `HTTPAddr=":8080"`) binds and is
+planned as a wildcard on the configured port for all provisioned HTTP routes:
+network-exposed with scope `shared`. Explicit unspecified IPv4 and IPv6 hosts
+also remain wildcard binds. An explicit numeric host in `HTTPAddr` preserves
+that address; only an explicit loopback host gives the local surface scope
+`local_only`. The plan and listener use the same address mapping, preserving the
+configured listener address byte-for-byte. This pull request changes no listener
+bind or default, and requires no new setting.
+An empty proxy host is conservatively treated as an IPv6 wildcard. This snapshot describes
+configuration, not live readiness. A nil callback supplies no available bindings.
+The plan does not open sockets, change routes, apply selections, admit native access or
+publish outputs. **Unknown**: listener readiness and effective publication;
+planned bindings do not establish either.
+
+Successful `GET /api/v1/config` and `PUT /api/v1/config` responses include:
+
+- `desired`: the accepted desired record.
+- `listener_application`: always `pending` in this slice.
+- `listener_plan`: `status` (always `pending`), `surfaces` and `conflicts`.
+  Both arrays are present even when empty. Surfaces have fixed order: `local`,
+  `graphql`, `mcp`, `adapter_proxy`, `matter`. Conflicts follow pair order within
+  the first four surfaces and contain `first`, `second` and `reason`.
+- Each surface has `surface`, `desired`, `scope`, `effective`, `status`, `reason`
+  and an optional `binding`. A binding contains host-owned `owner`, normalized
+  `address` and `port`; availability is not serialized. These operational fields
+  must not be copied into diagnostic exports.
+- `state.sharing.graphql`, `state.sharing.mcp`, `state.adapter_proxy` and
+  `state.output_bindings.matter` mirror their corresponding planned surfaces.
+  Driver state retains its existing desired/effective/status/reason view.
+
+The local surface is always desired; a valid host-reported loopback binding
+gives it scope `local_only`, and a wildcard or non-loopback binding gives it
+scope `shared`. Without binding evidence its scope remains `local_only`. GraphQL and MCP have scope
+`shared` when selected and `local_only` otherwise; proxy has scope `shared` and
+Matter has scope `output`. Every surface remains `effective: false`.
+
+| Condition | Surface status | Reason | Binding |
+| --- | --- | --- | --- |
+| Unselected | `withheld` | `not_selected` | Omitted |
+| Selected, no available host binding | `withheld` | `evidence_unavailable` | Omitted |
+| Selected, available valid host binding | `pending` | `listener_application_pending` | Present |
+| Selected, available invalid host binding | `withheld` | `invalid_binding` | Omitted |
+| Planned bindings conflict | `withheld` for both participants | `listener_collision` or `inconsistent_listener_owner` | Present |
+
+Matter has no listener binding in this planner. When selected it remains
+`withheld`/`evidence_unavailable`; selection alone supplies no output evidence.
+Bindings require an owner of 1–64 lowercase ASCII letters, digits, dots,
+underscores or hyphens, a valid non-multicast IP address without a zone and a
+nonzero port. A host-reported local binding is a fact, including wildcard and
+non-loopback binds; browser selections cannot override it. All bindings retain
+the same validation and conflict checks. IPv4-mapped addresses
+normalize to IPv4 before comparison. No socket options are inferred.
+
+Equal owner, address and port can cohost local, GraphQL and MCP HTTP routes.
+One owner describing different endpoints yields `inconsistent_listener_owner`.
+Adapter proxy cannot cohost an overlapping endpoint even with the same owner.
+For distinct listeners on the same port, equal addresses collide; an IPv4
+wildcard overlaps only IPv4 addresses, while an IPv6 wildcard conservatively
+overlaps both families because dual-stack socket behavior is unspecified.
+Distinct ports do not collide. Distinct owners with an IPv4 wildcard and an
+IPv6 loopback on the same port therefore remain separate planned listeners.
+
+PUT decodes the complete desired record, then validates its plan before calling
+the persistence callback. Any conflict rejects the edit with HTTP 400 and
+`error.code: listener_conflict`; otherwise an `invalid_binding` surface rejects
+it with HTTP 400 and `error.code: invalid_binding`. Both use `error.field: record`.
+Their safe next steps are respectively `choose non-conflicting host bindings`
+and `repair host listener configuration`. Rejected edits never call Update or
+replace accepted desired choices. Missing binding evidence alone does not
+reject an edit; the existing persistence constraints still apply.
+
+GET recomputes the plan from current host bindings without saving or applying
+anything. Evidence loss or conflicts change the returned plan without changing
+desired choices or unaffected sibling surfaces. On an error, a valid retained
+record is returned as `desired` with `historical: true` and the sanitized error;
+its plan is derived without host bindings and does not describe the rejected
+candidate. Without a valid retained record, `desired` is null, selection states
+report the error and listener-plan/application fields are absent.
 
 ## Desired, effective and error views
 
@@ -235,7 +328,9 @@ Errors contain a closed code, allowlisted field location and safe next step:
 `unsupported_selection` (choose a provisioned option), `revision_conflict`
 (reload), `persistence_failed` (check local storage), or `evidence_unavailable`
 (inspect the owning driver's sanitized status); `revision_exhausted` requires a
-future supported format migration, not a counter reset. Never echo supplied
+future supported format migration, not a counter reset. Listener validation adds
+`listener_conflict` and `invalid_binding` with the rejection semantics above.
+Never echo supplied
 values,
 unknown key text, parser snippets, paths or underlying errors. Diagnostic
 exports are built from an allowlist of format, safe state booleans, statuses

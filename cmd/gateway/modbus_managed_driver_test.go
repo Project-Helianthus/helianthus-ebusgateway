@@ -524,6 +524,9 @@ func TestM03UnprovenConnectionCloseBlocksReplacement(t *testing.T) {
 	if _, err := driver.Start(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) || !errors.Is(err, closeErr) || !errors.Is(err, openErr) {
 		t.Errorf("start lost unproven connection cleanup: %v", err)
 	}
+	if !driver.SafetyQuarantined() {
+		t.Error("unproven connection cleanup did not quarantine the attempt")
+	}
 	if _, err := driver.Start(context.Background()); !errors.Is(err, modbusadapter.ErrStartupCloseUnproven) {
 		t.Errorf("second start bypassed unproven cleanup: %v", err)
 	}
@@ -535,6 +538,79 @@ func TestM03UnprovenConnectionCloseBlocksReplacement(t *testing.T) {
 	}
 	if calls.Load() != 1 || endpoint.closes.Load() != 1 {
 		t.Errorf("endpoint factory calls=%d closes=%d, want 1 each", calls.Load(), endpoint.closes.Load())
+	}
+}
+
+func TestM03PreAdapterCleanupFailureQuarantinesManager(t *testing.T) {
+	for _, phase := range []string{"factory", "dial", "open"} {
+		t.Run(phase, func(t *testing.T) {
+			startErr := errors.New("synthetic startup failure")
+			closeErr := errors.New("synthetic provisional cleanup failure")
+			endpoint := &m03OpenFailureEndpoint{openErr: startErr}
+			if phase != "open" {
+				endpoint.closeErr = closeErr
+			}
+			var calls atomic.Int32
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				calls.Add(1)
+				if phase == "factory" {
+					return endpoint, startErr
+				}
+				return endpoint, nil
+			}, nil)
+			driver.dial = func(context.Context, string, string) (net.Conn, error) {
+				if phase == "dial" {
+					return nil, startErr
+				}
+				client, peer := net.Pipe()
+				_ = peer.Close()
+				return &m03StartupCloseErrorConn{Conn: client, closeErr: closeErr}, nil
+			}
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := manager.Start(ctx, "pv.primary"); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				snapshot, changed, ok := manager.Watch("pv.primary")
+				if !ok {
+					t.Fatal("driver missing")
+				}
+				if snapshot.ObservedState == drivermanager.ObservedFailed {
+					if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+						t.Fatalf("provisional cleanup snapshot=%+v", snapshot)
+					}
+					break
+				}
+				select {
+				case <-changed:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			attempt := driver.active.Load()
+			<-attempt.started
+			if attempt.adapter != nil || !errors.Is(attempt.startErr, startErr) || !errors.Is(attempt.startErr, closeErr) || !driver.SafetyQuarantined() {
+				t.Fatalf("provisional cleanup adapter=%v error=%v quarantine=%v", attempt.adapter, attempt.startErr, driver.SafetyQuarantined())
+			}
+			report, err := manager.StopWithReport(ctx, "pv.primary")
+			if err != nil || report.Class != drivermanager.CloseUnconfirmed {
+				t.Fatalf("provisional cleanup report=%+v error=%v", report, err)
+			}
+			if err := manager.Start(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("start=%v", err)
+			}
+			if err := manager.Replace(ctx, "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+				t.Fatalf("replace=%v", err)
+			}
+			if calls.Load() != 1 || endpoint.closes.Load() != 1 || driver.Generation() != 1 {
+				t.Fatal("quarantine allowed native retry or repeated cleanup")
+			}
+		})
 	}
 }
 

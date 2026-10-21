@@ -212,6 +212,8 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 	// Publish native close evidence before startup cleanup can block on semantics.
 	a.cleanupAdapter.Store(a.adapter)
 	if a.startErr != nil {
+		// Provisional cleanup may fail before an adapter owns the endpoint.
+		a.nativeCleanupFailed.Store(errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven))
 		return
 	}
 	if ctx.Err() != nil || a.withdrawn() {

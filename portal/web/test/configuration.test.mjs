@@ -88,6 +88,58 @@ for (const code of ["unsupported_selection", "persistence_failed", "revision_con
   assert.match(html, /checked/); assert.doesNotMatch(html, /Effective: Enabled/);
 });
 
+for (const code of ["invalid_record", "persistence_failed"]) test(`M27 first GET ${code} loads retained historical choices`, async () => {
+  const h = harness(), view = fixture();
+  view.historical = true;
+  view.error = { code, next_step: "review saved choices" };
+  view.state.drivers[0].effective = true;
+  h.respond(view, false);
+  assert.equal(await h.shell.requestConfiguration(false), false);
+  assert.deepEqual(plain(h.shell._configView), view);
+  assert.deepEqual(plain(h.shell._configDraft), view.desired);
+  assert.equal(h.elements.get("config-save").disabled, false);
+  assert.match(h.elements.get("config-notice").textContent, new RegExp(`${code}: review saved choices`));
+  const html = h.elements.get("config-fields").innerHTML;
+  assert.match(html, /Driver fixture.family.b desired selection[\s\S]*Saved desired: Selected; Effective: Unavailable/);
+  assert.doesNotMatch(html, /Effective: (Enabled|Disabled)/);
+});
+
+test("M27 revision conflict refreshes historical saved choices while retaining rejected edits", async () => {
+  const h = harness(); h.respond(fixture()); await h.shell.requestConfiguration(false);
+  h.shell.configurationOptions()[3].set(true);
+  const before = plain(h.shell._configDraft), view = fixture();
+  view.desired.revision = "5";
+  view.desired.sharing.graphql = true;
+  view.state.sharing.graphql = { desired: true, effective: true, status: "applied", reason: "owner_readback" };
+  view.historical = true;
+  view.error = { code: "revision_conflict", next_step: "reload saved choices" };
+  h.respond(view, false);
+  assert.equal(await h.shell.requestConfiguration(true), false);
+  assert.deepEqual(plain(h.shell._configView), view);
+  assert.deepEqual(plain(h.shell._configDraft), before);
+  const html = h.elements.get("config-fields").innerHTML;
+  assert.match(html, /GraphQL sharing desired selection<\/label><br><span>Saved desired: Selected; Effective: Unavailable/);
+  assert.match(html, /checked > MCP sharing desired selection/);
+  assert.doesNotMatch(html, /Effective: (Enabled|Disabled)/);
+  assert.match(h.elements.get("config-notice").textContent, /revision_conflict: reload saved choices/);
+  assert.equal(h.elements.get("config-save").disabled, false);
+});
+
+test("M27 malformed historical records cannot replace accepted choices or rejected edits", async () => {
+  for (const loaded of [false, true]) {
+    const h = harness();
+    if (loaded) { h.respond(fixture()); await h.shell.requestConfiguration(false); h.shell.configurationOptions()[3].set(true); }
+    const before = h.shell._configDraft && plain(h.shell._configDraft);
+    const view = fixture(); view.desired.sharing.graphql = "invalid";
+    h.respond({ ...view, historical: true, error: { code: "persistence_failed" } }, false);
+    assert.equal(await h.shell.requestConfiguration(false), false);
+    assert.deepEqual(h.shell._configDraft && plain(h.shell._configDraft), before);
+    assert.equal(h.elements.get("config-save").disabled, !loaded);
+    if (loaded) assert.deepEqual(plain(h.shell._configView.desired), fixture().desired);
+    else assert.equal(h.shell._configView, undefined);
+  }
+});
+
 test("M27 API readback alone enables effective state; evidence-blocked and historical state stays unavailable", async () => {
   const h = harness(), view = fixture();
   view.state.sharing.graphql = { desired: false, effective: true, status: "applied", reason: "owner_readback" };

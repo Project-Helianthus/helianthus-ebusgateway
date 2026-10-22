@@ -1701,24 +1701,29 @@ class PortalShell extends HTMLElement {
       const view = await response.json();
       if (request !== this._configRequest) return false;
       if (controller.signal.aborted) throw new Error("request timed out");
+      let problem;
       if (!response.ok || view.error) {
         const code = typeof view.error?.code === "string" ? view.error.code : "request_failed";
         const step = typeof view.error?.next_step === "string" ? view.error.next_step : "retry or reload saved choices";
-        throw new Error(`${code}: ${step}`);
+        problem = new Error(`${code}: ${step}`);
+        if (view.historical !== true) throw problem;
       }
       const record = view.desired;
       if (!record || record.format !== "helianthus.portal-config/v1" || typeof record.revision !== "string" ||
           !Array.isArray(record.drivers) || record.drivers.some((row) => typeof row.driver_id !== "string" || typeof row.enabled !== "boolean") ||
           typeof record.sharing?.graphql !== "boolean" || typeof record.sharing?.mcp !== "boolean" ||
-          typeof record.adapter_proxy !== "boolean" || typeof record.output_bindings?.matter !== "boolean" || view.historical) {
+          typeof record.adapter_proxy !== "boolean" || typeof record.output_bindings?.matter !== "boolean") {
         throw new Error("Configuration readback unavailable");
       }
       this._configView = view;
       // Only the closed desired record is sent back; host binding evidence is never browser input.
-      this._configDraft = { format: record.format, revision: record.revision,
+      // Historical readback refreshes saved choices without discarding rejected edits.
+      if (!view.historical || !this._configDraft) this._configDraft = { format: record.format, revision: record.revision,
         drivers: record.drivers.map(({ driver_id, enabled }) => ({ driver_id, enabled })),
         sharing: { graphql: record.sharing.graphql, mcp: record.sharing.mcp },
         adapter_proxy: record.adapter_proxy, output_bindings: { matter: record.output_bindings.matter } };
+      if (problem) throw problem;
+      if (view.historical) throw new Error("Configuration readback unavailable");
       if (notice) notice.textContent = save ? "Desired choices saved. Effective state is reported separately by the API." : "Saved choices loaded. Selections express desired configuration only.";
       return true;
     } catch (error) {

@@ -58,13 +58,14 @@ type Config struct {
 // Inputs are frozen before Start; Previous must be joined. Admission maps the
 // requested Generation above any generation already consumed by Previous.
 type PublicationScope struct {
-	Previous    *PublicationScope
-	core        *pvPublicationCore
-	adapter     *Adapter
-	startedWall time.Time
-	Epoch       semreg.SourceEpochID
-	Generation  uint64
-	withdrawn   atomic.Bool
+	Previous          *PublicationScope
+	core              *pvPublicationCore
+	adapter           *Adapter
+	startedWall       time.Time
+	Epoch             semreg.SourceEpochID
+	Generation        uint64
+	withdrawn         atomic.Bool
+	nativeCloseFailed atomic.Bool
 
 	startupCleanup func() error
 }
@@ -107,6 +108,12 @@ func (scope *PublicationScope) RetryStartupCleanup() (error, bool) {
 		return nil, false
 	}
 	return scope.startupCleanup(), true
+}
+
+// NativeCloseUnconfirmed retains provisional native cleanup failure even while
+// startup is waiting for semantic withdrawal.
+func (scope *PublicationScope) NativeCloseUnconfirmed() bool {
+	return scope != nil && scope.nativeCloseFailed.Load()
 }
 
 func (scope *PublicationScope) valid() bool {
@@ -253,6 +260,10 @@ func Start(
 	// The provisional PV source epoch is admitted exactly at the historical
 	// sample point, after the endpoint factory, dial and open.
 	if err := semanticPV.admitEpoch(epoch, generation); err != nil {
+		nativeCleanup := errors.Join(closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+		if nativeCleanup != nil && config.Publication != nil {
+			config.Publication.nativeCloseFailed.Store(true)
+		}
 		var cleanup error
 		if config.Publication != nil {
 			cleanup = semanticPV.withdrawManaged(semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(clock().UTC()), EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin))})
@@ -260,7 +271,6 @@ func Start(
 				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
 			}
 		}
-		nativeCleanup := errors.Join(closeStartupConnection(connection), closeStartupEndpoint(endpoint))
 		if config.Publication != nil && cleanup != nil {
 			// Keep the partially activated core reachable even though no adapter
 			// was admitted. Native cleanup is immutable; semantic fencing retries.

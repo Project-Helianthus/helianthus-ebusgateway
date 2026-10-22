@@ -29,9 +29,10 @@ const (
 )
 
 type modbusManagedAttempt struct {
-	startupMu           sync.Mutex
-	startupFinalized    bool
-	admission           atomic.Uint32
+	startupMu        sync.Mutex
+	startupFinalized bool
+	admission        atomic.Uint32
+	// Native cleanup failure is latched for the lifetime of this attempt.
 	nativeCleanupFailed atomic.Bool
 	cleanupAdapter      atomic.Pointer[modbusadapter.Adapter]
 	nativeGeneration    uint64
@@ -213,7 +214,9 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 	a.cleanupAdapter.Store(a.adapter)
 	if a.startErr != nil {
 		// Provisional cleanup may fail before an adapter owns the endpoint.
-		a.nativeCleanupFailed.Store(errors.Is(a.startErr, modbusadapter.ErrStartupNativeCloseUnproven))
+		if errors.Is(a.startErr, modbusadapter.ErrStartupNativeCloseUnproven) {
+			a.nativeCleanupFailed.Store(true)
+		}
 		return
 	}
 	if ctx.Err() != nil || a.withdrawn() {
@@ -233,7 +236,9 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 				a.work = nil
 			}
 			a.workErr = workErr
-			a.nativeCleanupFailed.Store(workErr != nil)
+			if workErr != nil {
+				a.nativeCleanupFailed.Store(true)
+			}
 			closeErr := a.adapter.Close()
 			a.startupClosed = workErr == nil && closeErr == nil
 			a.startErr = errors.Join(errors.New("modbus managed start withdrawn"), workErr, closeErr)
@@ -252,7 +257,9 @@ func (driver *modbusManagedDriver) open(ctx context.Context, a *modbusManagedAtt
 			a.workErr = a.work.Close()
 			a.work = nil
 		}
-		a.nativeCleanupFailed.Store(a.workErr != nil)
+		if a.workErr != nil {
+			a.nativeCleanupFailed.Store(true)
+		}
 		closeErr := a.adapter.Close()
 		a.startupClosed = a.workErr == nil && closeErr == nil
 		a.startErr = errors.Join(cancelErr, a.workErr, closeErr)
@@ -294,7 +301,9 @@ func (driver *modbusManagedDriver) Stop(ctx context.Context) error {
 				workErr = a.work.Close()
 			}
 			a.workErr = workErr
-			a.nativeCleanupFailed.Store(workErr != nil)
+			if workErr != nil {
+				a.nativeCleanupFailed.Store(true)
+			}
 			closeErr := a.adapter.Close()
 			if errors.Is(a.startErr, modbusadapter.ErrStartupCloseUnproven) {
 				closeErr = errors.Join(closeErr, a.retryStartupCleanup())
@@ -363,5 +372,5 @@ func (driver *modbusManagedDriver) SafetyQuarantined() bool {
 	if a.nativeCleanupFailed.Load() {
 		return true
 	}
-	return a.cleanupAdapter.Load().NativeCloseUnconfirmed()
+	return a.scope.NativeCloseUnconfirmed() || a.cleanupAdapter.Load().NativeCloseUnconfirmed()
 }

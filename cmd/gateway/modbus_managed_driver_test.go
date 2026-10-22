@@ -1934,3 +1934,179 @@ func TestM03ManagerRecoversPartialActivationCleanupAfterJournalRecovery(t *testi
 	}
 	m03AssertGeneration(t, view, semreg.SourceEpochID(m03Correlation().Epoch), "3")
 }
+
+// Admission fails after one source activates. Cleanup either stalls immediately
+// or fails once and stalls when Stop retries the retained semantic owner.
+type m03SupersededCleanupJournal struct {
+	*semhub.MemoryJournal
+	failSource                           semreg.SourceID
+	activationEntered, activationRelease chan struct{}
+	fenceEntered, fenceRelease           chan struct{}
+	retry                                bool
+	fences                               atomic.Int32
+	once                                 sync.Once
+}
+
+func (j *m03SupersededCleanupJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Generation != 2 {
+			continue
+		}
+		if record.Kind == semhub.EventGenerationActivated && record.Source == j.failSource {
+			close(j.activationEntered)
+			<-j.activationRelease
+			return errM03JournalFailure
+		}
+		if record.Kind == semhub.EventGenerationFenced {
+			if !j.retry || j.fences.Add(1) > 1 {
+				j.once.Do(func() { close(j.fenceEntered) })
+				<-j.fenceRelease
+			}
+			return errM03JournalFailure
+		}
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+func TestM03SupersededStartupPreservesNativeFailureDuringStopRetry(t *testing.T) {
+	for _, connectionFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("connection failure=%v", connectionFailure), func(t *testing.T) {
+			m03SupersededStartupCleanup(t, true, connectionFailure)
+		})
+	}
+}
+
+func TestM03ProvisionalNativeFailureRecordedBeforeSemanticCleanup(t *testing.T) {
+	for _, connectionFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("connection failure=%v", connectionFailure), func(t *testing.T) {
+			m03SupersededStartupCleanup(t, false, connectionFailure)
+		})
+	}
+}
+
+func m03SupersededStartupCleanup(t *testing.T, retry, connectionFailure bool) {
+	t.Helper()
+	journal := &m03SupersededCleanupJournal{MemoryJournal: semhub.NewMemoryJournal(),
+		activationEntered: make(chan struct{}), activationRelease: make(chan struct{}),
+		fenceEntered: make(chan struct{}), fenceRelease: make(chan struct{}), retry: retry}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeErr := errors.New("synthetic provisional native cleanup failure")
+	var calls atomic.Int32
+	var failedEndpoint *m03Endpoint
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		endpoint := &m03Endpoint{}
+		if calls.Add(1) == 2 {
+			if !connectionFailure {
+				endpoint.closeErr = closeErr
+			}
+			failedEndpoint = endpoint
+		}
+		return endpoint, nil
+	}, nil)
+	driver.hub = hub
+	var activationOnce, fenceOnce sync.Once
+	resumeActivation := func() { activationOnce.Do(func() { close(journal.activationRelease) }) }
+	resumeFence := func() { fenceOnce.Do(func() { close(journal.fenceRelease) }) }
+	t.Cleanup(func() { resumeActivation(); resumeFence() })
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var sources []semreg.SourceID
+	for i, scope := range []string{"fixture:superseded-a", "fixture:superseded-b"} {
+		words := sunspectest.ObservedFroniusFloatWords()
+		if i != 0 {
+			words[52] ^= 1
+		}
+		adapter := driver.active.Load().adapter
+		if err := adapter.RecordSunSpecQualificationObservation(m03ScopedObservation(t, uint64(i+1), words, scope)); err != nil {
+			t.Fatal(err)
+		}
+		view, ok := adapter.SemanticPVCurrentSingle()
+		if !ok {
+			t.Fatal("source unavailable")
+		}
+		sources = append(sources, view.Snapshot.Sources[0].SourceID)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	journal.failSource = sources[1]
+	canceled := make(chan struct{})
+	dial := driver.dial
+	driver.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		context.AfterFunc(ctx, func() { close(canceled) })
+		connection, err := dial(ctx, network, address)
+		if connectionFailure && err == nil {
+			connection = &m03StartupCloseErrorConn{Conn: connection, closeErr: closeErr}
+		}
+		return connection, err
+	}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startDone := make(chan error, 1)
+	go func() { startDone <- manager.Start(context.Background(), "pv.primary") }()
+	<-journal.activationEntered
+	attempt := driver.active.Load()
+	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	reports := make(chan drivermanager.CloseReport, 1)
+	go func() {
+		report, err := manager.StopWithReport(stopCtx, "pv.primary")
+		if err != nil {
+			t.Error(err)
+		}
+		reports <- report
+	}()
+	<-canceled
+	resumeActivation()
+	<-journal.fenceEntered
+	// This barrier is reached only after the cleanup path under test starts.
+	if retry && !attempt.nativeCleanupFailed.Load() {
+		t.Error("Stop cleared the latched startup native failure")
+	}
+	if failedEndpoint.closes.Load() != 1 || !driver.SafetyQuarantined() {
+		t.Errorf("native failure unavailable before semantic wait: closes=%d quarantine=%v", failedEndpoint.closes.Load(), driver.SafetyQuarantined())
+	}
+	report := <-reports
+	if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || report.Class != drivermanager.CloseUnconfirmed {
+		t.Errorf("deadline=%v close report=%+v", stopCtx.Err(), report)
+	}
+	snapshot, _ := manager.Snapshot("pv.primary")
+	if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+		t.Fatalf("superseded startup snapshot=%+v", snapshot)
+	}
+	if err := manager.Start(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Errorf("start=%v", err)
+	}
+	if err := manager.Replace(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Errorf("replace=%v", err)
+	}
+	resumeFence()
+	<-attempt.started
+	<-attempt.stopped
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(attempt.startErr, closeErr) || !errors.Is(attempt.stopErr, closeErr) || !driver.SafetyQuarantined() {
+		t.Fatal("completed cleanup lost native failure evidence")
+	}
+	snapshot, _ = manager.Snapshot("pv.primary")
+	if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
+		t.Fatal("completed semantic cleanup cleared manager quarantine")
+	}
+	if err := manager.Start(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Errorf("start after cleanup=%v", err)
+	}
+	if err := manager.Replace(context.Background(), "pv.primary"); !errors.Is(err, drivermanager.ErrSafetyQuarantined) {
+		t.Errorf("replace after cleanup=%v", err)
+	}
+	if calls.Load() != 2 || driver.Generation() != 2 || failedEndpoint.closes.Load() != 1 {
+		t.Fatal("quarantine allowed replacement or repeated native cleanup")
+	}
+}

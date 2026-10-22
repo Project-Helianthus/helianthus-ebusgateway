@@ -1111,6 +1111,7 @@ type hookRuntime struct {
 	starts      int
 	replaces    int
 	stops       int
+	onStop      func(int)
 }
 
 func (runtime *hookRuntime) construct() (uint64, error) {
@@ -1146,6 +1147,9 @@ func (runtime *hookRuntime) Stop(context.Context) error {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.stops++
+	if runtime.onStop != nil {
+		defer func() { runtime.onStop(runtime.stops) }()
+	}
 	var err error
 	if len(runtime.stopErrs) > 0 {
 		err = runtime.stopErrs[0]
@@ -1351,7 +1355,27 @@ func TestLifecycleHookHoldFailureWithUnprovenCloseQuarantines(t *testing.T) {
 // A Stop during the hold supersedes the operation: the held generation is
 // never published and is retired on the independent deadline.
 func TestLifecycleHookStopDuringHoldNeverPublishes(t *testing.T) {
-	runtime := &hookRuntime{}
+	retired := make(chan struct{})
+	runtime := &hookRuntime{onStop: func(stops int) {
+		if stops == 2 {
+			close(retired)
+		}
+	}}
+	// This deadline diagnoses a hung test; channel handshakes establish ordering.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	retirementObserved := false
+	wait := func(signal <-chan struct{}, phase string) {
+		t.Helper()
+		select {
+		case <-signal:
+			if signal == retired {
+				retirementObserved = true
+			}
+		case <-ctx.Done():
+			t.Fatalf("hung waiting for %s: %v", phase, ctx.Err())
+		}
+	}
 	entered := make(chan struct{})
 	holdCtxDone := make(chan struct{})
 	manager := newHookManager(t, runtime, 1, LifecycleHooks{HoldAdmission: func(ctx context.Context, _ AdmissionHold) error {
@@ -1360,26 +1384,34 @@ func TestLifecycleHookStopDuringHoldNeverPublishes(t *testing.T) {
 		close(holdCtxDone)
 		return nil
 	}})
-	if err := manager.StartAsync(context.Background(), "ebus.primary"); err != nil {
+	// Shutdown joins the asynchronous start on success and every Fatal path.
+	t.Cleanup(func() {
+		if err := manager.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+	})
+	if err := manager.StartAsync(ctx, "ebus.primary"); err != nil {
 		t.Fatal(err)
 	}
-	<-entered
-	report, err := manager.StopWithReport(context.Background(), "ebus.primary")
+	wait(entered, "admission hold")
+	report, err := manager.StopWithReport(ctx, "ebus.primary")
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-holdCtxDone:
-	case <-time.After(time.Second):
-		t.Fatal("hold context was not canceled by Stop")
-	}
+	wait(holdCtxDone, "hold cancellation by Stop")
 	if report.Class != CloseProven {
 		t.Fatalf("stop report = %#v", report)
 	}
-	waitForCondition(t, func() bool {
-		_, _, stops := runtime.counts()
-		return stops == 2
-	})
+	wait(retired, "held generation retirement")
+	// Keep this check before joining or reading: cleanup must not supply the
+	// retirement that the test is supposed to observe after Stop.
+	if !retirementObserved {
+		t.Fatal("join or snapshot read before observing retirement")
+	}
+	if _, _, stops := runtime.counts(); stops != 2 {
+		t.Fatalf("runtime stops = %d, want 2", stops)
+	}
+	manager.wg.Wait()
 	snapshot, _ := manager.Snapshot("ebus.primary")
 	if snapshot.ObservedState != ObservedStopped || snapshot.Generation != 0 || len(snapshot.EffectiveCapabilities) != 0 {
 		t.Fatalf("snapshot = %#v, want STOPPED with the held generation never published", snapshot)
@@ -1554,17 +1586,6 @@ func TestDriverBindHooksOnceAndWatch(t *testing.T) {
 	}
 	if _, _, ok := manager.Watch("missing"); ok {
 		t.Fatal("Watch(missing) reported a driver")
-	}
-}
-
-func waitForCondition(t *testing.T, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not reached")
-		}
-		time.Sleep(time.Millisecond)
 	}
 }
 

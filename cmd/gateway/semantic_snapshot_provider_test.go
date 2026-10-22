@@ -23,22 +23,27 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
+	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/packs/thermal"
 )
 
 type m11CaptureSource struct {
 	hub    *semhub.Hub
 	calls  atomic.Int64
+	before func()
 	after  func()
 	mutate func(*semhub.CoherentCapture)
 	err    error
 }
 
-func (s *m11CaptureSource) Capture(ctx context.Context, ids []semreg.AssetID, at time.Time) (semhub.CoherentCapture, error) {
+func (s *m11CaptureSource) Capture(ctx context.Context, ids []semreg.AssetID, now func() time.Time) (semhub.CoherentCapture, error) {
 	s.calls.Add(1)
 	if s.err != nil {
 		return semhub.CoherentCapture{}, s.err
 	}
-	c, err := s.hub.Capture(ctx, ids, at)
+	if s.before != nil {
+		s.before()
+	}
+	c, err := s.hub.Capture(ctx, ids, now)
 	if err == nil && s.mutate != nil {
 		s.mutate(&c)
 		for i := range c.Assets {
@@ -195,7 +200,7 @@ func TestM11HandlersShareHubAndAllowPublishBetweenRequests(t *testing.T) {
 	if publication.scalar(publication.binding.Identity.Target) == nil {
 		t.Fatal(publication.lastError)
 	}
-	control := &gatewayRuntimeControl{bridge: &ebusControlRuntime{hub: publication.hub}}
+	control := &gatewayRuntimeControl{hub: publication.hub}
 	provider := newGatewaySemanticSnapshotProvider(control)
 	if provider.hub != semanticHubCapture(publication.hub) {
 		t.Fatal("provider did not bind the composed hub")
@@ -305,6 +310,7 @@ func TestM11MixedRevisionRejectedByBothHandlers(t *testing.T) {
 func TestM11UnavailableProviderKeepsShellResponsive(t *testing.T) {
 	for name, provider := range map[string]*hubSemanticSnapshotProvider{
 		"nil control":    newGatewaySemanticSnapshotProvider(nil),
+		"no process hub": newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{}),
 		"failed capture": {hub: &m11CaptureSource{err: errors.New("synthetic failed driver")}, now: time.Now},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -345,7 +351,7 @@ func TestM11FencedDriverUnavailableAndRetainsNativeEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{bridge: &ebusControlRuntime{hub: publication.hub}})
+	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{hub: publication.hub})
 	provider.now = func() time.Time { return time.Unix(0, 1800000000000000020) }
 	gql, rpc := m11Handlers(t, provider)
 	if _, err := publication.hub.Fence(semhub.FenceRequest{Source: handle.Source(), Epoch: handle.Epoch(), Generation: handle.Generation(), Reason: "lifecycle.driver_failed", Evidence: []semreg.EvidenceRef{before.Snapshot.Sources[0].RegistryEvidence}, ObservedAt: before.Snapshot.EvaluatedAt, Monotonic: before.Snapshot.EvaluateMonotonic}); err != nil {
@@ -375,7 +381,7 @@ func TestM11PortalProductionOptionsSharedView(t *testing.T) {
 	if publication.scalar(publication.binding.Identity.Target) == nil {
 		t.Fatal(publication.lastError)
 	}
-	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{bridge: &ebusControlRuntime{hub: publication.hub}})
+	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{hub: publication.hub})
 	provider.now = func() time.Time { return time.Unix(0, 1800000000000000020) }
 	source := &m11CaptureSource{hub: publication.hub}
 	provider.hub = source
@@ -459,3 +465,124 @@ func TestM11PortalProductionOptionsUnavailable(t *testing.T) {
 }
 
 func (s *m11CaptureSource) AssetIDs() []semreg.AssetID { return s.hub.AssetIDs() }
+
+func TestM11PublicationBeforeCaptureLockUsesCurrentTime(t *testing.T) {
+	publication, _, tick := m15Fixture(t)
+	if publication.scalar(publication.binding.Identity.Target) == nil {
+		t.Fatal(publication.lastError)
+	}
+	before, err := publication.hub.Inspect(publication.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &m11CaptureSource{hub: publication.hub}
+	source.before = func() {
+		*tick = 10
+		publication.attempt.Received, publication.attempt.Receipt = publication.now()
+		publication.attempt.Reply = []byte{0x0d, 0x18, 0, 0x30, 3}
+		if publication.scalar(publication.binding.Identity.Target) == nil {
+			t.Fatal(publication.lastError)
+		}
+	}
+	provider := &hubSemanticSnapshotProvider{hub: source, now: func() time.Time { return time.Unix(0, 1800000000000000000+*tick) }}
+	_, inputs, err := provider.Capture(context.Background(), []semreg.AssetID{publication.binding.Identity.Asset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := publication.hub.Inspect(publication.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || inputs[0].Snapshot == nil || inputs[0].Evaluation == nil {
+		t.Fatalf("missing captured publication: %+v", inputs)
+	}
+	if current.Snapshot.SnapshotID == before.Snapshot.SnapshotID || inputs[0].Snapshot.SnapshotID != current.Snapshot.SnapshotID {
+		t.Fatal("capture did not include intervening publication")
+	}
+	if inputs[0].Evaluation.Context.EvaluatedAt != current.Snapshot.EvaluatedAt {
+		t.Fatal("evaluation time was sampled before publication")
+	}
+}
+
+// m11SidecarPublication uses the same hub admission and transaction boundary as
+// managed publishers, with a source owned independently of ebus.primary.
+func m11SidecarPublication(t *testing.T) (*semhub.Hub, semreg.AssetID) {
+	t.Helper()
+	template, _, _ := m15Fixture(t)
+	if template.scalar(template.binding.Identity.Target) == nil {
+		t.Fatal(template.lastError)
+	}
+	view, err := template.hub.Inspect(template.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := view.Snapshot
+	hub, err := semhub.New(semhub.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := snapshot.Sources[0]
+	handle, err := hub.AdmitSource(semhub.Admission{Source: source.SourceID, Driver: "synthetic.sidecar"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.ReplaceAll(raw, []byte(source.SourceEpochID), []byte(handle.Epoch()))
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Declare(semhub.AssetSpec{AssetID: snapshot.AssetID, SourceID: handle.Source(), Driver: "synthetic.sidecar", Validators: []semreg.PackValidator{thermal.New()}}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := hub.Begin(handle, snapshot.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	batch := semreg.PublicationBatch{Contract: semreg.ContractKernelV1, BatchID: "batch:sidecar", AssetID: snapshot.AssetID, SourceID: handle.Source(), SourceEpochID: handle.Epoch(), DriverGeneration: handle.GenerationID(), Sequence: tx.NextSequence(), ExpectedSemanticRevision: "0", ObservedAt: snapshot.EvaluatedAt,
+		SourceUpserts: snapshot.Sources, SourceRetirements: []semreg.SourceEpochID{}, BindingUpserts: snapshot.Bindings, IdentityLinkUpserts: snapshot.IdentityLinks, FactUpserts: []semreg.FactCandidate{snapshot.Facts[0].Candidates[0]}, FactWithdrawals: []semreg.CandidateID{}, ServiceUpserts: snapshot.Services, ServiceWithdrawals: []semreg.ServiceInstanceID{}, CapabilityUpserts: snapshot.Capabilities, CapabilityWithdrawals: []semreg.CapabilityInstanceID{}, GenerationFences: []semreg.GenerationFence{}}
+	batch.BatchDigest, err = batch.ComputedDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tx.Apply(batch, snapshot.EvaluateMonotonic); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := tx.Commit(nil); err != nil || outcome != semhub.Accepted {
+		t.Fatalf("publish=%v, %v", outcome, err)
+	}
+	return hub, snapshot.AssetID
+}
+
+func TestM11WithheldEBusKeepsProcessHubReadable(t *testing.T) {
+	hub, id := m11SidecarPublication(t)
+	control := &gatewayRuntimeControl{hub: hub, withheld: errors.New("synthetic withheld eBUS")}
+	provider := newGatewaySemanticSnapshotProvider(control)
+	if provider.hub != semanticHubCapture(hub) {
+		t.Fatal("provider did not bind process hub")
+	}
+	provider.now = func() time.Time { return time.Unix(0, 1800000000000000020) }
+	metadata, inputs, err := provider.Capture(context.Background(), []semreg.AssetID{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata == nil || len(inputs) != 1 || inputs[0].Snapshot == nil || inputs[0].Evaluation == nil {
+		t.Fatal("sidecar publication missing")
+	}
+	opts := portal.Options{}
+	configureGatewayPortalSemanticRead(&opts, provider)
+	got, err := opts.SharedSemanticView(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := semanticview.Build(metadata, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("Portal differs from process hub provider")
+	}
+}

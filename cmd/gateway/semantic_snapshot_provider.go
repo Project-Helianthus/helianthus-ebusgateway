@@ -14,7 +14,7 @@ import (
 )
 
 type semanticHubCapture interface {
-	Capture(context.Context, []semreg.AssetID, time.Time) (semhub.CoherentCapture, error)
+	Capture(context.Context, []semreg.AssetID, func() time.Time) (semhub.CoherentCapture, error)
 }
 
 type hubSemanticSnapshotProvider struct {
@@ -27,8 +27,8 @@ var _ mcp.SemanticSnapshotProvider = (*hubSemanticSnapshotProvider)(nil)
 
 func newGatewaySemanticSnapshotProvider(control *gatewayRuntimeControl) *hubSemanticSnapshotProvider {
 	provider := &hubSemanticSnapshotProvider{now: time.Now}
-	if control != nil && control.bridge != nil {
-		provider.hub, _ = control.bridge.hub.(semanticHubCapture)
+	if control != nil && control.hub != nil {
+		provider.hub = control.hub
 	}
 	return provider
 }
@@ -37,7 +37,7 @@ func (p *hubSemanticSnapshotProvider) Capture(ctx context.Context, ids []semreg.
 	if p == nil || p.hub == nil {
 		return nil, nil, semhub.ErrCaptureUnavailable
 	}
-	capture, err := p.hub.Capture(ctx, ids, p.now())
+	capture, err := p.hub.Capture(ctx, ids, p.now)
 	if err != nil {
 		return nil, nil, err
 	}

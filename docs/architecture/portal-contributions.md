@@ -216,8 +216,10 @@ the change; cancel its pending reads/stream listeners and ignore late replies.
 hub read lock across the selected assets. It reads the current admitted epoch
 and returns detached copies of selected publications with their lifecycle,
 read-admission and public-exposure decisions, matching evaluation context and
-catalog metadata. Evaluation uses the supplied time. The capture is read-only;
-`Inspect` remains an independent ungated audit surface, and the existing
+catalog metadata. Capture invokes the supplied clock once under that read lock,
+so an intervening publication cannot make the evaluation time precede the
+captured snapshot. The clock callback must not reenter the hub or wait on a hub
+writer. The capture is read-only; `Inspect` remains an independent ungated audit surface, and the existing
 admission predicates are unchanged. This internal API introduces no public
 schema change.
 
@@ -239,7 +241,9 @@ and carries one of these reasons:
 `cmd/gateway/gateway_http_server.go`: HTTP composition injects the same
 `hubSemanticSnapshotProvider` instance into GraphQL `semanticSnapshot`, MCP
 `semantic.v1.snapshot.get` and the Portal shared-view callback. The provider
-currently obtains its hub from the composed eBUS runtime bridge. Without that
+obtains the process semantic hub retained by `startGatewayRuntimeControl` from
+its `Hub` option, independently of the eBUS runtime bridge. Managed sidecar
+publications remain readable when the eBUS bridge is withheld. Without a process
 hub it returns `ErrCaptureUnavailable`; no replacement publication is fabricated.
 Each read captures once, then calls `semanticview.Build` with the returned
 metadata and inputs. GraphQL and MCP accept an explicit bounded asset selection.
@@ -256,6 +260,13 @@ the mounted Portal handler, bootstrap advertises the shared operation, an
 admitted publication produces the same view as the shared provider for the same
 assets, and a provider without a hub returns the unavailable error and no view.
 The tests also check one capture per callback and unchanged stored publication.
+
+**Proven** by `TestM11PublicationBeforeCaptureLockUsesCurrentTime` and
+`TestM11CaptureSamplesClockUnderReadLock`: evaluation samples time after an
+intervening publication and under the capture lock.
+`TestM11WithheldEBusKeepsProcessHubReadable` and
+`TestM11RuntimeControlHandsProcessHubToSharedReads` cover process-hub handover
+and Portal reads while the eBUS bridge is withheld.
 Production/Ingress forwarding and live-device behavior remain **Unknown** from
 these local fixtures.
 

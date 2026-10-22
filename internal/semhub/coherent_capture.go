@@ -33,8 +33,10 @@ type CoherentCapture struct {
 }
 
 // Capture reads the current admitted epochs without changing publication or
-// retention state. Inspect remains an independent, ungated audit surface.
-func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, at time.Time) (CoherentCapture, error) {
+// retention state. The clock is sampled under the read lock and must not
+// reenter the hub or block on a hub writer. Inspect remains an independent,
+// ungated audit surface.
+func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time.Time) (CoherentCapture, error) {
 	if h == nil {
 		return CoherentCapture{}, ErrCaptureUnavailable
 	}
@@ -49,6 +51,7 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, at time.Time) (
 	if h.restoring {
 		return CoherentCapture{}, ErrCaptureUnavailable
 	}
+	at := now()
 	metadata, err := packs.NewMetadataRegistry()
 	if err != nil {
 		return CoherentCapture{}, err

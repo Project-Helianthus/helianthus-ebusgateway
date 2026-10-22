@@ -12,7 +12,7 @@ import (
 
 func m11Capture(t *testing.T, h *Hub, ids ...semreg.AssetID) CoherentCapture {
 	t.Helper()
-	capture, err := h.Capture(context.Background(), ids, time.Unix(1800000004, 0))
+	capture, err := h.Capture(context.Background(), ids, func() time.Time { return time.Unix(1800000004, 0) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestM11CaptureSerializesPublishAcrossSelection(t *testing.T) {
 	}
 	read := make(chan result, 1)
 	go func() {
-		c, e := h.Capture(context.Background(), []semreg.AssetID{"asset:first", "asset:second"}, time.Unix(1800000004, 0))
+		c, e := h.Capture(context.Background(), []semreg.AssetID{"asset:first", "asset:second"}, func() time.Time { return time.Unix(1800000004, 0) })
 		read <- result{c, e}
 	}()
 	<-entered
@@ -190,17 +190,17 @@ func TestM11CaptureSerializesPublishAcrossSelection(t *testing.T) {
 
 func TestM11CaptureErrors(t *testing.T) {
 	var absent *Hub
-	if _, err := absent.Capture(context.Background(), []semreg.AssetID{"asset:a"}, time.Unix(0, 1)); !errors.Is(err, ErrCaptureUnavailable) {
+	if _, err := absent.Capture(context.Background(), []semreg.AssetID{"asset:a"}, func() time.Time { return time.Unix(0, 1) }); !errors.Is(err, ErrCaptureUnavailable) {
 		t.Fatal(err)
 	}
 	h := newTestHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := h.Capture(ctx, []semreg.AssetID{"asset:a"}, time.Unix(0, 1)); !errors.Is(err, context.Canceled) {
+	if _, err := h.Capture(ctx, []semreg.AssetID{"asset:a"}, func() time.Time { return time.Unix(0, 1) }); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	for _, ids := range [][]semreg.AssetID{nil, {"asset:a", "asset:a"}, {""}} {
-		if _, err := h.Capture(context.Background(), ids, time.Unix(0, 1)); err == nil {
+		if _, err := h.Capture(context.Background(), ids, func() time.Time { return time.Unix(0, 1) }); err == nil {
 			t.Fatalf("accepted %v", ids)
 		}
 	}
@@ -253,5 +253,28 @@ func TestM11AssetIDsDetachedOrderedSelection(t *testing.T) {
 		if asset.SourceAdmitted || asset.Snapshot != nil || asset.UnavailableReason != "semantic.read.reason.source_unavailable" {
 			t.Fatalf("selection bypassed admission: %+v", asset)
 		}
+	}
+}
+
+func TestM11CaptureSamplesClockUnderReadLock(t *testing.T) {
+	h := newTestHub(t)
+	mustDeclare(t, h, "asset:clock", "source:clock", "clock", nil)
+	handle := admitLegacy(t, h, "source:clock", "clock", "epoch:clock", 1)
+	mustPublish(t, h, handle, "asset:clock", "clock", 1, 2)
+	calls := 0
+	at := time.Unix(1800000004, 0)
+	capture, err := h.Capture(context.Background(), []semreg.AssetID{"asset:clock"}, func() time.Time {
+		calls++
+		if h.mu.TryLock() {
+			h.mu.Unlock()
+			t.Fatal("clock sampled outside hub read lock")
+		}
+		return at
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || capture.Assets[0].Snapshot == nil || capture.Assets[0].Evaluation.Context.EvaluatedAt != capture.Context.EvaluatedAt || capture.Context.EvaluatedAt.UnixNanoseconds != "1800000004000000000" {
+		t.Fatalf("incoherent clock capture: %+v, calls=%d", capture, calls)
 	}
 }

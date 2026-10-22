@@ -596,10 +596,10 @@ func (bridge *ebusControlRuntime) Stop(ctx context.Context, corr runtimecontrol.
 
 	nativeDone := bridge.ensureNativeStop(epoch)
 	retireDone := make(chan struct{})
-	go func() {
-		defer close(retireDone)
+	go func(done chan struct{}) {
+		defer close(done)
 		_ = bridge.awaitRetire(ctx, epoch)
-	}()
+	}(retireDone)
 	for nativeDone != nil || retireDone != nil {
 		select {
 		case <-nativeDone:

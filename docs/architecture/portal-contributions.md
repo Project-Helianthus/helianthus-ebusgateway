@@ -103,8 +103,11 @@ schema uses the same string representation; its native feed generation fields
 retain their existing representation.
 
 On mismatch the client refetches both requests, at most two times. While
-refetching it shows an inconsistent/refreshing state and renders no values; if
-the mismatch persists it stays in the generation-conflict state below. It never
+refetching it shows an inconsistent/refreshing state and retains previous valid
+cards explicitly as historical, withholding the mismatched response's values.
+Only three confirmed mismatched pairs enter the generation-conflict state below;
+an inconclusive HTTP, timeout or malformed-response failure during a retry keeps
+the historical cards with a refresh error. It never
 presents rows from one response under the identity of the other. Identities are
 compared exactly and never recomputed from the selected GraphQL response. The
 shared GraphQL read is **Unknown** in the current code (not yet exposed), so
@@ -117,7 +120,7 @@ Implementation acceptance must exercise sequential catalog/shared reads:
 | --- | --- |
 | Unchanged Storage publication; evaluation clocks and digests advance on every request | Publication/lifecycle identities match; render on the first pair without refetching. Repeated pairs remain readable. |
 | Same publication; shared evaluation crosses a freshness boundary after catalog capture | Render the shared read's updated freshness/disposition, including withholding values when required by M07; do not retain catalog freshness or refetch solely for evaluation drift. |
-| Publication, binding, source epoch or driver generation changes between requests | Withhold values and refetch both within the bound; render once a pair matches. Persistent mismatch remains a generation conflict. |
+| Publication, binding, source epoch or driver generation changes between requests | Withhold mismatched values and refetch both within the bound, retaining previous valid cards as historical; render once a pair matches. Three confirmed mismatches become a generation conflict; an inconclusive retry failure retains historical cards. |
 
 These are required tests for the future shared-read implementation, not claims
 of current production coverage.
@@ -142,9 +145,45 @@ lifecycle fences. Native evidence remains with its owner; an evidence reference
 is not permission to retrieve its body. Native interpretation requires its
 public native documentation first; this interface defines no native facts.
 
+Contribution cards plan the complete expansion before formatting rows or building
+HTML, with a shared budget of 512 DOM nodes across all resources. Card headings,
+view labels, fact and audit rows, projections, diagnostics and unavailable or
+historical notices all consume that budget, including repeated references.
+After node planning, a shared 4 MiB UTF-8 HTML budget counts markup, headings,
+row text and HTML escaping across all resources, including repeated audit records.
+Each row is checked before allocating its escaped HTML; overflow stops further
+formatting and discards the partial result. An oversized expansion fails closed
+through the unavailable-read path; a prior valid view remains explicitly historical.
+
+Contribution cards restrict view fields to the resource's domain, service and
+capability: the field, service and capability pack IDs must match the domain,
+and the service and capability IDs must match the resource. View membership
+alone does not authorize rendering another context's fields.
+
+Contribution cards first filter candidates by the resource's exact binding ID,
+source epoch and decimal-string driver generation, for both default choices and
+explicit selections. A selection outside that source tuple withholds the value
+without falling back to a matching sibling. Distinct selection policy IDs or
+versions for the same fact key coalesce only when every selection agrees on the
+candidate identity and revision. Conflicting choices or duplicate policy tuples
+withhold the value.
+Contribution cards check the selected candidate itself: qualification must be
+`qualified`, promotion `promoted`, and validity `good` or `suspect`, in addition
+to the shared evaluation and projection checks. A presentation selection cannot
+borrow eligibility from another candidate that makes the fact projection
+`exact`. Cards keep the selected candidate's source binding, epoch, generation,
+origin, causal context, times, derivation and evidence references, including
+access/redaction metadata, alongside the fact's conflict records and competing
+candidate identities. These details remain visible when the value is withheld;
+all are escaped text and no evidence body is fetched.
+
 Render decimal coefficient/exponent and canonical units without floating-point
 conversion; preserve string revisions/time coordinates. Missing values stay
-missing, while zero, false and empty text remain present. Evaluate freshness
+missing, while zero, false and empty text remain present. When a requested fact
+is absent, show its value as unknown and retain matching shared projection
+outcomes, reasons and losses. Match the fact item ID and, when source keys are
+present, the requested pack ID, pack version and fact ID; source-less dispositions
+remain visible for that item. Evaluate freshness
 from the captured evaluation, not browser receipt time. Valid partial
 publications retain omitted last-known fields and their original aging rules;
 rejected publications replace nothing. Retained or stale values are visibly
@@ -332,6 +371,17 @@ Reconnect only to the same advertised URL, preserving prefix and query policy.
 | Stream disabled | Live updates unavailable; explicit read refresh remains usable. |
 | Stream disconnect/parse failure | Mark disconnected/degraded, retain last-known data with source freshness; never mark it fresh on reconnect. |
 | Generation conflict (catalog/read identity mismatch persisting after the bounded refetch, or a changed registry/publication generation) or whole-read limit exceeded | Display the inconsistent/contract error and no values; do not splice/truncate a successful view. |
+
+Component reattachment preserves previous valid semantic cards as historical while
+the new bootstrap and refresh run. A refresh failure retains those cards; a
+successful replacement or a conflict/limit result replaces them. Every pending
+refresh keeps retained cards explicitly marked historical, including when their
+source freshness is fresh. A new lifecycle clears shared-read authorization;
+Refresh issues no shared reads until its bootstrap supplies that authorization.
+
+Structured GraphQL errors with `extensions.code` of `CONFLICT` or
+`RESOURCE_EXHAUSTED` use the no-values conflict/limit state, including after a
+previous successful read.
 
 ## Already trusted external caller context
 

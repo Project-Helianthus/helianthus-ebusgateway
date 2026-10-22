@@ -27,6 +27,7 @@ type m03Endpoint struct {
 	modbusRunLifecycleEndpoint
 	opens  atomic.Int32
 	closes atomic.Int32
+	closed chan struct{}
 }
 
 func (e *m03Endpoint) OpenConnection(c net.Conn) (modbus.TCPConnectionHandle, error) {
@@ -34,7 +35,13 @@ func (e *m03Endpoint) OpenConnection(c net.Conn) (modbus.TCPConnectionHandle, er
 	_ = c.Close()
 	return modbus.TCPConnectionHandle{}, nil
 }
-func (e *m03Endpoint) Close() error { e.closes.Add(1); return e.closeErr }
+func (e *m03Endpoint) Close() error {
+	e.closes.Add(1)
+	if e.closed != nil {
+		close(e.closed)
+	}
+	return e.closeErr
+}
 
 func m03Construction() runtimecontrol.Construction {
 	return runtimecontrol.Construction{DriverID: "pv.primary", Sources: []runtimecontrol.SourceID{"pv.configured"}}
@@ -1477,7 +1484,7 @@ func TestM03WorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *testing.T)
 		t.Fatal(err)
 	}
 	closeErr := errors.New("synthetic worker cleanup failure")
-	endpoint := &m03Endpoint{}
+	endpoint := &m03Endpoint{closed: make(chan struct{})}
 	var workCloses atomic.Int32
 	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
 		return endpoint, nil
@@ -1528,6 +1535,7 @@ func TestM03WorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *testing.T)
 	}
 	stopCancel()
 	report := m03Wait(t, reports, "stop did not honor its deadline")
+	m03Wait(t, endpoint.closed, "native endpoint close did not complete")
 	if workCloses.Load() != 1 || endpoint.closes.Load() != 1 {
 		t.Fatalf("worker closes=%d endpoint closes=%d", workCloses.Load(), endpoint.closes.Load())
 	}
@@ -1597,6 +1605,106 @@ func TestM03CancelDuringWorkStartCleansBeforeRetry(t *testing.T) {
 	}
 	if calls.Load() != 2 || workCloses.Load() != 1 {
 		t.Fatal("retry reused canceled work or repeated cleanup")
+	}
+}
+
+// m03DelayedCancellationContext holds both cancellation forwarding and the
+// waiting caller until startup has passed its commit decision.
+type m03DelayedCancellationContext struct {
+	context.Context
+	registered     atomic.Bool
+	forwardEntered chan struct{}
+	forwardRelease chan struct{}
+	forwardDone    chan struct{}
+	decided        chan struct{}
+}
+
+func (ctx *m03DelayedCancellationContext) Value(any) any { return nil }
+
+func (ctx *m03DelayedCancellationContext) Done() <-chan struct{} {
+	if ctx.registered.Load() {
+		<-ctx.decided
+	}
+	return ctx.Context.Done()
+}
+
+func (ctx *m03DelayedCancellationContext) AfterFunc(f func()) func() bool {
+	stop := context.AfterFunc(ctx.Context, func() {
+		close(ctx.forwardEntered)
+		<-ctx.forwardRelease
+		f()
+		close(ctx.forwardDone)
+	})
+	ctx.registered.Store(true)
+	return func() bool {
+		stopped := stop()
+		close(ctx.decided)
+		return stopped
+	}
+}
+
+func TestM03StartupCommitHonorsCallerBeforeCancellationForwarding(t *testing.T) {
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := &m03DelayedCancellationContext{
+		Context: callerCtx, forwardEntered: make(chan struct{}),
+		forwardRelease: make(chan struct{}), forwardDone: make(chan struct{}), decided: make(chan struct{}),
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce, forwardOnce sync.Once
+	resume := func() { releaseOnce.Do(func() { close(release) }) }
+	forward := func() { forwardOnce.Do(func() { close(ctx.forwardRelease) }) }
+	first := &m03Endpoint{}
+	var opens, workCloses atomic.Int32
+	var workerContext context.Context
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		if opens.Add(1) == 1 {
+			return first, nil
+		}
+		return &m03Endpoint{}, nil
+	}, func(runCtx context.Context, _ *modbusadapter.Adapter) modbusManagedWork {
+		if opens.Load() != 1 {
+			return nil
+		}
+		workerContext = runCtx
+		return &m03Work{start: func() {
+			close(entered)
+			<-release
+		}, close: func() error { workCloses.Add(1); return nil }}
+	})
+	t.Cleanup(func() { cancel(); resume(); forward() })
+	result := make(chan error, 1)
+	go func() { _, err := driver.Start(ctx); result <- err }()
+	m03Wait(t, entered, "startup did not reach worker installation")
+	attempt := driver.active.Load()
+	cancel()
+	m03Wait(t, ctx.forwardEntered, "cancellation forwarding did not reach its barrier")
+	resume()
+	m03Wait(t, ctx.decided, "startup did not pass its commit decision")
+	m03Wait(t, attempt.started, "startup cleanup did not finish")
+	if err := m03Wait(t, result, "originating caller did not return"); !errors.Is(err, context.Canceled) {
+		t.Errorf("originating caller error=%v", err)
+	}
+	if !errors.Is(attempt.startErr, context.Canceled) || !attempt.startupClosed {
+		t.Errorf("canceled startup error=%v closed=%v", attempt.startErr, attempt.startupClosed)
+	}
+	if workerContext.Err() != context.Canceled || workCloses.Load() != 1 || first.closes.Load() != 1 {
+		t.Errorf("worker context=%v worker closes=%d endpoint closes=%d", workerContext.Err(), workCloses.Load(), first.closes.Load())
+	}
+	forward()
+	m03Wait(t, ctx.forwardDone, "delayed cancellation forwarding did not finish")
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: "pv.primary", Enabled: true, Runtime: driver}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(context.Background(), "pv.primary"); err != nil {
+		t.Fatal(err)
+	}
+	m03AwaitState(t, manager, func(snapshot drivermanager.Snapshot) bool {
+		return snapshot.ObservedState == drivermanager.ObservedRunning
+	}, nil)
+	if opens.Load() != 2 || driver.Generation() != 2 || driver.active.Load() == attempt {
+		t.Fatal("manager retry reused canceled workers instead of opening a fresh endpoint")
 	}
 }
 
@@ -1684,7 +1792,7 @@ func TestM03StartupWorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *tes
 			entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 			var releaseOnce sync.Once
 			resume := func() { releaseOnce.Do(func() { close(release) }) }
-			endpoint := &m03Endpoint{}
+			endpoint := &m03Endpoint{closed: make(chan struct{})}
 			closeErr := errors.New("synthetic startup worker cleanup failure")
 			var workStarts, workCloses atomic.Int32
 			observation := m03Observation(t)
@@ -1747,6 +1855,7 @@ func TestM03StartupWorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
+			m03Wait(t, endpoint.closed, "native endpoint close did not complete")
 			if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || workCloses.Load() != 1 {
 				t.Fatalf("deadline=%v worker closes=%d", stopCtx.Err(), workCloses.Load())
 			}

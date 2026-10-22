@@ -56,6 +56,7 @@ type modbusManagedAttempt struct {
 
 	// startupMu orders caller cancellation against the startup commit.
 	startupMu        sync.Mutex
+	startupCaller    context.Context
 	startupFinalized bool
 
 	opened   chan struct{} // native open returned; adapter and openErr are final
@@ -168,7 +169,7 @@ retry:
 		}
 		generation := driver.generation.Add(1)
 		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, opened: make(chan struct{}), started: make(chan struct{}), stopped: make(chan struct{})}
+		a = &modbusManagedAttempt{nativeGeneration: generation, scope: &modbusadapter.PublicationScope{Epoch: semreg.SourceEpochID(driver.correlation.Epoch), Generation: uint64(driver.correlation.Generation), Previous: driver.previous}, cancel: cancel, startupCaller: ctx, opened: make(chan struct{}), started: make(chan struct{}), stopped: make(chan struct{})}
 		driver.active.Store(a)
 		driver.revision.Add(1)
 		forwardCancel := context.AfterFunc(ctx, a.cancelStartup)
@@ -276,6 +277,10 @@ func (a *modbusManagedAttempt) commitStartup(ctx context.Context) error {
 	defer a.startupMu.Unlock()
 	if a.withdrawn() {
 		return errModbusStartWithdrawn
+	}
+	if err := a.startupCaller.Err(); err != nil {
+		a.cancel()
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err

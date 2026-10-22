@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"expvar"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/adaptermux/v8classifier"
-	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/releasecheck"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
@@ -65,116 +63,6 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return fmt.Errorf("create portal contribution registry: %w", err)
 	}
-	updateModbusTransportStatus := func(ebusgateway.TransportRuntimeStatus) {}
-
-	modbusAdapter, err := startModbusRuntime(
-		ctx,
-		cfg.ModbusTCPConfig,
-		semanticHub,
-		dialModbusEndpointFn,
-		newModbusEndpointFn,
-	)
-	if err != nil {
-		log.Printf("Modbus TCP unavailable; continuing without Modbus")
-		modbusAdapter = nil
-	}
-	modbusTransportStatus := modbusRuntimeTransportStatus(cfg.ModbusTCPConfig, modbusAdapter != nil)
-	if modbusAdapter != nil {
-		pvContribution, err := startGatewayPortalPVContribution(modbusAdapter, portalContributions)
-		if err != nil {
-			_ = modbusAdapter.Close()
-			return fmt.Errorf("publish PV portal contribution: %w", err)
-		}
-		defer func() {
-			if pvContribution != nil {
-				pvContribution.Stop()
-			}
-			if err := modbusAdapter.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown Modbus TCP sidecar: %w", err))
-			}
-			updateModbusTransportStatus(retiredModbusRuntimeTransportStatus())
-		}()
-		sunSpecWorker := newGatewaySunSpecLiveSmokeWorker(ctx, modbusAdapter, log.Printf)
-		if sunSpecWorker != nil {
-			sunSpecWorker.Start()
-			defer func() { _ = sunSpecWorker.Close() }()
-		}
-	}
-	growattBMSRuntime, err := startGrowattBMSRS485Runtime(cfg.ModbusTCPConfig.GrowattBMSRS485, semanticHub)
-	if err != nil {
-		log.Printf("Growatt BMS RS-485 unavailable; continuing without Growatt BMS")
-		growattBMSRuntime = nil
-	}
-	if growattBMSRuntime != nil {
-		if err := attachGatewayPortalStorageContribution(growattBMSRuntime, portalContributions); err != nil {
-			_ = growattBMSRuntime.Close()
-			return fmt.Errorf("publish Storage portal contribution: %w", err)
-		}
-		defer func() {
-			if err := growattBMSRuntime.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown Growatt BMS RS-485 sidecar: %w", err))
-			}
-		}()
-	}
-	teslaHSCRetained, err := startTeslaHSCRetainedOwner(cfg.ModbusTCPConfig.TeslaGen3HSC, semanticHub)
-	if err != nil {
-		return fmt.Errorf("tesla HSC retained owner: %w", err)
-	}
-	if teslaHSCRetained != nil {
-		if err := attachGatewayPortalEVSEContribution(teslaHSCRetained, portalContributions); err != nil {
-			_ = teslaHSCRetained.Close()
-			return fmt.Errorf("publish EVSE portal contribution: %w", err)
-		}
-		defer func() {
-			if err := teslaHSCRetained.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown Tesla HSC retained owner: %w", err))
-			}
-		}()
-	}
-	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)
-	matterFeedProvider, err := newGatewayMatterBindingFeedProvider(portalCatalogSource, cfg.M2MGraphQL.AllowedAssets)
-	if err != nil {
-		return fmt.Errorf("matter binding feed provider: %w", err)
-	}
-	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, modbusAdapter, growattBMSRuntime, teslaHSCRetained, matterFeedProvider)
-	if err != nil {
-		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
-	}
-	if m2mRuntime != nil {
-		defer func() {
-			if err := m2mRuntime.Close(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown M2M GraphQL sidecar: %w", err))
-			}
-		}()
-	}
-
-	eebusAdapter, _, eebusLifecycle, _, err := startEEBusAdminAwareRuntime(ctx, cfg)
-	if err != nil {
-		log.Printf("eeBUS runtime unavailable; continuing without eeBUS reason=startup")
-	}
-	if eebusLifecycle != nil {
-		defer func() {
-			if err := eebusLifecycle.Shutdown(); err != nil {
-				result = errors.Join(result, fmt.Errorf("shutdown eeBUS sidecar: %w", err))
-			}
-		}()
-	}
-	eebusAdminHandler := eebusadmin.NewUnavailableHandler()
-	if eebusLifecycle != nil {
-		eebusAdminHandler = eebusLifecycle
-	}
-	if evidenceRuntime != nil {
-		var captureEEBus eebusEvidenceCapture
-		if eebusAdapter != nil {
-			captureEEBus = func(pseudonymKey []byte) (json.RawMessage, time.Time, error) {
-				return mcp.CaptureEEBusV1ServicesEvidence(eebusAdapter, pseudonymKey)
-			}
-		}
-		if err := evidenceRuntime.Configure(captureEEBus, resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
-			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
-		}
-	}
-
 	// Initialize the runtime-state Manager early so the cached
 	// ebus.self.last_admitted_source can be passed as a hint to the
 	// SourceAddressSelector below, and the Manager is available for
@@ -194,14 +82,16 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// Construct the protocol-neutral manager and stable eBUS provider before
 	// opening any eBUS resource. Driver-local construction failure is retained
 	// as categorical state and never promoted to process failure.
-	ebusDriver, err := prepareGatewayEBusDriver(&cfg)
+	sidecars := prepareManagedSidecars(ctx, cfg, semanticHub, runtimeStateMgr.State().Meta.InstanceGUID, portalContributions)
+	bindings := &managedSidecarBindings{sidecars: sidecars}
+	ebusDriver, err := prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 2*defaultEBusDriverDrainTimeout+time.Second)
 		defer cancel()
-		if err := ebusDriver.Shutdown(stopCtx); err != nil {
+		if err := errors.Join(ebusDriver.Shutdown(stopCtx), sidecars.shutdownError()); err != nil {
 			result = errors.Join(result, fmt.Errorf("shutdown eBUS driver: %w", err))
 		}
 	}()
@@ -213,6 +103,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	// Nothing else starts the DriverManager, and no failure here is a
 	// process error.
 	control := startGatewayRuntimeControl(ctx, gatewayRuntimeControlOptionsFor(gatewayRuntimeControlOptions{
+		Sidecars:     sidecars,
 		Driver:       ebusDriver,
 		Hub:          semanticHub,
 		Store:        runtimeStateMgr,
@@ -233,6 +124,46 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		log.Printf("eBUS control service unavailable; continuing without eBUS")
 	} else if view, err := service.Get(primaryEBusDriverID); err == nil && view.ObservedState != "RUNNING" {
 		log.Printf("eBUS driver not running at startup; continuing desired=%s state=%s reason=%s", view.DesiredState, view.ObservedState, view.Reason)
+	}
+
+	teslaHSCRetained, err := startTeslaHSCRetainedOwner(cfg.ModbusTCPConfig.TeslaGen3HSC, semanticHub)
+	if err != nil {
+		return fmt.Errorf("tesla HSC retained owner: %w", err)
+	}
+	if teslaHSCRetained != nil {
+		if err := attachGatewayPortalEVSEContribution(teslaHSCRetained, portalContributions); err != nil {
+			_ = teslaHSCRetained.Close()
+			return fmt.Errorf("publish EVSE portal contribution: %w", err)
+		}
+		defer func() {
+			if err := teslaHSCRetained.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown Tesla HSC retained owner: %w", err))
+			}
+		}()
+	}
+	portalCatalogSource := newGatewayPortalCatalogSource(nil, nil, teslaHSCRetained, portalContributions, bindings)
+	matterFeedProvider, err := newGatewayMatterBindingFeedProvider(portalCatalogSource, cfg.M2MGraphQL.AllowedAssets)
+	if err != nil {
+		return fmt.Errorf("matter binding feed provider: %w", err)
+	}
+	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, nil, nil, teslaHSCRetained, matterFeedProvider, bindings)
+	if err != nil {
+		return fmt.Errorf("M2M GraphQL sidecar: %w", err)
+	}
+	if m2mRuntime != nil {
+		defer func() {
+			if err := m2mRuntime.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("shutdown M2M GraphQL sidecar: %w", err))
+			}
+		}()
+	}
+
+	eebusAdapter := &eebusRuntimeAdapter{managed: bindings}
+	eebusAdminHandler := http.HandlerFunc(bindings.serveEEBusAdmin)
+	if evidenceRuntime != nil {
+		if err := evidenceRuntime.Configure(bindings.eebusEvidenceCapture(), resolvedBuildInfo.EvidenceVersion(), newSynchronizedEvidenceClock(), synchronizedEvidenceEntropy); err != nil {
+			return fmt.Errorf("configure synchronized evidence sidecar: %w", err)
+		}
 	}
 
 	// Warn if --proxy-listen is set but adapter-direct transport was not
@@ -302,12 +233,10 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 	if err != nil {
 		return err
 	}
+	stopTransportWatch := func() {}
 	if busObservability != nil {
-		updateModbusTransportStatus = busObservability.SetTransportRuntimeStatus
-		updateModbusTransportStatus(modbusTransportStatus)
-		if eebusLifecycle != nil {
-			eebusLifecycle.SetTransportRuntimeStatusObserver(busObservability.SetTransportRuntimeStatus)
-		}
+		stopTransportWatch = bindings.observeTransports(ctx, cfg, busObservability)
+		defer stopTransportWatch()
 	}
 	if busObservability != nil && (cfg.ModbusTCPConfig.Enabled || cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled || cfg.PrometheusEVSEEnabled) {
 		// This is intentionally wired before the HTTP control plane starts. The
@@ -316,7 +245,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		busObservability.SetSemanticMetricsProvider(func(at time.Time) []ebusgateway.SemanticMetricsDomain {
 			// The Tesla owner supplies only its detached retained publication. It
 			// cannot acquire, publish, or execute a native operation from a scrape.
-			return semanticPrometheusDomains(modbusAdapter, growattBMSRuntime, teslaHSCRetained, cfg.ModbusTCPConfig.Enabled, cfg.ModbusTCPConfig.GrowattBMSRS485.Enabled, cfg.PrometheusEVSEEnabled, cfg.ModbusTCPConfig.GrowattBMSRS485.AssetID, at)
+			return bindings.semanticMetrics(cfg, teslaHSCRetained, at)
 		})
 	}
 
@@ -632,7 +561,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		}
 		return startHTTPServer(
 			ctx, cfg, gateway, builder, hub, semanticProvider, eebusProvider, eebusCommandRouter,
-			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, eebusLifecycle, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver, control,
+			modbusProvider, portalCatalogSource, scheduleWriter, configWriter, busObservability, lateWatchProvider, eebusAdminHandler, nil, ebusDriver.ProxyReadiness, liveAdmittedEBusSource, resolvedBuildInfo, daemonReleaseChecker.UpdatesAvailable, ebusDriver, control,
 		)
 	}
 	// Keep the control plane alive through final transport retirement. The main
@@ -649,7 +578,7 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		portalSemanticProvider,
 		eebusMCPProvider(eebusAdapter),
 		eebusMCPCommandRouter(eebusAdapter),
-		newGatewayModbusMCPProviderWithRuntimes(modbusAdapter, growattBMSRuntime, teslaHSCRetained),
+		newManagedModbusMCPProvider(bindings, cfg.ModbusTCPConfig, teslaHSCRetained),
 		portalCatalogSource,
 		lateScheduleWriter,
 		lateConfigWriter,
@@ -695,7 +624,8 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 		// This defer is registered after control-plane teardown, so LIFO makes
 		// the final bounded runtime statuses observable before HTTP immediately
 		// stops admitting new work and drains already-admitted requests.
-		publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)
+		stopTransportWatch()
+		publishManagedTransportRetirement(busObservability, cfg)
 		if server != nil {
 			if err := shutdownHTTPControlPlane(server); err != nil {
 				log.Printf("http server shutdown: %v", err)
@@ -900,20 +830,19 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			// re-enter dedup locks while passive fingerprints are being built.
 			deduplicator.SetWatchObserver(poller.shadow)
 		}
-		if poller != nil && eebusAdapter != nil && !surfaceCaptureDone {
+		// Install the shell capture once; its binding checks admission per call.
+		if poller != nil && !surfaceCaptureDone {
 			captureSource := newLeafPromotionLiveSource(
 				poller,
 				eebusAdapter,
 				eebusMCPCommandRouter(eebusAdapter),
 				liveAdmittedEBusSource,
 			)
-			captureRuntime, captureErr := newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
-			if captureErr != nil {
-				return fmt.Errorf("leaf promotion capture runtime: %w", captureErr)
-			}
-			if captureRuntime != nil {
-				eebusAdapter.SetLeafPromotionCapture(captureRuntime)
-			}
+			eebusAdapter.SetLeafPromotionCapture(&lazyLeafPromotionCapture{
+				construct: func() (mcp.LeafPromotionCapture, error) {
+					return newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
+				},
+			})
 			surfaceCaptureDone = true
 		}
 		passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||
@@ -1414,5 +1343,21 @@ func runRuntimeStateRevalidatorLoop(
 		case <-ticker.C:
 			revalidateRuntimeStateMembers(ctx, mgr, gw, cfg, admittedSource, rotation, blocklist)
 		}
+	}
+}
+
+// publishManagedTransportRetirement records final statuses after the managed
+// transport observers have joined, before HTTP admission and observability close.
+func publishManagedTransportRetirement(store *ebusgateway.BusObservabilityStore, cfg ebusgateway.Config) {
+	if store == nil {
+		return
+	}
+	if cfg.ModbusTCPConfig.Enabled {
+		store.SetTransportRuntimeStatus(retiredModbusRuntimeTransportStatus())
+	}
+	if cfg.EEBusConfig.Enabled {
+		// Observers have joined and this store is about to close. A terminal
+		// revision supersedes every status published during its lifetime.
+		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped, Revision: ^uint64(0)}))
 	}
 }

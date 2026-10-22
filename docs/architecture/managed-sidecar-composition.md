@@ -1,10 +1,50 @@
 # Managed sidecar composition after G5
 
-Status: application contract for [issue #1290](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1290),
-a partial slice of Project #2 INT-06 / INT-07. This specifies subsequent
-composition work for M02–M06. The Growatt lifecycle wrapper described below
-is implemented for [issue #1305](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1305);
-shared service registration and family activation remain subsequent work.
+The gateway composes SunSpec TCP, Growatt BMS RS-485 and eeBUS through the
+shared runtime registry, native manager and durable lifecycle service.
+Physical family activation remains Unknown.
+
+## Gateway registration and consumer behavior
+
+Proven: the gateway composes the three sidecars through the shared registry,
+native manager and durable service. Disabled entries remain visible without constructing native
+runtimes. Consumer bindings acquire only the current admitted generation.
+
+The managed eeBUS shell intentionally registers its read and command-router
+MCP bindings even when eeBUS is disabled, stopped or unavailable. This changes the
+previous eager-start behavior, which omitted these tools without a started
+runtime. Discovery does not grant native admission: live reads return
+`backend_unavailable` and the command router returns `disconnected` while no
+generation is admitted. Existing request authorization, trust and mutation
+safeguards still apply. The disabled-case M06 fixture pins the complete eeBUS
+public list of nine read/evidence tools, excludes the five operator-only raw
+command tools from that list, and checks unavailable reads, mutations and
+rollback without native construction. The managed GraphQL compatibility
+overlay is composed but empty without admitted observations. When explicitly enabled, synchronized one-shot
+evidence also retains the managed provider and router; registration alone does
+not establish evidence availability. Portal readiness reads the managed
+lifecycle snapshot rather than a retained eager runtime.
+
+`prepareManagedSidecars` registers `ebus.primary` before assembling the shared
+manager. `composeEBusPrimary` accepts that same descriptor when identical;
+conflicting registrations still fail. The retained Tesla HSC owner starts after
+the runtime control service, and its shutdown remains in reverse acquisition
+order. Native sidecar work and consumer leases belong to their managed
+generations rather than duplicate eager shutdown calls.
+
+Synchronized evidence and leaf-promotion capture retain shell-facing bindings,
+not native generation pointers. Each capture resolves the currently admitted
+eeBUS generation and fails closed while none is admitted. Synchronized evidence
+configuration remains one-shot; later START and RESTART need no reconfiguration.
+Leaf-promotion checkpoint-store construction remains lazy. Proven: construction
+errors and nil constructor results fail closed with `ACQUISITION_FAILED` and
+log a diagnostic identifying the construction failure.
+
+The offline Modbus RTU gate includes the `TestM06` composition fixtures alongside
+`TestM04` and the existing gateway fixtures, followed by the native
+`TestRTUProduction` conformance tests. Gate selection is independent of results.
+Unknown: physical transport behavior and installation qualification; software
+fixtures do not establish either.
 
 ## Contract precedence and evidence
 
@@ -12,7 +52,7 @@ The public [runtime driver lifecycle contract](https://github.com/Project-Helian
 owns G5 decisions D1, D2, D3 and D5. They are reused unchanged. The local
 [runtime/provider contract](runtime-driver-provider-contract-v1.md) records the
 implemented seams; its S1/D3 amendment supersedes historical receipt and
-idempotency-ledger passages. The
+idempotency-record passages. The
 [bidirectional registration proposal](bidirectional-driver-registration.md)
 does not make reserved hooks available.
 
@@ -27,7 +67,8 @@ Protocol-neutral publication remains owned by
 [SemReg](https://github.com/Project-Helianthus/helianthus-semreg).
 
 **Proven** below means an inspected software seam exists; it does not qualify
-an installation. **Hypothesis** describes the proposed managed attachment.
+an installation. **Hypothesis** describes a proposed behavior awaiting
+implementation evidence.
 **Unknown** means evidence or an implementation decision is absent. Candidate,
 qualified, promoted, unsupported and unknown native states remain distinct
 from these evidence labels and from runtime admission.
@@ -50,10 +91,11 @@ The compiled registry lives in
 
 The existing production example is `composeEBusPrimary` in
 [`gateway_run_setup.go`](../../cmd/gateway/gateway_run_setup.go). It binds
-manager hooks before startup and registers only `ebus.primary`. Its typed
-factory returns the already prepared native runtime wrapper; registry
-acceptance alone does not connect the service to a family. There is no
-universal sidecar implementation to call today.
+manager hooks before startup and accepts the identical `ebus.primary`
+descriptor registered by `prepareManagedSidecars`. Its typed factory returns
+the already prepared native runtime wrapper; registry acceptance alone does
+not connect the service to a family. The gateway explicitly composes the
+three family bindings described above; reserved hooks remain unavailable.
 
 ## Adapter inputs, outputs and ownership
 
@@ -70,7 +112,7 @@ The following are required application bindings, not new exported Go APIs.
 | Recovery | Existing `RecoveryAdapter.Restore`, `Secure`, and managed `Recorder.Writer(source)` when semantic publication is migrated | Restore before native open/admission; commit secured recovery material before pruning terminal work. Route managed publications through the recorder, not a parallel direct writer. A lifecycle-only adapter cannot claim recovery for semantic assets. |
 | Consumer binding | Current admitted generation plus family-owned provider interfaces, Portal contribution leases and publication handles | Stable shell-facing indirection; unavailable while withdrawn. Install generation effects only through a live generation scope and revoke leases before close. Never leave a request holding an unguarded retired provider pointer. |
 
-Required composition order for M02–M06 (Hypothesis until implemented):
+Gateway composition order for M02–M06:
 
 1. Validate and register the complete descriptor batch before invoking any
    adapter. For each enabled, non-withheld driver, obtain
@@ -84,9 +126,9 @@ Required composition order for M02–M06 (Hypothesis until implemented):
    and its family-owned capabilities, error classifier and retry policy. Pass
    the complete list to `drivermanager.New` for the shared manager before
    creating lifecycle bridges/executors or the service. There is no later
-   runtime registration API; subsequent composition must refactor the current
-   primary-only manager construction rather than create a second manager or
-   try to append sidecars after it exists.
+   runtime registration API. `newEBusDriverController` constructs this shared
+   manager with the complete initial list; no second manager or later append
+   is needed.
 3. Bind each family bridge and its admission/close hooks to that same manager
    and driver ID before any manager start. Create its executor and install
    `runtimecontrol.DriverConfig{DriverID, Executor}` in the shared service.
@@ -191,7 +233,7 @@ conformance tests. These fixtures do not establish shared-service activation.
 | --- | --- | --- |
 | D1: new epochs | `runtimecontrol.Service` reconciliation allocates a new epoch on process start, explicit RESTART and START after completed STOP; driver generation begins at 1 and increases on retry. `ebusControlRuntime.Prepare`, `Start`, `Stop` demonstrate inert admission and succession. | Admit/restore before opening; bind the full key and native-generation mapping. Use hub `AdmitSuccessor` only after predecessor close and retirement. Never reuse a configured legacy epoch for a managed successor. |
 | D2: shell-up, driver-failed, explicit repair | `runtimestate.Manager.BootstrapControl`, `ControlLoad`, service cached views and `startGatewayRuntimeControl` preserve failed-load disposition without overwriting control state. | A corrupt, unreadable, unsupported or locked store keeps affected drivers failed and unopened. Keep HTTP, health, MCP, GraphQL and status available. Use the existing explicit offline repair process; never seed over a failed load or silently discard recovery material. |
-| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation ledger or new request member. Caller cancellation after acceptance does not retract durable intent. |
+| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation record or new request member. Caller cancellation after acceptance does not retract durable intent. |
 | D5: recovery | `Service.Start` restores committed material through `RecoveryAdapter` before executor calls. `Recorder` implements managed write-ahead restoration and `Secure`; terminal slots are pruned only after recovery material is committed. | Fail affected drivers closed on failed/unknown restoration. Resume pending work; settle historical ACTIVE correlations before new-epoch work; finish pending cleanup. Never reopen merely because desired state says RUNNING. Preserve unrelated valid state and native evidence. |
 
 Disabled configuration wins over durable desired state without rewriting it.
@@ -233,6 +275,13 @@ never equate connection generation, driver generation, source epoch, desired
 revision or semantic sequence. No direct legacy writer may bypass a migrated
 managed writer's fence or recovery path.
 
+Proven: sidecar withdrawal matches driver, source, epoch and generation while
+allowing the new STOP or RESTART decision sequence. Active START calls still
+require the full admitted correlation; retired generations cannot reopen under
+a different sequence. After transport observers join, final eeBUS retirement
+uses a terminal revision so earlier positive-revision statuses cannot leave
+ready metrics visible during control-plane teardown.
+
 Process exit first closes decision admission, stops reconcilers without a
 synthetic durable STOP, fences/joins generation tasks and closes native owners.
 It preserves committed desired state and in-flight recovery obligations for
@@ -244,9 +293,9 @@ and native qualification; no status read opens an endpoint.
 
 | Family | Provider availability (software evidence) | Native qualification | Actual composition after G5 / activation boundary |
 | --- | --- | --- | --- |
-| SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Existing startup sidecar, not a managed service registration. Managed attachment is Hypothesis until implemented and reviewed. |
-| Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration, durable recovery and consumer rebinding remain subsequent work. No Protocol II or CAN inference. |
-| eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Existing sidecar lifecycle; generic managed registration and semantic admission are not established here. |
+| SunSpec TCP | Proven: TCP adapter and qualify/refresh path exist. | Requires the existing exact native profile and observation evidence; availability does not qualify a peer. | Proven: managed factory, shared service registration and generation-guarded consumer bindings. |
+| Growatt BMS RS-485 | Proven: production provider/open seam exists. | Existing family/revision admission and qualified native evidence remain required. | Proven: inert managed factory and generation-owned lifecycle wrapper exist. Shared service registration and generation-guarded consumer rebinding are composed. Semantic recovery remains subject to the managed-recorder boundary. No Protocol II or CAN inference. |
+| eeBUS | Proven: runtime, operator adapter and slot exist. | Existing trust, pairing and native use-case evidence remain independent of process health. | Proven: shared service registration and generation-guarded runtime, operator and capture bindings. Native qualification and semantic promotion remain separate. |
 | Huawei SmartLogger | Typed/injected-provider contracts exist; availability alone is insufficient. | Unknown for an unprovisioned peer/profile. | Withheld: no activation without its own accepted evidence and composition decision. |
 | Huawei EMMA | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld; SunSpec or SmartLogger evidence cannot activate it. |
 | Huawei S-Dongle | Typed/injected-provider contracts exist. | Unknown without its own native evidence. | Withheld; no inherited route or qualification. |

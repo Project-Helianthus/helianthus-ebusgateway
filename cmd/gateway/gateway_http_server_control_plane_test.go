@@ -10,8 +10,27 @@ import (
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
+
+func TestM06PortalReadinessWithNilLifecycleAndManagedAdapter(t *testing.T) {
+	entry := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID, Disposition: runtimecontrol.DispositionEnabled}}
+	adapter := &eebusRuntimeAdapter{managed: &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{entry}}}}
+	readiness := gatewayPortalReadiness(adapter, nil, func() string { return "READY" })
+	want := portal.RuntimeReadiness{
+		ProcessReadiness: "READY", HTTPReadiness: "READY", ProxyReadiness: "READY",
+		EEBusReadiness: "DEGRADED", EEBusDegradedReason: "RUNTIME_FACTORY_UNAVAILABLE",
+	}
+	if got := readiness(); got != want {
+		t.Fatalf("managed readiness = %+v; want %+v", got, want)
+	}
+	entry.descriptor.Disposition = runtimecontrol.DispositionDisabled
+	want.EEBusReadiness, want.EEBusDegradedReason = "DISABLED", ""
+	if got := readiness(); got != want {
+		t.Fatalf("updated managed readiness = %+v; want %+v", got, want)
+	}
+}
 
 func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
@@ -154,7 +173,7 @@ func TestRunOrchestrationKeepsDriverPreparationBeforeShutdownAndStart(t *testing
 	}
 	text := string(source)
 
-	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg)")
+	prepare := strings.Index(text, "prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)")
 	shutdown := strings.Index(text, "ebusDriver.Shutdown(stopCtx)")
 	start := strings.Index(text, "startGatewayRuntimeControl(ctx")
 	if prepare < 0 || shutdown < 0 || start < 0 || prepare > shutdown || shutdown > start || strings.Contains(text, "ebusDriver.Start(") {
@@ -172,11 +191,12 @@ func TestRunOrchestrationKeepsDeferredShutdownStackInAcquisitionOrder(t *testing
 	last := -1
 	for _, closeCall := range []string{
 		"evidenceRuntime.Close()",
-		"modbusAdapter.Close()",
-		"m2mRuntime.Close()",
-		"eebusLifecycle.Shutdown()",
 		"runtimeStateMgr.Stop(stopCtx)",
 		"ebusDriver.Shutdown(stopCtx)",
+		"control.CloseAdmission(closeCtx)",
+		"control.CloseNative(closeCtx)",
+		"teslaHSCRetained.Close()",
+		"m2mRuntime.Close()",
 		"artifactBuilder.EmitToFile(artifactPath)",
 		"gateway.Close()",
 		"shutdownHTTPControlPlane(server)",
@@ -216,7 +236,7 @@ func TestRunOrchestrationKeepsFlagsConfigurationAdmissionAndStartupBarriersOrder
 	assertOrder(mainText, "flag.Parse()", "applyTransportSourcePolicy(&cfg)", "run(ctx, cfg)")
 	assertOrder(lifecycleText,
 		"prepareGatewayRunConfig(&cfg)",
-		"prepareGatewayEBusDriver(&cfg)",
+		"prepareGatewayEBusDriver(&cfg, sidecars.driverConfigs()...)",
 		"startGatewayRuntimeControl(ctx",
 		"ResolveAdmissionPath(cfg.TransportConfig.Protocol)",
 	)

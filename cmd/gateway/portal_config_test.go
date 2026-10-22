@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -260,8 +261,19 @@ func testPortalConfigComposition(t *testing.T, production bool) {
 				}
 				return
 			}
-			if view.Desired == nil || len(view.Desired.Drivers) != 1 || view.Desired.Drivers[0].ID != string(primaryEBusDriverID) || !view.Desired.Drivers[0].Enabled || view.Desired.Sharing != (portalconfig.Sharing{}) || view.Desired.AdapterProxy || view.Desired.OutputBindings.Matter {
+			if view.Desired == nil || len(view.Desired.Drivers) == 0 || view.Desired.Drivers[0].ID != string(primaryEBusDriverID) || !view.Desired.Drivers[0].Enabled || view.Desired.Sharing != (portalconfig.Sharing{}) || view.Desired.AdapterProxy || view.Desired.OutputBindings.Matter {
 				t.Fatalf("host seed: %+v", view.Desired)
+			}
+			wantDrivers := []portalconfig.Driver{{ID: string(primaryEBusDriverID), Enabled: true}}
+			if production {
+				wantDrivers = append(wantDrivers,
+					portalconfig.Driver{ID: string(managedEEBusID)},
+					portalconfig.Driver{ID: string(managedGrowattID)},
+					portalconfig.Driver{ID: string(managedSunSpecID)},
+				)
+			}
+			if !reflect.DeepEqual(view.Desired.Drivers, wantDrivers) {
+				t.Fatalf("host seed drivers: %+v; want %+v", view.Desired.Drivers, wantDrivers)
 			}
 			view.Desired.Sharing.GraphQL = true
 			body, err := json.Marshal(view.Desired)

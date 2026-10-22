@@ -89,9 +89,11 @@ func TestEEBusPublicRuntimeFallbackIsTransportReady(t *testing.T) {
 
 func TestGatewayPublishesRetirementBeforeObservabilityClose(t *testing.T) {
 	store := ebusgateway.NewBusObservabilityStore(ebusgateway.DefaultConfig())
-	eebus := &eebusRuntimeLifecycle{state: eebusLifecycleRunning, revision: 1, runtimeAvailable: true, adapter: &eebusRuntimeAdapter{}}
-	eebus.SetTransportRuntimeStatusObserver(store.SetTransportRuntimeStatus)
-	publishGatewayTransportRetirement(store, true, eebus)
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ModbusTCPConfig.Enabled = true
+	cfg.EEBusConfig.Enabled = true
+	store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning, RuntimeAvailable: true, Revision: 7}))
+	publishManagedTransportRetirement(store, cfg)
 	metrics := store.RenderPrometheus()
 	for _, want := range []string{
 		`protocol="modbus_tcp",reason="shutdown",state="retired"`,
@@ -107,12 +109,16 @@ func TestGatewayPublishesRetirementBeforeObservabilityClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	retire := strings.Index(text, "publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)")
+	retire := strings.Index(text, "publishManagedTransportRetirement(busObservability, cfg)")
 	close := strings.Index(text, "busObservability.Close()")
 	if retire < 0 || close < 0 {
 		t.Fatalf("missing retirement or observability close: retire=%d close=%d", retire, close)
 	}
 	retireDefer := strings.LastIndex(text[:retire], "defer func() {")
+	watchJoin := strings.LastIndex(text[:retire], "stopTransportWatch()")
+	if watchJoin < 0 || watchJoin < retireDefer || watchJoin > retire {
+		t.Fatalf("transport watchers must join in the retirement defer before final publication: join=%d defer=%d retire=%d", watchJoin, retireDefer, retire)
+	}
 	if retireDefer < 0 || close > retireDefer {
 		t.Fatalf("retirement defer must be registered after control-plane close defer: retire=%d close=%d defer=%d", retire, close, retireDefer)
 	}
@@ -124,7 +130,7 @@ func TestGatewayStopsHTTPAdmissionImmediatelyAfterRetirementPublication(t *testi
 		t.Fatal(err)
 	}
 	text := string(source)
-	retire := strings.Index(text, "publishGatewayTransportRetirement(busObservability, modbusAdapter != nil, eebusLifecycle)")
+	retire := strings.Index(text, "publishManagedTransportRetirement(busObservability, cfg)")
 	shutdown := strings.Index(text, "shutdownHTTPControlPlane(server)")
 	if retire < 0 || shutdown < 0 || shutdown < retire {
 		t.Fatalf("retirement must precede HTTP admission stop: retire=%d shutdown=%d", retire, shutdown)

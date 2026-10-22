@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
@@ -763,4 +764,18 @@ func eebusReadinessForLifecycle(snapshot eebusRuntimeLifecycleSnapshot) eebusadm
 		}
 	}
 	return readiness
+}
+
+func (b *managedSidecarBindings) serveEEBusAdmin(w http.ResponseWriter, r *http.Request) {
+	entry := b.entry(managedEEBusID)
+	err := entry.with(r.Context(), func(native drivermanager.Runtime) error {
+		lease := entry.runtime.active.Load()
+		if lease == nil || lease.adminHandler == nil {
+			return drivermanager.ErrUnavailable
+		}
+		return native.(*eebusManagedDriver).WithGeneration(native.Generation(), func(*eebusRuntimeAdapter, eebusruntime.AdminV1) error { lease.adminHandler.ServeHTTP(w, r); return nil })
+	})
+	if err != nil {
+		unavailableEEBusAdminHandler(eebusReadinessForLifecycle(b.eebusLifecycleSnapshot())).ServeHTTP(w, r)
+	}
 }

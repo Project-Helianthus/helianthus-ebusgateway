@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -117,14 +118,19 @@ func newGatewayPortalDescriptor(driver, id, group, field, service, capability, u
 }
 
 type gatewayPortalCatalogSource struct {
+	managed       *managedSidecarBindings
 	pv            *modbusadapter.Adapter
 	storage       *growattStoragePublication
 	evse          *teslaHSCRetainedOwner
 	contributions *gatewayPortalCatalogContributions
 }
 
-func newGatewayPortalCatalogSource(pv *modbusadapter.Adapter, storage *growattStoragePublication, evse *teslaHSCRetainedOwner, contributions *gatewayPortalCatalogContributions) catalogv1.SourceCapture {
-	return &gatewayPortalCatalogSource{pv: pv, storage: storage, evse: evse, contributions: contributions}
+func newGatewayPortalCatalogSource(pv *modbusadapter.Adapter, storage *growattStoragePublication, evse *teslaHSCRetainedOwner, contributions *gatewayPortalCatalogContributions, managed ...*managedSidecarBindings) catalogv1.SourceCapture {
+	source := &gatewayPortalCatalogSource{pv: pv, storage: storage, evse: evse, contributions: contributions}
+	if len(managed) == 1 {
+		source.managed = managed[0]
+	}
+	return source
 }
 func (s *gatewayPortalCatalogSource) PortalCatalogContributions() *gatewayPortalCatalogContributions {
 	if s == nil {
@@ -144,6 +150,22 @@ func (s *gatewayPortalCatalogSource) Capture(at time.Time) ([]catalogv1.Resource
 	fields := []catalogv1.Field{}
 	if s == nil {
 		return resources, fields, nil
+	}
+	if s.managed != nil {
+		_ = s.managed.modbus(context.Background(), func(adapter *modbusadapter.Adapter) error {
+			source := &gatewayPortalCatalogSource{pv: adapter, contributions: s.contributions}
+			r, f, err := source.Capture(at)
+			resources = append(resources, r...)
+			fields = append(fields, f...)
+			return err
+		})
+		_ = s.managed.growatt(context.Background(), func(provider *growattBMSRS485ProductionProvider) error {
+			source := &gatewayPortalCatalogSource{storage: provider.storage, contributions: s.contributions}
+			r, f, err := source.Capture(at)
+			resources = append(resources, r...)
+			fields = append(fields, f...)
+			return err
+		})
 	}
 	if s.pv != nil && s.contributions != nil && s.contributions.accepts("pv.primary", "portal.pv") {
 		if v, ok := s.pv.SemanticPVCurrentSingleAt(at); ok {

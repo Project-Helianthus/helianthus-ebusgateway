@@ -218,15 +218,13 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			Config:           gatewayPortalConfigCallbacks(configStore, cfg),
-			GraphQLPath:      cfg.GraphQLPath,
-			SnapshotPath:     cfg.SnapshotPath,
-			SubscriptionPath: cfg.SubscriptionPath,
-			MCPPath:          cfg.MCPPath,
-			EEBusAdminPath:   "/admin/eebus/v1",
-			Readiness: func() portal.RuntimeReadiness {
-				return projectGatewayReadiness(ebusProxyReadiness, eebusLifecycle.LifecycleSnapshot())
-			},
+			Config:                 gatewayPortalConfigCallbacks(configStore, cfg),
+			GraphQLPath:            cfg.GraphQLPath,
+			SnapshotPath:           cfg.SnapshotPath,
+			SubscriptionPath:       cfg.SubscriptionPath,
+			MCPPath:                cfg.MCPPath,
+			EEBusAdminPath:         "/admin/eebus/v1",
+			Readiness:              gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
 			GatewayVersion:         buildInfo.ReleaseVersion,
 			BuildID:                buildInfo.BuildID,
 			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
@@ -398,6 +396,16 @@ func startHTTPServer(
 		return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider, configStore)
 	}
 	return startHTTPControlPlaneListener(ctx, cfg, mux, gateway, mcpServer, eebusProvider)
+}
+
+func gatewayPortalReadiness(eebusProvider mcp.EEBusV1Provider, eebusLifecycle *eebusRuntimeLifecycle, ebusProxyReadiness func() string) func() portal.RuntimeReadiness {
+	return func() portal.RuntimeReadiness {
+		snapshot := eebusLifecycle.LifecycleSnapshot()
+		if adapter, ok := eebusProvider.(*eebusRuntimeAdapter); ok && adapter.managed != nil {
+			snapshot = adapter.managed.eebusLifecycleSnapshot()
+		}
+		return projectGatewayReadiness(ebusProxyReadiness, snapshot)
+	}
 }
 
 // registerRuntimeControlMCPTools registers the helianthus.runtime tools on the

@@ -35,13 +35,13 @@ type ebusDriverController struct {
 	proxyConfigured bool
 }
 
-func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, error) {
+func newEBusDriverController(cfg ebusgateway.Config, sidecars ...drivermanager.DriverConfig) (*ebusDriverController, error) {
 	protocol := configuredEBusDriverProtocol(cfg)
 	needsPassive := cfg.BroadcastListen && (protocol == ebusgateway.TransportAdapterDirect || shouldStartPassiveObserveFirst(cfg))
 	running := make(chan drivermanager.Correlation, 1)
 	v8Counter := &ebusV8CumulativeCounter{}
 	runtime := newEBusDriverRuntime(cfg, protocol, needsPassive, v8Counter, running)
-	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: append([]drivermanager.DriverConfig{{
 		ID:      primaryEBusDriverID,
 		Enabled: true,
 		Runtime: runtime,
@@ -59,7 +59,7 @@ func newEBusDriverController(cfg ebusgateway.Config) (*ebusDriverController, err
 			MaxDelay:     defaultEBusRetryMaxDelay,
 			JitterRatio:  defaultEBusRetryJitterRatio,
 		},
-	}}})
+	}}, sidecars...)})
 	if err != nil {
 		return nil, err
 	}

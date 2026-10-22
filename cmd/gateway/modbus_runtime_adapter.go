@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
@@ -18,16 +20,6 @@ var (
 	}
 	dialModbusEndpointFn modbusadapter.Dialer = (&net.Dialer{}).DialContext
 )
-
-func startModbusRuntime(
-	ctx context.Context,
-	config ebusgateway.ModbusTCPConfig,
-	hub *semhub.Hub,
-	dial modbusadapter.Dialer,
-	factory modbusadapter.Factory,
-) (*modbusadapter.Adapter, error) {
-	return startModbusRuntimeWithPublication(ctx, config, hub, dial, factory, nil)
-}
 
 func startModbusRuntimeWithPublication(ctx context.Context, config ebusgateway.ModbusTCPConfig, hub *semhub.Hub, dial modbusadapter.Dialer, factory modbusadapter.Factory, scope *modbusadapter.PublicationScope) (*modbusadapter.Adapter, error) {
 	runtimeConfig, err := mapModbusRuntimeConfig(config)
@@ -60,4 +52,32 @@ func startGatewayPortalPVContribution(adapter *modbusadapter.Adapter, contributi
 		return nil, nil
 	}
 	return startGatewayPortalContributionLifecycle(contributions, contributionv1.DriverGeneration{DriverID: "pv.primary", Generation: 1}, []contributionv1.Manifest{gatewayPortalPVDescriptor()})
+}
+
+type managedSunSpecWork struct {
+	ctx           context.Context
+	adapter       *modbusadapter.Adapter
+	contributions *gatewayPortalCatalogContributions
+	generation    uint64
+	worker        *sunSpecLiveSmokeWorker
+	lease         *gatewayPortalContributionLifecycle
+	err           error
+}
+
+func newManagedSunSpecWork(ctx context.Context, adapter *modbusadapter.Adapter, contributions *gatewayPortalCatalogContributions, generation uint64) *managedSunSpecWork {
+	return &managedSunSpecWork{ctx: ctx, adapter: adapter, contributions: contributions, generation: generation}
+}
+func (work *managedSunSpecWork) Start() {
+	work.lease, work.err = startGatewayPortalContributionLifecycle(work.contributions, contributionv1.DriverGeneration{DriverID: "pv.primary", Generation: work.generation}, []contributionv1.Manifest{gatewayPortalPVDescriptor()})
+	if work.err != nil {
+		return
+	}
+	work.worker = newGatewaySunSpecLiveSmokeWorker(work.ctx, work.adapter, log.Printf)
+	work.worker.Start()
+}
+func (work *managedSunSpecWork) Close() error {
+	if work.lease != nil {
+		work.lease.Stop()
+	}
+	return errors.Join(work.err, work.worker.Close())
 }

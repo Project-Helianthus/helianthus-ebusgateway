@@ -11,16 +11,16 @@ from pathlib import Path
 EXPECTED: dict[str, tuple[list[str], list[str]]] = {
     "cmd/gateway/gateway_run_lifecycle.go": (
         [
-            "	m2mRuntime, err := newM2MGraphQLRuntimeWithTesla(cfg, modbusAdapter, growattBMSRuntime, teslaHSCRetained)",
-            "	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)",
+            "	m2mRuntime, err := newM2MGraphQLRuntimeWithTesla(cfg, nil, nil, teslaHSCRetained, bindings)",
+            "	portalCatalogSource := newGatewayPortalCatalogSource(nil, nil, teslaHSCRetained, portalContributions, bindings)",
         ],
         [
-            "	portalCatalogSource := newGatewayPortalCatalogSource(modbusAdapter, gatewayPortalStoragePublication(growattBMSRuntime), teslaHSCRetained, portalContributions)",
+            "	portalCatalogSource := newGatewayPortalCatalogSource(nil, nil, teslaHSCRetained, portalContributions, bindings)",
             "	matterFeedProvider, err := newGatewayMatterBindingFeedProvider(portalCatalogSource, cfg.M2MGraphQL.AllowedAssets)",
             "	if err != nil {",
             '		return fmt.Errorf("matter binding feed provider: %w", err)',
             "	}",
-            "	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, modbusAdapter, growattBMSRuntime, teslaHSCRetained, matterFeedProvider)",
+            "	m2mRuntime, err := newM2MGraphQLRuntimeWithMatter(cfg, nil, nil, teslaHSCRetained, matterFeedProvider, bindings)",
         ],
     ),
     "cmd/gateway/m2m_graphql_config.go": (
@@ -47,8 +47,9 @@ EXPECTED: dict[str, tuple[list[str], list[str]]] = {
             "	return newM2MGraphQLRuntimeWithMatter(config, adapter, growatt, tesla, nil)",
             "}",
             "",
-            "func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider) (*m2mGraphQLRuntime, error) {",
+            "func newM2MGraphQLRuntimeWithMatter(config ebusgateway.Config, adapter *modbusadapter.Adapter, growatt *growattBMSRS485ProductionProvider, tesla *teslaHSCRetainedOwner, matterProvider feedv1.Provider, managed ...*managedSidecarBindings) (*m2mGraphQLRuntime, error) {",
             "	graphqlHandler, err := m2mgraphql.NewHandler(m2mgraphql.Config{",
+            "	}",
             "	handler := graphqlHandler",
             "	if matterProvider != nil {",
             "		instance, err := newMatterBindingFeedInstanceID()",
@@ -69,7 +70,6 @@ EXPECTED: dict[str, tuple[list[str], list[str]]] = {
             '		mux.Handle("/graphql/m2m/v1", graphqlHandler)',
             '		mux.Handle("/matter-binding/", budgetedMatter)',
             "		handler = mux",
-            "	}",
             "func newMatterBindingFeedInstanceID() (string, error) {",
             "	var value [16]byte",
             "	if _, err := rand.Read(value[:]); err != nil {",

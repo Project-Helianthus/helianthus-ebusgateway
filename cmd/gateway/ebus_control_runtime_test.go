@@ -905,6 +905,109 @@ func TestEBusControlCloseClasses(t *testing.T) {
 	})
 }
 
+func TestEBusControlStopCancelPendingRetirement(t *testing.T) {
+	for _, alreadyCancelled := range []bool{false, true} {
+		for _, retirementFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("already_cancelled=%t/retirement_fails=%t", alreadyCancelled, retirementFails), func(t *testing.T) {
+				plant := newCtlPlant(t, ctlPlantOptions{budget: 1})
+				corr := ctlCorr("inc.cancel", 1, 1)
+				watchdog, stopWatchdog := context.WithTimeout(context.Background(), 5*time.Second)
+				defer stopWatchdog()
+				wait := func(done <-chan struct{}, what string) {
+					t.Helper()
+					select {
+					case <-done:
+					case <-watchdog.Done():
+						t.Fatalf("timed out waiting for %s", what)
+					}
+				}
+				if err := plant.bridge.Start(watchdog, corr); err != nil {
+					t.Fatal(err)
+				}
+				plant.bridge.mu.Lock()
+				epoch := plant.bridge.current
+				plant.bridge.mu.Unlock()
+				// Settle native close independently so even an already-cancelled
+				// Stop reaches the pending hub retirement rather than its fence wait.
+				wait(plant.bridge.ensureNativeStop(epoch), "native close")
+
+				ctx, cancel := context.WithCancel(context.Background())
+				release := make(chan struct{})
+				entered := make(chan struct{})
+				returned := make(chan struct{})
+				stopDone := make(chan struct{})
+				var releaseOnce sync.Once
+				var retirementDone <-chan struct{}
+				t.Cleanup(func() {
+					cancel()
+					releaseOnce.Do(func() { close(release) })
+					cleanup, finishCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+					defer finishCleanup()
+					for _, done := range []<-chan struct{}{stopDone, returned} {
+						select {
+						case <-done:
+						case <-cleanup.Done():
+							t.Error("timed out joining stop or retirement during cleanup")
+						}
+					}
+					plant.bridge.mu.Lock()
+					pending := epoch.retiring
+					plant.bridge.mu.Unlock()
+					if pending != nil {
+						select {
+						case <-pending:
+						case <-cleanup.Done():
+							t.Error("timed out joining retirement during cleanup")
+						}
+					}
+				})
+				plant.hub.setHook("RetireEpoch", func() error {
+					defer close(returned)
+					close(entered)
+					<-release
+					if retirementFails {
+						return errors.New("synthetic retirement failure")
+					}
+					return nil
+				})
+				if alreadyCancelled {
+					cancel()
+				}
+				var out runtimecontrol.StopOutcome
+				go func() {
+					defer close(stopDone)
+					out = plant.bridge.Stop(ctx, corr)
+				}()
+				if !alreadyCancelled {
+					wait(entered, "pending retirement before cancellation")
+					cancel()
+				}
+				wait(stopDone, "Stop to return while retirement is pending")
+				if !out.NativeClosed || out.SemanticCleaned {
+					t.Errorf("Stop = %#v, want proven native close and pending retirement", out)
+				}
+				wait(entered, "retirement after cancelled Stop")
+				plant.bridge.mu.Lock()
+				retirementDone = epoch.retiring
+				fenced := epoch.fenced
+				plant.bridge.mu.Unlock()
+				if retirementDone == nil || !fenced {
+					t.Fatal("Stop did not fence the epoch and leave retirement pending")
+				}
+				releaseOnce.Do(func() { close(release) })
+				wait(returned, "hub retirement hook to return")
+				wait(retirementDone, "retirement goroutine to finish")
+				plant.bridge.mu.Lock()
+				retired := epoch.retired
+				plant.bridge.mu.Unlock()
+				if retired == retirementFails {
+					t.Errorf("retired = %t, retirement failure = %t", retired, retirementFails)
+				}
+			})
+		}
+	}
+}
+
 // --- acceptance 4: automatic native retry keeps the epoch ---
 
 func TestEBusControlAutomaticReplacementKeepsEpochAndMapsGeneration(t *testing.T) {

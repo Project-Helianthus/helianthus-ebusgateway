@@ -1092,35 +1092,115 @@ func TestServiceAcceptanceIsDurableBeforePublishWakeAndEvent(t *testing.T) {
 // transition advances only the catalog revision; desired revision and the
 // mark keep the accepted value.
 func TestServiceObservedTransitionsNeverBumpDesiredRevision(t *testing.T) {
-	f := newFixture(t, svcOpts{drivers: enabled("fam.alpha"),
-		opts: func(o *Options) {}})
-	f.waitSettled("fam.alpha", drivermanager.ObservedRunning)
+	// The deadline diagnoses a hung test; all progress is ordered by signals.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	await := func(signal <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-signal:
+		case <-ctx.Done():
+			t.Fatalf("hung waiting for %s: %v", what, ctx.Err())
+		}
+	}
+	f := newFixture(t, svcOpts{drivers: enabled("fam.alpha")})
+	// Register before reading the view so publication cannot lose a wakeup.
+	waitPublished := func(state drivermanager.ObservedState) {
+		t.Helper()
+		for {
+			notify := f.svc.EventNotify()
+			if f.status("fam.alpha").ObservedState == state {
+				return
+			}
+			await(notify, string(state))
+		}
+	}
+	waitPublished(drivermanager.ObservedRunning)
 	stop := f.mustDecide(MethodStop, "fam.alpha")
-	f.waitSettled("fam.alpha", drivermanager.ObservedStopped)
-	failures := 2
-	var mu sync.Mutex
-	f.execs["fam.alpha"].setStart(func(context.Context, LifecycleCorrelation) error {
-		mu.Lock()
-		defer mu.Unlock()
-		if failures > 0 {
-			failures--
+	waitPublished(drivermanager.ObservedStopped)
+
+	var began, release [3]chan struct{}
+	for i := range began {
+		began[i], release[i] = make(chan struct{}), make(chan struct{})
+	}
+	succeeded := make(chan struct{})
+	attempts := 0 // Only the serial executor callback accesses this counter.
+	f.execs["fam.alpha"].setStart(func(execCtx context.Context, _ LifecycleCorrelation) error {
+		i := attempts
+		attempts++
+		if i >= len(began) {
+			return errors.New("unexpected extra start attempt")
+		}
+		close(began[i])
+		select {
+		case <-release[i]:
+		case <-execCtx.Done():
+			return execCtx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if i < len(began)-1 {
 			return retryErr{"warming"}
 		}
+		close(succeeded)
 		return nil
 	})
-	cursor := f.svc.events.cursor()
+	// Close cancels blocked callbacks and joins the reconciler even on Fatal.
+	defer f.svc.Close()
 	accepted := f.mustDecide(MethodStart, "fam.alpha")
 	if accepted.DesiredRevision != stop.DesiredRevision+1 {
 		t.Fatalf("acceptance incremented the revision by %d", accepted.DesiredRevision-stop.DesiredRevision)
 	}
-	catalogAtAcceptance, _ := f.ms.Catalog()
-	f.waitSettled("fam.alpha", drivermanager.ObservedRunning)
-	catalog, _ := f.ms.Catalog()
+	await(began[0], "first retry-sequence attempt")
+	baseline := func() (uint64, ControlCatalog) {
+		t.Helper()
+		select {
+		case <-began[0]:
+		default:
+			t.Fatal("baseline read before first attempt signal")
+		}
+		select {
+		case <-release[0]:
+			t.Fatal("baseline read after retry sequence released")
+		default:
+		}
+		// The executor is blocked: neither events nor catalog can advance.
+		cursor := f.svc.events.cursor()
+		catalog, err := f.ms.Catalog()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cursor, catalog
+	}
+	cursor, catalogAtBaseline := baseline()
+	for i := range began {
+		await(began[i], fmt.Sprintf("attempt %d", i+1))
+		close(release[i])
+	}
+	await(succeeded, "final executor success")
+	waitPublished(drivermanager.ObservedRunning)
+	f.svc.Close() // No publisher remains while the final snapshots are compared.
+	catalog, err := f.ms.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if catalog.IssuedMark != accepted.DesiredRevision || f.record("fam.alpha").DesiredRevision != accepted.DesiredRevision {
 		t.Fatalf("observed transitions moved desired revision or mark: %+v", catalog)
 	}
+	observedEvents := func() EventPage {
+		t.Helper()
+		select {
+		case <-succeeded:
+		default:
+			t.Fatal("events counted before retry sequence success signal")
+		}
+		if f.status("fam.alpha").ObservedState != drivermanager.ObservedRunning {
+			t.Fatal("events counted before RUNNING publication")
+		}
+		return f.svc.EventsSince(cursor)
+	}
 	observed := 0
-	for _, ev := range f.svc.EventsSince(cursor).Events {
+	for _, ev := range observedEvents().Events {
 		if ev.Kind == EventObservedChanged {
 			observed++
 			if ev.DesiredRevision != accepted.DesiredRevision {
@@ -1128,8 +1208,8 @@ func TestServiceObservedTransitionsNeverBumpDesiredRevision(t *testing.T) {
 			}
 		}
 	}
-	if observed < 4 || catalog.CatalogRevision < catalogAtAcceptance.CatalogRevision+CatalogRevision(observed) {
-		t.Fatalf("observed=%d catalog %d -> %d", observed, catalogAtAcceptance.CatalogRevision, catalog.CatalogRevision)
+	if observed < 4 || catalog.CatalogRevision < catalogAtBaseline.CatalogRevision+CatalogRevision(observed) {
+		t.Fatalf("observed=%d catalog %d -> %d", observed, catalogAtBaseline.CatalogRevision, catalog.CatalogRevision)
 	}
 	if got := f.status("fam.alpha"); got.Revision != f.svc.List().Revision || got.DesiredRevision != accepted.DesiredRevision {
 		t.Fatalf("view = %+v", got)

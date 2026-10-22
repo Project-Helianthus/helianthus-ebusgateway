@@ -1186,6 +1186,9 @@ class PortalShell extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._configAbort?.abort();
+    this._configRequest = (this._configRequest || 0) + 1;
+    this._configBusy = false;
     this.endBootstrapLifecycle();
 	this._invalidateVaillantB503CapabilityRequests();
 	this._stopVaillantB503LiveMonitorSessionPolling();
@@ -1294,6 +1297,14 @@ class PortalShell extends HTMLElement {
   }
 
   bindEvents() {
+    this.renderConfiguration();
+    this.querySelector('[data-role="config-form"]')?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.requestConfiguration(true);
+    });
+    this.querySelector('[data-role="config-reload"]')?.addEventListener("click", () => {
+      void this.requestConfiguration(false);
+    });
     this.querySelector('[data-role="semantic-refresh"]')?.addEventListener("click", () => {
       const list = this.querySelector('[data-role="semantic-list"]');
       if (list) void this.loadSemanticPreview(list);
@@ -1576,6 +1587,9 @@ class PortalShell extends HTMLElement {
 	  this.clearEEBusSPINETree();
 	}
     this._activeSectionTarget = targetID;
+    if (targetID === "section-configuration" && !this._configView && !this._configBusy) {
+      void this.requestConfiguration(false);
+    }
 
     const sectionMap = {
       "section-registry": ["section-registry"],
@@ -1636,6 +1650,88 @@ class PortalShell extends HTMLElement {
 	if (targetID === "section-eebus" && this._capabilityEEBusAdmin) {
 	  void this.refreshEEBusStatus();
 	}
+  }
+
+  configurationOptions(record = this._configDraft) {
+    if (!record) return [];
+    return [
+      ...record.drivers.map((driver, index) => ({ label: `Driver ${driver.driver_id}`, value: driver.enabled, state: this._configView?.state?.drivers?.find((row) => row.driver_id === driver.driver_id), set: (value) => { record.drivers[index].enabled = value; } })),
+      ...["graphql", "mcp"].map((key) => ({ label: `${key === "graphql" ? "GraphQL" : "MCP"} sharing`, value: record.sharing[key], state: this._configView?.state?.sharing?.[key], set: (value) => { record.sharing[key] = value; } })),
+      { label: "Adapter proxy", value: record.adapter_proxy, state: this._configView?.state?.adapter_proxy, set: (value) => { record.adapter_proxy = value; } },
+      { label: "Matter output binding", value: record.output_bindings.matter, state: this._configView?.state?.output_bindings?.matter, set: (value) => { record.output_bindings.matter = value; } },
+    ];
+  }
+
+  renderConfiguration() {
+    const fields = this.querySelector('[data-role="config-fields"]');
+    if (!fields) return;
+    fields.innerHTML = this.configurationOptions().map((option, index) => {
+      const state = option.state;
+      const unavailable = this._configView?.historical || !state || state.status === "withheld" || state.status === "error" || state.reason === "evidence_unavailable";
+      const effective = unavailable ? "Unavailable" : state.effective === true ? "Enabled" : state.effective === false ? "Disabled" : "Unknown";
+      return `<p><label><input type="checkbox" data-config-index="${index}" ${option.value ? "checked" : ""} ${this._configBusy ? "disabled" : ""}> ${escapeHtml(option.label)} desired selection</label><br><span>Saved desired: ${state?.desired === true ? "Selected" : state?.desired === false ? "Unselected" : "Unknown"}; Effective: ${effective}; Status: ${escapeHtml(state?.status || "unknown")}; Reason: ${escapeHtml(state?.reason || "unavailable")}</span></p>`;
+    }).join("");
+    fields.querySelectorAll("[data-config-index]").forEach((input) => {
+      input.addEventListener("change", () => {
+        this.configurationOptions()[Number(input.getAttribute("data-config-index"))]?.set(input.checked);
+      });
+    });
+    const save = this.querySelector('[data-role="config-save"]');
+    const reload = this.querySelector('[data-role="config-reload"]');
+    if (save) save.disabled = this._configBusy || !this._configDraft;
+    if (reload) reload.disabled = this._configBusy;
+  }
+
+  async requestConfiguration(save) {
+    if (this._configBusy || (save && !this._configDraft)) return false;
+    const request = (this._configRequest || 0) + 1;
+    this._configRequest = request;
+    const controller = new AbortController();
+    this._configAbort = controller;
+    this._configBusy = true;
+    const notice = this.querySelector('[data-role="config-notice"]');
+    if (notice) notice.textContent = save ? "Saving desired choices; effective state awaits API readback." : "Loading saved configuration.";
+    this.renderConfiguration();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch("api/v1/config", {
+        method: save ? "PUT" : "GET", signal: controller.signal,
+        ...(save ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(this._configDraft) } : {}),
+      });
+      const view = await response.json();
+      if (request !== this._configRequest) return false;
+      if (controller.signal.aborted) throw new Error("request timed out");
+      if (!response.ok || view.error) {
+        const code = typeof view.error?.code === "string" ? view.error.code : "request_failed";
+        const step = typeof view.error?.next_step === "string" ? view.error.next_step : "retry or reload saved choices";
+        throw new Error(`${code}: ${step}`);
+      }
+      const record = view.desired;
+      if (!record || record.format !== "helianthus.portal-config/v1" || typeof record.revision !== "string" ||
+          !Array.isArray(record.drivers) || record.drivers.some((row) => typeof row.driver_id !== "string" || typeof row.enabled !== "boolean") ||
+          typeof record.sharing?.graphql !== "boolean" || typeof record.sharing?.mcp !== "boolean" ||
+          typeof record.adapter_proxy !== "boolean" || typeof record.output_bindings?.matter !== "boolean" || view.historical) {
+        throw new Error("Configuration readback unavailable");
+      }
+      this._configView = view;
+      // Only the closed desired record is sent back; host binding evidence is never browser input.
+      this._configDraft = { format: record.format, revision: record.revision,
+        drivers: record.drivers.map(({ driver_id, enabled }) => ({ driver_id, enabled })),
+        sharing: { graphql: record.sharing.graphql, mcp: record.sharing.mcp },
+        adapter_proxy: record.adapter_proxy, output_bindings: { matter: record.output_bindings.matter } };
+      if (notice) notice.textContent = save ? "Desired choices saved. Effective state is reported separately by the API." : "Saved choices loaded. Selections express desired configuration only.";
+      return true;
+    } catch (error) {
+      if (request === this._configRequest && this._configView) this._configView = { ...this._configView, historical: true };
+      if (request === this._configRequest && notice) notice.textContent = `Configuration problem: ${controller.signal.aborted ? "request timed out" : error.message}. Your input is retained. Reload saved choices to discard edits.`;
+      return false;
+    } finally {
+      clearTimeout(timer);
+      if (request === this._configRequest) {
+        this._configBusy = false;
+        this.renderConfiguration();
+      }
+    }
   }
 
   async loadStatus(lifecycleToken = this.bootstrapLifecycleToken, lifecycleAbort = this.bootstrapLifecycleAbort) {
@@ -4175,10 +4271,21 @@ class PortalShell extends HTMLElement {
             <button data-role="nav-l7-catalog" data-nav-target="section-l7-catalog" disabled><span class="nav-bullet"></span> L7 Catalog</button>
             <button data-role="nav-vaillant-b503" data-nav-target="section-vaillant-b503" disabled><span class="nav-bullet"></span> Vaillant B503</button>
 			<button data-role="nav-eebus" data-nav-target="section-eebus" disabled><span class="nav-bullet"></span> eeBUS</button>
+            <button data-role="nav-configuration" data-nav-target="section-configuration"><span class="nav-bullet"></span> Configuration</button>
           </aside>
           <main class="main">
             <h1>Portal Overview</h1>
             <p class="hero">Explore registry, semantic state, projection topology and evidence workflows from one gateway-native surface.</p>
+            <section id="section-configuration" class="registry-preview">
+              <h2>Configuration</h2>
+              <p>Passive observation and cache are always-on facilities. Availability still requires native evidence and admission.</p>
+              <p data-role="config-notice" role="alert" aria-live="assertive" aria-atomic="true">Load configuration to view saved choices.</p>
+              <form data-role="config-form">
+                <fieldset data-role="config-fields" aria-label="Desired configuration choices"></fieldset>
+                <button class="button" type="submit" data-role="config-save" disabled>Save desired choices</button>
+                <button class="button" type="button" data-role="config-reload">Reload saved choices (discard edits)</button>
+              </form>
+            </section>
             <section id="section-registry" class="registry-preview">
               <h2>Registry Preview</h2>
               <ul data-role="registry-list">

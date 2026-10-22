@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -449,6 +450,46 @@ func (r *m06CaptureRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
 }
 
 type m06PromotionCapture struct{ calls int }
+
+func TestM06LeafPromotionConstructionFailureIsObservable(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		construct func() (mcp.LeafPromotionCapture, error)
+		cause     string
+	}{
+		{
+			name: "invalid state root",
+			construct: func() (mcp.LeafPromotionCapture, error) {
+				capture, err := newLeafPromotionCaptureRuntime("relative", &leafPromotionLiveSource{})
+				if err != nil {
+					return nil, err
+				}
+				return capture, nil
+			},
+			cause: "leaf promotion state root is invalid",
+		},
+		{
+			name:      "nil capture",
+			construct: func() (mcp.LeafPromotionCapture, error) { return nil, nil },
+			cause:     "constructor returned nil capture",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			writer := log.Writer()
+			log.SetOutput(&logs)
+			defer log.SetOutput(writer)
+			capture := &lazyLeafPromotionCapture{construct: test.construct}
+			receipt := capture.CaptureLeafPromotion(context.Background(), mcp.LeafPromotionCaptureRequest{})
+			if receipt.Category != "ACQUISITION_FAILED" {
+				t.Fatalf("construction failure receipt = %+v", receipt)
+			}
+			if !strings.Contains(logs.String(), "leaf promotion capture runtime:") || !strings.Contains(logs.String(), test.cause) {
+				t.Fatalf("construction failure diagnostic missing cause: %q", logs.String())
+			}
+		})
+	}
+}
 
 func (c *m06PromotionCapture) CaptureLeafPromotion(context.Context, mcp.LeafPromotionCaptureRequest) mcp.LeafPromotionCaptureReceipt {
 	c.calls++

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -450,6 +451,10 @@ func (capture *lazyLeafPromotionCapture) CaptureLeafPromotion(ctx context.Contex
 	if capture.capture == nil {
 		resolved, err := capture.construct()
 		if err != nil || resolved == nil {
+			if err == nil {
+				err = errors.New("constructor returned nil capture")
+			}
+			log.Printf("leaf promotion capture runtime: %v", err)
 			return mcp.LeafPromotionCaptureReceipt{Category: "ACQUISITION_FAILED"}
 		}
 		capture.capture = resolved

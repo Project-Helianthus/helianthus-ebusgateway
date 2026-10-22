@@ -10,8 +10,27 @@ import (
 	"testing"
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 )
+
+func TestM06PortalReadinessWithNilLifecycleAndManagedAdapter(t *testing.T) {
+	entry := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID, Disposition: runtimecontrol.DispositionEnabled}}
+	adapter := &eebusRuntimeAdapter{managed: &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{entry}}}}
+	readiness := gatewayPortalReadiness(adapter, nil, func() string { return "READY" })
+	want := portal.RuntimeReadiness{
+		ProcessReadiness: "READY", HTTPReadiness: "READY", ProxyReadiness: "READY",
+		EEBusReadiness: "DEGRADED", EEBusDegradedReason: "RUNTIME_FACTORY_UNAVAILABLE",
+	}
+	if got := readiness(); got != want {
+		t.Fatalf("managed readiness = %+v; want %+v", got, want)
+	}
+	entry.descriptor.Disposition = runtimecontrol.DispositionDisabled
+	want.EEBusReadiness, want.EEBusDegradedReason = "DISABLED", ""
+	if got := readiness(); got != want {
+		t.Fatalf("updated managed readiness = %+v; want %+v", got, want)
+	}
+}
 
 func TestHTTPControlPlaneRouteManifestIsDeterministic(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()

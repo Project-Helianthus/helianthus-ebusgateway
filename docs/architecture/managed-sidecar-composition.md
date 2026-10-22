@@ -36,6 +36,9 @@ Synchronized evidence and leaf-promotion capture retain shell-facing bindings,
 not native generation pointers. Each capture resolves the currently admitted
 eeBUS generation and fails closed while none is admitted. Synchronized evidence
 configuration remains one-shot; later START and RESTART need no reconfiguration.
+Leaf-promotion checkpoint-store construction remains lazy. Proven: construction
+errors and nil constructor results fail closed with `ACQUISITION_FAILED` and
+log a diagnostic identifying the construction failure.
 
 The offline Modbus RTU gate includes the `TestM06` composition fixtures alongside
 `TestM04` and the existing gateway fixtures, followed by the native
@@ -49,7 +52,7 @@ The public [runtime driver lifecycle contract](https://github.com/Project-Helian
 owns G5 decisions D1, D2, D3 and D5. They are reused unchanged. The local
 [runtime/provider contract](runtime-driver-provider-contract-v1.md) records the
 implemented seams; its S1/D3 amendment supersedes historical receipt and
-idempotency-ledger passages. The
+idempotency-record passages. The
 [bidirectional registration proposal](bidirectional-driver-registration.md)
 does not make reserved hooks available.
 
@@ -230,7 +233,7 @@ conformance tests. These fixtures do not establish shared-service activation.
 | --- | --- | --- |
 | D1: new epochs | `runtimecontrol.Service` reconciliation allocates a new epoch on process start, explicit RESTART and START after completed STOP; driver generation begins at 1 and increases on retry. `ebusControlRuntime.Prepare`, `Start`, `Stop` demonstrate inert admission and succession. | Admit/restore before opening; bind the full key and native-generation mapping. Use hub `AdmitSuccessor` only after predecessor close and retirement. Never reuse a configured legacy epoch for a managed successor. |
 | D2: shell-up, driver-failed, explicit repair | `runtimestate.Manager.BootstrapControl`, `ControlLoad`, service cached views and `startGatewayRuntimeControl` preserve failed-load disposition without overwriting control state. | A corrupt, unreadable, unsupported or locked store keeps affected drivers failed and unopened. Keep HTTP, health, MCP, GraphQL and status available. Use the existing explicit offline repair process; never seed over a failed load or silently discard recovery material. |
-| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation ledger or new request member. Caller cancellation after acceptance does not retract durable intent. |
+| D3: desired-state idempotence | `Service.Control` / `Decide` durably accept decisions with expected desired revision; return desired state/revision only. A same-desired no-op writes, emits, fences and wakes nothing. START on failed desired RUNNING is a no-op; repair requires RESTART. | Reuse refusal ordering, transition slots and bounded reconciliation. Add no lifecycle receipt, client key, completed-operation record or new request member. Caller cancellation after acceptance does not retract durable intent. |
 | D5: recovery | `Service.Start` restores committed material through `RecoveryAdapter` before executor calls. `Recorder` implements managed write-ahead restoration and `Secure`; terminal slots are pruned only after recovery material is committed. | Fail affected drivers closed on failed/unknown restoration. Resume pending work; settle historical ACTIVE correlations before new-epoch work; finish pending cleanup. Never reopen merely because desired state says RUNNING. Preserve unrelated valid state and native evidence. |
 
 Disabled configuration wins over durable desired state without rewriting it.

@@ -28,6 +28,9 @@ type withdrawalFailureJournal struct {
 
 var errWithdrawalJournal = errors.New("synthetic withdrawal journal failure")
 
+// managedRecoveryWatchdog only diagnoses a hang; channels order every wait.
+const managedRecoveryWatchdog = 2 * time.Minute
+
 func (j *withdrawalFailureJournal) Append(records ...semhub.EpochRecord) error {
 	for _, record := range records {
 		if (record.Kind == semhub.EventGenerationFenced && record.Source == j.failSource) ||
@@ -267,10 +270,13 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// The runtime's result channel orders this test. Neither progress nor
+	// shutdown shares a wall-clock budget; the watchdog only diagnoses a hang.
+	ctx := context.Background()
 	defer func() {
-		if err := manager.Shutdown(ctx); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), managedRecoveryWatchdog)
+		defer shutdownCancel()
+		if err := manager.Shutdown(shutdownCtx); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -278,11 +284,13 @@ func TestManagedPartialActivationRecoversSameEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var results [2]managedActivationResult
+	watchdog := time.NewTimer(managedRecoveryWatchdog)
+	defer watchdog.Stop()
 	for i := range results {
 		select {
 		case results[i] = <-runtime.results:
-		case <-ctx.Done():
-			t.Fatal("manager did not finish its first retry")
+		case <-watchdog.C:
+			t.Fatal("hang diagnostic: manager did not finish its first retry")
 		}
 	}
 	if results[0].adapter != nil || !errors.Is(results[0].err, errWithdrawalJournal) {
@@ -587,5 +595,206 @@ func TestM03ManagedInjectedClockPublishesAndWithdraws(t *testing.T) {
 	}
 	if _, ok := adapter.SemanticPVCurrentSingle(); ok {
 		t.Fatal("closed publication remains available")
+	}
+}
+
+func managedRecoveryWait[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	watchdog := time.NewTimer(managedRecoveryWatchdog)
+	defer watchdog.Stop()
+	select {
+	case value := <-ch:
+		return value
+	case <-watchdog.C:
+		t.Fatalf("hang diagnostic: %s", what)
+		panic("unreachable")
+	}
+}
+
+// independentCleanupJournal fails one source's successor activation, reports
+// the compensating fence and can hold it.
+type independentCleanupJournal struct {
+	*semhub.MemoryJournal
+	failActivation semreg.SourceID
+	holdFence      bool
+	fenceEntered   chan struct{}
+	fenceRelease   chan struct{}
+	once           sync.Once
+}
+
+func (j *independentCleanupJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Generation != 2 {
+			continue
+		}
+		if record.Kind == semhub.EventGenerationActivated && record.Source == j.failActivation {
+			return errWithdrawalJournal
+		}
+		if record.Kind == semhub.EventGenerationFenced {
+			j.once.Do(func() { close(j.fenceEntered) })
+			if j.holdFence {
+				<-j.fenceRelease
+			}
+		}
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+type heldCloseEndpoint struct {
+	fakeEndpoint
+	closeEntered chan struct{}
+	closeRelease chan struct{}
+	closeErr     error
+}
+
+func (e *heldCloseEndpoint) Close() error {
+	close(e.closeEntered)
+	<-e.closeRelease
+	return e.closeErr
+}
+
+// A same-epoch activation fails after one source advanced. The compensating
+// fence and the provisional native close are independent obligations: a held
+// native close does not delay the fence, and a held fence does not hide a
+// native close failure.
+func TestM03PartialActivationCleanupObligationsProgressIndependently(t *testing.T) {
+	for _, held := range []string{"native close", "fence"} {
+		t.Run(held, func(t *testing.T) {
+			journal := &independentCleanupJournal{MemoryJournal: semhub.NewMemoryJournal(), fenceEntered: make(chan struct{}), fenceRelease: make(chan struct{})}
+			hub, err := semhub.New(semhub.Options{Journal: journal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			class, err := NewSemanticPVClass(hub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := &PublicationScope{Epoch: "source-epoch:pv:independent-cleanup", Generation: 1}
+			adapter := startManagedPublicationTestAdapter(t, class, scope)
+			words := observedFroniusFloatWords()
+			for i, nativeScope := range []string{"fixture:independent-a", "fixture:independent-b"} {
+				rotated := append([]uint16(nil), words...)
+				if i != 0 {
+					putSunSpecString(rotated[52:68], "fixture-identity-b")
+				}
+				if err := adapter.RecordSunSpecQualificationObservation(pvCoreScopedObservation(t, rotated, uint64(i+1), uint64(i+2), nativeScope)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sources := adapter.semanticPV.sortedHandleSources()
+			if len(sources) != 2 {
+				t.Fatalf("sources=%d", len(sources))
+			}
+			if err := adapter.Close(); err != nil {
+				t.Fatal(err)
+			}
+			closeErr := errors.New("synthetic provisional endpoint close failure")
+			endpoint := &heldCloseEndpoint{closeEntered: make(chan struct{}), closeRelease: make(chan struct{})}
+			journal.failActivation = sources[1]
+			release := func() { close(endpoint.closeRelease) }
+			if held == "fence" {
+				journal.holdFence = true
+				endpoint.closeErr = closeErr
+				close(endpoint.closeRelease)
+				release = func() { close(journal.fenceRelease) }
+			}
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(release) })
+			config := validConfig()
+			config.SemanticPV = class
+			successor := &PublicationScope{Previous: scope, Epoch: scope.Epoch, Generation: 2}
+			config.Publication = successor
+			client, peer := net.Pipe()
+			t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
+			type startResult struct {
+				adapter *Adapter
+				err     error
+			}
+			done := make(chan startResult, 1)
+			go func() {
+				started, err := Start(context.Background(), config,
+					func(context.Context, string, string) (net.Conn, error) { return client, nil },
+					func(modbus.TCPEndpointConfig) (Endpoint, error) { return endpoint, nil })
+				done <- startResult{started, err}
+			}()
+			if held == "native close" {
+				managedRecoveryWait(t, endpoint.closeEntered, "provisional native close was not entered")
+				managedRecoveryWait(t, journal.fenceEntered, "compensating fence waited for the held native close")
+				if successor.NativeCloseUnconfirmed() {
+					t.Error("pending native close reported as failed")
+				}
+			} else {
+				managedRecoveryWait(t, journal.fenceEntered, "compensating fence was not entered")
+				watchdog := time.NewTimer(managedRecoveryWatchdog)
+				defer watchdog.Stop()
+				for !successor.NativeCloseUnconfirmed() {
+					select {
+					case <-watchdog.C:
+						t.Fatal("hang diagnostic: native close failure hidden behind the held fence")
+					case <-time.After(time.Millisecond):
+					}
+				}
+			}
+			select {
+			case result := <-done:
+				t.Fatalf("Start returned while the %s was held: %v", held, result.err)
+			default:
+			}
+			releaseOnce.Do(release)
+			result := managedRecoveryWait(t, done, "Start did not return after release")
+			if result.adapter != nil || !errors.Is(result.err, errWithdrawalJournal) {
+				t.Fatalf("partial activation adapter=%v error=%v", result.adapter, result.err)
+			}
+			if held == "native close" {
+				if errors.Is(result.err, ErrStartupCloseUnproven) || successor.NativeCloseUnconfirmed() {
+					t.Fatalf("proven cleanup reported unproven: %v", result.err)
+				}
+			} else if !errors.Is(result.err, closeErr) || !errors.Is(result.err, ErrStartupNativeCloseUnproven) || !successor.NativeCloseUnconfirmed() {
+				t.Fatalf("native close failure lost: %v", result.err)
+			}
+			fenced := 0
+			for _, record := range journal.Records() {
+				if record.Kind == semhub.EventGenerationFenced && record.Source == sources[0] && record.Generation == 2 {
+					fenced++
+				}
+			}
+			if fenced != 1 {
+				t.Fatalf("partial activation fences=%d, want 1", fenced)
+			}
+		})
+	}
+}
+
+// A failed provisional connection close is latched before the endpoint close
+// can block, so the generation reports an unconfirmed close meanwhile.
+func TestM03ProvisionalCloseFailureLatchedBeforeNextClose(t *testing.T) {
+	config := validConfig()
+	scope := &PublicationScope{Epoch: "source-epoch:pv:provisional-latch", Generation: 1}
+	config.Publication = scope
+	openErr := errors.New("synthetic open failure")
+	closeErr := errors.New("synthetic connection close failure")
+	endpoint := &heldCloseEndpoint{closeEntered: make(chan struct{}), closeRelease: make(chan struct{})}
+	endpoint.openErr = openErr
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(endpoint.closeRelease) }) }
+	t.Cleanup(release)
+	client, peer := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = peer.Close() })
+	connection := &startupCloseErrorConn{Conn: client, closeErr: closeErr}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Start(context.Background(), config,
+			func(context.Context, string, string) (net.Conn, error) { return connection, nil },
+			func(modbus.TCPEndpointConfig) (Endpoint, error) { return endpoint, nil })
+		done <- err
+	}()
+	managedRecoveryWait(t, endpoint.closeEntered, "provisional endpoint close was not entered")
+	if !scope.NativeCloseUnconfirmed() {
+		t.Error("connection close failure hidden behind the held endpoint close")
+	}
+	release()
+	err := managedRecoveryWait(t, done, "Start did not return after release")
+	if !errors.Is(err, openErr) || !errors.Is(err, closeErr) || !errors.Is(err, ErrStartupNativeCloseUnproven) || !scope.NativeCloseUnconfirmed() {
+		t.Fatalf("provisional cleanup error=%v unconfirmed=%v", err, scope.NativeCloseUnconfirmed())
 	}
 }

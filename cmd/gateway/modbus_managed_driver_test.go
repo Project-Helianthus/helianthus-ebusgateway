@@ -70,6 +70,84 @@ func m03Driver(t *testing.T, enabled bool, factory modbusadapter.Factory, work m
 	return driver
 }
 
+// m03Watchdog bounds waits for progress the lifecycle makes on its own. It is
+// only a hang diagnostic: no assertion depends on how quickly work completes,
+// and every ordering is established by channels or observed state.
+const m03Watchdog = 2 * time.Minute
+
+func m03Wait[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	watchdog := time.NewTimer(m03Watchdog)
+	defer watchdog.Stop()
+	select {
+	case value := <-ch:
+		return value
+	case <-watchdog.C:
+		t.Fatalf("hang diagnostic: %s", what)
+		panic("unreachable")
+	}
+}
+
+// m03Eventually waits for state that has no completion signal of its own.
+func m03Eventually(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	watchdog := time.NewTimer(m03Watchdog)
+	defer watchdog.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for !done() {
+		select {
+		case <-poll.C:
+		case <-watchdog.C:
+			t.Fatalf("hang diagnostic: %s", what)
+		}
+	}
+}
+
+// m03AwaitState follows manager change notifications until accept or reject
+// matches the published snapshot.
+func m03AwaitState(t *testing.T, manager *drivermanager.Manager, accept, reject func(drivermanager.Snapshot) bool) drivermanager.Snapshot {
+	t.Helper()
+	watchdog := time.NewTimer(m03Watchdog)
+	defer watchdog.Stop()
+	for {
+		snapshot, changed, ok := manager.Watch("pv.primary")
+		if !ok {
+			t.Fatal("driver missing")
+		}
+		if accept(snapshot) {
+			return snapshot
+		}
+		if reject != nil && reject(snapshot) {
+			t.Fatalf("unexpected manager state: %+v", snapshot)
+		}
+		select {
+		case <-changed:
+		case <-watchdog.C:
+			t.Fatalf("hang diagnostic: manager state %+v", snapshot)
+		}
+	}
+}
+
+// m03FenceSignalJournal reports the first journalled generation fence.
+type m03FenceSignalJournal struct {
+	*semhub.MemoryJournal
+	fenced chan struct{}
+	once   sync.Once
+}
+
+func (j *m03FenceSignalJournal) Append(records ...semhub.EpochRecord) error {
+	if err := j.MemoryJournal.Append(records...); err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.Kind == semhub.EventGenerationFenced {
+			j.once.Do(func() { close(j.fenced) })
+		}
+	}
+	return nil
+}
+
 func TestM03ManagerDesiredStateAndGeneration(t *testing.T) {
 	var endpoints []*m03Endpoint
 	var calls atomic.Int32
@@ -89,7 +167,7 @@ func TestM03ManagerDesiredStateAndGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), m03Watchdog)
 	defer cancel()
 	for i := 0; i < 2; i++ {
 		if err := manager.Start(ctx, "pv.primary"); err != nil {
@@ -355,7 +433,7 @@ func TestM03BlockedWorkFactoryWithdrawal(t *testing.T) {
 					close(release)
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), m03Watchdog)
 			defer cancel()
 			result := make(chan error, 1)
 			go func() { _, err := driver.Start(ctx); result <- err }()
@@ -570,7 +648,7 @@ func TestM03PreAdapterCleanupFailureQuarantinesManager(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), m03Watchdog)
 			defer cancel()
 			if err := manager.Start(ctx, "pv.primary"); err != nil {
 				t.Fatal(err)
@@ -874,14 +952,7 @@ func TestM03WithdrawalIndependentOfNativeShutdown(t *testing.T) {
 				t.Fatalf("blocked shutdown result=%v", err)
 			}
 			<-entered
-			deadline := time.After(time.Second)
-			for driver.hub.Admitted(asset) {
-				select {
-				case <-deadline:
-					t.Fatal("semantic withdrawal waited for native shutdown")
-				case <-time.After(time.Millisecond):
-				}
-			}
+			m03Eventually(t, "semantic withdrawal waited for native shutdown", func() bool { return !driver.hub.Admitted(asset) })
 			retained, err := driver.hub.Inspect(asset)
 			if err != nil || !retained.Present {
 				t.Fatalf("withdrawal lost retained evidence: %v", err)
@@ -987,11 +1058,7 @@ func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
 	attempt := driver.active.Load()
 	fenced := make(chan struct{})
 	go func() { driver.FenceWithdrawal(); close(fenced) }()
-	select {
-	case <-fenced:
-	case <-time.After(time.Second):
-		t.Fatal("withdrawal blocked behind work installation")
-	}
+	m03Wait(t, fenced, "withdrawal blocked behind work installation")
 	if !attempt.withdrawn() {
 		t.Fatal("withdrawal gate did not close")
 	}
@@ -999,13 +1066,8 @@ func TestM03WorkInstallationSerializesWithdrawal(t *testing.T) {
 	defer cancel()
 	stopped := make(chan error, 1)
 	go func() { stopped <- driver.Stop(ctx) }()
-	select {
-	case err := <-stopped:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("cleanup completed while generation effects were still installing: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Stop did not honor its deadline")
+	if err := m03Wait(t, stopped, "Stop did not honor its deadline"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cleanup completed while generation effects were still installing: %v", err)
 	}
 	if closes.Load() != 0 {
 		t.Fatal("work closed before installation joined")
@@ -1067,12 +1129,16 @@ func TestM03RetryJoinsCanceledStartupThenOpensFreshEndpoint(t *testing.T) {
 			defer cancel()
 			initial := make(chan error, 1)
 			go func() { _, err := driver.Start(ctx); initial <- err }()
-			<-entered
+			m03Wait(t, entered, "canceled startup did not block")
+			attempt := driver.active.Load()
 			cancel()
-			if err := <-initial; !errors.Is(err, context.Canceled) {
+			// The originating caller returns only after its cancellation has
+			// reached the attempt, so the blocked startup cannot commit.
+			if err := m03Wait(t, initial, "originating caller did not return"); !errors.Is(err, context.Canceled) {
 				t.Fatalf("initial start=%v", err)
 			}
-			retryCtx, retryCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			// The retry carries no deadline; only the join barrier orders it.
+			retryCtx, retryCancel := context.WithCancel(context.Background())
 			defer retryCancel()
 			joined := &m03JoinContext{Context: retryCtx, joined: make(chan struct{})}
 			retried := make(chan error, 1)
@@ -1083,13 +1149,16 @@ func TestM03RetryJoinsCanceledStartupThenOpensFreshEndpoint(t *testing.T) {
 				}
 				retried <- err
 			}()
-			<-joined.joined
-			if calls.Load() != 1 {
+			m03Wait(t, joined.joined, "retry did not join the canceled startup")
+			if calls.Load() != 1 || driver.active.Load() != attempt {
 				t.Fatal("retry opened before predecessor cleanup")
 			}
 			close(release)
-			if err := <-retried; err != nil {
+			if err := m03Wait(t, retried, "joined retry did not finish"); err != nil {
 				t.Fatalf("joined retry did not start a fresh attempt: %v", err)
+			}
+			if !attempt.retryableStartup() {
+				t.Fatalf("canceled predecessor error=%v closed=%v", attempt.startErr, attempt.startupClosed)
 			}
 			if calls.Load() != 2 || first.closes.Load() != 1 {
 				t.Fatal("retry did not close predecessor and open exactly one fresh endpoint")
@@ -1140,10 +1209,13 @@ func TestM03ManagerRetryAfterPartialActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Synchronous manager calls and change notifications order this test.
+	// Neither progress nor shutdown shares a wall-clock budget.
+	ctx := context.Background()
 	defer func() {
-		if err := manager.Shutdown(ctx); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), m03Watchdog)
+		defer shutdownCancel()
+		if err := manager.Shutdown(shutdownCtx); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -1171,23 +1243,16 @@ func TestM03ManagerRetryAfterPartialActivation(t *testing.T) {
 		t.Fatal("fixture did not create distinct sources")
 	}
 	journal.source = sources[1]
+	// Replace returns once the failed activation has scheduled the manager's
+	// retry; the retry then publishes RUNNING (or FAILED) on its own.
 	if err := manager.Replace(ctx, "pv.primary"); err != nil {
 		t.Fatal(err)
 	}
-	for {
-		snapshot, ok := manager.Snapshot("pv.primary")
-		if ok && snapshot.ObservedState == drivermanager.ObservedRunning {
-			break
-		}
-		if ok && snapshot.ObservedState == drivermanager.ObservedFailed {
-			t.Fatalf("manager retry failed: %+v", snapshot)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("manager retry did not recover")
-		case <-time.After(time.Millisecond):
-		}
-	}
+	m03AwaitState(t, manager, func(snapshot drivermanager.Snapshot) bool {
+		return snapshot.ObservedState == drivermanager.ObservedRunning
+	}, func(snapshot drivermanager.Snapshot) bool {
+		return snapshot.ObservedState == drivermanager.ObservedFailed
+	})
 	if !journal.failed.Load() || opens.Load() != 3 {
 		t.Fatalf("failure=%v opens=%d; want one failed activation and one retry", journal.failed.Load(), opens.Load())
 	}
@@ -1341,7 +1406,7 @@ func TestM03NativeCleanupFailureQuarantinesManager(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), m03Watchdog)
 			defer cancel()
 			if err := manager.Start(ctx, "pv.primary"); err != nil {
 				t.Fatal(err)
@@ -1435,35 +1500,36 @@ func TestM03WorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if err := manager.Start(ctx, "pv.primary"); err != nil {
 		t.Fatal(err)
 	}
-	for {
-		snapshot, changed, _ := manager.Watch("pv.primary")
-		if snapshot.ObservedState == drivermanager.ObservedRunning {
-			break
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-	}
-	stopCtx, stopCancel := context.WithTimeout(ctx, time.Second)
+	m03AwaitState(t, manager, func(snapshot drivermanager.Snapshot) bool {
+		return snapshot.ObservedState == drivermanager.ObservedRunning
+	}, nil)
+	// The caller's stop deadline ends only after both barriers: the fence is
+	// blocked in the journal and the worker failure has been latched.
+	stopCtx, stopCancel := context.WithCancel(ctx)
 	defer stopCancel()
-	report, err := manager.StopWithReport(stopCtx, "pv.primary")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reports := make(chan drivermanager.CloseReport, 1)
+	go func() {
+		report, err := manager.StopWithReport(stopCtx, "pv.primary")
+		if err != nil {
+			t.Error(err)
+		}
+		reports <- report
+	}()
+	m03Wait(t, journal.entered, "semantic withdrawal did not reach the blocked journal")
+	m03Eventually(t, "worker failure was not latched while semantic withdrawal was blocked", driver.SafetyQuarantined)
 	select {
-	case <-journal.entered:
+	case report := <-reports:
+		t.Fatalf("stop returned while semantic withdrawal was blocked: %+v", report)
 	default:
-		t.Fatal("semantic withdrawal did not reach the blocked journal")
 	}
-	if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || workCloses.Load() != 1 || endpoint.closes.Load() != 1 {
-		t.Fatalf("deadline=%v worker closes=%d endpoint closes=%d", stopCtx.Err(), workCloses.Load(), endpoint.closes.Load())
+	stopCancel()
+	report := m03Wait(t, reports, "stop did not honor its deadline")
+	if workCloses.Load() != 1 || endpoint.closes.Load() != 1 {
+		t.Fatalf("worker closes=%d endpoint closes=%d", workCloses.Load(), endpoint.closes.Load())
 	}
 	if report.Class != drivermanager.CloseUnconfirmed || !driver.SafetyQuarantined() {
 		t.Fatalf("blocked cleanup class=%v quarantine=%v", report.Class, driver.SafetyQuarantined())
@@ -1666,7 +1732,10 @@ func TestM03StartupWorkerFailureQuarantinesWhileSemanticWithdrawalBlocked(t *tes
 				t.Fatal(err)
 			}
 			resume()
-			<-journal.entered
+			m03Wait(t, journal.entered, "startup cleanup did not reach the blocked fence")
+			// Native cleanup runs beside the blocked fence. Its failure is
+			// latched before the stop deadline starts, without semantic progress.
+			m03Eventually(t, "native failure was not latched while the fence was blocked", driver.SafetyQuarantined)
 			select {
 			case <-attempt.started:
 				t.Fatal("startup completed while semantic cleanup was blocked")
@@ -1778,7 +1847,10 @@ func TestM03StartupEndpointFailureQuarantinesWhileSemanticWithdrawalBlocked(t *t
 				t.Fatal(err)
 			}
 			resume()
-			<-journal.entered
+			m03Wait(t, journal.entered, "startup cleanup did not reach the blocked fence")
+			// Native cleanup runs beside the blocked fence. Its failure is
+			// latched before the stop deadline starts, without semantic progress.
+			m03Eventually(t, "native failure was not latched while the fence was blocked", driver.SafetyQuarantined)
 			select {
 			case <-attempt.started:
 				t.Fatal("startup completed while semantic cleanup was blocked")
@@ -1850,7 +1922,7 @@ func TestM03ManagerRecoversPartialActivationCleanupAfterJournalRecovery(t *testi
 	// bounds the regression without canceling an operation mid-inspection.
 	ctx := context.Background()
 	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), m03Watchdog)
 		defer shutdownCancel()
 		if err := manager.Shutdown(shutdownCtx); err != nil {
 			t.Error(err)
@@ -2053,7 +2125,8 @@ func m03SupersededStartupCleanup(t *testing.T, retry, connectionFailure bool) {
 	go func() { startDone <- manager.Start(context.Background(), "pv.primary") }()
 	<-journal.activationEntered
 	attempt := driver.active.Load()
-	stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// The caller's stop deadline is ended explicitly, after the barriers below.
+	stopCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reports := make(chan drivermanager.CloseReport, 1)
 	go func() {
@@ -2063,19 +2136,28 @@ func m03SupersededStartupCleanup(t *testing.T, retry, connectionFailure bool) {
 		}
 		reports <- report
 	}()
-	<-canceled
+	m03Wait(t, canceled, "stop did not cancel the superseded startup")
 	resumeActivation()
-	<-journal.fenceEntered
-	// This barrier is reached only after the cleanup path under test starts.
-	if retry && !attempt.nativeCleanupFailed.Load() {
+	m03Wait(t, journal.fenceEntered, "cleanup did not reach the blocked fence")
+	// With retry, startup returned before Stop retried the retained owner, so
+	// its native failure is already latched and the retry must not clear it.
+	if retry && !attempt.nativeCloseUnconfirmed() {
 		t.Error("Stop cleared the latched startup native failure")
 	}
+	// Otherwise the provisional native close runs beside the blocked fence.
+	m03Eventually(t, "native failure was not latched while the fence was blocked", attempt.nativeCloseUnconfirmed)
 	if failedEndpoint.closes.Load() != 1 || !driver.SafetyQuarantined() {
 		t.Errorf("native failure unavailable before semantic wait: closes=%d quarantine=%v", failedEndpoint.closes.Load(), driver.SafetyQuarantined())
 	}
-	report := <-reports
-	if !errors.Is(stopCtx.Err(), context.DeadlineExceeded) || report.Class != drivermanager.CloseUnconfirmed {
-		t.Errorf("deadline=%v close report=%+v", stopCtx.Err(), report)
+	select {
+	case report := <-reports:
+		t.Fatalf("stop returned while the fence was blocked: %+v", report)
+	default:
+	}
+	cancel()
+	report := m03Wait(t, reports, "stop did not honor its deadline")
+	if report.Class != drivermanager.CloseUnconfirmed {
+		t.Errorf("close report=%+v", report)
 	}
 	snapshot, _ := manager.Snapshot("pv.primary")
 	if !snapshot.SafetyQuarantined || snapshot.Reason.Code != drivermanager.ReasonCloseUnconfirmed {
@@ -2108,5 +2190,357 @@ func m03SupersededStartupCleanup(t *testing.T, retry, connectionFailure bool) {
 	}
 	if calls.Load() != 2 || driver.Generation() != 2 || failedEndpoint.closes.Load() != 1 {
 		t.Fatal("quarantine allowed replacement or repeated native cleanup")
+	}
+}
+
+// Caller cancellation reaches startup before or during worker installation,
+// and joining the worker then blocks. Publication admission is revoked and the
+// hub fence completes without waiting for that join; the endpoint still closes
+// only after it.
+func TestM03StartupCleanupFencesPublicationWhileWorkCloseBlocks(t *testing.T) {
+	for _, phase := range []string{"before installation", "during installation"} {
+		t.Run(phase, func(t *testing.T) {
+			journal := &m03FenceSignalJournal{MemoryJournal: semhub.NewMemoryJournal(), fenced: make(chan struct{})}
+			hub, err := semhub.New(semhub.Options{Journal: journal})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			joinEntered, joinRelease := make(chan struct{}), make(chan struct{})
+			var releaseOnce, joinOnce sync.Once
+			resume := func() { releaseOnce.Do(func() { close(release) }) }
+			resumeJoin := func() { joinOnce.Do(func() { close(joinRelease) }) }
+			// Unblock startup and its worker join before the fixture joins Stop.
+			t.Cleanup(func() { resume(); resumeJoin() })
+			var calls, workStarts, workCloses atomic.Int32
+			var asset semreg.AssetID
+			readableDuringJoin := make(chan bool, 1)
+			first := &m03Endpoint{}
+			observation := m03Observation(t)
+			driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+				if calls.Add(1) == 1 {
+					return first, nil
+				}
+				return &m03Endpoint{}, nil
+			}, func(runCtx context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+				if calls.Load() != 1 {
+					return nil
+				}
+				if err := adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+					t.Error(err)
+				}
+				view, ok := adapter.SemanticPVCurrentSingle()
+				if !ok {
+					t.Error("fixture publication missing")
+				}
+				asset = view.Snapshot.AssetID
+				pause := func() {
+					close(entered)
+					<-runCtx.Done()
+					close(canceled)
+					<-release
+				}
+				if phase == "before installation" {
+					pause()
+				}
+				return &m03Work{start: func() {
+					workStarts.Add(1)
+					pause()
+				}, close: func() error {
+					workCloses.Add(1)
+					_, readable := adapter.SemanticPVCurrentSingle()
+					readableDuringJoin <- readable
+					close(joinEntered)
+					<-joinRelease
+					return nil
+				}}
+			})
+			driver.hub = hub
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() { _, err := driver.Start(ctx); result <- err }()
+			m03Wait(t, entered, "startup did not reach worker installation")
+			attempt := driver.active.Load()
+			cancel()
+			m03Wait(t, canceled, "caller cancellation did not reach installation")
+			if err := m03Wait(t, result, "originating caller did not return"); !errors.Is(err, context.Canceled) {
+				t.Fatalf("initial start=%v", err)
+			}
+			resume()
+			m03Wait(t, joinEntered, "startup cleanup did not join the worker")
+			if m03Wait(t, readableDuringJoin, "worker join did not report admission") {
+				t.Error("canceled generation stayed readable while its worker was joining")
+			}
+			m03Wait(t, journal.fenced, "publication fence waited for the blocked worker join")
+			m03Eventually(t, "withdrawn asset stayed admitted while the worker join was blocked", func() bool { return !hub.Admitted(asset) })
+			select {
+			case <-attempt.started:
+				t.Fatal("startup completed while its worker join was blocked")
+			default:
+			}
+			if driver.SafetyQuarantined() || first.closes.Load() != 0 {
+				t.Fatalf("pending worker join quarantine=%v endpoint closes=%d", driver.SafetyQuarantined(), first.closes.Load())
+			}
+			resumeJoin()
+			m03Wait(t, attempt.started, "startup cleanup did not finish")
+			wantStarts := int32(0)
+			if phase == "during installation" {
+				wantStarts = 1
+			}
+			if attempt.startErr == nil || !attempt.startupClosed || workStarts.Load() != wantStarts || workCloses.Load() != 1 || first.closes.Load() != 1 {
+				t.Fatalf("canceled installation error=%v closed=%v starts=%d work closes=%d endpoint closes=%d", attempt.startErr, attempt.startupClosed, workStarts.Load(), workCloses.Load(), first.closes.Load())
+			}
+			if generation, err := driver.Start(context.Background()); err != nil || generation != 2 {
+				t.Fatalf("retry generation=%d error=%v", generation, err)
+			}
+		})
+	}
+}
+
+// Stop supersedes a startup whose worker installation is blocked. The hub
+// fence completes before the installation join; work and endpoint close only
+// after it.
+func TestM03StopFencesPublicationWhileInstallationBlocked(t *testing.T) {
+	journal := &m03FenceSignalJournal{MemoryJournal: semhub.NewMemoryJournal(), fenced: make(chan struct{})}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	resume := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(resume)
+	var workStarts, workCloses atomic.Int32
+	var asset semreg.AssetID
+	endpoint := &m03Endpoint{}
+	observation := m03Observation(t)
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		return endpoint, nil
+	}, func(_ context.Context, adapter *modbusadapter.Adapter) modbusManagedWork {
+		if err := adapter.RecordSunSpecQualificationObservation(observation); err != nil {
+			t.Error(err)
+		}
+		view, ok := adapter.SemanticPVCurrentSingle()
+		if !ok {
+			t.Error("fixture publication missing")
+		}
+		asset = view.Snapshot.AssetID
+		return &m03Work{start: func() {
+			workStarts.Add(1)
+			close(entered)
+			<-release
+		}, close: func() error { workCloses.Add(1); return nil }}
+	})
+	driver.hub = hub
+	result := make(chan error, 1)
+	go func() { _, err := driver.Start(context.Background()); result <- err }()
+	m03Wait(t, entered, "worker installation did not start")
+	attempt := driver.active.Load()
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(stopCtx) }()
+	m03Wait(t, journal.fenced, "publication fence waited for the installation join")
+	m03Eventually(t, "withdrawn asset stayed admitted while installation was blocked", func() bool { return !hub.Admitted(asset) })
+	if _, ok := attempt.adapter.SemanticPVCurrentSingle(); ok {
+		t.Error("withdrawn generation stayed readable")
+	}
+	select {
+	case <-attempt.started:
+		t.Fatal("installation joined while still blocked")
+	case err := <-stopped:
+		t.Fatalf("stop completed before the installation join: %v", err)
+	default:
+	}
+	if workCloses.Load() != 0 || endpoint.closes.Load() != 0 {
+		t.Fatal("worker or endpoint closed before installation joined")
+	}
+	stopCancel()
+	if err := m03Wait(t, stopped, "stop did not honor its deadline"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop deadline=%v", err)
+	}
+	resume()
+	if err := m03Wait(t, result, "withdrawn start did not return"); err == nil {
+		t.Fatal("withdrawn installation admitted")
+	}
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if workStarts.Load() != 1 || workCloses.Load() != 1 || endpoint.closes.Load() != 1 || driver.active.Load() != nil {
+		t.Fatal("stop did not join installation, then close work and endpoint exactly once")
+	}
+}
+
+// A stop deadline that expires while the publication fence is stalled reports
+// a fence timeout. A pending semantic fence is not a native close failure, so
+// the driver is not quarantined, but no successor is admitted until it ends.
+func TestM03StalledPublicationFenceReportsFenceTimeout(t *testing.T) {
+	journal := &m03BlockingFenceJournal{MemoryJournal: semhub.NewMemoryJournal(), entered: make(chan struct{}), release: make(chan struct{})}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	first := &m03Endpoint{}
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		if calls.Add(1) == 1 {
+			return first, nil
+		}
+		return &m03Endpoint{}, nil
+	}, nil)
+	var semanticOnce sync.Once
+	releaseSemantic := func() { semanticOnce.Do(func() { close(journal.release) }) }
+	// Release the fence before the fixture's registered cleanup joins Stop.
+	t.Cleanup(releaseSemantic)
+	driver.hub = hub
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.active.Load().adapter.RecordSunSpecQualificationObservation(m03Observation(t)); err != nil {
+		t.Fatal(err)
+	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(stopCtx) }()
+	m03Wait(t, journal.entered, "publication fence did not stall")
+	m03Eventually(t, "native close waited for the stalled fence", func() bool { return first.closes.Load() == 1 })
+	select {
+	case err := <-stopped:
+		t.Fatalf("stop returned while the fence was stalled: %v", err)
+	default:
+	}
+	stopCancel()
+	err = m03Wait(t, stopped, "stop did not honor its deadline")
+	if !errors.Is(err, errModbusPublicationFenceTimeout) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("stalled fence stop=%v", err)
+	}
+	if driver.SafetyQuarantined() {
+		t.Fatal("stalled semantic fence reported a native close failure")
+	}
+	if _, err := driver.Start(context.Background()); err == nil || driver.Generation() != 1 {
+		t.Fatalf("successor admitted while the fence was stalled: %v", err)
+	}
+	releaseSemantic()
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatalf("completed fence stop=%v", err)
+	}
+	if generation, err := driver.Start(context.Background()); err != nil || generation != 2 {
+		t.Fatalf("successor generation=%d error=%v", generation, err)
+	}
+	if calls.Load() != 2 || first.closes.Load() != 1 {
+		t.Fatal("fence timeout repeated native cleanup or skipped the successor")
+	}
+}
+
+// m03HeldCompensationJournal fails one source's successor activation and holds
+// the compensating fence until released; the fence then succeeds.
+type m03HeldCompensationJournal struct {
+	*semhub.MemoryJournal
+	failSource   semreg.SourceID
+	fenceEntered chan struct{}
+	fenceRelease chan struct{}
+	once         sync.Once
+}
+
+func (j *m03HeldCompensationJournal) Append(records ...semhub.EpochRecord) error {
+	for _, record := range records {
+		if record.Generation != 2 {
+			continue
+		}
+		if record.Kind == semhub.EventGenerationActivated && record.Source == j.failSource {
+			return errM03JournalFailure
+		}
+		if record.Kind == semhub.EventGenerationFenced {
+			j.once.Do(func() { close(j.fenceEntered) })
+			<-j.fenceRelease
+		}
+	}
+	return j.MemoryJournal.Append(records...)
+}
+
+// The compensating fence of a failed epoch admission stalls inside startup. A
+// stop deadline reached then is a fence timeout too; native cleanup succeeded,
+// so nothing is quarantined, and the successor waits for the fence.
+func TestM03StalledCompensatingFenceReportsFenceTimeout(t *testing.T) {
+	journal := &m03HeldCompensationJournal{MemoryJournal: semhub.NewMemoryJournal(), fenceEntered: make(chan struct{}), fenceRelease: make(chan struct{})}
+	hub, err := semhub.New(semhub.Options{Journal: journal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var endpoints []*m03Endpoint
+	driver := m03Driver(t, true, func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		endpoint := &m03Endpoint{}
+		endpoints = append(endpoints, endpoint)
+		return endpoint, nil
+	}, nil)
+	var releaseOnce sync.Once
+	releaseFence := func() { releaseOnce.Do(func() { close(journal.fenceRelease) }) }
+	// Release the fence before the fixture's registered cleanup joins Stop.
+	t.Cleanup(releaseFence)
+	driver.hub = hub
+	if _, err := driver.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var sources []semreg.SourceID
+	for i, scope := range []string{"fixture:compensation-a", "fixture:compensation-b"} {
+		words := sunspectest.ObservedFroniusFloatWords()
+		if i != 0 {
+			words[52] ^= 1
+		}
+		adapter := driver.active.Load().adapter
+		if err := adapter.RecordSunSpecQualificationObservation(m03ScopedObservation(t, uint64(i+1), words, scope)); err != nil {
+			t.Fatal(err)
+		}
+		view, ok := adapter.SemanticPVCurrentSingle()
+		if !ok {
+			t.Fatal("source unavailable")
+		}
+		sources = append(sources, view.Snapshot.Sources[0].SourceID)
+	}
+	sort.Slice(sources, func(i, j int) bool { return sources[i] < sources[j] })
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	journal.failSource = sources[1]
+	startDone := make(chan error, 1)
+	go func() { _, err := driver.Start(context.Background()); startDone <- err }()
+	m03Wait(t, journal.fenceEntered, "compensating fence did not stall")
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	defer stopCancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- driver.Stop(stopCtx) }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("stop returned while the compensating fence was stalled: %v", err)
+	default:
+	}
+	stopCancel()
+	err = m03Wait(t, stopped, "stop did not honor its deadline")
+	if !errors.Is(err, errModbusPublicationFenceTimeout) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("stalled compensating fence stop=%v", err)
+	}
+	if driver.SafetyQuarantined() || driver.Generation() != 2 {
+		t.Fatalf("stalled compensation quarantine=%v generation=%d", driver.SafetyQuarantined(), driver.Generation())
+	}
+	releaseFence()
+	if err := m03Wait(t, startDone, "failed admission did not return"); !errors.Is(err, errM03JournalFailure) || errors.Is(err, modbusadapter.ErrStartupCloseUnproven) {
+		t.Fatalf("failed admission=%v", err)
+	}
+	if err := driver.Stop(context.Background()); err != nil {
+		t.Fatalf("completed compensation stop=%v", err)
+	}
+	if generation, err := driver.Start(context.Background()); err != nil || generation != 3 {
+		t.Fatalf("successor generation=%d error=%v", generation, err)
+	}
+	fenced := 0
+	for _, record := range journal.Records() {
+		if record.Kind == semhub.EventGenerationFenced && record.Source == sources[0] && record.Generation == 2 {
+			fenced++
+		}
+	}
+	if fenced != 1 || len(endpoints) != 3 || endpoints[1].closes.Load() != 1 {
+		t.Fatalf("compensating fences=%d endpoints=%d", fenced, len(endpoints))
 	}
 }

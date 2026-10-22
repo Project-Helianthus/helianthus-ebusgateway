@@ -66,6 +66,8 @@ type PublicationScope struct {
 	Generation        uint64
 	withdrawn         atomic.Bool
 	nativeCloseFailed atomic.Bool
+	fenceStarted      atomic.Bool
+	fenced            atomic.Bool
 
 	startupCleanup func() error
 }
@@ -89,10 +91,34 @@ func closeStartupEndpoint(endpoint Endpoint) error {
 }
 
 func closeStartupConnection(connection net.Conn) error {
+	if connection == nil {
+		return nil
+	}
 	if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return errors.Join(ErrStartupCloseUnproven, ErrStartupNativeCloseUnproven, err)
 	}
 	return nil
+}
+
+// closeStartupNative closes provisional native resources of a failed Start.
+// A failure is latched on the managed scope before it is returned, so the
+// generation reports an unconfirmed close while any other cleanup still runs.
+func closeStartupNative(scope *PublicationScope, connection net.Conn, endpoint Endpoint) error {
+	connectionErr := closeStartupConnection(connection)
+	if connectionErr != nil {
+		scope.latchNativeCloseFailure()
+	}
+	endpointErr := closeStartupEndpoint(endpoint)
+	if endpointErr != nil {
+		scope.latchNativeCloseFailure()
+	}
+	return errors.Join(connectionErr, endpointErr)
+}
+
+func (scope *PublicationScope) latchNativeCloseFailure() {
+	if scope != nil {
+		scope.nativeCloseFailed.Store(true)
+	}
 }
 
 func (scope *PublicationScope) Withdraw() {
@@ -101,8 +127,9 @@ func (scope *PublicationScope) Withdraw() {
 	}
 }
 
-// RetryStartupCleanup retries retained semantic cleanup after a failed admission.
-// The boolean reports ownership; absent ownership never proves startup close.
+// RetryStartupCleanup retries the retained semantic fence of a failed epoch
+// admission; the boolean reports ownership. Native startup cleanup is reported
+// once by Start and latched on the scope: no retry here can prove it.
 func (scope *PublicationScope) RetryStartupCleanup() (error, bool) {
 	if scope == nil || scope.startupCleanup == nil {
 		return nil, false
@@ -110,10 +137,29 @@ func (scope *PublicationScope) RetryStartupCleanup() (error, bool) {
 	return scope.startupCleanup(), true
 }
 
-// NativeCloseUnconfirmed retains provisional native cleanup failure even while
-// startup is waiting for semantic withdrawal.
+// NativeCloseUnconfirmed reports a failed provisional or adapter-owned native
+// close of this generation. It is latched as soon as the close returns and is
+// independent of semantic withdrawal, which may still be pending or failing.
 func (scope *PublicationScope) NativeCloseUnconfirmed() bool {
 	return scope != nil && scope.nativeCloseFailed.Load()
+}
+
+// withdrawFence runs one managed fence pass of this generation's publication
+// core and records its progress. A completed fence is final.
+func (scope *PublicationScope) withdrawFence(core *pvPublicationCore, context semreg.EvaluationContext) error {
+	scope.fenceStarted.Store(true)
+	err := core.withdrawManaged(context)
+	if err == nil {
+		scope.fenced.Store(true)
+	}
+	return err
+}
+
+// FencePending reports a managed publication fence of this generation that
+// has started, including the compensating fence of a failed epoch admission,
+// and has not completed. A caller deadline reached now is a fence timeout.
+func (scope *PublicationScope) FencePending() bool {
+	return scope != nil && scope.fenceStarted.Load() && !scope.fenced.Load()
 }
 
 func (scope *PublicationScope) valid() bool {
@@ -217,7 +263,7 @@ func Start(
 	}
 	endpoint, err := factory(config.Endpoint)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("construct Modbus TCP endpoint: %w", err), closeStartupEndpoint(endpoint))
+		return nil, errors.Join(fmt.Errorf("construct Modbus TCP endpoint: %w", err), closeStartupNative(config.Publication, nil, endpoint))
 	}
 	if endpoint == nil {
 		return nil, errors.New("construct Modbus TCP endpoint: factory returned nil")
@@ -229,15 +275,14 @@ func Start(
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("dial Modbus TCP endpoint: %w", err),
-			closeStartupEndpoint(endpoint),
+			closeStartupNative(config.Publication, nil, endpoint),
 		)
 	}
 	handle, err := endpoint.OpenConnection(connection)
 	if err != nil {
 		return nil, errors.Join(
 			fmt.Errorf("open Modbus TCP endpoint: %w", err),
-			closeStartupConnection(connection),
-			closeStartupEndpoint(endpoint),
+			closeStartupNative(config.Publication, connection, endpoint),
 		)
 	}
 	clock := time.Now
@@ -252,34 +297,42 @@ func Start(
 		epoch, generation = config.Publication.Epoch, config.Publication.Generation
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, errors.Join(err, closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+		return nil, errors.Join(err, closeStartupNative(config.Publication, connection, endpoint))
 	}
 	if !config.Publication.valid() {
-		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), closeStartupConnection(connection), closeStartupEndpoint(endpoint))
+		return nil, errors.Join(errors.New("managed Modbus publication scope withdrawn"), closeStartupNative(config.Publication, connection, endpoint))
 	}
 	// The provisional PV source epoch is admitted exactly at the historical
 	// sample point, after the endpoint factory, dial and open.
 	if err := semanticPV.admitEpoch(epoch, generation); err != nil {
-		nativeCleanup := errors.Join(closeStartupConnection(connection), closeStartupEndpoint(endpoint))
-		if nativeCleanup != nil && config.Publication != nil {
-			config.Publication.nativeCloseFailed.Store(true)
-		}
-		var cleanup error
+		// A partial activation may already have advanced a source. Its
+		// compensating fence and the provisional native close are independent
+		// obligations: neither waits for the other to make progress, and a
+		// native failure is latched while the fence may still be blocked.
+		withdrawal := make(chan error, 1)
 		if config.Publication != nil {
-			cleanup = semanticPV.withdrawManaged(semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(clock().UTC()), EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin))})
-			if cleanup != nil {
-				cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
-			}
+			config.Publication.fenceStarted.Store(true)
+			go func() {
+				withdrawal <- config.Publication.withdrawFence(semanticPV, semreg.EvaluationContext{EvaluatedAt: pvPublicationWall(clock().UTC()), EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin))})
+			}()
+		} else {
+			withdrawal <- nil
+		}
+		nativeCleanup := closeStartupNative(config.Publication, connection, endpoint)
+		cleanup := <-withdrawal
+		if cleanup != nil {
+			cleanup = errors.Join(ErrStartupCloseUnproven, cleanup)
 		}
 		if config.Publication != nil && cleanup != nil {
 			// Keep the partially activated core reachable even though no adapter
 			// was admitted. Native cleanup is immutable; semantic fencing retries.
 			config.Publication.core = semanticPV
-			config.Publication.startupCleanup = func() error {
-				return errors.Join(nativeCleanup, semanticPV.withdrawManaged(semreg.EvaluationContext{
+			scope := config.Publication
+			scope.startupCleanup = func() error {
+				return scope.withdrawFence(semanticPV, semreg.EvaluationContext{
 					EvaluatedAt:       pvPublicationWall(clock().UTC()),
 					EvaluateMonotonic: pvPublicationMonotonic(time.Since(managedModbusMonotonicOrigin)),
-				}))
+				})
 			}
 		}
 		return nil, errors.Join(fmt.Errorf("admit SemReg PV source epoch: %w", err), cleanup, nativeCleanup)
@@ -1012,14 +1065,29 @@ func (adapter *Adapter) Close() error {
 	// Neither cleanup obligation waits for the other to make progress.
 	semanticDone := make(chan error, 1)
 	go func() { semanticDone <- adapter.WithdrawSemantic() }()
+	return errors.Join(adapter.CloseNative(), <-semanticDone)
+}
+
+// CloseNative revokes publication and transport admission, then closes the
+// endpoint exactly once without waiting for semantic withdrawal. Later calls
+// return the cached result. A failure is latched on the adapter and on its
+// managed scope before it is returned.
+func (adapter *Adapter) CloseNative() error {
+	if adapter == nil || adapter.endpoint == nil {
+		return nil
+	}
+	adapter.config.Publication.Withdraw()
 	adapter.closeOnce.Do(func() {
 		adapter.connectionMu.Lock()
 		adapter.closed = true
 		adapter.connectionMu.Unlock()
 		adapter.closeErr = adapter.endpoint.Close()
-		adapter.nativeCloseFailed.Store(adapter.closeErr != nil)
+		if adapter.closeErr != nil {
+			adapter.nativeCloseFailed.Store(true)
+			adapter.config.Publication.latchNativeCloseFailure()
+		}
 	})
-	return errors.Join(adapter.closeErr, <-semanticDone)
+	return adapter.closeErr
 }
 
 // WithdrawSemantic revokes read/publication admission and retries the semantic
@@ -1029,17 +1097,19 @@ func (adapter *Adapter) WithdrawSemantic() error {
 		return nil
 	}
 	adapter.config.Publication.Withdraw()
-	if adapter.config.Publication != nil {
+	if scope := adapter.config.Publication; scope != nil {
+		scope.fenceStarted.Store(true)
 		context, err := adapter.semanticPVReadContext()
 		if err != nil {
 			return err
 		}
-		return adapter.semanticPV.withdrawManaged(context)
+		return scope.withdrawFence(adapter.semanticPV, context)
 	}
 	return adapter.semanticPV.retire()
 }
 
-// NativeCloseUnconfirmed reports failed native cleanup independently of semantic withdrawal.
+// NativeCloseUnconfirmed reports a failed endpoint close independently of
+// semantic withdrawal.
 func (adapter *Adapter) NativeCloseUnconfirmed() bool {
 	return adapter != nil && adapter.nativeCloseFailed.Load()
 }

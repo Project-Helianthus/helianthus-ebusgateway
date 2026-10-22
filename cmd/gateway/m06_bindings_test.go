@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
@@ -273,7 +275,7 @@ func TestM06EEBusLeaseRejectsRetiredGeneration(t *testing.T) {
 
 func TestM06EEBusCaptureRequiresAdmittedRuntime(t *testing.T) {
 	var absent *managedSidecarBindings
-	if absent.eebusEvidenceCapture() != nil || absent.eebusAvailable() {
+	if !m06EvidenceUnavailable(absent) || absent.eebusAvailable() {
 		t.Fatal("disabled runtime admitted evidence or leaf capture")
 	}
 	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
@@ -286,7 +288,7 @@ func TestM06EEBusCaptureRequiresAdmittedRuntime(t *testing.T) {
 	}
 	defer func() { _ = manager.Shutdown(context.Background()) }()
 	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID}, runtime: runtime, manager: manager}}}}
-	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+	if !m06EvidenceUnavailable(bindings) || bindings.eebusAvailable() {
 		t.Fatal("unavailable runtime admitted evidence or leaf capture")
 	}
 	if err := manager.Start(context.Background(), string(managedEEBusID)); err != nil {
@@ -296,7 +298,7 @@ func TestM06EEBusCaptureRequiresAdmittedRuntime(t *testing.T) {
 		t.Fatal("running runtime withheld evidence or leaf capture")
 	}
 	runtime.FenceWithdrawal()
-	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+	if !m06EvidenceUnavailable(bindings) || bindings.eebusAvailable() {
 		t.Fatal("withdrawn runtime admitted evidence or leaf capture")
 	}
 }
@@ -319,7 +321,7 @@ func TestM06FailedEEBusWithholdsCapture(t *testing.T) {
 	if !ok || snapshot.ObservedState != drivermanager.ObservedFailed || runtime.active.Load() != nil {
 		t.Fatalf("factory failure did not withhold the runtime: %+v", snapshot)
 	}
-	if bindings.eebusEvidenceCapture() != nil || bindings.eebusAvailable() {
+	if !m06EvidenceUnavailable(bindings) || bindings.eebusAvailable() {
 		t.Fatal("failed runtime admitted evidence or leaf capture")
 	}
 }
@@ -432,4 +434,152 @@ func TestM06DisabledEEBusSurfaceIsDiscoverableAndFailsClosed(t *testing.T) {
 	if bindings.eebusAvailable() || entry.runtime != nil {
 		t.Fatal("surface discovery or a call started disabled eeBUS")
 	}
+}
+
+// Each callback is installed before admission and retained across restart.
+type m06CaptureRuntime struct {
+	msp05bRuntime
+	snapshot eebusruntime.SnapshotV1
+	reads    atomic.Int32
+}
+
+func (r *m06CaptureRuntime) Snapshot() (eebusruntime.SnapshotV1, error) {
+	r.reads.Add(1)
+	return r.snapshot.Clone(), nil
+}
+
+type m06PromotionCapture struct{ calls int }
+
+func (c *m06PromotionCapture) CaptureLeafPromotion(context.Context, mcp.LeafPromotionCaptureRequest) mcp.LeafPromotionCaptureReceipt {
+	c.calls++
+	return mcp.LeafPromotionCaptureReceipt{Category: "PUBLISHED"}
+}
+func TestM06CapturesFollowAdmissionAfterConfigureAndRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snapshot := m18Snapshot(t)
+	snapshot.Services = []eebusruntime.ServiceV1{{SKI: "synthetic-local-service", Kind: eebusruntime.ServiceKindV1Local, Visible: true}}
+	snapshot.Meta.DataHash = ""
+	snapshot, err := eebusruntime.NewSnapshotV1(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := &m06CaptureRuntime{snapshot: snapshot}
+	second := &m06CaptureRuntime{snapshot: snapshot}
+	var opens int
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		opens++
+		if opens == 1 {
+			return first, nil
+		}
+		return second, nil
+	}))
+	runtime := &managedSidecarRuntime{Runtime: native}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: string(managedEEBusID), Enabled: true, Runtime: runtime}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := manager.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID}, runtime: runtime, manager: manager}}}}
+	evidence, err := openSynchronizedEvidenceRuntime(enabledSynchronizedEvidenceConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = evidence.Close() }()
+	captureEvidence := bindings.eebusEvidenceCapture()
+	if captureEvidence == nil {
+		t.Fatal("Configure would install a permanently unavailable evidence reader before START")
+	}
+	type acquisition struct {
+		payload json.RawMessage
+		at      time.Time
+		err     error
+	}
+	acquired := make(chan acquisition, 1)
+	configure := func() error {
+		return evidence.Configure(func(key []byte) (json.RawMessage, time.Time, error) {
+			payload, at, err := captureEvidence(key)
+			acquired <- acquisition{payload: payload, at: at, err: err}
+			return payload, at, err
+		}, synchronizedEvidenceTestVersion, newSynchronizedEvidenceClock(), bytes.NewReader(bytes.Repeat([]byte{0x42}, 1<<20)))
+	}
+	if err := configure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := configure(); err == nil {
+		t.Fatal("Configure accepted a second call")
+	}
+
+	promotion := &m06PromotionCapture{}
+	adapter := &eebusRuntimeAdapter{managed: bindings}
+	constructs := 0
+	adapter.SetLeafPromotionCapture(&lazyLeafPromotionCapture{construct: func() (mcp.LeafPromotionCapture, error) { constructs++; return promotion, nil }})
+	// MCP retains this shell-facing capture across generation changes.
+	capture := adapter.LeafPromotionCapture()
+	if capture == nil {
+		t.Fatal("capture gate omitted before admission")
+	}
+	check := func(stage string, available bool) {
+		t.Helper()
+		if _, _, err := evidence.Capture(ctx, syncevidence.ActionMarker{EvidenceRef: contentEvidenceRef(strings.Repeat("1", 64))}); err != nil {
+			t.Fatal(err)
+		}
+		var result acquisition
+		select {
+		case result = <-acquired:
+		default:
+			t.Fatal("configured evidence reader was not called")
+		}
+		if available {
+			if result.err != nil || len(result.payload) == 0 || result.at.IsZero() {
+				t.Errorf("%s evidence reader unavailable: %v", stage, result.err)
+			}
+		} else if !errors.Is(result.err, syncevidence.ErrBackendUnavailable) || len(result.payload) != 0 || !result.at.IsZero() {
+			t.Errorf("%s evidence reader did not fail closed: %v", stage, result.err)
+		}
+
+		before := promotion.calls
+		receipt := capture.CaptureLeafPromotion(ctx, mcp.LeafPromotionCaptureRequest{})
+		if available {
+			if constructs != 1 || promotion.calls != before+1 || receipt.Category != "PUBLISHED" {
+				t.Errorf("%s promotion unavailable: %+v", stage, receipt)
+			}
+		} else if promotion.calls != before || receipt.Category != "ACQUISITION_FAILED" {
+			t.Errorf("%s promotion did not fail closed: %+v", stage, receipt)
+		}
+	}
+	check("before admission", false)
+	if constructs != 0 {
+		t.Fatal("unavailable capture opened checkpoint storage")
+	}
+	if err := manager.Start(ctx, string(managedEEBusID)); err != nil {
+		t.Fatal(err)
+	}
+	check("admitted", true)
+	runtime.FenceWithdrawal()
+	check("withdrawn", false)
+	if err := manager.Stop(ctx, string(managedEEBusID)); err != nil {
+		t.Fatal(err)
+	}
+	retiredReads := first.reads.Load()
+	if err := manager.Start(ctx, string(managedEEBusID)); err != nil {
+		t.Fatal(err)
+	}
+	check("restarted", true)
+	if first.reads.Load() != retiredReads || second.reads.Load() == 0 || opens != 2 {
+		t.Fatal("capture retained the retired generation")
+	}
+}
+
+func m06EvidenceUnavailable(b *managedSidecarBindings) bool {
+	capture := b.eebusEvidenceCapture()
+	if capture == nil {
+		return false
+	}
+	payload, at, err := capture(make([]byte, 32))
+	return errors.Is(err, syncevidence.ErrBackendUnavailable) && payload == nil && at.IsZero()
 }

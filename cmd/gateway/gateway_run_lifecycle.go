@@ -830,21 +830,19 @@ func runGatewayLifecycle(ctx context.Context, cfg ebusgateway.Config) (result er
 			// re-enter dedup locks while passive fingerprints are being built.
 			deduplicator.SetWatchObserver(poller.shadow)
 		}
-		// Set up capture only while the managed eeBUS runtime is admitted.
-		if poller != nil && bindings.eebusAvailable() && !surfaceCaptureDone {
+		// Install the shell capture once; its binding checks admission per call.
+		if poller != nil && !surfaceCaptureDone {
 			captureSource := newLeafPromotionLiveSource(
 				poller,
 				eebusAdapter,
 				eebusMCPCommandRouter(eebusAdapter),
 				liveAdmittedEBusSource,
 			)
-			captureRuntime, captureErr := newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
-			if captureErr != nil {
-				return fmt.Errorf("leaf promotion capture runtime: %w", captureErr)
-			}
-			if captureRuntime != nil {
-				eebusAdapter.SetLeafPromotionCapture(captureRuntime)
-			}
+			eebusAdapter.SetLeafPromotionCapture(&lazyLeafPromotionCapture{
+				construct: func() (mcp.LeafPromotionCapture, error) {
+					return newLeafPromotionCaptureRuntime(cfg.EEBusConfig.StateRoot, captureSource)
+				},
+			})
 			surfaceCaptureDone = true
 		}
 		passiveShadowLaneEnabled := observeFirstFlags.PassiveStateDirectApply() ||

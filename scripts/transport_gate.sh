@@ -166,7 +166,7 @@ run_modbus_rtu_transport_gate() {
   )
   echo "transport gate: Modbus RTU production conformance."
   if ! GOWORK=off go test ./cmd/gateway \
-    -run 'Test(M04|GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
+    -run 'Test(M04|M06|GrowattBMSRS485|PortalRawModbusUsesOnlyTCPAvailableComposition|TeslaHSCRetained)' -count=1; then
     echo "transport gate: FAIL — Modbus RTU gateway composition evidence failed."
     return 1
   fi

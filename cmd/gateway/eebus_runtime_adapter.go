@@ -15,6 +15,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebuscommand"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/promotioncapture"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 	"github.com/Project-Helianthus/helianthus-eebusreg/eebusraw"
@@ -429,7 +430,47 @@ func (adapter *eebusRuntimeAdapter) LeafPromotionCapture() mcp.LeafPromotionCapt
 	if adapter == nil {
 		return nil
 	}
+	if adapter.managed != nil && adapter.promotion != nil {
+		return managedLeafPromotionCapture{bindings: adapter.managed, capture: adapter.promotion}
+	}
 	return adapter.promotion
+}
+
+// Defer checkpoint-store access until the managed capture gate admits a call.
+// A stopped or disabled runtime need not have created its protected store yet.
+type lazyLeafPromotionCapture struct {
+	mu        sync.Mutex
+	construct func() (mcp.LeafPromotionCapture, error)
+	capture   mcp.LeafPromotionCapture
+}
+
+func (capture *lazyLeafPromotionCapture) CaptureLeafPromotion(ctx context.Context, request mcp.LeafPromotionCaptureRequest) mcp.LeafPromotionCaptureReceipt {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.capture == nil {
+		resolved, err := capture.construct()
+		if err != nil || resolved == nil {
+			return mcp.LeafPromotionCaptureReceipt{Category: "ACQUISITION_FAILED"}
+		}
+		capture.capture = resolved
+	}
+	return capture.capture.CaptureLeafPromotion(ctx, request)
+}
+
+// The shell retains only the binding. Each call leases the currently admitted
+// generation, preventing replacement until capture has returned.
+type managedLeafPromotionCapture struct {
+	bindings *managedSidecarBindings
+	capture  mcp.LeafPromotionCapture
+}
+
+func (capture managedLeafPromotionCapture) CaptureLeafPromotion(ctx context.Context, request mcp.LeafPromotionCaptureRequest) (receipt mcp.LeafPromotionCaptureReceipt) {
+	receipt.Category = "ACQUISITION_FAILED"
+	_ = capture.bindings.entry(managedEEBusID).with(ctx, func(drivermanager.Runtime) error {
+		receipt = capture.capture.CaptureLeafPromotion(ctx, request)
+		return nil
+	})
+	return receipt
 }
 
 func eebusMCPProvider(adapter *eebusRuntimeAdapter) mcp.EEBusV1Provider {
@@ -780,6 +821,9 @@ func (b *managedSidecarBindings) captureEEBus(key []byte) (out json.RawMessage, 
 		out, at, err = mcp.CaptureEEBusV1ServicesEvidence(a, key)
 		return err
 	})
+	if errors.Is(err, drivermanager.ErrUnavailable) {
+		err = syncevidence.ErrBackendUnavailable
+	}
 	return
 }
 
@@ -788,8 +832,6 @@ func (b *managedSidecarBindings) eebusAvailable() bool {
 }
 
 func (b *managedSidecarBindings) eebusEvidenceCapture() eebusEvidenceCapture {
-	if !b.eebusAvailable() {
-		return nil
-	}
+	// Configure is one-shot, so retain the guarded binding even before START.
 	return b.captureEEBus
 }

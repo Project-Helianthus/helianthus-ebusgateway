@@ -17,10 +17,12 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimestate"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	modbus "github.com/Project-Helianthus/helianthus-modbus"
 )
 
 type m06Runtime struct {
@@ -472,5 +474,110 @@ func TestM06LeaseSetupFailureIsReturnedAndNativeStopped(t *testing.T) {
 	generation, err := runtime.Start(context.Background())
 	if !errors.Is(err, setupErr) || generation != 0 || native.stops.Load() != 1 || native.running.Load() || runtime.active.Load() != nil || runtime.current != nil {
 		t.Fatalf("lease refusal: generation=%d err=%v stops=%d active=%v", generation, err, native.stops.Load(), runtime.active.Load())
+	}
+}
+
+func TestM06RealSunSpecFailedStartThenShutdownKeepsSiblingsRunning(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	siblings := m06Factories(t, "", "")
+	factory := gatewayManagedSidecarDescriptorsFor
+	gatewayManagedSidecarDescriptorsFor = func(descriptors []runtimecontrol.Descriptor) []runtimecontrol.Descriptor {
+		realSunSpec := descriptors[0]
+		descriptors = factory(descriptors)
+		for i := range descriptors {
+			if descriptors[i].DriverID == managedSunSpecID {
+				descriptors[i] = realSunSpec
+			}
+		}
+		return descriptors
+	}
+	original := newModbusEndpointFn
+	t.Cleanup(func() { newModbusEndpointFn = original })
+	entered, release := make(chan struct{}), make(chan struct{})
+	startErr := errors.New("synthetic SunSpec endpoint failure")
+	newModbusEndpointFn = func(modbus.TCPEndpointConfig) (modbusadapter.Endpoint, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, startErr
+	}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{Enabled: true, Endpoint: "tcp://fixture.invalid:502", DialTimeout: time.Second}
+	sidecars := prepareManagedSidecars(ctx, cfg, newTestSemanticHub(t), rctlGUID, nil)
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: sidecars.driverConfigs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = manager.Shutdown(ctx) }()
+	sidecars.bind(manager, nil)
+	bindings := &managedSidecarBindings{sidecars: sidecars}
+	sunSpec := bindings.entry(managedSunSpecID)
+	if sunSpec == nil || sunSpec.runtime == nil {
+		t.Fatal("SunSpec not composed")
+	}
+	if _, ok := sunSpec.runtime.Runtime.(*modbusManagedDriver); !ok {
+		t.Fatal("composition replaced the real SunSpec driver")
+	}
+	key := func(id runtimecontrol.DriverID) runtimecontrol.LifecycleCorrelation {
+		return runtimecontrol.LifecycleCorrelation{DriverID: id, Epoch: "synthetic-epoch", Generation: 1, Sequence: 1}
+	}
+	for _, id := range []runtimecontrol.DriverID{managedGrowattID, managedEEBusID} {
+		if err := bindings.entry(id).Start(ctx, key(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan error, 1)
+	go func() { started <- sunSpec.Start(ctx, key(managedSunSpecID)) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("SunSpec did not reach native construction")
+	}
+	close(release)
+	select {
+	case err := <-started:
+		if err == nil {
+			t.Fatal("SunSpec failed start reported success")
+		}
+	case <-ctx.Done():
+		t.Fatal("SunSpec failed start hung")
+	}
+	failed, ok := manager.Snapshot(string(managedSunSpecID))
+	if !ok || failed.ObservedState != drivermanager.ObservedFailed {
+		t.Fatal("SunSpec failure not retained")
+	}
+	stopped := make(chan runtimecontrol.StopOutcome, 1)
+	go func() { stopped <- sunSpec.Stop(ctx, key(managedSunSpecID)) }()
+	select {
+	case outcome := <-stopped:
+		if !outcome.NativeClosed || !outcome.SemanticCleaned {
+			t.Fatalf("failed SunSpec shutdown incomplete: %+v", outcome)
+		}
+	case <-ctx.Done():
+		t.Fatal("failed SunSpec shutdown hung")
+	}
+	for _, id := range []runtimecontrol.DriverID{managedGrowattID, managedEEBusID} {
+		snapshot, ok := manager.Snapshot(string(id))
+		if !ok || snapshot.ObservedState != drivermanager.ObservedRunning || !siblings[id].running.Load() || siblings[id].stops.Load() != 0 {
+			t.Fatalf("SunSpec shutdown affected sibling %s", id)
+		}
+	}
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- manager.Shutdown(ctx) }()
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("composition shutdown hung after failed SunSpec start")
+	}
+	for _, id := range []runtimecontrol.DriverID{managedGrowattID, managedEEBusID} {
+		if siblings[id].running.Load() || siblings[id].stops.Load() != 1 {
+			t.Fatalf("sibling %s did not close exactly once", id)
+		}
 	}
 }

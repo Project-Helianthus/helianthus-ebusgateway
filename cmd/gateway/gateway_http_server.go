@@ -11,12 +11,15 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func startHTTPServer(
@@ -215,22 +218,21 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			SemanticSnapshotAvailable: true,
-			Config:                    gatewayPortalConfigCallbacks(configStore, cfg),
-			GraphQLPath:               cfg.GraphQLPath,
-			SnapshotPath:              cfg.SnapshotPath,
-			SubscriptionPath:          cfg.SubscriptionPath,
-			MCPPath:                   cfg.MCPPath,
-			EEBusAdminPath:            "/admin/eebus/v1",
-			Readiness:                 gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
-			GatewayVersion:            buildInfo.ReleaseVersion,
-			BuildID:                   buildInfo.BuildID,
-			SemanticPVEnabled:         cfg.PortalPV.SemanticEnabled,
-			SemanticStorageEnabled:    cfg.PortalStorage.SemanticEnabled && storageAvailable,
-			RawModbusEnabled:          cfg.PortalPV.RawReadEnabled,
-			SemanticPV:                portalPVClient,
-			SemanticStorage:           portalStorageClient,
-			ModbusProvider:            portalModbusProvider,
+			Config:                 gatewayPortalConfigCallbacks(configStore, cfg),
+			GraphQLPath:            cfg.GraphQLPath,
+			SnapshotPath:           cfg.SnapshotPath,
+			SubscriptionPath:       cfg.SubscriptionPath,
+			MCPPath:                cfg.MCPPath,
+			EEBusAdminPath:         "/admin/eebus/v1",
+			Readiness:              gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
+			GatewayVersion:         buildInfo.ReleaseVersion,
+			BuildID:                buildInfo.BuildID,
+			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
+			SemanticStorageEnabled: cfg.PortalStorage.SemanticEnabled && storageAvailable,
+			RawModbusEnabled:       cfg.PortalPV.RawReadEnabled,
+			SemanticPV:             portalPVClient,
+			SemanticStorage:        portalStorageClient,
+			ModbusProvider:         portalModbusProvider,
 			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
 				log.Printf("portal_modbus_raw_audit request_id=%s surface=%s tool=%s unit_id=%s function=%s offset=%s quantity=%s outcome=%s error_code=%s duration_ms=%d endpoint_ref=%s timestamp=%s",
 					event.RequestID, event.Surface, event.Tool, auditNumber(event.UnitID), auditNumber(event.Function),
@@ -387,6 +389,7 @@ func startHTTPServer(
 			EbusStandardServer: mcpServer.EbusStandardServer(),
 		}
 	}
+	configureGatewayPortalSemanticRead(&portalOptions, sharedSemanticProvider)
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
 	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
@@ -464,4 +467,23 @@ func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider
 		return nil
 	}
 	return provider
+}
+
+// configureGatewayPortalSemanticRead binds Portal to the HTTP shared provider.
+func configureGatewayPortalSemanticRead(opts *portal.Options, provider *hubSemanticSnapshotProvider) {
+	opts.SemanticSnapshotAvailable = true
+	opts.SharedSemanticView = func(ctx context.Context) (semanticview.View, error) {
+		if provider == nil || provider.hub == nil {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		selection, ok := provider.hub.(interface{ AssetIDs() []semreg.AssetID })
+		if !ok {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		metadata, inputs, err := provider.Capture(ctx, selection.AssetIDs())
+		if err != nil {
+			return semanticview.View{}, err
+		}
+		return semanticview.Build(metadata, inputs)
+	}
 }

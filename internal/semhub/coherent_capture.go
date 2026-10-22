@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"strconv"
 	"time"
 
@@ -128,4 +129,20 @@ func publicCaptureEvidence(v reflect.Value) bool {
 		}
 	}
 	return true
+}
+
+// AssetIDs returns a detached selection of all declared assets in bytewise order.
+// It does not admit publications; Capture applies the current admission gates.
+func (h *Hub) AssetIDs() []semreg.AssetID {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]semreg.AssetID, 0, len(h.assets))
+	for id := range h.assets {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }

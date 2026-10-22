@@ -227,3 +227,31 @@ func TestM11CaptureCurrentAdmissionTuple(t *testing.T) {
 		})
 	}
 }
+
+func TestM11AssetIDsDetachedOrderedSelection(t *testing.T) {
+	var absent *Hub
+	if got := absent.AssetIDs(); got != nil {
+		t.Fatalf("nil hub selection=%v", got)
+	}
+	h := newTestHub(t)
+	if got := h.AssetIDs(); len(got) != 0 {
+		t.Fatalf("empty hub selection=%v", got)
+	}
+	mustDeclare(t, h, "asset:z", "source:selection", "selection", nil)
+	mustDeclare(t, h, "asset:a", "source:selection", "selection", nil)
+	want := []semreg.AssetID{"asset:a", "asset:z"}
+	ids := h.AssetIDs()
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("selection=%v", ids)
+	}
+	ids[0] = "asset:mutated"
+	if got := h.AssetIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("selection aliases hub: %v", got)
+	}
+	capture := m11Capture(t, h, h.AssetIDs()...)
+	for _, asset := range capture.Assets {
+		if asset.SourceAdmitted || asset.Snapshot != nil || asset.UnavailableReason != "semantic.read.reason.source_unavailable" {
+			t.Fatalf("selection bypassed admission: %+v", asset)
+		}
+	}
+}

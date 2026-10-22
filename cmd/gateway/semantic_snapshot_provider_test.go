@@ -20,6 +20,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
@@ -368,3 +369,93 @@ func TestM11FencedDriverUnavailableAndRetainsNativeEvidence(t *testing.T) {
 		t.Fatal("native evidence was lost")
 	}
 }
+
+func TestM11PortalProductionOptionsSharedView(t *testing.T) {
+	publication, _, _ := m15Fixture(t)
+	if publication.scalar(publication.binding.Identity.Target) == nil {
+		t.Fatal(publication.lastError)
+	}
+	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{bridge: &ebusControlRuntime{hub: publication.hub}})
+	provider.now = func() time.Time { return time.Unix(0, 1800000000000000020) }
+	source := &m11CaptureSource{hub: publication.hub}
+	provider.hub = source
+	opts := portal.Options{GraphQLPath: "/graphql"}
+	configureGatewayPortalSemanticRead(&opts, provider)
+	response := httptest.NewRecorder()
+	portal.NewHandler(opts).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d: %s", response.Code, response.Body.String())
+	}
+	var bootstrap struct {
+		Read struct {
+			Unavailable []string `json:"unavailable_operations"`
+		} `json:"portal_read"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range bootstrap.Read.Unavailable {
+		if operation == "semanticSnapshot" {
+			t.Fatal("production bootstrap withholds semanticSnapshot")
+		}
+	}
+	if source.calls.Load() != 0 {
+		t.Fatal("bootstrap captured data")
+	}
+	if opts.SharedSemanticView == nil {
+		t.Fatal("production shared view callback missing")
+	}
+	before, err := publication.hub.Inspect(publication.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := opts.SharedSemanticView(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.calls.Load() != 1 {
+		t.Fatalf("Portal captures=%d; want one", source.calls.Load())
+	}
+	metadata, inputs, err := provider.Capture(context.Background(), []semreg.AssetID{publication.binding.Identity.Asset})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := semanticview.Build(metadata, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Portal differs from shared provider: got=%+v want=%+v", got, want)
+	}
+	if len(got.Assets) != 1 || got.Assets[0].Snapshot == nil {
+		t.Fatal("admitted publication missing")
+	}
+	after, err := publication.hub.Inspect(publication.binding.Identity.Asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("Portal read mutated hub")
+	}
+}
+
+func TestM11PortalProductionOptionsUnavailable(t *testing.T) {
+	opts := portal.Options{GraphQLPath: "/graphql"}
+	configureGatewayPortalSemanticRead(&opts, newGatewaySemanticSnapshotProvider(nil))
+	// Mount the same options as production even when its shared provider has no hub.
+	handler := portal.NewHandler(opts)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d", response.Code)
+	}
+	if opts.SharedSemanticView == nil {
+		t.Fatal("unavailable provider lost callback")
+	}
+	view, err := opts.SharedSemanticView(context.Background())
+	if !errors.Is(err, semhub.ErrCaptureUnavailable) || !reflect.DeepEqual(view, semanticview.View{}) {
+		t.Fatalf("unavailable read fabricated view: %+v, %v", view, err)
+	}
+}
+
+func (s *m11CaptureSource) AssetIDs() []semreg.AssetID { return s.hub.AssetIDs() }

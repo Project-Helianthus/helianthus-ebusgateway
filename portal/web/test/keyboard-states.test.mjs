@@ -143,6 +143,20 @@ function harness() {
   };
 }
 
+function tabToCatalogRefresh(h) {
+  h.key("Tab");
+  assert.equal(h.document.activeElement, h.get("nav-configuration"));
+  h.key("Tab");
+  assert.equal(h.document.activeElement, h.get("portal-catalog-refresh"));
+}
+
+function tabBackToCatalogNav(h, nav) {
+  h.key("Tab", true);
+  assert.equal(h.document.activeElement, h.get("nav-configuration"));
+  h.key("Tab", true);
+  assert.equal(h.document.activeElement, nav);
+}
+
 function assertLive(node) {
   assert.equal(node.getAttribute("role"), "status");
   assert.equal(node.getAttribute("aria-live"), "polite");
@@ -160,8 +174,8 @@ test("keyboard Enter/Space select shell views and Tab can leave the selection", 
   assert.doesNotMatch(registry.className, /active/);
   assert.equal(h.shell.querySelectorAll("main .registry-preview").find((node) => node.id === "section-registry").style.display, "none");
   assert.equal(h.document.activeElement, catalogNav);
-  h.key("Tab"); assert.equal(h.document.activeElement, h.get("portal-catalog-refresh"));
-  h.key("Tab", true); assert.equal(h.document.activeElement, catalogNav);
+  tabToCatalogRefresh(h);
+  tabBackToCatalogNav(h, catalogNav);
 });
 
 test("selected shell view is announced to assistive technology", async () => {
@@ -184,7 +198,7 @@ test("successful catalog render has live semantics and preserves focus on Refres
   assert.match(h.get("portal-catalog-body").textContent, /24/);
   assert.equal(h.get("portal-catalog-notice").hidden, true);
   assert.equal(h.document.activeElement, button);
-  h.key("Tab", true); assert.equal(h.document.activeElement, nav);
+  tabBackToCatalogNav(h, nav);
 });
 
 test("loading announces busy state until the deferred fetch completes", async () => {
@@ -220,11 +234,11 @@ test("failed fetch announces an error and keeps keyboard retry and escape usable
   assertLive(notice); assert.equal(notice.hidden, false); assert.match(notice.textContent, /failed/i);
   assert.equal(h.get("portal-catalog-body").getAttribute("aria-busy"), "false");
   assert.equal(h.document.activeElement, nav);
-  h.key("Tab"); const retry = h.get("portal-catalog-refresh");
+  tabToCatalogRefresh(h); const retry = h.get("portal-catalog-refresh");
   assert.equal(h.document.activeElement, retry); assert.equal(retry.disabled, false);
   h.respond(); h.key(" "); await h.settle();
   assert.equal(notice.hidden, true); assert.equal(h.document.activeElement, retry);
-  h.key("Tab", true); assert.equal(h.document.activeElement, nav);
+  tabBackToCatalogNav(h, nav);
 });
 
 test("updating a contribution leaves unrelated search focus and navigation usable", async () => {
@@ -239,7 +253,7 @@ test("updating a contribution leaves unrelated search focus and navigation usabl
 test("updating a contribution preserves a usable focused catalog control", async () => {
   const h = await harness();
   h.respond(); const nav = h.get("nav-portal-catalog"); nav.focus(); h.key("Enter"); await h.settle();
-  h.key("Tab"); h.key("Tab");
+  tabToCatalogRefresh(h); h.key("Tab");
   assert.equal(h.document.activeElement, h.button("Next Resource"));
   h.respond(catalog(24)); assert.equal(await h.shell.refreshPortalCatalog(), true);
   assert.ok(h.document.activeElement?.isConnected, "refresh detached the focused catalog control without restoring focus");
@@ -251,7 +265,7 @@ test("updating a contribution preserves a usable focused catalog control", async
 test("paging to a disabled replacement returns keyboard focus to Refresh", async () => {
   const h = harness();
   h.respond(); const nav = h.get("nav-portal-catalog"); nav.focus(); h.key("Enter"); await h.settle();
-  h.key("Tab"); h.key("Tab"); h.key("Enter");
+  tabToCatalogRefresh(h); h.key("Tab"); h.key("Enter");
   assert.equal(h.button("Next Resource").disabled, true);
   assert.equal(h.document.activeElement, h.get("portal-catalog-refresh"));
   h.key("Tab"); assert.equal(h.document.activeElement, h.button("Previous Resource"));
@@ -260,7 +274,7 @@ test("paging to a disabled replacement returns keyboard focus to Refresh", async
 test("refresh with no remaining catalog controls returns keyboard focus to Refresh", async () => {
   const h = harness();
   h.respond(); const nav = h.get("nav-portal-catalog"); nav.focus(); h.key("Enter"); await h.settle();
-  h.key("Tab"); h.key("Tab");
+  tabToCatalogRefresh(h); h.key("Tab");
   const empty = catalog(); empty.resources = []; empty.fields = [];
   h.respond(empty); assert.equal(await h.shell.refreshPortalCatalog(), true);
   assert.equal(h.button("Next Resource"), undefined);
@@ -271,7 +285,7 @@ test("refresh with no remaining catalog controls returns keyboard focus to Refre
 test("failed contribution update retains last valid content and focused evidence control", async () => {
   const h = await harness();
   h.respond(); const nav = h.get("nav-portal-catalog"); nav.focus(); h.key("Enter"); await h.settle();
-  h.key("Tab"); h.key("Tab");
+  tabToCatalogRefresh(h); h.key("Tab");
   const focused = h.button("Next Resource");
   assert.equal(h.document.activeElement, focused);
   const body = h.get("portal-catalog-body"), previous = body.children[0];

@@ -102,6 +102,57 @@ func m06Wait(t *testing.T, condition func() bool) {
 	}
 }
 
+func TestM06ServiceStopClosesAdmittedSidecar(t *testing.T) {
+	m06ServiceTransition(t, runtimecontrol.MethodStop)
+}
+
+func TestM06ServiceRestartStartsSuccessorSidecar(t *testing.T) {
+	m06ServiceTransition(t, runtimecontrol.MethodRestart)
+}
+
+func m06ServiceTransition(t *testing.T, method runtimecontrol.Method) {
+	t.Helper()
+	natives := m06Factories(t, "", "")
+	process := newRCtlEnv(t).start(rctlProcessOptions{})
+	service := process.control.Service()
+	ctx, cancel := context.WithTimeout(context.Background(), rctlBound)
+	defer cancel()
+	wait := func(want drivermanager.ObservedState, starts int32) runtimecontrol.DriverStatus {
+		t.Helper()
+		for {
+			changed := service.EventNotify()
+			status, err := service.Get(managedSunSpecID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.ObservedState == drivermanager.ObservedFailed {
+				t.Fatalf("sidecar failed: %+v; starts=%d stops=%d running=%v", status, natives[managedSunSpecID].starts.Load(), natives[managedSunSpecID].stops.Load(), natives[managedSunSpecID].running.Load())
+			}
+			if status.ObservedState == want && natives[managedSunSpecID].starts.Load() == starts {
+				return status
+			}
+			select {
+			case <-changed:
+			case <-ctx.Done():
+				t.Fatalf("waiting for %s: %v", want, ctx.Err())
+			}
+		}
+	}
+	before := wait(drivermanager.ObservedRunning, 1)
+	if _, err := service.Decide(ctx, method, runtimecontrol.Request{DriverID: managedSunSpecID, ExpectedRevision: before.DesiredRevision}); err != nil {
+		t.Fatal(err)
+	}
+	wantState, wantStarts := drivermanager.ObservedStopped, int32(1)
+	if method == runtimecontrol.MethodRestart {
+		wantState, wantStarts = drivermanager.ObservedRunning, 2
+	}
+	wait(wantState, wantStarts)
+	native := natives[managedSunSpecID]
+	if native.stops.Load() != 1 || native.starts.Load() != wantStarts || native.running.Load() != (method == runtimecontrol.MethodRestart) {
+		t.Fatalf("transition %s: starts=%d stops=%d running=%v", method, native.starts.Load(), native.stops.Load(), native.running.Load())
+	}
+}
+
 func TestM06ProductionRegistrationFailureIsolationAndShutdown(t *testing.T) {
 	natives := m06Factories(t, managedGrowattID, "")
 	env := newRCtlEnv(t)
@@ -378,12 +429,20 @@ func TestM06LifecycleCorrelationRejectsEveryFieldDrift(t *testing.T) {
 			if err := entry.Start(ctx, changed); err == nil {
 				t.Fatalf("START accepted changed %s", field)
 			}
-			outcome := entry.Stop(ctx, changed)
-			if outcome.NativeClosed || outcome.SemanticCleaned || native.stops.Load() != 0 || !native.running.Load() {
-				t.Fatalf("STOP accepted changed %s", field)
+			if field != "Sequence" {
+				outcome := entry.Stop(ctx, changed)
+				if outcome.NativeClosed || outcome.SemanticCleaned || native.stops.Load() != 0 || !native.running.Load() {
+					t.Fatalf("STOP accepted changed %s", field)
+				}
 			}
 			if err := entry.Start(ctx, key); err != nil || native.starts.Load() != 1 {
 				t.Fatal("identical START was not idempotent")
+			}
+			if field == "Sequence" {
+				outcome := entry.Stop(ctx, changed)
+				if !outcome.NativeClosed || !outcome.SemanticCleaned || native.stops.Load() != 1 || native.running.Load() {
+					t.Fatal("STOP refused the admitted generation with a new sequence")
+				}
 			}
 			if outcome := entry.Stop(ctx, key); !outcome.NativeClosed || !outcome.SemanticCleaned {
 				t.Fatal("original correlation failed to stop")

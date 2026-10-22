@@ -275,6 +275,13 @@ never equate connection generation, driver generation, source epoch, desired
 revision or semantic sequence. No direct legacy writer may bypass a migrated
 managed writer's fence or recovery path.
 
+Proven: sidecar withdrawal matches driver, source, epoch and generation while
+allowing the new STOP or RESTART decision sequence. Active START calls still
+require the full admitted correlation; retired generations cannot reopen under
+a different sequence. After transport observers join, final eeBUS retirement
+uses a terminal revision so earlier positive-revision statuses cannot leave
+ready metrics visible during control-plane teardown.
+
 Process exit first closes decision admission, stops reconcilers without a
 synthetic durable STOP, fences/joins generation tasks and closes native owners.
 It preserves committed desired state and in-flight recovery obligations for

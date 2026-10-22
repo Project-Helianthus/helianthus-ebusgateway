@@ -92,6 +92,7 @@ func TestGatewayPublishesRetirementBeforeObservabilityClose(t *testing.T) {
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ModbusTCPConfig.Enabled = true
 	cfg.EEBusConfig.Enabled = true
+	store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleRunning, RuntimeAvailable: true, Revision: 7}))
 	publishManagedTransportRetirement(store, cfg)
 	metrics := store.RenderPrometheus()
 	for _, want := range []string{

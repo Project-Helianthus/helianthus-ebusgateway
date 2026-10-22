@@ -1356,6 +1356,8 @@ func publishManagedTransportRetirement(store *ebusgateway.BusObservabilityStore,
 		store.SetTransportRuntimeStatus(retiredModbusRuntimeTransportStatus())
 	}
 	if cfg.EEBusConfig.Enabled {
-		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped}))
+		// Observers have joined and this store is about to close. A terminal
+		// revision supersedes every status published during its lifetime.
+		store.SetTransportRuntimeStatus(eebusRuntimeTransportStatus(eebusRuntimeLifecycleSnapshot{State: eebusLifecycleStopped, Revision: ^uint64(0)}))
 	}
 }

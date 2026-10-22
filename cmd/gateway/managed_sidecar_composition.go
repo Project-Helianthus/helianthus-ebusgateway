@@ -189,6 +189,13 @@ func (s *managedSidecar) normalize(c runtimecontrol.LifecycleCorrelation) (runti
 	return c, nil
 }
 
+// sidecarGenerationKey excludes the decision slot sequence: STOP and RESTART
+// withdraw the admitted generation using their own transition sequence.
+func sidecarGenerationKey(c runtimecontrol.LifecycleCorrelation) runtimecontrol.LifecycleCorrelation {
+	c.Sequence = 0
+	return c
+}
+
 func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.LifecycleCorrelation) error {
 	if s.withheld != nil {
 		return s.withheld
@@ -201,7 +208,7 @@ func (s *managedSidecar) Start(ctx context.Context, correlation runtimecontrol.L
 		return err
 	}
 	s.mu.Lock()
-	if s.retired[c] || (s.started != nil && s.key != c) {
+	if s.retired[sidecarGenerationKey(c)] || (s.started != nil && s.key != c) {
 		s.mu.Unlock()
 		return errEBusControlStale
 	}
@@ -249,11 +256,11 @@ func (s *managedSidecar) Stop(ctx context.Context, correlation runtimecontrol.Li
 		return runtimecontrol.StopOutcome{}
 	}
 	s.mu.Lock()
-	if s.retired[c] {
+	if s.retired[sidecarGenerationKey(c)] {
 		s.mu.Unlock()
 		return runtimecontrol.StopOutcome{NativeClosed: true, SemanticCleaned: true}
 	}
-	if s.started != nil && s.key != c {
+	if s.started != nil && sidecarGenerationKey(s.key) != sidecarGenerationKey(c) {
 		s.mu.Unlock()
 		return runtimecontrol.StopOutcome{}
 	}
@@ -273,11 +280,11 @@ func (s *managedSidecar) Stop(ctx context.Context, correlation runtimecontrol.Li
 			}
 		}
 		s.mu.Lock()
-		if s.key == c || s.started == nil {
+		if sidecarGenerationKey(s.key) == sidecarGenerationKey(c) || s.started == nil {
 			if s.retired == nil {
 				s.retired = make(map[runtimecontrol.LifecycleCorrelation]bool)
 			}
-			s.retired[c] = true
+			s.retired[sidecarGenerationKey(c)] = true
 			s.started = nil
 		}
 		s.mu.Unlock()

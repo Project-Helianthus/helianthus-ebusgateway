@@ -799,6 +799,13 @@ func (b *managedSidecarBindings) eebusLifecycleSnapshot() eebusRuntimeLifecycleS
 	}
 	result.State = eebusLifecycleDegraded
 	result.DegradedReason = eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable
+	if s.runtime != nil {
+		if driver, ok := s.runtime.Runtime.(*eebusManagedDriver); ok {
+			if reason := driver.StartupDegradedReason(); reason != "" {
+				result.DegradedReason = reason
+			}
+		}
+	}
 	if s.manager != nil {
 		snapshot, _ := s.manager.Snapshot(string(managedEEBusID))
 		result.Revision = snapshot.Revision

@@ -8,6 +8,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	eebusruntime "github.com/Project-Helianthus/helianthus-eebusreg"
 )
@@ -76,6 +77,8 @@ type eebusManagedDriver struct {
 	generation  atomic.Uint64
 	revision    atomic.Uint64
 	quarantined atomic.Bool
+
+	startupDegradedReason eebusadmin.EEBusDegradedReason
 }
 
 var _ drivermanager.Runtime = (*eebusManagedDriver)(nil)
@@ -162,6 +165,7 @@ func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator boo
 		err = runtimecontrol.ErrNilRuntime
 	}
 	if err != nil {
+		driver.startupDegradedReason = eebusStartupFailureReason(err)
 		fallback := operator && attemptCtx.Err() == nil && startCtx.Err() == nil
 		cancel()
 		driver.mu.Unlock()
@@ -183,11 +187,18 @@ func (driver *eebusManagedDriver) startRuntime(ctx context.Context, operator boo
 	if degraded != nil {
 		adapter.startupDegradedReason = eebusStartupFailureReason(degraded)
 	}
+	driver.startupDegradedReason = adapter.startupDegradedReason
 	number := driver.generation.Add(1)
 	driver.current = &eebusManagedGeneration{adapter: adapter, admin: admin, number: number, closed: make(chan struct{})}
 	driver.revision.Add(1)
 	driver.mu.Unlock()
 	return number, nil
+}
+
+func (driver *eebusManagedDriver) StartupDegradedReason() eebusadmin.EEBusDegradedReason {
+	driver.mu.Lock()
+	defer driver.mu.Unlock()
+	return driver.startupDegradedReason
 }
 
 // Failed native starts remain owned and fenced until closure is proven.

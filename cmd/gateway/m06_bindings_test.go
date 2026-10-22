@@ -18,6 +18,7 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/eebusadmin"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/modbusadapter"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/syncevidence"
@@ -324,6 +325,101 @@ func TestM06FailedEEBusWithholdsCapture(t *testing.T) {
 	}
 	if !m06EvidenceUnavailable(bindings) || bindings.eebusAvailable() {
 		t.Fatal("failed runtime admitted evidence or leaf capture")
+	}
+}
+
+func TestM06FailedEEBusPreservesStartupReason(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		factoryError    string
+		invalidConfig   bool
+		startFailure    bool
+		operatorFailure bool
+		want            eebusadmin.EEBusDegradedReason
+	}{
+		{name: "configuration", invalidConfig: true, want: eebusadmin.EEBusDegradedReasonConfigurationInvalid},
+		{name: "identity", factoryError: "local identity unavailable", want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
+		{name: "listener", factoryError: "listener bind failed", want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "runtime start", startFailure: true, want: eebusadmin.EEBusDegradedReasonListenerUnavailable},
+		{name: "operator fallback", operatorFailure: true, factoryError: "local identity unavailable", want: eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable},
+		{name: "factory", factoryError: "backend construction failed", want: eebusadmin.EEBusDegradedReasonRuntimeFactoryUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+				if test.startFailure {
+					return &msp05bRuntime{startErr: errors.New("synthetic start failure")}, nil
+				}
+				return nil, errors.New(test.factoryError)
+			})
+			if test.operatorFailure {
+				options.OperatorFactory = func(eebusruntime.Config) (eebusruntime.Runtime, eebusruntime.AdminV1, error) {
+					return nil, nil, errors.New("listener unavailable")
+				}
+			}
+			if test.invalidConfig {
+				options.Config.StateRoot = ""
+			}
+			native := newEEBusManagedDriver(options)
+			runtime := &managedSidecarRuntime{Runtime: native}
+			manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: string(managedEEBusID), Enabled: true, Runtime: runtime}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = manager.Shutdown(context.Background()) }()
+			bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{{descriptor: runtimecontrol.Descriptor{DriverID: managedEEBusID, Disposition: runtimecontrol.DispositionEnabled}, runtime: runtime, manager: manager}}}}
+			if err := manager.Start(context.Background(), string(managedEEBusID)); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, ok := manager.Snapshot(string(managedEEBusID))
+			if !ok || snapshot.ObservedState != drivermanager.ObservedFailed || runtime.active.Load() != nil {
+				t.Fatalf("startup admitted a failed runtime: %+v", snapshot)
+			}
+			lifecycle := bindings.eebusLifecycleSnapshot()
+			if lifecycle.State != eebusLifecycleDegraded || lifecycle.DegradedReason != test.want {
+				t.Errorf("lifecycle=%+v; want degraded reason %s", lifecycle, test.want)
+			}
+			readiness := projectGatewayReadiness(nil, lifecycle)
+			if readiness.EEBusReadiness != "DEGRADED" || readiness.EEBusDegradedReason != string(test.want) {
+				t.Errorf("Portal readiness=%+v; want degraded reason %s", readiness, test.want)
+			}
+			response := httptest.NewRecorder()
+			bindings.serveEEBusAdmin(response, httptest.NewRequest(http.MethodGet, "/admin/eebus/v1/status", nil))
+			var envelope struct {
+				Data struct {
+					Readiness eebusadmin.ReadinessV1 `json:"readiness"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusServiceUnavailable || envelope.Data.Readiness.EEBusDegradedReason != test.want {
+				t.Fatalf("admin status=%d body=%s; want unavailable reason %s", response.Code, response.Body.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestM06EEBusRecoveryClearsStartupReason(t *testing.T) {
+	fail := true
+	native := newEEBusManagedDriver(m05Options(t, func(eebusruntime.Config) (eebusruntime.Runtime, error) {
+		if fail {
+			return nil, errors.New("local identity unavailable")
+		}
+		return &msp05bRuntime{}, nil
+	}))
+	defer func() { _ = native.Stop(context.Background()) }()
+	if _, err := native.Start(context.Background()); err == nil {
+		t.Fatal("startup unexpectedly succeeded")
+	}
+	if got := native.StartupDegradedReason(); got != eebusadmin.EEBusDegradedReasonLocalIdentityUnavailable {
+		t.Fatalf("failure reason=%s", got)
+	}
+	fail = false
+	if _, err := native.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := native.StartupDegradedReason(); got != "" {
+		t.Fatalf("recovery retained failure reason=%s", got)
 	}
 }
 

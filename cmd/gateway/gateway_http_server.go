@@ -80,11 +80,8 @@ func startHTTPServer(
 		portalStorageClient = nil
 	}
 
-	queryHandler, snapshotHandler, subscriptionHandler, err := newHTTPControlPlaneGraphQLHandlers(gateway, builder, hub)
-	if err != nil {
-		return nil, nil, err
-	}
-	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
+	sharedSemanticProvider := newGatewaySemanticSnapshotProvider(runtimeControl)
+	queryHandler, snapshotHandler, subscriptionHandler, mcpServer, err := newHTTPControlPlaneSemanticHandlers(gateway, builder, hub, sharedSemanticProvider)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,21 +215,22 @@ func startHTTPServer(
 			}
 		}
 		portalOptions = portal.Options{
-			Config:                 gatewayPortalConfigCallbacks(configStore, cfg),
-			GraphQLPath:            cfg.GraphQLPath,
-			SnapshotPath:           cfg.SnapshotPath,
-			SubscriptionPath:       cfg.SubscriptionPath,
-			MCPPath:                cfg.MCPPath,
-			EEBusAdminPath:         "/admin/eebus/v1",
-			Readiness:              gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
-			GatewayVersion:         buildInfo.ReleaseVersion,
-			BuildID:                buildInfo.BuildID,
-			SemanticPVEnabled:      cfg.PortalPV.SemanticEnabled,
-			SemanticStorageEnabled: cfg.PortalStorage.SemanticEnabled && storageAvailable,
-			RawModbusEnabled:       cfg.PortalPV.RawReadEnabled,
-			SemanticPV:             portalPVClient,
-			SemanticStorage:        portalStorageClient,
-			ModbusProvider:         portalModbusProvider,
+			SemanticSnapshotAvailable: true,
+			Config:                    gatewayPortalConfigCallbacks(configStore, cfg),
+			GraphQLPath:               cfg.GraphQLPath,
+			SnapshotPath:              cfg.SnapshotPath,
+			SubscriptionPath:          cfg.SubscriptionPath,
+			MCPPath:                   cfg.MCPPath,
+			EEBusAdminPath:            "/admin/eebus/v1",
+			Readiness:                 gatewayPortalReadiness(eebusProvider, eebusLifecycle, ebusProxyReadiness),
+			GatewayVersion:            buildInfo.ReleaseVersion,
+			BuildID:                   buildInfo.BuildID,
+			SemanticPVEnabled:         cfg.PortalPV.SemanticEnabled,
+			SemanticStorageEnabled:    cfg.PortalStorage.SemanticEnabled && storageAvailable,
+			RawModbusEnabled:          cfg.PortalPV.RawReadEnabled,
+			SemanticPV:                portalPVClient,
+			SemanticStorage:           portalStorageClient,
+			ModbusProvider:            portalModbusProvider,
 			RawModbusAudit: func(event portal.RawModbusAuditEvent) {
 				log.Printf("portal_modbus_raw_audit request_id=%s surface=%s tool=%s unit_id=%s function=%s offset=%s quantity=%s outcome=%s error_code=%s duration_ms=%d endpoint_ref=%s timestamp=%s",
 					event.RequestID, event.Surface, event.Tool, auditNumber(event.UnitID), auditNumber(event.Function),
@@ -432,9 +430,6 @@ func registerHTTPPortalRoutes(mux *http.ServeMux, portalPath string, opts portal
 	opts.PortalCatalogPath = catalogPath
 	opts.PortalCatalogAvailable = true
 	opts.BasePath = portalPath + "/"
-	// M11 has not wired the shared semanticSnapshot provider in production.
-	// Keep it unavailable even though other GraphQL operations are mounted.
-	opts.SemanticSnapshotAvailable = false
 	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portal.NewHandler(opts)))
 	mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)

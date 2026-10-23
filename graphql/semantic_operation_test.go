@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -21,6 +21,7 @@ import (
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/operation"
 	graphqlgo "github.com/graphql-go/graphql"
+	"github.com/graphql-go/handler"
 )
 
 const m56Mutation = `mutation SemanticOperation($input: SemanticOperationInput!) {
@@ -144,17 +145,48 @@ func m56Result(t *testing.T, response m56Response) map[string]any {
 	return result
 }
 
+// m56RequireCode requires every error to carry the code and every mutation
+// result to be null; two refused aliases yield one error each.
 func m56RequireCode(t *testing.T, response m56Response, code semanticoperations.Code) {
 	t.Helper()
-	if len(response.Errors) != 1 || response.Errors[0].Extensions["code"] != string(code) {
-		t.Fatalf("errors = %+v; want one %s", response.Errors, code)
+	if len(response.Errors) == 0 {
+		t.Fatalf("no errors; want %s", code)
 	}
-	if response.Data != nil && response.Data["semanticOperation"] != nil {
-		t.Fatalf("data = %+v; want a null mutation result", response.Data)
+	for _, refusal := range response.Errors {
+		if refusal.Extensions["code"] != string(code) {
+			t.Fatalf("errors = %+v; want only %s", response.Errors, code)
+		}
+		if strings.Contains(refusal.Message, "transport") {
+			t.Fatalf("message leaks detail: %q", refusal.Message)
+		}
 	}
-	if strings.Contains(response.Errors[0].Message, "transport") {
-		t.Fatalf("message leaks detail: %q", response.Errors[0].Message)
+	m56RequireNullResults(t, response)
+}
+
+// m56RequireRequestError requires a stock GraphQL request error raised before
+// any resolver ran.
+func m56RequireRequestError(t *testing.T, response m56Response) {
+	t.Helper()
+	if len(response.Errors) == 0 {
+		t.Fatalf("response = %+v; want a GraphQL request error", response)
 	}
+	m56RequireNullResults(t, response)
+}
+
+func m56RequireNullResults(t *testing.T, response m56Response) {
+	t.Helper()
+	for name, value := range response.Data {
+		if name != "__typename" && value != nil {
+			t.Fatalf("data[%s] = %+v; want a null mutation result", name, value)
+		}
+	}
+}
+
+// m56Pad pads a JSON object body with whitespace before its closing brace.
+func m56Pad(body []byte, size int) []byte {
+	padded := append([]byte{}, body[:len(body)-1]...)
+	padded = append(padded, bytes.Repeat([]byte(" "), size)...)
+	return append(padded, '}')
 }
 
 func m56Projection(status string, fields ...any) map[string]any {
@@ -273,6 +305,9 @@ func TestM56GraphQLRefusalsProduceNoSend(t *testing.T) {
 	})
 }
 
+// The resolver bounds and strictly decodes the parsed operation before
+// admission: the input as written (never GraphQL-coerced), the selection
+// count and the transport. Whitespace padding past 64 KiB changes nothing.
 func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 	type mutation func(t *testing.T, h m56Harness, input map[string]any) (contentType string, body []byte)
 	withInput := func(edit func(map[string]any)) mutation {
@@ -284,12 +319,17 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 	precondition := func(input map[string]any) map[string]any {
 		return input["preconditions"].([]any)[0].(map[string]any)
 	}
-	raw := func(contentType, body string) mutation {
-		return func(*testing.T, m56Harness, map[string]any) (string, []byte) { return contentType, []byte(body) }
+	argument := func(input map[string]any) map[string]any {
+		return input["arguments"].([]any)[0].(map[string]any)
 	}
 	withQuery := func(query string) mutation {
 		return func(t *testing.T, h m56Harness, input map[string]any) (string, []byte) {
 			return "application/json", m56Body(t, query, input)
+		}
+	}
+	withContentType := func(contentType string) mutation {
+		return func(t *testing.T, h m56Harness, input map[string]any) (string, []byte) {
+			return contentType, m56Body(t, m56Mutation, input)
 		}
 	}
 	long := "a" + strings.Repeat("b", semanticoperations.MaxOpaqueIDBytes)
@@ -302,7 +342,7 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 	}
 	fanOut += " fragment F30 on Mutation { __typename }"
 	validInline := `assetId: "asset:synthetic", bindingId: "binding:synthetic", capabilityInstanceId: "capability:synthetic", operation: {pack: {id: "fixture.pack.synthetic", version: "1.0.0"}, id: "fixture.operation.synthetic", version: "1.0.0"}, arguments: [{id: "fixture.field.level", value: {kind: "boolean", boolean: true}}], expectedSemanticRevision: "3", expectedCapabilityRevision: "2", expectedCapabilityInstanceRevision: "1", expectedSourceEpochId: "epoch:synthetic", expectedDriverGeneration: "4", preconditions: [], timeoutMs: 1000`
-	tests := []struct {
+	resolverRefusals := []struct {
 		name  string
 		build mutation
 		code  semanticoperations.Code
@@ -311,24 +351,17 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		{"numeric revision", withInput(func(in map[string]any) { in["expectedSemanticRevision"] = 3 }), invalid},
 		{"numeric nested revision", withInput(func(in map[string]any) { precondition(in)["candidateRevision"] = 2 }), invalid},
 		{"numeric nested identifier", withInput(func(in map[string]any) { precondition(in)["candidateId"] = 1 }), invalid},
-		{"unknown member", withInput(func(in map[string]any) { in["route"] = "binding:synthetic" }), invalid},
-		{"snake_case nested member", withInput(func(in map[string]any) {
-			p := precondition(in)
-			p["candidate_id"] = p["candidateId"]
-			delete(p, "candidateId")
-		}), invalid},
-		{"missing member", withInput(func(in map[string]any) { delete(in, "expectedDriverGeneration") }), invalid},
-		{"null member", withInput(func(in map[string]any) { in["bindingId"] = nil }), invalid},
 		{"zero timeout", withInput(func(in map[string]any) { in["timeoutMs"] = 0 }), invalid},
 		{"timeout above bound", withInput(func(in map[string]any) { in["timeoutMs"] = 5001 }), invalid},
 		{"fractional timeout", withInput(func(in map[string]any) { in["timeoutMs"] = 1.5 }), invalid},
 		{"string timeout", withInput(func(in map[string]any) { in["timeoutMs"] = "1000" }), invalid},
-		{"singleton list coercion", withInput(func(in map[string]any) { in["arguments"] = in["arguments"].([]any)[0] }), invalid},
+		{"boolean timeout", withInput(func(in map[string]any) { in["timeoutMs"] = true }), invalid},
+		{"string boolean value", withInput(func(in map[string]any) { argument(in)["value"] = map[string]any{"kind": "boolean", "boolean": "true"} }), invalid},
+		{"singleton argument list coercion", withInput(func(in map[string]any) { in["arguments"] = in["arguments"].([]any)[0] }), invalid},
+		{"singleton precondition list coercion", withInput(func(in map[string]any) { in["preconditions"] = in["preconditions"].([]any)[0] }), invalid},
 		{"zero revision", withInput(func(in map[string]any) { in["expectedCapabilityRevision"] = "0" }), invalid},
 		{"noncanonical revision", withInput(func(in map[string]any) { in["expectedDriverGeneration"] = "04" }), invalid},
-		{"mismatched value arm", withInput(func(in map[string]any) {
-			in["arguments"].([]any)[0].(map[string]any)["value"] = map[string]any{"kind": "boolean", "text": "true"}
-		}), invalid},
+		{"mismatched value arm", withInput(func(in map[string]any) { argument(in)["value"] = map[string]any{"kind": "boolean", "text": "true"} }), invalid},
 		{"unordered arguments", withInput(func(in map[string]any) {
 			first := in["arguments"].([]any)[0]
 			in["arguments"] = []any{first, map[string]any{"id": "fixture.field.alpha", "value": map[string]any{"kind": "boolean", "boolean": true}}}
@@ -350,31 +383,43 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		{"two fields through fragments", withQuery(`mutation($input: SemanticOperationInput!) { ...Op ...Op } fragment Op on Mutation { semanticOperation(input: $input) { status } }`), invalid},
 		{"exponential fragment fan-out", withQuery(fanOut), invalid},
 		{"skipped second field still counts", withQuery(`mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } ... on Mutation @skip(if: true) { again: semanticOperation(input: $input) { status } } }`), invalid},
-		{"query operation", withQuery(`query($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } }`), invalid},
-		{"missing variable", withQuery(`mutation($other: SemanticOperationInput!) { semanticOperation(input: $other) { status } }`), invalid},
-		{"extra argument", withQuery(`mutation($input: SemanticOperationInput!) { semanticOperation(input: $input, dryRun: true) { status } }`), invalid},
-		{"inline numeric identifier", withQuery(`mutation { semanticOperation(input: {` + strings.Replace(validInline, `assetId: "asset:synthetic"`, `assetId: 7`, 1) + `}) { status } }`), invalid},
-		{"invalid document", withQuery(`mutation { semanticOperation(input: { }`), invalid},
-		{"duplicate input member", raw("application/json", `{"query":"mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } }","variables":{"input":{"assetId":"asset:synthetic","assetId":"asset:other"}}}`), invalid},
-		{"duplicate escaped envelope member", raw("application/json", `{"query":"mutation { semanticOperation(input: {}) { status } }","query":"mutation { semanticOperation(input: {}) { status } }"}`), invalid},
-		{"invalid UTF-8", raw("application/json", "{\"query\":\"mutation { semanticOperation(input: {}) { status } } \xff\"}"), invalid},
-		{"batched request", raw("application/json", `[{"query":"mutation { semanticOperation(input: {}) { status } }"}]`), invalid},
-		{"trailing JSON value", raw("application/json", `{"query":"mutation { semanticOperation(input: {}) { status } }"} {}`), invalid},
-		{"case-variant query member", raw("application/json", `{"Query":"mutation { semanticOperation(input: {}) { status } }"}`), invalid},
-		{"unknown envelope member", raw("application/json", `{"query":"mutation { semanticOperation(input: {}) { status } }","id":1}`), invalid},
-		{"string variables", raw("application/json", `{"query":"mutation($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } }","variables":"{}"}`), invalid},
-		{"non-JSON media type", func(t *testing.T, h m56Harness, input map[string]any) (string, []byte) {
-			return "text/plain", m56Body(t, m56Mutation, input)
-		}, invalid},
-		{"non-UTF-8 charset", func(t *testing.T, h m56Harness, input map[string]any) (string, []byte) {
-			return "application/json; charset=latin1", m56Body(t, m56Mutation, input)
-		}, invalid},
+		{"non-JSON media type", withContentType("text/plain"), invalid},
+		{"non-UTF-8 charset", withContentType("application/json; charset=latin1"), invalid},
 	}
-	for _, test := range tests {
+	for _, test := range resolverRefusals {
+		for _, padding := range []int{0, 2 * semanticoperations.MaxRequestBytes} {
+			t.Run(fmt.Sprintf("%s/padding %d", test.name, padding), func(t *testing.T) {
+				h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
+				contentType, body := test.build(t, h, m56Input(t, h.f.Request()))
+				m56RequireCode(t, m56Post(t, h.handler, contentType, m56Pad(body, padding)), test.code)
+				h.untouched(t)
+			})
+		}
+	}
+	// The stock handler refuses these before any resolver runs.
+	requestErrors := []struct {
+		name  string
+		build mutation
+	}{
+		{"unknown member", withInput(func(in map[string]any) { in["route"] = "binding:synthetic" })},
+		{"snake_case nested member", withInput(func(in map[string]any) {
+			p := precondition(in)
+			p["candidate_id"] = p["candidateId"]
+			delete(p, "candidateId")
+		})},
+		{"missing member", withInput(func(in map[string]any) { delete(in, "expectedDriverGeneration") })},
+		{"null member", withInput(func(in map[string]any) { in["bindingId"] = nil })},
+		{"query operation", withQuery(`query($input: SemanticOperationInput!) { semanticOperation(input: $input) { status } }`)},
+		{"missing variable", withQuery(`mutation($other: SemanticOperationInput!) { semanticOperation(input: $other) { status } }`)},
+		{"extra argument", withQuery(`mutation($input: SemanticOperationInput!) { semanticOperation(input: $input, dryRun: true) { status } }`)},
+		{"inline numeric identifier", withQuery(`mutation { semanticOperation(input: {` + strings.Replace(validInline, `assetId: "asset:synthetic"`, `assetId: 7`, 1) + `}) { status } }`)},
+		{"invalid document", withQuery(`mutation { semanticOperation(input: { }`)},
+	}
+	for _, test := range requestErrors {
 		t.Run(test.name, func(t *testing.T) {
 			h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
 			contentType, body := test.build(t, h, m56Input(t, h.f.Request()))
-			m56RequireCode(t, m56Post(t, h.handler, contentType, body), test.code)
+			m56RequireRequestError(t, m56Post(t, h.handler, contentType, body))
 			h.untouched(t)
 		})
 	}
@@ -393,6 +438,7 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 			httptest.NewRequest(http.MethodGet, "/graphql?query="+url.QueryEscape(inline), nil),
 			httptest.NewRequest(http.MethodPost, "/graphql?query="+url.QueryEscape(inline), strings.NewReader(`{}`)),
 		}
+		requests[1].Header.Set("Content-Type", "application/json")
 		form := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(url.Values{"query": {inline}}.Encode()))
 		form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		document := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(inline))
@@ -402,68 +448,134 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		}
 		h.untouched(t)
 	})
-	t.Run("padded valid body past the byte bound is judged on its parsed input", func(t *testing.T) {
+	t.Run("padded valid body past 64 KiB is judged on its parsed input", func(t *testing.T) {
 		h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
-		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-		pad := bytes.Repeat([]byte(" "), 4*semanticoperations.MaxRequestBytes)
-		padded := append(body[:len(body)-1:len(body)-1], append(pad, '}')...)
+		padded := m56Pad(m56Body(t, m56Mutation, m56Input(t, h.f.Request())), 4*semanticoperations.MaxRequestBytes)
 		if got := m56Result(t, m56Post(t, h.handler, "application/json", padded)); got["status"] != "protocol_ack" || h.selected.Calls() != 1 {
 			t.Fatalf("result = %+v calls = %d", got, h.selected.Calls())
 		}
 	})
-	t.Run("oversized parsed input is refused with nothing sent", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
-		request := h.f.Request()
-		long := strings.Repeat("a", semanticoperations.MaxOpaqueIDBytes+1)
-		request.AssetID = semreg.AssetID(long)
-		body := m56Body(t, m56Mutation, m56Input(t, request))
-		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2*semanticoperations.MaxRequestBytes), '}')...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
-		h.untouched(t)
-	})
-	t.Run("oversized body keeps the selection-count limit", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
-		body := m56Body(t, "mutation($input: SemanticOperationInput!) { a: semanticOperation(input: $input) { status } b: semanticOperation(input: $input) { status } }", m56Input(t, h.f.Request()))
-		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2*semanticoperations.MaxRequestBytes), '}')...)
-		got := m56Post(t, h.handler, "application/json", padded)
-		if len(got.Errors) == 0 {
-			t.Fatalf("response = %+v", got)
+}
+
+// m56TextArguments returns sorted text arguments whose text lengths are
+// given.
+func m56TextArguments(lengths []int) []any {
+	arguments := make([]any, len(lengths))
+	for index, length := range lengths {
+		arguments[index] = map[string]any{
+			"id":    fmt.Sprintf("fixture.field.t%02d", index),
+			"value": map[string]any{"kind": "text", "text": strings.Repeat("x", length)},
 		}
-		for _, refusal := range got.Errors {
-			if refusal.Extensions["code"] != string(invalid) {
-				t.Fatalf("refusal = %+v; want %s", refusal, invalid)
+	}
+	return arguments
+}
+
+// m56Literal prints the test inputs as a GraphQL input literal.
+func m56Literal(t *testing.T, value any) string {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		names := make([]string, 0, len(typed))
+		for name := range typed {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		members := make([]string, 0, len(names))
+		for _, name := range names {
+			members = append(members, name+": "+m56Literal(t, typed[name]))
+		}
+		return "{" + strings.Join(members, ", ") + "}"
+	case []any:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			items = append(items, m56Literal(t, item))
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case string:
+		encoded, _ := json.Marshal(typed)
+		return string(encoded)
+	case bool, int64, json.Number:
+		return fmt.Sprint(typed)
+	}
+	t.Fatalf("no literal for %T", value)
+	return ""
+}
+
+// The aggregate input, variables or inline literal, is bounded on the parsed
+// operation: an input of individually valid members one byte over 64 KiB is
+// refused with nothing captured, admitted or sent; at the bound it reaches the
+// router.
+func TestM56GraphQLParsedInputSizeIsBoundedBeforeAdmission(t *testing.T) {
+	// sized spreads text over the most arguments the route admits until the
+	// compact JSON input is exactly size bytes, each argument still a valid
+	// SemReg TypedField on its own.
+	sized := func(t *testing.T, h m56Harness, size int) map[string]any {
+		t.Helper()
+		input := m56Input(t, h.f.Request())
+		lengths := make([]int, semanticoperations.MaxArguments)
+		for index := range lengths {
+			lengths[index] = 900
+		}
+		input["arguments"] = m56TextArguments(lengths)
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) >= size {
+			t.Fatalf("base input is %d bytes; want under %d", len(encoded), size)
+		}
+		extra := size - len(encoded)
+		for index := range lengths {
+			lengths[index] += extra / len(lengths)
+			if index < extra%len(lengths) {
+				lengths[index]++
 			}
 		}
-		h.untouched(t)
-	})
-	t.Run("duplicate members in a non-semantic query mentioning the field are served", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
-		got := m56Post(t, h.handler, "application/json", []byte(`{"query":"{ __typename } # semanticOperation","query":"{ __typename } # semanticOperation"}`))
-		if len(got.Errors) != 0 || got.Data["__typename"] == nil {
-			t.Fatalf("response = %+v", got)
+		input["arguments"] = m56TextArguments(lengths)
+		if encoded, _ = json.Marshal(input); len(encoded) != size {
+			t.Fatalf("input is %d bytes; want %d", len(encoded), size)
 		}
-		h.untouched(t)
-	})
-	t.Run("oversized non-semantic body keeps its handling", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
-		huge := append([]byte(`{"query":"{ __typename }"`), append(bytes.Repeat([]byte(" "), 2<<20), '}')...)
-		got := m56Post(t, h.handler, "application/json", huge)
-		if len(got.Errors) != 0 || got.Data["__typename"] == nil {
-			t.Fatalf("response = %+v", got)
+		for index, argument := range input["arguments"].([]any) {
+			if _, err := decodeSemanticRecord[semreg.TypedField](argument); err != nil {
+				t.Fatalf("argument %d is not individually valid: %v", index, err)
+			}
 		}
-		h.untouched(t)
-	})
-	t.Run("body at the byte bound", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
-		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), semanticoperations.MaxRequestBytes-len(body)), '}')...)
-		if len(padded) != semanticoperations.MaxRequestBytes {
-			t.Fatalf("padded body = %d bytes", len(padded))
-		}
-		if got := m56Result(t, m56Post(t, h.handler, "application/json", padded)); got["status"] != "protocol_ack" || h.selected.Calls() != 1 {
-			t.Fatalf("result = %+v calls = %d", got, h.selected.Calls())
-		}
-	})
+		return input
+	}
+	transports := map[string]func(t *testing.T, input map[string]any) []byte{
+		"variables": func(t *testing.T, input map[string]any) []byte { return m56Body(t, m56Mutation, input) },
+		"inline literal": func(t *testing.T, input map[string]any) []byte {
+			body, err := json.Marshal(map[string]any{"query": "mutation { semanticOperation(input: " + m56Literal(t, input) + ") { status reason } }"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return body
+		},
+	}
+	for name, encode := range transports {
+		t.Run(name+"/over the bound", func(t *testing.T) {
+			h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
+			body := encode(t, sized(t, h, semanticoperations.MaxRequestBytes+1))
+			m56RequireCode(t, m56Post(t, h.handler, "application/json", body), semanticoperations.CodeResourceExhausted)
+			h.untouched(t)
+		})
+		t.Run(name+"/at the bound", func(t *testing.T) {
+			h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
+			body := encode(t, sized(t, h, semanticoperations.MaxRequestBytes))
+			response := m56Post(t, h.handler, "application/json", body)
+			for _, refusal := range response.Errors {
+				if refusal.Extensions["code"] == string(semanticoperations.CodeResourceExhausted) {
+					t.Fatalf("input at the bound refused: %+v", response.Errors)
+				}
+			}
+			if h.owner.Calls() == 0 && h.f.Captures() == 0 {
+				t.Fatalf("input at the bound never reached the router: %+v", response)
+			}
+			if h.selected.Sends() != 0 {
+				t.Fatal("arguments the operation does not define were sent")
+			}
+		})
+	}
 }
 
 func TestM56GraphQLAcceptsInlineLiteralsAndDefaults(t *testing.T) {
@@ -508,9 +620,9 @@ func TestM56GraphQLUnwiredRouteIsUnavailable(t *testing.T) {
 	}
 }
 
-// Schemas executed outside the guarded HTTP body path, such as the WebSocket
-// subscription transport, fail closed instead of decoding coerced input.
-func TestM56GraphQLUnguardedExecutionFailsClosed(t *testing.T) {
+// Schemas executed outside the HTTP JSON handler, such as in process, carry no
+// transport facts and fail closed instead of decoding their input.
+func TestM56GraphQLExecutionOutsideHTTPFailsClosed(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{})
 	schema, err := NewSchema(h.builder, m56Registry{}, m56Invoker{t: t}, nil)
 	if err != nil {
@@ -524,20 +636,86 @@ func TestM56GraphQLUnguardedExecutionFailsClosed(t *testing.T) {
 	h.untouched(t)
 }
 
-func TestM56GraphQLGuardPreservesOtherRequests(t *testing.T) {
+// Requests that do not select semanticOperation are served exactly as on main:
+// each one goes through a handler built the way main built it (the schema
+// without the route or its extension, the original root object) and through
+// NewInvokeHandler, and status, headers and body must be byte-identical. Only
+// introspection of the Mutation type can tell the two apart, by the additive
+// field.
+func TestM56GraphQLNonSemanticRequestsMatchMainHandler(t *testing.T) {
 	h := newM56Harness(t, semoptest.Outcome{})
-	typename := func(response m56Response) {
-		t.Helper()
-		if len(response.Errors) != 0 || response.Data["__typename"] != "Query" {
-			t.Fatalf("response = %+v", response)
-		}
+	mainSchema, err := buildSchema(h.builder, m56Registry{}, m56Invoker{t: t}, nil, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	typename(m56Post(t, h.handler, "application/json", []byte(`{"query":"{ __typename } # semanticOperation is only named here"}`)))
-	typename(m56Post(t, h.handler, "application/json", []byte(`{"query":"{ semanticSnapshot }","query":"{ __typename }"}`)))
-	typename(m56Post(t, h.handler, "text/plain", []byte(`{"query":"{ __typename }"}`)))
-	large := append([]byte(`{"query":"{ __typename }"`), append(bytes.Repeat([]byte(" "), semanticoperations.MaxRequestBytes), '}')...)
-	typename(m56Post(t, h.handler, "application/json", large))
-	typename(m56Serve(t, h.handler, httptest.NewRequest(http.MethodGet, "/graphql?query="+url.QueryEscape("{ __typename }"), nil)))
+	mainHandler := handler.New(&handler.Config{
+		Schema:   &mainSchema,
+		Pretty:   true,
+		GraphiQL: false,
+		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
+			return newGraphQLRootObject(h.builder)
+		},
+	})
+	jsonBody := func(value any) string {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	padding := strings.Repeat(" ", 2*semanticoperations.MaxRequestBytes)
+	comment := strings.Repeat("# semanticOperation(input: {}) { status }\n", 4096)
+	named := "{ __typename } # semanticOperation"
+	requests := []struct {
+		name, method, target, contentType, encoding, body string
+	}{
+		{"plain query", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }"}`},
+		{"mixed-case query key with a comment naming the field", http.MethodPost, "/graphql", "application/json", "", `{"Query":"{ __typename } # semanticOperation"}`},
+		{"upper-case members", http.MethodPost, "/graphql", "application/json", "",
+			`{"QUERY":"query Q { __typename } # semanticOperation","OPERATIONNAME":"Q","VARIABLES":{"v":"semanticOperation"}}`},
+		{"alias named after the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticOperation: __typename }"}`},
+		{"duplicate query members", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticSnapshot }","query":"{ __typename } # semanticOperation"}`},
+		{"whitespace-padded body", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename } # semanticOperation"` + padding + `}`},
+		{"long comment naming the field", http.MethodPost, "/graphql", "application/json", "", jsonBody(map[string]any{"query": "{ __typename }\n" + comment})},
+		{"large variables naming the field", http.MethodPost, "/graphql", "application/json", "",
+			jsonBody(map[string]any{"query": "{ __typename }", "variables": map[string]any{"v": strings.Repeat("semanticOperation", 16384)}})},
+		{"mutation without the field", http.MethodPost, "/graphql", "application/json", "", `{"query":"mutation { __typename } # semanticOperation"}`},
+		{"string variables", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }","variables":"{\"v\":1}"}`},
+		{"batched request", http.MethodPost, "/graphql", "application/json", "", `[{"query":"{ __typename }"}]`},
+		{"trailing JSON value", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename }"} {}`},
+		{"truncated JSON", http.MethodPost, "/graphql", "application/json", "", `{"query":`},
+		{"invalid UTF-8", http.MethodPost, "/graphql", "application/json", "", "{\"query\":\"{ __typename } # semanticOperation \xff\"}"},
+		{"syntax error", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ __typename "}`},
+		{"unknown field", http.MethodPost, "/graphql", "application/json", "", `{"query":"{ semanticOperationX }"}`},
+		{"empty body", http.MethodPost, "/graphql", "application/json", "", ""},
+		{"text/plain body", http.MethodPost, "/graphql", "text/plain", "", `{"query":"{ __typename } # semanticOperation"}`},
+		{"latin1 charset", http.MethodPost, "/graphql", "application/json; charset=latin1", "", `{"query":"{ __typename }"}`},
+		{"gzip-labelled body", http.MethodPost, "/graphql", "application/json", "gzip", `{"query":"{ __typename }"}`},
+		{"form body", http.MethodPost, "/graphql", "application/x-www-form-urlencoded", "", url.Values{"query": {named}}.Encode()},
+		{"GraphQL body", http.MethodPost, "/graphql", "application/graphql", "", named},
+		{"GET query", http.MethodGet, "/graphql?query=" + url.QueryEscape(named), "", "", ""},
+		{"POST with a URL query", http.MethodPost, "/graphql?query=" + url.QueryEscape(named), "application/json", "", `{}`},
+	}
+	serve := func(target http.Handler, send int) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(requests[send].method, requests[send].target, strings.NewReader(requests[send].body))
+		if requests[send].contentType != "" {
+			request.Header.Set("Content-Type", requests[send].contentType)
+		}
+		if requests[send].encoding != "" {
+			request.Header.Set("Content-Encoding", requests[send].encoding)
+		}
+		recorder := httptest.NewRecorder()
+		target.ServeHTTP(recorder, request)
+		return recorder
+	}
+	for index, send := range requests {
+		t.Run(send.name, func(t *testing.T) {
+			want, got := serve(mainHandler, index), serve(h.handler, index)
+			if got.Code != want.Code || !reflect.DeepEqual(got.Header(), want.Header()) || !bytes.Equal(got.Body.Bytes(), want.Body.Bytes()) {
+				t.Fatalf("response differs from main:\n got %d %v %.512s\nwant %d %v %.512s", got.Code, got.Header(), got.Body.Bytes(), want.Code, want.Header(), want.Body.Bytes())
+			}
+		})
+	}
 	h.untouched(t)
 }
 
@@ -653,33 +831,4 @@ func m56RequireTypes(t *testing.T, owner string, fields []m56TypeRef, want map[s
 	if !bytes.Equal(gotJSON, wantJSON) {
 		t.Fatalf("%s fields = %s; want %s", owner, gotJSON, wantJSON)
 	}
-}
-
-func TestM56GuardOversizedBodyReachesStockHandlerIntact(t *testing.T) {
-	var got []byte
-	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, _ = io.ReadAll(r.Body)
-	}))
-	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 6 << 20} {
-		body := append([]byte(`{"query":"{ __typename } # semanticOperation"`), append(bytes.Repeat([]byte(" "), size), '}')...)
-		got = nil
-		request := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
-		request.Header.Set("Content-Type", "application/json")
-		guarded.ServeHTTP(httptest.NewRecorder(), request)
-		if !bytes.Equal(got, body) {
-			t.Fatalf("size %d: downstream body differs (%d bytes, want %d)", size, len(got), len(body))
-		}
-	}
-}
-
-func TestM56GraphQLOversizedNonSemanticMentioningFieldIsServed(t *testing.T) {
-	h := newM56Harness(t, semoptest.Outcome{})
-	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 5 << 20} {
-		body := append([]byte(`{"query":"{ __typename } # semanticOperation","variables":{"v":"semanticOperation"}`), append(bytes.Repeat([]byte(" "), size), '}')...)
-		got := m56Post(t, h.handler, "application/json", body)
-		if len(got.Errors) != 0 || got.Data["__typename"] != "Query" {
-			t.Fatalf("size %d: response = %+v", size, got)
-		}
-	}
-	h.untouched(t)
 }

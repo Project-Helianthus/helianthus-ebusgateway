@@ -1,11 +1,10 @@
 package graphql
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
+	"math"
 	"mime"
 	"net/http"
 	"reflect"
@@ -13,15 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticoperations"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 	"github.com/Project-Helianthus/helianthus-semreg/semreg/v1/operation"
 	graphqlgo "github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/ast"
-	"github.com/graphql-go/graphql/language/parser"
-	"github.com/graphql-go/handler"
 )
 
 // SemanticOperationRouter is the injected bounded dispatcher of the one
@@ -35,9 +32,12 @@ type SemanticOperationRouter interface {
 const (
 	semanticOperationFieldName = "semanticOperation"
 	semanticOperationMaxDepth  = 32
-	// semanticOperationMaxSelections bounds the selections the request guard
-	// visits while counting semanticOperation fields.
+	// semanticOperationMaxSelections bounds the selections the resolver visits
+	// while counting semanticOperation fields of the parsed operation.
 	semanticOperationMaxSelections = 4096
+	// semanticOperationTransportRootKey holds, in the HTTP root value, the
+	// request-line and header facts the semanticOperation resolver checks.
+	semanticOperationTransportRootKey = "semanticOperationTransport"
 )
 
 // semanticOperationError is a request-level refusal surfaced on
@@ -117,26 +117,11 @@ func semanticOperationField(builder *Builder) *graphqlgo.Field {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			marker, _ := ctx.Value(semanticOperationMarkerKey{}).(*semanticOperationMarker)
-			// Only the strict single-JSON-body path decodes the input; GET,
-			// form, raw GraphQL and in-process paths fail closed here.
-			var request semanticoperations.Request
-			switch {
-			case marker != nil && marker.oversize:
-				// The body was too large to inspect strictly; the stock
-				// handler parsed it, so the limits apply to the parsed input.
-				parsed, err := semanticOperationParsedRequest(p)
-				if err != nil {
-					return nil, semanticOperationErrorFrom(err)
-				}
-				request = parsed
-			case marker != nil && marker.request != nil:
-				if args, ok := p.Args["input"].(map[string]interface{}); !ok || args["assetId"] != string(marker.request.AssetID) {
-					return nil, semanticOperationInvalid("input does not match the inspected request")
-				}
-				request = *marker.request
-			default:
-				return nil, semanticOperationInvalid("requires one strict JSON request body")
+			// Every limit holds on the parsed operation before admission; a
+			// refusal here never reaches the router, so nothing is sent.
+			request, err := semanticOperationParsedRequest(ctx, p)
+			if err != nil {
+				return nil, semanticOperationErrorFrom(err)
 			}
 			router := builder.semanticOperationRouter()
 			if router == nil {
@@ -151,16 +136,24 @@ func semanticOperationField(builder *Builder) *graphqlgo.Field {
 	}
 }
 
-// semanticOperationParsedRequest decodes the already parsed input of an
-// oversized request and bounds its semanticOperation selections, so the size
-// and selection limits hold without scanning the body.
-func semanticOperationParsedRequest(p graphqlgo.ResolveParams) (semanticoperations.Request, error) {
+// semanticOperationParsedRequest applies the route's request limits to the
+// operation the stock GraphQL handler has already parsed: the transport facts
+// recorded with the HTTP root value, at most one semanticOperation selection
+// in the executing operation, the aggregate input size, and the strict typed
+// decode of the input as written. The input is rebuilt from the document's
+// literals and the request variables as the handler decoded them, never from
+// GraphQL-coerced arguments. No request body is read or scanned here.
+func semanticOperationParsedRequest(ctx context.Context, p graphqlgo.ResolveParams) (semanticoperations.Request, error) {
 	var none semanticoperations.Request
-	if p.Info.Operation == nil {
-		return none, semanticOperationInvalid("operation selection")
+	transport, ok := semanticOperationRootTransport(p.Info.RootValue)
+	if !ok {
+		return none, semanticOperationInvalid("requires one JSON request body")
+	}
+	if transport.err != nil {
+		return none, transport.err
 	}
 	operationDefinition, ok := p.Info.Operation.(*ast.OperationDefinition)
-	if !ok {
+	if !ok || operationDefinition == nil || len(p.Info.FieldASTs) != 1 {
 		return none, semanticOperationInvalid("operation selection")
 	}
 	fragments := map[string]*ast.FragmentDefinition{}
@@ -176,29 +169,173 @@ func semanticOperationParsedRequest(p graphqlgo.ResolveParams) (semanticoperatio
 	if len(collector.fields) != 1 {
 		return none, semanticOperationInvalid("at most one semanticOperation field per request")
 	}
-	return decodeSemanticOperationInput(semanticParsedRaw(p.Args["input"]))
+	if operationDefinition.Operation != ast.OperationTypeMutation {
+		return none, semanticOperationInvalid("semanticOperation is a mutation")
+	}
+	variables, ok := ctx.Value(semanticOperationVariablesKey{}).(*semanticOperationVariables)
+	if !ok || variables == nil {
+		return none, semanticOperationInvalid("request variables unavailable")
+	}
+	raw, err := semanticOperationRawInput(p.Info.FieldASTs[0], operationDefinition, variables.values)
+	if err != nil {
+		return none, err
+	}
+	meter := semanticInputMeter{remaining: semanticoperations.MaxRequestBytes}
+	if err := meter.measure(raw, 0); err != nil {
+		return none, err
+	}
+	return decodeSemanticOperationInput(raw)
 }
 
-// semanticParsedRaw maps GraphQL-coerced values to the JSON-typed form the
-// strict decoder reads.
-func semanticParsedRaw(value any) any {
-	switch typed := value.(type) {
-	case map[string]interface{}:
-		object := make(map[string]any, len(typed))
-		for name, member := range typed {
-			object[name] = semanticParsedRaw(member)
-		}
-		return object
-	case []interface{}:
-		list := make([]any, len(typed))
-		for i, member := range typed {
-			list[i] = semanticParsedRaw(member)
-		}
-		return list
-	case int:
-		return json.Number(strconv.Itoa(typed))
+// semanticOperationTransport records whether the stock handler took the
+// operation from one UTF-8, identity-encoded JSON POST body. It is derived
+// from the request line and headers alone and only the semanticOperation
+// resolver reads it; every other field ignores it.
+type semanticOperationTransport struct{ err error }
+
+// semanticOperationTransportOf mirrors the stock handler's request-option
+// selection: a URL query, a non-POST method, a raw GraphQL or form body, or a
+// non-JSON media type never carries a semantic operation.
+func semanticOperationTransportOf(r *http.Request) *semanticOperationTransport {
+	if r == nil || r.Method != http.MethodPost || r.URL == nil || r.URL.Query().Get("query") != "" {
+		return &semanticOperationTransport{err: semanticOperationInvalid("requires one JSON request body")}
 	}
-	return value
+	return &semanticOperationTransport{err: strictSemanticOperationHeaders(r.Header)}
+}
+
+func semanticOperationRootTransport(root any) (*semanticOperationTransport, bool) {
+	values, ok := root.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	transport, ok := values[semanticOperationTransportRootKey].(*semanticOperationTransport)
+	return transport, ok && transport != nil
+}
+
+// semanticOperationVariables holds the request variables exactly as the
+// caller of graphql.Do supplied them (for HTTP, as the stock handler decoded
+// the body), before GraphQL input coercion.
+type semanticOperationVariables struct{ values map[string]any }
+
+type semanticOperationVariablesKey struct{}
+
+// semanticOperationVariablesExtension keeps a reference to the supplied
+// variables in the execution context so the semanticOperation resolver can
+// decode its input without GraphQL's lenient coercion (numbers to strings,
+// truncated integers, singleton lists). It never reads, rejects or alters a
+// request and adds nothing to any result.
+type semanticOperationVariablesExtension struct{}
+
+func (semanticOperationVariablesExtension) Init(ctx context.Context, p *graphqlgo.Params) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticOperationVariablesKey{}, &semanticOperationVariables{values: p.VariableValues})
+}
+
+func (semanticOperationVariablesExtension) Name() string { return "semanticOperationVariables" }
+
+func (semanticOperationVariablesExtension) ParseDidStart(ctx context.Context) (context.Context, graphqlgo.ParseFinishFunc) {
+	return ctx, func(error) {}
+}
+
+func (semanticOperationVariablesExtension) ValidationDidStart(ctx context.Context) (context.Context, graphqlgo.ValidationFinishFunc) {
+	return ctx, func([]gqlerrors.FormattedError) {}
+}
+
+func (semanticOperationVariablesExtension) ExecutionDidStart(ctx context.Context) (context.Context, graphqlgo.ExecutionFinishFunc) {
+	return ctx, func(*graphqlgo.Result) {}
+}
+
+func (semanticOperationVariablesExtension) ResolveFieldDidStart(ctx context.Context, _ *graphqlgo.ResolveInfo) (context.Context, graphqlgo.ResolveFieldFinishFunc) {
+	return ctx, func(interface{}, error) {}
+}
+
+func (semanticOperationVariablesExtension) HasResult() bool { return false }
+
+func (semanticOperationVariablesExtension) GetResult(context.Context) interface{} { return nil }
+
+// semanticInputMeter measures the compact encoding/json form of the raw
+// input, inline literals and variable values alike, and stops as soon as the
+// route's byte bound is exceeded, so an aggregate of individually valid
+// members cannot pass.
+type semanticInputMeter struct{ remaining int }
+
+func (m *semanticInputMeter) add(bytes int) error {
+	if m.remaining -= bytes; m.remaining < 0 {
+		return semanticOperationExhausted("input exceeds the byte bound")
+	}
+	return nil
+}
+
+func (m *semanticInputMeter) measure(value any, depth int) error {
+	if depth > semanticOperationMaxDepth {
+		return semanticOperationInvalid("input nesting")
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		if err := m.add(2 + max(len(typed)-1, 0)); err != nil {
+			return err
+		}
+		for name, member := range typed {
+			if err := m.text(name); err != nil {
+				return err
+			}
+			if err := m.add(1); err != nil {
+				return err
+			}
+			if err := m.measure(member, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		if err := m.add(2 + max(len(typed)-1, 0)); err != nil {
+			return err
+		}
+		for _, member := range typed {
+			if err := m.measure(member, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case string:
+		return m.text(typed)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return semanticOperationInvalid("input value")
+	}
+	return m.add(len(encoded))
+}
+
+// text never encodes a string longer than the remaining budget: its encoding
+// is at least its bytes plus the two quotes.
+func (m *semanticInputMeter) text(value string) error {
+	if len(value)+2 > m.remaining {
+		return semanticOperationExhausted("input exceeds the byte bound")
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return semanticOperationInvalid("input value")
+	}
+	return m.add(len(encoded))
+}
+
+// semanticIntegerText returns the decimal text of an integer input: an
+// integer literal of the document, or an integral JSON number of the
+// variables. Fractions, strings and booleans are never converted.
+func semanticIntegerText(raw any) (string, bool) {
+	switch number := raw.(type) {
+	case json.Number:
+		return string(number), semanticIntegerToken.MatchString(string(number))
+	case float64:
+		if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) {
+			return "", false
+		}
+		return strconv.FormatFloat(number, 'f', -1, 64), true
+	}
+	return "", false
 }
 
 func semanticOperationResultValue(result semanticoperations.Result) map[string]interface{} {
@@ -350,14 +487,14 @@ func semanticSnakeValue(raw any, t reflect.Type) (any, error) {
 		}
 		return value, nil
 	case reflect.Int32:
-		number, ok := raw.(json.Number)
-		if !ok || !semanticIntegerToken.MatchString(string(number)) {
+		number, ok := semanticIntegerText(raw)
+		if !ok {
 			return nil, semanticOperationInvalid("input member must be an integer")
 		}
-		if _, err := strconv.ParseInt(string(number), 10, 32); err != nil {
+		if _, err := strconv.ParseInt(number, 10, 32); err != nil {
 			return nil, semanticOperationInvalid("input member exceeds Int")
 		}
-		return number, nil
+		return json.Number(number), nil
 	}
 	return nil, semanticOperationInvalid("unsupported input member")
 }
@@ -388,8 +525,9 @@ var semanticOperationInputMembers = map[string]bool{
 	"expectedSourceEpochId": true, "expectedDriverGeneration": true, "preconditions": true, "timeoutMs": true,
 }
 
-// decodeSemanticOperationInput decodes the closed input member set from raw
-// JSON-typed values, so GraphQL's lenient variable coercion never applies.
+// decodeSemanticOperationInput decodes the closed input member set from the
+// raw values of the parsed operation, so GraphQL's lenient variable coercion
+// never applies.
 func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 	var request semanticoperations.Request
 	object, ok := raw.(map[string]any)
@@ -478,11 +616,11 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 		request.Preconditions = append(request.Preconditions, precondition)
 	}
 
-	timeout, ok := object["timeoutMs"].(json.Number)
-	if !ok || !semanticIntegerToken.MatchString(string(timeout)) {
+	timeout, ok := semanticIntegerText(object["timeoutMs"])
+	if !ok {
 		return request, semanticOperationInvalid("timeoutMs must be an integer")
 	}
-	milliseconds, err := strconv.ParseInt(string(timeout), 10, 64)
+	milliseconds, err := strconv.ParseInt(timeout, 10, 64)
 	if err != nil || milliseconds < 1 || milliseconds > semanticoperations.MaxTimeout.Milliseconds() {
 		return request, semanticOperationInvalid("timeoutMs out of range")
 	}
@@ -493,181 +631,11 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 	return request, nil
 }
 
-// semanticOperationMarker carries the guard's verdict for one HTTP request.
-type semanticOperationMarker struct {
-	request  *semanticoperations.Request
-	oversize bool
-}
-
-type semanticOperationMarkerKey struct{}
-
-type semanticReplayBody struct {
-	io.Reader
-	io.Closer
-}
-
-type semanticBodyReadError struct{ err error }
-
-func (r semanticBodyReadError) Read([]byte) (int, error) { return 0, r.err }
-
-// guardSemanticOperationRequests bounds and strictly inspects requests that
-// select semanticOperation before GraphQL parsing or coercion runs. Every other
-// request reaches the handler with a byte-identical body; an oversized body
-// only carries a marker that the semanticOperation resolver alone reads.
-func guardSemanticOperationRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Mirror the handler's request-option selection: URL query, raw GraphQL
-		// and form bodies never carry a strict semantic operation.
-		if r.Method != http.MethodPost || r.Body == nil || r.URL.Query().Get("query") != "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-		switch strings.Split(r.Header.Get("Content-Type"), ";")[0] {
-		case handler.ContentTypeGraphQL, handler.ContentTypeFormURLEncoded:
-			next.ServeHTTP(w, r)
-			return
-		}
-		original := r.Body
-		body, err := io.ReadAll(io.LimitReader(original, int64(semanticoperations.MaxRequestBytes)+1))
-		if err != nil {
-			r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), semanticBodyReadError{err: err}), Closer: original}
-			next.ServeHTTP(w, r)
-			return
-		}
-		if len(body) > semanticoperations.MaxRequestBytes {
-			// The body is not scanned: the stock handler receives every byte
-			// and the resolver refuses a semantic selection by its parsed form.
-			r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), original), Closer: original}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), semanticOperationMarkerKey{}, &semanticOperationMarker{oversize: true})))
-			return
-		}
-		r.Body = semanticReplayBody{Reader: bytes.NewReader(body), Closer: original}
-		request, semantic, err := inspectSemanticOperationRequest(r.Header, body)
-		if !semantic {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if err != nil {
-			writeSemanticOperationError(w, err)
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), semanticOperationMarkerKey{}, &semanticOperationMarker{request: &request})))
-	})
-}
-
-func writeSemanticOperationError(w http.ResponseWriter, err error) {
-	refusal, ok := semanticOperationErrorFrom(err).(semanticOperationError)
-	if !ok {
-		refusal = semanticOperationError{code: semanticoperations.CodeInvalidArgument, detail: "request"}
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"data": nil,
-		"errors": []interface{}{map[string]interface{}{
-			"message":    refusal.Error(),
-			"extensions": refusal.Extensions(),
-		}},
-	})
-}
-
-// inspectSemanticOperationRequest strictly parses the body before any lenient
-// decoding and reports whether it names semanticOperation. Safety never
-// depends on this detection: the resolver refuses any execution that did not
-// pass through it.
-func inspectSemanticOperationRequest(header http.Header, body []byte) (semanticoperations.Request, bool, error) {
-	var none semanticoperations.Request
-	envelope := parseSemanticEnvelope(body)
-	named := false
-	for _, query := range envelope.queries {
-		named = named || strings.Contains(query, semanticOperationFieldName)
-	}
-	if !named {
-		return none, false, nil
-	}
-	if envelope.root == nil && envelope.err != nil {
-		return none, true, envelope.err
-	}
-	object, ok := envelope.root.(map[string]any)
-	if !ok {
-		return none, true, semanticOperationInvalid("batched or non-object request bodies are not supported")
-	}
-	query, ok := object["query"].(string)
-	if !ok {
-		return none, true, semanticOperationInvalid("request query must be a string member named query")
-	}
-	operationName, ok := object["operationName"].(string)
-	if !ok && object["operationName"] != nil {
-		return none, true, semanticOperationInvalid("operationName must be a string")
-	}
-	document, err := parser.Parse(parser.ParseParams{Source: query})
-	if err != nil {
-		return none, true, semanticOperationInvalid("GraphQL document")
-	}
-	selected, fragments, ok := selectSemanticOperationDefinition(document, operationName)
-	if !ok {
-		return none, true, semanticOperationInvalid("operation selection")
-	}
-	collector := semanticFieldCollector{fragments: fragments, active: map[string]bool{}}
-	if !collector.collect(selected.SelectionSet, 0) {
-		return none, true, semanticOperationInvalid("fragment structure")
-	}
-	fields := collector.fields
-	if len(fields) == 0 {
-		return none, false, nil
-	}
-	if envelope.err != nil {
-		return none, true, envelope.err
-	}
-	variables, err := strictSemanticOperationMembers(object)
-	if err != nil {
-		return none, true, err
-	}
-	if err := strictSemanticOperationHeaders(header); err != nil {
-		return none, true, err
-	}
-	if len(fields) != 1 {
-		return none, true, semanticOperationInvalid("at most one semanticOperation field per request")
-	}
-	if selected.Operation != ast.OperationTypeMutation {
-		return none, true, semanticOperationInvalid("semanticOperation is a mutation")
-	}
-	raw, err := semanticOperationRawInput(fields[0], selected, variables)
-	if err != nil {
-		return none, true, err
-	}
-	request, err := decodeSemanticOperationInput(raw)
-	return request, true, err
-}
-
-func selectSemanticOperationDefinition(document *ast.Document, name string) (*ast.OperationDefinition, map[string]*ast.FragmentDefinition, bool) {
-	fragments := map[string]*ast.FragmentDefinition{}
-	var selected *ast.OperationDefinition
-	for _, definition := range document.Definitions {
-		switch typed := definition.(type) {
-		case *ast.OperationDefinition:
-			if name == "" {
-				if selected != nil {
-					return nil, nil, false
-				}
-				selected = typed
-			} else if typed.Name != nil && typed.Name.Value == name {
-				selected = typed
-			}
-		case *ast.FragmentDefinition:
-			if typed.Name != nil {
-				fragments[typed.Name.Value] = typed
-			}
-		}
-	}
-	return selected, fragments, selected != nil
-}
-
 // semanticFieldCollector counts every root selection of the field, through
 // aliases, inline fragments and each fragment spread, whatever its
 // directives. It stops at a second field, which is refused anyway, and bounds
 // the selections it visits, so repeated fragment spreads cannot make the
-// inspection exponential. A fragment cycle is malformed.
+// count exponential. A fragment cycle is malformed.
 type semanticFieldCollector struct {
 	fragments map[string]*ast.FragmentDefinition
 	active    map[string]bool
@@ -720,6 +688,8 @@ func (c *semanticFieldCollector) collect(set *ast.SelectionSet, depth int) bool 
 	return true
 }
 
+// strictSemanticOperationHeaders admits only an identity-encoded
+// application/json body with no parameter other than a UTF-8 charset.
 func strictSemanticOperationHeaders(header http.Header) error {
 	mediaType, parameters, err := mime.ParseMediaType(header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
@@ -738,122 +708,8 @@ func strictSemanticOperationHeaders(header http.Header) error {
 	return nil
 }
 
-// semanticEnvelope is the strict parse of one request body. Every query-like
-// member value is kept, including duplicates and case variants that a lenient
-// decoder would merge; err holds the first strict violation.
-type semanticEnvelope struct {
-	root    any
-	queries []string
-	err     error
-}
-
-// parseSemanticEnvelope rejects duplicate member names at every level after
-// JSON escape decoding, before any object that discards duplicates exists.
-func parseSemanticEnvelope(body []byte) semanticEnvelope {
-	var envelope semanticEnvelope
-	if !utf8.Valid(body) {
-		envelope.err = semanticOperationInvalid("request body must be UTF-8")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	root, err := readStrictSemanticJSON(decoder, 0, true, &envelope)
-	if err != nil {
-		if envelope.err == nil {
-			envelope.err = err
-		}
-		return envelope
-	}
-	if _, err := decoder.Token(); err != io.EOF && envelope.err == nil {
-		envelope.err = semanticOperationInvalid("request body must hold one JSON value")
-	}
-	envelope.root = root
-	return envelope
-}
-
-func readStrictSemanticJSON(decoder *json.Decoder, depth int, collect bool, envelope *semanticEnvelope) (any, error) {
-	if depth > semanticOperationMaxDepth {
-		return nil, semanticOperationInvalid("request nesting")
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, semanticOperationInvalid("request body JSON")
-	}
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return token, nil
-	}
-	switch delimiter {
-	case '{':
-		object := map[string]any{}
-		for decoder.More() {
-			key, err := decoder.Token()
-			if err != nil {
-				return nil, semanticOperationInvalid("request body JSON")
-			}
-			name, ok := key.(string)
-			if !ok {
-				return nil, semanticOperationInvalid("request body JSON")
-			}
-			if _, duplicate := object[name]; duplicate && envelope.err == nil {
-				envelope.err = semanticOperationInvalid("duplicate JSON member")
-			}
-			value, err := readStrictSemanticJSON(decoder, depth+1, false, envelope)
-			if err != nil {
-				return nil, err
-			}
-			if text, isText := value.(string); collect && isText && strings.EqualFold(name, "query") {
-				envelope.queries = append(envelope.queries, text)
-			}
-			object[name] = value
-		}
-		if _, err := decoder.Token(); err != nil {
-			return nil, semanticOperationInvalid("request body JSON")
-		}
-		return object, nil
-	case '[':
-		list := []any{}
-		for decoder.More() {
-			value, err := readStrictSemanticJSON(decoder, depth+1, collect && depth == 0, envelope)
-			if err != nil {
-				return nil, err
-			}
-			list = append(list, value)
-		}
-		if _, err := decoder.Token(); err != nil {
-			return nil, semanticOperationInvalid("request body JSON")
-		}
-		return list, nil
-	}
-	return nil, semanticOperationInvalid("request body JSON")
-}
-
-// strictSemanticOperationMembers admits only the GraphQL-over-HTTP request
-// members with their exact names and JSON types.
-func strictSemanticOperationMembers(envelope map[string]any) (map[string]any, error) {
-	var variables map[string]any
-	for name, value := range envelope {
-		switch name {
-		case "query", "operationName":
-		case "variables":
-			if value != nil {
-				var ok bool
-				if variables, ok = value.(map[string]any); !ok {
-					return nil, semanticOperationInvalid("variables must be an object")
-				}
-			}
-		case "extensions":
-			if _, ok := value.(map[string]any); !ok && value != nil {
-				return nil, semanticOperationInvalid("extensions must be an object")
-			}
-		default:
-			return nil, semanticOperationInvalid("unknown request member")
-		}
-	}
-	return variables, nil
-}
-
-// semanticOperationRawInput resolves the one input argument from inline
-// literals and the strictly parsed variables, never from coerced values.
+// semanticOperationRawInput resolves the one input argument from the
+// document's literals and the variables as supplied, never from coerced values.
 func semanticOperationRawInput(field *ast.Field, selected *ast.OperationDefinition, variables map[string]any) (any, error) {
 	var input ast.Value
 	for _, argument := range field.Arguments {

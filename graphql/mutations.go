@@ -151,6 +151,14 @@ type paramBuilder interface {
 }
 
 func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub) (graphqlgo.Schema, error) {
+	return buildSchema(builder, registry, invoker, hub, true)
+}
+
+// buildSchema builds the gateway schema; semanticOperation adds the one
+// generic semantic operation mutation and the extension that keeps the
+// supplied request variables for it. Without it the schema is the one that
+// existed before the route.
+func buildSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *BroadcastHub, semanticOperation bool) (graphqlgo.Schema, error) {
 	if builder == nil {
 		return graphqlgo.Schema{}, fmt.Errorf("graphql schema missing builder: %w", ebuserrors.ErrInvalidPayload)
 	}
@@ -162,9 +170,11 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 	var mutationType *graphqlgo.Object
 	if registry != nil && invoker != nil {
 		mutationType = buildMutationType(registry, invoker, builder.boilerConfigWriter(), builder.systemConfigWriter(), builder.scheduleWriter(), builder.mutationSourceForRequest, builder.systemConfigBound)
-		// The one generic semantic operation route; it reads the builder's
-		// injected router per request and never uses the eBUS invoker.
-		mutationType.AddFieldConfig(semanticOperationFieldName, semanticOperationField(builder))
+		if semanticOperation {
+			// The one generic semantic operation route; it reads the builder's
+			// injected router per request and never uses the eBUS invoker.
+			mutationType.AddFieldConfig(semanticOperationFieldName, semanticOperationField(builder))
+		}
 	}
 
 	var subscriptionType *graphqlgo.Object
@@ -172,11 +182,15 @@ func NewSchema(builder *Builder, registry InvokeRegistry, invoker Invoker, hub *
 		subscriptionType = buildSubscriptionType(hub, types)
 	}
 
-	return graphqlgo.NewSchema(graphqlgo.SchemaConfig{
+	schema, err := graphqlgo.NewSchema(graphqlgo.SchemaConfig{
 		Query:        queryType,
 		Mutation:     mutationType,
 		Subscription: subscriptionType,
 	})
+	if err == nil && semanticOperation && mutationType != nil {
+		schema.AddExtensions(semanticOperationVariablesExtension{})
+	}
+	return schema, err
 }
 
 func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker) (http.Handler, error) {
@@ -185,14 +199,18 @@ func NewInvokeHandler(builder *Builder, registry InvokeRegistry, invoker Invoker
 		return nil, err
 	}
 
-	return guardSemanticOperationRequests(handler.New(&handler.Config{
+	return handler.New(&handler.Config{
 		Schema:   &schema,
 		Pretty:   true,
 		GraphiQL: false,
-		RootObjectFn: func(_ context.Context, _ *http.Request) map[string]interface{} {
-			return newGraphQLRootObject(builder)
+		RootObjectFn: func(_ context.Context, r *http.Request) map[string]interface{} {
+			root := newGraphQLRootObject(builder)
+			// Request-line and header facts for the semanticOperation
+			// resolver only; the body is never read here.
+			root[semanticOperationTransportRootKey] = semanticOperationTransportOf(r)
+			return root
 		},
-	})), nil
+	}), nil
 }
 
 func buildMutationType(registry InvokeRegistry, invoker Invoker, boilerWriter BoilerConfigWriter, systemWriter SystemConfigWriter, scheduleWriter ScheduleWriter, mutationSourceProvider func() (byte, bool), boundProviders ...func() *ConfigBound) *graphqlgo.Object {

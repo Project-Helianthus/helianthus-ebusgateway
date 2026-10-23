@@ -892,3 +892,21 @@ func TestM38StartHTTPServerSharesProviderWithScrapeRoute(t *testing.T) {
 		t.Fatal("the scrape handler must compose the bus store with the shared semantic runtime")
 	}
 }
+
+func TestM38NilStoreComposesWithoutMetricsRoute(t *testing.T) {
+	f := m38Setup(t)
+	if handler := newGatewayMetricsHandler(nil, f.metrics(t)); handler != nil {
+		t.Fatal("handler for a nil store must be nil")
+	}
+	plan := newHTTPControlPlaneRoutePlan(ebusgateway.DefaultConfig(), false)
+	if plan.metricsPath != "" {
+		t.Fatalf("metrics path = %q without bus observability; want none", plan.metricsPath)
+	}
+	gateway := &ebusgateway.Gateway{Registry: registry.NewDeviceRegistry(nil)}
+	query, snapshot, subscription, server, err := newHTTPControlPlaneSemanticHandlers(gateway, graphql.NewBuilder(gateway.Registry, nil), graphql.NewBroadcastHub(nil), f.provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerHTTPControlPlaneCoreRoutes(mux, plan, t.TempDir(), newGatewayMetricsHandler(nil, f.metrics(t)), query, snapshot, subscription, server, http.NotFoundHandler())
+}

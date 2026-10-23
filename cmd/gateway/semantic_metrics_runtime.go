@@ -115,6 +115,9 @@ func (m *gatewaySemanticMetrics) note(failure error) {
 // capture starts, so neither section waits on the other; a semantic failure
 // affects only semantic samples.
 func newGatewayMetricsHandler(store *ebusgateway.BusObservabilityStore, semantic *gatewaySemanticMetrics) http.Handler {
+	if store == nil {
+		return nil
+	}
 	transport := store.MetricsHandler()
 	if semantic == nil {
 		return transport

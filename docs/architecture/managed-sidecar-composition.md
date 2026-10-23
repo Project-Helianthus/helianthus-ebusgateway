@@ -331,7 +331,7 @@ closure or release readiness.
 ## Composed northbound acceptance (M57)
 
 Proven by the `TestM57` fixtures in
-[`composition_projection_acceptance_test.go`](../../cmd/gateway/composition_projection_acceptance_test.go):
+[`composition_projection_acceptance_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/composition_projection_acceptance_test.go):
 they run the post-G5 lifecycle entrypoint with the production HTTP control
 plane, runtime control service, managed registry, process hub, shared snapshot
 provider and semantic operation router and kernel. Replaced parts: the eBUS

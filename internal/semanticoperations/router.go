@@ -446,10 +446,13 @@ func (r *Router) Route(ctx context.Context, request Request) (Result, error) {
 		}
 		return refused(string(id)), nil
 	}
+	route, hasRoute := admission.Route()
+	if hasRoute && route.BindingID != request.BindingID {
+		return refused(ReasonBindingMismatch), nil
+	}
 	if recorded, ok := admission.Recorded(); ok {
 		return project(recorded), nil
 	}
-	route, hasRoute := admission.Route()
 	guard, hasGuard := admission.GuardClaims()
 	admittedAt, admittedRevision, admitted := admission.AdmittedAt()
 	if !hasRoute || !hasGuard || !admitted {
@@ -459,9 +462,6 @@ func (r *Router) Route(ctx context.Context, request Request) (Result, error) {
 		// Identical intent bytes returned an earlier admission that was not
 		// re-evaluated against this capture. Never dispatch it again.
 		return r.replayed(admission), nil
-	}
-	if route.BindingID != request.BindingID {
-		return refused(ReasonBindingMismatch), nil
 	}
 	if route.CapabilityInstance != request.CapabilityInstanceID || route.SourceEpochID != request.ExpectedSourceEpochID || route.DriverGeneration != request.ExpectedDriverGeneration {
 		return refused(ReasonRouteMismatch), nil

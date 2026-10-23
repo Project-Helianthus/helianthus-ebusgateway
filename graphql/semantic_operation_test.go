@@ -411,6 +411,18 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
 		h.untouched(t)
 	})
+	t.Run("padded body past the byte bound never reaches graphql", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{})
+		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
+		pad := bytes.Repeat([]byte(" "), 4*semanticoperations.MaxRequestBytes)
+		padded := append(body[:len(body)-1:len(body)-1], append(pad, '}')...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
+		malformed := append([]byte(`{"query":"mutation { semanticOperation(`), pad...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", malformed), exhausted)
+		huge := append([]byte(`{"query":"{ __typename }"`), append(bytes.Repeat([]byte(" "), 2<<20), '}')...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", huge), exhausted)
+		h.untouched(t)
+	})
 	t.Run("body at the byte bound", func(t *testing.T) {
 		h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
 		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))

@@ -296,6 +296,18 @@ func TestM56RouterReplayNeverRedispatches(t *testing.T) {
 			t.Fatalf("first=%+v second=%+v calls=%d", first, second, h.selected.Calls())
 		}
 	})
+	t.Run("changed binding on replay is refused", func(t *testing.T) {
+		h := newHarness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
+		h.owner.Replay = true
+		if first := h.route(t, h.f.Request()); first.status != "protocol_ack" {
+			t.Fatalf("first = %+v", first)
+		}
+		other := h.f.Request()
+		other.BindingID = "binding:other"
+		if got := h.route(t, other); got != refusedView(semanticoperations.ReasonBindingMismatch) || h.selected.Calls() != 1 {
+			t.Fatalf("replay = %+v calls=%d", got, h.selected.Calls())
+		}
+	})
 	t.Run("in-flight admission is not dispatched twice", func(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Block: true})
 		h.owner.Replay = true

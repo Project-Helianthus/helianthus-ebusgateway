@@ -389,7 +389,7 @@ func TestM06NoDuplicateEagerStarts(t *testing.T) {
 	}
 	cfg := ebusgateway.DefaultConfig()
 	hub := newTestSemanticHub(t)
-	sidecars := prepareManagedSidecars(context.Background(), cfg, hub, rctlGUID, nil)
+	sidecars := prepareManagedSidecars(context.Background(), cfg, hub, rctlGUID, nil, nil)
 	for _, s := range sidecars.entries {
 		if s.runtime != nil {
 			t.Fatalf("disabled %s constructed", s.descriptor.DriverID)
@@ -488,7 +488,7 @@ func TestM06RegistrationRefusalKeepsSiblingsRunning(t *testing.T) {
 				natives := m06Factories(t, "", disabled)
 				cfg := ebusgateway.DefaultConfig()
 				cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID = string(source)
-				sidecars := prepareManagedSidecars(context.Background(), cfg, nil, "", nil)
+				sidecars := prepareManagedSidecars(context.Background(), cfg, nil, "", nil, nil)
 				bindings := &managedSidecarBindings{sidecars: sidecars}
 				if bindings.entry(managedGrowattID).withheld == nil {
 					t.Fatal("bad Growatt source was admitted")
@@ -565,7 +565,7 @@ func TestM06RealSunSpecFailedStartThenShutdownKeepsSiblingsRunning(t *testing.T)
 	}
 	cfg := ebusgateway.DefaultConfig()
 	cfg.ModbusTCPConfig = ebusgateway.ModbusTCPConfig{Enabled: true, Endpoint: "tcp://fixture.invalid:502", DialTimeout: time.Second}
-	sidecars := prepareManagedSidecars(ctx, cfg, newTestSemanticHub(t), rctlGUID, nil)
+	sidecars := prepareManagedSidecars(ctx, cfg, newTestSemanticHub(t), rctlGUID, nil, nil)
 	manager, err := drivermanager.New(drivermanager.Config{Drivers: sidecars.driverConfigs()})
 	if err != nil {
 		t.Fatal(err)

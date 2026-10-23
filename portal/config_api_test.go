@@ -196,3 +196,68 @@ func TestM26InvalidPutPreservesHistoricalDesired(t *testing.T) {
 		}
 	}
 }
+
+type configSelection struct {
+	Desired   bool   `json:"desired"`
+	Effective bool   `json:"effective"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
+}
+
+// TestM28ConfigDriverStatesComeFromHost: host driver rows replace the
+// evidence_unavailable defaults for accepted, historical and missing records,
+// and a host answer without rows still serializes an empty list.
+func TestM28ConfigDriverStatesComeFromHost(t *testing.T) {
+	accepted := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: []portalconfig.Driver{{ID: "family.primary", Enabled: true}}}
+	enabled := true
+	for _, tc := range []struct {
+		name     string
+		readErr  error
+		record   portalconfig.Record
+		nilRows  bool
+		wantSeen string
+		want     string
+	}{
+		{name: "accepted", record: accepted, wantSeen: "2", want: `[{"driver_id":"family.primary","desired":true,"effective":true,"status":"effective","reason":"running"}]`},
+		{name: "historical", readErr: &portalconfig.Error{Code: "invalid_record"}, record: accepted, wantSeen: "2", want: `[{"driver_id":"family.primary","desired":true,"effective":true,"status":"effective","reason":"running"}]`},
+		{name: "missing", readErr: &portalconfig.Error{Code: "invalid_record"}, wantSeen: "none", want: `[{"driver_id":"family.primary","desired":true,"effective":true,"status":"effective","reason":"running"}]`},
+		{name: "no_rows", record: accepted, nilRows: true, wantSeen: "2", want: `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := ""
+			h := NewHandler(Options{Config: &ConfigCallbacks{
+				Read: func(context.Context) (portalconfig.Record, error) { return tc.record, tc.readErr },
+				Drivers: func(_ context.Context, r *portalconfig.Record) []ConfigDriverState {
+					seen = "none"
+					if r != nil {
+						seen = r.Revision
+					}
+					if tc.nilRows {
+						return nil
+					}
+					return []ConfigDriverState{{DriverID: "family.primary", Desired: &enabled, Effective: true, Status: "effective", Reason: "running"}}
+				},
+			}})
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+			var got struct {
+				State struct {
+					Drivers json.RawMessage `json:"drivers"`
+				} `json:"state"`
+			}
+			if e := json.Unmarshal(w.Body.Bytes(), &got); e != nil {
+				t.Fatal(e)
+			}
+			if seen != tc.wantSeen || string(got.State.Drivers) != tc.want {
+				t.Fatalf("host saw %q, rows %s; want %q, %s", seen, got.State.Drivers, tc.wantSeen, tc.want)
+			}
+		})
+	}
+	// Without a host callback, rows never claim application.
+	h := NewHandler(Options{Config: &ConfigCallbacks{Read: func(context.Context) (portalconfig.Record, error) { return accepted, nil }}})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+	if !strings.Contains(w.Body.String(), `"drivers":[{"driver_id":"family.primary","desired":true,"effective":false,"status":"withheld","reason":"evidence_unavailable"}]`) {
+		t.Fatalf("default rows changed: %s", w.Body.String())
+	}
+}

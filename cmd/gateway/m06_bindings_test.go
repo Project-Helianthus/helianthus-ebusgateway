@@ -430,7 +430,7 @@ func TestM06DisabledEEBusSurfaceIsDiscoverableAndFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sidecars := prepareManagedSidecars(context.Background(), cfg, hub, rctlGUID, nil)
+	sidecars := prepareManagedSidecars(context.Background(), cfg, hub, rctlGUID, nil, nil)
 	bindings := &managedSidecarBindings{sidecars: sidecars}
 	entry := bindings.entry(managedEEBusID)
 	if entry == nil || entry.runtime != nil || entry.descriptor.Disposition != runtimecontrol.DispositionDisabled {

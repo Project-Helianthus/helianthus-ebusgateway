@@ -15,35 +15,51 @@ type ConfigCallbacks struct {
 	Update func(context.Context, portalconfig.Record) (portalconfig.Record, error)
 	// Bindings snapshots host provisioned listeners; nil withholds listener plans.
 	Bindings func(context.Context) portalconfig.ListenerAvailability
+	// Drivers reports host-owned driver application and owner readback for the
+	// shown record, or for nil when no valid record is available. Nil keeps
+	// every driver withheld with evidence_unavailable.
+	Drivers func(context.Context, *portalconfig.Record) []ConfigDriverState
 }
 
-type configSelection struct {
-	Desired   bool   `json:"desired"`
+// ConfigDriverState is one driver's desired selection (nil when no valid
+// record is available), owner-confirmed effective state and closed status.
+type ConfigDriverState struct {
+	DriverID  string `json:"driver_id"`
+	Desired   *bool  `json:"desired"`
 	Effective bool   `json:"effective"`
 	Status    string `json:"status"`
 	Reason    string `json:"reason"`
 }
 
-func configView(r portalconfig.Record, availability ...portalconfig.ListenerAvailability) map[string]any {
+// driverStates never lets a missing host callback claim application.
+func (c *ConfigCallbacks) driverStates(ctx context.Context, r *portalconfig.Record) []ConfigDriverState {
+	if c != nil && c.Drivers != nil {
+		if states := c.Drivers(ctx, r); states != nil {
+			return states
+		}
+		return []ConfigDriverState{}
+	}
+	states := []ConfigDriverState{}
+	if r == nil {
+		return states
+	}
+	for _, d := range r.Drivers {
+		desired := d.Enabled
+		states = append(states, ConfigDriverState{DriverID: d.ID, Desired: &desired, Status: "withheld", Reason: "evidence_unavailable"})
+	}
+	return states
+}
+
+func configView(r portalconfig.Record, drivers []ConfigDriverState, availability ...portalconfig.ListenerAvailability) map[string]any {
 	var bindings portalconfig.ListenerAvailability
 	if len(availability) == 1 {
 		bindings = availability[0]
 	}
 	plan := portalconfig.DeriveListenerPlan(r, bindings)
-	selection := func(v bool) configSelection {
-		return configSelection{Desired: v, Status: "withheld", Reason: "evidence_unavailable"}
-	}
-	drivers := make([]any, 0, len(r.Drivers))
-	for _, d := range r.Drivers {
-		drivers = append(drivers, struct {
-			ID string `json:"driver_id"`
-			configSelection
-		}{d.ID, selection(d.Enabled)})
-	}
 	return map[string]any{"desired": r, "listener_plan": plan, "listener_application": "pending", "state": map[string]any{"drivers": drivers, "sharing": map[string]any{"graphql": plan.Surfaces[1], "mcp": plan.Surfaces[2]}, "adapter_proxy": plan.Surfaces[3], "output_bindings": map[string]any{"matter": plan.Surfaces[4]}}}
 }
 
-func configError(w http.ResponseWriter, err error, historical ...portalconfig.Record) {
+func configError(w http.ResponseWriter, err error, drivers func(*portalconfig.Record) []ConfigDriverState, historical ...portalconfig.Record) {
 	safe := &portalconfig.Error{Code: "persistence_failed", Field: "record", NextStep: "check local storage"}
 	var typed *portalconfig.Error
 	if errors.As(err, &typed) {
@@ -61,13 +77,13 @@ func configError(w http.ResponseWriter, err error, historical ...portalconfig.Re
 	}
 	unavailable := map[string]any{"desired": nil, "effective": false, "status": "error", "reason": safe.Code}
 	view := map[string]any{"desired": nil, "error": safe, "state": map[string]any{
-		"drivers":         []any{},
+		"drivers":         drivers(nil),
 		"sharing":         map[string]any{"graphql": unavailable, "mcp": unavailable},
 		"adapter_proxy":   unavailable,
 		"output_bindings": map[string]any{"matter": unavailable},
 	}}
 	if len(historical) == 1 && historical[0].Format == portalconfig.Format {
-		view = configView(historical[0])
+		view = configView(historical[0], drivers(&historical[0]))
 		view["historical"] = true
 		view["error"] = safe
 	}
@@ -82,8 +98,9 @@ func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	drivers := func(record *portalconfig.Record) []ConfigDriverState { return c.driverStates(r.Context(), record) }
 	if c == nil || c.Read == nil || (r.Method == http.MethodPut && c.Update == nil) {
-		configError(w, errors.New("unavailable"))
+		configError(w, errors.New("unavailable"), drivers)
 		return
 	}
 	var availability portalconfig.ListenerAvailability
@@ -122,8 +139,8 @@ func (h *handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		configError(w, err, record)
+		configError(w, err, drivers, record)
 		return
 	}
-	writeJSON(w, http.StatusOK, configView(record, availability))
+	writeJSON(w, http.StatusOK, configView(record, drivers(&record), availability))
 }

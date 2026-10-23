@@ -316,11 +316,19 @@ func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSType
 	for i := range batch.ServiceUpserts {
 		batch.ServiceUpserts[i].Revision = sequence
 	}
+	if exists && growattStorageHasSourceEpoch(current, source, epoch) {
+		// One source epoch has one descriptor, upserted by its first publication.
+		// A successor generation of the same epoch (RESTART, STOP then START)
+		// mints a new binding but must not upsert the descriptor again: its start
+		// would be the successor's receipt, and SemReg accepts a changed object
+		// only at its current revision plus one, never at the new cursor's
+		// sequence. A retired epoch stays refused by SemReg either way.
+		batch.SourceUpserts = []semreg.SourceDescriptor{}
+	}
 	if exists && growattStorageHasBinding(current, bindingID) {
 		// Identity and capability topology are stable for one configured asset.
 		// Refreshes carry only newer source-bound facts; this avoids presenting a
-		// source/binding replacement for an unchanged native observation route.
-		batch.SourceUpserts = []semreg.SourceDescriptor{}
+		// binding replacement for an unchanged native observation route.
 		batch.BindingUpserts = []semreg.NativeBinding{}
 		batch.IdentityLinkUpserts = []semreg.IdentityLink{}
 		batch.ServiceUpserts = []semreg.ServiceInstance{}
@@ -342,6 +350,15 @@ func growattStorageBatch(inc semhub.Incarnation, status modbusreg.GrowattBMSType
 	}
 	batch.BatchDigest = digest
 	return batch, manifest, requested, growattStorageProjectionDispositions(dispositions), nil
+}
+
+func growattStorageHasSourceEpoch(snapshot semreg.Snapshot, source semreg.SourceID, epoch semreg.SourceEpochID) bool {
+	for _, existing := range snapshot.Sources {
+		if existing.SourceID == source && existing.SourceEpochID == epoch {
+			return true
+		}
+	}
+	return false
 }
 
 func growattStorageHasBinding(snapshot semreg.Snapshot, binding semreg.NativeBindingID) bool {

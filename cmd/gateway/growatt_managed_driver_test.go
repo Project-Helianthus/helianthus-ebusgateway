@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/drivermanager"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/runtimecontrol"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	modbus "github.com/Project-Helianthus/helianthus-modbus"
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
@@ -26,9 +29,9 @@ func m04Driver(t *testing.T, config ebusgateway.GrowattBMSRS485Config, open func
 }
 
 func TestM04StopJoinsAndRestartRejectsRetiredProvider(t *testing.T) {
-	started, release := make(chan struct{}, 1), make(chan struct{})
-	first := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1, readStarted: started, releaseRead: release}
-	second := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 2}
+	started, release, clock := make(chan struct{}, 1), make(chan struct{}), &growattReceiptClock{}
+	first := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 1, readStarted: started, releaseRead: release, clock: clock}
+	second := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 2, clock: clock}
 	opens := 0
 	driver := m04Driver(t, growattProductionConfig(), func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
 		opens++
@@ -165,13 +168,13 @@ func TestM04FailedOpenRetainsActivatedGenerationForRetry(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := growattProductionConfig()
 			openErr := errors.New("synthetic endpoint open failure")
-			failOpen, opens := false, 0
+			failOpen, opens, clock := false, 0, &growattReceiptClock{}
 			driver := m04Driver(t, config, func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
 				opens++
 				if failOpen {
 					return nil, openErr
 				}
-				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: uint64(opens)}, nil
+				return &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: uint64(opens), clock: clock}, nil
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -1113,4 +1116,268 @@ func TestM04WithdrawalRejectsEvidenceAtCommitBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// m61Endpoints opens one fresh register endpoint per driver generation, as the
+// production open function does, and stamps every response from one shared
+// receipt clock, as successive real endpoints do.
+func m61Endpoints() (*[]*growattEndpointFake, func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error)) {
+	clock, endpoints := &growattReceiptClock{}, &[]*growattEndpointFake{}
+	return endpoints, func(modbus.RTUProductionConfig) (growattBMSRTUEndpoint, error) {
+		endpoint := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: uint64(len(*endpoints) + 1), clock: clock}
+		*endpoints = append(*endpoints, endpoint)
+		return endpoint, nil
+	}
+}
+
+// m61Harness publishes Storage through one surface of the real managed driver
+// and reads it back only through the production shared provider.
+type m61Harness struct {
+	t          *testing.T
+	ctx        context.Context
+	driver     *growattManagedDriver
+	shared     *hubSemanticSnapshotProvider
+	publish    func(*growattBMSRS485ProductionProvider)
+	epochStart semreg.TimePoint
+	revision   uint64
+}
+
+func newM61Harness(t *testing.T, ctx context.Context, driver *growattManagedDriver, publish func(*growattBMSRS485ProductionProvider)) *m61Harness {
+	return &m61Harness{t: t, ctx: ctx, driver: driver, shared: &hubSemanticSnapshotProvider{hub: driver.hub}, publish: publish}
+}
+
+// publishAndRead publishes one Storage observation of the current generation
+// and checks the shared read against the hub's rules for the configured epoch:
+// one source descriptor that keeps the epoch's first start and revision, a
+// current binding minted for this generation with every older one fenced,
+// every older cursor fenced, every fact candidate bound to this generation at
+// the cursor sequence and fresh, and a strictly newer semantic revision.
+func (h *m61Harness) publishAndRead(generation uint64, sequence semreg.Uint64) *growattBMSRS485ProductionProvider {
+	t := h.t
+	t.Helper()
+	config := growattProductionConfig()
+	asset, source, epoch := semreg.AssetID(config.AssetID), semreg.SourceID(config.SourceID), semreg.SourceEpochID(config.SourceEpoch)
+	provider, ok := h.driver.Provider()
+	if !ok {
+		t.Fatalf("generation %d provider unavailable", generation)
+	}
+	h.publish(provider)
+	evidence, ok := provider.LastObservationEvidence()
+	if !ok || evidence.DriverGeneration != generation || evidence.SourceEpoch != config.SourceEpoch {
+		t.Fatalf("generation %d evidence=%+v/%t", generation, evidence, ok)
+	}
+	if h.epochStart == (semreg.TimePoint{}) {
+		h.epochStart = growattWall(evidence.ReceiptWall)
+	}
+	h.shared.now = func() time.Time { return evidence.ReceiptWall.Add(time.Millisecond) }
+	_, inputs, err := h.shared.Capture(h.ctx, []semreg.AssetID{asset})
+	if err != nil || len(inputs) != 1 {
+		t.Fatalf("generation %d shared read: %d inputs, %v", generation, len(inputs), err)
+	}
+	if inputs[0].UnavailableReason != "" || inputs[0].Snapshot == nil || inputs[0].Evaluation == nil {
+		t.Fatalf("generation %d shared read withheld: %q", generation, inputs[0].UnavailableReason)
+	}
+	snapshot, evaluation := *inputs[0].Snapshot, *inputs[0].Evaluation
+	if len(snapshot.Sources) != 1 || snapshot.Sources[0].SourceID != source || snapshot.Sources[0].SourceEpochID != epoch || snapshot.Sources[0].State != semreg.SourceCurrent ||
+		snapshot.Sources[0].Revision != "1" || snapshot.Sources[0].StartedAt != h.epochStart {
+		t.Fatalf("generation %d rewrote the epoch source descriptor: %+v", generation, snapshot.Sources)
+	}
+	minter, err := semhub.NewLegacyMinter(semhub.LegacyGrowattStorage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := minter.Binding(semhub.Incarnation{Asset: asset, Source: source, Epoch: epoch, Generation: generation, First: generation == config.DriverGeneration}, growattStorageProfile)
+	generationID := semreg.Uint64(strconv.FormatUint(generation, 10))
+	current := 0
+	for _, b := range snapshot.Bindings {
+		switch {
+		case b.State == semreg.BindingCurrent && b.BindingID == binding && b.DriverGeneration == generationID:
+			current++
+		case b.State != semreg.BindingFenced || b.DriverGeneration == generationID:
+			t.Fatalf("generation %d binding %s is %s at generation %s", generation, b.BindingID, b.State, b.DriverGeneration)
+		}
+	}
+	if current != 1 || len(snapshot.Bindings) != int(generation-config.DriverGeneration)+1 {
+		t.Fatalf("generation %d bindings=%+v", generation, snapshot.Bindings)
+	}
+	if len(snapshot.Cursors) != int(generation-config.DriverGeneration)+1 {
+		t.Fatalf("generation %d cursors=%+v", generation, snapshot.Cursors)
+	}
+	for _, cursor := range snapshot.Cursors {
+		older := cursor.DriverGeneration != generationID
+		if cursor.SourceID != source || cursor.SourceEpochID != epoch || cursor.Fenced != older || !older && cursor.LastSequence != sequence {
+			t.Fatalf("generation %d cursor=%+v want sequence %s", generation, cursor, sequence)
+		}
+	}
+	if len(snapshot.Facts) == 0 || len(evaluation.Facts) != len(snapshot.Facts) {
+		t.Fatalf("generation %d facts=%d evaluated=%d", generation, len(snapshot.Facts), len(evaluation.Facts))
+	}
+	for _, envelope := range snapshot.Facts {
+		if len(envelope.Candidates) != 1 {
+			t.Fatalf("generation %d fact %s has %d candidates", generation, envelope.Key.FactID, len(envelope.Candidates))
+		}
+		candidate := envelope.Candidates[0]
+		if candidate.BindingID == nil || *candidate.BindingID != binding || candidate.DriverGeneration == nil || *candidate.DriverGeneration != generationID || candidate.Revision != sequence {
+			t.Fatalf("generation %d fact %s is not this generation's sequence %s: %+v", generation, envelope.Key.FactID, sequence, candidate)
+		}
+	}
+	for _, fact := range evaluation.Facts {
+		if fact.Freshness != semreg.FreshnessFresh || fact.EffectiveAvailability != semreg.AvailabilityAvailable {
+			t.Fatalf("generation %d fact %s evaluated %s/%s", generation, fact.CandidateID, fact.Freshness, fact.EffectiveAvailability)
+		}
+	}
+	revision, err := strconv.ParseUint(string(snapshot.Revisions.Semantic), 10, 64)
+	if err != nil || revision <= h.revision {
+		t.Fatalf("generation %d semantic revision %s does not follow %d", generation, snapshot.Revisions.Semantic, h.revision)
+	}
+	h.revision = revision
+	if info, ok := h.driver.hub.Source(source); !ok || !info.Live || info.Epoch != epoch || info.Generation != generation {
+		t.Fatalf("generation %d hub source=%+v", generation, info)
+	}
+	return provider
+}
+
+// TestM61SuccessorGenerationPublishesStorageAfterSameEpochRestart drives the
+// real managed driver through RESTART and STOP then START of one configured
+// epoch. Each successor generation must publish Storage again and be readable
+// through the shared provider, while every retired generation's publication
+// stays refused.
+func TestM61SuccessorGenerationPublishesStorageAfterSameEpochRestart(t *testing.T) {
+	config := growattProductionConfig()
+	asset := semreg.AssetID(config.AssetID)
+	endpoints, open := m61Endpoints()
+	driver := m04Driver(t, config, open)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer func() {
+		if err := driver.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	h := newM61Harness(t, ctx, driver, func(provider *growattBMSRS485ProductionProvider) {
+		t.Helper()
+		if _, err := provider.SemanticStorageCurrent(ctx); err != nil {
+			t.Fatalf("Storage publication: %v", err)
+		}
+	})
+	if generation, err := driver.Start(ctx); err != nil || generation != 1 {
+		t.Fatalf("start=%d/%v", generation, err)
+	}
+	first := h.publishAndRead(1, "1")
+	// A completed first-generation observation that is never published, kept
+	// to try publishing it after its generation is retired.
+	late, err := first.GrowattBMSRS485V202(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateEvidence, _ := first.LastObservationEvidence()
+
+	// RESTART: the manager replaces the generation in place.
+	if generation, err := driver.Replace(ctx); err != nil || generation != 2 {
+		t.Fatalf("restart=%d/%v", generation, err)
+	}
+	restarted := h.publishAndRead(2, "1")
+	before, err := driver.hub.Inspect(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The retired generation stays refused through its own provider, through
+	// its own publication handle, and through the successor's handle.
+	if _, err := first.SemanticStorageCurrent(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("retired provider refresh=%v", err)
+	}
+	if _, err := first.storage.Publish(late.Status, lateEvidence); semreg.ErrorIdentifier(err) != semreg.StaleDriverGeneration {
+		t.Fatalf("retired handle publication=%v", err)
+	}
+	if _, err := restarted.storage.Publish(late.Status, lateEvidence); semreg.ErrorIdentifier(err) != semreg.StaleDriverGeneration {
+		t.Fatalf("retired evidence through the successor handle=%v", err)
+	}
+	if after, err := driver.hub.Inspect(asset); err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("refused retired publication changed the hub: %v", err)
+	}
+	h.publishAndRead(2, "2")
+
+	// STOP then START activates the next generation of the same epoch.
+	if err := driver.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if generation, err := driver.Start(ctx); err != nil || generation != 3 {
+		t.Fatalf("start after stop=%d/%v", generation, err)
+	}
+	h.publishAndRead(3, "1")
+	if _, err := restarted.SemanticStorageCurrent(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stopped provider refresh=%v", err)
+	}
+	h.publishAndRead(3, "2")
+	if len(*endpoints) != 3 {
+		t.Fatalf("endpoints opened=%d; want one per generation", len(*endpoints))
+	}
+	for index, endpoint := range (*endpoints)[:2] {
+		endpoint.mu.Lock()
+		closed := endpoint.closed
+		endpoint.mu.Unlock()
+		if closed != 1 {
+			t.Fatalf("retired endpoint %d closed %d times", index+1, closed)
+		}
+	}
+}
+
+// TestM61ManagedSidecarRestartRepublishesStorage runs the real driver behind
+// the managed sidecar executor that runtime control drives and publishes
+// through the composed Storage MCP tool. After STOP then START of a lifecycle
+// correlation, and after the manager's in-place replacement, the MCP read
+// succeeds and the shared provider serves the successor's publication.
+func TestM61ManagedSidecarRestartRepublishesStorage(t *testing.T) {
+	config := growattProductionConfig()
+	_, open := m61Endpoints()
+	native := m04Driver(t, config, open)
+	contributions, err := newGatewayPortalCatalogContributions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &managedSidecarRuntime{Runtime: native, contributions: contributions}
+	manager, err := drivermanager.New(drivermanager.Config{Drivers: []drivermanager.DriverConfig{{ID: string(managedGrowattID), Enabled: true, Runtime: runtime, Capabilities: []drivermanager.Capability{drivermanager.CapabilityRead}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	defer func() {
+		if err := manager.Shutdown(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	entry := &managedSidecar{descriptor: runtimecontrol.Descriptor{DriverID: managedGrowattID, Sources: []runtimecontrol.SourceID{runtimecontrol.SourceID(config.SourceID)}}, runtime: runtime, manager: manager}
+	bindings := &managedSidecarBindings{sidecars: &managedSidecars{entries: []*managedSidecar{entry}}}
+	server, err := mcp.NewServer(emptyMCPRegistry{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcp.RegisterModbusV1Tools(server, newManagedModbusMCPProvider(bindings, ebusgateway.ModbusTCPConfig{Enabled: true, GrowattBMSRS485: config}, nil))
+	h := newM61Harness(t, ctx, native, func(*growattBMSRS485ProductionProvider) {
+		t.Helper()
+		characterizationMCPCall(t, server.Handler(), mcp.SemanticV1GrowattStorageCurrentGetTool, `{}`)
+	})
+	key := runtimecontrol.LifecycleCorrelation{DriverID: managedGrowattID, SourceID: runtimecontrol.SourceID(config.SourceID), Epoch: "synthetic-control-1", Generation: 1, Sequence: 1}
+	if err := entry.Start(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	h.publishAndRead(1, "1")
+	if outcome := entry.Stop(ctx, key); !outcome.NativeClosed || !outcome.SemanticCleaned {
+		t.Fatalf("stop outcome=%+v", outcome)
+	}
+	next := runtimecontrol.LifecycleCorrelation{DriverID: managedGrowattID, SourceID: runtimecontrol.SourceID(config.SourceID), Epoch: "synthetic-control-2", Generation: 1, Sequence: 1}
+	if err := entry.Start(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	h.publishAndRead(2, "1")
+	if err := manager.Replace(ctx, string(managedGrowattID)); err != nil {
+		t.Fatal(err)
+	}
+	m06Wait(t, func() bool {
+		snapshot, _ := manager.Snapshot(string(managedGrowattID))
+		return snapshot.ObservedState == drivermanager.ObservedRunning && snapshot.Generation == 3
+	})
+	h.publishAndRead(3, "1")
+	h.publishAndRead(3, "2")
 }

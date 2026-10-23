@@ -11,12 +11,15 @@ import (
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/portalconfig"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp/ebus_standard"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mdns"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/portal/catalogv1"
 	"github.com/Project-Helianthus/helianthus-ebusreg/registry"
+	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
 )
 
 func startHTTPServer(
@@ -80,11 +83,8 @@ func startHTTPServer(
 		portalStorageClient = nil
 	}
 
-	queryHandler, snapshotHandler, subscriptionHandler, err := newHTTPControlPlaneGraphQLHandlers(gateway, builder, hub)
-	if err != nil {
-		return nil, nil, err
-	}
-	mcpServer, err := mcp.NewServer(gateway.Registry, gateway.Router)
+	sharedSemanticProvider := newGatewaySemanticSnapshotProvider(runtimeControl)
+	queryHandler, snapshotHandler, subscriptionHandler, mcpServer, err := newHTTPControlPlaneSemanticHandlers(gateway, builder, hub, sharedSemanticProvider)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -389,6 +389,7 @@ func startHTTPServer(
 			EbusStandardServer: mcpServer.EbusStandardServer(),
 		}
 	}
+	configureGatewayPortalSemanticRead(&portalOptions, sharedSemanticProvider)
 	registerHTTPPortalRoutes(mux, routePlan.portalPath, portalOptions, portalCatalogSource)
 
 	cfg.HTTPAddr, _ = gatewayPortalHTTPAddress(cfg.HTTPAddr)
@@ -432,9 +433,6 @@ func registerHTTPPortalRoutes(mux *http.ServeMux, portalPath string, opts portal
 	opts.PortalCatalogPath = catalogPath
 	opts.PortalCatalogAvailable = true
 	opts.BasePath = portalPath + "/"
-	// M11 has not wired the shared semanticSnapshot provider in production.
-	// Keep it unavailable even though other GraphQL operations are mounted.
-	opts.SemanticSnapshotAvailable = false
 	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portal.NewHandler(opts)))
 	mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
@@ -469,4 +467,23 @@ func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider
 		return nil
 	}
 	return provider
+}
+
+// configureGatewayPortalSemanticRead binds Portal to the HTTP shared provider.
+func configureGatewayPortalSemanticRead(opts *portal.Options, provider *hubSemanticSnapshotProvider) {
+	opts.SemanticSnapshotAvailable = true
+	opts.SharedSemanticView = func(ctx context.Context) (semanticview.View, error) {
+		if provider == nil || provider.hub == nil {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		selection, ok := provider.hub.(interface{ AssetIDs() []semreg.AssetID })
+		if !ok {
+			return semanticview.View{}, semhub.ErrCaptureUnavailable
+		}
+		metadata, inputs, err := provider.Capture(ctx, selection.AssetIDs())
+		if err != nil {
+			return semanticview.View{}, err
+		}
+		return semanticview.Build(metadata, inputs)
+	}
 }

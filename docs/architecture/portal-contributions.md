@@ -4,8 +4,8 @@ Status: integration contract for issue [#1129](https://github.com/Project-Helian
 This is a partial slice of [#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999)
 (Project #2 INT-10); it does not close the parent. The descriptor and bootstrap
 transport is implemented by [#1172](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1172).
-Handler prefix support is implemented; production/Ingress forwarding and shared
-semantic read provider wiring remain separate integration work.
+Handler prefix support and the shared semantic read provider wiring are
+implemented; production/Ingress forwarding remains separate integration work.
 This is not an available universal lifecycle/configuration API or a stability promise.
 
 ## Existing seams and remaining work
@@ -20,7 +20,7 @@ The implementation comparison is:
 
 | Existing source | Current behavior | Integration requirement |
 | --- | --- | --- |
-| `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production shared snapshot provider wiring remains unavailable. |
+| `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production sets the shared-view callback and advertises the mounted snapshot operation together. |
 | `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; redirects the bare mount to its trailing slash; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
 | `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` | Resolve from the canonical Portal directory. |
 | `portal/handler.go`, bootstrap | Host-composed endpoints using the external prefix and Portal base path | Preserve handler composition; production/Ingress forwarding must cover advertised routes. |
@@ -110,9 +110,9 @@ an inconclusive HTTP, timeout or malformed-response failure during a retry keeps
 the historical cards with a refresh error. It never
 presents rows from one response under the identity of the other. Identities are
 compared exactly and never recomputed from the selected GraphQL response. The
-shared GraphQL read is **Unknown** in the current code (not yet exposed), so
-this rule is the contract it must satisfy; the catalog side already carries every
-participating field.
+shared GraphQL read is exposed through the shared provider; the catalog side
+already carries every participating field. Cross-request identity comparison
+remains the consumer contract described here.
 
 Implementation acceptance must exercise sequential catalog/shared reads:
 
@@ -210,6 +210,88 @@ a late withdrawal cannot remove its successor. If the selected resource goes
 away, choose an available registered resource deterministically and announce
 the change; cancel its pending reads/stream listeners and ignore late replies.
 
+## Coherent capture and shared provider
+
+**Proven** from `internal/semhub/coherent_capture.go`: `Hub.Capture` takes one
+hub read lock across the selected assets. It reads the current admitted epoch
+and returns detached copies of selected publications with their lifecycle,
+read-admission and public-exposure decisions and catalog metadata. The hub epoch
+orders the capture; it is not a freshness clock. Capture invokes the supplied
+wall clock once under that read lock. Each snapshot is evaluated on its own
+recorded aging epoch: its recorded evaluation ticks plus the elapsed time
+between its recorded wall point and the captured wall instant. Freshness and
+retention therefore use the candidate's recorded aging coordinate, preserving
+fresh, degraded and unavailable outcomes while the wall clock advances normally.
+`semanticview.Build` accepts these per-asset evaluation coordinates at one shared
+wall instant and retains each evaluation's snapshot and digest binding. The clock
+callback must not reenter the hub or wait on a hub writer. The capture is read-only;
+`Inspect` remains an independent ungated audit surface, and the existing admission
+predicates are unchanged. This internal API introduces no public
+schema change.
+
+**Proven** by `TestM11StorageProviderAging`,
+`TestM11CaptureRecordedAgingCoordinate` and
+`TestM11CandidateCoordinatesAtSharedInstant`: production Storage reads are
+available before the fresh-for limit, degraded from that limit until the
+retain-for limit, and unavailable from the retention boundary onward. These
+reads neither acquire observations nor change publication or admission state.
+
+**Proven** limitation: capture cannot preserve the original Go monotonic age
+under a wall-clock step because it has only serialized wall points: a backward
+step before the snapshot's recorded wall point fails closed, while a forward step
+advances age and can expire a candidate early. A rollback that remains after the recorded
+wall point can reduce evaluated age. The Storage provider test covers backward
+and forward steps at this boundary. Exact monotonic aging requires retaining
+original process receipt coordinates across publishers and a shared evaluation
+contract.
+
+A missing hub or restore in progress returns `ErrCaptureUnavailable`, without a
+view. Cancellation, invalid or duplicate asset IDs, selections outside the
+1–32 asset bound, metadata construction and evaluation failures return errors.
+Within a successful capture, an unavailable asset has no snapshot or evaluation
+and carries one of these reasons:
+
+- `semantic.read.reason.asset_unknown`: the asset is not declared.
+- `semantic.read.reason.source_unavailable`: its source is not currently admitted
+  and live, or is fenced or retired.
+- `semantic.read.reason.snapshot_unavailable`: no current publication exists.
+- `semantic.read.reason.publication_withheld`: restore/read admission is closed,
+  the publication does not belong to the current source epoch and generation,
+  or its evidence is neither public nor metadata-only.
+
+**Proven** from `cmd/gateway/semantic_snapshot_provider.go` and
+`cmd/gateway/gateway_http_server.go`: HTTP composition injects the same
+`hubSemanticSnapshotProvider` instance into GraphQL `semanticSnapshot`, MCP
+`semantic.v1.snapshot.get` and the Portal shared-view callback. The provider
+obtains the process semantic hub retained by `startGatewayRuntimeControl` from
+its `Hub` option, independently of the eBUS runtime bridge. Managed sidecar
+publications remain readable when the eBUS bridge is withheld. Without a process
+hub it returns `ErrCaptureUnavailable`; no replacement publication is fabricated.
+Each read captures once, then calls `semanticview.Build` with the returned
+metadata and inputs. GraphQL and MCP accept an explicit bounded asset selection.
+Portal uses `Hub.AssetIDs`, a detached, bytewise-ordered list of declared assets;
+selection itself grants no admission. The callback preserves the capture and
+builder errors, including bound failures, rather than truncating the selection.
+Portal bootstrap checks the mounted-operation flag and callback together and
+does not capture data. The shared read performs no acquisition, publication or
+hub mutation.
+
+**Proven** by `TestM11PortalProductionOptionsSharedView` and
+`TestM11PortalProductionOptionsUnavailable`: the production options helper feeds
+the mounted Portal handler, bootstrap advertises the shared operation, an
+admitted publication produces the same view as the shared provider for the same
+assets, and a provider without a hub returns the unavailable error and no view.
+The tests also check one capture per callback and unchanged stored publication.
+
+**Proven** by `TestM11PublicationBeforeCaptureLockUsesCurrentTime` and
+`TestM11CaptureSamplesClockUnderReadLock`: evaluation samples time after an
+intervening publication and under the capture lock.
+`TestM11WithheldEBusKeepsProcessHubReadable` and
+`TestM11RuntimeControlHandsProcessHubToSharedReads` cover process-hub handover
+and Portal reads while the eBUS bridge is withheld.
+Production/Ingress forwarding and live-device behavior remain **Unknown** from
+these local fixtures.
+
 ## Bootstrap transport
 
 Keep `GET <portal-base>api/v1/bootstrap` as the bootstrap discovery entry. An
@@ -245,8 +327,11 @@ share one catalog capture instead of requiring a separate describe operation.
 The in-process read adapter consumes the admitted contribution registry and a
 shared detached semantic view when supplied; production serves its catalog on
 the outer gateway mux. The host explicitly declares that mounted catalog
-available in bootstrap. Production shared `semanticSnapshot` provider wiring
-remains unavailable until M11 lands.
+available in bootstrap. Production also supplies `SharedSemanticView` and
+sets `SemanticSnapshotAvailable` through `configureGatewayPortalSemanticRead`,
+so bootstrap no longer lists the mounted `semanticSnapshot` operation as
+unavailable. This advertisement describes wiring, not a promise that every
+capture or asset is available.
 
 Obtain the shared read through ordinary GraphQL `semanticSnapshot(assetIds:)` on `endpoints.graphql`
 only once M07 exposure and applicable parity gates are accepted. Ask for the

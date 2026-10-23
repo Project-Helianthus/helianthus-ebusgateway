@@ -134,6 +134,7 @@ type gatewayRuntimeControlOptions struct {
 
 // gatewayRuntimeControl is the composed control path of one process.
 type gatewayRuntimeControl struct {
+	hub      *semhub.Hub
 	service  *runtimecontrol.Service
 	registry *runtimecontrol.Registry
 	store    *runtimestate.Manager
@@ -185,6 +186,7 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 		incarnation = newGatewayIncarnation()
 	}
 	control := &gatewayRuntimeControl{
+		hub:      opts.Hub,
 		registry: runtimecontrol.NewRegistry(controlHubOwnership{hub: opts.Hub}),
 		store:    opts.Store,
 		driver:   opts.Driver,

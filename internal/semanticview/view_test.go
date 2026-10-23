@@ -597,6 +597,51 @@ func TestM08ContextMismatchAcrossAssets(t *testing.T) {
 	}
 }
 
+func TestM11CandidateCoordinatesAtSharedInstant(t *testing.T) {
+	first := m08Input(t)
+	second := m08Input(t)
+	second.AssetID = "asset:other"
+	s := second.Snapshot
+	s.AssetID = second.AssetID
+	for i := range s.Bindings {
+		s.Bindings[i].AssetID = s.AssetID
+	}
+	for i := range s.Facts {
+		s.Facts[i].AssetID = s.AssetID
+	}
+	for i := range s.Services {
+		s.Services[i].AssetID = s.AssetID
+	}
+	for i := range s.Capabilities {
+		s.Capabilities[i].AssetID = s.AssetID
+	}
+	s.EvaluateMonotonic.ClockEpochID = "clock-epoch:other"
+	for i := range s.Facts {
+		for j := range s.Facts[i].Candidates {
+			c := &s.Facts[i].Candidates[j]
+			c.Times.ReceiptMonotonic.ClockEpochID = s.EvaluateMonotonic.ClockEpochID
+			c.Times.EvaluateMonotonic.ClockEpochID = s.EvaluateMonotonic.ClockEpochID
+		}
+	}
+	m08Seal(t, s)
+	coordinate := first.Evaluation.Context
+	coordinate.EvaluateMonotonic = semreg.MonotonicPoint{ClockEpochID: "clock-epoch:other", Nanoseconds: "42"}
+	e, err := semreg.EvaluateSnapshot(*s, coordinate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Evaluation = &e
+	for _, inputs := range [][]Input{{first, second}, {second, first}} {
+		out, err := Build(m08Registry(t), inputs)
+		if err != nil {
+			t.Fatalf("same instant with distinct coordinates rejected: %v", err)
+		}
+		if len(out.Assets) != 2 || !reflect.DeepEqual(out.Assets[0].Evaluation.Context, coordinate) {
+			t.Fatalf("lost candidate coordinate: %+v", out)
+		}
+	}
+}
+
 func TestM08SelectionsDetached(t *testing.T) {
 	in := m08Input(t)
 	in.Selections = []semreg.Selection{m08Selection(in, 0, "policy:a", "1.0.0")}

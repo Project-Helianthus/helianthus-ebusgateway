@@ -5,7 +5,10 @@ This is a partial slice of [#999](https://github.com/Project-Helianthus/helianth
 (Project #2 INT-10); it does not close the parent. The descriptor and bootstrap
 transport is implemented by [#1172](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1172).
 Handler prefix support and the shared semantic read provider wiring are
-implemented; production/Ingress forwarding remains separate integration work.
+implemented. Home Assistant Ingress URL construction is implemented by
+[#1337](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/1337)
+(see [Exact external URL construction](#exact-external-url-construction)); the
+route allowlist for a read-only embedded bootstrap remains separate work.
 This is not an available universal lifecycle/configuration API or a stability promise.
 
 ## Existing seams and remaining work
@@ -20,11 +23,11 @@ The implementation comparison is:
 
 | Existing source | Current behavior | Integration requirement |
 | --- | --- | --- |
-| `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks | Keep existing options compatible; production sets the shared-view callback and advertises the mounted snapshot operation together. |
-| `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; redirects the bare mount to its trailing slash; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
-| `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` | Resolve from the canonical Portal directory. |
-| `portal/handler.go`, bootstrap | Host-composed endpoints using the external prefix and Portal base path | Preserve handler composition; production/Ingress forwarding must cover advertised routes. |
-| `portal/web/src/app.js` | Relative health/bootstrap fetches and SSE URL, bootstrap catalog endpoint, capability-based legacy sections | Contribution cards use one generic renderer; advertised endpoints become authoritative without root-path fallbacks. |
+| `portal/handler.go`, `Options` | Validated endpoint paths, trusted external prefix, host catalog availability and Portal base path; optional detached shared-view callback and legacy semantic callbacks; per-request Ingress prefix (`X-Ingress-Path`) used only for URL construction | Keep existing options compatible; production sets the shared-view callback and advertises the mounted snapshot operation together. |
+| `cmd/gateway/gateway_http_server.go` | Mounts the Portal with `StripPrefix`; routes the bare mount to the same handler, whose redirect carries the served prefix and query; mounts catalog separately at `/graphql/portal/v1` | Preserve route ownership; external prefix rewriting must cover both mounts. |
+| `portal/static/index.html` | Relative `assets/app.css` and `assets/app.js` under a served `<base href>` | Resolve from the canonical Portal directory. |
+| `portal/handler.go`, bootstrap | Host-composed endpoints using the served prefix and Portal base path | Preserve handler composition; every advertised endpoint carries the served prefix. |
+| `portal/web/src/app.js` | Relative `api/v1/` fetches and SSE URL resolved against the served base; bootstrap GraphQL, catalog and eeBUS admin endpoints used verbatim after same-origin path validation, with no root-path fallback; capability-based legacy sections | Contribution cards use one generic renderer; advertised endpoints stay authoritative. |
 | `cmd/gateway/portal_catalog_contributions.go` | Generation-fenced descriptor publication and withdrawal | Reuse the registry; no per-family handler/bootstrap switch. |
 
 The existing sixth-contribution example is in
@@ -308,10 +311,12 @@ additive `portal_read` block is emitted as host-produced transport metadata:
 }
 ```
 
-The handler emits this block. `base_path` combines the trusted configured
-external prefix and Portal directory mount. Handler tests cover prefixed shell,
-assets, bootstrap and endpoint construction; this does not establish
-production/Ingress forwarding or shared semantic read provider availability.
+The handler emits this block. `base_path` is the served Portal directory `B`
+defined below: the Ingress prefix reported for the request, the trusted
+configured external prefix and the Portal directory mount. Handler tests cover
+prefixed shell, assets, bootstrap and endpoint construction, and a production
+composition test serves the Portal behind a simulated Supervisor Ingress proxy;
+neither establishes shared semantic read provider availability.
 The existing bootstrap
 `endpoints.portal_catalog` and `endpoints.graphql` members remain the authoritative
 catalog and shared-read URLs; no separate endpoint fields are introduced.
@@ -361,11 +366,21 @@ Let `P` be a trusted, configured external prefix: empty or an absolute path
 with no trailing slash. Let `M` be the internal Portal mount with exactly one
 leading slash and no trailing slash (normally `/portal`); `Options.BasePath`
 represents that directory with its trailing slash (normally `/portal/`).
-The root mount uses `M = ""` and `Options.BasePath = "/"`. The public Portal
-directory is `B = P + M + "/"`. Configuration rejects schemes, authorities,
-queries, fragments, backslashes, repeated slashes, dot segments and percent
-escapes in `P`/`M`; do not repair ambiguous input. Neither request headers nor
-contribution data choose these paths. Validation errors identify only the invalid
+The root mount uses `M = ""` and `Options.BasePath = "/"`. Let `I` be the path
+prefix a Home Assistant Supervisor Ingress proxy strips before forwarding and
+reports in the `X-Ingress-Path` request header (`portal.IngressPathHeader`);
+`I` is empty when the header is absent, as on the direct listener. The served
+prefix is `S = I + P` and the public Portal directory is `B = S + M + "/"`.
+Configuration rejects schemes, authorities, queries, fragments, backslashes,
+repeated slashes, dot segments and percent escapes in `P`/`M`; do not repair
+ambiguous input. `I` follows the same rules plus no trailing slash. An empty,
+repeated or malformed header fails only the responses that embed URLs (the
+shell, bootstrap and the bare-mount redirect) with a generic `400` that never
+echoes the value; it never falls back to unprefixed URLs. Responses built from
+`I` carry `Vary: X-Ingress-Path`. `I` is not trusted for anything but URL
+construction: it selects no route, mount, prefix stripping, capability or
+authorization, and other routes never read it. Contribution data never
+chooses these paths. Validation errors identify only the invalid
 `Options` field from the closed list `ExternalPrefix`, `BasePath`, `GraphQLPath`,
 `PortalCatalogPath`, `SnapshotPath`, `SubscriptionPath`, `MCPPath` and
 `EEBusAdminPath`; they never include the supplied path value. Invalid
@@ -374,21 +389,22 @@ remains generic; these field diagnostics belong to path validation.
 
 For fixed relative Portal suffix `s` (no leading slash), construct `B + s`.
 For a configured gateway endpoint `E` (an absolute internal path, validated by
-the same rules), construct `P + E` exactly once. Do not prepend `B` to a
-GraphQL endpoint or prepend `P` again to an already external bootstrap URL.
+the same rules), construct `S + E` exactly once. Do not prepend `B` to a
+GraphQL endpoint or prepend `S` again to an already external bootstrap URL.
 The host must apply this rule to every advertised endpoint, including existing
 options-derived paths. Empty/disabled endpoints remain absent, never `P` alone.
 
-| Resource | `P = ""`, `M = "/portal"` | `P = "/console"`, `M = "/portal"` |
-| --- | --- | --- |
-| Bare mount redirect target | `/portal/` | `/console/portal/` |
-| Static module | `/portal/assets/app.js` | `/console/portal/assets/app.js` |
-| Static stylesheet | `/portal/assets/app.css` | `/console/portal/assets/app.css` |
-| Health | `/portal/api/v1/health` | `/console/portal/api/v1/health` |
-| Bootstrap | `/portal/api/v1/bootstrap` | `/console/portal/api/v1/bootstrap` |
-| Ordinary GraphQL | `/graphql` | `/console/graphql` |
-| Portal catalog | `/graphql/portal/v1` | `/console/graphql/portal/v1` |
-| Legacy SSE | `/portal/api/v1/stream?max_events_per_second=2&interval_ms=1000` | `/console/portal/api/v1/stream?max_events_per_second=2&interval_ms=1000` |
+| Resource | `I = ""`, `P = ""`, `M = "/portal"` | `I = ""`, `P = "/console"`, `M = "/portal"` | `I = "/api/hassio_ingress/<token>"`, `P = ""`, `M = "/portal"` |
+| --- | --- | --- | --- |
+| Bare mount redirect target | `/portal/` | `/console/portal/` | `<I>/portal/` |
+| Static module | `/portal/assets/app.js` | `/console/portal/assets/app.js` | `<I>/portal/assets/app.js` |
+| Static stylesheet | `/portal/assets/app.css` | `/console/portal/assets/app.css` | `<I>/portal/assets/app.css` |
+| Health | `/portal/api/v1/health` | `/console/portal/api/v1/health` | `<I>/portal/api/v1/health` |
+| Bootstrap | `/portal/api/v1/bootstrap` | `/console/portal/api/v1/bootstrap` | `<I>/portal/api/v1/bootstrap` |
+| Ordinary GraphQL | `/graphql` | `/console/graphql` | `<I>/graphql` |
+| Portal catalog | `/graphql/portal/v1` | `/console/graphql/portal/v1` | `<I>/graphql/portal/v1` |
+| eeBUS admin boundary | `/admin/eebus/v1` | `/console/admin/eebus/v1` | `<I>/admin/eebus/v1` |
+| Legacy SSE | `/portal/api/v1/stream?max_events_per_second=2&interval_ms=1000` | `/console/portal/api/v1/stream?max_events_per_second=2&interval_ms=1000` | `<I>/portal/api/v1/stream?max_events_per_second=2&interval_ms=1000` |
 
 Redirect the bare mount before loading relative assets. Support only the
 canonical directory and `index.html` shell entry; card navigation is in-page
@@ -404,9 +420,18 @@ back to `/graphql`, `/portal`, or a native endpoint.
 An embedding proxy strips `P` once before forwarding, preserves the Portal
 mount for the gateway's existing `StripPrefix(M, ...)`, and routes sibling
 GraphQL endpoints under the same external prefix. It must also preserve the
-external redirect target. The handler already composes prefixed bootstrap paths;
-configuring it alone does not establish production/Ingress forwarding. That
-integration still requires its own implementation and acceptance.
+external redirect target.
+
+Home Assistant Ingress is such a proxy with a per-installation prefix: the
+Supervisor strips `I`, forwards every path of the declared Ingress port to the
+gateway HTTP listener and sends `I` in `X-Ingress-Path`. The add-on therefore
+passes only the existing `-portal-path /portal` (its Ingress entry `portal/`
+names that mount) and no prefix option; the gateway builds the redirect, shell
+base, bootstrap endpoints and `portal_read.base_path` under `I`, so the page,
+GraphQL, the catalog, the eeBUS admin sections and the live stream all stay
+under the Ingress path while the direct listener keeps root-relative URLs.
+Ingress reaches the same listener and routes as the direct port, so it exposes
+no additional route.
 The host retains its listener, proxy, TLS, origin and trust configuration.
 Prefix handling neither relaxes those controls nor introduces a new trust source.
 
@@ -424,10 +449,11 @@ example) belong to capabilities the read-only embedded bootstrap disables and
 omits, not to the forwarded set. This is **Unknown** in current code: no such
 list or test exists today.
 
-Production/Ingress integration must omit endpoints the entry point does not
-forward, for example `mcp` and `eebus_admin`, rather than advertise them under the
-prefix. This omission remains separate entry-point work; the current handler
-prefixes configured non-empty endpoints and does not establish forwarding.
+An entry point that forwards only a subset of the listener must omit endpoints
+it does not forward, for example `mcp` and `eebus_admin`, rather than advertise
+them under the prefix. This omission remains separate entry-point work; the
+current handler prefixes configured non-empty endpoints. Home Assistant Ingress
+forwards the whole listener, so its advertised endpoints are reachable.
 This route allowlist requirement adds no authorization gate. It avoids
 accidental administrative-route exposure ([#999](https://github.com/Project-Helianthus/helianthus-ebusgateway/issues/999))
 and keeps native protocol endpoints off Ingress

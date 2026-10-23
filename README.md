@@ -214,7 +214,7 @@ go run ./cmd/gateway -address tcp-plain://203.0.113.10:9999 -http-addr :8080
 | `-snapshot-path` | `/snapshot` | projection snapshot endpoint |
 | `-mcp-path` | `/mcp` | MCP JSON-RPC endpoint |
 | `-ui-path` | `/ui` | set empty to disable UI |
-| `-portal-path` | `/portal` | set empty to disable dynamic portal surface |
+| `-portal-path` | `/portal` | set empty to disable dynamic portal surface; behind Home Assistant Ingress the Portal builds its URLs under the `X-Ingress-Path` prefix ([details](docs/architecture/portal-contributions.md#exact-external-url-construction)) |
 | `-instance-guid` | _empty_ | lowercase UUIDv4 published via GraphQL and Zeroconf |
 | `-mdns` | `true` | set `false` outside trusted LAN |
 | `-dump-upload-path` | _disabled_ | unknown-device dump upload endpoint path |

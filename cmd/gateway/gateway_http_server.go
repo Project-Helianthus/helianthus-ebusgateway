@@ -433,10 +433,12 @@ func registerHTTPPortalRoutes(mux *http.ServeMux, portalPath string, opts portal
 	opts.PortalCatalogPath = catalogPath
 	opts.PortalCatalogAvailable = true
 	opts.BasePath = portalPath + "/"
-	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portal.NewHandler(opts)))
-	mux.HandleFunc(portalPath, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, portalPath+"/", http.StatusMovedPermanently)
-	})
+	portalHandler := portal.NewHandler(opts)
+	mux.Handle(portalPath+"/", http.StripPrefix(portalPath, portalHandler))
+	// The bare mount reaches the same handler unstripped, so its redirect to the
+	// Portal directory carries the served prefix (portal.IngressPathHeader) and
+	// the query instead of a root-absolute target that Ingress cannot route.
+	mux.Handle(portalPath, portalHandler)
 }
 
 func validatePortalCatalogRoute(cfg ebusgateway.Config) error {

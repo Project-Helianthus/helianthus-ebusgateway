@@ -96,8 +96,9 @@ type portalReadBootstrap struct {
 	UnavailableOperations []string `json:"unavailable_operations"`
 }
 
-func (h *handler) portalRead() portalReadBootstrap {
-	out := portalReadBootstrap{BasePath: h.opts.BasePath, SnapshotOperation: "semanticSnapshot", UnavailableOperations: []string{}}
+// portalRead reports base, the Portal directory as served to this requester.
+func (h *handler) portalRead(base string) portalReadBootstrap {
+	out := portalReadBootstrap{BasePath: base, SnapshotOperation: "semanticSnapshot", UnavailableOperations: []string{}}
 	if !h.opts.PortalCatalogAvailable && !h.contributionAvailable() {
 		out.UnavailableOperations = append(out.UnavailableOperations, "PortalCatalogV1")
 	}

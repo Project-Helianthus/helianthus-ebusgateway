@@ -66,7 +66,8 @@ type Options struct {
 	PortalCatalogAvailable bool
 	BasePath               string
 	// ExternalPrefix is a trusted configured path stripped by the embedding proxy.
-	// BasePath remains the internal Portal directory mount. Headers never select either.
+	// BasePath remains the internal Portal directory mount. Headers never select
+	// either; the IngressPathHeader value only prefixes URLs written in a response.
 	ExternalPrefix string
 	// SemanticSnapshotAvailable is set by the host only after mounting the
 	// accepted shared GraphQL read; a catalog capture provider alone is insufficient.
@@ -134,9 +135,11 @@ type RawModbusAuditEvent struct {
 }
 
 type handler struct {
-	opts          Options
-	mountPath     string
-	shellBase     string
+	opts      Options
+	mountPath string
+	// relativeShell keeps the historical "./" shell base for handlers created
+	// without a mount or prefix, whose external directory is unknown.
+	relativeShell bool
 	files         http.Handler
 	timeline      *timelineBuffer
 	snapshots     *snapshotStore
@@ -619,12 +622,9 @@ func NewHandler(opts Options) http.Handler {
 		})
 	}
 	mountPath := strings.TrimSuffix(opts.BasePath, "/")
+	// opts.BasePath keeps the configured external directory for route matching;
+	// response URLs are built per request by servedURLs.
 	opts.BasePath = opts.ExternalPrefix + opts.BasePath
-	shellBase := opts.BasePath
-	if standalone && opts.ExternalPrefix == "" {
-		// Preserve direct and StripPrefix mounting for callers without an explicit mount.
-		shellBase = "./"
-	}
 	if opts.GatewayVersion == "" {
 		opts.GatewayVersion = "dev"
 	}
@@ -644,13 +644,13 @@ func NewHandler(opts Options) http.Handler {
 		}
 	}
 	h := &handler{
-		opts:      opts,
-		mountPath: mountPath,
-		shellBase: shellBase,
-		files:     http.FileServer(http.FS(staticFS)),
-		timeline:  newTimelineBuffer(1000),
-		snapshots: newSnapshotStore(50),
-		sessions:  newSessionStore(100),
+		opts:          opts,
+		mountPath:     mountPath,
+		relativeShell: standalone && opts.ExternalPrefix == "",
+		files:         http.FileServer(http.FS(staticFS)),
+		timeline:      newTimelineBuffer(1000),
+		snapshots:     newSnapshotStore(50),
+		sessions:      newSessionStore(100),
 	}
 	if opts.ExplorerBus != nil {
 		h.explorer = newExplorerStore(opts.ExplorerBus, opts.ExplorerSource, opts.ExplorerSourceProvider)
@@ -972,7 +972,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if r.URL.Path == base {
-			target := h.opts.BasePath
+			urls, ok := h.responseURLs(w, r)
+			if !ok {
+				return
+			}
+			target := urls.base
 			if r.URL.RawQuery != "" {
 				target += "?" + r.URL.RawQuery
 			}
@@ -1006,10 +1010,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == "/" || path == "/index.html" {
+		urls, ok := h.responseURLs(recorder, r)
+		if !ok {
+			return
+		}
+		shellBase := urls.base
+		if h.relativeShell {
+			// Preserve direct and StripPrefix mounting for callers without an explicit mount.
+			shellBase = "./"
+		}
 		recorder.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = indexTemplate.Execute(recorder, map[string]any{
-			"GraphQLPath": h.externalEndpoint(h.opts.GraphQLPath),
-			"BasePath":    h.shellBase,
+			"GraphQLPath": urls.endpoint(h.opts.GraphQLPath),
+			"BasePath":    shellBase,
 		})
 		return
 	}
@@ -1078,14 +1091,19 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 			"readiness":       h.opts.Readiness(),
 		})
 	case "bootstrap":
+		urls, ok := h.responseURLs(w, r)
+		if !ok {
+			return
+		}
+		base := urls.base
 		streamEnabled := h.opts.ListRegistry != nil || h.opts.ListSemantic != nil || h.opts.ListProjections != nil
 		eebusAdminAvailable := h.opts.Readiness().EEBusReadiness == "READY"
 		eebusAdminPath := ""
 		if eebusAdminAvailable {
-			eebusAdminPath = h.externalEndpoint(h.opts.EEBusAdminPath)
+			eebusAdminPath = urls.endpoint(h.opts.EEBusAdminPath)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"portal_read": h.portalRead(),
+			"portal_read": h.portalRead(base),
 			"capabilities": map[string]bool{
 				"registry":          h.opts.ListRegistry != nil,
 				"semantic":          h.opts.ListSemantic != nil,
@@ -1115,37 +1133,37 @@ func (h *handler) handleAPI(w http.ResponseWriter, r *http.Request, path string)
 				"modbus_raw_read":  h.opts.RawModbusEnabled && h.opts.ModbusProvider != nil,
 			},
 			"endpoints": map[string]string{
-				"graphql":                  h.externalEndpoint(h.opts.GraphQLPath),
-				"portal_catalog":           h.externalEndpoint(h.opts.PortalCatalogPath),
-				"snapshot":                 h.externalEndpoint(h.opts.SnapshotPath),
-				"subscriptions":            h.externalEndpoint(h.opts.SubscriptionPath),
-				"mcp":                      h.externalEndpoint(h.opts.MCPPath),
+				"graphql":                  urls.endpoint(h.opts.GraphQLPath),
+				"portal_catalog":           urls.endpoint(h.opts.PortalCatalogPath),
+				"snapshot":                 urls.endpoint(h.opts.SnapshotPath),
+				"subscriptions":            urls.endpoint(h.opts.SubscriptionPath),
+				"mcp":                      urls.endpoint(h.opts.MCPPath),
 				"eebus_admin":              eebusAdminPath,
-				"bus_observability":        h.opts.BasePath + "api/v1/bus/observability",
-				"search":                   h.opts.BasePath + "api/v1/search",
-				"stream":                   h.opts.BasePath + "api/v1/stream",
-				"timeline":                 h.opts.BasePath + "api/v1/timeline/events",
-				"provenance":               h.opts.BasePath + "api/v1/provenance/events",
-				"snapshots":                h.opts.BasePath + "api/v1/snapshots",
-				"capture":                  h.opts.BasePath + "api/v1/snapshots/capture",
-				"retention":                h.opts.BasePath + "api/v1/snapshots/retention",
-				"snapshot_diff":            h.opts.BasePath + "api/v1/snapshots/diff",
-				"snapshot_view":            h.opts.BasePath + "api/v1/snapshots/view",
-				"semantic_storage_current": h.opts.BasePath + "api/v1/semantic/storage/current",
-				"sessions":                 h.opts.BasePath + "api/v1/sessions",
-				"session_save":             h.opts.BasePath + "api/v1/sessions/save",
-				"session_load":             h.opts.BasePath + "api/v1/sessions/load",
-				"issue_draft":              h.opts.BasePath + "api/v1/issues/draft",
-				"issue_export":             h.opts.BasePath + "api/v1/issues/export",
-				"explorer_scans":           h.opts.BasePath + "api/v1/explorer/scans",
-				"explorer_scan_current":    h.opts.BasePath + "api/v1/explorer/scans/current",
-				"explorer_scan_results":    h.opts.BasePath + "api/v1/explorer/scans/current/results",
-				"explorer_scan_stream":     h.opts.BasePath + "api/v1/explorer/scans/current/stream",
-				"explorer_read_b524":       h.opts.BasePath + "api/v1/explorer/read/b524",
-				"explorer_read_b509":       h.opts.BasePath + "api/v1/explorer/read/b509",
-				"explorer_read_scanid":     h.opts.BasePath + "api/v1/explorer/read/scanid",
-				"semantic_pv_current":      h.opts.BasePath + "api/v1/semantic/pv/current",
-				"modbus_raw_read":          h.opts.BasePath + "api/v1/explorer/modbus/raw-read",
+				"bus_observability":        base + "api/v1/bus/observability",
+				"search":                   base + "api/v1/search",
+				"stream":                   base + "api/v1/stream",
+				"timeline":                 base + "api/v1/timeline/events",
+				"provenance":               base + "api/v1/provenance/events",
+				"snapshots":                base + "api/v1/snapshots",
+				"capture":                  base + "api/v1/snapshots/capture",
+				"retention":                base + "api/v1/snapshots/retention",
+				"snapshot_diff":            base + "api/v1/snapshots/diff",
+				"snapshot_view":            base + "api/v1/snapshots/view",
+				"semantic_storage_current": base + "api/v1/semantic/storage/current",
+				"sessions":                 base + "api/v1/sessions",
+				"session_save":             base + "api/v1/sessions/save",
+				"session_load":             base + "api/v1/sessions/load",
+				"issue_draft":              base + "api/v1/issues/draft",
+				"issue_export":             base + "api/v1/issues/export",
+				"explorer_scans":           base + "api/v1/explorer/scans",
+				"explorer_scan_current":    base + "api/v1/explorer/scans/current",
+				"explorer_scan_results":    base + "api/v1/explorer/scans/current/results",
+				"explorer_scan_stream":     base + "api/v1/explorer/scans/current/stream",
+				"explorer_read_b524":       base + "api/v1/explorer/read/b524",
+				"explorer_read_b509":       base + "api/v1/explorer/read/b509",
+				"explorer_read_scanid":     base + "api/v1/explorer/read/scanid",
+				"semantic_pv_current":      base + "api/v1/semantic/pv/current",
+				"modbus_raw_read":          base + "api/v1/explorer/modbus/raw-read",
 			},
 			"limits": map[string]any{
 				"max_events_per_second": 200,

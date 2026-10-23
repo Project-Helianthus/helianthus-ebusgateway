@@ -930,6 +930,14 @@ function semanticEndpoint(value) {
     !/[\\%?#\s]/.test(value) && !value.split("/").some((part) => part === "." || part === "..") && !value.includes("//");
 }
 
+// Bootstrap endpoints are host-composed, already external same-origin paths
+// (served prefix included). Use them verbatim; an absent or malformed value
+// leaves the feature unavailable instead of falling back to a root path that a
+// path-prefix proxy such as Home Assistant Ingress cannot route.
+function bootstrapEndpoint(value) {
+  return semanticEndpoint(value) ? value : "";
+}
+
 function semanticKey(value) {
   if (Array.isArray(value)) return `[${value.map(semanticKey).join(",")}]`;
   if (isPlainRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${semanticKey(value[key])}`).join(",")}}`;
@@ -1773,17 +1781,13 @@ class PortalShell extends HTMLElement {
         statusEl.textContent = `Gateway ${health.status} (${gatewayVersion})`;
       }
       const capabilities = bootstrap.capabilities || {};
-      const gqlEndpoint = bootstrap && bootstrap.endpoints && typeof bootstrap.endpoints.graphql === "string"
-        ? bootstrap.endpoints.graphql
-        : "/graphql";
+      const gqlEndpoint = bootstrapEndpoint(bootstrap?.endpoints?.graphql);
       this._graphqlEndpoint = gqlEndpoint;
-      this._semanticGraphqlEndpoint = bootstrap.endpoints?.graphql;
+      this._semanticGraphqlEndpoint = gqlEndpoint;
       this._portalRead = bootstrap.portal_read;
-	  this._portalCatalogEndpoint = typeof bootstrap?.endpoints?.portal_catalog === "string"
-	    ? bootstrap.endpoints.portal_catalog
-	    : "";
+	  this._portalCatalogEndpoint = bootstrapEndpoint(bootstrap?.endpoints?.portal_catalog);
 	  this._eebusAdminPath = capabilities.eebus_admin && typeof bootstrap.endpoints?.eebus_admin === "string"
-	    ? bootstrap.endpoints.eebus_admin.replace(/\/$/, "")
+	    ? bootstrapEndpoint(bootstrap.endpoints.eebus_admin.replace(/\/$/, ""))
 	    : "";
 	  this.applyCapabilityState(capabilities);
 	  this.setNavState("portal-catalog", Boolean(this._portalCatalogEndpoint));
@@ -4893,7 +4897,8 @@ class PortalShell extends HTMLElement {
   // ---------------------------------------------------------------------
 
   async _gqlRequest(query, variables, options) {
-    const endpoint = this._graphqlEndpoint || "/graphql";
+    const endpoint = bootstrapEndpoint(this._graphqlEndpoint);
+    if (!endpoint) throw new Error("GraphQL endpoint unavailable");
     const body = JSON.stringify({ query, variables: variables || {} });
     const request = {
       method: "POST",

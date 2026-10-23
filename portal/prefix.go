@@ -2,9 +2,18 @@ package portal
 
 import (
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 )
+
+// IngressPathHeader is the request header in which a Home Assistant Supervisor
+// Ingress proxy reports the path prefix it stripped before forwarding. Portal
+// uses it only to build the URLs it writes back in the same response; it never
+// selects a route, a mount or an authorization decision.
+const IngressPathHeader = "X-Ingress-Path"
+
+var errInvalidIngressPath = errors.New("invalid ingress path header")
 
 // validPortalPath accepts only unambiguous absolute paths. Configuration is
 // rejected rather than cleaned, so it cannot acquire a different route meaning.
@@ -46,6 +55,55 @@ func validatePortalPaths(opts Options) error {
 		}
 	}
 	return nil
+}
+
+// servedURLs holds the external URL roots of one response: prefix is the
+// proxy-reported Ingress prefix followed by the configured ExternalPrefix, and
+// base is the Portal directory under that prefix.
+type servedURLs struct {
+	prefix string
+	base   string
+}
+
+// endpoint maps a configured gateway endpoint to its served URL exactly once.
+// A disabled endpoint stays empty instead of becoming the prefix alone.
+func (u servedURLs) endpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	return u.prefix + endpoint
+}
+
+// servedURLs derives the URL roots for r. The Ingress prefix is validated by
+// the configured-path rules; an empty, repeated or malformed value is an error
+// rather than a silent fallback to root-absolute URLs the proxy cannot route.
+func (h *handler) servedURLs(r *http.Request) (servedURLs, error) {
+	ingress := ""
+	switch values := r.Header.Values(IngressPathHeader); len(values) {
+	case 0:
+	case 1:
+		if !validPortalPath(values[0]) || strings.HasSuffix(values[0], "/") {
+			return servedURLs{}, errInvalidIngressPath
+		}
+		ingress = values[0]
+	default:
+		return servedURLs{}, errInvalidIngressPath
+	}
+	prefix := ingress + h.opts.ExternalPrefix
+	return servedURLs{prefix: prefix, base: prefix + h.mountPath + "/"}, nil
+}
+
+// responseURLs resolves the URL roots for a response whose body or Location
+// embeds Portal URLs and marks it as varying with the Ingress prefix. A bad
+// prefix fails only that response with a generic message.
+func (h *handler) responseURLs(w http.ResponseWriter, r *http.Request) (servedURLs, bool) {
+	w.Header().Add("Vary", IngressPathHeader)
+	urls, err := h.servedURLs(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return servedURLs{}, false
+	}
+	return urls, true
 }
 
 func (h *handler) externalEndpoint(endpoint string) string {

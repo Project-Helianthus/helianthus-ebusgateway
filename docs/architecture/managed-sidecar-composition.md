@@ -210,6 +210,15 @@ the drain continues; Start refuses a successor until that drain completes.
 Close or fence failure quarantines the wrapper and refuses restart. Replace
 requires successful Stop before Start; a successful restart advances the driver
 generation and rejects calls through the retired provider.
+The successor generation of the configured epoch, after Replace or Stop then
+Start, publishes Storage again under its own binding, identity link, service and
+facts. The epoch's source descriptor is upserted only by the epoch's first
+publication, so it keeps that start and revision. A retired generation's
+evidence stays refused through its own handle and through the successor's. The
+`TestM61` fixtures in
+[`growatt_managed_driver_test.go`](../../cmd/gateway/growatt_managed_driver_test.go)
+prove this over register fakes that share one advancing receipt clock, reading
+through the shared snapshot provider.
 
 A stop during construction cancels and joins the pending start. If endpoint open
 returns late, startup rechecks cancellation under the same lifecycle lock used

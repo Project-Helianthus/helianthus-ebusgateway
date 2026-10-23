@@ -112,7 +112,7 @@ func registerHTTPControlPlaneCoreRoutes(
 	mux *http.ServeMux,
 	plan httpControlPlaneRoutePlan,
 	dumpOutputDir string,
-	busObservability *ebusgateway.BusObservabilityStore,
+	metricsHandler http.Handler,
 	queryHandler http.Handler,
 	snapshotHandler http.Handler,
 	subscriptionHandler http.Handler,
@@ -120,7 +120,7 @@ func registerHTTPControlPlaneCoreRoutes(
 	eebusAdminHandler http.Handler,
 ) {
 	if plan.metricsPath != "" {
-		mux.Handle(plan.metricsPath, busObservability.MetricsHandler())
+		mux.Handle(plan.metricsPath, metricsHandler)
 	}
 	// The gateway owns its mux, so expvar's default-mux registration must be
 	// mounted explicitly.

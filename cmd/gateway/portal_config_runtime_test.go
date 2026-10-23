@@ -834,3 +834,24 @@ func TestM28RetainedStoppedIntentStillPresentsWithheldSidecarsFailed(t *testing.
 		t.Fatalf("stored record rewritten (%v)", err)
 	}
 }
+
+// TestM28RegistrationRefusalKeepsPortalWithholdMarker: a host-enabled sidecar
+// whose registration is refused while the Portal record did not load keeps
+// both errors, so recovery still blocks it and readback presents it failed.
+func TestM28RegistrationRefusalKeepsPortalWithholdMarker(t *testing.T) {
+	m28Sidecars(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), []byte(`{"private_marker":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ebusgateway.DefaultConfig()
+	cfg.PortalConfigRoot = root
+	cfg.ModbusTCPConfig.GrowattBMSRS485.SourceID = "invalid source"
+	portalConfig := openGatewayPortalConfigRuntime(cfg)
+	defer func() { _ = portalConfig.Close() }()
+	sidecars := prepareManagedSidecars(context.Background(), cfg, nil, rctlGUID, nil, portalConfig)
+	withheld := sidecars.portalWithheld()
+	if _, ok := withheld[managedGrowattID]; !ok {
+		t.Fatalf("withheld %v; want the refused Growatt registration to keep the Portal marker", withheld)
+	}
+}

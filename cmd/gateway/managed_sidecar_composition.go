@@ -130,8 +130,8 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 	}
 	for _, d := range descriptors {
 		withheld := registrationErrors[d.DriverID]
-		if withheld == nil {
-			withheld = portalWithheld[d.DriverID]
+		if portal := portalWithheld[d.DriverID]; portal != nil {
+			withheld = errors.Join(withheld, portal)
 		}
 		sidecar := &managedSidecar{descriptor: d, withheld: withheld}
 		result.entries = append(result.entries, sidecar)

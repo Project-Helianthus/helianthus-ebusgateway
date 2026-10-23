@@ -87,6 +87,12 @@ func startHTTPServer(
 	if err != nil {
 		return nil, nil, err
 	}
+	// The scrape route reads the same provider instance as GraphQL, MCP and
+	// Portal; its transport exposition stays owned by the bus store.
+	semanticMetrics, err := newGatewaySemanticMetrics(sharedSemanticProvider, gatewaySemanticMetricRegistry())
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := mcpServer.SetServerVersion(buildInfo.ReleaseVersion); err != nil {
 		return nil, nil, fmt.Errorf("configure MCP build identity: %w", err)
 	}
@@ -203,7 +209,7 @@ func startHTTPServer(
 	mux := http.NewServeMux()
 	routePlan := newHTTPControlPlaneRoutePlan(cfg, busObservability != nil)
 	registerHTTPControlPlaneCoreRoutes(
-		mux, routePlan, cfg.DumpOutputDir, busObservability, queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
+		mux, routePlan, cfg.DumpOutputDir, newGatewayMetricsHandler(busObservability, semanticMetrics), queryHandler, snapshotHandler, subscriptionHandler, mcpServer, eebusAdminHandler,
 	)
 	var portalOptions portal.Options
 	var portalConfig *gatewayPortalConfigRuntime

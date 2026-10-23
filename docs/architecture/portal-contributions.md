@@ -265,7 +265,10 @@ and carries one of these reasons:
 **Proven** from `cmd/gateway/semantic_snapshot_provider.go` and
 `cmd/gateway/gateway_http_server.go`: HTTP composition injects the same
 `hubSemanticSnapshotProvider` instance into GraphQL `semanticSnapshot`, MCP
-`semantic.v1.snapshot.get` and the Portal shared-view callback. The provider
+`semantic.v1.snapshot.get` and the Portal shared-view callback. The scrape
+route's Thermal and Infrastructure families read the same instance
+([semantic metrics on the scrape route](../semantic-prometheus-thermal-infrastructure-v1.md)).
+The provider
 obtains the process semantic hub retained by `startGatewayRuntimeControl` from
 its `Hub` option, independently of the eBUS runtime bridge. Managed sidecar
 publications remain readable when the eBUS bridge is withheld. Without a process

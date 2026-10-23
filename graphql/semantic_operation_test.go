@@ -649,3 +649,19 @@ func TestM56GuardOversizedSemanticBodyNeverReachesDownstream(t *testing.T) {
 	}
 	h.untouched(t)
 }
+
+func TestM56GuardPrefixPaddedSemanticBodyNeverReachesDownstream(t *testing.T) {
+	called := 0
+	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }))
+	h := newM56Harness(t, semoptest.Outcome{})
+	body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
+	for _, size := range []int{2 * semanticoperations.MaxRequestBytes, 2 * semanticOversizeHardCap} {
+		pad := bytes.Repeat([]byte(" "), size)
+		prefixed := append([]byte("{"), append(pad, body[1:]...)...)
+		m56RequireCode(t, m56Post(t, guarded, "application/json", prefixed), semanticoperations.CodeResourceExhausted)
+	}
+	if called != 0 {
+		t.Fatalf("downstream handler called %d times", called)
+	}
+	h.untouched(t)
+}

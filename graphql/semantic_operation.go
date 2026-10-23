@@ -442,6 +442,10 @@ type semanticOperationMarker struct {
 
 type semanticOperationMarkerKey struct{}
 
+// semanticOversizeHardCap bounds what the guard buffers for a body past the
+// request bound before refusing it.
+const semanticOversizeHardCap = 4 << 20
+
 type semanticReplayBody struct {
 	io.Reader
 	io.Closer
@@ -476,14 +480,25 @@ func guardSemanticOperationRequests(next http.Handler) http.Handler {
 			return
 		}
 		if len(body) > semanticoperations.MaxRequestBytes {
-			if strings.Contains(string(body), semanticOperationFieldName) {
+			// The stock handler reads a body fully, so the remainder is buffered
+			// only up to a hard cap and scanned here first: a semantic request
+			// padded in front of the field name, or a body past the cap, is
+			// refused before any downstream read or GraphQL parse.
+			rest, err := io.ReadAll(io.LimitReader(original, semanticOversizeHardCap-int64(len(body))+1))
+			if err == nil {
+				body = append(body, rest...)
+			}
+			if err == nil && (int64(len(body)) > semanticOversizeHardCap || strings.Contains(string(body), semanticOperationFieldName)) {
 				writeSemanticOperationError(w, semanticOperationExhausted("request body exceeds the byte bound"))
 				return
 			}
-			// A body past the bound is replayed in full to the stock handler so
-			// other requests keep their handling; a semantic one is refused by
+			if err != nil {
+				r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), semanticBodyReadError{err: err}), Closer: original}
+			} else {
+				r.Body = semanticReplayBody{Reader: bytes.NewReader(body), Closer: original}
+			}
+			// A semantic request with an escaped field name is still refused by
 			// the resolver before any owner, capture or dispatch.
-			r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), original), Closer: original}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), semanticOperationMarkerKey{}, &semanticOperationMarker{oversize: true})))
 			return
 		}

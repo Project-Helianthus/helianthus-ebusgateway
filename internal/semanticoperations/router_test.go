@@ -339,11 +339,11 @@ func TestM56RouterReplayNeverRedispatches(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Block: true})
 		h.owner.Replay = true
 		request := h.f.Request()
-		request.Timeout = 30 * time.Millisecond
+		request.Timeout = 150 * time.Millisecond
 		first := h.route(t, request)
 		second := h.route(t, request)
 		h.selected.Release()
-		<-h.selected.Done()
+		awaitDone(t, h.selected)
 		third := h.route(t, request)
 		accepted := view{"accepted", null, null, null, null, null}
 		if first != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) || second != accepted || third != accepted || h.selected.Calls() != 1 {
@@ -379,14 +379,23 @@ func TestM56RouterReplayNeverRedispatches(t *testing.T) {
 	})
 }
 
+func awaitDone(t *testing.T, e *semoptest.Executor) {
+	t.Helper()
+	select {
+	case <-e.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("executor never completed (calls=%d)", e.Calls())
+	}
+}
+
 func TestM56RouterBoundsTheWait(t *testing.T) {
 	t.Run("expired wait is unknown without delivery claim", func(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Block: true})
 		request := h.f.Request()
-		request.Timeout = 25 * time.Millisecond
+		request.Timeout = 150 * time.Millisecond
 		got := h.route(t, request)
 		h.selected.Release()
-		<-h.selected.Done()
+		awaitDone(t, h.selected)
 		if got != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) {
 			t.Fatalf("result = %+v", got)
 		}
@@ -395,12 +404,12 @@ func TestM56RouterBoundsTheWait(t *testing.T) {
 		h := newHarness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted, Block: true})
 		h.owner.Replay = true
 		request := h.f.Request()
-		request.Timeout = 25 * time.Millisecond
+		request.Timeout = 150 * time.Millisecond
 		if got := h.route(t, request); got != (view{"unknown", null, null, null, null, semanticoperations.ReasonEvidenceTimeout}) {
 			t.Fatalf("first = %+v", got)
 		}
 		h.selected.Release()
-		<-h.selected.Done()
+		awaitDone(t, h.selected)
 		want := view{"protocol_ack", "acknowledged_unverified", "sent", "accepted", null, null}
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
 			got := h.route(t, request)

@@ -112,6 +112,10 @@ func prepareManagedSidecars(ctx context.Context, cfg ebusgateway.Config, hub *se
 				}
 				return result.primary, nil
 			})); err == nil {
+				// The accepted selection is part of the frozen registration.
+				if !portalConfig.application(primaryEBusDriverID, true).enabled {
+					primary.Disposition = runtimecontrol.DispositionDisabled
+				}
 				_ = registry.Register(primary)
 			}
 		}

@@ -208,10 +208,13 @@ func startGatewayRuntimeControl(ctx context.Context, opts gatewayRuntimeControlO
 
 	// 1 + 2: identity, bridge and frozen registration. The bridge binds the
 	// manager hooks here, before the service (the only start owner) runs.
-	control.bridge, control.withheld = composeEBusPrimary(control.registry, opts, incarnation)
 	// The accepted Portal selection narrows configured eligibility only; a
 	// record that did not load withholds the driver, failed and unopened.
+	// It is applied before registration so the descriptor carries it.
 	primaryEnabled, portalWithheld := opts.PortalConfig.configure(id, !opts.Disabled)
+	composed := opts
+	composed.Disabled = !primaryEnabled
+	control.bridge, control.withheld = composeEBusPrimary(control.registry, composed, incarnation)
 	if control.withheld == nil {
 		control.withheld = portalWithheld
 	}
@@ -335,6 +338,9 @@ func composeEBusPrimary(registry *runtimecontrol.Registry, opts gatewayRuntimeCo
 	descriptor, err := newEBusPrimaryDescriptor(native, source, adapter)
 	if err != nil {
 		return bridge, err
+	}
+	if opts.Disabled {
+		descriptor.Disposition = runtimecontrol.DispositionDisabled
 	}
 	if existing, err := registry.Get(descriptor.DriverID); err == nil {
 		if existing.Driver.NativeContract != descriptor.NativeContract || len(existing.Driver.Sources) != 1 || existing.Driver.Sources[0] != source {

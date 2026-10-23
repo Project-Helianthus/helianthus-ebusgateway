@@ -331,6 +331,9 @@ func TestM28RetainedPrimaryDeselectionDisablesWithoutRewritingIntent(t *testing.
 	if opened := env.dials.Load() - dials; opened != 0 || status.Enabled || status.DesiredState != runtimecontrol.DesiredRunning || status.DesiredRevision != intent {
 		t.Fatalf("deselected ebus.primary opened %d endpoints with view %+v; want disabled, unopened, RUNNING intent at revision %d", opened, status, intent)
 	}
+	if registered, err := second.control.Registry().Get(primaryEBusDriverID); err != nil || registered.Driver.Disposition != runtimecontrol.DispositionDisabled {
+		t.Fatalf("deselected ebus.primary registered as %+v (%v); want a disabled descriptor", registered.Driver, err)
+	}
 	after := natives.counts()
 	for _, id := range m28SidecarIDs {
 		if after[id][0]-before[id][0] != 1 || after[id][1]-before[id][1] != 1 {
@@ -733,5 +736,82 @@ func TestM28PassiveObservationAndCacheAreNotPortalOptions(t *testing.T) {
 	}
 	if accepted, err := runtime.store.Read(); err != nil || accepted.Revision != "0" {
 		t.Fatalf("revision after rejected edits: %+v, %v", accepted, err)
+	}
+}
+
+// TestM28PartialRecordFromEarlierReleaseIsMigrated: a valid record written
+// when only some drivers were registered is completed in place with the
+// missing drivers at host enablement, keeping its revision and selections,
+// instead of withholding every host-enabled driver.
+func TestM28PartialRecordFromEarlierReleaseIsMigrated(t *testing.T) {
+	m28Sidecars(t)
+	root := t.TempDir()
+	record := m28AdoptedRecord(true)
+	record.Revision = "3"
+	record.Drivers = record.Drivers[:2]
+	partial := record.Drivers[1].ID
+	record.Drivers[1].Enabled = false
+	if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), m28Marshal(t, record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	process := newRCtlEnv(t).start(m28Options(root))
+	process.waitObserved(drivermanager.ObservedRunning)
+	data, err := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := portalconfig.Decode(data)
+	if err != nil || migrated.Revision != "3" || len(migrated.Drivers) != len(portalConfigDriverIDs) {
+		t.Fatalf("migrated record %+v (%v); want revision 3 and %d drivers", migrated, err, len(portalConfigDriverIDs))
+	}
+	for _, driver := range migrated.Drivers {
+		if driver.ID == partial && driver.Enabled {
+			t.Fatalf("migrated %s enabled; want its retained deselection", driver.ID)
+		}
+	}
+	code, view := m28Config(t, process, http.MethodGet, nil)
+	if code != http.StatusOK || view.Error != nil {
+		t.Fatalf("GET %d %+v; want the migrated record to load", code, view)
+	}
+	for _, row := range view.State.Drivers {
+		if row.Status == "error" {
+			t.Fatalf("driver row %+v; a partial earlier record must not withhold drivers", row)
+		}
+	}
+}
+
+// TestM28MigrationCompletesMissingDriversAtHostEnablement pins the values of
+// the completed drivers and the records the migration must leave alone.
+func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
+	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: false}, {ID: "c", Enabled: true}}
+	unsupported := &portalconfig.Error{Code: "unsupported_selection"}
+	write := func(root string, drivers ...portalconfig.Driver) {
+		record := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: drivers}
+		if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), m28Marshal(t, record), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	write(root, portalconfig.Driver{ID: "a", Enabled: false})
+	if !migratePortalConfigRecord(root, unsupported, seed) {
+		t.Fatal("partial record was not migrated")
+	}
+	data, _ := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
+	got, err := portalconfig.Decode(data)
+	want := []portalconfig.Driver{{ID: "a", Enabled: false}, {ID: "b", Enabled: false}, {ID: "c", Enabled: true}}
+	if err != nil || got.Revision != "2" || !reflect.DeepEqual(got.Drivers, want) {
+		t.Fatalf("migrated %+v (%v); want %+v at revision 2", got, err, want)
+	}
+	if migratePortalConfigRecord(root, unsupported, seed) {
+		t.Fatal("complete record was migrated again")
+	}
+	foreign := t.TempDir()
+	write(foreign, portalconfig.Driver{ID: "a", Enabled: true}, portalconfig.Driver{ID: "zz", Enabled: true})
+	before, _ := os.ReadFile(filepath.Join(foreign, portalConfigRecordFile))
+	if migratePortalConfigRecord(foreign, unsupported, seed) || migratePortalConfigRecord(root, &portalconfig.Error{Code: "invalid_record"}, seed) {
+		t.Fatal("migrated a record naming an unknown driver or a different failure")
+	}
+	if after, _ := os.ReadFile(filepath.Join(foreign, portalConfigRecordFile)); !bytes.Equal(before, after) {
+		t.Fatal("record with an unknown driver was rewritten")
 	}
 }

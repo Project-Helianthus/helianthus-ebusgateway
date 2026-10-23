@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -64,6 +66,10 @@ func openGatewayPortalConfigRuntime(cfg ebusgateway.Config) *gatewayPortalConfig
 	}
 	runtime := &gatewayPortalConfigRuntime{applied: map[runtimecontrol.DriverID]portalConfigApplication{}}
 	runtime.store, runtime.loadErr = openGatewayPortalConfigDrivers(cfg, seed)
+	if migratePortalConfigRecord(cfg.PortalConfigRoot, runtime.loadErr, seed) {
+		_ = runtime.store.Close()
+		runtime.store, runtime.loadErr = openGatewayPortalConfigDrivers(cfg, seed)
+	}
 	if runtime.loadErr == nil {
 		record, err := runtime.store.Read()
 		if err == nil {
@@ -81,6 +87,64 @@ func openGatewayPortalConfigRuntime(cfg ebusgateway.Config) *gatewayPortalConfig
 		log.Printf("portal configuration: no record file (%s); host driver configuration applies", runtime.errorCode())
 	}
 	return runtime
+}
+
+// migratePortalConfigRecord widens a record written before the editable set
+// was the compiled set. The earlier set came from the registrations that were
+// accepted, so a valid record may omit a compiled driver. Such a record is
+// completed in place, keeping its revision and selections, with each missing
+// driver at its host-configured enablement. Any other record, including one
+// naming a driver outside the compiled set, is left untouched. It reports
+// whether the record was rewritten.
+func migratePortalConfigRecord(root string, loadErr error, seed []portalconfig.Driver) bool {
+	var typed *portalconfig.Error
+	if !errors.As(loadErr, &typed) || typed.Code != "unsupported_selection" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
+	if err != nil {
+		return false
+	}
+	record, err := portalconfig.Decode(data)
+	if err != nil {
+		return false
+	}
+	host := make(map[string]portalconfig.Driver, len(seed))
+	for _, driver := range seed {
+		host[driver.ID] = driver
+	}
+	present := make(map[string]bool, len(record.Drivers))
+	for _, driver := range record.Drivers {
+		if _, known := host[driver.ID]; !known {
+			return false
+		}
+		present[driver.ID] = true
+	}
+	if len(present) == len(host) {
+		return false
+	}
+	for _, driver := range seed {
+		if !present[driver.ID] {
+			record.Drivers = append(record.Drivers, driver)
+		}
+	}
+	sort.Slice(record.Drivers, func(i, j int) bool { return record.Drivers[i].ID < record.Drivers[j].ID })
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return false
+	}
+	tmp, err := os.CreateTemp(root, portalConfigRecordFile+".migrate-*")
+	if err != nil {
+		return false
+	}
+	_, werr := tmp.Write(encoded)
+	serr := tmp.Sync()
+	cerr := tmp.Close()
+	if werr != nil || serr != nil || cerr != nil || os.Chmod(tmp.Name(), 0o600) != nil || os.Rename(tmp.Name(), filepath.Join(root, portalConfigRecordFile)) != nil {
+		_ = os.Remove(tmp.Name())
+		return false
+	}
+	return true
 }
 
 // portalConfigHostEnabled is the host-configured disposition that the managed
@@ -108,6 +172,20 @@ func portalConfigRecordMayExist(root string) bool {
 	return !errors.Is(err, fs.ErrNotExist)
 }
 
+// application is the eligibility the record gives one driver, without
+// recording it.
+func (r *gatewayPortalConfigRuntime) application(id runtimecontrol.DriverID, host bool) portalConfigApplication {
+	application := portalConfigApplication{host: host, enabled: host}
+	if host && r != nil {
+		if r.failClosed {
+			application.withheld = true
+		} else if selected, ok := r.selected[id]; ok && r.adopted {
+			application.enabled = selected
+		}
+	}
+	return application
+}
+
 // configure applies the startup record to one driver's host-configured
 // eligibility and records the result for readback. The record only narrows
 // host configuration, and only after a local edit was accepted. A withheld
@@ -118,14 +196,7 @@ func (r *gatewayPortalConfigRuntime) configure(id runtimecontrol.DriverID, host 
 	if r == nil {
 		return host, nil
 	}
-	application := portalConfigApplication{host: host, enabled: host}
-	if host {
-		if r.failClosed {
-			application.withheld = true
-		} else if selected, ok := r.selected[id]; ok && r.adopted {
-			application.enabled = selected
-		}
-	}
+	application := r.application(id, host)
 	r.mu.Lock()
 	r.applied[id] = application
 	r.mu.Unlock()

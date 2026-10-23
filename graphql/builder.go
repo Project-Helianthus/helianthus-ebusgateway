@@ -13,6 +13,7 @@ type Builder struct {
 	identity               GatewayIdentityProvider
 	semantic               SemanticProvider
 	semanticSnapshot       SemanticSnapshotProvider
+	semanticOperation      SemanticOperationRouter
 	bus                    BusObservabilityProvider
 	identificationEvidence IdentificationEvidenceProvider
 	watch                  WatchSummaryProvider
@@ -392,4 +393,34 @@ func (b *Builder) systemConfigBound() *ConfigBound {
 	}
 	bound := *system.Config.DhwBivalenceBound
 	return &bound
+}
+
+// SetSemanticOperationRouter installs the bounded dispatcher of the one
+// semanticOperation mutation. Nil routers, including typed nils, clear the
+// registration; the mutation then answers UNAVAILABLE without dispatch.
+func (b *Builder) SetSemanticOperationRouter(router SemanticOperationRouter) {
+	if b == nil {
+		return
+	}
+	if router != nil {
+		value := reflect.ValueOf(router)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				router = nil
+			}
+		}
+	}
+	b.mu.Lock()
+	b.semanticOperation = router
+	b.mu.Unlock()
+}
+
+func (b *Builder) semanticOperationRouter() SemanticOperationRouter {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.semanticOperation
 }

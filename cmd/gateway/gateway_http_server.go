@@ -10,6 +10,7 @@ import (
 
 	ebusgateway "github.com/Project-Helianthus/helianthus-ebusgateway"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/graphql"
+	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticoperations"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semanticview"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/internal/semhub"
 	"github.com/Project-Helianthus/helianthus-ebusgateway/mcp"
@@ -83,6 +84,9 @@ func startHTTPServer(
 	}
 
 	sharedSemanticProvider := newGatewaySemanticSnapshotProvider(runtimeControl)
+	if err := installGatewaySemanticOperationRoute(builder, sharedSemanticProvider); err != nil {
+		return nil, nil, err
+	}
 	queryHandler, snapshotHandler, subscriptionHandler, mcpServer, err := newHTTPControlPlaneSemanticHandlers(gateway, builder, hub, sharedSemanticProvider)
 	if err != nil {
 		return nil, nil, err
@@ -481,6 +485,30 @@ func portalTCPModbusProvider(provider mcp.ModbusV1Provider) mcp.ModbusV1Provider
 		return nil
 	}
 	return provider
+}
+
+// installGatewaySemanticOperationRoute composes the one GraphQL
+// semanticOperation route over the shared current-generation capture and the
+// SemReg operation kernel, and injects its executor lookup. The default lookup
+// holds no send-capable executor; a qualified driver composition supplies its
+// own. No runtime intent owner is composed yet, so the route answers
+// UNAVAILABLE without capture or send until that integration exists.
+func installGatewaySemanticOperationRoute(builder *graphql.Builder, snapshots semanticoperations.SnapshotCapture) error {
+	return composeGatewaySemanticOperationRoute(builder, snapshots, nil, semanticoperations.NoExecutors())
+}
+
+func composeGatewaySemanticOperationRoute(builder *graphql.Builder, snapshots semanticoperations.SnapshotCapture, intents semanticoperations.IntentOwner, executors semanticoperations.ExecutorLookup) error {
+	if builder == nil {
+		return fmt.Errorf("graphql builder missing for semantic operation route")
+	}
+	kernel, err := semanticoperations.NewBuiltinKernel()
+	if err != nil {
+		return fmt.Errorf("compose semantic operation kernel: %w", err)
+	}
+	builder.SetSemanticOperationRouter(semanticoperations.NewRouter(semanticoperations.Config{
+		Snapshots: snapshots, Kernel: kernel, Intents: intents, Executors: executors,
+	}))
+	return nil
 }
 
 // configureGatewayPortalSemanticRead binds Portal to the HTTP shared provider.

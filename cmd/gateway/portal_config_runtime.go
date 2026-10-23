@@ -91,9 +91,11 @@ func openGatewayPortalConfigRuntime(cfg ebusgateway.Config) *gatewayPortalConfig
 
 // migratePortalConfigRecord widens a record written before the editable set
 // was the compiled set. The earlier set came from the registrations that were
-// accepted, so a valid record may omit a compiled driver. Such a record is
-// completed in place, keeping its revision and selections, with each missing
-// driver at its host-configured enablement. Any other record, including one
+// accepted, so a valid record may omit a compiled driver the host did not
+// enable. Only such a record is completed in place, keeping its revision and
+// selections, with each missing driver disabled. A record missing a
+// host-enabled driver is not an explicitly supported legacy case: it stays
+// untouched and its failed load withholds drivers. Any other record, including one
 // naming a driver outside the compiled set, is left untouched. It reports
 // whether the record was rewritten. A record that also selects an option the
 // host does not provision stays untouched, so the failed load is preserved.
@@ -123,6 +125,11 @@ func migratePortalConfigRecord(root string, loadErr error, seed []portalconfig.D
 	}
 	if len(present) == len(host) {
 		return false
+	}
+	for _, driver := range seed {
+		if !present[driver.ID] && driver.Enabled {
+			return false
+		}
 	}
 	if record.Sharing.GraphQL && !constraints.GraphQL || record.Sharing.MCP && !constraints.MCP || record.AdapterProxy && !constraints.AdapterProxy || record.OutputBindings.Matter && !constraints.Matter {
 		return false

@@ -783,7 +783,7 @@ func TestM28PartialRecordFromEarlierReleaseIsMigrated(t *testing.T) {
 // TestM28MigrationCompletesMissingDriversAtHostEnablement pins the values of
 // the completed drivers and the records the migration must leave alone.
 func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
-	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: false}, {ID: "c", Enabled: true}}
+	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: false}, {ID: "c", Enabled: false}}
 	unsupported := &portalconfig.Error{Code: "unsupported_selection"}
 	open := portalconfig.Constraints{GraphQL: true, MCP: true, AdapterProxy: true, Matter: true}
 	write := func(root string, drivers ...portalconfig.Driver) {
@@ -799,12 +799,22 @@ func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
 	got, err := portalconfig.Decode(data)
-	want := []portalconfig.Driver{{ID: "a", Enabled: false}, {ID: "b", Enabled: false}, {ID: "c", Enabled: true}}
+	want := []portalconfig.Driver{{ID: "a", Enabled: false}, {ID: "b", Enabled: false}, {ID: "c", Enabled: false}}
 	if err != nil || got.Revision != "2" || !reflect.DeepEqual(got.Drivers, want) {
 		t.Fatalf("migrated %+v (%v); want %+v at revision 2", got, err, want)
 	}
 	if migratePortalConfigRecord(root, unsupported, seed, open) {
 		t.Fatal("complete record was migrated again")
+	}
+	hostEnabled := t.TempDir()
+	write(hostEnabled, portalconfig.Driver{ID: "a", Enabled: false})
+	enabledSeed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: true}}
+	enabledBefore, _ := os.ReadFile(filepath.Join(hostEnabled, portalConfigRecordFile))
+	if migratePortalConfigRecord(hostEnabled, unsupported, enabledSeed, open) {
+		t.Fatal("migrated a record missing a host-enabled driver")
+	}
+	if after, _ := os.ReadFile(filepath.Join(hostEnabled, portalConfigRecordFile)); !bytes.Equal(enabledBefore, after) {
+		t.Fatal("record missing a host-enabled driver was rewritten")
 	}
 	foreign := t.TempDir()
 	write(foreign, portalconfig.Driver{ID: "a", Enabled: true}, portalconfig.Driver{ID: "zz", Enabled: true})
@@ -821,7 +831,7 @@ func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
 // that also selects an option the host does not provision is not completed,
 // so the failed load keeps the stored bytes.
 func TestM28MigrationKeepsRecordSelectingUnprovisionedOption(t *testing.T) {
-	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: true}}
+	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: false}}
 	root := t.TempDir()
 	record := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: seed[:1], AdapterProxy: true}
 	if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), m28Marshal(t, record), 0o600); err != nil {

@@ -327,3 +327,54 @@ composition changes also require the declared offline RTU conformance gate;
 applicable eBUS transport changes require their transport gate. This document
 claims no gate result, physical smoke, installation qualification, parent
 closure or release readiness.
+
+## Composed northbound acceptance (M57)
+
+Proven by the `TestM57` fixtures in
+[`composition_projection_acceptance_test.go`](https://github.com/Project-Helianthus/helianthus-ebusgateway/blob/main/cmd/gateway/composition_projection_acceptance_test.go):
+they run the post-G5 lifecycle entrypoint with the production HTTP control
+plane, runtime control service, managed registry, process hub, shared snapshot
+provider and semantic operation router and kernel. Replaced parts: the eBUS
+endpoint is an in-process pipe with its poller and scans stubbed, so its
+Thermal value is a synthetic batch published through the admitted
+generation's handle; Growatt is the real managed driver and Storage publication
+over an in-memory register fake; SunSpec and eeBUS are injected managed
+factories, and the SunSpec one publishes synthetic PV batches through its own
+hub admission; the control-plane listener is in memory and the owner-only eeBUS
+operator socket is an inert closer; the operation route receives a fake intent
+owner and executor lookup. The listener, operator-socket and
+route-configuration seams (`listenHTTPControlPlane`,
+`startEEBusOperatorEndpoint`, `gatewaySemanticOperationConfigFor`) leave
+production behavior unchanged, and the M2M and adapter-proxy listeners stay
+unconfigured, so no socket is bound.
+
+- Registration, publication and reads agree. Each publication is bound to the
+  source its driver registered and to that source's current hub admission.
+  GraphQL `semanticSnapshot` and MCP `semantic.v1.snapshot.get` return the same
+  publication, revisions, values and losses, including an explicitly withheld
+  value. Portal bootstrap advertises the same GraphQL read, and Portal driver
+  rows report the lifecycle the MCP list reports. The scrape route serves the
+  transport exposition first and withholds semantic samples while no durable
+  slot registry exists.
+- The ordinary MCP lifecycle tools stop, start and restart composed drivers.
+  The composition signals withdrawal before every native stop of an exposed
+  generation. A stopped driver reads `source_unavailable` on both surfaces and
+  `withheld`/`lifecycle_stopped` in Portal. A publication racing withdrawal and
+  any later use of a retired handle are refused, and START after STOP binds a
+  new lifecycle epoch.
+- A semantic operation completed by an injected executor confirms within one
+  generation. Across a RESTART the same completion is never confirmed: the
+  SemReg kernel refuses its evidence because the readback names the successor
+  epoch. A request naming the retired generation is not sent.
+- A sidecar whose construction is refused stays unconstructed. A sidecar whose
+  shell lease is refused after its native start is stopped and joined by the
+  composition, and its publication is fenced. Both are reported as FAILED by
+  the MCP list and as `error` in Portal, while the shell and sibling drivers
+  keep serving. Every generation task joins at shutdown.
+
+Not established by these fixtures: a Growatt Storage publication from a
+successor generation of the same configured epoch, and operation admission on a
+successor generation of an operation-capable asset. Both are refused by the
+current publication and admission paths and remain open defects. Physical
+transport behavior, installation qualification and release readiness remain
+**Unknown**.

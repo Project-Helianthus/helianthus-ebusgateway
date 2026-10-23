@@ -212,6 +212,15 @@ func (h *httpControlPlaneHandler) retire() {
 	}
 }
 
+// The control plane's operating-system endpoints are seams for offline
+// composition fixtures. Production binds the configured TCP address and the
+// owner-only eeBUS operator socket; a fixture substitutes in-memory transports
+// so the composed mux, server and shutdown path run without binding anything.
+var (
+	listenHTTPControlPlane     = net.Listen
+	startEEBusOperatorEndpoint = (*mcp.Server).StartEEBusV1OperatorEndpoint
+)
+
 func startHTTPControlPlaneListener(
 	ctx context.Context,
 	cfg ebusgateway.Config,
@@ -236,13 +245,13 @@ func startHTTPControlPlaneListener(
 	var operatorEndpoint io.Closer
 	var err error
 	if eebusProvider != nil {
-		operatorEndpoint, err = mcpServer.StartEEBusV1OperatorEndpoint(ctx)
+		operatorEndpoint, err = startEEBusOperatorEndpoint(mcpServer, ctx)
 		if err != nil {
 			return nil, nil, fmt.Errorf("start eeBUS operator MCP endpoint: %w", err)
 		}
 	}
 
-	listener, err := net.Listen("tcp", cfg.HTTPAddr)
+	listener, err := listenHTTPControlPlane("tcp", cfg.HTTPAddr)
 	if err != nil {
 		if operatorEndpoint != nil {
 			_ = operatorEndpoint.Close()

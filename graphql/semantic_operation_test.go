@@ -402,25 +402,45 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		}
 		h.untouched(t)
 	})
-	t.Run("body over the byte bound", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
-		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), semanticoperations.MaxRequestBytes-len(body)+1), '}')...)
-		if len(padded) != semanticoperations.MaxRequestBytes+1 {
-			t.Fatalf("padded body = %d bytes", len(padded))
-		}
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
-		h.untouched(t)
-	})
-	t.Run("padded body past the byte bound never reaches graphql", func(t *testing.T) {
-		h := newM56Harness(t, semoptest.Outcome{})
+	t.Run("padded valid body past the byte bound is judged on its parsed input", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{Kind: operation.OutcomeAcknowledgedUnverified, Delivery: operation.DeliverySent, Ack: operation.AckAccepted})
 		body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
 		pad := bytes.Repeat([]byte(" "), 4*semanticoperations.MaxRequestBytes)
 		padded := append(body[:len(body)-1:len(body)-1], append(pad, '}')...)
+		if got := m56Result(t, m56Post(t, h.handler, "application/json", padded)); got["status"] != "protocol_ack" || h.selected.Calls() != 1 {
+			t.Fatalf("result = %+v calls = %d", got, h.selected.Calls())
+		}
+	})
+	t.Run("oversized parsed input is refused with nothing sent", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{})
+		request := h.f.Request()
+		long := strings.Repeat("a", semanticoperations.MaxOpaqueIDBytes+1)
+		request.AssetID = semreg.AssetID(long)
+		body := m56Body(t, m56Mutation, m56Input(t, request))
+		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2*semanticoperations.MaxRequestBytes), '}')...)
 		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
-		malformed := append([]byte(`{"query":"mutation { semanticOperation(`), pad...)
-		if got := m56Post(t, h.handler, "application/json", malformed); len(got.Errors) == 0 || got.Data != nil {
-			t.Fatalf("malformed oversized body = %+v", got)
+		h.untouched(t)
+	})
+	t.Run("oversized body keeps the selection-count limit", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{})
+		body := m56Body(t, "mutation($input: SemanticOperationInput!) { a: semanticOperation(input: $input) { status } b: semanticOperation(input: $input) { status } }", m56Input(t, h.f.Request()))
+		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2*semanticoperations.MaxRequestBytes), '}')...)
+		got := m56Post(t, h.handler, "application/json", padded)
+		if len(got.Errors) == 0 {
+			t.Fatalf("response = %+v", got)
+		}
+		for _, refusal := range got.Errors {
+			if refusal.Extensions["code"] != string(invalid) {
+				t.Fatalf("refusal = %+v; want %s", refusal, invalid)
+			}
+		}
+		h.untouched(t)
+	})
+	t.Run("duplicate members in a non-semantic query mentioning the field are served", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{})
+		got := m56Post(t, h.handler, "application/json", []byte(`{"query":"{ __typename } # semanticOperation","query":"{ __typename } # semanticOperation"}`))
+		if len(got.Errors) != 0 || got.Data["__typename"] == nil {
+			t.Fatalf("response = %+v", got)
 		}
 		h.untouched(t)
 	})
@@ -660,18 +680,6 @@ func TestM56GraphQLOversizedNonSemanticMentioningFieldIsServed(t *testing.T) {
 		if len(got.Errors) != 0 || got.Data["__typename"] != "Query" {
 			t.Fatalf("size %d: response = %+v", size, got)
 		}
-	}
-	h.untouched(t)
-}
-
-func TestM56GraphQLOversizedSemanticInputRefusedAfterParse(t *testing.T) {
-	h := newM56Harness(t, semoptest.Outcome{})
-	body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
-	for _, pad := range []int{2 << 20, 6 << 20} {
-		padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), pad), '}')...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), semanticoperations.CodeResourceExhausted)
-		prefixed := append([]byte("{"), append(bytes.Repeat([]byte(" "), pad), body[1:]...)...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", prefixed), semanticoperations.CodeResourceExhausted)
 	}
 	h.untouched(t)
 }

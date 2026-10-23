@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"reflect"
 	"strconv"
@@ -399,6 +400,9 @@ func (r *Router) Route(ctx context.Context, request Request) (Result, error) {
 
 	draft := request.draftIntent()
 	intent, authority, err := r.intents.CompleteIntent(ctx, cloneIntent(draft), deadline)
+	if err != nil && (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded)) {
+		return refused(string(semreg.DeadlineExpired)), nil
+	}
 	if err != nil || isNil(authority) {
 		return Result{}, unavailable("intent owner cannot construct the intent")
 	}

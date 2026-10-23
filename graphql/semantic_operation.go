@@ -476,6 +476,10 @@ func guardSemanticOperationRequests(next http.Handler) http.Handler {
 			return
 		}
 		if len(body) > semanticoperations.MaxRequestBytes {
+			if strings.Contains(string(body), semanticOperationFieldName) {
+				writeSemanticOperationError(w, semanticOperationExhausted("request body exceeds the byte bound"))
+				return
+			}
 			// A body past the bound is replayed in full to the stock handler so
 			// other requests keep their handling; a semantic one is refused by
 			// the resolver before any owner, capture or dispatch.

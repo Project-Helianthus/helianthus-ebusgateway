@@ -295,6 +295,15 @@ func TestM56RouterCaptureDeadlineExpiryIsNoSendDeadlineExpired(t *testing.T) {
 	}
 }
 
+func TestM56RouterOwnerDeadlineExpiryIsNoSendDeadlineExpired(t *testing.T) {
+	h := newHarness(t, semoptest.Outcome{})
+	h.owner.Err = context.DeadlineExceeded
+	result, err := h.router.Route(context.Background(), h.f.Request())
+	if err != nil || viewOf(result) != refusedView(string(semreg.DeadlineExpired)) || h.selected.Calls() != 0 {
+		t.Fatalf("result = %+v, %v, calls %d", viewOf(result), err, h.selected.Calls())
+	}
+}
+
 func TestM56RouterGuardChangeBeforeInvocationSendsNothing(t *testing.T) {
 	h := newHarness(t, semoptest.Outcome{Kind: operation.OutcomeApplied, Delivery: operation.DeliverySent, Readback: operation.ReadbackConfirms})
 	h.selected.Before = h.f.Fence

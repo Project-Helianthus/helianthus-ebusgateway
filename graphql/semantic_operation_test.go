@@ -636,3 +636,16 @@ func m56RequireTypes(t *testing.T, owner string, fields []m56TypeRef, want map[s
 		t.Fatalf("%s fields = %s; want %s", owner, gotJSON, wantJSON)
 	}
 }
+
+func TestM56GuardOversizedSemanticBodyNeverReachesDownstream(t *testing.T) {
+	called := 0
+	guarded := guardSemanticOperationRequests(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called++ }))
+	h := newM56Harness(t, semoptest.Outcome{})
+	body := m56Body(t, m56Mutation, m56Input(t, h.f.Request()))
+	padded := append(body[:len(body)-1:len(body)-1], append(bytes.Repeat([]byte(" "), 2<<20), '}')...)
+	m56RequireCode(t, m56Post(t, guarded, "application/json", padded), semanticoperations.CodeResourceExhausted)
+	if called != 0 {
+		t.Fatalf("downstream handler called %d times", called)
+	}
+	h.untouched(t)
+}

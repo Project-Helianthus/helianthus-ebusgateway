@@ -215,13 +215,35 @@ the change; cancel its pending reads/stream listeners and ignore late replies.
 **Proven** from `internal/semhub/coherent_capture.go`: `Hub.Capture` takes one
 hub read lock across the selected assets. It reads the current admitted epoch
 and returns detached copies of selected publications with their lifecycle,
-read-admission and public-exposure decisions, matching evaluation context and
-catalog metadata. Capture invokes the supplied clock once under that read lock,
-so an intervening publication cannot make the evaluation time precede the
-captured snapshot. The clock callback must not reenter the hub or wait on a hub
-writer. The capture is read-only; `Inspect` remains an independent ungated audit surface, and the existing
-admission predicates are unchanged. This internal API introduces no public
+read-admission and public-exposure decisions and catalog metadata. The hub epoch
+orders the capture; it is not a freshness clock. Capture invokes the supplied
+wall clock once under that read lock. Each snapshot is evaluated on its own
+recorded aging epoch: its recorded evaluation ticks plus the elapsed time
+between its recorded wall point and the captured wall instant. Freshness and
+retention therefore use the candidate's recorded aging coordinate, preserving
+fresh, degraded and unavailable outcomes while the wall clock advances normally.
+`semanticview.Build` accepts these per-asset evaluation coordinates at one shared
+wall instant and retains each evaluation's snapshot and digest binding. The clock
+callback must not reenter the hub or wait on a hub writer. The capture is read-only;
+`Inspect` remains an independent ungated audit surface, and the existing admission
+predicates are unchanged. This internal API introduces no public
 schema change.
+
+**Proven** by `TestM11StorageProviderAging`,
+`TestM11CaptureRecordedAgingCoordinate` and
+`TestM11CandidateCoordinatesAtSharedInstant`: production Storage reads are
+available before the fresh-for limit, degraded from that limit until the
+retain-for limit, and unavailable from the retention boundary onward. These
+reads neither acquire observations nor change publication or admission state.
+
+**Proven** limitation: capture cannot preserve the original Go monotonic age
+under a wall-clock step because it has only serialized wall points: a backward
+step before the snapshot's recorded wall point fails closed, while a forward step
+advances age and can expire a candidate early. A rollback that remains after the recorded
+wall point can reduce evaluated age. The Storage provider test covers backward
+and forward steps at this boundary. Exact monotonic aging requires retaining
+original process receipt coordinates across publishers and a shared evaluation
+contract.
 
 A missing hub or restore in progress returns `ErrCaptureUnavailable`, without a
 view. Cancellation, invalid or duplicate asset IDs, selections outside the

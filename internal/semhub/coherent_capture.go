@@ -3,6 +3,7 @@ package semhub
 import (
 	"context"
 	"errors"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
@@ -27,9 +28,9 @@ type CapturedAsset struct {
 }
 
 type CoherentCapture struct {
-	Metadata *semreg.PackMetadataRegistry
-	Context  semreg.EvaluationContext
-	Assets   []CapturedAsset
+	Metadata    *semreg.PackMetadataRegistry
+	EvaluatedAt semreg.TimePoint
+	Assets      []CapturedAsset
 }
 
 // Capture reads the current admitted epochs without changing publication or
@@ -56,10 +57,7 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time
 	if err != nil {
 		return CoherentCapture{}, err
 	}
-	result := CoherentCapture{Metadata: metadata, Context: semreg.EvaluationContext{
-		EvaluatedAt:       semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(at.UnixNano(), 10)), ClockID: "clock.utc", UncertaintyNS: "0"},
-		EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: semreg.ClockEpochID("clock:semantic-read:" + h.incarnation), Nanoseconds: "0"},
-	}, Assets: make([]CapturedAsset, 0, len(ids))}
+	result := CoherentCapture{Metadata: metadata, EvaluatedAt: semreg.TimePoint{UnixNanoseconds: semreg.Int64(strconv.FormatInt(at.UnixNano(), 10)), ClockID: "clock.utc", UncertaintyNS: "0"}, Assets: make([]CapturedAsset, 0, len(ids))}
 	seen := map[semreg.AssetID]bool{}
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
@@ -94,7 +92,11 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time
 				if !item.PublicAdmitted {
 					item.UnavailableReason = "semantic.read.reason.publication_withheld"
 				} else {
-					evaluation, err := semreg.EvaluateSnapshot(snapshot, result.Context)
+					evaluationContext, err := recordedEvaluationContext(snapshot, result.EvaluatedAt)
+					if err != nil {
+						return CoherentCapture{}, err
+					}
+					evaluation, err := semreg.EvaluateSnapshot(snapshot, evaluationContext)
 					if err != nil {
 						return CoherentCapture{}, err
 					}
@@ -106,6 +108,24 @@ func (h *Hub) Capture(ctx context.Context, ids []semreg.AssetID, now func() time
 		h.fault("capture-read", id)
 	}
 	return result, ctx.Err()
+}
+
+// recordedEvaluationContext advances the publication's own aging coordinate by
+// elapsed serialized wall time. The original Go monotonic receipt is not retained
+// here: steps before the recorded wall point fail closed; forward steps age data.
+func recordedEvaluationContext(snapshot semreg.Snapshot, at semreg.TimePoint) (semreg.EvaluationContext, error) {
+	base, bok := new(big.Int).SetString(string(snapshot.EvaluateMonotonic.Nanoseconds), 10)
+	then, tok := new(big.Int).SetString(string(snapshot.EvaluatedAt.UnixNanoseconds), 10)
+	now, nok := new(big.Int).SetString(string(at.UnixNanoseconds), 10)
+	if !bok || !tok || !nok || !base.IsUint64() || !then.IsInt64() || !now.IsInt64() {
+		return semreg.EvaluationContext{}, &semreg.Error{ID: semreg.InvalidTime}
+	}
+	elapsed := new(big.Int).Sub(now, then)
+	ticks := new(big.Int).Add(base, elapsed)
+	if elapsed.Sign() < 0 || !ticks.IsUint64() {
+		return semreg.EvaluationContext{}, &semreg.Error{ID: semreg.InvalidTime}
+	}
+	return semreg.EvaluationContext{EvaluatedAt: at, EvaluateMonotonic: semreg.MonotonicPoint{ClockEpochID: snapshot.EvaluateMonotonic.ClockEpochID, Nanoseconds: semreg.Uint64(ticks.String())}}, nil
 }
 
 // Evidence references expose only public material or metadata-only references.

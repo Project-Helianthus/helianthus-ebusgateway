@@ -3,7 +3,6 @@ package semanticview
 
 import (
 	"encoding/json"
-	"reflect"
 	"sort"
 
 	semreg "github.com/Project-Helianthus/helianthus-semreg/semreg/v1"
@@ -44,6 +43,7 @@ func failure(id semreg.ErrorID) error { return &semreg.Error{ID: id, Detail: "se
 
 // Build consumes complete public-safe captures. Native safety and lifecycle
 // gates must be applied before capture; unsafe assets use publication_withheld.
+// Assets share one captured wall instant; each keeps its own aging coordinate.
 // A nil provider is an error, never an empty successful publication.
 func Build(metadata *semreg.PackMetadataRegistry, inputs []Input) (View, error) {
 	if metadata == nil {
@@ -54,7 +54,7 @@ func Build(metadata *semreg.PackMetadataRegistry, inputs []Input) (View, error) 
 	}
 	result := View{Assets: make([]Asset, 0, len(inputs))}
 	seen := map[semreg.AssetID]bool{}
-	var context *semreg.EvaluationContext
+	var evaluatedAt *semreg.TimePoint
 	for _, input := range inputs {
 		if input.AssetID.Validate() != nil || len(input.AssetID) > 256 || seen[input.AssetID] {
 			return View{}, failure(semreg.InvalidValue)
@@ -88,10 +88,10 @@ func Build(metadata *semreg.PackMetadataRegistry, inputs []Input) (View, error) 
 		if snapshot.AssetID != input.AssetID {
 			return View{}, failure(semreg.RevisionConflict)
 		}
-		if context != nil && !reflect.DeepEqual(*context, evaluation.Context) {
+		if evaluatedAt != nil && *evaluatedAt != evaluation.Context.EvaluatedAt {
 			return View{}, failure(semreg.RevisionConflict)
 		}
-		context = &evaluation.Context
+		evaluatedAt = &evaluation.Context.EvaluatedAt
 		availability, err := projection.DerivePackAvailability(metadata, snapshot, evaluation)
 		if err != nil {
 			return View{}, failure(semreg.ErrorIdentifier(err))

@@ -586,3 +586,83 @@ func TestM11WithheldEBusKeepsProcessHubReadable(t *testing.T) {
 		t.Fatal("Portal differs from process hub provider")
 	}
 }
+
+// Use the native Storage publication boundary, then read only through the
+// production shared provider with an injected clock.
+func TestM11StorageProviderAging(t *testing.T) {
+	fake := &growattEndpointFake{words: growattBMSProductionWords(), failAt: -1, mismatch: -1, generation: 4}
+	runtime := startGrowattRuntimeWithFake(t, growattProductionConfig(), fake)
+	native, err := runtime.GrowattBMSRS485V202(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, ok := runtime.LastObservationEvidence()
+	if !ok {
+		t.Fatal("missing native evidence")
+	}
+	received := time.Unix(1800000000, 0)
+	evidence.ReceiptWall = received
+	evidence.ReceiptMonotonic = 7 * time.Second
+	if _, err := runtime.storage.Publish(native.Status, evidence); err != nil {
+		t.Fatal(err)
+	}
+	provider := newGatewaySemanticSnapshotProvider(&gatewayRuntimeControl{hub: runtime.storage.hub})
+	before, err := runtime.storage.hub.Inspect(runtime.storage.assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name         string
+		elapsed      time.Duration
+		freshness    semreg.Freshness
+		availability semreg.Availability
+	}{
+		{"fresh", 59 * time.Second, semreg.FreshnessFresh, semreg.AvailabilityAvailable},
+		{"fresh-boundary", 60 * time.Second, semreg.FreshnessStale, semreg.AvailabilityDegraded},
+		{"degraded", 299 * time.Second, semreg.FreshnessStale, semreg.AvailabilityDegraded},
+		{"retention-boundary", 300 * time.Second, semreg.FreshnessExpired, semreg.AvailabilityUnavailable},
+		{"expired", 301 * time.Second, semreg.FreshnessExpired, semreg.AvailabilityUnavailable},
+		// With serialized wall points, a forward wall step advances age too.
+		{"forward-wall-step", time.Hour, semreg.FreshnessExpired, semreg.AvailabilityUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			provider.now = func() time.Time { calls++; return received.Add(tc.elapsed) }
+			metadata, inputs, err := provider.Capture(context.Background(), []semreg.AssetID{runtime.storage.assetID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			view, err := semanticview.Build(metadata, inputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || len(view.Assets) != 1 || view.Assets[0].Evaluation == nil || len(view.Assets[0].Evaluation.Facts) == 0 {
+				t.Fatalf("missing capture: %+v calls=%d", view, calls)
+			}
+			for _, fact := range view.Assets[0].Evaluation.Facts {
+				if fact.Freshness != tc.freshness || fact.EffectiveAvailability != tc.availability {
+					t.Fatalf("fact=%+v want %s/%s", fact, tc.freshness, tc.availability)
+				}
+			}
+			if view.Assets[0].Evaluation.Context.EvaluateMonotonic.ClockEpochID != semreg.ClockEpochID(evidence.ClockEpoch) {
+				t.Fatal("lost publisher aging epoch")
+			}
+			againMetadata, againInputs, err := provider.Capture(context.Background(), []semreg.AssetID{runtime.storage.assetID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			again, err := semanticview.Build(againMetadata, againInputs)
+			if err != nil || !reflect.DeepEqual(view, again) {
+				t.Fatalf("nondeterministic read: %v", err)
+			}
+		})
+	}
+	provider.now = func() time.Time { return received.Add(-time.Nanosecond) }
+	if _, _, err := provider.Capture(context.Background(), []semreg.AssetID{runtime.storage.assetID}); semreg.ErrorIdentifier(err) != semreg.InvalidTime {
+		t.Fatalf("backward wall step must fail closed: %v", err)
+	}
+	after, err := runtime.storage.hub.Inspect(runtime.storage.assetID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("read changed publication: %v", err)
+	}
+}

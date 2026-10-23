@@ -42,6 +42,7 @@ func (p *hubSemanticSnapshotProvider) Capture(ctx context.Context, ids []semreg.
 		return nil, nil, err
 	}
 	inputs := make([]semanticview.Input, 0, len(capture.Assets))
+	// Preserve each publication's evaluation coordinate at the captured instant.
 	for _, asset := range capture.Assets {
 		inputs = append(inputs, semanticview.Input{AssetID: asset.AssetID, Snapshot: asset.Snapshot, Evaluation: asset.Evaluation, UnavailableReason: asset.UnavailableReason})
 	}

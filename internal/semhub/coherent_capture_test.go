@@ -37,7 +37,7 @@ func TestM11CaptureDetachedAndUnavailable(t *testing.T) {
 	if !got.SourceAdmitted || !got.ReadAdmitted || !got.PublicAdmitted || got.UnavailableReason != "" || !reflect.DeepEqual(*got.Snapshot, before.Snapshot) {
 		t.Fatalf("capture=%+v", got)
 	}
-	if got.Evaluation.SnapshotID != got.Snapshot.SnapshotID || got.Evaluation.Revisions != got.Snapshot.Revisions || got.Evaluation.Context != capture.Context {
+	if got.Evaluation.SnapshotID != got.Snapshot.SnapshotID || got.Evaluation.Revisions != got.Snapshot.Revisions || got.Evaluation.Context.EvaluatedAt != capture.EvaluatedAt || got.Evaluation.Context.EvaluateMonotonic != testMono(4) {
 		t.Fatal("mixed evaluation")
 	}
 	if capture.Assets[1].UnavailableReason != "semantic.read.reason.asset_unknown" {
@@ -274,7 +274,45 @@ func TestM11CaptureSamplesClockUnderReadLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || capture.Assets[0].Snapshot == nil || capture.Assets[0].Evaluation.Context.EvaluatedAt != capture.Context.EvaluatedAt || capture.Context.EvaluatedAt.UnixNanoseconds != "1800000004000000000" {
+	if calls != 1 || capture.Assets[0].Snapshot == nil || capture.Assets[0].Evaluation.Context.EvaluatedAt != capture.EvaluatedAt || capture.EvaluatedAt.UnixNanoseconds != "1800000004000000000" {
 		t.Fatalf("incoherent clock capture: %+v, calls=%d", capture, calls)
+	}
+}
+
+func TestM11CaptureRecordedAgingCoordinate(t *testing.T) {
+	h := newTestHub(t)
+	id := semreg.AssetID("asset:aging")
+	mustDeclare(t, h, id, "source:aging", "aging", nil)
+	handle := admitLegacy(t, h, "source:aging", "aging", "epoch:aging", 1)
+	mustPublish(t, h, handle, id, "aging", 1, 7)
+	before, _ := h.Inspect(id)
+	for _, tc := range []struct {
+		seconds      int64
+		freshness    semreg.Freshness
+		availability semreg.Availability
+	}{
+		{59, semreg.FreshnessFresh, semreg.AvailabilityAvailable},
+		{60, semreg.FreshnessStale, semreg.AvailabilityDegraded},
+		{299, semreg.FreshnessStale, semreg.AvailabilityDegraded},
+		{300, semreg.FreshnessExpired, semreg.AvailabilityUnavailable},
+	} {
+		capture, err := h.Capture(context.Background(), []semreg.AssetID{id}, func() time.Time { return time.Unix(1800000007+tc.seconds, 0) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := capture.Assets[0].Evaluation
+		if got.Context.EvaluateMonotonic.ClockEpochID != testMono(7).ClockEpochID || got.Context.EvaluateMonotonic.Nanoseconds != testMono(7+tc.seconds).Nanoseconds {
+			t.Fatalf("lost recorded coordinate: %+v", got.Context)
+		}
+		if len(got.Facts) != 1 || got.Facts[0].Freshness != tc.freshness || got.Facts[0].EffectiveAvailability != tc.availability {
+			t.Fatalf("age %d: %+v", tc.seconds, got.Facts)
+		}
+	}
+	if _, err := h.Capture(context.Background(), []semreg.AssetID{id}, func() time.Time { return time.Unix(1800000006, 0) }); semreg.ErrorIdentifier(err) != semreg.InvalidTime {
+		t.Fatalf("backward wall step accepted: %v", err)
+	}
+	after, _ := h.Inspect(id)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("aging read changed publication")
 	}
 }

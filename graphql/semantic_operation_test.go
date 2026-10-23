@@ -417,10 +417,22 @@ func TestM56GraphQLStructuralRefusalsNeverDispatch(t *testing.T) {
 		pad := bytes.Repeat([]byte(" "), 4*semanticoperations.MaxRequestBytes)
 		padded := append(body[:len(body)-1:len(body)-1], append(pad, '}')...)
 		m56RequireCode(t, m56Post(t, h.handler, "application/json", padded), exhausted)
+		hugePad := bytes.Repeat([]byte(" "), 2<<20)
+		hugeSemantic := append(body[:len(body)-1:len(body)-1], append(hugePad, '}')...)
+		m56RequireCode(t, m56Post(t, h.handler, "application/json", hugeSemantic), exhausted)
 		malformed := append([]byte(`{"query":"mutation { semanticOperation(`), pad...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", malformed), exhausted)
+		if got := m56Post(t, h.handler, "application/json", malformed); len(got.Errors) == 0 || got.Data != nil {
+			t.Fatalf("malformed oversized body = %+v", got)
+		}
+		h.untouched(t)
+	})
+	t.Run("oversized non-semantic body keeps its handling", func(t *testing.T) {
+		h := newM56Harness(t, semoptest.Outcome{})
 		huge := append([]byte(`{"query":"{ __typename }"`), append(bytes.Repeat([]byte(" "), 2<<20), '}')...)
-		m56RequireCode(t, m56Post(t, h.handler, "application/json", huge), exhausted)
+		got := m56Post(t, h.handler, "application/json", huge)
+		if len(got.Errors) != 0 || got.Data["__typename"] == nil {
+			t.Fatalf("response = %+v", got)
+		}
 		h.untouched(t)
 	})
 	t.Run("body at the byte bound", func(t *testing.T) {

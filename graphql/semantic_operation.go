@@ -120,6 +120,9 @@ func semanticOperationField(builder *Builder) *graphqlgo.Field {
 			marker, _ := ctx.Value(semanticOperationMarkerKey{}).(*semanticOperationMarker)
 			// Only the strict single-JSON-body path decodes the input; GET,
 			// form, raw GraphQL and in-process paths fail closed here.
+			if marker != nil && marker.oversize {
+				return nil, semanticOperationExhausted("request body exceeds the byte bound")
+			}
 			if marker == nil || marker.request == nil {
 				return nil, semanticOperationInvalid("requires one strict JSON request body")
 			}
@@ -433,7 +436,8 @@ func decodeSemanticOperationInput(raw any) (semanticoperations.Request, error) {
 
 // semanticOperationMarker carries the guard's verdict for one HTTP request.
 type semanticOperationMarker struct {
-	request *semanticoperations.Request
+	request  *semanticoperations.Request
+	oversize bool
 }
 
 type semanticOperationMarkerKey struct{}
@@ -465,22 +469,18 @@ func guardSemanticOperationRequests(next http.Handler) http.Handler {
 			return
 		}
 		original := r.Body
-		body, err := io.ReadAll(io.LimitReader(original, semanticOversizeScanBytes+1))
+		body, err := io.ReadAll(io.LimitReader(original, int64(semanticoperations.MaxRequestBytes)+1))
 		if err != nil {
 			r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), semanticBodyReadError{err: err}), Closer: original}
 			next.ServeHTTP(w, r)
 			return
 		}
 		if len(body) > semanticoperations.MaxRequestBytes {
-			// Padding must not move a semantic request past the bound into the
-			// unbounded stock reader: an oversized body that names the field,
-			// or exceeds the scan bound, is refused before GraphQL sees it.
-			if len(body) > semanticOversizeScanBytes || semanticEnvelopeNamesField(body) {
-				writeSemanticOperationError(w, semanticOperationExhausted("request body exceeds the byte bound"))
-				return
-			}
-			r.Body = semanticReplayBody{Reader: bytes.NewReader(body), Closer: original}
-			next.ServeHTTP(w, r)
+			// A body past the bound is replayed in full to the stock handler so
+			// other requests keep their handling; a semantic one is refused by
+			// the resolver before any owner, capture or dispatch.
+			r.Body = semanticReplayBody{Reader: io.MultiReader(bytes.NewReader(body), original), Closer: original}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), semanticOperationMarkerKey{}, &semanticOperationMarker{oversize: true})))
 			return
 		}
 		r.Body = semanticReplayBody{Reader: bytes.NewReader(body), Closer: original}
@@ -495,25 +495,6 @@ func guardSemanticOperationRequests(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), semanticOperationMarkerKey{}, &semanticOperationMarker{request: &request})))
 	})
-}
-
-// semanticOversizeScanBytes bounds how much of an oversized JSON body the guard
-// buffers to decide whether it names semanticOperation.
-const semanticOversizeScanBytes = 1 << 20
-
-// semanticEnvelopeNamesField also answers true for a body that does not parse
-// strictly, since its text cannot be proven free of the field.
-func semanticEnvelopeNamesField(body []byte) bool {
-	envelope := parseSemanticEnvelope(body)
-	if envelope.err != nil {
-		return true
-	}
-	for _, query := range envelope.queries {
-		if strings.Contains(query, semanticOperationFieldName) {
-			return true
-		}
-	}
-	return false
 }
 
 func writeSemanticOperationError(w http.ResponseWriter, err error) {

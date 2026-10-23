@@ -420,6 +420,9 @@ func (r *Router) Route(ctx context.Context, request Request) (Result, error) {
 
 	_, inputs, err := r.snapshots.Capture(ctx, []semreg.AssetID{request.AssetID})
 	if err != nil {
+		if ctx.Err() != nil {
+			return refused(string(semreg.DeadlineExpired)), nil
+		}
 		return Result{}, unavailable("current snapshot capture unavailable")
 	}
 	if len(inputs) != 1 || inputs[0].AssetID != request.AssetID {

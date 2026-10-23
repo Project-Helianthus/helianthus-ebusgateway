@@ -277,6 +277,24 @@ func (c failingCapture) Capture(context.Context, []semreg.AssetID) (*semreg.Pack
 	return nil, nil, errors.New("hub restoring")
 }
 
+type expiringCapture struct{}
+
+func (expiringCapture) Capture(ctx context.Context, _ []semreg.AssetID) (*semreg.PackMetadataRegistry, []semanticview.Input, error) {
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+func TestM56RouterCaptureDeadlineExpiryIsNoSendDeadlineExpired(t *testing.T) {
+	h := newHarness(t, semoptest.Outcome{})
+	router := semanticoperations.NewRouter(semanticoperations.Config{Snapshots: expiringCapture{}, Kernel: h.f.Kernel, Intents: h.owner, Executors: h.lookup})
+	request := h.f.Request()
+	request.Timeout = time.Millisecond
+	result, err := router.Route(context.Background(), request)
+	if err != nil || viewOf(result) != refusedView(string(semreg.DeadlineExpired)) || h.selected.Calls() != 0 {
+		t.Fatalf("result = %+v, %v, calls %d", viewOf(result), err, h.selected.Calls())
+	}
+}
+
 func TestM56RouterGuardChangeBeforeInvocationSendsNothing(t *testing.T) {
 	h := newHarness(t, semoptest.Outcome{Kind: operation.OutcomeApplied, Delivery: operation.DeliverySent, Readback: operation.ReadbackConfirms})
 	h.selected.Before = h.f.Fence

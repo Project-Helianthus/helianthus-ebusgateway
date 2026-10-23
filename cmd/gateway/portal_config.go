@@ -28,6 +28,18 @@ func openGatewayPortalConfig(cfg ebusgateway.Config, registry *runtimecontrol.Re
 // drivers, and host-supplied initial enablement, are exactly drivers.
 func openGatewayPortalConfigDrivers(cfg ebusgateway.Config, drivers []portalconfig.Driver) (*portalconfig.Store, error) {
 	initial := portalconfig.Record{Format: portalconfig.Format, Revision: "0", Drivers: append([]portalconfig.Driver{}, drivers...)}
+	constraints := portalConfigConstraints(cfg, drivers)
+	// Open returns a usable error view even on cold-load failure. Keep that
+	// view mounted and never replace corrupt or unavailable storage with defaults.
+	store, err := portalconfig.Open(cfg.PortalConfigRoot, initial, constraints)
+	if err != nil {
+		log.Printf("portal configuration unavailable: %v", err)
+	}
+	return store, err
+}
+
+// portalConfigConstraints is the host-provisioned option set for a driver set.
+func portalConfigConstraints(cfg ebusgateway.Config, drivers []portalconfig.Driver) portalconfig.Constraints {
 	plan := newHTTPControlPlaneRoutePlan(cfg, false)
 	constraints := portalconfig.Constraints{
 		GraphQL: plan.graphqlPath != "", MCP: plan.mcpPath != "",
@@ -36,13 +48,7 @@ func openGatewayPortalConfigDrivers(cfg ebusgateway.Config, drivers []portalconf
 	for _, driver := range drivers {
 		constraints.Drivers = append(constraints.Drivers, driver.ID)
 	}
-	// Open returns a usable error view even on cold-load failure. Keep that
-	// view mounted and never replace corrupt or unavailable storage with defaults.
-	store, err := portalconfig.Open(cfg.PortalConfigRoot, initial, constraints)
-	if err != nil {
-		log.Printf("portal configuration unavailable: %v", err)
-	}
-	return store, err
+	return constraints
 }
 
 func gatewayPortalConfigCallbacks(store *portalconfig.Store, cfg ebusgateway.Config) *portal.ConfigCallbacks {

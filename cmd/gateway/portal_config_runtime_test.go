@@ -785,6 +785,7 @@ func TestM28PartialRecordFromEarlierReleaseIsMigrated(t *testing.T) {
 func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
 	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: false}, {ID: "c", Enabled: true}}
 	unsupported := &portalconfig.Error{Code: "unsupported_selection"}
+	open := portalconfig.Constraints{GraphQL: true, MCP: true, AdapterProxy: true, Matter: true}
 	write := func(root string, drivers ...portalconfig.Driver) {
 		record := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: drivers}
 		if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), m28Marshal(t, record), 0o600); err != nil {
@@ -793,7 +794,7 @@ func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
 	}
 	root := t.TempDir()
 	write(root, portalconfig.Driver{ID: "a", Enabled: false})
-	if !migratePortalConfigRecord(root, unsupported, seed) {
+	if !migratePortalConfigRecord(root, unsupported, seed, open) {
 		t.Fatal("partial record was not migrated")
 	}
 	data, _ := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
@@ -802,16 +803,39 @@ func TestM28MigrationCompletesMissingDriversAtHostEnablement(t *testing.T) {
 	if err != nil || got.Revision != "2" || !reflect.DeepEqual(got.Drivers, want) {
 		t.Fatalf("migrated %+v (%v); want %+v at revision 2", got, err, want)
 	}
-	if migratePortalConfigRecord(root, unsupported, seed) {
+	if migratePortalConfigRecord(root, unsupported, seed, open) {
 		t.Fatal("complete record was migrated again")
 	}
 	foreign := t.TempDir()
 	write(foreign, portalconfig.Driver{ID: "a", Enabled: true}, portalconfig.Driver{ID: "zz", Enabled: true})
 	before, _ := os.ReadFile(filepath.Join(foreign, portalConfigRecordFile))
-	if migratePortalConfigRecord(foreign, unsupported, seed) || migratePortalConfigRecord(root, &portalconfig.Error{Code: "invalid_record"}, seed) {
+	if migratePortalConfigRecord(foreign, unsupported, seed, open) || migratePortalConfigRecord(root, &portalconfig.Error{Code: "invalid_record"}, seed, open) {
 		t.Fatal("migrated a record naming an unknown driver or a different failure")
 	}
 	if after, _ := os.ReadFile(filepath.Join(foreign, portalConfigRecordFile)); !bytes.Equal(before, after) {
 		t.Fatal("record with an unknown driver was rewritten")
+	}
+}
+
+// TestM28MigrationKeepsRecordSelectingUnprovisionedOption: a partial record
+// that also selects an option the host does not provision is not completed,
+// so the failed load keeps the stored bytes.
+func TestM28MigrationKeepsRecordSelectingUnprovisionedOption(t *testing.T) {
+	seed := []portalconfig.Driver{{ID: "a", Enabled: true}, {ID: "b", Enabled: true}}
+	root := t.TempDir()
+	record := portalconfig.Record{Format: portalconfig.Format, Revision: "2", Drivers: seed[:1], AdapterProxy: true}
+	if err := os.WriteFile(filepath.Join(root, portalConfigRecordFile), m28Marshal(t, record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(root, portalConfigRecordFile))
+	unsupported := &portalconfig.Error{Code: "unsupported_selection"}
+	if migratePortalConfigRecord(root, unsupported, seed, portalconfig.Constraints{GraphQL: true, MCP: true}) {
+		t.Fatal("migrated a record selecting an unprovisioned option")
+	}
+	if after, _ := os.ReadFile(filepath.Join(root, portalConfigRecordFile)); !bytes.Equal(before, after) {
+		t.Fatal("record selecting an unprovisioned option was rewritten")
+	}
+	if !migratePortalConfigRecord(root, unsupported, seed, portalconfig.Constraints{AdapterProxy: true}) {
+		t.Fatal("provisioned option blocked migration")
 	}
 }

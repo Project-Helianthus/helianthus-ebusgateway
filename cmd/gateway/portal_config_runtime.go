@@ -66,7 +66,7 @@ func openGatewayPortalConfigRuntime(cfg ebusgateway.Config) *gatewayPortalConfig
 	}
 	runtime := &gatewayPortalConfigRuntime{applied: map[runtimecontrol.DriverID]portalConfigApplication{}}
 	runtime.store, runtime.loadErr = openGatewayPortalConfigDrivers(cfg, seed)
-	if migratePortalConfigRecord(cfg.PortalConfigRoot, runtime.loadErr, seed) {
+	if migratePortalConfigRecord(cfg.PortalConfigRoot, runtime.loadErr, seed, portalConfigConstraints(cfg, seed)) {
 		_ = runtime.store.Close()
 		runtime.store, runtime.loadErr = openGatewayPortalConfigDrivers(cfg, seed)
 	}
@@ -95,8 +95,9 @@ func openGatewayPortalConfigRuntime(cfg ebusgateway.Config) *gatewayPortalConfig
 // completed in place, keeping its revision and selections, with each missing
 // driver at its host-configured enablement. Any other record, including one
 // naming a driver outside the compiled set, is left untouched. It reports
-// whether the record was rewritten.
-func migratePortalConfigRecord(root string, loadErr error, seed []portalconfig.Driver) bool {
+// whether the record was rewritten. A record that also selects an option the
+// host does not provision stays untouched, so the failed load is preserved.
+func migratePortalConfigRecord(root string, loadErr error, seed []portalconfig.Driver, constraints portalconfig.Constraints) bool {
 	var typed *portalconfig.Error
 	if !errors.As(loadErr, &typed) || typed.Code != "unsupported_selection" {
 		return false
@@ -121,6 +122,9 @@ func migratePortalConfigRecord(root string, loadErr error, seed []portalconfig.D
 		present[driver.ID] = true
 	}
 	if len(present) == len(host) {
+		return false
+	}
+	if record.Sharing.GraphQL && !constraints.GraphQL || record.Sharing.MCP && !constraints.MCP || record.AdapterProxy && !constraints.AdapterProxy || record.OutputBindings.Matter && !constraints.Matter {
 		return false
 	}
 	for _, driver := range seed {
